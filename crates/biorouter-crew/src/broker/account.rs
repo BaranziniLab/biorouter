@@ -249,16 +249,16 @@ fn claim(broker: &mut Broker, uid: u32, conn: &mut Connection, req: &Request) ->
     let mut state = broker.state.clone();
     join::prune_expired(&mut state, now);
     let host_uid = state.workspace.host_uid;
-    let (mut state, principal_id, admitted, renamed) =
+    let (mut state, principal_id, admitted, changed) =
         admit(broker, state, branch, uid, host_uid, &account)?;
     // 5. The key. One already bound to this principal is a retry: it commits nothing but a
-    // host rename this request found.
+    // host rename this request found or an add-device join it consumed.
     if let Some(device) = state.devices.get(&device_id) {
         ensure!(
             device.principal_id == principal_id,
             "device_conflict: this device key is already enrolled in this workspace; use a new device key"
         );
-        if renamed {
+        if changed {
             commit(broker, state, &principal_id, uid == host_uid, now)?;
         }
         return Ok(answer(broker, &principal_id, &device_id, "device", None));
@@ -290,7 +290,8 @@ fn claim(broker: &mut Broker, uid: u32, conn: &mut Connection, req: &Request) ->
 }
 
 /// AO-2 step 4: the branch's own checks, made on `state`. Returns `state` with the caller
-/// admitted, the principal's ID, how it was admitted, and whether a host rename was found.
+/// admitted, the principal's ID, how it was admitted, and whether the record changes anything
+/// besides the device (a followed host rename, or an add-device join it consumes).
 fn admit(
     broker: &Broker,
     mut state: State,
@@ -299,7 +300,7 @@ fn admit(
     host_uid: u32,
     account: &Account,
 ) -> Result<(State, String, &'static str, bool)> {
-    let mut renamed = false;
+    let mut changed = false;
     let (principal_id, admitted) = match branch {
         Branch::Member(member) => {
             if member.username != account.name {
@@ -310,7 +311,9 @@ fn admit(
                     "account_changed: This server account is no longer named @{0}, the name it joined with. Ask the host to remove @{0} and invite you again.",
                     member.username
                 );
-                Broker::ensure_username_free(&state, uid, &account.name)?;
+                Broker::ensure_username_free(&state, uid, &account.name).map_err(|_| {
+                    host_rename_conflict(&state, uid, &member.username, &account.name)
+                })?;
                 let principal = state
                     .principals
                     .get_mut(&member.id)
@@ -319,8 +322,11 @@ fn admit(
                     principal.nickname = account.name.clone();
                 }
                 principal.username = account.name.clone();
-                renamed = true;
+                changed = true;
             }
+            // A member reaches this branch before the invited one, so an add-device join for
+            // this principal ends here, in the same record that adds the device.
+            changed |= consume_add_device_join(&mut state, uid, &member.id);
             (member.id, "device")
         }
         Branch::HostFirst => {
@@ -382,7 +388,39 @@ fn admit(
             (principal_id, "invitation")
         }
     };
-    Ok((state, principal_id, admitted, renamed))
+    Ok((state, principal_id, admitted, changed))
+}
+
+/// AO-2 step 4 for a member: an add-device join selecting `principal_id` is removed, with any
+/// legacy enrollment for the UID, as the invited branch removes a join it admits. Whether one
+/// was.
+fn consume_add_device_join(state: &mut State, uid: u32, principal_id: &str) -> bool {
+    let key = uid.to_string();
+    let selects_this_principal = state.pending_joins.get(&key).is_some_and(|join| {
+        join.uid == uid && join.existing_principal_id.as_deref() == Some(principal_id)
+    });
+    if selects_this_principal {
+        state.pending_joins.remove(&key);
+        state
+            .enrollments
+            .retain(|_, enrollment| enrollment.uid != uid);
+    }
+    selects_this_principal
+}
+
+/// D3's refusal of a followed host rename, in words the host can act on. Every device of the
+/// host stops authenticating once its account is renamed, so the host can remove the other
+/// member only after renaming the account back.
+fn host_rename_conflict(state: &State, uid: u32, old: &str, new: &str) -> anyhow::Error {
+    let other = state
+        .principals
+        .values()
+        .find(|p| p.active && p.uid != uid && names_collide(&p.username, new))
+        .map_or(new, |p| p.username.as_str());
+    let workspace = workspace_label(state);
+    anyhow!(
+        "identity_conflict: Crew can't follow this account's new name, @{new}, because @{other} already uses it in {workspace}. Rename the account back to @{old} on the server and remove @{other} from {workspace} before renaming it again."
+    )
 }
 
 /// When `principal_id` already holds [`MAX_DEVICES_PER_PRINCIPAL`] devices or more, remove the

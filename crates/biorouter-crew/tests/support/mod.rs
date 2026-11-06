@@ -682,6 +682,22 @@ pub fn uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// `cp -a source target` for a stopped workspace's folder: directories made owner-only, and
+/// regular files copied with their modes. Anything else (a socket, a link) is left behind.
+pub fn copy_tree(source: &Path, target: &Path) {
+    fs::create_dir(target).unwrap();
+    fs::set_permissions(target, fs::Permissions::from_mode(0o700)).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target.join(entry.file_name()));
+        } else if kind.is_file() {
+            fs::copy(entry.path(), target.join(entry.file_name())).unwrap();
+        }
+    }
+}
+
 /// Whether `text` contains a UUID or a 64-hex string anywhere.
 pub fn contains_machine_id(text: &str) -> bool {
     let bytes = text.as_bytes();

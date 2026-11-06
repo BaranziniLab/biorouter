@@ -17,14 +17,14 @@
 //!
 //! - `skipped`: workspaces of other accounts that were not described: a candidate left untried
 //!   by the per-account or total cap, one that did not answer within its deadline, and one whose
-//!   answer did not check out. A running workspace of this account that did not answer counts
-//!   too.
+//!   answer did not check out (a bad signature, or a name, institution or version larger than
+//!   a real broker sends). A running workspace of this account that did not answer counts too.
 //! - `unsupported`: brokers of other accounts that answered but do not advertise
 //!   `account_identity_v1`, so they cannot say whether this account belongs to them. They are
 //!   never listed.
 //! - `truncated`: whether workspaces were left out to keep the answer within its bounds: hosted
-//!   folders past the 64th, runtime directories of this account past the 32nd, or entries past
-//!   48 KiB.
+//!   folders past the 64th, runtime directories of this account past the 32nd, or entries that
+//!   no longer fit in 48 KiB (each is passed over, and smaller ones after it are still listed).
 //!
 //! Each ENTRY is:
 //!
@@ -71,6 +71,10 @@
 //! with a custom `--state-dir`. A running workspace is described by `runtime.json` and a
 //! `hello` checked as `status` checks it (socket and listener this account's, the recorded
 //! workspace and key), without replaying the journal; a stopped one by its replayed journal.
+//! A running broker found by its runtime directory is the same workspace as a listed folder
+//! only when ID, host and key all agree; otherwise both are listed. An ID that more than one
+//! folder holds (a copy of a workspace's folder kept in the store) lists each of those folders
+//! as `unknown` with the `identity_conflict` sentence `start` and `restart` refuse it with.
 //!
 //! **Elsewhere:** runtime sockets `/tmp/crew-<uid>-<32 hex>/broker.sock` of other accounts.
 //! Each candidate is checked before it is probed, as the bridge checks a workspace that moved:
@@ -78,14 +82,18 @@
 //! nobody else can write into the directory, and the listener runs as that UID. At most 4 per
 //! account, taken round-robin across accounts, and 64 in all, are probed concurrently, each
 //! with a 1-second deadline and a 16 KiB cap on what it reads, within 5 seconds for the whole
-//! scan. `hello` must be signed (v1 and v2) by the key it presents over a fresh nonce, and its
-//! signed `host_uid` must be the socket's owner; `host_username` comes from resolving that UID,
-//! never from the answer. Only `member`, `invited` and `removed` answers are listed.
+//! scan. `hello` must be signed (v1 and v2) by the key it presents over a fresh nonce, its
+//! signed `host_uid` must be the socket's owner, and its `name`, `institution_id` and unsigned
+//! `version` must be as small as a real broker's (the workspace-name rule, the institution
+//! rule, at most 64 printable bytes); `host_username` comes from resolving that UID, never
+//! from the answer. Only `member`, `invited` and `removed` answers are listed. Entries of
+//! different brokers are never merged, even when they share a workspace ID: each keeps its
+//! own `host_uid`, socket and key fingerprint, so a reader can tell them apart.
 //!
 //! A workspace found by the scan is trusted on first use, bounded by what the kernel vouches
 //! for: a socket in a directory only its host account controls, answered by a process running
 //! as that account.
-use super::by_id::{installed_program, peer_credentials, store_of};
+use super::by_id::{held_by_several_folders, installed_program, peer_credentials, store_of};
 use super::*;
 use std::sync::mpsc;
 
@@ -373,11 +381,34 @@ fn collect(probes: Probes, until: Instant) -> Vec<Option<Outcome>> {
     outcomes
 }
 
+/// The longest `version` a listed broker may report. It is unsigned and shown as it is.
+const VERSION_BYTES: usize = 64;
+
+/// Whether what an entry would repeat from another account's `hello` stays as small as a real
+/// broker keeps it: a `name` the workspace-name rule accepts, a canonical `institution_id`, and
+/// a short printable `version`. The signatures only say the answer is the broker's own, and
+/// that broker is another account's: without these bounds a few of its brokers could fill the
+/// answer's 48 KiB and leave every later workspace out.
+fn listed_fields_bounded(hello: &Value) -> bool {
+    let present = |key: &str| hello.get(key).filter(|value| !value.is_null());
+    present("name").is_none_or(|name| name.as_str().is_some_and(workspace_name_valid))
+        && present("institution_id")
+            .is_none_or(|id| id.as_str().is_some_and(is_canonical_institution_id))
+        && present("version").is_none_or(|version| {
+            version.as_str().is_some_and(|version| {
+                (1..=VERSION_BYTES).contains(&version.len())
+                    && version.bytes().all(|byte| byte.is_ascii_graphic())
+            })
+        })
+}
+
 /// Whether another account's `hello` checks out for the socket `owner` owns: it is signed, v1
-/// and v2, over `nonce` by the workspace key it presents, and its signed `host_uid` is `owner`.
-/// The v2 signature is what makes its capabilities, name, mode and institution trustworthy.
+/// and v2, over `nonce` by the workspace key it presents, its signed `host_uid` is `owner`, and
+/// the fields an entry repeats are bounded ([`listed_fields_bounded`]). The v2 signature is
+/// what makes its capabilities, name, mode and institution trustworthy.
 fn foreign_hello_checks_out(hello: &Value, owner: u32, nonce: &str) -> bool {
     let check = || -> Result<()> {
+        ensure!(listed_fields_bounded(hello), "a listed field is too large");
         let workspace_id = text(hello, "workspace_id")?;
         ensure!(broker_id(workspace_id), "invalid workspace ID");
         let host_uid = u32::try_from(number(hello, "host_uid")?)?;
@@ -715,6 +746,36 @@ fn unknown_entry(
     }
 }
 
+/// Hosted entries whose ID more than one state directory holds (a copy of a workspace's
+/// folder kept in the store) become `unknown`, each with the refusal `start` and `restart`
+/// give for that ID: which folder is the workspace cannot be told from here, so none is listed
+/// as it, and a stopped copy never stands in for the running workspace.
+fn mark_copies(entries: &mut [Entry]) {
+    let mut folders: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for entry in entries.iter().filter(|entry| entry.found_by == "state_dir") {
+        if let (Some(id), Some(dir)) = (&entry.workspace_id, &entry.state_dir) {
+            folders
+                .entry(id.clone())
+                .or_default()
+                .push(PathBuf::from(dir));
+        }
+    }
+    for entry in entries
+        .iter_mut()
+        .filter(|entry| entry.found_by == "state_dir")
+    {
+        let Some(id) = entry.workspace_id.clone() else {
+            continue;
+        };
+        if let Some(held) = folders.get(&id).filter(|held| held.len() > 1) {
+            let mut held = held.clone();
+            held.sort();
+            entry.state = "unknown";
+            entry.error = Some(held_by_several_folders(&id, &held));
+        }
+    }
+}
+
 /// This account's runtime sockets in `runtime_root` (`crew-<uid>-<32 hex>/broker.sock`, the
 /// directory and the socket its own), in name order, at most [`OWN_RUNTIME_LIMIT`], and how
 /// many more there were.
@@ -1000,8 +1061,13 @@ impl Listing<'_> {
             entry.host_username = entry.host_uid.and_then(|uid| self.username(uid));
             entry.binary_current = pid.and_then(|pid| runs_installed(pid, &self.installed));
             entry.others_connected = others_connected(&status);
+            // The same workspace only when its ID, host and key all agree: two entries sharing
+            // an ID are otherwise kept apart, so a reader can tell them apart.
             let listed = entries.iter_mut().find(|listed| {
-                listed.workspace_id.is_some() && listed.workspace_id == entry.workspace_id
+                listed.workspace_id.is_some()
+                    && listed.workspace_id == entry.workspace_id
+                    && listed.host_uid == entry.host_uid
+                    && listed.public_key == entry.public_key
             });
             match listed {
                 Some(listed) if listed.state == "stopped" => {
@@ -1069,26 +1135,25 @@ impl Listing<'_> {
         found
     }
 
-    /// The answer: the account, the entries in order while they fit in [`ANSWER_BYTES`], the
-    /// counts, and whether anything was left out (`truncated` counts what was).
+    /// The answer: the account, every entry, in order, that still fits in [`ANSWER_BYTES`], the
+    /// counts, and whether anything was left out (`truncated` counts what was). An entry that
+    /// does not fit is passed over, so one large entry never hides the smaller ones after it.
     fn answer(mut self, entries: Vec<Entry>) -> Value {
         let account_uid = self.scope.account_uid;
         let account = json!({"uid": account_uid, "username": self.username(account_uid)});
-        // Room for the envelope and the counts, then entries in order while they fit.
+        // Room for the envelope and the counts, then each entry that fits.
         let mut used = json_len(&account) + 128;
         let mut listed = Vec::new();
-        let mut entries = entries.into_iter();
-        for entry in entries.by_ref() {
+        for entry in entries {
             let wire = entry.wire();
             let length = json_len(&wire) + 1;
             if used + length > ANSWER_BYTES {
                 self.truncated += 1;
-                break;
+                continue;
             }
             used += length;
             listed.push(wire);
         }
-        self.truncated += entries.count();
         json!({
             "account": account,
             "workspaces": listed,
@@ -1139,6 +1204,7 @@ fn report(scope: &Scope) -> Value {
         .collect();
     let mut entries = listing.hosted_entries(&dirs, &hosted, probed);
     listing.runtime_entries(&mut entries, &own_sockets, collect(own_probes, own_until));
+    mark_copies(&mut entries);
     entries.sort_by(|a, b| {
         (&a.name, &a.workspace_id, &a.state_dir).cmp(&(&b.name, &b.workspace_id, &b.state_dir))
     });
@@ -1200,6 +1266,145 @@ mod tests {
         );
         assert_eq!(runtime_owner("crew-1001-short"), None);
         assert_eq!(runtime_owner(&format!("crt-1001-{hex}")), None);
+    }
+
+    /// A directory that knows no account.
+    struct NoAccounts;
+    impl Directory for NoAccounts {
+        fn by_uid(&self, _uid: u32) -> Result<Account> {
+            bail!("no such account")
+        }
+        fn by_name(&self, _name: &str) -> Result<Account> {
+            bail!("no such account")
+        }
+    }
+
+    fn scanned(name: &str, error: Option<String>) -> Entry {
+        Entry {
+            workspace_id: Some(Uuid::new_v4().to_string()),
+            name: Some(name.into()),
+            role: "member",
+            host_uid: Some(1002),
+            state: "running",
+            found_by: "scan",
+            error,
+            ..Entry::default()
+        }
+    }
+
+    /// One entry too large for what is left of the 48 KiB is passed over, and the smaller ones
+    /// after it are still listed; every entry left out counts as truncated.
+    #[test]
+    fn an_entry_that_does_not_fit_never_hides_the_ones_after_it() {
+        let root = std::env::temp_dir();
+        let scope = Scope {
+            home: &root,
+            runtime_root: &root,
+            account_uid: 1001,
+            directory: &NoAccounts,
+        };
+        let listing = || Listing {
+            scope: &scope,
+            started: Instant::now(),
+            installed: PathBuf::new(),
+            usernames: BTreeMap::new(),
+            skipped: 0,
+            unsupported: 0,
+            truncated: 0,
+        };
+        let huge = || Some("x".repeat(20 * 1024));
+        let entries = vec![
+            scanned("first", huge()),
+            scanned("second", huge()),
+            scanned("third", huge()),
+            scanned("after", None),
+        ];
+        let answer = listing().answer(entries);
+        let names: Vec<&str> = answer["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["first", "second", "after"], "{answer:#}");
+        assert_eq!(answer["truncated"], true);
+        assert!(json_len(&answer) <= ANSWER_BYTES);
+
+        let fits = listing().answer(vec![scanned("only", None)]);
+        assert_eq!(fits["truncated"], false);
+    }
+
+    /// Another account's broker may repeat only a name, institution and version as small as a
+    /// real broker's; anything larger does not check out, whatever its signatures say.
+    #[test]
+    fn a_foreign_hello_repeats_only_bounded_fields() {
+        let real = json!({"name": "baranzini-lab", "institution_id": "ucsf", "version": "1.94.1"});
+        assert!(listed_fields_bounded(&real));
+        assert!(listed_fields_bounded(
+            &json!({"name": null, "institution_id": null})
+        ));
+        assert!(listed_fields_bounded(&json!({})));
+        for bad in [
+            json!({"name": "a".repeat(15 * 1024)}),
+            json!({"name": "Baranzini Lab"}),
+            json!({"name": 7}),
+            json!({"institution_id": "u".repeat(65)}),
+            json!({"institution_id": "UCSF"}),
+            json!({"version": "1".repeat(VERSION_BYTES + 1)}),
+            json!({"version": "1.94.1 \u{202e}"}),
+            json!({"version": ""}),
+            json!({"version": 194}),
+        ] {
+            assert!(!listed_fields_bounded(&bad), "{bad}");
+        }
+        assert!(listed_fields_bounded(
+            &json!({"version": "1".repeat(VERSION_BYTES)})
+        ));
+    }
+
+    fn hosted_entry(workspace_id: &str, state: &'static str, dir: &str) -> Entry {
+        Entry {
+            workspace_id: Some(workspace_id.into()),
+            name: Some("lab".into()),
+            role: "host",
+            host_uid: Some(1001),
+            state,
+            state_dir: Some(dir.into()),
+            found_by: "state_dir",
+            ..Entry::default()
+        }
+    }
+
+    /// Two folders holding one ID: neither is listed as the workspace. A running workspace is
+    /// never reported stopped because a copy of its folder sorts first, and the sentence is
+    /// the one `start` and `restart` refuse that ID with.
+    #[test]
+    fn folders_sharing_an_id_are_listed_as_a_conflict() {
+        let id = Uuid::new_v4().to_string();
+        let other = Uuid::new_v4().to_string();
+        let mut entries = vec![
+            hosted_entry(
+                &id,
+                "stopped",
+                "/home/a/.local/share/biorouter-crew/backup-lab",
+            ),
+            hosted_entry(&id, "running", "/home/a/.local/share/biorouter-crew/lab"),
+            hosted_entry(
+                &other,
+                "stopped",
+                "/home/a/.local/share/biorouter-crew/notes",
+            ),
+        ];
+        mark_copies(&mut entries);
+        for entry in &entries[..2] {
+            assert_eq!(entry.state, "unknown");
+            let error = entry.error.as_deref().unwrap();
+            assert!(error.starts_with("identity_conflict: "), "{error}");
+            assert!(error.contains("(backup-lab, lab)"), "{error}");
+            assert!(entry.invitation().is_none());
+        }
+        assert_eq!(entries[2].state, "stopped");
+        assert!(entries[2].error.is_none());
     }
 
     /// An entry that cannot be opened carries no invitation, and one with every field does.

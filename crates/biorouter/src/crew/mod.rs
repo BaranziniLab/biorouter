@@ -1320,6 +1320,11 @@ pub struct CrewManager {
     /// Runs whose `run.revoke` is on its way to the workspace now, so the retry pass never
     /// sends a second one beside it (W2-DMN-13). Memory only.
     revoking: StdMutex<HashSet<String>>,
+    /// The UID of the server account each connection's bridge signs in as, as the workspace
+    /// server's last `auth.challenge` answer named it, by connection ID. Memory only, unsigned,
+    /// and never used to authorize anything: it tells the host apart for words, on a server
+    /// too old to say who the account is (AO-9), without asking the server once more.
+    account_uids: StdMutex<HashMap<String, u64>>,
 }
 /// How long one live admission of a chat's grant by the workspace stands for the provider
 /// uses that are not the reply loop's own model requests ([`CrewManager::check_provider_use`]).
@@ -2187,6 +2192,7 @@ impl CrewManager {
             unreadable: StdMutex::new(unreadable),
             ended_runs: StdMutex::new(HashSet::new()),
             revoking: StdMutex::new(HashSet::new()),
+            account_uids: StdMutex::new(HashMap::new()),
         })
     }
     /// [`CrewManager::new`], shared, and able to keep its connections' bridges alive.
@@ -3567,14 +3573,22 @@ impl CrewManager {
     /// A person's Connect. One that fails for a network reason keeps being tried by the daemon
     /// on the keepalive's schedule, so a network that comes back reconnects without a second
     /// click (Q4-01, [`Self::connect_failed`]); any other failure is final and left showing.
+    ///
+    /// Once connected, and with the lifecycle guard let go (a request whose bridge breaks takes
+    /// it), the account's devices are read once (AO-10), so a computer that was offline when
+    /// a device was added reports it as soon as it connects.
     pub async fn connect(&self, id: &str) -> Result<Connection> {
-        let _lifecycle = self.connection_guard(id).await?;
-        authentication::ensure_connect_available(id)?;
-        let connected = self.connect_locked(id).await;
-        if let Err(error) = &connected {
-            self.connect_failed(id, error).await;
-        }
-        connected
+        let connected = {
+            let _lifecycle = self.connection_guard(id).await?;
+            authentication::ensure_connect_available(id)?;
+            let connected = self.connect_locked(id).await;
+            if let Err(error) = &connected {
+                self.connect_failed(id, error).await;
+            }
+            connected?
+        };
+        self.observe_devices_at_connect(id).await;
+        Ok(connected)
     }
     pub(super) async fn connect_locked(&self, id: &str) -> Result<Connection> {
         // Its host deleted the workspace, whose server has stopped for good: a dial, a person's
@@ -4242,11 +4256,46 @@ impl CrewManager {
             .map_err(|_| anyhow::anyhow!("Invalid device key"))?;
         let signer = SigningKey::from_bytes(&key);
         let public = signer.verifying_key().to_bytes();
+        let matches = hex(&public) == c.public_key && hex(&Sha256::digest(public)) == c.device_id;
+        // A rejoin's staged key is written as the device key only after the workspace took it,
+        // and the saved identity follows in a second write. When that write failed, or the
+        // process ended between the two, the key is one the workspace knows and the connection
+        // still names the old device. Adding this computer again finishes it: the workspace
+        // answers the same staged key as a retry (AO-9).
+        if !matches
+            && self
+                .registry
+                .lock()
+                .await
+                .pending_rekeys
+                .get(&c.id)
+                .is_some_and(|pending| pending.public_key == hex(&public))
+        {
+            let workspace = self.workspace_label(&c.id).await;
+            return Err(CrewRefusal::device_not_recognized(&workspace).into());
+        }
         ensure!(
-            hex(&public) == c.public_key && hex(&Sha256::digest(public)) == c.device_id,
+            matches,
             "Saved Crew device identity does not match its signing credential; reconnect using a verified device identity"
         );
         Ok(signer)
+    }
+    /// Note that the workspace server named `uid` as the account `id`'s bridge signs in as.
+    fn note_account_uid(&self, id: &str, uid: u64) {
+        self.account_uids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_owned(), uid);
+    }
+    /// The UID the workspace server last named for the account `id`'s bridge signs in as, in
+    /// an `auth.challenge` answer this process read ([`Self::note_account_uid`]). Unsigned:
+    /// for words only, never to decide what the person may do.
+    pub(super) fn answered_account_uid(&self, id: &str) -> Option<u64> {
+        self.account_uids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .copied()
     }
     async fn signed_exchange(
         &self,
@@ -4294,6 +4343,9 @@ impl CrewManager {
             challenge["workspace_id"].as_str() == Some(&c.workspace_id),
             "Challenge workspace mismatch"
         );
+        if let Some(uid) = challenge["uid"].as_u64() {
+            self.note_account_uid(id, uid);
+        }
         let nonce = challenge["nonce"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing authentication challenge"))?;

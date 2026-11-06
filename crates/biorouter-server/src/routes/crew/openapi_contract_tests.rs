@@ -447,6 +447,56 @@ fn every_field_a_crew_refusal_carries_is_one_crew_error_declares() {
     );
 }
 
+/// The words a description quotes in backticks.
+fn quoted(text: &str) -> BTreeSet<&str> {
+    text.split('`').skip(1).step_by(2).collect()
+}
+
+/// AO-9: `crew_account_unsupported` chooses its words by `is_host`, with `server_login` for the
+/// host and `host_username` for anyone else. `host` is another refusal's field (an SSH
+/// failure's hop), so a client written from a description that named it found nothing and
+/// could not tell the host's words from a member's.
+#[test]
+fn the_account_unsupported_refusal_is_described_by_the_fields_it_carries() {
+    let spec = spec();
+    let mut described = 0;
+    for (path, operations) in spec["paths"].as_object().expect("paths") {
+        for method in METHODS {
+            let Some(responses) = operations[method]["responses"].as_object() else {
+                continue;
+            };
+            // A refusal's own answer: a setup job's status reports the code inside its
+            // `error`, beside the job's fields.
+            for (status, response) in responses.iter().filter(|(s, _)| s.starts_with('4')) {
+                let text = response["description"].as_str().unwrap_or_default();
+                let Some((_, after)) = text.split_once("`crew_account_unsupported`") else {
+                    continue;
+                };
+                // What the description says of this refusal: up to the parenthesis that
+                // names its fields.
+                let said = after.split_once(')').map_or(after, |(said, _)| said);
+                let fields = quoted(said);
+                // A description that only names the code says nothing of its fields.
+                if fields.is_empty() {
+                    continue;
+                }
+                described += 1;
+                let at = format!("{} {path} {status}", method.to_uppercase());
+                for field in ["is_host", "server_login", "host_username"] {
+                    assert!(
+                        fields.contains(field),
+                        "{at} does not name `{field}`: {said}"
+                    );
+                }
+                assert!(!fields.contains("host"), "{at} names `host`: {said}");
+            }
+        }
+    }
+    // A check that reads nothing would agree with one that finds nothing: join, rejoin and
+    // account each describe it.
+    assert!(described >= 3, "only {described} descriptions were read");
+}
+
 #[test]
 fn the_institution_refusal_schema_names_what_the_core_sends() {
     let details = biorouter::crew::institution_refusal_details("model", None, None, None);

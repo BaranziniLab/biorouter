@@ -9,7 +9,10 @@
 //!
 //! The first snapshot a connection is seen with sets what was seen, and reports nothing: there
 //! is nothing earlier to compare with. Kept in the saved registry, so every process sharing the
-//! profile reports the same devices and one acknowledgement clears them everywhere.
+//! profile reports the same devices and one acknowledgement clears them everywhere. Once a
+//! connection is watched, a person's connect reads one snapshot and a keepalive re-dial's
+//! membership read is the snapshot, so a computer that was offline is told at its next connect.
+//! An acknowledgement names the devices the person was shown, and clears only those.
 
 use super::authentication::grouped_fingerprint_shape;
 use super::{CrewManager, Registry};
@@ -78,10 +81,17 @@ impl DeviceWatch {
         Self { known, new }
     }
 
-    /// The watch once the person has seen every device it reports.
-    fn acknowledged(mut self) -> Self {
+    /// The watch once the person has seen the devices whose fingerprints are `shown`: those
+    /// become known, and a device reported since that is not among them stays reported, so a
+    /// device added while a notice was on screen is never cleared unseen.
+    fn acknowledged(mut self, shown: &[String]) -> Self {
+        let (seen, unseen): (Vec<NewDevice>, Vec<NewDevice>) = self
+            .new
+            .drain(..)
+            .partition(|device| shown.contains(&device.fingerprint));
         self.known
-            .extend(self.new.drain(..).map(|device| device.fingerprint));
+            .extend(seen.into_iter().map(|device| device.fingerprint));
+        self.new = unseen;
         self
     }
 }
@@ -191,9 +201,12 @@ impl CrewManager {
             .unwrap_or_default())
     }
 
-    /// The person has seen the new devices of connection `id`: stop reporting them, on every
-    /// computer process that shares this profile. Refused for a connection that is not saved.
-    pub async fn acknowledge_devices(&self, id: &str) -> Result<()> {
+    /// The person has seen the new devices of connection `id` whose fingerprints are `shown`
+    /// (the grouped form [`Self::new_devices`] reports): stop reporting those, on every
+    /// computer process that shares this profile. A device reported after the person was
+    /// shown the list, and so not in `shown`, stays reported; a fingerprint that is not
+    /// reported changes nothing. Refused for a connection that is not saved.
+    pub async fn acknowledge_devices(&self, id: &str, shown: &[String]) -> Result<()> {
         self.update_registry(|r| {
             r.connections
                 .iter()
@@ -201,11 +214,38 @@ impl CrewManager {
                 .then_some(())
                 .context("Unknown Crew connection")?;
             if let Some(watch) = r.seen_devices.remove(id) {
-                r.seen_devices.insert(id.to_owned(), watch.acknowledged());
+                r.seen_devices
+                    .insert(id.to_owned(), watch.acknowledged(shown));
             }
             Ok(())
         })
         .await
+    }
+
+    /// Whether this computer keeps what it last saw of the account's devices on connection
+    /// `id`: a snapshot was read there before, so one read now can report what was added
+    /// since (AO-10). Before that there is nothing to compare with.
+    pub(super) async fn watches_devices(&self, id: &str) -> bool {
+        self.refresh_registry().await;
+        self.registry.lock().await.seen_devices.contains_key(id)
+    }
+
+    /// AO-10 at a person's connect: one signed `workspace.snapshot`, read the way every
+    /// snapshot is ([`Self::observe_devices`]), so a device added while this computer was
+    /// offline is reported now rather than at the next read someone happens to make. Only for
+    /// a connection whose devices this computer watches ([`Self::watches_devices`]), and best
+    /// effort: a refusal is handled where every signed request's is, and the connect stands.
+    /// The caller holds no lifecycle guard, which a request whose bridge breaks takes.
+    pub(super) async fn observe_devices_at_connect(&self, id: &str) {
+        if !self.watches_devices(id).await {
+            return;
+        }
+        if let Err(error) = self
+            .signed_request(id, "workspace.snapshot", serde_json::json!({}), None)
+            .await
+        {
+            tracing::debug!(connection = id, %error, "Couldn't read the Crew account's devices after connecting");
+        }
     }
 }
 
@@ -269,9 +309,47 @@ mod tests {
         );
         // Seen again, it is still new until acknowledged; then never again.
         assert_eq!(observe(Some(&second), &added), second);
-        let acknowledged = second.acknowledged();
+        let acknowledged = second.acknowledged(&[DESKTOP.to_owned()]);
         assert!(acknowledged.new.is_empty());
         assert!(observe(Some(&acknowledged), &added).new.is_empty());
+    }
+
+    /// Only the devices the person was shown are acknowledged: one reported after the notice
+    /// was drawn stays reported, and a fingerprint nobody reported changes nothing.
+    #[test]
+    fn acknowledging_clears_only_the_devices_the_person_was_shown() {
+        const PHONE: &str = "DDDD DDDD DDDD DDDD";
+        let first = observe(None, &snapshot(json!([device(OWN, "invitation", 1)])));
+        let shown = observe(
+            Some(&first),
+            &snapshot(json!([
+                device(OWN, "invitation", 1),
+                device(DESKTOP, "account", 3)
+            ])),
+        );
+        // A snapshot taken while the notice was on screen reports one more.
+        let both = snapshot(json!([
+            device(OWN, "invitation", 1),
+            device(DESKTOP, "account", 3),
+            device(PHONE, "account", 4)
+        ]));
+        let later = observe(Some(&shown), &both);
+        assert_eq!(later.new.len(), 2);
+
+        let acknowledged = later.acknowledged(&[DESKTOP.to_owned(), LAPTOP.to_owned()]);
+        assert_eq!(
+            acknowledged
+                .new
+                .iter()
+                .map(|device| device.fingerprint.as_str())
+                .collect::<Vec<_>>(),
+            [PHONE],
+            "the device the person never saw is still reported"
+        );
+        assert!(acknowledged.known.contains(DESKTOP));
+        assert!(!acknowledged.known.contains(LAPTOP));
+        assert_eq!(observe(Some(&acknowledged), &both).new.len(), 1);
+        assert_eq!(acknowledged.clone().acknowledged(&[]), acknowledged);
     }
 
     /// A new key of this computer (a rejoin) is not news to it, and a revoked device stops

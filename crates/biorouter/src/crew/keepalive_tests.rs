@@ -131,8 +131,9 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// every `hello` says `"state": "deleted"`, as a server counting down to its erase answers
 /// ([`deleted_hello`]). `run.create` answers
 /// [`REGRANTED_RUN`], and `workspace.snapshot` answers [`grant_snapshot`] once a test has created
-/// `grant-snapshot` under the root ([`allow_grants`]); every other test's probes get the generic
-/// answer they always did. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
+/// `grant-snapshot` under the root ([`allow_grants`]), or the account's devices once a test has
+/// written `devices-snapshot` there ([`list_devices`]); every other test's probes get the
+/// generic answer they always did. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
 /// `blob-new` and `blob-old` ([`blob_read`], [`blob_status`]), `blob.read` answers for any
 /// `blob-bulk-N` as a file named `blob-bulk-N.csv` ([`bulk_read`]), and every other blob is
 /// refused, as the broker refuses one outside the run. `remote.read` answers [`remote_file`] and
@@ -305,6 +306,8 @@ while IFS= read -r line; do
       printf '{{"id":"%s","result":%s}}\n' "$id" '{begun}'
     elif [ -e "$root/grant-snapshot" ] && printf '%s\n' "$line" | grep -q '"method":"workspace.snapshot"'; then
       printf '{{"id":"%s","result":%s}}\n' "$id" '{snapshot}'
+    elif [ -e "$root/devices-snapshot" ] && printf '%s\n' "$line" | grep -q '"method":"workspace.snapshot"'; then
+      printf '{{"id":"%s","result":%s}}\n' "$id" "$(cat "$root/devices-snapshot")"
     else
       printf '{{"id":"%s","result":{{"accepted_method":"fixture"}}}}\n' "$id"
     fi
@@ -4759,4 +4762,112 @@ async fn a_hello_that_says_the_workspace_was_deleted_ends_the_connection_for_goo
         "{:?}",
         requests(&f.root)
     );
+}
+
+/// A device of the person's account that this computer has not seen.
+const LAPTOP: &str = "ABCD ABCD ABCD ABCD";
+/// Another, added while this computer was offline.
+const DESKTOP: &str = "1234 5678 9ABC DEF0";
+
+/// From now on `workspace.snapshot` lists the account's devices: this computer's own and each
+/// of `others`, added by account sign-in (AO-10).
+fn list_devices(root: &Path, others: &[&str]) {
+    let own = biorouter_crew::invitation::grouped_fingerprint(&connection().device_id);
+    let mut devices = vec![json!({"fingerprint": own, "added_via": "invitation", "added_at": 1})];
+    devices.extend(others.iter().zip(2u64..).map(|(fingerprint, at)| {
+        json!({"fingerprint": fingerprint, "added_via": "account", "added_at": at})
+    }));
+    let snapshot = json!({
+        "workspace": {"id": WORKSPACE_ID, "name": "lab"},
+        "actor": {"id": "principal-crew", "username": "crew", "devices": devices},
+    })
+    .to_string();
+    assert!(!snapshot.contains('\'') && !snapshot.contains('%'));
+    fs::write(root.join("devices-snapshot"), snapshot).unwrap();
+}
+
+/// The fingerprints of the devices the connection reports as new.
+async fn reported(manager: &CrewManager) -> Vec<String> {
+    manager
+        .new_devices(CONNECTION_ID)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|device| device.fingerprint)
+        .collect()
+}
+
+/// AO-10: a device added while this computer was disconnected is reported as soon as a person
+/// connects, before anything else reads a snapshot, with one read. A connection whose devices
+/// this computer never saw reads nothing at its connect.
+#[tokio::test]
+async fn a_device_added_while_disconnected_is_reported_at_the_next_connect() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("devices-at-connect", &["serve", "serve"], quiet()).await;
+    list_devices(&f.root, &[LAPTOP]);
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    assert_eq!(methods_on(&f.root, 1), ["hello"], "nothing watched yet");
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap();
+    assert!(
+        reported(&f.manager).await.is_empty(),
+        "the first read reports nothing"
+    );
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+
+    list_devices(&f.root, &[LAPTOP, DESKTOP]);
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    assert_eq!(reported(&f.manager).await, [DESKTOP]);
+    let device = &f.manager.new_devices(CONNECTION_ID).await.unwrap()[0];
+    assert_eq!(
+        (device.added_via.as_deref(), device.added_at),
+        (Some("account"), Some(3))
+    );
+    assert_eq!(
+        methods_on(&f.root, 2),
+        ["hello", "auth.challenge", "workspace.snapshot"],
+        "one read at the connect"
+    );
+}
+
+/// AO-10 after a keepalive re-dial: the membership read is the snapshot for a connection whose
+/// devices this computer watches, so a device added while the bridge was down is reported
+/// with the one request a re-dial already makes.
+#[tokio::test]
+async fn a_redial_reports_a_device_added_while_the_bridge_was_down() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    // Bridge 1 answers the connect's hello and one signed read, then drops at the next
+    // heartbeat; bridge 2 serves.
+    let f = fixture(
+        "devices-at-redial",
+        &["drop-after-3", "serve"],
+        fast(Duration::from_millis(30)),
+    )
+    .await;
+    list_devices(&f.root, &[LAPTOP]);
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap();
+    list_devices(&f.root, &[LAPTOP, DESKTOP]);
+    let manager = Arc::clone(&f.manager);
+    until(async || reported(&manager).await == [DESKTOP]).await;
+    let redialled = methods_on(&f.root, 2);
+    assert_eq!(
+        redialled[..3],
+        ["hello", "auth.challenge", "workspace.snapshot"],
+        "the re-dial's own hello, then the snapshot as its membership check"
+    );
+    assert!(
+        !redialled.iter().any(|method| method == "profile.suggest"),
+        "{redialled:?}"
+    );
+    assert_eq!(status(&f.manager).await, ("connected".into(), None));
 }

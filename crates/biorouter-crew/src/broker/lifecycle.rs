@@ -4,7 +4,9 @@
 //! find the workspace's state directory under `~/.local/share/biorouter-crew/` by the ID its
 //! `journal.jsonl` holds, so setup only ever substitutes an ID it checked, never a path the
 //! server printed. Neither ever creates a journal: an ID no directory holds is refused
-//! `not_found`, and so is a directory whose journal went away before the broker opened it.
+//! `not_found`, and so is a directory whose journal went away before the broker opened it. An
+//! ID more than one directory holds (a copy of a workspace's folder kept beside it) is refused
+//! `identity_conflict`, naming the folders, before anything is started or stopped.
 //!
 //! `start --workspace-id` answers exactly as `start --state-dir` does, with `created: false`.
 //!
@@ -13,7 +15,8 @@
 //!
 //! 1. It takes the account's restart lock, an exclusive `flock` on
 //!    `~/.local/share/biorouter-crew/.restart-lock`, refused `busy` while another restart holds
-//!    it (as setup's install lock refuses a second install).
+//!    it (as setup's install lock refuses a second install). Without an installed program to
+//!    start in the old one's place it stops nothing (`program_missing`).
 //! 2. It leaves the terminal's session (`setsid`, `SIGHUP` ignored) before it stops anything.
 //! 3. It stops the running broker, checked as `stop` checks it (the listener's kernel PID is the
 //!    one `runtime.json` records, and it answers `hello` for this workspace), and waits on the
@@ -125,9 +128,30 @@ pub(super) fn journal_workspace_id(journal: &Path) -> Option<String> {
     broker_id(id).then(|| id.to_owned())
 }
 
+/// The refusal for a workspace ID that more than one folder of the store holds: a copy kept
+/// beside the workspace's own folder (`cp -a lab lab-backup`). Which one is the workspace
+/// cannot be told from the folders, so nothing is started or stopped, and the listing reports
+/// each of them with this sentence instead of guessing.
+pub(super) fn held_by_several_folders(workspace_id: &str, folders: &[PathBuf]) -> String {
+    let names: Vec<String> = folders
+        .iter()
+        .map(|folder| {
+            folder.file_name().map_or_else(
+                || folder.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    format!(
+        "identity_conflict: Workspace {workspace_id} is kept in more than one folder of ~/.local/share/biorouter-crew ({}). Move every copy out of that folder, keeping the workspace's own, then try again.",
+        names.join(", ")
+    )
+}
+
 /// The state directory under `store` whose journal holds `workspace_id`: a directory (not a
 /// symbolic link) this account owns. Directory names are never trusted to say which workspace
-/// is inside; a renamed workspace keeps its folder.
+/// is inside; a renamed workspace keeps its folder. When more than one folder holds the ID
+/// (a copy of the folder kept in the store), none is chosen: [`held_by_several_folders`].
 pub(super) fn find_state_dir(store: &Path, workspace_id: &str) -> Result<PathBuf> {
     ensure!(
         broker_id(workspace_id),
@@ -143,13 +167,15 @@ pub(super) fn find_state_dir(store: &Path, workspace_id: &str) -> Result<PathBuf
         }
     };
     let euid = unsafe { libc::geteuid() };
+    // Sorted before the cap, so which folders are read never depends on directory order.
     let mut names: Vec<std::ffi::OsString> = entries
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name())
         .filter(|name| !name.to_string_lossy().starts_with('.'))
-        .take(STORE_SCAN_LIMIT)
         .collect();
     names.sort();
+    names.truncate(STORE_SCAN_LIMIT);
+    let mut holding = Vec::new();
     for name in names {
         let dir = store.join(&name);
         let owned = fs::symlink_metadata(&dir)
@@ -166,10 +192,14 @@ pub(super) fn find_state_dir(store: &Path, workspace_id: &str) -> Result<PathBuf
                 .map(|stored| stored.id)
         });
         if held.as_deref() == Some(workspace_id) {
-            return Ok(dir);
+            holding.push(dir);
         }
     }
-    Err(not_found(workspace_id))
+    match holding.len() {
+        0 => Err(not_found(workspace_id)),
+        1 => Ok(holding.remove(0)),
+        _ => bail!(held_by_several_folders(workspace_id, &holding)),
+    }
 }
 
 /// The account's restart lock, held for as long as this value lives (and by a child this
@@ -353,11 +383,12 @@ fn restart(home: &Path, workspace_id: &str, stop_timeout: Duration, leave: bool)
     let store = store_of(home);
     let root = find_state_dir(&store, workspace_id)?;
     let _lock = restart_lock(&store)?;
-    // Nothing is stopped unless there is a program to start in its place.
+    // Nothing is stopped unless there is a program to start in its place. This is its own
+    // code: `start_failed` means the broker was stopped and the new one did not start.
     let program = installed_program(home);
     ensure!(
         fs::metadata(&program).is_ok_and(|file| file.is_file() && file.mode() & 0o111 != 0),
-        "start_failed: {} is missing or cannot run, so the running broker was left as it is.",
+        "program_missing: {} is missing or cannot run, so the running broker was left as it is.",
         program.display()
     );
     if leave {

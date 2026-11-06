@@ -264,10 +264,19 @@ pub struct SetupRequest {
     pub keep_older: bool,
     /// Whether to restart the hosted workspaces still running an older program than the one
     /// installed (design AO-8). Absent restarts only those nobody else is connected to; `true`
-    /// restarts them even with others connected, which ends what those members had in flight;
-    /// `false` only reports them in `outcome.outdated`.
+    /// restarts all of them even with others connected, which ends what those members had in
+    /// flight; `false` only reports them in `outcome.outdated`. It covers every workspace not
+    /// named in `restart_workspace_ids`.
     #[serde(default)]
     pub restart_workspaces: Option<bool>,
+    /// Hosted workspaces to restart on the installed program even when others are connected,
+    /// or the server did not say that nobody is, by workspace ID (design AO-8): the person's
+    /// consent for exactly these, whatever `restart_workspaces` says. Each one named that runs
+    /// an older program than the one installed is restarted, unless it keeps its state outside
+    /// `~/.local/share/biorouter-crew`; one that runs the installed program, or is not running,
+    /// is left as it is. A check changes nothing, so it takes none.
+    #[serde(default)]
+    pub restart_workspace_ids: Vec<String>,
     /// Stopped workspaces the account hosts to start, by workspace ID (design AO-8). A check
     /// changes nothing, so it takes none.
     #[serde(default)]
@@ -564,8 +573,8 @@ pub struct SetupOutdated {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupOutdatedReason {
-    /// Others are connected (or the server did not say that nobody is), and the request did not
-    /// set `restart_workspaces: true`.
+    /// Others are connected (or the server did not say that nobody is), and the request neither
+    /// set `restart_workspaces: true` nor named it in `restart_workspace_ids`.
     OthersConnected,
     /// It runs a newer program than the one installed.
     RunningNewer,
@@ -1482,6 +1491,24 @@ fn workspace_entry(value: &Value) -> Option<SetupWorkspace> {
     })
 }
 
+/// Whether two listed entries are one workspace: the same ID, host and workspace key. Any
+/// account can present another workspace's ID and name, so entries from two hosts or keys are
+/// two workspaces, both listed, and opening by name refuses to choose between them (AO-6).
+fn same_workspace(a: &SetupWorkspace, b: &SetupWorkspace) -> bool {
+    a.workspace_id == b.workspace_id
+        && a.host_uid == b.host_uid
+        && a.workspace_key_fingerprint == b.workspace_key_fingerprint
+}
+
+/// The folder under `~/.local/share/biorouter-crew` a listed workspace keeps its state in, by
+/// its last path component; `None` for one kept elsewhere.
+fn folder_of(workspace: &SetupWorkspace) -> Option<&str> {
+    workspace
+        .state_dir
+        .as_deref()
+        .and_then(|dir| dir.trim_end_matches('/').rsplit('/').next())
+}
+
 /// What `biorouter-crew workspaces --output-format json` answered; `None` when it named no
 /// list of workspaces.
 fn read_workspaces(stdout: &[u8]) -> Option<(Vec<SetupWorkspace>, SetupWorkspaceScan)> {
@@ -1490,10 +1517,7 @@ fn read_workspaces(stdout: &[u8]) -> Option<(Vec<SetupWorkspace>, SetupWorkspace
     let mut workspaces: Vec<SetupWorkspace> = Vec::new();
     for entry in entries.iter().take(MAX_WORKSPACES) {
         if let Some(entry) = workspace_entry(entry) {
-            if !workspaces
-                .iter()
-                .any(|seen| seen.workspace_id == entry.workspace_id)
-            {
+            if !workspaces.iter().any(|seen| same_workspace(seen, &entry)) {
                 workspaces.push(entry);
             }
         }
@@ -1612,12 +1636,47 @@ fn broker_unsupported(error: &anyhow::Error) -> bool {
         || broker_refusals(error).any(|(code, _)| code == "unsupported")
 }
 
+/// Whether `connection` is this computer's saved connection to the listed `workspace`: the same
+/// workspace ID and, where the entry names them, the same host and workspace key.
+fn saved_for(connection: &Connection, workspace: &SetupWorkspace) -> bool {
+    let key =
+        || biorouter_crew::invitation::workspace_key_fingerprint(&connection.workspace_public_key);
+    connection.workspace_id == workspace.workspace_id
+        && workspace
+            .host_uid
+            .is_none_or(|uid| uid == connection.owner_uid)
+        && workspace
+            .workspace_key_fingerprint
+            .as_deref()
+            .is_none_or(|listed| key().is_some_and(|saved| saved.eq_ignore_ascii_case(listed)))
+}
+
+/// Whether another host has a listed workspace of `workspace`'s name, so opening it by name
+/// needs its host as well (AO-6).
+fn name_shared(workspaces: &[SetupWorkspace], workspace: &SetupWorkspace) -> bool {
+    let Some(name) = workspace.name.as_deref() else {
+        return false;
+    };
+    workspaces.iter().any(|other| {
+        other.host_username != workspace.host_username
+            && other
+                .name
+                .as_deref()
+                .is_some_and(|other| other.eq_ignore_ascii_case(name))
+    })
+}
+
 /// What a check says, in place of a bare "Ready", about a workspace this computer has nothing
-/// saved for (design AO-8), with the command that opens it from `login`; `None` for one that
-/// cannot be opened (removed, deleted).
-fn reach_sentence(workspace: &SetupWorkspace, login: &str) -> Option<String> {
+/// saved for (design AO-8), with the command that opens it from `login`, naming its host when
+/// `shared` (another host has a workspace of that name); `None` for one that cannot be opened
+/// (removed, deleted).
+fn reach_sentence(workspace: &SetupWorkspace, login: &str, shared: bool) -> Option<String> {
     let name = workspace.name.as_deref()?;
-    let open = format!("Open it with biorouter crew open {name} --server {login}.");
+    let by_host = match (shared, workspace.host_username.as_deref()) {
+        (true, Some(host)) => format!(" --host {host}"),
+        _ => String::new(),
+    };
+    let open = format!("Open it with biorouter crew open {name} --server {login}{by_host}.");
     let host = workspace
         .host_username
         .as_deref()
@@ -1644,6 +1703,18 @@ fn reach_sentence(workspace: &SetupWorkspace, login: &str) -> Option<String> {
             format!("You are invited to {name}{host}. {unreached} {open}")
         }
     })
+}
+
+/// What a job says about a stopped workspace the account hosts and this computer has saved:
+/// the command that starts it from `login`, by the name its journal gives it. `None` for any
+/// other workspace.
+fn start_sentence(workspace: &SetupWorkspace, login: &str) -> Option<String> {
+    let name = workspace.name.as_deref()?;
+    (workspace.role == SetupWorkspaceRole::Host
+        && workspace.state == SetupWorkspaceState::Stopped)
+        .then(|| {
+            format!("{name} is stopped. Start it with biorouter crew setup --server {login} --start {name}.")
+        })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1736,6 +1807,9 @@ struct Job {
     keep_older: bool,
     /// `restart_workspaces`, as the request set it.
     restart_workspaces: Option<bool>,
+    /// `restart_workspace_ids`: hosted workspaces to restart even with others connected, as
+    /// canonical workspace IDs.
+    restart_workspace_ids: Vec<String>,
     /// Stopped hosted workspaces to start, as canonical workspace IDs.
     start_workspaces: Vec<String>,
     /// The agent access a member's job sets, as the person chose it; `None` leaves it as is.
@@ -1941,6 +2015,24 @@ enum Plan {
     },
 }
 
+/// What the check decided about the account's program, for a person; `ours` is the version of
+/// this app's copy.
+fn decided(plan: &Plan, ours: Option<&String>) -> String {
+    match plan {
+        Plan::Reuse(version) => format!("Crew {version} is installed in your account."),
+        Plan::Install { previous: None, .. } => "Crew isn't installed in your account yet.".into(),
+        Plan::Install {
+            previous: Some(_),
+            from: Some(from),
+        } if Some(from) == ours => format!(
+            "Crew {from} in your account is another build than this app's, so it will be replaced."
+        ),
+        Plan::Install {
+            previous: Some(_), ..
+        } => "Crew in your account will be replaced with this app's.".into(),
+    }
+}
+
 impl Job {
     fn progress(&self) -> Progress {
         self.progress
@@ -1979,6 +2071,31 @@ impl Job {
             self.progress().state,
             SetupState::Running | SetupState::NeedsSignIn
         )
+    }
+    /// Whether `request`, with its `finish` and its canonical `start` and `restart` IDs, asks
+    /// for exactly what this job does beyond its server and intent. The IDs are compared as
+    /// sets.
+    fn asks_the_same(
+        &self,
+        request: &SetupRequest,
+        finish: Option<&Finish>,
+        start: &[String],
+        restart: &[String],
+    ) -> bool {
+        let set = |ids: &[String]| {
+            let mut ids = ids.to_vec();
+            ids.sort();
+            ids
+        };
+        self.workspace_name == request.workspace_name
+            && self.replace_existing == request.replace_existing
+            && self.keep_older == request.keep_older
+            && self.restart_workspaces == request.restart_workspaces
+            && set(&self.restart_workspace_ids) == set(restart)
+            && set(&self.start_workspaces) == set(start)
+            && self.agent_access == request.agent_access
+            && self.fix_storage_permissions == request.fix_storage_permissions
+            && self.finish.as_ref() == finish
     }
     fn mark(&self, name: SetupStageName, state: SetupStageState, detail: Option<String>) {
         self.update(|progress| {
@@ -2032,6 +2149,13 @@ impl Job {
             state: SetupState::Cancelled,
             ..self.stop("crew_setup_cancelled", message, None)
         }
+    }
+    /// Between steps: a Stop the person pressed ends the job here, before the next change.
+    fn go_on(&self) -> Result<(), Stop> {
+        if self.cancel.is_cancelled() {
+            return Err(self.cancelled(false));
+        }
+        Ok(())
     }
     /// The `ssh` arguments that run `remote` over the job's control path, never prompting.
     fn args(&self, remote: String) -> Vec<String> {
@@ -2145,32 +2269,18 @@ impl Job {
             }
         };
         let ours = artifact.as_ref().ok().map(|a| a.info.version.clone());
-        let decided = match &plan {
-            Plan::Reuse(version) => format!("Crew {version} is installed in your account."),
-            Plan::Install { previous: None, .. } => {
-                "Crew isn't installed in your account yet.".into()
-            }
-            Plan::Install {
-                previous: Some(_),
-                from: Some(from),
-            } if Some(from) == ours.as_ref() => format!(
-                "Crew {from} in your account is another build than this app's, so it will be replaced."
-            ),
-            Plan::Install {
-                previous: Some(_), ..
-            } => "Crew in your account will be replaced with this app's.".into(),
-        };
-        self.done(Name::Check, Some(decided));
+        self.done(Name::Check, Some(decided(&plan, ours.as_ref())));
         let ours_sha = artifact.as_ref().ok().map(|a| a.info.sha256.clone());
+        // Whether the program in the account, as it is, can list the workspaces.
+        let listable = lists_workspaces(
+            probe.installed_version().as_deref(),
+            probe.binary_sha256.as_deref(),
+            ours_sha.as_deref(),
+        );
         if self.intent == SetupIntent::Check {
             // The program as it is: a check installs nothing.
             let version = probe.installed_version();
-            let current = lists_workspaces(
-                version.as_deref(),
-                probe.binary_sha256.as_deref(),
-                ours_sha.as_deref(),
-            );
-            self.workspaces(version.as_deref(), current).await?;
+            self.workspaces(version.as_deref(), listable).await?;
             if let Some(version) = &version {
                 let (outdated, _) = self.outdated(version, false);
                 if !outdated.is_empty() {
@@ -2183,16 +2293,14 @@ impl Job {
         }
         if self.intent == SetupIntent::Host {
             // Before anything changes on the server.
-            self.name_free_before_install().await?;
+            self.name_free_before_install(listable).await?;
         }
         let installed_sha = match &plan {
             Plan::Reuse(_) => probe.binary_sha256.clone(),
             Plan::Install { .. } => ours_sha.clone(),
         };
         let installed_version = self.install_or_reuse(plan, artifact).await?;
-        if self.cancel.is_cancelled() {
-            return Err(self.cancelled(false));
-        }
+        self.go_on()?;
         // The listing is taken with the program now in place, so `binary_current` describes it.
         let current = lists_workspaces(
             Some(&installed_version),
@@ -2204,6 +2312,9 @@ impl Job {
             self.name_free_after_listing()?;
         }
         self.restart(&installed_version).await?;
+        // A Stop pressed while a workspace restarted, which runs to its end, is heeded here,
+        // before the connect, the start or any change to the connection.
+        self.go_on()?;
         let started = match self.intent {
             SetupIntent::Host => Some(self.start().await?),
             SetupIntent::Member => {
@@ -2212,6 +2323,7 @@ impl Job {
             }
             SetupIntent::Check | SetupIntent::Install => None,
         };
+        self.go_on()?;
         if matches!(self.intent, SetupIntent::Host | SetupIntent::Member) {
             self.work_folder(&installed_version).await?;
             self.context().await?;
@@ -3104,13 +3216,15 @@ impl Job {
     }
 
     /// What this computer has for each listed workspace: its saved connection, connected or
-    /// not. A connected one is preferred, then one with this job's login.
+    /// not. A connected one is preferred, then one with this job's login. A connection is the
+    /// entry's only when its host and workspace key are the ones the entry names, so another
+    /// account presenting the same ID never shows as this computer's.
     async fn annotate(&self, workspaces: &mut [SetupWorkspace]) {
         let saved = self.manager.list().await;
         for workspace in workspaces {
             let found = saved
                 .iter()
-                .filter(|connection| connection.workspace_id == workspace.workspace_id)
+                .filter(|connection| saved_for(connection, workspace))
                 .min_by_key(|connection| {
                     (
                         connection.status != "connected",
@@ -3129,15 +3243,22 @@ impl Job {
     }
 
     /// A job that found a workspace this computer cannot reach says so in place of a bare
-    /// "Ready" (design AO-8): the Done stage names each, and the command that opens it.
+    /// "Ready" (design AO-8): the Done stage names each, and the command that opens it. A
+    /// stopped workspace the account hosts and this computer has saved is named with the
+    /// command that starts it.
     fn say_reach(&self) {
         let login = self.route.ssh_target.clone();
-        let lines: Vec<String> = self
-            .progress()
-            .workspaces
+        let workspaces = self.progress().workspaces;
+        let lines: Vec<String> = workspaces
             .iter()
-            .filter(|workspace| workspace.this_computer == SetupThisComputer::NotSaved)
-            .filter_map(|workspace| reach_sentence(workspace, &login))
+            .filter_map(|workspace| match workspace.this_computer {
+                SetupThisComputer::NotSaved => {
+                    reach_sentence(workspace, &login, name_shared(&workspaces, workspace))
+                }
+                SetupThisComputer::Saved | SetupThisComputer::Connected => {
+                    start_sentence(workspace, &login)
+                }
+            })
             .take(8)
             .collect();
         if lines.is_empty() {
@@ -3156,8 +3277,9 @@ impl Job {
     }
 
     /// Before a host's job installs anything: refuse a name the account already keeps a
-    /// workspace under (design AO-9).
-    async fn name_free_before_install(&self) -> Result<(), Stop> {
+    /// workspace under (design AO-9). `listable` says the program in the account can list the
+    /// workspaces, so the refusal can name the workspace kept there as it is called now.
+    async fn name_free_before_install(&self, listable: bool) -> Result<(), Stop> {
         let Some(slug) = self.workspace_name.as_deref() else {
             return Ok(());
         };
@@ -3174,9 +3296,54 @@ impl Job {
         }
         match read_name(&ran.stdout) {
             Some(None) => Ok(()),
-            Some(Some(running)) => Err(self.name_in_use(slug, !running)),
+            Some(Some(_)) => Err(self.folder_in_use(slug, listable).await?),
             None => Err(self.unreadable(&ran)),
         }
+    }
+
+    /// `crew_host_name_in_use` for the workspace kept in `~/.local/share/biorouter-crew/<slug>`.
+    /// It may have been renamed since, or be half erased, so it is named, and its start or open
+    /// command given, only as the listing has it now; without one the refusal names the folder.
+    async fn folder_in_use(&self, slug: &str, listable: bool) -> Result<Stop, Stop> {
+        if listable {
+            let ran = self
+                .run(
+                    WORKSPACES_SCRIPT.into(),
+                    None,
+                    WORKSPACES_LIMIT,
+                    &self.cancel,
+                )
+                .await?;
+            if ran.cancelled {
+                return Err(self.cancelled(false));
+            }
+            let listed = (!ran.timed_out && ran.exit_code == Some(0))
+                .then(|| read_workspaces(&ran.stdout))
+                .flatten()
+                .map(|(workspaces, _)| workspaces)
+                .unwrap_or_default();
+            let kept = listed.iter().find(|workspace| {
+                workspace.role == SetupWorkspaceRole::Host && folder_of(workspace) == Some(slug)
+            });
+            if let Some(workspace) = kept {
+                if let (Some(name), SetupWorkspaceState::Running | SetupWorkspaceState::Stopped) =
+                    (workspace.name.as_deref(), workspace.state)
+                {
+                    return Ok(
+                        self.name_in_use(name, workspace.state == SetupWorkspaceState::Stopped)
+                    );
+                }
+            }
+        }
+        let server = self.server();
+        let login = &self.route.ssh_target;
+        Ok(self.stop(
+            "crew_host_name_in_use",
+            format!(
+                "Your account on {server} already keeps a workspace in ~/.local/share/biorouter-crew/{slug}. Choose another name, or see it with biorouter crew setup --server {login} --check."
+            ),
+            None,
+        ))
     }
 
     /// After the listing: refuse a name any workspace the account hosts, and has not deleted,
@@ -3189,12 +3356,7 @@ impl Job {
         let taken = progress.workspaces.iter().find(|workspace| {
             workspace.role == SetupWorkspaceRole::Host
                 && workspace.state != SetupWorkspaceState::Deleted
-                && (workspace.name.as_deref() == Some(slug)
-                    || workspace
-                        .state_dir
-                        .as_deref()
-                        .and_then(|dir| dir.trim_end_matches('/').rsplit('/').next())
-                        == Some(slug))
+                && (workspace.name.as_deref() == Some(slug) || folder_of(workspace) == Some(slug))
         });
         match taken {
             Some(workspace) => Err(self.name_in_use(
@@ -3221,7 +3383,8 @@ impl Job {
 
     /// The hosted workspaces still running an older program than `installed` (design AO-8):
     /// each one not to be restarted, with why, and those to restart. `may_restart` is false
-    /// for a job that never restarts.
+    /// for a job that never restarts. One others are connected to is restarted only with the
+    /// person's consent: for it by ID (`restart_workspace_ids`), or for all.
     fn outdated(
         &self,
         installed: &str,
@@ -3237,15 +3400,16 @@ impl Job {
             }
             // A broker that names no version counts as older.
             let running = workspace.version.as_deref().and_then(version_of);
+            // The person's consent for this one by ID, or for every one.
+            let named = self.restart_workspace_ids.contains(&workspace.workspace_id);
+            let consented = named || self.restart_workspaces == Some(true);
             let reason = if workspace.state_dir.is_none() {
                 Some(SetupOutdatedReason::CustomStateDir)
             } else if running > version_of(installed) {
                 Some(SetupOutdatedReason::RunningNewer)
-            } else if workspace.others_connected != Some(0)
-                && !(may_restart && self.restart_workspaces == Some(true))
-            {
+            } else if workspace.others_connected != Some(0) && !(may_restart && consented) {
                 Some(SetupOutdatedReason::OthersConnected)
-            } else if !may_restart || self.restart_workspaces == Some(false) {
+            } else if !may_restart || (self.restart_workspaces == Some(false) && !named) {
                 Some(SetupOutdatedReason::NotRunningInstalled)
             } else {
                 None
@@ -3281,18 +3445,14 @@ impl Job {
         let (outdated, to_restart) = self.outdated(installed, true);
         let mut restarted = Vec::new();
         for workspace in &to_restart {
-            if self.cancel.is_cancelled() {
-                return Err(self.cancelled(false));
-            }
+            self.go_on()?;
             match self.restart_one(workspace, installed).await {
                 Ok(done) => restarted.push(done),
                 Err(failure) => failed.push(failure),
             }
         }
         for id in &self.start_workspaces {
-            if self.cancel.is_cancelled() {
-                return Err(self.cancelled(false));
-            }
+            self.go_on()?;
             let hosted = progress.workspaces.iter().find(|workspace| {
                 &workspace.workspace_id == id && workspace.role == SetupWorkspaceRole::Host
             });
@@ -3341,6 +3501,7 @@ impl Job {
             said.push(format!("Couldn't restart or start: {}.", names(&broken)));
         }
         let failed_any = !failed.is_empty();
+        self.now_running(&restarted);
         self.outcome(|outcome| {
             outcome.restarted.extend(restarted);
             outcome.outdated = outdated;
@@ -3353,6 +3514,23 @@ impl Job {
             self.done(Name::Restart, detail);
         }
         Ok(())
+    }
+
+    /// The listing after the Restart stage: each hosted workspace it restarted or started now
+    /// runs the installed program, so the list a job reports when it ends is current.
+    fn now_running(&self, restarted: &[SetupRestarted]) {
+        self.update(|progress| {
+            for done in restarted {
+                for workspace in progress.workspaces.iter_mut().filter(|workspace| {
+                    workspace.workspace_id == done.workspace_id
+                        && workspace.role == SetupWorkspaceRole::Host
+                }) {
+                    workspace.state = SetupWorkspaceState::Running;
+                    workspace.version = done.to_version.clone();
+                    workspace.binary_current = Some(true);
+                }
+            }
+        });
     }
 
     /// The Restart stage when the server gave no listing of its workspaces: nothing is known
@@ -3555,15 +3733,19 @@ impl Job {
         if draft.is_some() {
             configure.push(SetupStep::Context);
         }
+        // A start that did not say whether it created the workspace leaves its settings to the
+        // person as well, as a finished job does (below).
         let left = |from: &[SetupStep]| -> Vec<SetupStep> {
             let mut left = from.to_vec();
-            if started.created == Some(true) {
+            if started.created != Some(false) {
                 left.extend(&configure);
             }
             left
         };
 
+        // A Stop is heeded before each change, and what is left stays as recorded there.
         self.begin(Name::Save);
+        self.go_on()?;
         let connection = self.save_hosted(finish, &invitation).await?;
         let id = connection.id.clone();
         self.outcome(|outcome| {
@@ -3573,12 +3755,14 @@ impl Job {
         self.done(Name::Save, None);
 
         self.begin(Name::Join);
+        self.go_on()?;
         if connection.status != "connected" {
             if let Err(error) = self.manager.connect(&id).await {
                 return Err(self.request_stop(&error));
             }
         }
         self.outcome(|outcome| outcome.steps_left = left(&[SetupStep::Join]));
+        self.go_on()?;
         self.join_as_host(&connection).await?;
         self.outcome(|outcome| outcome.steps_left = left(&[]));
         self.done(Name::Join, None);
@@ -3607,6 +3791,7 @@ impl Job {
             }
         }
         self.begin(Name::Configure);
+        self.go_on()?;
         self.configure(&id, finish, draft.as_deref(), &configure)
             .await?;
         self.done(Name::Configure, None);
@@ -3713,6 +3898,12 @@ impl Job {
             self.outcome(|outcome| outcome.steps_left = steps[at..].to_vec());
             self.request_stop(&error)
         };
+        // A Stop pressed during one request is heeded before the next, leaving the rest.
+        let heed = |at: usize| {
+            self.go_on().inspect_err(|_| {
+                self.outcome(|outcome| outcome.steps_left = steps[at..].to_vec());
+            })
+        };
         let mut policy = serde_json::json!({"mode": finish.mode});
         if let Some(institution) = &finish.institution_id {
             policy["institution_id"] = serde_json::json!(institution);
@@ -3721,6 +3912,7 @@ impl Job {
             .human_request(id, "policy.set", policy, request("privacy"))
             .await
             .map_err(|error| stopped(error, 0))?;
+        heed(1)?;
         let governance = match self
             .manager
             .human_request(
@@ -3738,6 +3930,7 @@ impl Job {
         self.outcome(|outcome| outcome.governance = Some(governance));
         let mut revision = None;
         if let Some(draft) = draft {
+            heed(2)?;
             match self
                 .manager
                 .human_request(
@@ -3841,25 +4034,26 @@ fn check_request(request: &SetupRequest) -> Result<()> {
         }
         _ => {}
     }
-    if !request.start_workspaces.is_empty() {
-        if request.intent == SetupIntent::Check {
-            return Err(refused(
-                400,
-                "crew_request_invalid",
-                "A check changes nothing, so it starts no workspace.",
-            ));
+    for (ids, unchanged, by_id) in [
+        (
+            &request.start_workspaces,
+            "A check changes nothing, so it starts no workspace.",
+            "Name each workspace to start by its ID.",
+        ),
+        (
+            &request.restart_workspace_ids,
+            "A check changes nothing, so it restarts no workspace.",
+            "Name each workspace to restart by its ID.",
+        ),
+    ] {
+        if ids.is_empty() {
+            continue;
         }
-        if request.start_workspaces.len() > MAX_START_WORKSPACES
-            || request
-                .start_workspaces
-                .iter()
-                .any(|id| workspace_id(id).is_none())
-        {
-            return Err(refused(
-                400,
-                "crew_request_invalid",
-                "Name each workspace to start by its ID.",
-            ));
+        if request.intent == SetupIntent::Check {
+            return Err(refused(400, "crew_request_invalid", unchanged));
+        }
+        if ids.len() > MAX_START_WORKSPACES || ids.iter().any(|id| workspace_id(id).is_none()) {
+            return Err(refused(400, "crew_request_invalid", by_id));
         }
     }
     if request.finish && request.intent != SetupIntent::Host {
@@ -3870,6 +4064,18 @@ fn check_request(request: &SetupRequest) -> Result<()> {
         ));
     }
     finish_of(request).map(|_| ())
+}
+
+/// Workspace IDs a request named, each in its canonical form and once, in the order named.
+fn canonical_ids(ids: &[String]) -> Vec<String> {
+    ids.iter()
+        .filter_map(|id| workspace_id(id))
+        .fold(Vec::new(), |mut ids, id| {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+            ids
+        })
 }
 
 /// What a host's `finish` sets, checked as a save checks it: a privacy, and an institution in
@@ -3908,7 +4114,8 @@ fn finish_of(request: &SetupRequest) -> Result<Option<Finish>> {
 
 impl CrewManager {
     /// Start a setup job (see the module documentation). Answers the job already under way for
-    /// the same server and intent rather than starting a second.
+    /// the same server, intent and choices rather than starting a second; one under way for the
+    /// same server with other choices is `crew_setup_busy`.
     pub async fn start_setup(&self, request: SetupRequest) -> Result<SetupStatus> {
         let manager = self
             .this
@@ -3917,16 +4124,8 @@ impl CrewManager {
             .context("Crew setup needs the daemon's own Crew manager")?;
         check_request(&request)?;
         let finish = finish_of(&request)?;
-        let start_workspaces: Vec<String> = request
-            .start_workspaces
-            .iter()
-            .filter_map(|id| workspace_id(id))
-            .fold(Vec::new(), |mut ids, id| {
-                if !ids.contains(&id) {
-                    ids.push(id);
-                }
-                ids
-            });
+        let start_workspaces = canonical_ids(&request.start_workspaces);
+        let restart_workspace_ids = canonical_ids(&request.restart_workspace_ids);
         let (key, route, bootstrap_key, connection_id) = self.setup_target(&request.target).await?;
         let control = self.control_path(&key)?;
         let _starting = STARTING.lock().await;
@@ -3934,8 +4133,17 @@ impl CrewManager {
             let jobs = jobs();
             if let Some((id, job)) = jobs.iter().find(|(_, job)| job.running() && job.key == key) {
                 // The same job only for the same login and route: one for another would ride
-                // the sign-in this one is using (C12).
-                if job.intent == request.intent && job.route == route {
+                // the sign-in this one is using (C12). And only for the same choices: one that
+                // asks for more (another workspace to start or restart) would silently not get it.
+                if job.intent == request.intent
+                    && job.route == route
+                    && job.asks_the_same(
+                        &request,
+                        finish.as_ref(),
+                        &start_workspaces,
+                        &restart_workspace_ids,
+                    )
+                {
                     return Ok(job.status(id));
                 }
                 return Err(refused(
@@ -3974,6 +4182,7 @@ impl CrewManager {
             replace_existing: request.replace_existing,
             keep_older: request.keep_older,
             restart_workspaces: request.restart_workspaces,
+            restart_workspace_ids,
             start_workspaces,
             agent_access: request.agent_access,
             fix_storage_permissions: request.fix_storage_permissions,

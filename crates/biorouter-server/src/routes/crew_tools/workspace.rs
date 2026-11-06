@@ -10,12 +10,13 @@
 
 use anyhow::Result;
 use biorouter::crew::{ClusterMode, Connection};
-use biorouter::privacy::SessionClassification;
+use biorouter::privacy::{ProviderTier, SessionClassification};
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
+use super::places::{naming_scope, place as target, Place as Target};
 use super::setup::{hosts, save_over, saved_fields};
-use super::{document_diff, idempotency_key, said, Card, ContentScope, Ctx, Resolved};
+use super::{document_diff, idempotency_key, naming, said, Card, ContentScope, Ctx, Resolved};
 use crate::routes::crew::names::SelectorKind;
 
 /// The context document's size limit, as `biorouter crew workspace context set` holds it.
@@ -186,6 +187,13 @@ pub(super) fn profile_devices(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
 
 /// `biorouter crew grants list` (AO-12): the route's own listing, keeping only the chats this
 /// chat may list ([`Ctx::lists_chat`]), so a listing never names a chat it could not read.
+///
+/// A grant's `labels` name the workspace's channels, teams and people, which is content: they
+/// are kept only under a scope that may name things from the workspace ([`naming_scope`]: the
+/// call may read it and the person let this chat read it as them), narrowed to what a public
+/// call may see, and the chat is raised as a read raises it before they return. Otherwise,
+/// and whenever the snapshot can't be read, they are left out and counted. A replaced grant's
+/// chat ID may name another chat now, so a public call is never shown its labels.
 pub(super) fn grants_list(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let connection = ctx.connection().await?;
@@ -204,9 +212,63 @@ pub(super) fn grants_list(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             }
             answer[key] = json!(kept);
         }
+        let names = match ctx.snapshot(&connection).await {
+            Ok(snapshot) => naming_scope(ctx, &connection, &snapshot).await,
+            Err(_) => None,
+        };
+        let public =
+            ctx.call.capability.enforced() && ctx.call.capability.tier() == ProviderTier::Public;
+        let (mut shown, mut withheld) = (false, 0u64);
+        for key in ["grants", "replaced_grants"] {
+            let scope = names
+                .as_ref()
+                .filter(|_| !(public && key == "replaced_grants"));
+            for row in answer[key].as_array_mut().into_iter().flatten() {
+                if row["labels"].is_null() {
+                    continue;
+                }
+                row["labels"] = grant_labels(&row["labels"], scope);
+                if row["labels"].is_null() {
+                    withheld += 1;
+                } else {
+                    shown = true;
+                }
+            }
+        }
         answer["connection_id"] = json!(connection.id);
-        Ok(answer)
+        if withheld > 0 {
+            answer["withheld"] = json!({"labels": withheld});
+        }
+        match names {
+            Some(scope) if shown => ctx.release(&scope, answer).await,
+            _ => Ok(answer),
+        }
     })
+}
+
+/// A grant's `labels` as `scope` lets the call see them: none without a scope; to a public
+/// call, none when its channel may not be read, and of the channels it reads only those that
+/// may be ([`ContentScope::channel_allowed`]).
+pub(super) fn grant_labels(labels: &Value, scope: Option<&ContentScope>) -> Value {
+    let Some(scope) = scope else {
+        return Value::Null;
+    };
+    if !scope.public_only {
+        return labels.clone();
+    }
+    let allowed = |label: &Value| {
+        label["channel_id"]
+            .as_str()
+            .is_some_and(|id| scope.channel_allowed(id))
+    };
+    if !allowed(&labels["destination"]) {
+        return Value::Null;
+    }
+    let mut kept = labels.clone();
+    if let Some(sources) = kept["sources"].as_array_mut() {
+        sources.retain(allowed);
+    }
+    kept
 }
 
 fn profile_refusal(refusal: crate::routes::crew_profile::Refusal) -> anyhow::Error {
@@ -215,27 +277,8 @@ fn profile_refusal(refusal: crate::routes::crew_profile::Refusal) -> anyhow::Err
 
 // ----------------------------------------------------------------------------------- changes
 
-/// The connection a change is for, its workspace's snapshot, the workspace's name and its
-/// server's, read before the card is parked.
-struct Target {
-    connection: Connection,
-    snapshot: Value,
-    workspace: String,
-    server: String,
-}
-
-async fn target(ctx: &Ctx) -> Result<Target> {
-    let connection = ctx.connection().await?;
-    let snapshot = ctx.snapshot(&connection).await?;
-    let workspace = Ctx::workspace_label(&connection, Some(&snapshot));
-    let server = Ctx::server_label(&connection).await;
-    Ok(Target {
-        connection,
-        snapshot,
-        workspace,
-        server,
-    })
-}
+// A change's target is the connection it is for, its workspace's snapshot, the workspace's
+// name and its server's, read before the card is parked (`places::place`, a `Target` here).
 
 /// Send one of the person's changes to the workspace, with its idempotency key, as
 /// `biorouter crew` sends it through `POST /crew/connections/{id}/request`.
@@ -261,22 +304,17 @@ async fn crossing(ctx: &Ctx, target: &Target) -> Option<&'static str> {
         .then_some(CROSSING)
 }
 
-/// A name resolved in `target`'s workspace. When the call may not read the workspace, a name
-/// that does not resolve is refused without the resolver's candidates, so no name from a
-/// withheld workspace reaches the model.
-fn resolve_in(ctx: &Ctx, target: &Target, kind: SelectorKind, text: &str) -> Result<Resolved> {
-    let readable = ctx
-        .content_scope(&target.connection, &target.snapshot)
-        .is_ok();
-    Ctx::resolve(&target.snapshot, kind, text).map_err(|error| {
-        if readable {
-            error
-        } else {
-            said(
-                Some("unknown_name"),
-                format!("Nothing you can see in this workspace is named {text}."),
-            )
-        }
+/// A name resolved in `target`'s workspace. Unless the call may be shown names from it (it may
+/// read the workspace and the person let this chat read it: [`Target::names`]), a name that does
+/// not resolve is refused without the resolver's candidates, so no name from a withheld
+/// workspace reaches the model; when it may, they return only as content does ([`naming`]).
+fn resolve_in(target: &Target, kind: SelectorKind, text: &str) -> Result<Resolved> {
+    Ctx::resolve(&target.snapshot, kind, text).map_err(|error| match &target.names {
+        Some(scope) => naming(error, scope),
+        None => said(
+            Some("unknown_name"),
+            format!("Nothing you can see in this workspace is named {text}."),
+        ),
     })
 }
 
@@ -557,7 +595,7 @@ pub(super) fn enroll_revoke(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let member = ctx.required("member")?;
         let target = target(ctx).await?;
-        let person = resolve_in(ctx, &target, SelectorKind::Person, &member)?;
+        let person = resolve_in(&target, SelectorKind::Person, &member)?;
         ctx.approve(
             Card::new(format!(
                 "Remove {} from {} for everyone; this cannot be undone",

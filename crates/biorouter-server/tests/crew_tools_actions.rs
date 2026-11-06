@@ -678,6 +678,69 @@ async fn call(
     }
 }
 
+/// [`call`] with one card, answered with `answer` only after `meanwhile` ran while it waited:
+/// what changes while a card is open for the person.
+async fn call_meanwhile(
+    session: &str,
+    capability: CallCapability,
+    tool: PersonTool,
+    action: &str,
+    params: Value,
+    answer: &str,
+    meanwhile: impl std::future::Future<Output = ()>,
+) -> Called {
+    let host = tool_host::get().expect("the host is installed");
+    let call = PersonToolCall {
+        tool,
+        action: action.to_owned(),
+        params,
+        session_id: session.to_owned(),
+        tool_call_id: Some(format!("call-{}", uuid::Uuid::new_v4())),
+        capability,
+        cancel: CancellationToken::new(),
+        approvals: Arc::clone(PendingUserActions::global()),
+    };
+    let task =
+        tokio::spawn(async move { host.call(call).await.map_err(|error| error.to_string()) });
+    let mut meanwhile = Some(meanwhile);
+    let mut cards = Vec::new();
+    let mut answered = std::collections::HashSet::new();
+    loop {
+        for message in PendingUserActions::global().pending_cards_for_session(session) {
+            let card = serde_json::to_value(&message).unwrap();
+            let data = &card["content"][0]["data"];
+            let id = data["id"].as_str().unwrap_or_default().to_owned();
+            if id.is_empty() || !answered.insert(id.clone()) {
+                continue;
+            }
+            cards.push(SeenCard {
+                tool: data["toolName"].as_str().unwrap_or_default().to_owned(),
+                prompt: data["prompt"].as_str().unwrap_or_default().to_owned(),
+                arguments: data["arguments"].clone(),
+            });
+            if let Some(change) = meanwhile.take() {
+                change.await;
+            }
+            let answer = if cards.len() == 1 { answer } else { "deny" };
+            let (status, body) = http(
+                "POST",
+                "/action-required/tool-confirmation",
+                Some(json!({"id": id, "principalType": "Tool", "action": answer, "sessionId": session})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        if task.is_finished() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Called {
+        answer: task.await.expect("the call ran"),
+        cards,
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Workspaces
 // ---------------------------------------------------------------------------------------------
@@ -2059,5 +2122,247 @@ fn tasks_are_asked_for_on_one_card_and_a_private_chat_s_cannot_use_a_public_mode
         );
         assert!(sent(PUBLIC_HOST, "run.create").is_empty());
         remove(&open).await;
+    });
+}
+
+/// Refusing to delete a team's `#general` names the team only to a call that may be shown names
+/// from the workspace: a public model in a Private workspace is told what to do without it.
+#[test]
+#[serial]
+fn a_refused_delete_names_no_team_to_a_model_that_may_not_read() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d000c";
+        const HOST: &str = "general-delete.example.test";
+        let connection = workspace(
+            HOST,
+            false,
+            scenario(WORKSPACE, "private", snapshot("private", true)),
+        )
+        .await;
+        let session = chat("delete general").await;
+        let refused = call(
+            &session,
+            public(),
+            PersonTool::Change,
+            "channels_delete",
+            on(&connection, json!({"channel": "#general"})),
+            &[],
+        )
+        .await;
+        assert!(
+            refused
+                .refusal()
+                .starts_with("That channel belongs to its team. Delete the team instead"),
+            "{}",
+            refused.refusal()
+        );
+        assert!(
+            !refused.refusal().contains("Analysis Lab"),
+            "{}",
+            refused.refusal()
+        );
+        assert!(refused.cards.is_empty());
+        assert!(sent(HOST, "channel.delete").is_empty());
+        remove(&connection).await;
+    });
+}
+
+/// A name that matches more than one thing lists the workspace's names only once the chat may
+/// read them: a private model is not shown the candidates before the person let the chat read
+/// the workspace, and once they have, the names return only as content does, after the chat is
+/// raised Private, on a change and on a read alike.
+#[test]
+#[serial]
+fn candidate_names_wait_for_the_read_consent_and_the_raise() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d000d";
+        const HOST: &str = "candidates.example.test";
+        // A second team with its own #methods, so `#methods` alone names two channels.
+        let mut twins = snapshot("private", true);
+        twins["teams"].as_array_mut().unwrap().push(json!({
+            "id": "t-field", "name": "field-team", "display_name": "Field Team",
+            "general_channel_id": "c-field-general", "members": ["p-alice"],
+            "name_conflict": false,
+        }));
+        twins["channels"].as_array_mut().unwrap().push(json!({
+            "id": "c-field-methods", "team_id": "t-field", "name": "methods",
+            "classification": "restricted", "name_conflict": false,
+        }));
+        twins["totals"] = json!({"teams": 2, "channels": 4});
+        let connection = workspace(HOST, false, scenario(WORKSPACE, "private", twins)).await;
+        let session = chat("candidates").await;
+        let post = || {
+            on(
+                &connection,
+                json!({"channel": "#methods", "text": "the counts"}),
+            )
+        };
+        let before = call(
+            &session,
+            private_local().await,
+            PersonTool::Change,
+            "send",
+            post(),
+            &[],
+        )
+        .await;
+        assert!(
+            before
+                .refusal()
+                .contains("doesn't name exactly one thing you can see in this workspace"),
+            "{}",
+            before.refusal()
+        );
+        assert!(
+            !before.refusal().contains("Field Team") && !before.refusal().contains("Analysis Lab"),
+            "{}",
+            before.refusal()
+        );
+        assert!(before.cards.is_empty());
+        assert_eq!(
+            classification(&session).await,
+            SessionClassification::Public
+        );
+
+        crew()
+            .grant_person_read(&session, &connection.id)
+            .await
+            .unwrap();
+        let after = call(
+            &session,
+            private_local().await,
+            PersonTool::Change,
+            "send",
+            post(),
+            &[],
+        )
+        .await;
+        assert!(
+            after.refusal().contains("Field Team"),
+            "{}",
+            after.refusal()
+        );
+        assert_eq!(
+            classification(&session).await,
+            SessionClassification::Private,
+            "the names returned before the chat was raised"
+        );
+        assert!(sent(HOST, "message.post").is_empty());
+
+        let reader = chat("candidates, reading").await;
+        crew()
+            .grant_person_read(&reader, &connection.id)
+            .await
+            .unwrap();
+        let read = call(
+            &reader,
+            private_local().await,
+            PersonTool::Read,
+            "history",
+            on(&connection, json!({"channel": "#methods"})),
+            &[],
+        )
+        .await;
+        assert!(read.refusal().contains("Field Team"), "{}", read.refusal());
+        assert_eq!(
+            classification(&reader).await,
+            SessionClassification::Private,
+            "a read's refusal named channels before the chat was raised"
+        );
+        assert!(sent(HOST, "messages.history").is_empty());
+        remove(&connection).await;
+    });
+}
+
+/// A public model reads only channels the snapshot lists: in a workspace whose channel list was
+/// cut short, a channel given by an ID it does not list may be protected, so it is unknown to
+/// the call and nothing is asked of the workspace.
+#[test]
+#[serial]
+fn a_public_model_reads_no_channel_beyond_a_list_cut_short() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d000e";
+        const HOST: &str = "cut-short.example.test";
+        let mut partial = snapshot("public", true);
+        partial["totals"]["channels"] = json!(5);
+        let open = workspace(HOST, true, scenario(WORKSPACE, "public", partial)).await;
+        let session = chat("cut short").await;
+        crew().grant_person_read(&session, &open.id).await.unwrap();
+        let unlisted = "6b1f0c2e-1d4a-4c5e-9a0b-0000000c4a11";
+        let refused = call(
+            &session,
+            public(),
+            PersonTool::Read,
+            "history",
+            on(&open, json!({"channel": unlisted})),
+            &[],
+        )
+        .await;
+        assert!(
+            refused.refusal().contains("Nothing you can see is named"),
+            "{}",
+            refused.refusal()
+        );
+        assert!(refused.cards.is_empty());
+        assert!(
+            sent(HOST, "messages.history").is_empty(),
+            "an unlisted channel's history was asked for a public model"
+        );
+        remove(&open).await;
+    });
+}
+
+/// A share uploads the file its card showed or nothing: a file rewritten while the card waited
+/// is refused after the approval, and nothing reaches the workspace.
+#[test]
+#[serial]
+fn a_share_refuses_a_file_changed_while_its_card_waited() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d000f";
+        const HOST: &str = "share-changed.example.test";
+        let connection = workspace(
+            HOST,
+            false,
+            scenario(WORKSPACE, "private", snapshot("private", true)),
+        )
+        .await;
+        let folder = local_folder("share-changed");
+        let file = folder.join("plot.csv");
+        fs::write(&file, b"a,b\n").unwrap();
+        let session = private_chat("share changed").await;
+        let rewritten = async {
+            fs::write(&file, b"another file entirely,\nwith other rows\n").unwrap();
+        };
+        let shared = call_meanwhile(
+            &session,
+            private_local().await,
+            PersonTool::Change,
+            "files_share",
+            on(
+                &connection,
+                json!({"channel": "#general", "path": file.display().to_string()}),
+            ),
+            "allow_once",
+            rewritten,
+        )
+        .await;
+        assert_eq!(shared.cards.len(), 1);
+        assert!(
+            shared.cards[0]
+                .prompt
+                .starts_with("Share plot.csv (4 bytes)"),
+            "{}",
+            shared.cards[0].prompt
+        );
+        assert!(
+            shared.refusal().contains(
+                "plot.csv changed on this computer while this waited for your approval, so nothing was shared"
+            ),
+            "{}",
+            shared.refusal()
+        );
+        assert!(sent(HOST, "blob.begin").is_empty());
+        assert!(sent(HOST, "message.post").is_empty());
+        remove(&connection).await;
     });
 }

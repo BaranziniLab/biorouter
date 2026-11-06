@@ -217,6 +217,10 @@ pub const MEMBERSHIP_ENDED: &str = "crew_membership_ended";
 /// uses to tell a member from a stranger.
 const MEMBERSHIP_PROBE: &str = "profile.suggest";
 
+/// The membership read of a re-dial on a connection whose account devices this computer
+/// watches (AO-10): the snapshot, whose `actor.devices` is how new devices are seen.
+const DEVICES_PROBE: &str = "workspace.snapshot";
+
 /// The broker's `{code, message}` for a refusal it answered, from the transport's error.
 pub(super) fn broker_refusal(error: &anyhow::Error) -> Option<(String, String)> {
     let text = error.to_string();
@@ -900,12 +904,22 @@ impl CrewManager {
     /// revoked while this computer slept or was offline is noticed now rather than at the next
     /// request someone makes. Only for a device the workspace accepted in this process; the
     /// read's refusal, if any, is handled where every signed request's is.
+    ///
+    /// For a connection whose account devices this computer watches, the read is the snapshot
+    /// itself ([`DEVICES_PROBE`]): it is refused for a device the workspace no longer knows
+    /// exactly as [`MEMBERSHIP_PROBE`] is, and it reports a device added while the bridge was
+    /// down (AO-10), still with one request per re-dial.
     pub(super) async fn probe_membership(&self, id: &str) {
         if !self.was_member(id) {
             return;
         }
+        let probe = if self.watches_devices(id).await {
+            DEVICES_PROBE
+        } else {
+            MEMBERSHIP_PROBE
+        };
         if let Err(error) = self
-            .signed_request(id, MEMBERSHIP_PROBE, serde_json::json!({}), None)
+            .signed_request(id, probe, serde_json::json!({}), None)
             .await
         {
             tracing::debug!(connection = id, error = %error, "Crew membership check after a re-dial failed");

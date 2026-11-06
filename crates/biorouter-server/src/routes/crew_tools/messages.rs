@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use anyhow::Result;
 use biorouter_server::crew::local_files::Direction;
 use biorouter_server::crew::transfers::{
-    service, FilePurpose, FileRequest, Receipt, StartRequest, TransferService,
+    service, FileCapability, FilePurpose, FileRequest, Receipt, StartRequest, TransferService,
 };
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
@@ -27,7 +27,7 @@ use super::places::{
     private_where_kept, private_write, public_safe, reading, resolve, send, size_words, yours,
     Reading,
 };
-use super::{idempotency_key, said, Card, Ctx, Progress};
+use super::{idempotency_key, naming, said, Card, Ctx, Progress};
 use crate::routes::crew::names::SelectorKind;
 
 /// The most messages a page reads (the broker's own limit).
@@ -304,7 +304,15 @@ pub(super) fn files_status(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             _ => return Ok(transfer_view(&receipt, false)),
         };
         let workspace = Ctx::workspace_label(&connection, Some(&snapshot));
-        ctx.read_consent(&connection, &workspace).await?;
+        let scope = if ctx.read_consent(&connection, &workspace).await? {
+            // The card waited for the person: judged again on the workspace as it is now.
+            match ctx.rescoped(&connection.id).await {
+                Ok((_, _, scope)) if scope.channel_allowed(&receipt.channel_id) => scope,
+                _ => return Ok(transfer_view(&receipt, false)),
+            }
+        } else {
+            scope
+        };
         ctx.release(&scope, transfer_view(&receipt, true)).await
     })
 }
@@ -375,6 +383,69 @@ async fn finished(service: &TransferService, id: &str, progress: &Progress) -> R
     }
 }
 
+/// What a share's card says the local file is: where it sits on disk, its size and its last
+/// change. Compared again after the approval, so the file shared is the one the person allowed.
+#[derive(Debug, PartialEq, Eq)]
+struct FileStamp {
+    /// Device and inode, where the platform has them.
+    identity: Option<(u64, u64)>,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            Some((metadata.dev(), metadata.ino()))
+        };
+        #[cfg(not(unix))]
+        let identity = None;
+        Self {
+            identity,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        }
+    }
+
+    /// Whether the file at `path` is still the one this stamp describes.
+    fn still_at(&self, path: &std::path::Path) -> bool {
+        std::fs::metadata(path).is_ok_and(|now| Self::of(&now) == *self)
+    }
+}
+
+/// Select `request`'s file for an upload, as the transfer service holds it for the transfer,
+/// only when it is the file the card showed (`shown`): checked before the selection and again
+/// after it, with the selection's own size. A file replaced, rewritten or resized while the card
+/// waited is refused, and nothing is shared.
+async fn select_shown(
+    request: FileRequest,
+    shown: &FileStamp,
+    name: &str,
+) -> Result<FileCapability> {
+    let changed = || {
+        said(
+            None,
+            format!("{name} changed on this computer while this waited for your approval, so nothing was shared. Ask again to share it as it is now."),
+        )
+    };
+    let path = request.path.clone();
+    if !shown.still_at(&path) {
+        return Err(changed());
+    }
+    let transfers = service().await.map_err(transfer_refusal)?;
+    let capability = transfers
+        .register(request)
+        .await
+        .map_err(transfer_refusal)?;
+    if capability.size != Some(shown.size) || !shown.still_at(&path) {
+        let _ = transfers.discard(&capability.capability_id).await;
+        return Err(changed());
+    }
+    Ok(capability)
+}
+
 /// `biorouter crew files upload CHANNEL FILE`, then a post that carries it (and `text`, when
 /// given). The card names the file's resolved path and size; from a Private chat the file and
 /// the post are marked Private.
@@ -406,6 +477,7 @@ pub(super) fn files_share(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
+        let shown = FileStamp::of(&metadata);
         let place = place(ctx).await?;
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         yours(&place.snapshot, &channel, &typed)?;
@@ -432,9 +504,8 @@ pub(super) fn files_share(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         }
         ctx.approve(card).await?;
         let key = idempotency_key(ctx, 0);
-        let transfers = service().await.map_err(transfer_refusal)?;
-        let capability = transfers
-            .register(FileRequest {
+        let capability = select_shown(
+            FileRequest {
                 approval_pending: false,
                 expected_mode: private.then_some(biorouter::crew::ClusterMode::Private),
                 purpose: FilePurpose::Transfer,
@@ -446,9 +517,12 @@ pub(super) fn files_share(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 blob_id: None,
                 transfer_id: None,
                 request_id: Some(key.clone()),
-            })
-            .await
-            .map_err(transfer_refusal)?;
+            },
+            &shown,
+            &name,
+        )
+        .await?;
+        let transfers = service().await.map_err(transfer_refusal)?;
         let receipt = transfers
             .start(StartRequest {
                 request_id: key,
@@ -538,12 +612,16 @@ pub(super) fn files_download(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 .and_then(|file| file["attachment_id"].as_str())
                 .map(str::to_owned)
                 .ok_or_else(|| {
-                    said(
-                        Some("unknown_name"),
-                        format!(
-                            "No file you can see in {} is named {typed}.",
-                            reading.phrase(&channel)
+                    // The phrase names the channel's team: it returns as content does.
+                    naming(
+                        said(
+                            Some("unknown_name"),
+                            format!(
+                                "No file you can see in {} is named {typed}.",
+                                reading.phrase(&channel)
+                            ),
                         ),
+                        &reading.scope,
                     )
                 })?
         };

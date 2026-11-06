@@ -388,13 +388,16 @@ fn a_request_names_no_command_and_takes_only_its_fields() {
     // host's job finishes nothing unless asked.
     assert!(!request.keep_older);
     assert_eq!(request.restart_workspaces, None);
+    assert!(request.restart_workspace_ids.is_empty());
     assert!(request.start_workspaces.is_empty());
     assert!(!request.finish && request.mode.is_none() && request.institution_id.is_none());
     let server: SetupRequest = serde_json::from_value(json!({
         "target": {"kind": "server", "ssh_target": LOGIN, "port": 2222},
         "intent": "check", "keep_older": true, "restart_workspaces": false,
+        "restart_workspace_ids": [WORKSPACE_ID],
     }))
     .unwrap();
+    assert_eq!(server.restart_workspace_ids, [WORKSPACE_ID]);
     assert!(matches!(
         server.target,
         SetupTarget::Server {
@@ -426,6 +429,7 @@ fn a_request_names_no_command_and_takes_only_its_fields() {
         json!({"target": {"kind": "connection", "connection_id": "c"}, "intent": "root"}),
         json!({"target": {"kind": "server", "ssh_target": LOGIN, "script": "id"}, "intent": "check"}),
         json!({"target": {"kind": "server", "ssh_target": LOGIN}, "intent": "install", "restart_workspaces": "yes"}),
+        json!({"target": {"kind": "server", "ssh_target": LOGIN}, "intent": "install", "restart_workspace_ids": "all"}),
     ] {
         assert!(
             serde_json::from_value::<SetupRequest>(smuggled.clone()).is_err(),
@@ -771,6 +775,7 @@ fn pending(preparation_id: &str, intent: SetupIntent) -> SetupRequest {
         replace_existing: false,
         keep_older: false,
         restart_workspaces: None,
+        restart_workspace_ids: Vec::new(),
         start_workspaces: Vec::new(),
         agent_access: None,
         fix_storage_permissions: false,
@@ -791,6 +796,7 @@ fn member(id: &str, agent_access: Option<SetupAgentAccess>) -> SetupRequest {
         replace_existing: false,
         keep_older: false,
         restart_workspaces: None,
+        restart_workspace_ids: Vec::new(),
         start_workspaces: Vec::new(),
         agent_access,
         fix_storage_permissions: false,
@@ -1296,15 +1302,19 @@ async fn a_cancelled_install_stops_and_installs_nothing() {
     let server = server().await;
     let prepared = server.manager.prepare_device().await.unwrap();
     server.flag("hang-install");
-    let started = server
-        .manager
-        .start_setup(pending(&prepared.preparation_id, SetupIntent::Install))
-        .await
-        .unwrap();
-    // A second click answers the job under way; another intent for the same server is refused.
+    let install = || SetupRequest {
+        start_workspaces: vec![W_PARKED.into(), W_LAB.into()],
+        ..pending(&prepared.preparation_id, SetupIntent::Install)
+    };
+    let started = server.manager.start_setup(install()).await.unwrap();
+    // A second click answers the job under way, its workspaces named in any order or case;
+    // another intent for the same server is refused.
     let again = server
         .manager
-        .start_setup(pending(&prepared.preparation_id, SetupIntent::Install))
+        .start_setup(SetupRequest {
+            start_workspaces: vec![W_LAB.to_uppercase(), W_PARKED.into(), W_PARKED.into()],
+            ..install()
+        })
         .await
         .unwrap();
     assert_eq!(again.job_id, started.job_id);
@@ -1314,6 +1324,28 @@ async fn a_cancelled_install_stops_and_installs_nothing() {
         .await
         .unwrap_err();
     assert_eq!(refusal_of(other).1, "crew_setup_busy");
+    // The same intent with other choices is not this job: it would not get what it asks for.
+    for asks_more in [
+        SetupRequest {
+            start_workspaces: vec![W_PARKED.into()],
+            ..install()
+        },
+        SetupRequest {
+            restart_workspaces: Some(true),
+            ..install()
+        },
+        SetupRequest {
+            restart_workspace_ids: vec![W_BUSY.into()],
+            ..install()
+        },
+        SetupRequest {
+            keep_older: true,
+            ..install()
+        },
+    ] {
+        let refused = server.manager.start_setup(asks_more).await.unwrap_err();
+        assert_eq!(refusal_of(refused).1, "crew_setup_busy");
+    }
     for _ in 0..500 {
         if server
             .remotes()
@@ -2720,18 +2752,20 @@ async fn the_servers_workspaces_are_listed_with_what_this_computer_has() {
     );
 
     // What this computer has saved is said, and not offered again.
-    let mut kept = saved("saved-connection", None);
-    kept.workspace_id = W_SAVED.into();
+    let kept = saved_to("saved-connection", W_SAVED, 1022, &workspace_key());
     server.manager.registry.lock().await.connections.push(kept);
     server.install(&serve_listing(
-        &listing(vec![hosted(
-            W_SAVED,
-            "saved-here",
-            "running",
-            VERSION,
-            Some(true),
-            Some(1),
-            Some("saved-here"),
+        &listing(vec![keyed(
+            hosted(
+                W_SAVED,
+                "saved-here",
+                "running",
+                VERSION,
+                Some(true),
+                Some(1),
+                Some("saved-here"),
+            ),
+            &workspace_key(),
         )]),
         &restart_arm(&[]),
         None,
@@ -2745,6 +2779,134 @@ async fn the_servers_workspaces_are_listed_with_what_this_computer_has() {
     );
     assert_eq!(only.this_computer, SetupThisComputer::Saved);
     assert_eq!(stage(&done, SetupStageName::Done).detail, None, "Ready");
+
+    // A stopped one the account hosts and this computer has saved is named with the command
+    // that starts it, by the name its journal gives it, not its folder's.
+    let parked = saved_to("parked-connection", W_PARKED, 1022, &workspace_key());
+    server
+        .manager
+        .registry
+        .lock()
+        .await
+        .connections
+        .push(parked);
+    server.install(&serve_listing(
+        &listing(vec![keyed(
+            hosted(
+                W_PARKED,
+                "acct-lab",
+                "stopped",
+                "1.0.0",
+                None,
+                None,
+                Some("first-name"),
+            ),
+            &workspace_key(),
+        )]),
+        &restart_arm(&[]),
+        None,
+    ));
+    let done = ran(&server, on_server(SetupIntent::Check)).await;
+    assert_eq!(done.state, SetupState::Finished, "{done:?}");
+    assert_eq!(done.workspaces[0].this_computer, SetupThisComputer::Saved);
+    assert_eq!(
+        stage(&done, SetupStageName::Done).detail,
+        Some(format!(
+            "acct-lab is stopped. Start it with biorouter crew setup --server {LOGIN} --start acct-lab."
+        ))
+    );
+}
+
+/// A saved connection to `workspace_id`, hosted by `owner_uid` under `key`.
+fn saved_to(
+    id: &str,
+    workspace_id: &str,
+    owner_uid: u32,
+    key: &ed25519_dalek::SigningKey,
+) -> Connection {
+    let mut connection = saved(id, None);
+    connection.workspace_id = workspace_id.into();
+    connection.owner_uid = owner_uid;
+    connection.workspace_public_key = super::super::hex(&key.verifying_key().to_bytes());
+    connection
+}
+
+/// `entry`, listed with the fingerprint of the workspace key `key`, as the server lists it.
+fn keyed(mut entry: Value, key: &ed25519_dalek::SigningKey) -> Value {
+    entry["workspace_key_fingerprint"] = json!(
+        biorouter_crew::invitation::workspace_key_fingerprint(&super::super::hex(
+            &key.verifying_key().to_bytes()
+        ))
+        .unwrap()
+    );
+    entry
+}
+
+/// AO-6: another account presenting a workspace's ID and name is listed beside it, never in its
+/// place, so opening by name has both hosts to choose between; and a saved connection is this
+/// computer's for an entry only with the host and key it names.
+#[tokio::test]
+async fn a_workspace_id_another_host_presents_is_listed_beside_it() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let server = server().await;
+    let forger = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let member = |uid: u32, host: &str, key: &ed25519_dalek::SigningKey| {
+        let entry = json!({"workspace_id": W_CHEN, "name": "baranzini-lab", "role": "member",
+            "host_uid": uid, "host_username": host, "state": "running", "version": VERSION,
+            "found_by": "scan", "invitation": format!("brcrew1:{}", host.to_uppercase())});
+        keyed(entry, key)
+    };
+    // The scan sorts by host, so the one presenting the copied ID comes first; the same
+    // workspace listed twice is listed once.
+    server.install(&serve_listing(
+        &listing(vec![
+            member(1066, "mallory", &forger),
+            member(1044, "chen", &workspace_key()),
+            member(1044, "chen", &workspace_key()),
+        ]),
+        &restart_arm(&[]),
+        None,
+    ));
+    let real = saved_to("real", W_CHEN, 1044, &workspace_key());
+    server.manager.registry.lock().await.connections.push(real);
+    let done = ran(&server, on_server(SetupIntent::Check)).await;
+    assert_eq!(done.state, SetupState::Finished, "{done:?}");
+    let rows: Vec<(Option<&str>, Option<&str>, SetupThisComputer)> = done
+        .workspaces
+        .iter()
+        .map(|workspace| {
+            (
+                workspace.host_username.as_deref(),
+                workspace.saved_connection_id.as_deref(),
+                workspace.this_computer,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (Some("mallory"), None, SetupThisComputer::NotSaved),
+            (Some("chen"), Some("real"), SetupThisComputer::Saved),
+        ]
+    );
+    // Its command names the host, since opening by name alone would not say which.
+    let ready = stage(&done, SetupStageName::Done).detail.unwrap();
+    assert_eq!(
+        ready,
+        format!(
+            "You are a member of baranzini-lab, hosted by @mallory. This computer has no connection to it. Open it with biorouter crew open baranzini-lab --server {LOGIN} --host mallory."
+        )
+    );
+    // The same ID from the same host under another key is another workspace too.
+    let mut moved = done.workspaces[1].clone();
+    moved.workspace_key_fingerprint = done.workspaces[0].workspace_key_fingerprint.clone();
+    assert!(!saved_for(
+        &saved_to("real", W_CHEN, 1044, &workspace_key()),
+        &moved
+    ));
+    assert!(!same_workspace(&moved, &done.workspaces[1]));
 }
 
 /// AO-8: after an install, every hosted workspace still running an older program is restarted
@@ -2786,6 +2948,28 @@ async fn running_workspaces_follow_the_installed_program() {
     assert_eq!(busy.others_connected, Some(2));
     assert_eq!(busy.running_version.as_deref(), Some("1.0.0"));
     assert_eq!(busy.installed_version.as_deref(), Some(VERSION));
+    // The list the job reports says what runs now: the restarted one on the installed Crew.
+    let listed = |status: &SetupStatus, id: &str| {
+        let found = status.workspaces.iter().find(|w| w.workspace_id == id);
+        let found = found.unwrap();
+        (found.state, found.version.clone(), found.binary_current)
+    };
+    assert_eq!(
+        listed(&done, W_LAB),
+        (
+            SetupWorkspaceState::Running,
+            Some(VERSION.to_owned()),
+            Some(true)
+        )
+    );
+    assert_eq!(
+        listed(&done, W_BUSY),
+        (
+            SetupWorkspaceState::Running,
+            Some("1.0.0".to_owned()),
+            Some(false)
+        )
+    );
     assert_eq!(
         stage(&done, SetupStageName::Restart).state,
         SetupStageState::Done
@@ -2880,6 +3064,19 @@ async fn a_failed_restart_fails_only_its_stage_and_stopped_workspaces_start_by_i
     assert!(server
         .remotes()
         .contains(&remote(&START_ID_SCRIPT.replace("@ID@", W_PARKED))));
+    // The list the job reports says the one started runs now, and the one whose restart
+    // failed still runs the older Crew.
+    let parked = done
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == W_PARKED)
+        .unwrap();
+    assert_eq!(parked.state, SetupWorkspaceState::Running);
+    assert_eq!(parked.version.as_deref(), Some(VERSION));
+    assert_eq!(parked.binary_current, Some(true));
+    assert_eq!(done.workspaces[0].version.as_deref(), Some("1.0.0"));
+    let ready = stage(&done, SetupStageName::Done).detail.unwrap();
+    assert!(ready.contains("You host parked here (running)."), "{ready}");
     assert_only_fixed_scripts(&server, "no-preparation", "lab", None);
 
     // A check starts nothing, and a workspace is named by its ID.
@@ -3106,29 +3303,66 @@ async fn a_host_job_refuses_a_name_the_account_already_hosts() {
     assert_eq!(done.state, SetupState::Failed, "{done:?}");
     assert_eq!(error_code(&done), "crew_host_name_in_use");
     assert_eq!(done.stage, SetupStageName::Check);
-    assert_eq!(
-        done.error.as_ref().unwrap().message,
-        format!(
-            "You already host lab on lab-server. It is stopped: start it with biorouter crew setup --server {LOGIN} --start lab, then open it."
-        )
+    // No program in the account lists the workspaces, so its name now is not known: the
+    // refusal names the folder, never a start or open command built from it.
+    let by_folder = format!(
+        "Your account on lab-server already keeps a workspace in ~/.local/share/biorouter-crew/lab. Choose another name, or see it with biorouter crew setup --server {LOGIN} --check."
     );
+    assert_eq!(done.error.as_ref().unwrap().message, by_folder);
     assert!(!server.installed().exists(), "nothing was installed");
-    // A process the runtime file names that still runs: the workspace runs.
-    fs::write(
-        folder.join("runtime.json"),
-        format!("{{\"pid\":{},\"socket\":\"/tmp/s\"}}", std::process::id()),
-    )
-    .unwrap();
+
+    // Where the program there lists them, the workspace kept in the folder is named as it is
+    // called now: renamed, stopped, or running.
+    let in_lab = |name: &str, state: &str| {
+        let program = serve_listing(
+            &listing(vec![hosted(
+                W_LAB,
+                name,
+                state,
+                VERSION,
+                None,
+                None,
+                Some("lab"),
+            )]),
+            &restart_arm(&[]),
+            None,
+        );
+        server.install(&program);
+    };
+    in_lab("chen-lab", "stopped");
     let done = ran(
         &server,
         pending(&prepared.preparation_id, SetupIntent::Host),
     )
     .await;
     assert_eq!(error_code(&done), "crew_host_name_in_use");
+    assert_eq!(done.stage, SetupStageName::Check);
     assert_eq!(
         done.error.unwrap().message,
-        "You already host lab on lab-server. Open it on this computer instead."
+        format!(
+            "You already host chen-lab on lab-server. It is stopped: start it with biorouter crew setup --server {LOGIN} --start chen-lab, then open it."
+        )
     );
+    in_lab("chen-lab", "running");
+    let done = ran(
+        &server,
+        pending(&prepared.preparation_id, SetupIntent::Host),
+    )
+    .await;
+    assert_eq!(
+        done.error.unwrap().message,
+        "You already host chen-lab on lab-server. Open it on this computer instead."
+    );
+    // One whose erase was interrupted is never offered to start.
+    in_lab("chen-lab", "deleted");
+    let done = ran(
+        &server,
+        pending(&prepared.preparation_id, SetupIntent::Host),
+    )
+    .await;
+    assert_eq!(error_code(&done), "crew_host_name_in_use");
+    assert_eq!(done.error.unwrap().message, by_folder);
+    fs::remove_file(server.installed()).unwrap();
     fs::remove_dir_all(&folder).unwrap();
 
     // Renamed since: its folder is still `lab`.
@@ -3320,8 +3554,9 @@ fn hosted_invitation() -> String {
 
 /// A bridge for a host's `finish`: it answers `hello` signed by [`workspace_key`] with
 /// `capabilities`, a challenge for every signed request, `auth.bootstrap` with `bootstrap` (a
-/// whole `result` or `error` member), `auth.account` as a host's retry, and the context with
-/// revision 3; every request's line is kept in `requests` under `root`.
+/// whole `result` or `error` member, held while `hold-bootstrap` exists under `root`),
+/// `auth.account` as a host's retry, and the context with revision 3; every request's line is
+/// kept in `requests` under `root`.
 fn hosting_bridge(root: &Path, capabilities: &[&str], bootstrap: &str) -> String {
     *super::super::TEST_HELLO_NONCE
         .lock()
@@ -3348,7 +3583,9 @@ fn hosting_bridge(root: &Path, capabilities: &[&str], bootstrap: &str) -> String
         *'"method":"bridge.hello"'*) printf '{{"id":"%s","result":%s}}\n' "$id" '{full}' ;;
         *'"method":"hello"'*) printf '{{"id":"%s","result":%s}}\n' "$id" '{hello}' ;;
         *'"method":"auth.challenge"'*) printf '{{"id":"%s","result":%s}}\n' "$id" '{challenge}' ;;
-        *'"method":"auth.bootstrap"'*) printf '{{"id":"%s",%s}}\n' "$id" '{bootstrap}' ;;
+        *'"method":"auth.bootstrap"'*)
+          while [ -f "{root}/hold-bootstrap" ]; do sleep 0.05; done
+          printf '{{"id":"%s",%s}}\n' "$id" '{bootstrap}' ;;
         *'"method":"auth.account"'*) printf '{{"id":"%s","result":{{"role":"host","admitted":"device"}}}}\n' "$id" ;;
         *'"method":"workspace.context.set"'*) printf '{{"id":"%s","result":{{"revision":3}}}}\n' "$id" ;;
         *) printf '{{"id":"%s","result":{{}}}}\n' "$id" ;;
@@ -3381,6 +3618,17 @@ async fn host_in_one_job(
     capabilities: &[&str],
     bootstrap: &str,
 ) -> (SetupStatus, String) {
+    let (request, preparation_id) = hosting_request(server, created, capabilities, bootstrap).await;
+    (ran(server, request).await, preparation_id)
+}
+
+/// [`host_in_one_job`]'s request, and its preparation's ID, with the program it runs in place.
+async fn hosting_request(
+    server: &Server,
+    created: &str,
+    capabilities: &[&str],
+    bootstrap: &str,
+) -> (SetupRequest, String) {
     let prepared = server.manager.prepare_device().await.unwrap();
     let start = format!(
         r#"printf '%s\n' '{{"started_pid":42,"state":"running","workspace_id":"{WORKSPACE_ID}","name":"lab","invitation":"{}"{created}}}'"#,
@@ -3396,18 +3644,14 @@ async fn host_in_one_job(
             ..Arms::default()
         },
     ));
-    let done = ran(
-        server,
-        SetupRequest {
-            finish: true,
-            mode: Some(ClusterMode::Private),
-            institution_id: Some("UCSF".into()),
-            agent_access: Some(SetupAgentAccess::Full),
-            ..pending(&prepared.preparation_id, SetupIntent::Host)
-        },
-    )
-    .await;
-    (done, prepared.preparation_id)
+    let request = SetupRequest {
+        finish: true,
+        mode: Some(ClusterMode::Private),
+        institution_id: Some("UCSF".into()),
+        agent_access: Some(SetupAgentAccess::Full),
+        ..pending(&prepared.preparation_id, SetupIntent::Host)
+    };
+    (request, prepared.preparation_id)
 }
 
 const BOOTSTRAPPED: &str = r#""result":{"principal_id":"p1"}"#;
@@ -3575,4 +3819,215 @@ async fn a_join_refused_after_the_save_says_what_is_left() {
         stage(&done, SetupStageName::Configure).state,
         SetupStageState::Skipped
     );
+}
+
+/// AO-9: a start that did not say whether it created the workspace leaves its settings to the
+/// person, so a join that fails leaves them in `steps_left` too, as a finished job would.
+#[tokio::test]
+async fn a_join_refused_after_an_older_start_leaves_the_settings_too() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let server = server().await;
+    let (done, _) = host_in_one_job(&server, "", &["human_chat"], ALREADY_ENROLLED).await;
+    assert_eq!(done.state, SetupState::Failed, "{done:?}");
+    assert_eq!(done.stage, SetupStageName::Join);
+    assert_eq!(
+        done.outcome.unwrap().steps_left,
+        [
+            SetupStep::Join,
+            SetupStep::Privacy,
+            SetupStep::Governance,
+            SetupStep::Context
+        ]
+    );
+}
+
+/// Wait until `ready` holds while the job `job_id` runs, for as long as [`settled`] waits.
+async fn until(job_id: &str, mut ready: impl FnMut() -> bool) {
+    for _ in 0..9000 {
+        if ready() {
+            return;
+        }
+        let status = setup_status(job_id).expect("the job is known");
+        assert!(
+            matches!(status.state, SetupState::Running | SetupState::NeedsSignIn),
+            "the job ended first: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("it never happened: {:?}", setup_status(job_id));
+}
+
+/// A Stop pressed while a host's join is under way is heeded before the workspace's settings
+/// change: nothing more is sent, and what is left is said.
+#[tokio::test]
+async fn a_stop_during_the_join_changes_no_settings() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let server = server().await;
+    let (request, id) =
+        hosting_request(&server, r#","created":true"#, &["human_chat"], BOOTSTRAPPED).await;
+    server.flag("hold-bootstrap");
+    let started = server.manager.start_setup(request).await.unwrap();
+    until(&started.job_id, || {
+        sent(&server).contains(&"auth.bootstrap".to_owned())
+    })
+    .await;
+    assert!(cancel_setup(&started.job_id));
+    fs::remove_file(server.path("hold-bootstrap")).unwrap();
+    let done = settled(&started.job_id).await;
+    assert_eq!(done.state, SetupState::Cancelled, "{done:?}");
+    assert_eq!(error_code(&done), "crew_setup_cancelled");
+    assert_eq!(sent(&server), ["auth.bootstrap"], "no setting was changed");
+    let outcome = done.outcome.clone().unwrap();
+    assert_eq!(outcome.connection_id.as_deref(), Some(id.as_str()));
+    assert_eq!(
+        outcome.steps_left,
+        [
+            SetupStep::Privacy,
+            SetupStep::Governance,
+            SetupStep::Context
+        ]
+    );
+    assert_eq!(outcome.governance, None);
+}
+
+/// A restart arm that answers as [`restart_arm`] does for `ok`, once `hold-restart` is gone
+/// from `root`.
+fn held_restart_arm(root: &Path, ok: &[&str]) -> String {
+    format!(
+        "while [ -f \"{}/hold-restart\" ]; do sleep 0.05; done; {}",
+        root.display(),
+        restart_arm(ok)
+    )
+}
+
+/// A Stop pressed while a workspace restarts, which runs to its end, ends the job there.
+#[tokio::test]
+async fn a_stop_during_a_restart_ends_the_job_after_it() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let server = server().await;
+    let lab = hosted(
+        W_LAB,
+        "lab",
+        "running",
+        "1.0.0",
+        Some(false),
+        Some(0),
+        Some("lab"),
+    );
+    serve_listing(
+        &listing(vec![lab]),
+        &held_restart_arm(server.root.path(), &[W_LAB]),
+        None,
+    );
+    server.flag("hold-restart");
+    let started = server
+        .manager
+        .start_setup(on_server(SetupIntent::Install))
+        .await
+        .unwrap();
+    until(&started.job_id, || !restarted_ids(&server).is_empty()).await;
+    assert!(cancel_setup(&started.job_id));
+    fs::remove_file(server.path("hold-restart")).unwrap();
+    let done = settled(&started.job_id).await;
+    assert_eq!(done.state, SetupState::Cancelled, "{done:?}");
+    assert_eq!(error_code(&done), "crew_setup_cancelled");
+    // The restart under way ran to its end, and is reported.
+    let outcome = done.outcome.clone().unwrap();
+    assert_eq!(outcome.restarted.len(), 1, "{outcome:?}");
+    assert_eq!(outcome.restarted[0].workspace_id, W_LAB);
+}
+
+/// AO-8: the person's consent to restart one workspace others are connected to restarts that
+/// one only, whatever `restart_workspaces` says about the rest.
+#[tokio::test]
+async fn a_restart_consented_for_one_workspace_restarts_only_that_one() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    const W_UNSAID: &str = "0b0e5a5e-0000-4000-8000-00000000000a";
+    let server = server().await;
+    let busy = |id: &str, name: &str, others: Option<u32>| {
+        hosted(
+            id,
+            name,
+            "running",
+            "1.0.0",
+            Some(false),
+            others,
+            Some(name),
+        )
+    };
+    serve_listing(
+        &listing(vec![
+            busy(W_LAB, "lab", Some(3)),
+            busy(W_BUSY, "busy", Some(2)),
+            busy(W_UNSAID, "unsaid", None),
+            busy(W_PARKED, "idle", Some(0)),
+        ]),
+        &restart_arm(&[W_LAB, W_BUSY, W_UNSAID, W_PARKED]),
+        None,
+    );
+    let done = ran(
+        &server,
+        SetupRequest {
+            restart_workspace_ids: vec![W_BUSY.to_uppercase()],
+            ..on_server(SetupIntent::Install)
+        },
+    )
+    .await;
+    assert_eq!(done.state, SetupState::Finished, "{done:?}");
+    // The one consented to, and the one nobody else is connected to.
+    assert_eq!(restarted_ids(&server), [W_BUSY, W_PARKED]);
+    assert_eq!(
+        reasons(&done),
+        [
+            (W_LAB.to_owned(), SetupOutdatedReason::OthersConnected),
+            (W_UNSAID.to_owned(), SetupOutdatedReason::OthersConnected),
+        ]
+    );
+
+    // One the server did not say anyone is connected to, named with `false` for the rest.
+    let done = ran(
+        &server,
+        SetupRequest {
+            restart_workspaces: Some(false),
+            restart_workspace_ids: vec![W_UNSAID.into()],
+            ..on_server(SetupIntent::Install)
+        },
+    )
+    .await;
+    assert_eq!(done.state, SetupState::Finished, "{done:?}");
+    assert_eq!(restarted_ids(&server)[2..], [W_UNSAID]);
+    assert_eq!(
+        reasons(&done),
+        [
+            (W_LAB.to_owned(), SetupOutdatedReason::OthersConnected),
+            (W_BUSY.to_owned(), SetupOutdatedReason::OthersConnected),
+            (
+                W_PARKED.to_owned(),
+                SetupOutdatedReason::NotRunningInstalled
+            ),
+        ]
+    );
+
+    // A check restarts nothing, and a workspace is named by its ID.
+    for bad in [
+        SetupRequest {
+            restart_workspace_ids: vec![W_BUSY.into()],
+            ..on_server(SetupIntent::Check)
+        },
+        SetupRequest {
+            restart_workspace_ids: vec!["busy; id".into()],
+            ..on_server(SetupIntent::Install)
+        },
+    ] {
+        let refused = server.manager.start_setup(bad).await.unwrap_err();
+        assert_eq!(refusal_of(refused).1, "crew_request_invalid");
+    }
 }

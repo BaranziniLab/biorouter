@@ -75,6 +75,18 @@ export type AccountStatus = {
     workspace_name?: string | null;
 };
 
+/**
+ * `POST /crew/connections/{id}/devices/acknowledge`: the new devices the person was shown.
+ */
+export type AcknowledgeDevicesRequest = {
+    /**
+     * The fingerprints of the devices the person was shown, as `new_devices` gave them
+     * (`3F2A 9C1E 77B0 D4E1`). Only these stop being reported: a device the workspace listed
+     * after they were shown stays in `new_devices` until it is acknowledged in turn.
+     */
+    fingerprints: Array<string>;
+};
+
 export type ActionRequired = {
     data: ActionRequiredData;
 };
@@ -6368,10 +6380,20 @@ export type SetupRequest = {
      */
     replace_existing?: boolean;
     /**
+     * Hosted workspaces to restart on the installed program even when others are connected,
+     * or the server did not say that nobody is, by workspace ID (design AO-8): the person's
+     * consent for exactly these, whatever `restart_workspaces` says. Each one named that runs
+     * an older program than the one installed is restarted, unless it keeps its state outside
+     * `~/.local/share/biorouter-crew`; one that runs the installed program, or is not running,
+     * is left as it is. A check changes nothing, so it takes none.
+     */
+    restart_workspace_ids?: Array<string>;
+    /**
      * Whether to restart the hosted workspaces still running an older program than the one
      * installed (design AO-8). Absent restarts only those nobody else is connected to; `true`
-     * restarts them even with others connected, which ends what those members had in flight;
-     * `false` only reports them in `outcome.outdated`.
+     * restarts all of them even with others connected, which ends what those members had in
+     * flight; `false` only reports them in `outcome.outdated`. It covers every workspace not
+     * named in `restart_workspace_ids`.
      */
     restart_workspaces?: boolean | null;
     /**
@@ -9519,7 +9541,7 @@ export type CrewConnectionAccountErrors = {
      */
     404: CrewError;
     /**
-     * `crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and does not answer about accounts; nothing was sent (`workspace`, and `host` with `server_login` for the host or `host_username` for anyone else)
+     * `crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and does not answer about accounts; nothing was sent (`workspace`, and `is_host`: `true` with `server_login` for the host, `false` with `host_username` for anyone else)
      */
     409: CrewError;
     /**
@@ -9700,7 +9722,7 @@ export type CrewContextDraftResponses = {
 export type CrewContextDraftResponse = CrewContextDraftResponses[keyof CrewContextDraftResponses];
 
 export type CrewConnectionAcknowledgeDevicesData = {
-    body?: never;
+    body: AcknowledgeDevicesRequest;
     path: {
         /**
          * The saved Crew connection
@@ -9713,7 +9735,7 @@ export type CrewConnectionAcknowledgeDevicesData = {
 
 export type CrewConnectionAcknowledgeDevicesErrors = {
     /**
-     * `crew_request_refused` with a fixed sentence: the acknowledgement could not be saved
+     * `crew_request_invalid` for a body that is not JSON, or `crew_request_refused` with a fixed sentence: the acknowledgement could not be saved
      */
     400: CrewError;
     /**
@@ -9728,13 +9750,25 @@ export type CrewConnectionAcknowledgeDevicesErrors = {
      * `crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support
      */
     409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
 };
 
 export type CrewConnectionAcknowledgeDevicesError = CrewConnectionAcknowledgeDevicesErrors[keyof CrewConnectionAcknowledgeDevicesErrors];
 
 export type CrewConnectionAcknowledgeDevicesResponses = {
     /**
-     * Acknowledged: the connection's `new_devices` is empty until the workspace lists another device this computer has not seen. Acknowledging when nothing is new changes nothing
+     * Acknowledged: the devices `fingerprints` names leave the connection's `new_devices`, and any other device stays there until it is acknowledged in turn. A fingerprint `new_devices` does not list changes nothing, so acknowledging again is safe
      */
     204: void;
 };
@@ -9933,7 +9967,7 @@ export type CrewConnectionJoinErrors = {
      */
     404: CrewError;
     /**
-     * `crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict`, `crew_join_removed` (the workspace removed this account: "You were removed from {workspace}. Ask a member to invite you again.") or `crew_join_refused`. Joining by account also answers `crew_account_unsupported` (the server's Crew is older; `host`, `server_login` or `host_username` choose the words) and `crew_device_key_missing` (this computer no longer holds its key; add it again with `POST /crew/connections/{id}/rejoin`)
+     * `crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict`, `crew_join_removed` (the workspace removed this account: "You were removed from {workspace}. Ask a member to invite you again.") or `crew_join_refused`. Joining by account also answers `crew_account_unsupported` (the server's Crew is older; `is_host` chooses the words: `true` with `server_login` for the host, `false` with `host_username` for anyone else) and `crew_device_key_missing` (this computer no longer holds its key; add it again with `POST /crew/connections/{id}/rejoin`)
      */
     409: CrewError;
     /**
@@ -10004,7 +10038,7 @@ export type CrewObserveError = CrewObserveErrors[keyof CrewObserveErrors];
 
 export type CrewObserveResponses = {
     /**
-     * Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, and `clear` asks the client to drop what the observation showed
+     * Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, or `crew_device_key_missing` (this computer no longer holds its key) or `crew_device_not_recognized` (the workspace no longer recognizes this computer while it still lists the account), which adding this computer again with `POST /crew/connections/{id}/rejoin` repairs. `clear` asks the client to drop what the observation showed
      */
     200: ObserveEvent;
 };
@@ -10037,7 +10071,7 @@ export type CrewConnectionRejoinErrors = {
      */
     404: CrewError;
     /**
-     * `crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and cannot add a computer by account; nothing was sent (`workspace`, and `host` with `server_login` for the host or `host_username` for anyone else). A typed refusal of the workspace, which keeps the old key: `crew_join_removed` (the workspace removed this account), `crew_join_not_invited` (this account is not a member), `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`
+     * `crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and cannot add a computer by account; nothing was sent (`workspace`, and `is_host`: `true` with `server_login` for the host, `false` with `host_username` for anyone else). A typed refusal of the workspace, which keeps the old key: `crew_join_removed` (the workspace removed this account), `crew_join_not_invited` (this account is not a member), `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`
      */
     409: CrewError;
     /**
@@ -10969,7 +11003,7 @@ export type CrewSetupStartData = {
 
 export type CrewSetupStartErrors = {
     /**
-     * `crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, a `member` job without a saved connection, a `host` or `member` job on a `server` target, `start_workspaces` on a `check` job or an ID that is not a workspace ID, or `finish` without `mode`, on a job that does not host, or for a Private workspace without `institution_id`; `crew_request_refused` for an SSH configuration the preflight refuses
+     * `crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, a `member` job without a saved connection, a `host` or `member` job on a `server` target, `start_workspaces` or `restart_workspace_ids` on a `check` job, or an ID in either that is not a workspace ID, or `finish` without `mode`, on a job that does not host, or for a Private workspace without `institution_id`; `crew_request_refused` for an SSH configuration the preflight refuses
      */
     400: CrewError;
     /**
@@ -10981,7 +11015,7 @@ export type CrewSetupStartErrors = {
      */
     404: CrewError;
     /**
-     * `crew_host_setup_unknown`: no pending host setup (or, for a `server` target, prepared device) with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: another kind of job is under way for this server, or too many jobs at once
+     * `crew_host_setup_unknown`: no pending host setup (or, for a `server` target, prepared device) with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: a job with another intent, route or choices is under way for this server, or too many jobs at once
      */
     409: CrewError;
     /**
@@ -10998,7 +11032,7 @@ export type CrewSetupStartError = CrewSetupStartErrors[keyof CrewSetupStartError
 
 export type CrewSetupStartResponses = {
     /**
-     * The job, started (or the one already under way for the same server and intent): poll `GET /crew/setup/{job_id}`. A `check` job runs check, sign-in, `workspaces`, done; an `install` job adds install and `restart`; a `host` job adds the start and, with `finish`, `save`, `join` and `configure`. An installed Crew older than this app's is replaced unless `keep_older`; `replace_existing` only covers one that does not run or name its version, and a newer one is never replaced. `restart_workspaces` (`true`: restart even with others connected; `false`: only report in `outcome.outdated`) and `start_workspaces` (stopped hosted workspaces, by ID) choose what the `restart` stage does. A `host` job whose account already hosts a workspace of that name on the server fails with `crew_host_name_in_use` before anything is started or restarted
+     * The job, started (or the one already under way for the same server, intent and choices): poll `GET /crew/setup/{job_id}`. A `check` job runs check, sign-in, `workspaces`, done; an `install` job adds install and `restart`; a `host` job adds the start and, with `finish`, `save`, `join` and `configure`. An installed Crew older than this app's is replaced unless `keep_older`; `replace_existing` only covers one that does not run or name its version, and a newer one is never replaced. `restart_workspaces` (`true`: restart every outdated hosted workspace even with others connected; `false`: only report them in `outcome.outdated`), `restart_workspace_ids` (hosted workspaces, by ID, the person agreed to restart even with others connected, whatever `restart_workspaces` says) and `start_workspaces` (stopped hosted workspaces, by ID) choose what the `restart` stage does. A `host` job whose account already hosts a workspace of that name on the server fails with `crew_host_name_in_use` before anything is started or restarted
      */
     200: SetupStatus;
 };

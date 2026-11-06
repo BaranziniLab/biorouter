@@ -519,12 +519,21 @@ export const crewConnect = <ThrowOnError extends boolean = false>(options: Optio
 export const crewContextDraft = <ThrowOnError extends boolean = false>(options: Options<CrewContextDraftData, ThrowOnError>) => (options.client ?? client).post<CrewContextDraftResponses, CrewContextDraftErrors, ThrowOnError>({ url: '/crew/connections/{id}/context/draft', ...options });
 
 /**
- * The person has seen the new devices of their account on this connection (account ownership
+ * The person has seen these new devices of their account on this connection (account
  *
- * AO-10): stop reporting them in `new_devices`, on every Biorouter process of this profile.
- * Asks the workspace nothing, so it works while the connection is down.
+ * ownership AO-10): stop reporting them in `new_devices`, on every Biorouter process of this
+ * profile. Only the devices the request names are acknowledged, so a device added between
+ * showing the notice and acknowledging it is still reported. Asks the workspace nothing, so it
+ * works while the connection is down.
  */
-export const crewConnectionAcknowledgeDevices = <ThrowOnError extends boolean = false>(options: Options<CrewConnectionAcknowledgeDevicesData, ThrowOnError>) => (options.client ?? client).post<CrewConnectionAcknowledgeDevicesResponses, CrewConnectionAcknowledgeDevicesErrors, ThrowOnError>({ url: '/crew/connections/{id}/devices/acknowledge', ...options });
+export const crewConnectionAcknowledgeDevices = <ThrowOnError extends boolean = false>(options: Options<CrewConnectionAcknowledgeDevicesData, ThrowOnError>) => (options.client ?? client).post<CrewConnectionAcknowledgeDevicesResponses, CrewConnectionAcknowledgeDevicesErrors, ThrowOnError>({
+    url: '/crew/connections/{id}/devices/acknowledge',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
 
 export const crewDisconnect = <ThrowOnError extends boolean = false>(options: Options<CrewDisconnectData, ThrowOnError>) => (options.client ?? client).post<CrewDisconnectResponses, CrewDisconnectErrors, ThrowOnError>({ url: '/crew/connections/{id}/disconnect', ...options });
 

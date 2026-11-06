@@ -1094,8 +1094,35 @@ async fn a_new_device_is_reported_until_acknowledged() {
         reported
     );
 
-    crew.acknowledge_devices(CONNECTION).await.unwrap();
-    crew.observe_devices(CONNECTION, &added).await;
+    // Another device appears after the person was shown the list: acknowledging what they
+    // were shown leaves it reported.
+    let phone = "5555 6666 7777 8888";
+    let more = devices(&[
+        (own, "invitation", 1),
+        (laptop, "invitation", 2),
+        (desktop, "account", 3),
+        (phone, "account", 4),
+    ]);
+    crew.observe_devices(CONNECTION, &more).await;
+    let shown: Vec<String> = reported.iter().map(|d| d.fingerprint.clone()).collect();
+    crew.acknowledge_devices(CONNECTION, &shown).await.unwrap();
+    crew.observe_devices(CONNECTION, &more).await;
+    let left = crew.new_devices(CONNECTION).await.unwrap();
+    assert_eq!(
+        left.iter()
+            .map(|d| d.fingerprint.as_str())
+            .collect::<Vec<_>>(),
+        [phone]
+    );
+    assert_eq!(
+        device.restarted().new_devices(CONNECTION).await.unwrap(),
+        left
+    );
+
+    crew.acknowledge_devices(CONNECTION, &[phone.to_owned()])
+        .await
+        .unwrap();
+    crew.observe_devices(CONNECTION, &more).await;
     assert!(crew.new_devices(CONNECTION).await.unwrap().is_empty());
     assert!(device
         .restarted()
@@ -1104,5 +1131,8 @@ async fn a_new_device_is_reported_until_acknowledged() {
         .unwrap()
         .is_empty());
     assert!(crew.new_devices("not-a-connection").await.is_err());
-    assert!(crew.acknowledge_devices("not-a-connection").await.is_err());
+    assert!(crew
+        .acknowledge_devices("not-a-connection", &shown)
+        .await
+        .is_err());
 }

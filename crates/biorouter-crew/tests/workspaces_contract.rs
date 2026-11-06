@@ -86,17 +86,18 @@ fn hosted(
     (id, dir, socket, state)
 }
 
-/// The workspace public key a journal's state holds, hex.
-fn public_key_of(state: &Value) -> String {
+/// The workspace signing key a journal's state holds.
+fn signing_key_of(state: &Value) -> ed25519_dalek::SigningKey {
     let secret: [u8; 32] = hex::decode(state["workspace_signing_key"].as_str().unwrap())
         .unwrap()
         .try_into()
         .unwrap();
-    hex::encode(
-        ed25519_dalek::SigningKey::from_bytes(&secret)
-            .verifying_key()
-            .to_bytes(),
-    )
+    ed25519_dalek::SigningKey::from_bytes(&secret)
+}
+
+/// The workspace public key a journal's state holds, hex.
+fn public_key_of(state: &Value) -> String {
+    hex::encode(signing_key_of(state).verifying_key().to_bytes())
 }
 
 fn entries(answer: &Value) -> &Vec<Value> {
@@ -275,6 +276,39 @@ fn more_than_sixty_four_hosted_folders_leave_the_answer_truncated() {
     assert_eq!(hosted, 64, "{answer:#}");
     assert_eq!(answer["truncated"], true);
     assert!(serde_json::to_vec(&answer).unwrap().len() <= 48 * 1024);
+}
+
+/// A copy of a workspace's folder kept in the store holds the same ID. Neither folder is
+/// listed as the workspace: each is `unknown` with the sentence `start` and `restart` refuse
+/// that ID with, so a stopped copy never stands in for the workspace. Another workspace in
+/// the same store is listed as before.
+#[test]
+fn a_copy_of_a_workspaces_folder_is_listed_as_a_conflict() {
+    let (home, store) = home("ws-copies");
+    let runtime = TempRoot::short();
+    let (id, ..) = hosted(&store, "lab", "lab", runtime.path());
+    let (notes, ..) = hosted(&store, "notes", "notes", runtime.path());
+    copy_tree(&store.join("lab"), &store.join("backup-lab"));
+    let answer = Broker::list_workspaces_with(home.path(), runtime.path(), host_uid(), &alice());
+    let copies: Vec<&Value> = entries(&answer)
+        .iter()
+        .filter(|entry| entry["workspace_id"] == json!(id))
+        .collect();
+    assert_eq!(copies.len(), 2, "{answer:#}");
+    for copy in copies {
+        assert_eq!(copy["state"], "unknown", "{answer:#}");
+        let error = copy["error"].as_str().unwrap();
+        assert!(error.starts_with("identity_conflict: "), "{error}");
+        assert!(error.contains("(backup-lab, lab)"), "{error}");
+        assert!(copy["invitation"].is_null());
+    }
+    assert_eq!(entry(&answer, &notes)["state"], "stopped");
+    let start = format!("{:#}", Broker::start_by_id(home.path(), &id).unwrap_err());
+    let listed = entries(&answer)
+        .iter()
+        .find(|entry| entry["workspace_id"] == json!(id))
+        .unwrap();
+    assert_eq!(listed["error"], json!(start), "one sentence for both");
 }
 
 #[test]
@@ -678,6 +712,103 @@ mod linux {
         assert_eq!(answer["skipped"], 2);
     }
 
+    /// Another account's brokers cannot fill the answer: a signed name larger than the
+    /// workspace-name rule allows, or an unsigned version longer than 64 bytes, does not check
+    /// out and is counted in `skipped`. Its well-formed neighbour, whose name sorts after the
+    /// oversized ones, is still listed.
+    #[test]
+    fn a_broker_repeating_oversized_fields_is_skipped() {
+        let (home, _store) = home("ws-scan-oversized");
+        let runtime = TempRoot::short();
+        let oversized = |name: String, version: Option<&'static str>| Behaviour::Answer {
+            key: SigningKey::from_bytes(&rand_seed()),
+            workspace_id: uuid(),
+            host_uid: host_uid(),
+            name: Some(name),
+            capabilities: capabilities(true),
+            status: json!({"role": "member"}),
+            version,
+            wrong_nonce: false,
+        };
+        let long_version: &'static str = Box::leak("9".repeat(4 * 1024).into_boxed_str());
+        let big = "a".repeat(14 * 1024);
+        for (index, behaviour) in [
+            oversized(big.clone(), Some("1.94.1")),
+            oversized(format!("{big}b"), Some("1.94.1")),
+            oversized("aaa-lab".into(), Some(long_version)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fake_broker(
+                &runtime.path().join(runtime_name(&format!("{index}"))),
+                behaviour,
+            );
+        }
+        let good = member_broker("member");
+        let good_id = workspace_id_of(&good);
+        fake_broker(&runtime.path().join(runtime_name("3")), good);
+        let answer = as_another_account(home.path(), runtime.path());
+        assert_eq!(entries(&answer).len(), 1, "{answer:#}");
+        assert_eq!(entry(&answer, &good_id)["name"], "lab");
+        assert_eq!(answer["skipped"], 3);
+        assert_eq!(answer["truncated"], false);
+    }
+
+    /// Two brokers answering with one workspace ID are two entries, never one: each keeps its
+    /// own socket and key fingerprint (and `host_uid`), so a reader can tell them apart and
+    /// refuse to open the name when two hosts claim it.
+    #[test]
+    fn brokers_sharing_a_workspace_id_are_listed_apart() {
+        let (home, _store) = home("ws-scan-shared-id");
+        let runtime = TempRoot::short();
+        let shared = uuid();
+        let mut keys = Vec::new();
+        let mut sockets = Vec::new();
+        for index in 0..2 {
+            let key = SigningKey::from_bytes(&rand_seed());
+            keys.push(digest(&key.verifying_key().to_bytes()));
+            sockets.push(fake_broker(
+                &runtime.path().join(runtime_name(&format!("{index}"))),
+                Behaviour::Answer {
+                    key,
+                    workspace_id: shared.clone(),
+                    host_uid: host_uid(),
+                    name: Some("baranzini-lab".into()),
+                    capabilities: capabilities(true),
+                    status: json!({"role": "member"}),
+                    version: Some("1.94.1"),
+                    wrong_nonce: false,
+                },
+            ));
+        }
+        let answer = as_another_account(home.path(), runtime.path());
+        let listed: Vec<&Value> = entries(&answer)
+            .iter()
+            .filter(|entry| entry["workspace_id"] == json!(shared))
+            .collect();
+        assert_eq!(listed.len(), 2, "{answer:#}");
+        let mut seen_keys: Vec<Value> = listed
+            .iter()
+            .map(|entry| entry["workspace_key_fingerprint"].clone())
+            .collect();
+        seen_keys.sort_by_key(Value::to_string);
+        let mut expected: Vec<Value> = keys.iter().map(|key| json!(key)).collect();
+        expected.sort_by_key(Value::to_string);
+        assert_eq!(seen_keys, expected);
+        let mut seen_sockets: Vec<Value> = listed
+            .iter()
+            .map(|entry| entry["socket_path"].clone())
+            .collect();
+        seen_sockets.sort_by_key(Value::to_string);
+        let mut expected: Vec<Value> = sockets.iter().map(|socket| json!(socket)).collect();
+        expected.sort_by_key(Value::to_string);
+        assert_eq!(seen_sockets, expected);
+        for entry in listed {
+            assert_eq!(entry["host_uid"], host_uid());
+        }
+    }
+
     /// A member's entry carries the line the ordinary join path opens, pointing at the socket
     /// the broker answered at.
     #[test]
@@ -813,12 +944,13 @@ mod linux {
         };
         let custom_id = workspace_id_of(&custom);
         fake_broker(&runtime.path().join(runtime_name("1")), custom);
-        // A workspace of the store whose runtime.json went missing while its broker runs.
-        let (stored_id, stored_dir, ..) = hosted(&store, "lab", "lab", runtime.path());
+        // A workspace of the store whose runtime.json went missing while its broker runs: the
+        // same ID, host and key.
+        let (stored_id, stored_dir, _, stored_state) = hosted(&store, "lab", "lab", runtime.path());
         fake_broker(
             &runtime.path().join(runtime_name("2")),
             Behaviour::Answer {
-                key: SigningKey::from_bytes(&rand_seed()),
+                key: signing_key_of(&stored_state),
                 workspace_id: stored_id.clone(),
                 host_uid: host_uid(),
                 name: Some("lab".into()),
@@ -850,6 +982,56 @@ mod linux {
         );
         assert_eq!(entries(&answer).len(), 2, "{answer:#}");
         assert_eq!(answer["skipped"], 0);
+    }
+
+    /// A running broker that answers with a folder's workspace ID but another key is not that
+    /// workspace: both are listed, each with its own key, and the folder stays stopped.
+    #[test]
+    fn a_runtime_broker_with_a_folders_id_but_another_key_is_listed_apart() {
+        let (home, store) = home("ws-custom-other-key");
+        let runtime = TempRoot::short();
+        let (id, dir, _, state) = hosted(&store, "lab", "lab", runtime.path());
+        let other_key = SigningKey::from_bytes(&rand_seed());
+        let socket = fake_broker(
+            &runtime.path().join(runtime_name("2")),
+            Behaviour::Answer {
+                key: other_key.clone(),
+                workspace_id: id.clone(),
+                host_uid: host_uid(),
+                name: Some("lab".into()),
+                capabilities: capabilities(true),
+                status: json!({"role": "host", "others_connected": 0}),
+                version: Some("1.94.1"),
+                wrong_nonce: false,
+            },
+        );
+        let answer =
+            Broker::list_workspaces_with(home.path(), runtime.path(), host_uid(), &alice());
+        let listed: Vec<&Value> = entries(&answer)
+            .iter()
+            .filter(|entry| entry["workspace_id"] == json!(id))
+            .collect();
+        assert_eq!(listed.len(), 2, "{answer:#}");
+        let folder = listed
+            .iter()
+            .find(|entry| entry["found_by"] == "state_dir")
+            .unwrap();
+        assert_eq!(folder["state"], "stopped", "{answer:#}");
+        assert_eq!(folder["state_dir"], json!(dir));
+        assert_eq!(
+            folder["workspace_key_fingerprint"],
+            json!(digest(&hex::decode(public_key_of(&state)).unwrap()))
+        );
+        let running = listed
+            .iter()
+            .find(|entry| entry["found_by"] == "runtime")
+            .unwrap();
+        assert_eq!(running["state"], "running");
+        assert_eq!(running["socket_path"], json!(socket));
+        assert_eq!(
+            running["workspace_key_fingerprint"],
+            json!(digest(&other_key.verifying_key().to_bytes()))
+        );
     }
 
     /// A probe never reads more than 16 KiB of an answer.

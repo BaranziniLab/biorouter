@@ -1437,17 +1437,18 @@ async fn the_account_routes_need_a_person_and_a_saved_connection() {
         let unknown = "00000000-0000-4000-8000-000000000000";
         let routes = |id: &str| {
             [
-                ("POST", format!("/crew/connections/{id}/rejoin")),
-                ("GET", format!("/crew/connections/{id}/account")),
+                ("POST", format!("/crew/connections/{id}/rejoin"), None),
+                ("GET", format!("/crew/connections/{id}/account"), None),
                 (
                     "POST",
                     format!("/crew/connections/{id}/devices/acknowledge"),
+                    Some(json!({"fingerprints": []})),
                 ),
             ]
         };
-        for (method, uri) in routes(unknown) {
+        for (method, uri, sent) in routes(unknown) {
             for proof in [Proof::Absent, Proof::Wrong] {
-                let (status, body) = call(method, &uri, None, proof).await;
+                let (status, body) = call(method, &uri, sent.clone(), proof).await;
                 assert_refused(
                     status,
                     &body,
@@ -1456,7 +1457,7 @@ async fn the_account_routes_need_a_person_and_a_saved_connection() {
                 );
                 assert_eq!(body.as_object().unwrap().len(), 2, "{method} {uri}: {body}");
             }
-            let (status, body) = call(method, &uri, None, Proof::Person).await;
+            let (status, body) = call(method, &uri, sent, Proof::Person).await;
             assert_refused(
                 status,
                 &body,
@@ -1469,11 +1470,12 @@ async fn the_account_routes_need_a_person_and_a_saved_connection() {
         let connection = save_joiner(&created, WORKSPACE, HOST).await;
         let id = connection["id"].as_str().unwrap().to_owned();
         let [rejoin, account, acknowledge] = routes(&id);
-        for (method, uri) in [rejoin, account] {
-            let (status, body) = call(method, &uri, None, Proof::Person).await;
+        for (method, uri, sent) in [rejoin, account] {
+            let (status, body) = call(method, &uri, sent, Proof::Person).await;
             assert_refused(status, &body, StatusCode::CONFLICT, "crew_not_connected");
         }
-        let (status, body) = call(acknowledge.0, &acknowledge.1, None, Proof::Person).await;
+        let (status, body) =
+            call(acknowledge.0, &acknowledge.1, acknowledge.2, Proof::Person).await;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
         assert!(
             !log_path(&fixture_root(), HOST).exists(),
@@ -1754,7 +1756,9 @@ async fn an_older_server_answers_account_unsupported() {
 /// this computer had not seen, with how and when it was added, until the person acknowledges
 /// it. The first snapshot is the baseline and this computer's own device is never reported. A
 /// connected connection to a server that takes joining by account says `account_identity:
-/// true`; a disconnected one says `null`.
+/// true`; a disconnected one says `null`. An acknowledgement names the devices the person was
+/// shown, and only those leave the report: a device a snapshot listed after the notice was
+/// shown is still reported, so nothing is cleared that no computer ever showed.
 #[tokio::test]
 #[serial]
 async fn the_connection_view_reports_new_devices_until_acknowledged() {
@@ -1763,6 +1767,7 @@ async fn the_connection_view_reports_new_devices_until_acknowledged() {
     const OWN: &str = "AAAA AAAA AAAA AAAA";
     const LAPTOP: &str = "ABCD ABCD ABCD ABCD";
     const DESKTOP: &str = "1234 5678 9ABC DEF0";
+    const TABLET: &str = "5555 6666 7777 8888";
     let created = Mutex::new(Vec::new());
     with_cleanup(&created, async {
         let snapshot = |devices: Value| {
@@ -1771,6 +1776,8 @@ async fn the_connection_view_reports_new_devices_until_acknowledged() {
         let own = json!({"fingerprint": OWN, "added_via": "invitation", "added_at": 1, "this_device": true});
         let laptop = json!({"fingerprint": LAPTOP, "added_via": "invitation", "added_at": 2});
         let desktop = json!({"fingerprint": DESKTOP, "added_via": "account", "added_at": 3});
+        let tablet = json!({"fingerprint": TABLET, "added_via": "account", "added_at": 4});
+        let (own_again, laptop_again) = (own.clone(), laptop.clone());
         let scenario = Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES);
         stage(
             HOST,
@@ -1832,21 +1839,88 @@ async fn the_connection_view_reports_new_devices_until_acknowledged() {
         assert_eq!(listed["new_devices"], new, "{listed}");
         assert_eq!(listed["account_identity"], true, "{listed}");
 
+        // The person is shown the desktop. Before they acknowledge it, a snapshot that any
+        // surface reads lists a tablet nobody has been shown yet.
+        let shown = json!({"fingerprints": [DESKTOP]});
+        stage(
+            HOST,
+            &scenario.clone().answer(
+                "workspace.snapshot",
+                snapshot(json!([own_again, laptop_again, desktop.clone(), tablet.clone()])),
+            ),
+        );
+        crew()
+            .human_request(&id, "workspace.snapshot", json!({}), None)
+            .await
+            .expect("a snapshot after the notice was shown");
+        let both = json!([desktop, tablet.clone()]);
+        let (_, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(body["new_devices"], both, "{body}");
+
         let acknowledge = format!("/crew/connections/{id}/devices/acknowledge");
-        let (status, body) =
-            call_app(daemon.clone(), "POST", &acknowledge, None, Proof::Absent).await;
+        let (status, body) = call_app(
+            daemon.clone(),
+            "POST",
+            &acknowledge,
+            Some(shown.clone()),
+            Proof::Absent,
+        )
+        .await;
         assert_refused(
             status,
             &body,
             StatusCode::FORBIDDEN,
             "crew_user_action_required",
         );
+        // An acknowledgement that does not say which devices the person saw acknowledges none.
+        for (sent, expected) in [
+            (None, StatusCode::UNSUPPORTED_MEDIA_TYPE),
+            (Some(json!({})), StatusCode::UNPROCESSABLE_ENTITY),
+            (
+                Some(json!({"fingerprints": [DESKTOP], "all": true})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ] {
+            let (status, body) =
+                call_app(daemon.clone(), "POST", &acknowledge, sent, Proof::Person).await;
+            assert_refused(status, &body, expected, "crew_request_invalid");
+        }
         let (_, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
         assert_eq!(
-            body["new_devices"], new,
+            body["new_devices"], both,
             "a refused acknowledgement changes nothing"
         );
-        let (status, _) = call_app(daemon.clone(), "POST", &acknowledge, None, Proof::Person).await;
+
+        let (status, body) = call_app(
+            daemon.clone(),
+            "POST",
+            &acknowledge,
+            Some(shown.clone()),
+            Proof::Person,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let (status, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["new_devices"],
+            json!([tablet]),
+            "only the device the person was shown is acknowledged: {body}"
+        );
+        // Acknowledging the same device again changes nothing; the tablet goes once it is named.
+        let (status, _) =
+            call_app(daemon.clone(), "POST", &acknowledge, Some(shown), Proof::Person).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(body["new_devices"], json!([tablet]), "{body}");
+        let (status, _) = call_app(
+            daemon.clone(),
+            "POST",
+            &acknowledge,
+            Some(json!({"fingerprints": [TABLET]})),
+            Proof::Person,
+        )
+        .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let (status, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -1889,14 +1963,19 @@ async fn the_account_ownership_routes_are_registered() {
             "crew_not_found",
         ),
     ] {
-        let (status, body) = call_app(daemon.clone(), method, &uri, None, Proof::Absent).await;
+        // The acknowledgement names the devices the person was shown.
+        let sent = uri
+            .ends_with("/devices/acknowledge")
+            .then(|| json!({"fingerprints": []}));
+        let (status, body) =
+            call_app(daemon.clone(), method, &uri, sent.clone(), Proof::Absent).await;
         assert_refused(
             status,
             &body,
             StatusCode::FORBIDDEN,
             "crew_user_action_required",
         );
-        let (status, body) = call_app(daemon.clone(), method, &uri, None, Proof::Person).await;
+        let (status, body) = call_app(daemon.clone(), method, &uri, sent, Proof::Person).await;
         assert_refused(status, &body, StatusCode::NOT_FOUND, answered);
     }
     let (status, body) = call_app(daemon.clone(), "GET", "/crew/setup", None, Proof::Absent).await;

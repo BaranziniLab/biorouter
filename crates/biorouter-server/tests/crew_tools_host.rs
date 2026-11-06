@@ -688,6 +688,69 @@ async fn call(
     }
 }
 
+/// [`call`] with one card, answered with `answer` only after `meanwhile` ran while it waited:
+/// what changes while a card is open for the person.
+async fn call_meanwhile(
+    session: &str,
+    capability: CallCapability,
+    tool: PersonTool,
+    action: &str,
+    params: Value,
+    answer: &str,
+    meanwhile: impl std::future::Future<Output = ()>,
+) -> Called {
+    let host = tool_host::get().expect("the host is installed");
+    let call = PersonToolCall {
+        tool,
+        action: action.to_owned(),
+        params,
+        session_id: session.to_owned(),
+        tool_call_id: Some(format!("call-{}", uuid::Uuid::new_v4())),
+        capability,
+        cancel: CancellationToken::new(),
+        approvals: Arc::clone(PendingUserActions::global()),
+    };
+    let task =
+        tokio::spawn(async move { host.call(call).await.map_err(|error| error.to_string()) });
+    let mut meanwhile = Some(meanwhile);
+    let mut cards = Vec::new();
+    let mut answered = std::collections::HashSet::new();
+    loop {
+        for message in PendingUserActions::global().pending_cards_for_session(session) {
+            let card = serde_json::to_value(&message).unwrap();
+            let data = &card["content"][0]["data"];
+            let id = data["id"].as_str().unwrap_or_default().to_owned();
+            if id.is_empty() || !answered.insert(id.clone()) {
+                continue;
+            }
+            cards.push(SeenCard {
+                tool: data["toolName"].as_str().unwrap_or_default().to_owned(),
+                prompt: data["prompt"].as_str().unwrap_or_default().to_owned(),
+                arguments: data["arguments"].clone(),
+            });
+            if let Some(change) = meanwhile.take() {
+                change.await;
+            }
+            let answer = if cards.len() == 1 { answer } else { "deny" };
+            let (status, body) = http(
+                "POST",
+                "/action-required/tool-confirmation",
+                Some(json!({"id": id, "principalType": "Tool", "action": answer, "sessionId": session})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        if task.is_finished() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Called {
+        answer: task.await.expect("the call ran"),
+        cards,
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Workspaces
 // ---------------------------------------------------------------------------------------------
@@ -1250,6 +1313,14 @@ fn a_chat_reads_a_workspace_only_after_the_person_lets_it() {
             "{}",
             denied.cards[0].prompt
         );
+        // The command it names takes back this chat's consent, not a Crew grant it never had.
+        assert!(
+            denied.cards[0].prompt.contains(&format!(
+                "until you take this back with biorouter crew grants revoke {session} --reads."
+            )),
+            "{}",
+            denied.cards[0].prompt
+        );
         assert!(!crew().has_person_read(&session, &connection.id).await);
         assert_eq!(
             classification(&session).await,
@@ -1674,6 +1745,231 @@ fn without_a_person_s_proof_nothing_is_parked() {
             crew().connection(&connection.id).await.unwrap().status,
             "connected"
         );
+        remove(&connection).await;
+    });
+}
+
+/// A read whose consent card waited for the person is judged again once it is allowed: a
+/// workspace made Private while the card was open is not read by a public model, and nothing
+/// is fetched from it.
+#[test]
+#[serial]
+fn a_read_is_judged_again_after_its_consent_card_waits() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000c0009";
+        const HOST: &str = "consent-wait.example.test";
+        let open = workspace(
+            WORKSPACE,
+            HOST,
+            true,
+            snapshot("public", Some("ucsf"), false),
+            true,
+        )
+        .await;
+        let session = chat("consent wait").await;
+        let made_private = async {
+            let mut scenario = Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES)
+                .answer(
+                    "workspace.snapshot",
+                    snapshot("private", Some("ucsf"), false),
+                )
+                .answer(
+                    "workspace.context.get",
+                    json!({"result": {"context": {"text": "patients' notes", "revision": 4}}}),
+                );
+            scenario.mode = "public".into();
+            stage(HOST, &scenario);
+        };
+        let read = call_meanwhile(
+            &session,
+            public(),
+            PersonTool::Read,
+            "context_show",
+            json!({"connection": open.id}),
+            "allow_once",
+            made_private,
+        )
+        .await;
+        assert_eq!(read.cards.len(), 1, "the consent card");
+        assert!(
+            read.refusal().starts_with("This chat uses a public model"),
+            "{}",
+            read.refusal()
+        );
+        assert!(!read.refusal().contains("patients"), "{}", read.refusal());
+        assert!(
+            sent(HOST, "workspace.context.get").is_empty(),
+            "the document was fetched after the workspace was made Private"
+        );
+        remove(&open).await;
+    });
+}
+
+/// A connection's card is acted on only as it showed it: when the connection changes while the
+/// card waits, allowing the card saves nothing over the change, and says why.
+#[test]
+#[serial]
+fn a_connection_change_saves_nothing_over_a_change_made_while_it_waited() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000c000a";
+        const HOST: &str = "stale-card.example.test";
+        let connection = workspace(
+            WORKSPACE,
+            HOST,
+            false,
+            snapshot("private", Some("ucsf"), false),
+            false,
+        )
+        .await;
+        let session = chat("stale card").await;
+        let id = connection.id.clone();
+        let changed_meanwhile = async {
+            // The person renames it in the Crew view while the chat's card is open.
+            let saved = serde_json::to_value(crew().connection(&id).await.unwrap()).unwrap();
+            let mut input = serde_json::Map::new();
+            for key in [
+                "name",
+                "ssh_target",
+                "port",
+                "identity_file",
+                "proxy_jump",
+                "socket_path",
+                "owner_uid",
+                "workspace_id",
+                "workspace_public_key",
+                "remote_root",
+                "remote_execution",
+                "remote_access",
+                "cluster_connection_id",
+                "mode",
+                "institution_id",
+            ] {
+                if let Some(value) = saved.get(key) {
+                    input.insert(key.into(), value.clone());
+                }
+            }
+            input.insert("name".into(), json!("lab-meanwhile"));
+            let request: biorouter::crew::SaveConnection =
+                serde_json::from_value(Value::Object(input)).unwrap();
+            crew().update(&id, request).await.unwrap();
+        };
+        let allowed = call_meanwhile(
+            &session,
+            public(),
+            PersonTool::Change,
+            "connections_update",
+            json!({"connection": connection.id, "name": "lab-renamed"}),
+            "allow_once",
+            changed_meanwhile,
+        )
+        .await;
+        assert_eq!(allowed.cards.len(), 1);
+        assert!(
+            allowed
+                .refusal()
+                .contains("changed while this waited for your approval, so nothing was changed"),
+            "{}",
+            allowed.refusal()
+        );
+        assert_eq!(
+            crew().connection(&connection.id).await.unwrap().name,
+            "lab-meanwhile",
+            "the card's save went over a change it never showed"
+        );
+        remove(&connection).await;
+    });
+}
+
+/// A check through a saved login signs in as the person without a card only on that
+/// connection's own route: the same login through another jump host asks first.
+#[test]
+#[serial]
+fn checking_a_saved_login_through_another_route_asks_first() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000c000b";
+        const HOST: &str = "saved-route.example.test";
+        let connection = workspace(
+            WORKSPACE,
+            HOST,
+            false,
+            snapshot("private", Some("ucsf"), false),
+            false,
+        )
+        .await;
+        let session = chat("another route").await;
+        let before = biorouter::crew::setup_jobs().len();
+        let denied = call(
+            &session,
+            public(),
+            PersonTool::Read,
+            "setup_check",
+            json!({"server": connection.ssh_target, "proxy_jump": "other@jump.example.test"}),
+            &["deny"],
+        )
+        .await;
+        assert_eq!(denied.cards.len(), 1, "{:?}", denied.answer);
+        assert_eq!(
+            denied.refusal(),
+            "The person declined. Nothing was changed."
+        );
+        assert!(
+            denied.cards[0]
+                .prompt
+                .starts_with(&format!("Check {} as you", connection.ssh_target)),
+            "{}",
+            denied.cards[0].prompt
+        );
+        assert_eq!(
+            biorouter::crew::setup_jobs().len(),
+            before,
+            "a denied check started a job"
+        );
+        remove(&connection).await;
+    });
+}
+
+/// Joining through a saved connection names the workspace's host on its card, as joining from
+/// an invitation and opening one do.
+#[test]
+#[serial]
+fn joining_a_saved_connection_names_its_host() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000c000c";
+        const HOST: &str = "join-host.example.test";
+        let connection = workspace(
+            WORKSPACE,
+            HOST,
+            false,
+            snapshot("private", Some("ucsf"), false),
+            true,
+        )
+        .await;
+        stage(
+            HOST,
+            &Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES)
+                .answer("workspace.snapshot", snapshot("private", Some("ucsf"), false))
+                .answer(
+                    "account.status",
+                    json!({"result": {"role": "invited", "host_username": "alice", "expired": false}}),
+                ),
+        );
+        let session = chat("join host").await;
+        let denied = call(
+            &session,
+            public(),
+            PersonTool::Change,
+            "join",
+            json!({"connection": connection.id}),
+            &["deny"],
+        )
+        .await;
+        assert_eq!(denied.cards.len(), 1, "{:?}", denied.answer);
+        let prompt = &denied.cards[0].prompt;
+        assert!(
+            prompt.starts_with(&format!("Join {}, hosted by @alice, on ", connection.name)),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Workspace key fingerprint:"), "{prompt}");
         remove(&connection).await;
     });
 }

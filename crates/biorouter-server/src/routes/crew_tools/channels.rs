@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use super::places::{
     channel_phrase, crossing, item, names_readable, place, public_safe, resolve, send, yours, Place,
 };
-use super::{said, tool_error, Card, Ctx, Resolved};
+use super::{naming, said, tool_error, Card, ContentScope, Ctx, Resolved};
 use crate::routes::crew::names::SelectorKind;
 
 // ------------------------------------------------------------------------------------- reads
@@ -47,7 +47,10 @@ pub(super) fn channels_list(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         ctx.read_content(|visible, scope| {
             let team = team_text
                 .as_deref()
-                .map(|text| Ctx::resolve(visible, SelectorKind::Team, text))
+                .map(|text| {
+                    Ctx::resolve(visible, SelectorKind::Team, text)
+                        .map_err(|error| naming(error, scope))
+                })
                 .transpose()?;
             let in_team = |channel: &Value| {
                 team.as_ref()
@@ -169,24 +172,27 @@ fn joinable<'a>(ctx: &Ctx, place: &'a Place, team: bool, text: &str) -> Result<&
             })
             .collect()
     };
-    match matches.as_slice() {
-        [only] => Ok(*only),
-        [] => Err(said(
+    match (matches.as_slice(), names_readable(ctx, place)) {
+        ([only], _) => Ok(*only),
+        ([], _) => Err(said(
             Some("unknown_name"),
             format!("No {noun} you can join is named {text}."),
         )),
-        several if names_readable(ctx, place) => Err(said(
-            Some("ambiguous_name"),
-            format!(
-                "More than one {noun} you can join matches {text}: {}. Name its team too, like analysis-lab/methods.",
-                several
-                    .iter()
-                    .map(|item| item["name"].as_str().unwrap_or_default().to_owned())
-                    .collect::<Vec<_>>()
-                    .join("; ")
+        (several, Some(scope)) => Err(naming(
+            said(
+                Some("ambiguous_name"),
+                format!(
+                    "More than one {noun} you can join matches {text}: {}. Name its team too, like analysis-lab/methods.",
+                    several
+                        .iter()
+                        .map(|item| item["name"].as_str().unwrap_or_default().to_owned())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
             ),
+            scope,
         )),
-        _ => Err(said(
+        (_, None) => Err(said(
             Some("ambiguous_name"),
             format!("More than one {noun} you can join matches {text}. Name it exactly, or by its team too."),
         )),
@@ -547,10 +553,21 @@ pub(super) fn channels_delete(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             .flatten()
             .any(|team| team["general_channel_id"].as_str() == Some(channel.id.as_str()));
         if general_of {
-            return Err(said(
-                None,
-                format!("{phrase} belongs to its team. Delete the team instead, with crew__change action teams_delete."),
-            ));
+            // The phrase names the channel's team: only to a call that may be shown names
+            // from this workspace (AO-12), and only as content returns.
+            return Err(match names_readable(ctx, &place) {
+                Some(scope) => naming(
+                    said(
+                        None,
+                        format!("{phrase} belongs to its team. Delete the team instead, with crew__change action teams_delete."),
+                    ),
+                    scope,
+                ),
+                None => said(
+                    None,
+                    "That channel belongs to its team. Delete the team instead, with crew__change action teams_delete.",
+                ),
+            });
         }
         let expected = stored_name(&place, "channels", &channel.id);
         ctx.approve(
@@ -716,19 +733,13 @@ pub(super) fn members_add(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                     }
                 }
                 Err(error) if step > 0 => {
-                    let done: Vec<String> = channels[..step]
-                        .iter()
-                        .map(|channel| channel.label.clone())
-                        .collect();
                     let reason = tool_error(error, ctx.text("connection")).await;
-                    return Err(said(
-                        None,
-                        format!(
-                            "Added {} to {}, then stopped at {}: {reason}",
-                            person.label,
-                            and_list(&done),
-                            channel.label
-                        ),
+                    return Err(stopped_adding(
+                        names_readable(ctx, &place),
+                        &person,
+                        &channels,
+                        step,
+                        &reason,
                     ));
                 }
                 Err(error) => return Err(error),
@@ -736,6 +747,44 @@ pub(super) fn members_add(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         }
         Ok(json!({"added": true, "principal_id": person.id, "added_channels": added}))
     })
+}
+
+/// What a direct add says when `channels[stopped]` refused it after the ones before it were
+/// added. By name only to a call that may be shown names from the workspace (`names`), and
+/// then only as content returns; to any other call, by count, so a resolved person's name or a
+/// channel's name typed as its ID never reaches a model that may not read them (AO-12).
+pub(super) fn stopped_adding(
+    names: Option<&ContentScope>,
+    person: &Resolved,
+    channels: &[Resolved],
+    stopped: usize,
+    reason: &anyhow::Error,
+) -> anyhow::Error {
+    let Some(scope) = names else {
+        return said(
+            None,
+            format!(
+                "Added them to {stopped} of the {} channels, then one was refused: {reason}",
+                channels.len()
+            ),
+        );
+    };
+    let done: Vec<String> = channels[..stopped]
+        .iter()
+        .map(|channel| channel.label.clone())
+        .collect();
+    naming(
+        said(
+            None,
+            format!(
+                "Added {} to {}, then stopped at {}: {reason}",
+                person.label,
+                and_list(&done),
+                channels[stopped].label
+            ),
+        ),
+        scope,
+    )
 }
 
 /// `biorouter crew invites create @bob --team T` or `--channel C`.
@@ -849,24 +898,27 @@ pub(super) fn invites_accept(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                     format!("You have no pending invitation to {text}. List them with crew__read action invites_list."),
                 ))
             }
-            (several, _) if names_readable(ctx, &place) => {
-                return Err(said(
-                    Some("ambiguous_name"),
-                    format!(
-                        "Name the invitation to accept: {}.",
-                        several
-                            .iter()
-                            .map(|invitation| invitation_label(invitation))
-                            .collect::<Vec<_>>()
-                            .join("; ")
+            (several, _) => {
+                return Err(match names_readable(ctx, &place) {
+                    Some(scope) => naming(
+                        said(
+                            Some("ambiguous_name"),
+                            format!(
+                                "Name the invitation to accept: {}.",
+                                several
+                                    .iter()
+                                    .map(|invitation| invitation_label(invitation))
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            ),
+                        ),
+                        scope,
                     ),
-                ))
-            }
-            _ => {
-                return Err(said(
-                    Some("ambiguous_name"),
-                    "You have more than one pending invitation. Name the one to accept.",
-                ))
+                    None => said(
+                        Some("ambiguous_name"),
+                        "You have more than one pending invitation. Name the one to accept.",
+                    ),
+                })
             }
         };
         let id = chosen["id"].as_str().unwrap_or_default().to_owned();

@@ -90,6 +90,11 @@ pub(crate) const CONNECTION_WITHOUT_INSTITUTION: &str = "This connection is Priv
 pub(crate) const INSTITUTIONS_DIFFER: &str = "This connection and its workspace are set to different institutions, so a chat can't read it. Set the connection's institution to the workspace's with privacy_set_personal.";
 /// Said when the chat could not be raised Private, so nothing is returned.
 pub(crate) const RAISE_FAILED: &str = "Biorouter couldn't mark this chat Private, so it returned nothing from the workspace. Try again.";
+/// Said when the connection a call names, or one read again after a card, is not saved here.
+pub(crate) const NO_CONNECTION: &str = "This computer has no saved Crew connection with that ID.";
+/// Said when the person allowed a change and then pressed Stop before it ran.
+pub(crate) const STOPPED_BEFORE_IT_RAN: &str =
+    "Nothing was changed: the chat was stopped before it ran.";
 /// Said for anything a core function refused without a sentence of its own.
 pub(crate) const FAILED: &str =
     "Crew couldn't do that. Try again. If it keeps failing, the Biorouter log has the details.";
@@ -127,7 +132,20 @@ impl CrewToolHost for ChatCrewHost {
         };
         match run(&ctx).await {
             Ok(answer) => Ok(answer),
-            Err(error) => Err(tool_error(error, ctx.named_connection()).await),
+            Err(error) => {
+                // A refusal that names things from a workspace returns them only as a read of
+                // it would: the chat is raised first, and if it can't be, nothing is named.
+                let names_from = error
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<Said>())
+                    .and_then(|said| said.names_from.clone());
+                if let Some(scope) = names_from {
+                    if let Err(failed) = ctx.release(&scope, Value::Null).await {
+                        return Err(tool_error(failed, ctx.named_connection()).await);
+                    }
+                }
+                Err(tool_error(error, ctx.named_connection()).await)
+            }
         }
     }
 }
@@ -141,6 +159,9 @@ impl CrewToolHost for ChatCrewHost {
 pub(crate) struct Said {
     pub(crate) code: Option<&'static str>,
     pub(crate) sentence: String,
+    /// The read whose names the sentence lists, when it lists any ([`naming`]): the chat is
+    /// raised as that read raises it before the refusal returns.
+    pub(crate) names_from: Option<ContentScope>,
 }
 
 impl std::fmt::Display for Said {
@@ -156,7 +177,39 @@ pub(crate) fn said(code: Option<&'static str>, sentence: impl Into<String>) -> a
     anyhow::Error::new(Said {
         code,
         sentence: sentence.into(),
+        names_from: None,
     })
+}
+
+/// `error`, a refusal that lists names from a workspace this call may read under `scope`
+/// (resolver candidates, a channel's team): the chat is raised as a read under `scope` raises
+/// it before the refusal returns (AO-12, "Privacy"), so a name reaches the model only the way
+/// content does. Any other error is returned as it is.
+pub(crate) fn naming(error: anyhow::Error, scope: &ContentScope) -> anyhow::Error {
+    match error.downcast::<Said>() {
+        Ok(mut said) => {
+            said.names_from = Some(scope.clone());
+            anyhow::Error::new(said)
+        }
+        Err(error) => error,
+    }
+}
+
+/// Why a change's card let nothing run, for any outcome but an allow the action may act on:
+/// declined, allowed and then stopped, or never answered.
+pub(crate) fn not_approved(outcome: &UserActionOutcome) -> anyhow::Error {
+    match outcome {
+        UserActionOutcome::Denied { .. } => said(None, "The person declined. Nothing was changed."),
+        // An allow reaches here only when Stop was pressed before the change ran.
+        UserActionOutcome::Approved { .. } => said(None, STOPPED_BEFORE_IT_RAN),
+        other => said(
+            None,
+            format!(
+                "Nothing was changed: the approval {}.",
+                other.refusal_detail()
+            ),
+        ),
+    }
 }
 
 /// The step a refusal's code asks the person to take, when there is one (AO-12, "Signing in
@@ -286,13 +339,42 @@ pub(crate) struct ContentScope {
     pub(crate) protected_channels: BTreeSet<String>,
     /// Every channel is protected: the snapshot did not say which are.
     pub(crate) all_protected: bool,
+    /// For a public call, the channels the snapshot lists that it may be shown: the person's
+    /// own and the public-safe ones they may join ([`listed_channels`]). The workspace says
+    /// which channels are protected only among those, so any other, such as one beyond a list
+    /// cut short, is withheld from a public call.
+    pub(crate) listed_channels: BTreeSet<String>,
 }
 
 impl ContentScope {
-    /// Whether a channel's content may be returned to this call.
+    /// Whether a channel's content may be returned to this call: to a public call, only a
+    /// channel the snapshot lists that is not protected.
     pub(crate) fn channel_allowed(&self, channel_id: &str) -> bool {
-        !self.public_only || (!self.all_protected && !self.protected_channels.contains(channel_id))
+        !self.public_only
+            || (self.unprotected(channel_id) && self.listed_channels.contains(channel_id))
     }
+
+    /// Whether a channel listed in the snapshot is not protected.
+    fn unprotected(&self, channel_id: &str) -> bool {
+        !self.all_protected && !self.protected_channels.contains(channel_id)
+    }
+}
+
+/// The channels `snapshot` lists that a public call may be shown, before the protected ones
+/// are taken out: the person's own, and of those they may join the public-safe ones.
+fn listed_channels(snapshot: &Value) -> BTreeSet<String> {
+    let joinable = snapshot["joinable_channels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|channel| channel["classification"] == "public_safe");
+    snapshot["channels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(joinable)
+        .filter_map(|channel| channel["id"].as_str().map(str::to_owned))
+        .collect()
 }
 
 /// A setup job this host started, and the target it started it on, so `open` can save a
@@ -449,12 +531,7 @@ impl Ctx {
             .map_err(connection_refusal)?;
         let id =
             id.ok_or_else(|| said(Some("crew_connection_required"), "Name the connection."))?;
-        crew.connection(&id).await.map_err(|_| {
-            said(
-                Some(super::crew_authentication::CONNECTION_NOT_FOUND_CODE),
-                "This computer has no saved Crew connection with that ID.",
-            )
-        })
+        saved_connection(&crew, &id).await
     }
 
     /// The person's own snapshot of `connection`'s workspace, as `biorouter crew workspace
@@ -482,8 +559,9 @@ impl Ctx {
     /// One name (`@bob`, `#methods`, `analysis-lab`) resolved in `snapshot` as
     /// `POST /crew/resolve` resolves it: its ID, label and username. An unknown or ambiguous
     /// name is refused with the resolver's own words, which list only what the person can see
-    /// there; a caller must have passed [`Self::content_scope`] for this workspace first, so
-    /// no name from a withheld workspace reaches a refusal.
+    /// there; a caller passes such a refusal on only under a scope that may name things from
+    /// the workspace, through [`naming`], and words its own otherwise, so no name from a
+    /// withheld workspace reaches a refusal and none returns before the chat is raised.
     pub(crate) fn resolve(
         snapshot: &Value,
         kind: super::crew::names::SelectorKind,
@@ -566,6 +644,7 @@ impl Ctx {
                 ));
             }
             scope.public_only = true;
+            scope.listed_channels = listed_channels(snapshot);
             return Ok(scope);
         }
         let institution = |value: Option<&str>| {
@@ -612,18 +691,20 @@ impl Ctx {
     /// The person's consent for this chat to read `connection`'s workspace as them (AO-12,
     /// "Read consent"): already given in this chat, or asked for now on one proof-backed card.
     /// Until it is given, reads answer `crew_read_consent_required`. On a daemon that can never
-    /// show the card (`biorouter serve`), a sentence says so instead of parking one.
+    /// show the card (`biorouter serve`), a sentence says so instead of parking one. Answers
+    /// whether a card was asked and allowed now, after which the caller judges the workspace
+    /// again ([`Self::consented`]): the person may have taken minutes to answer.
     pub(crate) async fn read_consent(
         &self,
         connection: &Connection,
         workspace: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let crew = self.crew()?;
         if crew
             .has_person_read(&self.call.session_id, &connection.id)
             .await
         {
-            return Ok(());
+            return Ok(false);
         }
         if !user_proof_available() {
             return Err(said(
@@ -637,8 +718,9 @@ impl Ctx {
         arguments.insert("workspace".into(), json!(workspace));
         arguments.insert("server".into(), json!(server));
         arguments.insert("connection".into(), json!(connection.name));
+        let session = &self.call.session_id;
         let prompt = format!(
-            "Let this chat read {workspace} as you\nIt can then read what you see in {workspace} on {server}: messages, files, names and the context document, until you take this back with biorouter crew grants revoke. It changes nothing; every change still asks you."
+            "Let this chat read {workspace} as you\nIt can then read what you see in {workspace} on {server}: messages, files, names and the context document, until you take this back with biorouter crew grants revoke {session} --reads. It changes nothing; every change still asks you."
         );
         let outcome = self
             .park(
@@ -654,7 +736,34 @@ impl Ctx {
         self.call.ensure_still_ungranted().await?;
         crew.grant_person_read(&self.call.session_id, &connection.id)
             .await?;
-        Ok(())
+        Ok(true)
+    }
+
+    /// A content read's connection, its snapshot and the read's privacy scope, with the
+    /// person's consent ([`Self::read_consent`]). When the consent card had to be asked, the
+    /// workspace or the connection may have changed while it waited (made Private, a channel
+    /// protected), so both are read again and the scope judged anew: what returns is judged on
+    /// them as they are when it is fetched, and a scope that now refuses refuses the read.
+    pub(crate) async fn consented(
+        &self,
+        connection: Connection,
+    ) -> Result<(Connection, Value, ContentScope)> {
+        let snapshot = self.snapshot(&connection).await?;
+        let scope = self.content_scope(&connection, &snapshot)?;
+        let workspace = Self::workspace_label(&connection, Some(&snapshot));
+        if !self.read_consent(&connection, &workspace).await? {
+            return Ok((connection, snapshot, scope));
+        }
+        self.rescoped(&connection.id).await
+    }
+
+    /// The saved connection `id`, its snapshot and a read's scope, all read again.
+    pub(crate) async fn rescoped(&self, id: &str) -> Result<(Connection, Value, ContentScope)> {
+        let crew = self.crew()?;
+        let connection = saved_connection(&crew, id).await?;
+        let snapshot = self.snapshot(&connection).await?;
+        let scope = self.content_scope(&connection, &snapshot)?;
+        Ok((connection, snapshot, scope))
     }
 
     /// Return `answer`, raising the chat Private first when `scope` says its content is not
@@ -689,16 +798,14 @@ impl Ctx {
 
     /// A content read, whole: the snapshot, the privacy scope, the consent, then `pick` on what
     /// the call may see, and the raise. `pick` gets the snapshot already narrowed to the
-    /// scope ([`public_snapshot`]) and the scope itself.
+    /// scope ([`public_snapshot`]) and the scope itself; a refusal of its own that lists names
+    /// from the snapshot passes through [`naming`].
     pub(crate) async fn read_content(
         &self,
         pick: impl FnOnce(&Value, &ContentScope) -> Result<Value>,
     ) -> Result<Value> {
         let connection = self.connection().await?;
-        let snapshot = self.snapshot(&connection).await?;
-        let scope = self.content_scope(&connection, &snapshot)?;
-        let label = Self::workspace_label(&connection, Some(&snapshot));
-        self.read_consent(&connection, &label).await?;
+        let (_, snapshot, scope) = self.consented(connection).await?;
         let visible = public_snapshot(&snapshot, &scope);
         let answer = pick(&visible, &scope)?;
         self.release(&scope, answer).await
@@ -755,16 +862,7 @@ impl Ctx {
             UserActionOutcome::Approved { .. } if !self.call.cancel.is_cancelled() => {
                 self.call.ensure_still_ungranted().await
             }
-            UserActionOutcome::Denied { .. } => {
-                Err(said(None, "The person declined. Nothing was changed."))
-            }
-            other => Err(said(
-                None,
-                format!(
-                    "Nothing was changed: the approval {}.",
-                    other.refusal_detail()
-                ),
-            )),
+            other => Err(not_approved(&other)),
         }
     }
 
@@ -828,6 +926,16 @@ pub(crate) struct Resolved {
     pub(crate) username: Option<String>,
 }
 
+/// The saved connection `id`, as it is saved now.
+pub(crate) async fn saved_connection(crew: &CrewManager, id: &str) -> Result<Connection> {
+    crew.connection(id).await.map_err(|_| {
+        said(
+            Some(super::crew_authentication::CONNECTION_NOT_FOUND_CODE),
+            NO_CONNECTION,
+        )
+    })
+}
+
 fn connection_refusal(refusal: super::crew::names::ResolveRefusal) -> anyhow::Error {
     use super::crew::names::{Resolution, ResolveRefusal};
     match refusal {
@@ -868,7 +976,8 @@ pub(crate) fn public_snapshot(snapshot: &Value, scope: &ContentScope) -> Value {
     if !scope.public_only {
         return visible;
     }
-    let allowed = |id: &Value| id.as_str().is_some_and(|id| scope.channel_allowed(id));
+    // Entries of the snapshot's own lists: listed by definition, so only protection decides.
+    let allowed = |id: &Value| id.as_str().is_some_and(|id| scope.unprotected(id));
     let mut withheld = Map::new();
     let channels = narrow(&mut visible, "channels", |channel| allowed(&channel["id"]));
     withheld.insert("channels".into(), json!(channels.unwrap_or(0)));

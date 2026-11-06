@@ -2410,6 +2410,24 @@ impl ExtensionManager {
         tools.retain(|tool| {
             !crate::security::knowledge_delete::is_knowledge_delete_tool(tool.name.as_ref())
         });
+        // …and so are the Crew person tools this process can never run (AO-12, SD-8), by the
+        // rule the roster asks (`CrewToolStanding::offers`): with no host installed neither
+        // `crew__read` nor `crew__change` runs, and where no person's proof can be obtained
+        // (`biorouter serve`) no change's card can be allowed, so a script is not handed a
+        // binding that is refused the moment it is called. Only what holds for every chat in
+        // this process is decided here; the chat's own standing (a grant, an app's or a
+        // subagent's session) is still dispatch's to refuse, since this catalogue is not told
+        // which chat it is for.
+        let person_tools = crate::agents::crew_extension::CrewToolStanding {
+            scoped: false,
+            persons_chat: true,
+            host: crate::crew::tool_host::get().is_some(),
+            proof: crate::pending_user_action::user_proof_available(),
+        };
+        tools.retain(|tool| {
+            crate::crew::tool_host::PersonTool::from_name(tool.name.as_ref()).is_none()
+                || person_tools.offers(tool.name.as_ref())
+        });
         Ok(tools)
     }
 
@@ -5472,6 +5490,134 @@ mod tests {
 
         assert!(!tool_names.iter().any(|n| n.starts_with("ext_a__")));
         assert!(tool_names.iter().any(|n| n.starts_with("ext_b__")));
+    }
+
+    /// The `crew` extension's tools as it lists them: the two person tools and a grant's two
+    /// worker tools.
+    struct CrewToolsClient;
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for CrewToolsClient {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+
+        async fn list_resources(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            let schema = Arc::new(serde_json::json!({}).as_object().unwrap().clone());
+            Ok(ListToolsResult {
+                tools: ["read", "change", "connections", "request"]
+                    .into_iter()
+                    .map(|name| Tool::new(name.to_string(), name.to_string(), schema.clone()))
+                    .collect(),
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_prompts(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// AO-12 and SD-8: Code Execution's import catalogue offers a script no Crew person tool
+    /// this process can never run. With no host installed neither is listed; with one, both
+    /// are while a person's proof can be obtained, as the roster lists them. A grant's worker
+    /// tools are the chat's own standing, which dispatch decides, so they stay either way.
+    #[tokio::test]
+    async fn the_import_catalogue_offers_no_person_tool_this_process_cannot_run() {
+        struct NoHost;
+        #[async_trait::async_trait]
+        impl crate::crew::tool_host::CrewToolHost for NoHost {
+            async fn call(
+                &self,
+                _call: crate::crew::tool_host::PersonToolCall,
+            ) -> anyhow::Result<Value> {
+                anyhow::bail!("not in this test")
+            }
+        }
+        let temp_dir = tempfile::tempdir().unwrap();
+        let extension_manager =
+            ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        extension_manager
+            .add_mock_extension("crew".to_string(), Arc::new(CrewToolsClient))
+            .await;
+        async fn catalogue(manager: &ExtensionManager) -> Vec<String> {
+            let mut names: Vec<String> = manager
+                .get_prefixed_tools_excluding("code_execution", None)
+                .await
+                .unwrap()
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            names.sort();
+            names
+        }
+
+        let without_host =
+            crate::crew::tool_host::with_host_for_tests(None, catalogue(&extension_manager)).await;
+        assert_eq!(without_host, ["crew__connections", "crew__request"]);
+
+        let with_host = crate::crew::tool_host::with_host_for_tests(
+            Some(Arc::new(NoHost)),
+            catalogue(&extension_manager),
+        )
+        .await;
+        assert_eq!(
+            with_host,
+            [
+                "crew__change",
+                "crew__connections",
+                "crew__read",
+                "crew__request"
+            ]
+        );
     }
 
     #[tokio::test]

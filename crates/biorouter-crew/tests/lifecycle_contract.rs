@@ -151,7 +151,8 @@ fn the_id_finds_the_folder_whatever_it_is_called() {
     assert_ne!(lab, other);
 }
 
-/// Nothing is stopped when there is no installed program to start in its place.
+/// Nothing is stopped when there is no installed program to start in its place, and the code
+/// says so: `start_failed` is kept for a broker that was stopped and did not start again.
 #[test]
 fn a_restart_without_an_installed_program_leaves_the_workspace_alone() {
     let (home, store) = home("restart-no-program");
@@ -162,9 +163,44 @@ fn a_restart_without_an_installed_program_leaves_the_workspace_alone() {
         &id,
         Duration::from_secs(1),
     ));
-    assert!(error.starts_with("start_failed: "), "{error}");
+    assert!(error.starts_with("program_missing: "), "{error}");
     assert!(error.contains(".local/bin/biorouter-crew"), "{error}");
+    assert!(
+        error.ends_with("so the running broker was left as it is."),
+        "{error}"
+    );
     assert_eq!(paths(&store.join("lab")), before);
+}
+
+/// A copy of a workspace's folder kept in the store holds the same ID. Neither `start` nor
+/// `restart` guesses which folder is the workspace: both refuse, naming the folders, and
+/// nothing is started, stopped or written.
+#[test]
+fn an_id_two_folders_hold_is_refused_and_nothing_is_touched() {
+    let (home, store) = home("by-id-copies");
+    let id = stored(&store, "lab");
+    copy_tree(&store.join("lab"), &store.join("backup-lab"));
+    let before = paths(home.path());
+    let start = refusal(Broker::start_by_id(home.path(), &id));
+    let restart = refusal(Broker::restart_by_id_with(
+        home.path(),
+        &id,
+        Duration::from_secs(1),
+    ));
+    for error in [&start, &restart] {
+        assert!(error.starts_with("identity_conflict: "), "{error}");
+        assert!(error.contains(&id), "{error}");
+        assert!(error.contains("(backup-lab, lab)"), "{error}");
+    }
+    assert_eq!(paths(home.path()), before, "nothing was started or written");
+    // With the copy moved out, the ID finds its folder again.
+    fs::remove_dir_all(store.join("backup-lab")).unwrap();
+    let error = refusal(Broker::restart_by_id_with(
+        home.path(),
+        &id,
+        Duration::from_secs(1),
+    ));
+    assert!(error.starts_with("program_missing: "), "{error}");
 }
 
 /// The program setup installs, as a script that says why it cannot start and exits.

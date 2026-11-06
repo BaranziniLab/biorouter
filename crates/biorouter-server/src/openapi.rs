@@ -658,6 +658,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::crew_authentication::FromInvitationResponse,
         super::routes::crew_authentication::InvitationSummary,
         super::routes::crew_authentication::JoinClaimed,
+        super::routes::crew_authentication::AcknowledgeDevicesRequest,
         biorouter::crew::ClusterMode,
         biorouter::crew::authentication::InvitationAdvanced,
         biorouter::crew::authentication::InvitationPreview,

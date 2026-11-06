@@ -949,9 +949,30 @@ pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
     let connection = current.info.connection_id.clone();
     drop(current);
     let manager = manager()?;
-    let _lifecycle = manager.connection_guard(&connection).await?;
-    // A replaced or cancelled session must not clean up a later connection.
-    session(id, controller)?;
+    let (handed_off, connected_now) = {
+        let _lifecycle = manager.connection_guard(&connection).await?;
+        // A replaced or cancelled session must not clean up a later connection.
+        let adopted_before = session(id, controller)?.adopted.load(Ordering::Acquire);
+        let handed_off = handoff_connection(&manager, &connection, id, controller).await;
+        // A session adopted earlier answers `true` again without connecting anything.
+        let connected_now = !adopted_before && matches!(handed_off, Ok(true));
+        (handed_off, connected_now)
+    };
+    // A sign-in is a person's connect: the account's devices are read once, outside the
+    // lifecycle guard, as Connect reads them (AO-10).
+    if connected_now {
+        manager.observe_devices_at_connect(&connection).await;
+    }
+    handed_off
+}
+/// [`handoff`] of a connection's sign-in, under the connection's lifecycle guard: connect over
+/// the adopted master, or clean up after a failure.
+async fn handoff_connection(
+    manager: &CrewManager,
+    connection: &str,
+    id: &str,
+    controller: &str,
+) -> Result<bool> {
     match handoff_locked(id, controller).await {
         Ok(adopted) => Ok(adopted),
         Err(cause) => {
@@ -961,7 +982,7 @@ pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
                     session.adopted.store(true, Ordering::Release);
                 }
             } else {
-                let _ = manager.disconnect_locked(&connection).await;
+                let _ = manager.disconnect_locked(connection).await;
             }
             let mut registry = manager.registry.lock().await;
             if let Some(entry) = registry.connections.iter_mut().find(|c| c.id == connection) {
@@ -969,7 +990,7 @@ pub async fn handoff(id: &str, controller: &str) -> Result<bool> {
             }
             drop(registry);
             if keep_master {
-                manager.note_error_code(&connection, &cause, HANDOFF_FAILED_MESSAGE);
+                manager.note_error_code(connection, &cause, HANDOFF_FAILED_MESSAGE);
             }
             let failure = HandoffFailed::wrap(cause);
             if let Some(typed) = failure.downcast_ref::<HandoffFailed>() {
@@ -3118,6 +3139,17 @@ impl CrewManager {
         let Some(pending) = pending else {
             let state = if self.is_member(id).await? {
                 JoinState::Joined
+            } else if self.signs_in_as_host(id, &c) {
+                // The host opening its own workspace from a new computer, on a server whose
+                // Crew predates accounts (AO-9's compatibility rows): no invitation can come,
+                // so waiting for one would never end. The account is told apart by the UID the
+                // membership read's own challenge was answered with, for words only.
+                let workspace = self.workspace_label(id).await;
+                return Err(super::CrewRefusal::account_unsupported_for_host(
+                    &workspace,
+                    &c.ssh_target,
+                )
+                .into());
             } else {
                 JoinState::NotInvited
             };
@@ -3630,6 +3662,14 @@ impl CrewManager {
             tracing::warn!(connection = id, %error, "Couldn't delete a staged Crew device key after using it");
         }
         Ok(())
+    }
+
+    /// Whether the account `c`'s bridge signs in as is the workspace's host: the UID the server
+    /// last answered an `auth.challenge` for this connection with ([`Self::answered_account_uid`])
+    /// equals the host UID `hello` pinned. Unsigned, so for words only (AO-9), and asks nothing:
+    /// the caller reads it right after a signed request on the connection.
+    fn signs_in_as_host(&self, id: &str, c: &Connection) -> bool {
+        self.answered_account_uid(id) == Some(u64::from(c.owner_uid))
     }
 
     /// `crew_account_unsupported` for the connection `id` (AO-9), worded by role. To the host
@@ -6388,6 +6428,177 @@ fi
             "lab's server runs an older Crew. Update it with biorouter crew setup --server bob@hpc.example.org."
         );
         assert!(logged(&root, "auth.account").is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// AO-9's compatibility rows, for the host: opening its own workspace from a new computer,
+    /// on a server whose running Crew predates accounts, is told to update Crew there, from the
+    /// join status and from a join alike, instead of waiting for an invitation that cannot
+    /// come. The words come from the UID the membership read's own challenge was answered
+    /// with: nothing more is asked. Anyone else nobody invited still waits for an invitation,
+    /// and a host whose device is a member has joined.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_host_on_an_older_server_is_told_to_update_it_and_never_waits() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        // The fake bridge's account has UID 10001; this workspace's host is 1000.
+        let (root, _env, stranger, manager) = joiner_fixture(
+            "account-host-older-server",
+            "7c7c7c7c-7c7c-47c7-87c7-7c7c7c7c7c7c",
+            &[JOIN_BY_NAME_CAPABILITY],
+        )
+        .await;
+        let nobody_invited = || {
+            write_fake_ssh(
+                &root,
+                &[],
+                &[
+                    ("enrollment.pending", json!({"result": {"invited": false}})),
+                    ("profile.suggest", unknown_device()),
+                ],
+            );
+        };
+        nobody_invited();
+        attach_transport(&manager, &stranger).await;
+        let status = manager.join_status(&stranger.id).await.unwrap();
+        assert_eq!(status.status, JoinState::NotInvited);
+
+        // The host: this workspace's host UID is the account's.
+        let (mut hosted, device) = joiner("7d7d7d7d-7d7d-47d7-87d7-7d7d7d7d7d7d");
+        hosted.owner_uid = 10001;
+        let host_root = root.join("host-profile");
+        fs::create_dir_all(&host_root).unwrap();
+        let host =
+            connected_manager(&host_root, &hosted, &device, &[JOIN_BY_NAME_CAPABILITY]).await;
+        let sentence = "lab's server runs an older Crew. Update it with biorouter crew setup --server bob@hpc.example.org.";
+        for error in [
+            host.join_status(&hosted.id).await.unwrap_err(),
+            host.join(&hosted.id).await.unwrap_err(),
+        ] {
+            assert_eq!(refusal_code(&error), Some("crew_account_unsupported"));
+            assert_eq!(error.to_string(), sentence);
+            let refusal = crate::crew::CrewRefusal::find(&error).unwrap();
+            assert!(refusal.fields().contains(&("is_host", json!(true))));
+        }
+        assert!(logged(&root, "auth.join").is_empty());
+        assert!(logged(&root, "auth.account").is_empty());
+        assert_eq!(
+            logged(&root, "auth.challenge").len(),
+            logged(&root, "profile.suggest").len(),
+            "no challenge beyond the membership read's own"
+        );
+
+        // A host whose device the workspace knows has joined, as before.
+        write_fake_ssh(
+            &root,
+            &[],
+            &[
+                ("enrollment.pending", json!({"result": {"invited": false}})),
+                ("profile.suggest", json!({"result": {}})),
+            ],
+        );
+        attach_transport(&host, &hosted).await;
+        let status = host.join_status(&hosted.id).await.unwrap();
+        assert_eq!(status.status, JoinState::Joined);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A rejoin the workspace accepted whose saved identity was never updated (the registry
+    /// could not be saved after the device key was, or the process ended between the two
+    /// writes) reads as a computer the workspace does not recognize, with the code that offers
+    /// Add this computer again, before anything is sent. That rejoin sends the same staged key,
+    /// which the workspace answers as a retry, and finishes the commit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_rejoin_left_half_saved_offers_add_this_computer_again_which_finishes_it() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let (root, _env, connection, manager) = joiner_fixture(
+            "account-rejoin-half-saved",
+            "7f7f7f7f-7f7f-47f7-87f7-7f7f7f7f7f7f",
+            &[ACCOUNT_IDENTITY_CAPABILITY],
+        )
+        .await;
+        let id = connection.id.clone();
+        // What `commit_staged_device` leaves when its registry save fails: the staged key is
+        // the device key, the staged credential and its record are still there, and the
+        // connection still names the device the key replaced.
+        let staged = SigningKey::from_bytes(&[9; 32]);
+        let public = staged.verifying_key().to_bytes();
+        let pending = crate::crew::PendingRekey {
+            public_key: hex(&public),
+            device_id: hex(&Sha256::digest(public)),
+            replaces_device_id: connection.device_id.clone(),
+        };
+        manager
+            .write_credential(&format!("device:{id}"), &hex(&staged.to_bytes()))
+            .unwrap();
+        manager
+            .write_credential(&staged_device_credential(&id), &hex(&staged.to_bytes()))
+            .unwrap();
+        let record = pending.clone();
+        manager
+            .update_registry(|r| {
+                r.pending_rekeys.insert(id.clone(), record);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let sentence = "lab no longer recognizes this computer. Choose Add this computer again while you are still a member.";
+        for error in [
+            manager.device_code(&id).await.unwrap_err(),
+            manager
+                .human_request(&id, "profile.suggest", json!({}), None)
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(refusal_code(&error), Some("crew_device_not_recognized"));
+            assert_eq!(error.to_string(), sentence);
+        }
+        assert!(logged(&root, "profile.suggest").is_empty());
+
+        write_fake_ssh(
+            &root,
+            &[],
+            &[(
+                "auth.account",
+                json!({"result": {"role": "member", "admitted": "device",
+                    "principal": {"username": "bob", "display_name": "bob"}}}),
+            )],
+        );
+        attach_transport(&manager, &connection).await;
+        manager.rejoin(&id).await.unwrap();
+        let sent = logged(&root, "auth.account");
+        assert_eq!(sent.len(), 1);
+        let frame: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(frame["params"]["public_key"], json!(pending.public_key));
+        assert_eq!(
+            frame["params"]["replaces_device_id"],
+            json!(connection.device_id)
+        );
+        assert_eq!(frame["auth"]["device_id"], json!(pending.device_id));
+        let after = manager.connection(&id).await.unwrap();
+        assert_eq!(
+            (after.public_key.as_str(), after.device_id.as_str()),
+            (pending.public_key.as_str(), pending.device_id.as_str())
+        );
+        assert!(manager.registry.lock().await.pending_rekeys.is_empty());
+        assert!(manager
+            .read_credential(&staged_device_credential(&id))
+            .is_err());
+        assert!(manager.device_code(&id).await.is_ok());
+
+        // A key that matches neither the connection nor a staged rejoin stays refused as it was.
+        let stray = SigningKey::from_bytes(&[11; 32]);
+        manager
+            .write_credential(&format!("device:{id}"), &hex(&stray.to_bytes()))
+            .unwrap();
+        let error = manager.device_code(&id).await.unwrap_err();
+        assert_eq!(refusal_code(&error), None);
+        assert!(error.to_string().contains("does not match"), "{error}");
         let _ = fs::remove_dir_all(root);
     }
 

@@ -7,7 +7,7 @@ use biorouter::crew::{ClusterMode, Connection};
 use biorouter::privacy::{ProviderTier, SessionClassification};
 use serde_json::{json, Value};
 
-use super::{idempotency_key, public_snapshot, said, ContentScope, Ctx, Resolved, Said};
+use super::{idempotency_key, naming, public_snapshot, said, ContentScope, Ctx, Resolved, Said};
 use crate::routes::crew::names::SelectorKind;
 
 /// A change's workspace, read before its card is parked: the connection, the person's own
@@ -17,6 +17,9 @@ pub(super) struct Place {
     pub(super) snapshot: Value,
     pub(super) workspace: String,
     pub(super) server: String,
+    /// The scope a refusal may name things from this workspace under ([`naming_scope`]);
+    /// `None` when it may name nothing from it.
+    pub(super) names: Option<ContentScope>,
 }
 
 pub(super) async fn place(ctx: &Ctx) -> Result<Place> {
@@ -24,12 +27,32 @@ pub(super) async fn place(ctx: &Ctx) -> Result<Place> {
     let snapshot = ctx.snapshot(&connection).await?;
     let workspace = Ctx::workspace_label(&connection, Some(&snapshot));
     let server = Ctx::server_label(&connection).await;
+    let names = naming_scope(ctx, &connection, &snapshot).await;
     Ok(Place {
         connection,
         snapshot,
         workspace,
         server,
+        names,
     })
+}
+
+/// The scope under which this call may be shown names from `connection`'s workspace outside a
+/// read of it (a resolver's candidates, a channel's team, a grant's labels): the call may read
+/// the workspace ([`Ctx::content_scope`]) and the person let this chat read it as them, as a
+/// read itself needs (AO-12, "Read consent"). `None` otherwise, and then nothing from the
+/// workspace is named.
+pub(super) async fn naming_scope(
+    ctx: &Ctx,
+    connection: &Connection,
+    snapshot: &Value,
+) -> Option<ContentScope> {
+    let scope = ctx.content_scope(connection, snapshot).ok()?;
+    ctx.crew()
+        .ok()?
+        .has_person_read(&ctx.call.session_id, &connection.id)
+        .await
+        .then_some(scope)
 }
 
 /// Send step `step` of one of the person's changes to the workspace, with its own idempotency
@@ -48,14 +71,16 @@ pub(super) async fn send(
         .await
 }
 
-/// Whether a refusal may list names from `place`'s workspace: only to a private model that
-/// passes the workspace's privacy checks. A public model, even one allowed the public-safe
-/// part, is never shown a protected channel's name in a list of candidates.
-pub(super) fn names_readable(ctx: &Ctx, place: &Place) -> bool {
-    ctx.call.capability.tier() != ProviderTier::Public
-        && ctx
-            .content_scope(&place.connection, &place.snapshot)
-            .is_ok()
+/// The scope a refusal may list names from `place`'s workspace under: only a private model's
+/// that may read the workspace and was let read it ([`Place::names`]). A public model, even one
+/// allowed the public-safe part, is never shown a protected channel's name in a list of
+/// candidates. A refusal that lists names goes through [`naming`] with it, so the chat is
+/// raised as a read would raise it.
+pub(super) fn names_readable<'a>(ctx: &Ctx, place: &'a Place) -> Option<&'a ContentScope> {
+    if ctx.call.capability.tier() == ProviderTier::Public {
+        return None;
+    }
+    place.names.as_ref()
 }
 
 /// A name resolved in `place`'s workspace for a change. To a call that may not be shown names
@@ -68,8 +93,8 @@ pub(super) fn resolve(
     text: &str,
 ) -> Result<Resolved> {
     Ctx::resolve(&place.snapshot, kind, text).map_err(|error| {
-        if names_readable(ctx, place) {
-            return error;
+        if let Some(scope) = names_readable(ctx, place) {
+            return naming(error, scope);
         }
         let code = error
             .downcast_ref::<Said>()
@@ -205,10 +230,9 @@ pub(super) struct Reading {
 
 pub(super) async fn reading(ctx: &Ctx) -> Result<Reading> {
     let connection = ctx.connection().await?;
-    let snapshot = ctx.snapshot(&connection).await?;
-    let scope = ctx.content_scope(&connection, &snapshot)?;
+    // Judged again after a consent card that had to wait for the person ([`Ctx::consented`]).
+    let (connection, snapshot, scope) = ctx.consented(connection).await?;
     let workspace = Ctx::workspace_label(&connection, Some(&snapshot));
-    ctx.read_consent(&connection, &workspace).await?;
     // `public_snapshot` also lowers `totals` by what it withheld, so the resolver reads the
     // narrowed view as whole exactly when the person's own list was whole.
     let visible = public_snapshot(&snapshot, &scope);
@@ -222,9 +246,12 @@ pub(super) async fn reading(ctx: &Ctx) -> Result<Reading> {
 
 impl Reading {
     /// One of the person's channels the call may read, by name or ID, resolved in what the call
-    /// may see, so an unknown name lists nothing it may not see.
+    /// may see, so an unknown name lists nothing it may not see, and what it lists returns only
+    /// as content does ([`naming`]). To a public call, a channel given by an ID the snapshot does
+    /// not list is unknown: whether it is protected can't be read.
     pub(super) fn channel(&self, text: &str) -> Result<Resolved> {
-        let channel = Ctx::resolve(&self.visible, SelectorKind::Channel, text)?;
+        let channel = Ctx::resolve(&self.visible, SelectorKind::Channel, text)
+            .map_err(|error| naming(error, &self.scope))?;
         if !self.scope.channel_allowed(&channel.id) {
             return Err(said(
                 Some("unknown_name"),

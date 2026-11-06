@@ -6,6 +6,7 @@
 use super::catalog::{self, Kind, ACTIONS};
 use super::*;
 use biorouter::crew::tool_host::{PersonTool, CHANGE_ACTIONS, READ_ACTIONS};
+use biorouter::crew::SetupWorkspace;
 
 /// Every action of both tools has exactly one entry, in the tools' own order, so a call can
 /// never name an action the host does not know.
@@ -280,4 +281,302 @@ fn the_context_diff_keeps_common_lines_as_context() {
         ]
     );
     assert_eq!((added, removed), (2, 1));
+}
+
+/// A public call reads only channels the snapshot lists that are not protected: a channel
+/// given by an ID beyond a list cut short is withheld, since whether it is protected can't be
+/// read there. A private call's reach is the person's.
+#[test]
+fn a_public_call_reads_only_channels_the_snapshot_lists() {
+    let snapshot = json!({
+        "channels": [{"id": "c1", "name": "general"}, {"id": "c2", "name": "patients"}],
+        "joinable_channels": [
+            {"id": "c3", "classification": "public_safe"},
+            {"id": "c4", "classification": "restricted"},
+        ],
+    });
+    let scope = ContentScope {
+        public_only: true,
+        protected_channels: ["c2".to_owned()].into(),
+        listed_channels: listed_channels(&snapshot),
+        ..ContentScope::default()
+    };
+    assert!(scope.channel_allowed("c1"));
+    assert!(!scope.channel_allowed("c2"), "protected");
+    assert!(
+        scope.channel_allowed("c3"),
+        "a public-safe channel they may join"
+    );
+    assert!(
+        !scope.channel_allowed("c4"),
+        "a restricted one they may join"
+    );
+    assert!(
+        !scope.channel_allowed("c9"),
+        "a channel the snapshot does not list"
+    );
+    assert!(ContentScope::default().channel_allowed("c9"));
+}
+
+/// An approval allowed and then stopped says the chat was stopped, never that the approval was
+/// allowed and nothing changed.
+#[test]
+fn an_allowed_approval_that_was_stopped_says_so() {
+    use biorouter::permission::Permission;
+    let stopped = not_approved(&UserActionOutcome::Approved {
+        permission: Permission::AllowOnce,
+    });
+    assert_eq!(stopped.to_string(), STOPPED_BEFORE_IT_RAN);
+    assert!(!stopped.to_string().contains("was allowed"));
+    let declined = not_approved(&UserActionOutcome::Denied {
+        permission: Permission::DenyOnce,
+    });
+    assert_eq!(
+        declined.to_string(),
+        "The person declined. Nothing was changed."
+    );
+    let expired = not_approved(&UserActionOutcome::TimedOut);
+    assert!(
+        expired
+            .to_string()
+            .starts_with("Nothing was changed: the approval expired"),
+        "{expired}"
+    );
+}
+
+/// A refusal that names things from a workspace carries the read's scope, so the host raises
+/// the chat before it returns; one that names nothing carries none.
+#[test]
+fn a_refusal_that_names_things_carries_the_read_s_scope() {
+    let scope = ContentScope {
+        raise: true,
+        institutions: ["ucsf".to_owned()].into(),
+        ..ContentScope::default()
+    };
+    let named = naming(said(Some("unknown_name"), "Did you mean #methods?"), &scope);
+    let found = named.downcast_ref::<Said>().expect("still a Said");
+    assert_eq!(found.code, Some("unknown_name"));
+    assert!(found.names_from.as_ref().is_some_and(|scope| scope.raise));
+    assert!(said(None, "plain")
+        .downcast_ref::<Said>()
+        .is_some_and(|said| said.names_from.is_none()));
+    // Anything else is passed on as it is.
+    let other = naming(anyhow::anyhow!("broker"), &scope);
+    assert!(other.downcast_ref::<Said>().is_none());
+}
+
+fn resolved(id: &str, label: &str) -> Resolved {
+    Resolved {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        username: None,
+    }
+}
+
+/// A direct add refused part way names the person and channels only to a call that may be
+/// shown names from the workspace, and then only as content; any other call is told how many.
+#[test]
+fn a_direct_add_refused_part_way_names_nothing_to_a_call_that_may_not_read() {
+    let person = resolved("p-bob", "Bob Lee (@bob)");
+    let channels = [
+        resolved("c-1", "#methods"),
+        resolved("c-2", "#patients"),
+        resolved("c-3", "#cohort"),
+    ];
+    let reason = anyhow::anyhow!("You can't add people to that channel.");
+    let withheld = super::channels::stopped_adding(None, &person, &channels, 1, &reason);
+    let text = withheld.to_string();
+    assert_eq!(
+        text,
+        "Added them to 1 of the 3 channels, then one was refused: You can't add people to that channel."
+    );
+    for name in ["Bob", "bob", "#methods", "#patients"] {
+        assert!(!text.contains(name), "{name}: {text}");
+    }
+    let scope = ContentScope {
+        raise: true,
+        ..ContentScope::default()
+    };
+    let named = super::channels::stopped_adding(Some(&scope), &person, &channels, 1, &reason);
+    assert!(
+        named
+            .to_string()
+            .starts_with("Added Bob Lee (@bob) to #methods, then stopped at #patients"),
+        "{named}"
+    );
+    assert!(named
+        .downcast_ref::<Said>()
+        .is_some_and(|said| said.names_from.is_some()));
+}
+
+/// A grant's labels go to a call only under a scope that may name things from the workspace;
+/// to a public call, only for channels it may read.
+#[test]
+fn a_grant_s_labels_follow_what_the_call_may_read() {
+    let labels = json!({
+        "you": "Alice Chen (@alice)",
+        "workspace": "lab",
+        "destination": {"channel_id": "c1", "label": "#general", "team": "Analysis Lab"},
+        "sources": [
+            {"channel_id": "c1", "label": "#general"},
+            {"channel_id": "c2", "label": "#patients"},
+        ],
+    });
+    assert_eq!(super::workspace::grant_labels(&labels, None), Value::Null);
+    let private = ContentScope {
+        raise: true,
+        ..ContentScope::default()
+    };
+    assert_eq!(
+        super::workspace::grant_labels(&labels, Some(&private)),
+        labels
+    );
+    let public = ContentScope {
+        public_only: true,
+        protected_channels: ["c2".to_owned()].into(),
+        listed_channels: ["c1".to_owned(), "c2".to_owned()].into(),
+        ..ContentScope::default()
+    };
+    let kept = super::workspace::grant_labels(&labels, Some(&public));
+    assert_eq!(
+        kept["sources"],
+        json!([{"channel_id": "c1", "label": "#general"}])
+    );
+    assert!(!kept.to_string().contains("patients"), "{kept}");
+    let protected_destination = ContentScope {
+        protected_channels: ["c1".to_owned()].into(),
+        ..public
+    };
+    assert_eq!(
+        super::workspace::grant_labels(&labels, Some(&protected_destination)),
+        Value::Null
+    );
+}
+
+fn listed_workspace(name: &str, version: &str, binary_current: bool) -> SetupWorkspace {
+    use biorouter::crew::{SetupThisComputer, SetupWorkspaceRole, SetupWorkspaceState};
+    SetupWorkspace {
+        workspace_id: format!("{name}-id"),
+        name: Some(name.to_owned()),
+        role: SetupWorkspaceRole::Host,
+        host_uid: Some(1000),
+        host_username: Some("alice".to_owned()),
+        socket_path: None,
+        workspace_key_fingerprint: Some("AAAA BBBB CCCC DDDD".to_owned()),
+        mode: Some(ClusterMode::Private),
+        institution_id: Some("ucsf".to_owned()),
+        state: SetupWorkspaceState::Running,
+        version: Some(version.to_owned()),
+        binary_current: Some(binary_current),
+        state_dir: Some("~/.local/share/biorouter-crew/lab".to_owned()),
+        found_by: None,
+        invitation: Some("brcrew1:fixture".to_owned()),
+        error: None,
+        others_connected: Some(0),
+        saved_connection_id: None,
+        this_computer: SetupThisComputer::NotSaved,
+    }
+}
+
+/// A setup's card names the workspaces it will restart, and who is connected, even when the
+/// listing it reads was taken before the setup installs this app's program: then every hosted
+/// workspace running an older Crew is one it restarts, though the listing found each on the
+/// program installed at the time.
+#[test]
+fn a_setup_card_names_what_it_restarts_after_installing() {
+    use super::setup::planned_restarts;
+    let mut lab = listed_workspace("lab", "1.94.0", true);
+    lab.others_connected = Some(3);
+    let quiet = listed_workspace("quiet", "1.94.0", true);
+    let mut unknown = listed_workspace("old-lab", "1.93.0", true);
+    unknown.others_connected = None;
+    let newer = listed_workspace("newer", "1.96.0", true);
+    let listing = [lab, quiet, unknown, newer];
+
+    let lines = planned_restarts(Some(&listing), Some("1.95.0"), None, &[]);
+    assert_eq!(
+        lines,
+        [
+            "It leaves lab running the older Crew: 3 other people are connected.",
+            "It restarts quiet, which nobody else is connected to.",
+            "It leaves old-lab running the older Crew: its server can't say who is connected.",
+        ],
+        "{lines:?}"
+    );
+    let forced = planned_restarts(Some(&listing), Some("1.95.0"), Some(true), &[]);
+    assert!(
+        forced[0].starts_with("It restarts lab: 3 other people are connected"),
+        "{forced:?}"
+    );
+    assert!(
+        forced[2].starts_with("It restarts old-lab. Its server can't say who is connected"),
+        "{forced:?}"
+    );
+    // Nothing installed: only what the listing found on an older program.
+    assert!(planned_restarts(Some(&listing), None, None, &[]).is_empty());
+    for line in lines.iter().chain(&forced) {
+        assert!(!line.contains(['\u{2014}', '\u{2013}']), "{line}");
+    }
+}
+
+fn saved(name: &str, ssh_target: &str) -> Connection {
+    serde_json::from_value(json!({
+        "id": format!("{name}-id"), "name": name, "ssh_target": ssh_target, "port": null,
+        "identity_file": null, "proxy_jump": null, "socket_path": "/tmp/crew.sock",
+        "owner_uid": 1000, "workspace_id": "lab-id", "workspace_public_key": "00",
+        "cluster_connection_id": "cluster", "mode": "private", "policy_epoch": 1,
+        "status": "connected", "last_error": null, "device_id": "11", "public_key": "22",
+    }))
+    .expect("a saved connection")
+}
+
+/// Opening a workspace this computer already saved under another login says so on its card
+/// and names that connection, rather than naming the checked login and its role.
+#[test]
+fn an_open_through_another_login_s_connection_says_so() {
+    use super::setup::open_card;
+    let entry = listed_workspace("lab", "1.95.0", true);
+    let fresh = open_card(&entry, "wanjun@leo", None, None);
+    assert!(fresh
+        .lines
+        .iter()
+        .any(|line| line == "You join it as its host."));
+
+    let other = saved("lab-gb", "gbellucci@leo");
+    let reused = open_card(&entry, "wanjun@leo", Some("full"), Some(&other));
+    assert!(
+        reused.lines.iter().any(|line| line
+            == "It uses the connection already saved on this computer as lab-gb, which signs in as gbellucci@leo, not wanjun@leo."),
+        "{:?}",
+        reused.lines
+    );
+    assert!(
+        !reused
+            .lines
+            .iter()
+            .any(|line| line.starts_with("You join it as")),
+        "{:?}",
+        reused.lines
+    );
+    assert_eq!(reused.payload["connection"], "lab-gb");
+    assert!(
+        reused
+            .lines
+            .iter()
+            .any(|line| line.starts_with("Agents get full access")
+                && line.contains("on gbellucci@leo")),
+        "agent access is set on the connection the open uses: {:?}",
+        reused.lines
+    );
+
+    let same = saved("lab", "wanjun@leo");
+    let kept = open_card(&entry, "wanjun@leo", None, Some(&same));
+    assert!(kept
+        .lines
+        .iter()
+        .any(|line| line == "It uses the connection already saved for it on this computer."));
+    assert!(kept
+        .lines
+        .iter()
+        .any(|line| line == "You join it as its host."));
 }

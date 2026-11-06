@@ -2689,7 +2689,7 @@
             }
           },
           "409": {
-            "description": "`crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and does not answer about accounts; nothing was sent (`workspace`, and `host` with `server_login` for the host or `host_username` for anyone else)",
+            "description": "`crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and does not answer about accounts; nothing was sent (`workspace`, and `is_host`: `true` with `server_login` for the host, `false` with `host_username` for anyone else)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2992,8 +2992,8 @@
         "tags": [
           "Crew"
         ],
-        "summary": "The person has seen the new devices of their account on this connection (account ownership",
-        "description": "AO-10): stop reporting them in `new_devices`, on every Biorouter process of this profile.\nAsks the workspace nothing, so it works while the connection is down.",
+        "summary": "The person has seen these new devices of their account on this connection (account",
+        "description": "ownership AO-10): stop reporting them in `new_devices`, on every Biorouter process of this\nprofile. Only the devices the request names are acknowledged, so a device added between\nshowing the notice and acknowledging it is still reported. Asks the workspace nothing, so it\nworks while the connection is down.",
         "operationId": "crew_connection_acknowledge_devices",
         "parameters": [
           {
@@ -3006,12 +3006,22 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcknowledgeDevicesRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "204": {
-            "description": "Acknowledged: the connection's `new_devices` is empty until the workspace lists another device this computer has not seen. Acknowledging when nothing is new changes nothing"
+            "description": "Acknowledged: the devices `fingerprints` names leave the connection's `new_devices`, and any other device stays there until it is acknowledged in turn. A fingerprint `new_devices` does not list changes nothing, so acknowledging again is safe"
           },
           "400": {
-            "description": "`crew_request_refused` with a fixed sentence: the acknowledgement could not be saved",
+            "description": "`crew_request_invalid` for a body that is not JSON, or `crew_request_refused` with a fixed sentence: the acknowledgement could not be saved",
             "content": {
               "application/json": {
                 "schema": {
@@ -3042,6 +3052,36 @@
           },
           "409": {
             "description": "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
             "content": {
               "application/json": {
                 "schema": {
@@ -3386,7 +3426,7 @@
             }
           },
           "409": {
-            "description": "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict`, `crew_join_removed` (the workspace removed this account: \"You were removed from {workspace}. Ask a member to invite you again.\") or `crew_join_refused`. Joining by account also answers `crew_account_unsupported` (the server's Crew is older; `host`, `server_login` or `host_username` choose the words) and `crew_device_key_missing` (this computer no longer holds its key; add it again with `POST /crew/connections/{id}/rejoin`)",
+            "description": "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict`, `crew_join_removed` (the workspace removed this account: \"You were removed from {workspace}. Ask a member to invite you again.\") or `crew_join_refused`. Joining by account also answers `crew_account_unsupported` (the server's Crew is older; `is_host` chooses the words: `true` with `server_login` for the host, `false` with `host_username` for anyone else) and `crew_device_key_missing` (this computer no longer holds its key; add it again with `POST /crew/connections/{id}/rejoin`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3439,7 +3479,7 @@
         },
         "responses": {
           "200": {
-            "description": "Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, and `clear` asks the client to drop what the observation showed",
+            "description": "Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, or `crew_device_key_missing` (this computer no longer holds its key) or `crew_device_not_recognized` (the workspace no longer recognizes this computer while it still lists the account), which adding this computer again with `POST /crew/connections/{id}/rejoin` repairs. `clear` asks the client to drop what the observation showed",
             "content": {
               "application/x-ndjson": {
                 "schema": {
@@ -3592,7 +3632,7 @@
             }
           },
           "409": {
-            "description": "`crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and cannot add a computer by account; nothing was sent (`workspace`, and `host` with `server_login` for the host or `host_username` for anyone else). A typed refusal of the workspace, which keeps the old key: `crew_join_removed` (the workspace removed this account), `crew_join_not_invited` (this account is not a member), `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`",
+            "description": "`crew_not_connected`: connect first. `crew_account_unsupported`: the server's Crew is older and cannot add a computer by account; nothing was sent (`workspace`, and `is_host`: `true` with `server_login` for the host, `false` with `host_username` for anyone else). A typed refusal of the workspace, which keeps the old key: `crew_join_removed` (the workspace removed this account), `crew_join_not_invited` (this account is not a member), `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`",
             "content": {
               "application/json": {
                 "schema": {
@@ -5250,7 +5290,7 @@
         },
         "responses": {
           "200": {
-            "description": "The job, started (or the one already under way for the same server and intent): poll `GET /crew/setup/{job_id}`. A `check` job runs check, sign-in, `workspaces`, done; an `install` job adds install and `restart`; a `host` job adds the start and, with `finish`, `save`, `join` and `configure`. An installed Crew older than this app's is replaced unless `keep_older`; `replace_existing` only covers one that does not run or name its version, and a newer one is never replaced. `restart_workspaces` (`true`: restart even with others connected; `false`: only report in `outcome.outdated`) and `start_workspaces` (stopped hosted workspaces, by ID) choose what the `restart` stage does. A `host` job whose account already hosts a workspace of that name on the server fails with `crew_host_name_in_use` before anything is started or restarted",
+            "description": "The job, started (or the one already under way for the same server, intent and choices): poll `GET /crew/setup/{job_id}`. A `check` job runs check, sign-in, `workspaces`, done; an `install` job adds install and `restart`; a `host` job adds the start and, with `finish`, `save`, `join` and `configure`. An installed Crew older than this app's is replaced unless `keep_older`; `replace_existing` only covers one that does not run or name its version, and a newer one is never replaced. `restart_workspaces` (`true`: restart every outdated hosted workspace even with others connected; `false`: only report them in `outcome.outdated`), `restart_workspace_ids` (hosted workspaces, by ID, the person agreed to restart even with others connected, whatever `restart_workspaces` says) and `start_workspaces` (stopped hosted workspaces, by ID) choose what the `restart` stage does. A `host` job whose account already hosts a workspace of that name on the server fails with `crew_host_name_in_use` before anything is started or restarted",
             "content": {
               "application/json": {
                 "schema": {
@@ -5260,7 +5300,7 @@
             }
           },
           "400": {
-            "description": "`crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, a `member` job without a saved connection, a `host` or `member` job on a `server` target, `start_workspaces` on a `check` job or an ID that is not a workspace ID, or `finish` without `mode`, on a job that does not host, or for a Private workspace without `institution_id`; `crew_request_refused` for an SSH configuration the preflight refuses",
+            "description": "`crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, a `member` job without a saved connection, a `host` or `member` job on a `server` target, `start_workspaces` or `restart_workspace_ids` on a `check` job, or an ID in either that is not a workspace ID, or `finish` without `mode`, on a job that does not host, or for a Private workspace without `institution_id`; `crew_request_refused` for an SSH configuration the preflight refuses",
             "content": {
               "application/json": {
                 "schema": {
@@ -5290,7 +5330,7 @@
             }
           },
           "409": {
-            "description": "`crew_host_setup_unknown`: no pending host setup (or, for a `server` target, prepared device) with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: another kind of job is under way for this server, or too many jobs at once",
+            "description": "`crew_host_setup_unknown`: no pending host setup (or, for a `server` target, prepared device) with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: a job with another intent, route or choices is under way for this server, or too many jobs at once",
             "content": {
               "application/json": {
                 "schema": {
@@ -11063,6 +11103,23 @@
             "nullable": true
           }
         }
+      },
+      "AcknowledgeDevicesRequest": {
+        "type": "object",
+        "description": "`POST /crew/connections/{id}/devices/acknowledge`: the new devices the person was shown.",
+        "required": [
+          "fingerprints"
+        ],
+        "properties": {
+          "fingerprints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The fingerprints of the devices the person was shown, as `new_devices` gave them\n(`3F2A 9C1E 77B0 D4E1`). Only these stop being reported: a device the workspace listed\nafter they were shown stays in `new_devices` until it is acknowledged in turn."
+          }
+        },
+        "additionalProperties": false
       },
       "ActionRequired": {
         "type": "object",
@@ -23169,9 +23226,16 @@
             "type": "boolean",
             "description": "Replace a Crew program in the account that does not run or does not name its version\n(`crew_install_incompatible`). The one replaced stays as `biorouter-crew.previous`. An\nolder program is replaced without it (see `keep_older`), and a newer one never is."
           },
+          "restart_workspace_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hosted workspaces to restart on the installed program even when others are connected,\nor the server did not say that nobody is, by workspace ID (design AO-8): the person's\nconsent for exactly these, whatever `restart_workspaces` says. Each one named that runs\nan older program than the one installed is restarted, unless it keeps its state outside\n`~/.local/share/biorouter-crew`; one that runs the installed program, or is not running,\nis left as it is. A check changes nothing, so it takes none."
+          },
           "restart_workspaces": {
             "type": "boolean",
-            "description": "Whether to restart the hosted workspaces still running an older program than the one\ninstalled (design AO-8). Absent restarts only those nobody else is connected to; `true`\nrestarts them even with others connected, which ends what those members had in flight;\n`false` only reports them in `outcome.outdated`.",
+            "description": "Whether to restart the hosted workspaces still running an older program than the one\ninstalled (design AO-8). Absent restarts only those nobody else is connected to; `true`\nrestarts all of them even with others connected, which ends what those members had in\nflight; `false` only reports them in `outcome.outdated`. It covers every workspace not\nnamed in `restart_workspace_ids`.",
             "nullable": true
           },
           "start_workspaces": {

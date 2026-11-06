@@ -335,6 +335,12 @@ mod account {
         let mut fresh = Member::new(host_uid(), key(54));
         let (code, message) = refused(ws.account(&mut fresh, json!({})));
         assert_eq!(code, "identity_conflict", "{message}");
+        // The host cannot remove @bob from a device the rename has already locked out, so the
+        // sentence says to rename the account back first.
+        assert_eq!(
+            message,
+            "identity_conflict: Crew can't follow this account's new name, @Bob, because @bob already uses it in baranzini-lab. Rename the account back to @alice on the server and remove @bob from baranzini-lab before renaming it again."
+        );
         assert_eq!(ws.journal_records(), records);
     }
 
@@ -366,6 +372,82 @@ mod account {
             .filter(|d| d["this_device"] == true)
             .collect();
         assert_eq!(mine[0]["fingerprint"], json!(fingerprint(&desktop.key)));
+    }
+
+    /// AO-2 step 4: an add-device join is selected and removed. A member reaches the member
+    /// branch first, so the record that adds the device by account ends the join and any
+    /// legacy enrollment for the UID; nothing is left waiting for the member's code.
+    #[test]
+    fn a_member_adding_a_device_by_account_ends_an_add_device_join() {
+        let mut ws = named("account-member-add-device-join");
+        let desktop = ws.enroll(BOB, "bob", 11);
+        let invited = ws.host_ok(
+            "enrollment.invite",
+            json!({"username": "bob", "add_device": true}),
+        );
+        assert_eq!(invited["add_device"], true);
+        ws.host_ok(
+            "enrollment.invite",
+            json!({"uid": BOB, "public_key": key_hex(&key(65)),
+                   "existing_principal_id": desktop.principal_id}),
+        );
+        let state = ws.broker.state_json();
+        assert!(state["pending_joins"].get(BOB.to_string()).is_some());
+        assert!(!state["enrollments"].as_object().unwrap().is_empty());
+
+        let mut laptop = Member::new(BOB, key(66));
+        let answer = ws.account_ok(&mut laptop, json!({}));
+        assert_eq!(answer["admitted"], "device");
+        assert_eq!(answer["principal"]["id"], json!(desktop.principal_id));
+        let state = ws.broker.state_json();
+        assert!(
+            state
+                .get("pending_joins")
+                .is_none_or(|joins| joins.get(BOB.to_string()).is_none()),
+            "{state:#}"
+        );
+        assert!(
+            state
+                .get("enrollments")
+                .is_none_or(|enrollments| enrollments.as_object().unwrap().is_empty()),
+            "{state:#}"
+        );
+        let record = ws.last_record();
+        assert_eq!(record["actor"], json!(desktop.principal_id));
+        assert_eq!(record["operation"], "auth.account");
+        // The host no longer sees @bob waiting to add a device.
+        assert_eq!(ws.host_snapshot()["pending_joins"], json!([]));
+
+        // With the join gone, a retry of the same key commits nothing again.
+        let records = ws.journal_records();
+        ws.account_ok(&mut laptop, json!({}));
+        assert_eq!(ws.journal_records(), records);
+    }
+
+    /// A join made after the device was already added is still ended by the next sign-in from
+    /// that computer, which otherwise commits nothing.
+    #[test]
+    fn a_retried_key_still_ends_a_later_add_device_join() {
+        let mut ws = named("account-member-retry-join");
+        let desktop = ws.enroll(BOB, "bob", 11);
+        let mut laptop = Member::new(BOB, key(67));
+        ws.account_ok(&mut laptop, json!({}));
+        ws.host_ok(
+            "enrollment.invite",
+            json!({"username": "bob", "add_device": true}),
+        );
+        let records = ws.journal_records();
+        let again = ws.account_ok(&mut laptop, json!({}));
+        assert_eq!(again["admitted"], "device");
+        assert_eq!(ws.journal_records(), records + 1);
+        let state = ws.broker.state_json();
+        assert!(
+            state
+                .get("pending_joins")
+                .is_none_or(|joins| joins.get(BOB.to_string()).is_none()),
+            "{state:#}"
+        );
+        assert_eq!(ws.last_record()["actor"], json!(desktop.principal_id));
     }
 
     /// The same key sent again is a retry: the same principal, `admitted: "device"`, and no
