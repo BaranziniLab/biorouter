@@ -32,7 +32,14 @@ export const generalCopy = {
   /** Folded in from the old one-row Workspace section. The daemon reads the switch. */
   announceOnly: 'Never open tabs automatically',
   announceOnlyHelp:
-    'When an agent opens a chat or starts a subagent, you get a notification instead of a tab. Subagents still run; open them from History.',
+    'When an agent opens a chat or starts a subagent, you get a notification instead of a tab. Subagents still run; open them from the chat summary.',
+  /**
+   * The daemon reads it (`BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS`); off by default. "Never open
+   * tabs automatically" wins on the daemon, so the help names it instead of disabling the switch.
+   */
+  openSubagentTabs: 'Open subagent tabs automatically',
+  openSubagentTabsHelp:
+    'When off, subagents run in the background and the chat summary lists them. When on, each opens in its own tab, unless “Never open tabs automatically” is on.',
   showCosts: 'Show costs',
   showCostsHelp: 'Model prices and usage costs, in chats and on this page.',
 } as const;

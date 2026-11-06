@@ -5,6 +5,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
@@ -23,15 +24,22 @@ export type ComposerTrigger = '@' | '/';
  *
  * A chosen mention or command runs after the menu has closed and declined to
  * hand focus back to the `+`, so the caret lands in the text, not on a button.
+ *
+ * In a chat that exists, a last row opens the chat's decision monitors: the
+ * summary's Decisions section, the other way in, is drawn only once a chat has a
+ * decision call or a monitor, so without this row nothing could add the first.
  */
 export function ComposerPlusMenu({
   onAttachFiles,
   onInsertTrigger,
+  onOpenDecisionMonitors,
 }: {
   /** The files picked in the system dialog, handled exactly like a drop. */
   onAttachFiles: (files: FileList) => void;
   /** Put `@` or `/` at the caret and open the matching menu. */
   onInsertTrigger: (trigger: ComposerTrigger) => void;
+  /** Open the chat's Monitors dialog. Absent (and the row with it) before the chat exists. */
+  onOpenDecisionMonitors?: () => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chosenTrigger = useRef<ComposerTrigger | null>(null);
@@ -106,6 +114,17 @@ export function ComposerPlusMenu({
             {COPY.commands}
             <DropdownMenuShortcut>{COPY.commandsHint}</DropdownMenuShortcut>
           </DropdownMenuItem>
+          {onOpenDecisionMonitors ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                data-testid="composer-plus-decision-monitors"
+                onSelect={onOpenDecisionMonitors}
+              >
+                {COPY.decisionMonitors}
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </>

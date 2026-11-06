@@ -11,7 +11,8 @@ import { FooterCardGroup } from './FooterCard';
 /**
  * The composer's footer line (spec 3.7): the working folder on the left, the
  * context ring and the chat's cost on the right, in 12px muted ink under the
- * card. On Home (`sessionId === null`) only the folder shows.
+ * card. On Home (`sessionId === null`) only the folder shows, and a decision
+ * chat (`showContext={false}`) shows no ring.
  *
  * Each of the three items opens a card in ONE format and with ONE behaviour
  * (`FooterCard`, `useFooterCard`): hover, Tab or a click opens it, a click
@@ -46,6 +47,14 @@ export interface ComposerFooterProps {
   /** A chat restarts its agent to change folder; these bracket that restart. */
   onRestartStart?: () => void;
   onRestartEnd?: () => void;
+  /**
+   * Whether the chat has a context ring (default true). A chat whose model is a
+   * decision model has none: each message is asked on its own, so there is no
+   * running context to measure and nothing to compact. The cost stays.
+   */
+  showContext?: boolean;
+  /** Price the chat's usage ledger only (a decision chat): see `CostTracker`. */
+  costFromLedgerOnly?: boolean;
   /** Context used so far, and the model's window. */
   totalTokens?: number;
   tokenLimit: number;
@@ -83,6 +92,8 @@ export function ComposerFooter({
   onWorkingDirChange,
   onRestartStart,
   onRestartEnd,
+  showContext = true,
+  costFromLedgerOnly = false,
   totalTokens,
   tokenLimit,
   isTokenLimitLoaded,
@@ -114,22 +125,25 @@ export function ComposerFooter({
         </div>
         {inChat && (
           <div className="br-footline__side" data-side="end">
-            <ContextWindowIndicator
-              sessionId={sessionId}
-              totalTokens={totalTokens}
-              tokenLimit={tokenLimit}
-              isTokenLimitLoaded={isTokenLimitLoaded}
-              boundModel={boundModel}
-              tokenLimitModel={tokenLimitModel}
-              showRemainingPercent
-              onCompact={onCompact}
-            />
+            {showContext && (
+              <ContextWindowIndicator
+                sessionId={sessionId}
+                totalTokens={totalTokens}
+                tokenLimit={tokenLimit}
+                isTokenLimitLoaded={isTokenLimitLoaded}
+                boundModel={boundModel}
+                tokenLimitModel={tokenLimitModel}
+                showRemainingPercent
+                onCompact={onCompact}
+              />
+            )}
             {COST_TRACKING_ENABLED && (
               <CostTracker
                 inputTokens={inputTokens}
                 outputTokens={outputTokens}
                 sessionCosts={sessionCosts}
                 modelCostRows={modelCostRows}
+                ledgerOnly={costFromLedgerOnly}
               />
             )}
           </div>

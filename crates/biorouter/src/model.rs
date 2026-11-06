@@ -226,6 +226,16 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("qwen3.6", 262_144),
         ("qwen3.6-27b", 262_144),
         ("qwen3.6-35b-a3b", 262_144),
+        // ── Decision models (`providers/decision/catalog.rs`) ──
+        // Baseten's three: 16,384 each (`BASETEN_DECISION_CONTEXT`, Baseten's
+        // docs). A decision chat sends one note per call, so the gauge must show
+        // this window, not the 128k default.
+        ("joey-1", 16_384),
+        ("elephant-1", 16_384),
+        ("mammoth-1", 16_384),
+        // The Ollama decision provider's default model; the window it assumes
+        // for a tag that states none (`OLLAMA_DEFAULT_DECISION_CONTEXT`).
+        ("tev1:0.8b", 8_192),
         // ── DeepSeek ──
         ("deepseek-chat", 1_000_000),
         // DeepSeek-V4.1-Flash (2026-09-10); DeepSeek tells users to call it

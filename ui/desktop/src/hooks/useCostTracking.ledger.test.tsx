@@ -144,8 +144,8 @@ describe('useCostTracking: a live chat’s counters refresh the ledger', () => {
   /** The row a live chat holds: read on open, never refreshed by a turn. */
   const openedRow = chat('a', 0);
   const renderLive = (counters = live(0, 0)) =>
-    renderHook(({ liveCounters }) => useCostTracking({ session: openedRow, liveCounters }), {
-      initialProps: { liveCounters: counters },
+    renderHook(({ liveTokens }) => useCostTracking({ session: openedRow, liveTokens }), {
+      initialProps: { liveTokens: counters },
     });
 
   it('re-reads after each turn, with the chat’s row unchanged and nothing remounted', async () => {
@@ -156,14 +156,14 @@ describe('useCostTracking: a live chat’s counters refresh the ledger', () => {
 
     // The first reply recorded its usage.
     mocks.getSessionUsage.mockResolvedValueOnce({ data: { models: [usageRow] } });
-    rerender({ liveCounters: live(100, 20) });
+    rerender({ liveTokens: live(100, 20) });
     await waitFor(() => expect(result.current.modelRows).toHaveLength(1));
     expect(mocks.getSessionUsage).toHaveBeenCalledTimes(2);
 
     // A second turn: the new answer replaces the old one, which held meanwhile.
     const usage = deferred();
     mocks.getSessionUsage.mockReturnValue(usage.promise);
-    rerender({ liveCounters: live(300, 60) });
+    rerender({ liveTokens: live(300, 60) });
     await waitFor(() => expect(mocks.getSessionUsage).toHaveBeenCalledTimes(3));
     expect(result.current.ledgerSettled).toBe(true);
     expect(result.current.modelRows[0]).toMatchObject({ inputTokens: 100, turns: 2 });
@@ -187,11 +187,11 @@ describe('useCostTracking: a live chat’s counters refresh the ledger', () => {
     await waitFor(() => expect(result.current.ledgerSettled).toBe(true));
 
     // Every streamed token's frame carries a new copy of the same counters.
-    for (let token = 0; token < 50; token += 1) rerender({ liveCounters: live(100, 20) });
+    for (let token = 0; token < 50; token += 1) rerender({ liveTokens: live(100, 20) });
     await act(async () => {});
     expect(mocks.getSessionUsage).toHaveBeenCalledTimes(1);
 
-    rerender({ liveCounters: live(150, 40) });
+    rerender({ liveTokens: live(150, 40) });
     await waitFor(() => expect(mocks.getSessionUsage).toHaveBeenCalledTimes(2));
   });
 
@@ -203,9 +203,9 @@ describe('useCostTracking: a live chat’s counters refresh the ledger', () => {
     const older = deferred();
     const newer = deferred();
     mocks.getSessionUsage.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
-    rerender({ liveCounters: live(100, 20) });
+    rerender({ liveTokens: live(100, 20) });
     await waitFor(() => expect(mocks.getSessionUsage).toHaveBeenCalledTimes(2));
-    rerender({ liveCounters: live(300, 60) });
+    rerender({ liveTokens: live(300, 60) });
     await waitFor(() => expect(mocks.getSessionUsage).toHaveBeenCalledTimes(3));
 
     await act(async () => newer.answer([usageRow, { ...usageRow, modelId: 'other' }]));
@@ -222,14 +222,14 @@ describe('useCostTracking: a live chat’s counters refresh the ledger', () => {
     await waitFor(() => expect(result.current.modelRows).toHaveLength(1));
 
     mocks.getSessionUsage.mockRejectedValueOnce(new Error('offline'));
-    rerender({ liveCounters: live(150, 40) });
+    rerender({ liveTokens: live(150, 40) });
     await waitFor(() => expect(mocks.getSessionUsage).toHaveBeenCalledTimes(2));
     await act(async () => {});
     expect(result.current.modelRows).toHaveLength(1);
 
     // A refused read (`throwOnError: false`) is a failure too, not an empty ledger.
     mocks.getSessionUsage.mockResolvedValueOnce({ data: undefined, error: { message: 'no' } });
-    rerender({ liveCounters: live(200, 50) });
+    rerender({ liveTokens: live(200, 50) });
     await waitFor(() => expect(mocks.getSessionUsage).toHaveBeenCalledTimes(3));
     await act(async () => {});
     expect(result.current.ledgerSettled).toBe(true);
@@ -239,5 +239,28 @@ describe('useCostTracking: a live chat’s counters refresh the ledger', () => {
     const first = renderHook(() => useCostTracking({ session: chat('b') }));
     await waitFor(() => expect(first.result.current.ledgerSettled).toBe(true));
     expect(first.result.current.modelRows).toEqual([]);
+  });
+});
+
+describe('useCostTracking: the live counters ask the ledger again', () => {
+  it("reloads when a reply moves the stream's counters before the chat record changes", async () => {
+    // A decision chat's reply moves the stream's counters, not the chat record
+    // the hook was handed; the ledger kept its empty first answer and the
+    // footer priced the new tokens at the app's default model.
+    mocks.getSessionUsage
+      .mockResolvedValueOnce({ data: { models: [] } })
+      .mockResolvedValueOnce({ data: { models: [usageRow] } });
+    const session = chat('a', 0);
+    const { result, rerender } = renderHook(
+      ({ live }: { live: number }) =>
+        useCostTracking({ session, liveTokens: { accumulatedTotalTokens: live } }),
+      { initialProps: { live: 0 } }
+    );
+    await waitFor(() => expect(result.current.ledgerSettled).toBe(true));
+    expect(result.current.modelRows).toEqual([]);
+
+    rerender({ live: 144 });
+    await waitFor(() => expect(mocks.getSessionUsage).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.modelRows).toHaveLength(1));
   });
 });

@@ -65,6 +65,38 @@ describe('cost estimates', () => {
     expect(formatCostEstimate(estimate)).toBe('$1.25');
   });
 
+  it('keeps the total exact beside a local decision model, which has no meter', () => {
+    const chat = {
+      provider: 'anthropic',
+      model: 'claude-fable-5',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 120,
+      turns: 1,
+      totalCost: 0.42,
+      costIsPartial: false,
+    };
+    const local = {
+      ...chat,
+      provider: 'ollama_decision',
+      model: 'tev1:0.8b',
+      turns: 20,
+      totalCost: null,
+    };
+    const estimate = aggregateModelRowsCost([chat, local]);
+    expect(estimate).toEqual({ amount: 0.42, partial: false });
+    expect(formatCostEstimate(estimate)).toBe('$0.42');
+
+    // A local decision model alone costs $0, not an unknown amount.
+    expect(aggregateModelRowsCost([local])).toEqual({ amount: 0, partial: false });
+
+    // Baseten bills its decision models, so an unpriced one leaves it partial.
+    const hosted = { ...local, provider: 'baseten_decision', model: 'decision-models/x' };
+    expect(aggregateModelRowsCost([chat, hosted])).toEqual({ amount: 0.42, partial: true });
+  });
+
   it('keeps an entirely unknown total unavailable', () => {
     const unknownBucket: ModelCostRow = {
       provider: undefined,

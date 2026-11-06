@@ -143,7 +143,7 @@ function LiveChat({ sessionId }: { sessionId: string }) {
   const { session, tokenState } = useChatStream({ sessionId, onStreamFinish });
   const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({
     session,
-    liveCounters: tokenState,
+    liveTokens: tokenState,
   });
   const footer = footerCostInputs({
     ready: !!session && ledgerSettled,

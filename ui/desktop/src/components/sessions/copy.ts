@@ -52,6 +52,38 @@ export const BILLED_TOKENS_EXACT =
   'Billed tokens across every turn, including recorded cache usage.';
 export const EXTENSIONS_STAT = 'Extensions';
 
+/** A top-level row's decision-model call count (never child rows: owner rule A1.5). */
+export const decisionCallsLabel = (count: number) =>
+  `${count.toLocaleString()} decision-model ${count === 1 ? 'call' : 'calls'}`;
+export const DECISION_CALLS_HINT = "Listed one by one in the chat's decision history.";
+
+/* A parent's runs, nested under it. The glyph says what a run is (V1-R2-10), so none of these
+   name the kind. */
+
+/** The group's accessible name: which chat these runs belong to. */
+export const runsFromLabel = (name: string) => `Runs from ${name}`;
+/** The row that unfolds the runs past the newest three. */
+export const showMoreRuns = (count: number) => `Show ${count} more ${count === 1 ? 'run' : 'runs'}`;
+/** The run-status cell's spoken label: "Run status: Completed". */
+export const RUN_STATUS_STAT = 'Run status';
+/** The word a run's status glyph stands for, spoken and in its tooltip. */
+export const RUN_STATUS_WORDS = {
+  completed: 'Completed',
+  blocked: 'Blocked',
+  failed: 'Failed',
+  incomplete: 'Incomplete',
+} as const;
+/** What each end means, after the word in the tooltip when the run left no line of its own. */
+export const RUN_STATUS_DETAILS = {
+  completed: 'Finished and reported a result.',
+  blocked: 'Stopped to ask a question before acting.',
+  failed: 'Ended in an error.',
+  incomplete: 'Ended before it finished.',
+} as const;
+/** The model chip's tooltip: which provider served the model. */
+export const runModelTooltip = (model: string, provider: string | null | undefined) =>
+  provider ? `${model} on ${provider}` : model;
+
 /* -------------------------------------------------------------- Row actions */
 
 export const MAKE_CHAT_PUBLIC = 'Make this chat public';

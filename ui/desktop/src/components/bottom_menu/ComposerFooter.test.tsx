@@ -201,6 +201,18 @@ describe('ComposerFooter (spec 3.7)', () => {
     });
   });
 
+  // A decision chat has no running context: each message is asked on its own,
+  // so a ring (and its Compact button) would measure and compact nothing.
+  it('draws no context ring when showContext is false, and keeps the cost', async () => {
+    render(<ComposerFooter {...BASE} showContext={false} />);
+    await settle();
+    expect(screen.queryByTestId('context-window-indicator')).toBeNull();
+    expect(screen.queryByText(FOOTER_COPY.contextLeft(28))).toBeNull();
+    expect(screen.queryByText('0%')).toBeNull();
+    expect(screen.getByTestId('chat-cost')).toHaveTextContent('$0.42');
+    expect(screen.getByText('Desktop')).toBeInTheDocument();
+  });
+
   it('hides a $0.00 cost inside a chat', async () => {
     render(
       <ComposerFooter {...BASE} modelCostRows={[{ ...BASE.modelCostRows![0], totalCost: 0 }]} />

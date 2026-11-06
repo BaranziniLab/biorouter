@@ -20,6 +20,7 @@ function artifactIdentity(artifact: ArtifactSource): string {
   if (artifact.kind === 'html') {
     return `html:${artifact.title}:${artifact.html.length}:${artifact.html.slice(0, 80)}`;
   }
+  if (artifact.kind === 'decisions') return `decisions:${artifact.sessionId}`;
   return `resource:${artifact.resource.uri}:${artifact.resource.mimeType ?? ''}`;
 }
 

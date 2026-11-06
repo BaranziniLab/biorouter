@@ -27,11 +27,15 @@
 //! * **Handles are process-local and in-memory.** The child *session* is
 //!   persisted as always, but a handle does not survive a restart; a poll after
 //!   a restart reports the handle as unknown rather than inventing a result.
-//! * **Off by default.** `BIOROUTER_SUBAGENT_BACKGROUND` (config or env) gates
-//!   the `subagent` tool's `background` parameter, so the default tool surface
-//!   and the default blocking behaviour are unchanged. Since BR-71 decision 23
-//!   it gates *only* that parameter: collecting a detached child is done with
-//!   the workspace tools, which are advertised on their own terms.
+//!   What does survive is the child's durable outcome record, written when the
+//!   delegated run ends (`subagent_roster::record_outcome`), which is how the
+//!   side panel, `biorouter session subagents` and the terminal UI still show a
+//!   finished child's status after a restart.
+//! * **Every parent-facing spawn runs here.** `handle_subagent_tool` and the
+//!   coding-agent bridge both force `background` on (the supervised default),
+//!   so every delegated child is a handle in this registry.
+//!   `BIOROUTER_SUBAGENT_BACKGROUND` (config or env, default off) now matters
+//!   only to a caller that does not force it, which in this tree is a test.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -554,6 +558,17 @@ impl BackgroundSubagent {
 
     pub fn is_running(&self) -> bool {
         self.result.borrow().is_none()
+    }
+
+    /// Registered but not yet running its delegated turn: still waiting for a
+    /// concurrency permit, or its runtime profile is not installed yet. The
+    /// subagent roster shows this as "queued".
+    pub fn is_initializing(&self) -> bool {
+        let state = self
+            .initial_run
+            .lock()
+            .expect("subagent initial-run state poisoned");
+        !state.finished && !state.runtime_ready
     }
 
     /// The finished result, if the run has ended.

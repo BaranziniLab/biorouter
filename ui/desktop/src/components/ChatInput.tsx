@@ -87,6 +87,8 @@ import {
   subscribeQueuedOfferReturns,
   type QueuedMessage,
 } from '../utils/composerQueues';
+import { DecisionComposer, DECISION_CHAT_PLACEHOLDER } from './decisions/DecisionComposer';
+import { isDecisionProvider } from './decisions/decisionWire';
 
 /**
  * Queued messages as a draft, for a composer with no chat to keep a queue for.
@@ -398,6 +400,13 @@ interface ChatInputProps {
    * the left pane, the caret and the focused pane were the right pane's chat.
    */
   autoFocus?: boolean;
+  /**
+   * Open this chat's decision monitors (BaseChat's `MonitorsDialog`), from the
+   * `+` menu. The menu offers it only while the composer names a chat
+   * (`sessionId`): a chat that has not been created has nothing to attach a
+   * monitor to.
+   */
+  onOpenDecisionMonitors?: () => void;
 }
 
 export default function ChatInput({
@@ -433,6 +442,7 @@ export default function ChatInput({
   supportsVisionOverride,
   supportedInputMimeTypesOverride,
   autoFocus = true,
+  onOpenDecisionMonitors,
 }: ChatInputProps) {
   const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
@@ -1464,6 +1474,12 @@ export default function ChatInput({
         settle(0, false);
         return;
       }
+      // A decision chat draws no context ring (each message is asked on its
+      // own), so there is no window to look up.
+      if (isDecisionProvider(provider)) {
+        settle(0, false);
+        return;
+      }
 
       // Local models (Llama Server, Ollama): the real context window is a
       // property of the running server, not of the model's name. Prefer it over
@@ -2261,6 +2277,13 @@ export default function ChatInput({
     modelConfigStatus,
     effectiveModel?.provider ?? currentProvider
   );
+
+  /**
+   * The chat's main model is a decision model: there is no LLM loop, each message
+   * is the state the chat's question is asked of, and the reply is one decision
+   * card. The question is set above the text box (`DecisionComposer`).
+   */
+  const decisionChat = isDecisionProvider(effectiveModel?.provider ?? currentProvider);
 
   // Why a chat whose Crew access lapsed cannot send, for Enter to say instead of doing nothing.
   const crewHold = useCrewComposerHold(sessionId);
@@ -3067,6 +3090,8 @@ export default function ChatInput({
           onRemoveFile={handleRemoveDroppedFile}
         />
 
+        {decisionChat && <DecisionComposer sessionId={sessionId} />}
+
         <form id={composerFormId} onSubmit={onFormSubmit} className="relative flex min-w-0">
           {/* The field grows with what is typed by itself (`field-sizing:
               content` in `composer.css`, as Crew's fields do), up to ten lines,
@@ -3087,9 +3112,11 @@ export default function ChatInput({
               crewHold?.placeholder ??
               (composerCommand
                 ? CHIP_COMMANDS[composerCommand].placeholder
-                : (followUp ?? (messagesLength ?? 0) > 0)
-                  ? COMPOSER_COPY.placeholderFollowUp
-                  : COMPOSER_COPY.placeholderEmpty)
+                : decisionChat
+                  ? DECISION_CHAT_PLACEHOLDER
+                  : (followUp ?? (messagesLength ?? 0) > 0)
+                    ? COMPOSER_COPY.placeholderFollowUp
+                    : COMPOSER_COPY.placeholderEmpty)
             }
             // The prose after the command chip: every textarea offset is a
             // prose offset (`utils/composerCommand.ts`).
@@ -3112,7 +3139,11 @@ export default function ChatInput({
         {/* THE CONTROLS ROW: what to add, what the agent can reach, which model
             answers, and Send at the end, Crew's `.crew-compose-controls`. */}
         <div data-testid="chat-input-toolbar" className="br-composer-controls">
-          <ComposerPlusMenu onAttachFiles={attachPickedFiles} onInsertTrigger={insertTrigger} />
+          <ComposerPlusMenu
+            onAttachFiles={attachPickedFiles}
+            onInsertTrigger={insertTrigger}
+            onOpenDecisionMonitors={sessionId ? onOpenDecisionMonitors : undefined}
+          />
           <ToolsChip
             sessionId={sessionId}
             privacyTier={sessionPrivacyTier}
@@ -3139,7 +3170,7 @@ export default function ChatInput({
 
       {/* THE FOOTER LINE: the folder on the left, the context ring and the cost
           on the right, 12px muted, on the canvas under the card. The ring and
-          the cost show only inside a chat. */}
+          the cost show only inside a chat, and a decision chat has no ring. */}
       <ComposerFooter
         className="br-composer-footer"
         composerRef={composerCardRef}
@@ -3152,6 +3183,8 @@ export default function ChatInput({
         }}
         onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
         onRestartEnd={() => setChatState?.(ChatState.Idle)}
+        showContext={!decisionChat}
+        costFromLedgerOnly={decisionChat}
         totalTokens={totalTokens}
         tokenLimit={tokenLimit}
         isTokenLimitLoaded={isTokenLimitLoaded}

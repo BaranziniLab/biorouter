@@ -975,6 +975,14 @@ struct CodingAgentBridgePolicy {
 // ⚠ Adding a tool here is a security-posture change. This one is a `list` whose
 // results the tier gate already filters; do not read it as licence to add a
 // WRITE without the same scrutiny.
+//
+// `workspace_orchestrate` is a WRITE, and it passed that scrutiny because of
+// what it writes: only the calling chat's own phase plan, in its own
+// `extension_data`. It names no other conversation, so there is nothing for a
+// tier gate or a child-scope check to hold, and it is a strictly smaller
+// capability than `workspace_send_prompt` and `workspace_close` beside it, which
+// already reach into other conversations. Without it a Claude Code or Codex
+// parent could spawn into phases but never declare, start or complete one.
 const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__subagent",
     "workspace__workspace_list",
@@ -982,6 +990,7 @@ const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__workspace_send_prompt",
     "workspace__workspace_close",
     "workspace__workspace_watch",
+    "workspace__workspace_orchestrate",
 ];
 
 // The FULL Developer roster, deliberately — a coding-agent child gets the same
@@ -1308,11 +1317,12 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
         let description = bridged.description.as_deref().unwrap_or_default();
         bridged.description = Some(
             format!(
-                "{description}\n\nCoding-agent bridge behavior: this starts a visible child and \
-                 returns its session id. You MUST supervise it with workspace_watch and \
-                 workspace_read_conversation until it finishes; the parent turn is not allowed \
-                 to finish while the child runs. The user can open the child tab and steer or \
-                 stop it at any time. The child can inherit only the audited Knowledge, Skills, \
+                "{description}\n\nCoding-agent bridge behavior: this starts a child in the \
+                 background and returns its session id. You MUST supervise it with \
+                 workspace_watch and workspace_read_conversation until it finishes; the parent \
+                 turn is not allowed to finish while the child runs. The user can open the child \
+                 from the chat's side panel and steer or stop it at any time. The child can \
+                 inherit only the audited Knowledge, Skills, \
                  and Extension Manager capabilities that this chat currently has. It cannot \
                  inherit Developer, Code Execution, arbitrary installed extensions, or its \
                  vendor-native shell/editor. Do not retry with one of those names. For a skill \
@@ -2024,6 +2034,7 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
 /// [`crate::agents::workspace_extension::DISPATCHED_TOOL_NAMES`], which a
 /// source-shape test in that file pins against the `match` itself.
 use crate::agents::workspace_extension::DISPATCHED_TOOL_NAMES as WORKSPACE_TOOL_NAMES;
+use crate::agents::workspace_extension::ORCHESTRATE_TOOL_NAME;
 
 pub(crate) fn is_workspace_tool_refused_for(
     session_type: crate::session::session_manager::SessionType,
@@ -3892,6 +3903,18 @@ pub(super) enum SupervisionStep {
     UserSteered,
 }
 
+/// What one decision-model monitor point asks the reply loop to do. Small on
+/// purpose: it is held across the loop's yields, so the note is boxed.
+#[derive(Default)]
+struct MonitorVerdict {
+    /// Stored notices, then the steer note's name frame, in yield order.
+    events: Vec<AgentEvent>,
+    /// A model-only note to push into the conversation (already stored).
+    steer: Option<Box<Message>>,
+    /// End the turn through the commit point.
+    stop: bool,
+}
+
 /// How the reply loop ended, as far as a steer is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TurnExit {
@@ -4220,6 +4243,11 @@ pub struct Agent {
     /// The note the last provider retry was stored behind, as (session id,
     /// message id). See [`Agent::retire_unanswered_retry_note`].
     pub(super) pending_retry_note: std::sync::Mutex<Option<(String, String)>>,
+    /// Decision models: each chat's monitor state and its settings cached for
+    /// the turn, the turn id decisions are logged under, and the decision
+    /// service this agent asks. On the Agent, never as generator locals (see
+    /// [`crate::agents::loop_phase`] on the stack cliff).
+    pub(super) decisions: crate::decision::monitor::AgentDecisions,
 }
 
 /// What an accepted steer is waiting behind. See [`AgentEvent::SteerWaiting`].
@@ -5413,7 +5441,15 @@ impl Agent {
             steer_arrivals: tokio::sync::watch::Sender::new(0),
             announced_steer_seq: std::sync::atomic::AtomicU64::new(0),
             pending_retry_note: std::sync::Mutex::new(None),
+            decisions: Default::default(),
         }
+    }
+
+    /// Ask decision models through `service` instead of the process's
+    /// [`crate::decision::global`] (monitors and decision chats). For tests
+    /// and embedders that bring their own decision models.
+    pub fn set_decision_service(&self, service: Arc<crate::decision::DecisionService>) {
+        self.decisions.service.set(service);
     }
 
     /// Install the per-app secret vault (BRSDK encryption). Decrypted secrets are
@@ -7518,6 +7554,23 @@ impl Agent {
         }
     }
 
+    /// BR-35: add the dollars this reply's priced decision calls (a monitor,
+    /// the `decide` tool, a phase gate) have cost since the last boundary to
+    /// the reply budget. Dollars only, and only priced calls: a 1.2M-token
+    /// `decide` batch must not trip a token cap set for the chat's own
+    /// context, and an unpriced local decision model must not switch the
+    /// dollar axis off. Synchronous and free when no budget is set; the turn's
+    /// spend is forgotten with the turn either way.
+    fn charge_decision_spend(&self, session_id: &str, budget: &mut BudgetTracker) {
+        if !budget.is_active() {
+            return;
+        }
+        let Some(turn_id) = self.decisions.monitors.turn_id(session_id) else {
+            return;
+        };
+        budget.record_external_usd(crate::decision::monitor::take_turn_decision_spend(&turn_id));
+    }
+
     /// Fold one provider round-trip (a turn, or an in-reply compaction) into the
     /// BR-35 budget. Free when no budget is set.
     async fn record_budget_usage(
@@ -9554,6 +9607,11 @@ impl Agent {
                 "workspace_send_prompt".to_string(),
                 "workspace_close".to_string(),
                 "workspace_watch".to_string(),
+                // The phase plan of a staged delegation. It edits only this
+                // chat's own plan, so it widens nothing the spawn tool beside it
+                // does not already grant; it is here, and nowhere else by
+                // default, so it exists exactly when delegation does.
+                "workspace_orchestrate".to_string(),
             ],
         };
         // Never fatal: a session that cannot load the extension simply has no
@@ -9698,9 +9756,16 @@ impl Agent {
         // revoked. The invariant is about the tool, not about how the extension
         // arrived: no spawn tool, under any name, from any source, in a session
         // whose gate says delegation is off.
+        //
+        // `workspace_orchestrate` goes with it: a phase plan is a plan for
+        // spawning, so a chat that may not spawn is not offered one, whichever
+        // way the extension arrived.
         if !subagents_enabled {
             let prefixed_spawn_tool = format!("{}__{}", Self::SPAWN_EXTENSION, SUBAGENT_TOOL_NAME);
-            prefixed_tools.retain(|tool| tool.name != prefixed_spawn_tool);
+            let prefixed_plan_tool =
+                format!("{}__{}", Self::SPAWN_EXTENSION, ORCHESTRATE_TOOL_NAME);
+            prefixed_tools
+                .retain(|tool| tool.name != prefixed_spawn_tool && tool.name != prefixed_plan_tool);
         }
 
         // BR-71: the extension advertises the spawn tool with no sub-workflow
@@ -9987,11 +10052,38 @@ impl Agent {
             .extension_manager
             .bind_computer_use_task(&session_config.id)
             .await;
+        // Every decision this reply causes (a monitor, a `decide` batch, a
+        // phase gate, a decision chat) is logged under one fresh turn id, so
+        // surfaces aggregate per turn instead of listing calls. The guard ends
+        // the turn on every exit, a dropped stream included.
+        //
+        // An elicitation answer is not a turn: it goes to a tool call parked
+        // inside a turn that is still running, and its own stream ends almost
+        // at once. Beginning a decision turn for it would replace the running
+        // turn's id and monitor state, and its guard's drop would then clear
+        // both while that turn goes on.
+        let answers_an_elicitation = user_message.content.iter().any(|content| {
+            matches!(
+                content,
+                MessageContent::ActionRequired(action_required)
+                    if matches!(
+                        action_required.data,
+                        ActionRequiredData::ElicitationResponse { .. }
+                    )
+            )
+        });
+        let decision_turn = (!answers_an_elicitation).then(|| {
+            crate::decision::monitor::DecisionTurnGuard::begin(
+                Arc::clone(&self.decisions.monitors),
+                &session_config.id,
+            )
+        });
         let mut replies = self
             .reply_with_computer_use_scope(user_message, session_config, cancel_token)
             .await?;
         Ok(Box::pin(async_stream::try_stream! {
             let _task = task;
+            let _decision_turn = decision_turn;
             while let Some(event) = replies.next().await {
                 yield event?;
             }
@@ -10503,6 +10595,9 @@ impl Agent {
                 prestream_persisted.push(user_message.clone());
             }
         }
+        // The prompt as the model would read it (a slash command's resolution
+        // stands in for the command). A decision chat asks its question of it.
+        let prompt_index = prestream_persisted.len().checked_sub(1);
 
         // Context injected by SessionStart/UserPromptSubmit hooks: visible to
         // the model, hidden from the user.
@@ -10556,6 +10651,27 @@ impl Agent {
             prestream_persisted.iter(),
             NeverYielded::ClientPromptAndModelOnly,
         );
+
+        // A decision model bound as this chat's main model answers the prompt
+        // itself: no LLM loop, no tools, no compaction. Gate B above has run
+        // (the bind is Gate A's); Gate H runs inside the decision service.
+        if let Some(provider) = self.bound_decision_chat_provider().await {
+            let text = prompt_index
+                .and_then(|index| prestream_persisted.get(index))
+                .map(Message::as_concat_text)
+                .unwrap_or_default();
+            return Ok(Box::pin(async_stream::try_stream! {
+                if let Some(published) = prestream_published {
+                    yield published;
+                }
+                if let Some(pinned) = privacy_pinned {
+                    yield pinned;
+                }
+                for message in Box::pin(self.reply_decision_chat(&session_config.id, &provider, &text)).await? {
+                    yield AgentEvent::Message(message);
+                }
+            }));
+        }
 
         // Snapshot with the revision this view is based on, so every rewrite in
         // this turn — the auto-compaction below AND the reply loop's overflow
@@ -10978,6 +11094,299 @@ impl Agent {
         notice
     }
 
+    /// Cache the chat's decision settings (its monitors) for this turn. A read
+    /// that fails caches nothing: monitors are skipped for the turn, never
+    /// guessed, and their latches are kept for the next turn that reads them.
+    async fn load_decision_monitors(&self, session_id: &str) {
+        match crate::decision::settings::load(&self.config.session_manager, session_id).await {
+            Ok(settings) => self.decisions.monitors.cache_settings(session_id, settings),
+            Err(e) => warn!(
+                session_id,
+                "could not read the chat's decision monitors; none run this turn: {e:#}"
+            ),
+        }
+    }
+
+    /// One monitor evaluation point, as the reply loop needs it: the notices
+    /// to show (already stored), whether to stop, and a model-only note to
+    /// push (already stored) when a `steer` monitor fired.
+    ///
+    /// The decision calls are raced against a cancel and a steer the person
+    /// typed: either one wins, and the evaluation is dropped with nothing
+    /// observed (the window is asked again at the next point). A plain `async
+    /// fn` the loop boxes, so none of this joins `reply_internal`'s frame.
+    async fn run_monitor_point(
+        &self,
+        session_id: &str,
+        timing: crate::decision::settings::MonitorTiming,
+        conversation: &Conversation,
+        iteration: u32,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<MonitorVerdict> {
+        let (previous_phase, _) = self.loop_phase.snapshot();
+        self.loop_phase
+            .enter(crate::agents::loop_phase::LoopPhase::Monitoring);
+        let verdict = self
+            .evaluate_monitor_point(session_id, timing, conversation, iteration, cancel_token)
+            .await;
+        self.loop_phase.enter(previous_phase);
+        verdict
+    }
+
+    /// `work`, unless a cancel or a steer the person typed comes first, in
+    /// which case `None` and the monitor point is dropped with nothing
+    /// observed (its windows are asked again at the next point).
+    async fn unless_cancelled_or_steered<T>(
+        &self,
+        session_id: &str,
+        cancel_token: Option<&CancellationToken>,
+        work: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
+        tokio::select! {
+            biased;
+            _ = async {
+                match cancel_token {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => None,
+            _ = self.user_steer_waiting() => {
+                info!(session_id, "a steer is waiting; monitors wait for the next point");
+                None
+            }
+            done = work => Some(done),
+        }
+    }
+
+    /// The window, in tokens, of each model the criteria due at `timing` ask,
+    /// so each window is fitted to its model before it is built (none when the
+    /// chat could not be read). The lookup reads the model listing, which can
+    /// wait on a slow Ollama, so it races a cancel and a steer like the
+    /// decision calls do: `None` when one of them came first.
+    async fn monitor_windows(
+        &self,
+        service: &crate::decision::DecisionService,
+        base: &Result<crate::decision::DecisionSession>,
+        session_id: &str,
+        timing: crate::decision::settings::MonitorTiming,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Option<HashMap<Option<crate::decision::DecisionModelRef>, usize>> {
+        let Ok(base) = base else {
+            return Some(HashMap::new());
+        };
+        let due = self.decisions.monitors.due_models(session_id, timing);
+        let looked_up = crate::decision::monitor::context_windows(service, base, due);
+        self.unless_cancelled_or_steered(session_id, cancel_token, looked_up)
+            .await
+    }
+
+    async fn evaluate_monitor_point(
+        &self,
+        session_id: &str,
+        timing: crate::decision::settings::MonitorTiming,
+        conversation: &Conversation,
+        iteration: u32,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<MonitorVerdict> {
+        use crate::decision::monitor;
+        let registry = &self.decisions.monitors;
+        let mut verdict = MonitorVerdict::default();
+        let custom = self.decisions.service.custom();
+        let service: &crate::decision::DecisionService = match custom.as_deref() {
+            Some(service) => service,
+            None => crate::decision::global(),
+        };
+        // Sampled once for this point and threaded (DR-15).
+        let enforced = crate::privacy::privacy_tiers_enabled();
+        let base = crate::decision::DecisionSession::load(
+            self.config.session_manager.clone(),
+            session_id,
+            enforced,
+        )
+        .await
+        .map(|base| base.with_turn(registry.turn_id(session_id)));
+        let Some(windows) = self
+            .monitor_windows(service, &base, session_id, timing, cancel_token)
+            .await
+        else {
+            return Ok(verdict);
+        };
+        let planned = registry.plan_fitted(session_id, timing, conversation, iteration, |model| {
+            windows.get(&model.cloned()).copied()
+        });
+        for (name, why) in registry.take_invalid(session_id) {
+            let notice = self
+                .durable_notice(
+                    session_id,
+                    format!("Monitor '{name}' is off for this turn: {why}"),
+                )
+                .await;
+            verdict.events.push(AgentEvent::Message(notice));
+        }
+        if planned.is_empty() {
+            return Ok(verdict);
+        }
+        let outcomes = match base {
+            Ok(base) => {
+                let asked = monitor::ask_planned(service, &base, &planned);
+                match self
+                    .unless_cancelled_or_steered(session_id, cancel_token, asked)
+                    .await
+                {
+                    Some(outcomes) => outcomes,
+                    None => return Ok(verdict),
+                }
+            }
+            // The chat's classification cannot be read, so nothing is sent:
+            // every criterion of this point sees a refusal.
+            Err(e) => planned
+                .iter()
+                .map(|_| {
+                    Err(crate::decision::DecisionError::Refused(format!(
+                        "this chat's privacy tier could not be read ({e})"
+                    )))
+                })
+                .collect(),
+        };
+        let events = registry.apply(
+            session_id,
+            &planned,
+            outcomes,
+            self.has_pending_user_direct_steer(),
+        );
+        let mut notes: Vec<String> = Vec::new();
+        for event in &events {
+            if let Some(text) = monitor::event_notice(event) {
+                let notice = self.durable_notice(session_id, text).await;
+                verdict.events.push(AgentEvent::Message(notice));
+            }
+            if monitor::event_stops(event) {
+                info!(
+                    session_id,
+                    monitor = %event.criterion_id,
+                    "a decision-model monitor ended the turn"
+                );
+                verdict.stop = true;
+            }
+            notes.extend(monitor::steer_note(event));
+        }
+        if !verdict.stop && !notes.is_empty() {
+            // #59 / #66 SHAPE 2: model-only, named for the client, like the
+            // done gate's feedback.
+            let (note, published) = persist_steering_message(
+                &self.config.session_manager,
+                session_id,
+                notes.join("\n\n"),
+            )
+            .await?;
+            verdict.events.extend(published);
+            verdict.steer = Some(Box::new(note));
+        }
+        Ok(verdict)
+    }
+
+    /// Whether this turn has anything for the decision marker. Synchronous.
+    fn decision_turn_had_activity(&self, session_id: &str) -> bool {
+        let Some(turn_id) = self.decisions.monitors.turn_id(session_id) else {
+            return false;
+        };
+        crate::decision::monitor::turn_has_tally(&turn_id)
+            || !self.decisions.monitors.marker_items(session_id).is_empty()
+    }
+
+    /// The turn's one decision marker: a stored, user-only inline notice whose
+    /// text reads everywhere and whose `decision_summary` carries the
+    /// per-origin aggregate the desktop draws. `None` when nothing ran.
+    async fn decision_turn_marker(&self, session_id: &str) -> Option<Message> {
+        use crate::decision::monitor;
+        let turn_id = self.decisions.monitors.turn_id(session_id)?;
+        let marker = monitor::turn_marker(
+            &turn_id,
+            self.decisions.monitors.marker_items(session_id),
+            monitor::take_turn_tally(&turn_id),
+        )?;
+        let mut notice = inline_notice_user_only(monitor::marker_text(&marker));
+        notice.metadata.decision_summary = Some(marker);
+        if let Err(e) = self
+            .config
+            .session_manager
+            .add_message_adopting_uid(session_id, &mut notice)
+            .await
+        {
+            warn!("could not store the turn's decision marker; it stays live-only: {e}");
+        }
+        Some(notice)
+    }
+
+    /// The bound provider when it is a decision model (a decision chat).
+    pub(super) async fn bound_decision_chat_provider(&self) -> Option<Arc<dyn Provider>> {
+        self.bound_provider_unchecked().await.filter(|provider| {
+            crate::providers::decision::chat::is_decision_chat_provider(provider.get_name())
+        })
+    }
+
+    /// A decision chat's reply to one prompt: the decision, stored as one
+    /// assistant message naming the logged decision, then anything a steer
+    /// left in the queue, stored as unanswered (a decision chat has no loop to
+    /// answer it in). Boxed by its caller.
+    async fn reply_decision_chat(
+        &self,
+        session_id: &str,
+        provider: &Arc<dyn Provider>,
+        text: &str,
+    ) -> Result<Vec<Message>> {
+        self.loop_phase
+            .enter(crate::agents::loop_phase::LoopPhase::ProviderOpen);
+        crate::crew::manager()?
+            .check_provider_dispatch(session_id, provider.as_ref())
+            .await?;
+        let session_manager = self.config.session_manager.clone();
+        // Sampled once for this decision and threaded (DR-15).
+        let enforced = crate::privacy::privacy_tiers_enabled();
+        let session =
+            crate::decision::DecisionSession::load(session_manager.clone(), session_id, enforced)
+                .await?
+                .with_turn(self.decisions.monitors.turn_id(session_id));
+        let settings =
+            match crate::decision::settings::load_chat(&session_manager, session_id).await {
+                Ok(settings) => settings,
+                Err(e) => {
+                    warn!(
+                        session_id,
+                        "could not read the decision chat's question: {e:#}"
+                    );
+                    None
+                }
+            };
+        let model = crate::decision::DecisionModelRef::new(
+            provider.get_name(),
+            provider.get_model_config().model_name,
+        );
+        let custom = self.decisions.service.custom();
+        let service: &crate::decision::DecisionService = match custom.as_deref() {
+            Some(service) => service,
+            None => crate::decision::global(),
+        };
+        let reply = crate::providers::decision::chat::run_decision_chat(
+            service,
+            session,
+            &model,
+            settings.as_ref(),
+            text,
+        )
+        .await;
+        let mut message = Message::assistant().with_text(reply.text);
+        message.metadata.decision_id = reply.decision_id;
+        session_manager
+            .add_message_adopting_uid(session_id, &mut message)
+            .await?;
+        let mut messages = vec![message];
+        messages.extend(self.settle_carried_over_soft_interrupts(session_id).await?);
+        self.loop_phase
+            .enter(crate::agents::loop_phase::LoopPhase::Idle);
+        Ok(messages)
+    }
+
     /// Item 7 — write the prose a STOPPED turn had streamed but not yet stored.
     ///
     /// The detached runner calls this before it drops a cancelled reply stream,
@@ -11316,6 +11725,9 @@ impl Agent {
             &toolshim_tools,
             reply_provider.uses_tool_bridge_for_tool_surface(),
         );
+        // The chat's monitors, read once for the turn: every evaluation point
+        // below asks the cached copy synchronously first.
+        Box::pin(self.load_decision_monitors(&session_config.id)).await;
 
         // Freshness basis for this turn's overflow-recovery compactions.
         //
@@ -11733,7 +12145,11 @@ impl Agent {
 
                 // BR-35: the per-reply budget meter. Cheap (no LLM call, no I/O):
                 // a comparison against the running totals `record_turn_usage` has
-                // already folded in, skipped entirely when no limit is set.
+                // already folded in, skipped entirely when no limit is set. The
+                // dollars this reply's decision models spent since the last
+                // boundary are folded in first; that is one in-process lock, not
+                // a wait, so it needs no steer arm.
+                self.charge_decision_spend(&session_config.id, &mut budget);
                 match budget.check_at(reply_started.elapsed()) {
                     BudgetAction::Proceed => {}
                     BudgetAction::Warn(snapshot) => {
@@ -13428,6 +13844,57 @@ impl Agent {
                     break;
                 }
 
+                // Decision-model monitors timed `post_iteration`: this
+                // iteration's results are folded in, the exit gates are next.
+                // The check is synchronous, so a chat with no monitor due pays
+                // nothing; the evaluation and its state live in the boxed
+                // helper and on the Agent, never in this frame.
+                if self.decisions.monitors.any_due(
+                    &session_config.id,
+                    crate::decision::settings::MonitorTiming::PostIteration,
+                ) && !is_token_cancelled(&cancel_token)
+                {
+                    let verdict = Box::pin(self.run_monitor_point(
+                        &session_config.id,
+                        crate::decision::settings::MonitorTiming::PostIteration,
+                        &conversation,
+                        turns_taken,
+                        cancel_token.as_ref(),
+                    ))
+                    .await?;
+                    for event in verdict.events {
+                        yield event;
+                    }
+                    if verdict.stop {
+                        // A safety stop, ended the way the action, tool-call
+                        // and stall limits end a turn: never through the
+                        // commit point, whose drain would continue the turn
+                        // for an agent's injection after the stop notice is
+                        // stored and the criterion latched, and whose close
+                        // would refuse every steer the person types while the
+                        // children are collected. The queue stays open; what
+                        // is left in it is stored as unanswered, or a steer
+                        // the person typed continues the turn.
+                        self.record_turn_exit(TurnExit::ResumableForUserInput);
+                        crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+                        native_supervision_required = true;
+                        break;
+                    }
+                    if let Some(note) = verdict.steer {
+                        if signed_replay_context.take().is_some() {
+                            conversation =
+                                crate::conversation::without_bedrock_reasoning(&conversation);
+                        }
+                        conversation.push(*note);
+                        if exit_chat {
+                            // The model's last reply would have ended the turn;
+                            // it reads the monitor's note first.
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
+                    }
+                }
+
                 // BR-61 + #69 + D12b: the take-and-close happens at the COMMIT
                 // POINT — `commit_turn_exit`, immediately before each `break` that
                 // really ends the turn below — never here. A non-empty drain keeps
@@ -13546,6 +14013,47 @@ impl Agent {
                         }
                     }
 
+                    // Decision-model monitors timed `turn_end`, beside the done
+                    // gate. Skipped while a stall or budget wrap-up is ending the
+                    // turn, as the done gate is.
+                    if stall_deadline.is_none()
+                        && budget_deadline.is_none()
+                        && !is_token_cancelled(&cancel_token)
+                        && self.decisions.monitors.any_due(
+                            &session_config.id,
+                            crate::decision::settings::MonitorTiming::TurnEnd,
+                        )
+                    {
+                        let verdict = Box::pin(self.run_monitor_point(
+                            &session_config.id,
+                            crate::decision::settings::MonitorTiming::TurnEnd,
+                            &conversation,
+                            turns_taken,
+                            cancel_token.as_ref(),
+                        ))
+                        .await?;
+                        for event in verdict.events {
+                            yield event;
+                        }
+                        if verdict.stop {
+                            // A safety stop, as at the post-iteration point:
+                            // no commit point, the queue stays open.
+                            self.record_turn_exit(TurnExit::ResumableForUserInput);
+                            crate::agents::subagent_handle::begin_parent_closing(
+                                &session_config.id,
+                            );
+                            native_supervision_required = true;
+                            break;
+                        }
+                        if let Some(note) = verdict.steer {
+                            conversation.push(*note);
+                            // #69: the turn continues for the note.
+                            self.reopen_for_more_work();
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
+                    }
+
                     // BR-50: optional self-critique pass on an *ordinary* answer.
                     // Skipped when a /goal is active (its Stop-hook judge already
                     // re-reads the work), when the turn is already being wrapped up
@@ -13641,6 +14149,16 @@ impl Agent {
             }
 
             crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+
+            // Owner rule A1: whatever decision models did this turn (monitors,
+            // `decide` batches, phase gates) is ONE stored marker, never a row
+            // per call. The check is synchronous; a turn that asked nothing
+            // writes nothing.
+            if self.decision_turn_had_activity(&session_config.id) {
+                if let Some(marker) = Box::pin(self.decision_turn_marker(&session_config.id)).await {
+                    yield AgentEvent::Message(marker);
+                }
+            }
 
             // The open question in fix/steer-always-lands, decided: a steer that
             // arrives while a forced exit waits for its children is ACCEPTED. So
@@ -17543,6 +18061,7 @@ mod tests {
             "workspace__subagent",
             "workspace__workspace_watch",
             "workspace__workspace_send_prompt",
+            "workspace__workspace_orchestrate",
             "knowledge__kb_search",
             PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
             PLATFORM_INGEST_SOURCE_TOOL_NAME,
@@ -20177,6 +20696,29 @@ mod tests {
                 "auto-injection must grant child supervision with {tool}: {names:?}"
             );
         }
+        // The phase plan of a staged delegation rides the same grant: it exists
+        // exactly where the spawn tool does.
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "workspace__workspace_orchestrate"),
+            "auto-injection must grant the phase plan tool: {names:?}"
+        );
+        // …and the entry it rides decides the per-turn context: the plan
+        // summary belongs to `workspace_orchestrate`, the preview panel to
+        // `workspace_read_panel`, which this entry does not hold
+        // (`WorkspaceClient::get_moim_for`).
+        let extensions = &agent.extension_manager;
+        assert!(
+            extensions
+                .is_extension_tool_available(Agent::SPAWN_EXTENSION, "workspace_orchestrate")
+                .await
+        );
+        assert!(
+            !extensions
+                .is_extension_tool_available(Agent::SPAWN_EXTENSION, "workspace_read_panel")
+                .await
+        );
         // Cross-chat injection, and the discovery half without which its one
         // required argument is unobtainable. Both were on the excluded list
         // below until the write rule stopped reading lineage; a delegating
@@ -20280,6 +20822,8 @@ mod tests {
             "workspace__workspace_list",
             "workspace_list",
             "workspace__workspace_send_prompt",
+            "workspace__workspace_orchestrate",
+            "workspace_orchestrate",
             "workspace__subagent",
             "subagent",
         ] {
@@ -21263,6 +21807,12 @@ mod tests {
             !names.iter().any(|n| n.contains("subagent")),
             "…but not a spawn tool the gate says this session may not have: \
              {names:?}"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|n| n == "workspace__workspace_orchestrate"),
+            "…nor a phase plan for spawns it cannot make: {names:?}"
         );
     }
 

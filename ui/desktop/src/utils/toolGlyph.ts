@@ -85,6 +85,7 @@ export type ToolGlyphKind =
   | 'extension'
   | 'app'
   | 'agent'
+  | 'decision'
   // other built-in components
   | 'workspace'
   | 'figure'
@@ -119,6 +120,7 @@ export const TOOL_GLYPHS: Record<ToolGlyphKind, ToolIcon> = {
   extension: ENTITY_ICONS.extension,
   app: ENTITY_ICONS.application,
   agent: ENTITY_ICONS.agent,
+  decision: ENTITY_ICONS.decision,
   workspace: MessagesSquare,
   figure: ChartColumn,
   copilot: Copilot,
@@ -160,6 +162,7 @@ export const BUILT_IN_EXTENSION_KEYS: ReadonlySet<string> = new Set([
   'code_execution',
   'chatrecall',
   'crew',
+  'decisions',
   'platform',
   'workflow',
 ]);
@@ -282,6 +285,7 @@ const FAMILY: Record<string, ToolGlyphKind> = {
   code_execution: 'code',
   compute: 'code',
   workflow: 'workflow',
+  decisions: 'decision',
 };
 
 /** 4. Built-in toolbox families: the action decides, then the family's default. */

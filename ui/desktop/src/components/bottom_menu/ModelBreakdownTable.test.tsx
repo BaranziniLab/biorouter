@@ -59,6 +59,74 @@ describe('modelLabel', () => {
     // The key token is never what a person reads.
     expect(modelLabel({ provider: undefined, model: undefined })).not.toBe(UNKNOWN_MODEL_LABEL);
   });
+
+  it('names a decision model as one, by its alias', () => {
+    expect(
+      modelLabel({
+        provider: 'baseten_decision',
+        model: 'decision-models/baseten-joey-2b-latest',
+      })
+    ).toBe('Decision model: joey-1');
+    expect(modelLabel({ provider: 'ollama_decision', model: 'tev1:0.8b' })).toBe(
+      'Decision model: tev1:0.8b'
+    );
+  });
+});
+
+describe('ModelBreakdownTable decision rows', () => {
+  it('counts a decision model in requests, not turns', () => {
+    render(
+      <ModelBreakdownTable
+        rows={[
+          {
+            provider: 'baseten_decision',
+            model: 'decision-models/baseten-mammoth-27b-latest',
+            inputTokens: 1_200_000,
+            outputTokens: 600,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalTokens: 1_200_600,
+            turns: 600,
+            totalCost: 0.12,
+            costIsPartial: false,
+          },
+        ]}
+      />
+    );
+    const row = screen.getByText('Decision model: mammoth-1').closest('tr')!;
+    const cells = within(row).getAllByRole('cell');
+    expect(cells[1].textContent).toBe('600 requests');
+    expect(cells[7].textContent).toBe('$0.12');
+  });
+
+  it('says a local decision model is not metered, and an unpriced hosted one is unavailable', () => {
+    const local: ModelCostRow = {
+      provider: 'ollama_decision',
+      model: 'tev1:0.8b',
+      inputTokens: 40_000,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 40_020,
+      turns: 20,
+      totalCost: null,
+      costIsPartial: false,
+    };
+    const hosted: ModelCostRow = {
+      ...local,
+      provider: 'baseten_decision',
+      model: 'decision-models/baseten-unlisted-99b-latest',
+    };
+    render(<ModelBreakdownTable rows={[local, hosted]} />);
+    const localCells = within(
+      screen.getByText('Decision model: tev1:0.8b').closest('tr')!
+    ).getAllByRole('cell');
+    expect(localCells[7].textContent).toBe('Not metered');
+    const hostedRow = screen.getByText('Decision model: baseten-unlisted-99b-latest');
+    expect(within(hostedRow.closest('tr')!).getAllByRole('cell')[7].textContent).toBe(
+      'Unavailable'
+    );
+  });
 });
 
 describe('ModelBreakdownTable', () => {

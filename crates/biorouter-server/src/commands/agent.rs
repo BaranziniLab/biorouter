@@ -444,6 +444,11 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
     biorouter_mcp::app_folder::report_once();
     biorouter::session::SessionManager::instance().validate_storage()?;
+    // The decision log: every decision this daemon makes is a row in its chats' store.
+    // Before anything that could run a turn or a scheduled job, so none goes unlogged.
+    biorouter::decision::log::install_global_sink(std::sync::Arc::new(
+        biorouter::session::SessionManager::instance(),
+    ));
 
     // Opt-in: only `biorouter serve` passes the flag. See `watch_parent`.
     let orphaned = match exit_with_parent {

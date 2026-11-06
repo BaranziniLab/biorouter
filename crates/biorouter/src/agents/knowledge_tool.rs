@@ -1054,6 +1054,7 @@ mod tests {
             parent_session_id: None,
             privacy_tier: crate::privacy::SessionClassification::Public,
             privacy_reason: None,
+            decision_count: None,
         }
     }
 }

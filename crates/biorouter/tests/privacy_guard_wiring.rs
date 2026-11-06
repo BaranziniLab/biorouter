@@ -169,6 +169,26 @@ const REGISTRY: &[Guard] = &[
         status: Status::Wired,
         sites: &[
             Site {
+                file: "crates/biorouter-cli/src/commands/session_decisions.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`check_local_reach`, the gate on `biorouter session decisions` and \
+                       `biorouter session monitors` when they read the LOCAL store (no daemon \
+                       answered): a chat's decision log holds what each call was sent, its own \
+                       content, so the chat must be readable at this terminal's capability, as \
+                       `routes::decisions` requires over HTTP. Plus its import",
+            },
+            Site {
+                file: "crates/biorouter-cli/src/commands/session_subagents.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`biorouter session subagents` read from the LOCAL store (no daemon \
+                       answered): the parent chat must be readable at this terminal's \
+                       capability, as `GET /sessions/{id}/subagents` requires over HTTP, so \
+                       unsetting the daemon secret is not a way around the route's gate. Plus \
+                       its import",
+            },
+            Site {
                 file: "crates/biorouter-cli/src/commands/web.rs",
                 counts: c(1, 0, 1),
                 kind: SiteKind::Guard,
@@ -201,6 +221,15 @@ const REGISTRY: &[Guard] = &[
                   because an LLM-generated title is content",
         status: Status::Wired,
         sites: &[
+            Site {
+                file: "crates/biorouter-cli/src/commands/session_subagents.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`biorouter session subagents` on the local store: each child is listed \
+                       at this terminal's capability before the phase plan is rebuilt from the \
+                       children that remain, the CLI counterpart of the route's `lists_session` \
+                       filter. Plus its import",
+            },
             Site {
                 file: "crates/biorouter/src/agents/schedule_tool.rs",
                 counts: c(1, 0, 0),
@@ -498,6 +527,34 @@ const REGISTRY: &[Guard] = &[
                        named chat's next turn (QA 2026-09-10, F0's sweep)",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/decisions.rs",
+                counts: c(1, 1, 0),
+                kind: SiteKind::Guard,
+                what: "`reach_chat`, the ONE helper every decision route that names a chat asks \
+                       before it reads or parses anything about that chat: `GET \
+                       /sessions/{id}/decisions` (a page of the decision log, which holds what \
+                       was sent, i.e. the chat's own content), `GET …/decisions/summary`, `GET \
+                       …/decisions/{decision_id}` (one call with its full context), `GET|PUT \
+                       …/decision-settings` and `GET|PUT …/decision-chat` (the PUTs then also \
+                       take the user-action proof on a keyed daemon), plus `GET \
+                       /decisions/models?sessionId=` and `POST /decisions/decide` with a \
+                       `sessionId` (whose decision the service then checks against that chat's \
+                       tier, Gate H). One call for nine routes, so the count does not grow with \
+                       the routes: a decision route that skipped the helper would not show up \
+                       here, and `decisions_tests.rs` drives every one of them instead. The ref \
+                       is the module qualifier",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session_subagents.rs",
+                counts: c(1, 2, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/{id}/subagents`, which names the PARENT chat and answers \
+                       with its children's names, models and result lines, so the parent is \
+                       gated before its row is read. The second ref is the module qualifier on \
+                       `http_caller`, which then filters each child as a listing does: a child \
+                       can be more private than its parent",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/workflow.rs",
                 counts: c(1, 3, 0),
                 kind: SiteKind::Guard,
@@ -578,6 +635,12 @@ const REGISTRY: &[Guard] = &[
                 counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`keyset_listing_scope`, which `GET /sessions/sidebar` and the paged `GET /sessions?limit=` (History's first paint) both ask, plus `GET /sessions/insights` and `GET /sessions/activity`, each omitting Crew-owned rows before serialization",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session_subagents.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/{id}/subagents`, omitting Crew-owned children from the roster before the plan's counts are derived from it",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session_meta.rs",
@@ -698,6 +761,13 @@ const REGISTRY: &[Guard] = &[
                        filtering the rows they expose",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/session_subagents.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/{id}/subagents`, resolved ONCE for the whole roster after \
+                       the parent's own gate, then asked of every child row",
+            },
+            Site {
                 file: SESSION_REACH,
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
@@ -755,6 +825,15 @@ const REGISTRY: &[Guard] = &[
                        unfiltered ordering and resume from the position it reached, which made \
                        the continuation value a count of the rows it hid (adversarial review \
                        2026-09-12)",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/session_subagents.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /sessions/{id}/subagents`, asked of each child's OWN classification \
+                       (a child can be more private than its parent), BEFORE the plan is \
+                       recomputed from the rows that survive, so a phase neither counts nor \
+                       names a child the caller was not listed",
             },
         ],
     },
@@ -1204,6 +1283,29 @@ const REGISTRY: &[Guard] = &[
                        path both halves of Gate H are called through",
             },
         ],
+    },
+    Guard {
+        ident: "assert_alt_tier_allowed",
+        defined_in: "crates/biorouter/src/privacy/alt_provider.rs",
+        decides: "Gate H's downward half for an alternate model that is not a `Provider`: whether \
+                  a decision model of a declared tier may read a session of this classification, \
+                  with the master switch as the caller sampled it",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter/src/decision/service.rs",
+            counts: c(1, 0, 1),
+            kind: SiteKind::Guard,
+            what: "`privacy_allows`, the one place every decision is gated, plus its import. Every \
+                   decision path goes through `DecisionService` (a monitor's window, the `decide` \
+                   tool's chunks, a phase gate's hand-off, a decision chat, `POST \
+                   /decisions/decide` and the CLI), and the service asks `privacy_allows` before \
+                   anything is sent: for the model a batch resolved, again per chunk on the \
+                   classification as it stands then (a chat raised mid-batch stops reaching a \
+                   public model at the next chunk), for each candidate of an automatic choice, \
+                   and for the advisory `unavailableReason` of `GET /decisions/models`. If this \
+                   row ever reads ZERO calls, a private chat's text can reach a public decision \
+                   model and no route test will say so, because each one drives a fake source",
+        }],
     },
     Guard {
         ident: "bind_allowed",

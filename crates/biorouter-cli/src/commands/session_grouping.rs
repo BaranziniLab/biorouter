@@ -10,11 +10,16 @@
 //!   3. **no row is ever dropped.** Anything that cannot nest under a top-level
 //!      parent — an orphan, a grandchild, a cycle — stays top level.
 //!
-//! ⚠ The renderer counterpart does not exist in this worktree yet, so this is
-//! the rule Task 38 must be written against, not a claim that two files already
-//! agree. When it lands, cite it here by path and keep the two in step.
+//! The renderer counterpart is `groupSessionsByParent` in
+//! `ui/desktop/src/components/sessions/sessionGrouping.ts`, which follows the
+//! same three rules. One difference is deliberate: this listing orders a
+//! parent's children oldest first, History newest first.
 
+use biorouter::agents::subagent_roster::{
+    SubagentRunStatus, SUBAGENT_OUTCOME_STATE, SUBAGENT_OUTCOME_VERSION,
+};
 use biorouter::session::session_manager::SessionType;
+use biorouter::session::Session;
 use chrono::{DateTime, Utc};
 
 /// The fields a listing needs. A projection rather than `biorouter::session::
@@ -27,6 +32,46 @@ pub struct SessionRow {
     pub parent_session_id: Option<String>,
     pub updated_at: DateTime<Utc>,
     pub message_count: usize,
+    /// The model the session is bound to, when one is recorded.
+    pub model: Option<String>,
+    /// A subagent's durable outcome record, written when its run ended.
+    /// `None` for a run still going, one that predates the record, and every
+    /// session that is not a subagent.
+    pub outcome: Option<SubagentRunStatus>,
+}
+
+impl SessionRow {
+    /// The projection of a stored session, ONE spelling for every listing.
+    pub fn from_session(session: &Session) -> Self {
+        Self {
+            id: session.id.clone(),
+            name: session.name.clone(),
+            session_type: session.session_type,
+            parent_session_id: session.parent_session_id.clone(),
+            updated_at: session.updated_at,
+            message_count: session.message_count,
+            model: session
+                .model_config
+                .as_ref()
+                .map(|config| config.model_name.clone())
+                .filter(|name| !name.is_empty())
+                .or_else(|| session.provider_name.clone()),
+            outcome: recorded_outcome(session),
+        }
+    }
+}
+
+/// The `status` of a subagent's outcome record (`subagent_outcome.v1`), or
+/// `None` when there is no record or it cannot be read. An unreadable record is
+/// treated as absent, never as a status it does not state.
+pub fn recorded_outcome(session: &Session) -> Option<SubagentRunStatus> {
+    if session.session_type != SessionType::SubAgent {
+        return None;
+    }
+    let record = session
+        .extension_data
+        .get_extension_state(SUBAGENT_OUTCOME_STATE, SUBAGENT_OUTCOME_VERSION)?;
+    serde_json::from_value(record.get("status")?.clone()).ok()
 }
 
 /// Whether the daemon says this session has a turn in flight.
@@ -144,24 +189,57 @@ pub fn liveness_label(liveness: Liveness) -> &'static str {
     }
 }
 
-/// One indented line for a child, carrying the three things that separate two
-/// siblings of one fan-out: its own label, its id, and how far it got.
-pub fn render_child(row: &SessionRow, liveness: Liveness) -> String {
-    let state = match liveness {
-        Liveness::Running => "● live",
-        Liveness::Finished => "○ done",
+/// What a child's state reads as in a listing, from the daemon's liveness and
+/// the child's own outcome record. Glyphs are the ones `biorouter session
+/// subagents` draws ([`super::session_subagents::status_glyph`]).
+///
+/// A live turn wins over a recorded outcome, because a finished child can be
+/// steered into a new turn and its record then describes the previous one. With
+/// no turn in flight, or liveness unknowable, a recorded outcome is the answer:
+/// it was written when the run ended, so it does not need a daemon to be true.
+pub fn child_state(liveness: Liveness, outcome: Option<SubagentRunStatus>) -> String {
+    use super::session_subagents::{status_glyph, status_label};
+    match (liveness, outcome) {
+        (Liveness::Running, _) => format!(
+            "{} {}",
+            status_glyph(SubagentRunStatus::Running),
+            status_label(SubagentRunStatus::Running)
+        ),
+        (_, Some(status)) => format!("{} {}", status_glyph(status), status_label(status)),
+        // Not running, and no record of how it ended: a run from before outcome
+        // records, or one whose process went away. "ended" says exactly that
+        // much and no more.
+        (Liveness::Finished, None) => "· ended".to_string(),
         // ⚠ Not "(no daemon)". A missing daemon is only one of several reasons
         // liveness can be unknown — a stripped secret, a non-200 and an
         // unreadable body reach here too — and naming the wrong one sends the
         // reader after a problem that does not exist. `handle_session_list`
         // prints the actual reason once, on stderr.
-        Liveness::Unknown => "· state unknown",
-    };
+        (Liveness::Unknown, None) => "· state unknown".to_string(),
+    }
+}
+
+/// One indented line for a child, carrying the things that separate two
+/// siblings of one fan-out: its own label, its id, how far it got, and the
+/// model it ran on.
+pub fn render_child(row: &SessionRow, liveness: Liveness) -> String {
+    use super::session_subagents::{printable, SUBAGENT_NAME_PREFIX};
+    let name = printable(
+        row.name
+            .strip_prefix(SUBAGENT_NAME_PREFIX)
+            .unwrap_or(&row.name),
+    );
+    let model = row
+        .model
+        .as_deref()
+        .map(|model| format!("  {}", printable(model)))
+        .unwrap_or_default();
     format!(
-        "  └─ {} [{}]  {}  {} msgs  {}",
-        row.name,
-        state,
+        "  └─ {} [{}]  {}{}  {} msgs  {}",
+        name,
+        child_state(liveness, row.outcome),
         row.id,
+        model,
         row.message_count,
         row.updated_at.format("%Y-%m-%d %H:%M")
     )
@@ -179,6 +257,8 @@ mod tests {
             parent_session_id: parent.map(str::to_string),
             updated_at: chrono::Utc::now(),
             message_count: 3,
+            model: None,
+            outcome: None,
         }
     }
 
@@ -294,6 +374,94 @@ mod tests {
             reachable(&grouped),
             ["a", "b"].map(str::to_string).into_iter().collect(),
             "a cycle must degrade to two top-level rows, not to an empty listing"
+        );
+    }
+
+    #[test]
+    fn a_child_line_shows_its_recorded_outcome_and_model() {
+        let mut r = row("c1", SessionType::SubAgent, Some("p1"), "Subagent: audit");
+        r.model = Some("gpt-5.5".to_string());
+        r.outcome = Some(SubagentRunStatus::Failed);
+        let finished = render_child(&r, Liveness::Finished);
+        assert!(
+            finished.starts_with("  └─ audit [✗ failed]  c1  gpt-5.5  3 msgs"),
+            "{finished}"
+        );
+        // A recorded outcome is true without a daemon: it was written when the
+        // run ended.
+        assert!(render_child(&r, Liveness::Unknown).contains("[✗ failed]"));
+        // A live turn wins: the record describes the previous turn.
+        assert!(render_child(&r, Liveness::Running).contains("[◐ running]"));
+        // No record: "ended" when the daemon says it is not running, and still
+        // "state unknown" when nothing could be asked.
+        r.outcome = None;
+        assert!(render_child(&r, Liveness::Finished).contains("[· ended]"));
+        assert!(render_child(&r, Liveness::Unknown).contains("[· state unknown]"));
+        r.model = None;
+        assert!(render_child(&r, Liveness::Unknown).contains("]  c1  3 msgs"));
+    }
+
+    #[test]
+    fn every_recorded_outcome_reads_with_its_own_glyph() {
+        use SubagentRunStatus as S;
+        for (status, expected) in [
+            (S::Completed, "● completed"),
+            (S::Blocked, "⏸ blocked"),
+            (S::Incomplete, "✗ incomplete"),
+            (S::Failed, "✗ failed"),
+            (S::Interrupted, "⊘ interrupted"),
+        ] {
+            assert_eq!(child_state(Liveness::Finished, Some(status)), expected);
+        }
+    }
+
+    #[test]
+    fn the_outcome_is_read_from_the_subagent_outcome_record_only() {
+        let mut session = Session {
+            id: "c1".to_string(),
+            name: "Subagent: audit".to_string(),
+            session_type: SessionType::SubAgent,
+            parent_session_id: Some("p1".to_string()),
+            provider_name: Some("versa_azure".to_string()),
+            model_config: Some(biorouter::model::ModelConfig::new("gpt-5.5").unwrap()),
+            ..Session::default()
+        };
+        assert_eq!(recorded_outcome(&session), None, "no record, no outcome");
+        session.extension_data.set_extension_state(
+            SUBAGENT_OUTCOME_STATE,
+            SUBAGENT_OUTCOME_VERSION,
+            serde_json::json!({
+                "status": "blocked",
+                "ended_at": "2026-11-04T10:00:00Z",
+                "result_line": "Which table?",
+            }),
+        );
+        let row = SessionRow::from_session(&session);
+        assert_eq!(row.outcome, Some(SubagentRunStatus::Blocked));
+        assert_eq!(row.model.as_deref(), Some("gpt-5.5"));
+
+        // A status this build does not know is no status, never a guess.
+        session.extension_data.set_extension_state(
+            SUBAGENT_OUTCOME_STATE,
+            SUBAGENT_OUTCOME_VERSION,
+            serde_json::json!({ "status": "teleported" }),
+        );
+        assert_eq!(recorded_outcome(&session), None);
+
+        // Only a subagent carries one: a user chat with the same key is not read.
+        session.session_type = SessionType::User;
+        session.extension_data.set_extension_state(
+            SUBAGENT_OUTCOME_STATE,
+            SUBAGENT_OUTCOME_VERSION,
+            serde_json::json!({ "status": "completed" }),
+        );
+        assert_eq!(recorded_outcome(&session), None);
+
+        // With no model name, the provider stands in.
+        session.model_config = None;
+        assert_eq!(
+            SessionRow::from_session(&session).model.as_deref(),
+            Some("versa_azure")
         );
     }
 

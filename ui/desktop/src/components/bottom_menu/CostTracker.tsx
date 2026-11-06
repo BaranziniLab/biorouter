@@ -23,12 +23,20 @@ import {
   FooterCardValue,
 } from './FooterCard';
 import { useFooterCard } from './useFooterCard';
+import { isUnmeteredDecisionProvider } from '../decisions/decisionWire';
 
 interface CostTrackerProps {
   inputTokens?: number;
   outputTokens?: number;
   sessionCosts?: SessionCosts;
   modelCostRows?: ModelCostRow[];
+  /**
+   * Price only the usage ledger, never the bare counters. A decision chat's
+   * tokens belong to its decision model, and the fallback prices counters at
+   * the app's current model, which is not the chat's: a local decision chat
+   * showed "<$0.01" at GPT-5.5's rate for a request that costs nothing.
+   */
+  ledgerOnly?: boolean;
 }
 
 export interface CostEstimate {
@@ -37,18 +45,31 @@ export interface CostEstimate {
 }
 
 /**
+ * A row of requests to a local decision model, which has no price because it
+ * has no meter. It costs nothing, so it counts as $0 and leaves the chat's
+ * total exact, as the usage report does.
+ */
+export function isUnmeteredDecisionRow(
+  row: Pick<ModelCostRow, 'provider'> & Pick<SessionCostRow, 'totalCost'>
+): boolean {
+  return row.totalCost === null && isUnmeteredDecisionProvider(row.provider);
+}
+
+/**
  * The total of priced rows: the ledger's per-model rows, or the legacy per-model map's values. A
  * row with no price makes the total a conservative subtotal; no priced row at all leaves it
- * unavailable rather than $0.
+ * unavailable rather than $0. An unmetered decision model's row costs nothing and counts as $0.
  */
 export function aggregateModelRowsCost(
-  rows: Pick<SessionCostRow, 'totalCost' | 'costIsPartial'>[]
+  rows: (Pick<SessionCostRow, 'totalCost' | 'costIsPartial'> & Pick<ModelCostRow, 'provider'>)[]
 ): CostEstimate {
   let amount = 0;
   let hasKnownCost = false;
   let partial = false;
   for (const row of rows) {
-    if (row.totalCost === null) {
+    if (isUnmeteredDecisionRow(row)) {
+      hasKnownCost = true;
+    } else if (row.totalCost === null) {
       partial = true;
     } else {
       amount += row.totalCost;
@@ -275,6 +296,7 @@ export function CostTracker({
   outputTokens = 0,
   sessionCosts,
   modelCostRows,
+  ledgerOnly = false,
 }: CostTrackerProps) {
   const { currentModel, currentProvider } = useModelAndProvider();
   const [costInfo, setCostInfo] = useState<PricingData | null>(null);
@@ -320,8 +342,9 @@ export function CostTracker({
     sessionCosts,
     inputTokens,
     outputTokens,
-    // Loading, or no model to price the counters at: nothing from this path.
-    pricing: currentModel && currentProvider && !isLoading ? costInfo : null,
+    // Loading, no model to price the counters at, or a chat whose counters are not the current
+    // model's (`ledgerOnly`): nothing from this path.
+    pricing: !ledgerOnly && currentModel && currentProvider && !isLoading ? costInfo : null,
   });
   // One element at one place for every path, so a card the person pinned stays pinned when the
   // ledger's answer replaces the live price.

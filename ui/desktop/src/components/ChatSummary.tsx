@@ -11,6 +11,8 @@ import { Button } from './ui/button';
 import { InfoTip } from './ui/info-tip';
 import { Progress } from './ui/progress';
 import { summaryCopy } from './summary/copy';
+import { SummarySubagents, type SummarySubagentsData } from './summary/SummarySubagents';
+import { SummaryDecisions, type SummaryDecisionsData } from './summary/SummaryDecisions';
 import { prefersReducedMotion } from '../styles/motion';
 import type { TodoItem, TodoStatus } from '../utils/sessionTodos';
 import './summary/chatSummary.css';
@@ -112,14 +114,25 @@ export interface ChatSummaryProps {
   artifacts: string | null;
   codeDelta: { added: number; removed: number } | null;
   todos: { items: TodoItem[]; loading: boolean; error: boolean; refresh: () => void };
+  /**
+   * The chat's subagents and its phase plan (`hooks/useSessionSubagents.ts`).
+   * Absent, or with nothing to list, the section draws nothing.
+   */
+  subagents?: SummarySubagentsData;
+  /**
+   * The chat's decision-model activity, one row per source
+   * (`hooks/useSessionDecisions.ts`). Absent, or with no calls and no monitors,
+   * the section draws nothing.
+   */
+  decisions?: SummaryDecisionsData;
   hasWorkflow: boolean;
   onWorkflow: () => void;
   onDiagnostics: () => void;
 }
 
 /**
- * The Chat summary's content: the live to-do list, the chat's statistics and
- * two actions. The docked rail (`summary/ChatSummaryRail.tsx`) and the header
+ * The Chat summary's content: the live to-do list, the chat's subagents and
+ * phases, the chat's statistics and two actions. The docked rail (`summary/ChatSummaryRail.tsx`) and the header
  * popover draw exactly this, so the two read as one component.
  *
  * A scrolling body over a pinned footer, in two type sizes (13 for rows and
@@ -132,6 +145,8 @@ export function ChatSummary({
   artifacts,
   codeDelta,
   todos,
+  subagents,
+  decisions,
   hasWorkflow,
   onWorkflow,
   onDiagnostics,
@@ -251,6 +266,14 @@ export function ChatSummary({
             </Button>
           </div>
         )}
+        {/* The subagents and phases, between the to-do list and the
+            statistics. Their rows are buttons of their own (not the Button
+            primitive), in their own module, so this card keeps its three. */}
+        {subagents && <SummarySubagents {...subagents} />}
+        {/* Decision-model activity, aggregated per source: never one row per
+            call. Its rows and its Monitors action are plain buttons in its own
+            module, for the same reason as the subagents'. */}
+        {decisions && <SummaryDecisions {...decisions} />}
         <dl
           aria-label={summaryCopy.statsLabel}
           aria-busy={statsPending || undefined}
