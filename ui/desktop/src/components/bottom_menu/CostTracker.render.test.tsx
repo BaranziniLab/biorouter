@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { useId } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelCostRow, SessionCosts } from '../../hooks/useCostTracking';
-import { COST_CARD_COPY } from './copy';
+import { COST_CARD_COPY, MODEL_NOT_RECORDED } from './copy';
 import { CostTracker } from './CostTracker';
 import {
   FooterCard,
@@ -187,7 +187,8 @@ describe('the cost card', () => {
     expect(card).toHaveAttribute('data-testid', 'cost-card');
     expect(card).toHaveTextContent('Cost of this chat');
     expect(within(card).getByText('$3.50')).toHaveClass('br-footer-card__value');
-    expect(within(card).getByText('20,100 input tokens · 1,550 output tokens')).toHaveClass(
+    // Neither row recorded the cache, so the line lists input and output alone.
+    expect(within(card).getByText('20,100 input · 1,550 output')).toHaveClass(
       'br-footer-card__detail'
     );
     expect(within(card).getByText(COST_CARD_COPY.partialNote)).toHaveClass('br-footer-card__note');
@@ -205,6 +206,26 @@ describe('the cost card', () => {
     expect(within(card).queryByRole('button')).not.toBeInTheDocument();
   });
 
+  it('names a ledger row with no model in sentence case in the By model list', async () => {
+    const user = userEvent.setup();
+    // The ledger's null model bucket: turns saved before model attribution, or from a provider
+    // that reported no model. Its key token is the lowercase "unknown"; a person never reads it.
+    const noModelRow: ModelCostRow = { ...unpricedRow, provider: undefined, model: undefined };
+    render(<CostTracker modelCostRows={[ledgerRow, noModelRow]} />);
+    await waitFor(() => expect(figure()).toHaveTextContent('$3.50'));
+    await user.click(figure());
+    const card = screen.getByRole('dialog', { name: COST_CARD_COPY.cardLabel });
+    const rows = within(
+      within(card).getByRole('list', { name: COST_CARD_COPY.byModel })
+    ).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[1]).getByText(MODEL_NOT_RECORDED)).toHaveClass('br-footer-card__value');
+    expect(within(rows[1]).getByText('Unavailable · 20,000 in · 1,500 out')).toHaveClass(
+      'br-footer-card__detail'
+    );
+    expect(card).not.toHaveTextContent(/unknown/);
+  });
+
   it('says nothing about an estimate when every row is priced exactly', async () => {
     const user = userEvent.setup();
     render(<CostTracker modelCostRows={[ledgerRow]} />);
@@ -212,7 +233,7 @@ describe('the cost card', () => {
     await user.click(figure());
     const card = screen.getByRole('dialog', { name: 'Cost' });
     expect(card).not.toHaveTextContent(COST_CARD_COPY.partialNote);
-    expect(within(card).getByText('100 input tokens · 50 output tokens')).toBeInTheDocument();
+    expect(within(card).getByText('100 input · 50 output')).toBeInTheDocument();
     expect(
       within(within(card).getByRole('list', { name: 'By model' })).getAllByRole('listitem')
     ).toHaveLength(1);
@@ -288,7 +309,7 @@ describe('the cost card', () => {
     await user.click(figure());
     const mapCard = screen.getByRole('dialog', { name: 'Cost' });
     expect(mapCard).toHaveAttribute('data-testid', 'cost-card');
-    expect(within(mapCard).getByText('100 input tokens · 50 output tokens')).toBeInTheDocument();
+    expect(within(mapCard).getByText('100 input · 50 output')).toBeInTheDocument();
     expect(within(mapCard).getByText(COST_CARD_COPY.partialNote)).toBeInTheDocument();
     expect(within(mapCard).queryByText(COST_CARD_COPY.byModel)).not.toBeInTheDocument();
     const mapShape = cardShape(mapCard);
@@ -299,9 +320,9 @@ describe('the cost card', () => {
     await user.click(figure());
     const liveCard = screen.getByRole('dialog', { name: 'Cost' });
     expect(within(liveCard).getByText('$11.00')).toHaveClass('br-footer-card__value');
-    expect(
-      within(liveCard).getByText('2,000,000 input tokens · 200,000 output tokens')
-    ).toBeInTheDocument();
+    expect(within(liveCard).getByText('2,000,000 input · 200,000 output')).toBeInTheDocument();
+    // The counters hold input and output alone: the card says nothing about the cache.
+    expect(liveCard).not.toHaveTextContent(/cache/);
     // The counters priced at the current model's rate are always an estimate.
     expect(within(liveCard).getByText(COST_CARD_COPY.partialNote)).toBeInTheDocument();
     expect(within(liveCard).queryByText(COST_CARD_COPY.byModel)).not.toBeInTheDocument();
@@ -322,6 +343,118 @@ describe('the cost card', () => {
       'br-footer-card__value',
       'br-footer-card__detail',
     ]);
+  });
+
+  it('lists the cache the ledger recorded, so its figures add up to the chat’s billed tokens', async () => {
+    const user = userEvent.setup();
+    // The owner's chat: the card read "22,788 input · 382 output" beside a Tokens value of 89k,
+    // and Settings > App > Usage listed the other 65,408 as cache read.
+    const owners: ModelCostRow = {
+      provider: 'versa_azure',
+      model: 'gpt-5.5-2026-04-24',
+      inputTokens: 22_788,
+      outputTokens: 382,
+      cacheReadTokens: 65_408,
+      cacheCreationTokens: 0,
+      totalTokens: 88_578,
+      turns: 4,
+      totalCost: 0.14,
+      costIsPartial: false,
+    };
+    render(<CostTracker modelCostRows={[owners]} />);
+    await waitFor(() => expect(figure()).toHaveTextContent('$0.14'));
+    await user.click(figure());
+    const card = screen.getByRole('dialog', { name: COST_CARD_COPY.cardLabel });
+    // One line: input, output and one cache bucket fit the card's column.
+    const total = within(card).getByText('22,788 input · 382 output · 65,408 cache read');
+    expect(total).toHaveClass('br-footer-card__detail');
+    expect(total.querySelector('br')).toBeNull();
+    // A bucket with nothing in it says nothing.
+    expect(card).not.toHaveTextContent(/cache write/);
+    const [row] = within(
+      within(card).getByRole('list', { name: COST_CARD_COPY.byModel })
+    ).getAllByRole('listitem');
+    expect(within(row).getByText('$0.14 · 22,788 in · 382 out · 65,408 cache read')).toHaveClass(
+      'br-footer-card__detail'
+    );
+    expect(22_788 + 382 + 65_408).toBe(owners.totalTokens);
+  });
+
+  it('gives both cache buckets a second line inside the same muted detail', async () => {
+    const user = userEvent.setup();
+    const cachedBothWays: ModelCostRow = {
+      ...ledgerRow,
+      inputTokens: 1_200,
+      outputTokens: 800,
+      cacheReadTokens: 40_000,
+      cacheCreationTokens: 9_000,
+      totalTokens: 51_000,
+    };
+    render(<CostTracker modelCostRows={[cachedBothWays]} />);
+    await waitFor(() => expect(figure()).toHaveTextContent('$3.50'));
+    await user.click(figure());
+    const card = screen.getByRole('dialog', { name: COST_CARD_COPY.cardLabel });
+
+    // As they read: the no-break spaces that hold each figure to its word are spaces.
+    const lines = (detail: HTMLElement) =>
+      [...detail.querySelectorAll(':scope > span')].map((line) =>
+        line.textContent?.replace(/\u00a0/g, ' ')
+      );
+    // ONE paragraph with a line break, so the second line keeps the detail's own rhythm rather
+    // than the section's gap: the card's shape is the same as with one line.
+    const total = within(card).getByText('1,200 input · 800 output').parentElement!;
+    expect(total).toHaveClass('br-footer-card__detail');
+    expect(lines(total)).toEqual([
+      '1,200 input · 800 output',
+      '40,000 cache read · 9,000 cache write',
+    ]);
+    expect(total.querySelectorAll('br')).toHaveLength(1);
+    expect(card.querySelectorAll('.br-footer-card__detail')).toHaveLength(2);
+    expect(cardShape(card)).toEqual([
+      'br-footer-card__section',
+      'br-footer-card__label',
+      'br-footer-card__value',
+      'br-footer-card__detail',
+      'br-footer-card__section',
+      'br-footer-card__label',
+      'br-footer-card__list',
+      'br-footer-card__row',
+      'br-footer-card__row-text',
+      'br-footer-card__value',
+      'br-footer-card__detail',
+    ]);
+
+    const [row] = within(
+      within(card).getByRole('list', { name: COST_CARD_COPY.byModel })
+    ).getAllByRole('listitem');
+    const rowDetail = within(row).getByText('$3.50 · 1,200 in · 800 out').parentElement!;
+    expect(rowDetail).toHaveClass('br-footer-card__detail');
+    expect(lines(rowDetail)).toEqual([
+      '$3.50 · 1,200 in · 800 out',
+      '40,000 cache read · 9,000 cache write',
+    ]);
+  });
+
+  it('lists the cache buckets a legacy map’s rows carry', async () => {
+    const user = userEvent.setup();
+    render(
+      <CostTracker
+        sessionCosts={{
+          'openai/gpt-5.5': {
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadTokens: 2_000,
+            totalCost: 3.5,
+          },
+        }}
+      />
+    );
+    await waitFor(() => expect(figure()).toHaveTextContent('$3.50'));
+    await user.click(figure());
+    const card = screen.getByRole('dialog', { name: COST_CARD_COPY.cardLabel });
+    expect(within(card).getByText('100 input · 50 output · 2,000 cache read')).toHaveClass(
+      'br-footer-card__detail'
+    );
   });
 
   it('stays pinned when the ledger’s answer replaces the live price', async () => {
@@ -361,7 +494,7 @@ describe('one card at a time on the footer line', () => {
   const otherOpen = () =>
     document.querySelector('[data-testid="other-card"]')?.getAttribute('data-state') === 'open';
 
-  it('closes the other card when the cost card opens, and closes the cost card when it opens', async () => {
+  it('closes the other card when the cost card opens, and the cost card when the other is kept, never on a hover', async () => {
     const user = userEvent.setup();
     render(
       <FooterCardGroup>
@@ -379,11 +512,17 @@ describe('one card at a time on the footer line', () => {
     // Opening it never took focus from where the click left it.
     expect(figure()).toHaveFocus();
 
+    // Hover peeks, click pins: a hover over the other item opens nothing while the cost card is
+    // kept (footerCards.contract rule 7)...
     vi.useFakeTimers();
     fireEvent.pointerEnter(screen.getByTestId('other'), { pointerType: 'mouse' });
     act(() => {
-      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS + 10);
+      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS * 3);
     });
+    expect(otherOpen()).toBe(false);
+    expect(isOpen()).toBe(true);
+    // ...and a click on it replaces it.
+    fireEvent.click(screen.getByTestId('other'), { detail: 1 });
     expect(otherOpen()).toBe(true);
     expect(isOpen()).toBe(false);
   });

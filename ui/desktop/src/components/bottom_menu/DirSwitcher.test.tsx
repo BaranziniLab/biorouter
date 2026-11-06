@@ -26,7 +26,7 @@ vi.mock('../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
 }));
 
-import { DirSwitcher, workingDirLabel, deriveWorkingDirLocked } from './DirSwitcher';
+import { DirSwitcher, deriveWorkingDirLocked } from './DirSwitcher';
 import { ChatState } from '../../types/chatState';
 import { updateWorkingDir } from '../../api';
 import { toastError } from '../../toasts';
@@ -54,6 +54,8 @@ afterAll(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(window, {
+    // No home folder known unless a test says so: paths stay absolute.
+    appConfig: undefined,
     electron: {
       directoryChooser: vi.fn(async () => ({ canceled: false, filePaths: [CHOSEN_DIR] })),
       addRecentDir: vi.fn(),
@@ -62,34 +64,12 @@ beforeEach(() => {
   });
 });
 
-describe('workingDirLabel', () => {
-  it('shows only the basename of a directory', () => {
-    expect(workingDirLabel('/Users/wgu/Desktop')).toBe('Desktop');
-    expect(workingDirLabel('/Users/wgu/Desktop/')).toBe('Desktop');
-    expect(workingDirLabel('C:\\Users\\wgu\\Desktop')).toBe('Desktop');
-  });
-
-  it('shows the home directory as its own basename', () => {
-    expect(workingDirLabel('/Users/wgu')).toBe('wgu');
-  });
-
-  it('shows a rootlike path as-is when there is no basename', () => {
-    expect(workingDirLabel('/')).toBe('/');
-    expect(workingDirLabel('')).toBe('');
-  });
-
-  it('shows a Windows drive root as-is, not as a folder named "C:"', () => {
-    expect(workingDirLabel('C:\\')).toBe('C:\\');
-    expect(workingDirLabel('C:/')).toBe('C:/');
-    expect(workingDirLabel('d:\\\\')).toBe('d:\\\\');
-  });
-});
-
 /**
  * Spec 3.7: the footer names the FOLDER, never the path, in both states (names,
- * not IDs or paths, principle 10). The path is one hover away, in the card.
- * The name sits in a `<bdi>` so a right-to-left folder name cannot reorder the
- * line around it.
+ * not IDs or paths, principle 10), with the word the sidebar's folder groups use
+ * (`folderName`, utils/folderPath.ts, whose own cases are folderPath.test.ts's).
+ * The path is one hover away, in the card. The name sits in a `<bdi>` so a
+ * right-to-left folder name cannot reorder the line around it.
  */
 describe('the chip names the folder, inside its bidi isolate', () => {
   it.each([
@@ -114,6 +94,52 @@ describe('the chip names the folder, inside its bidi isolate', () => {
     );
     expect(screen.getByTestId('dir-switcher-locked')).toHaveTextContent('Downloads');
     expect(container.querySelector('bdi')?.textContent).toBe('Downloads');
+  });
+
+  describe('with the home folder known (the desktop’s own daemon)', () => {
+    beforeEach(() => {
+      Object.assign(window, {
+        appConfig: {
+          get: (key: string) =>
+            ({ BIOROUTER_HOME_DIR: '/Users/wgu', BIOROUTER_LOCAL_BACKEND: true })[key],
+        },
+      });
+    });
+
+    it.each([
+      // The visible word is not in the path, so the name says it first (WCAG 2.5.3).
+      ['the home folder', '/Users/wgu', '~', 'Working folder: ~ (/Users/wgu)'],
+      [
+        'the Crew task folder',
+        '/Users/wgu/Library/Application Support/Biorouter/crew/tasks',
+        'Crew',
+        'Working folder: Crew (/Users/wgu/Library/Application Support/Biorouter/crew/tasks)',
+      ],
+      // The visible word is in the path: the name is the path alone, as before.
+      [
+        'a folder under home',
+        '/Users/wgu/Desktop',
+        'Desktop',
+        'Working folder: /Users/wgu/Desktop',
+      ],
+    ])('names %s as the sidebar does, and its name holds that word', (_case, dir, name, label) => {
+      const { container } = render(<DirSwitcher sessionId="session-1" workingDir={dir} locked />);
+      const chip = screen.getByTestId('dir-switcher-locked');
+      expect(container.querySelector('bdi')?.textContent).toBe(name);
+      expect(chip).toHaveAccessibleName(label);
+      expect(chip.getAttribute('aria-label')).toContain(name);
+      expect(FOOTER_COPY.folderLabel(dir, name)).toBe(label);
+    });
+
+    it('reads the home folder by its own name for a daemon that may be elsewhere', () => {
+      Object.assign(window, {
+        appConfig: { get: (key: string) => ({ BIOROUTER_HOME_DIR: '/Users/wgu' })[key] },
+      });
+      render(<DirSwitcher sessionId="session-1" workingDir="/Users/wgu" locked />);
+      const chip = screen.getByTestId('dir-switcher-locked');
+      expect(chip).toHaveTextContent('wgu');
+      expect(chip).toHaveAccessibleName('Working folder: /Users/wgu');
+    });
   });
 });
 
@@ -371,10 +397,18 @@ describe('DirSwitcher card control mode (#50)', () => {
   });
 });
 
-/// The footer is sans (principle 3: mono is for machine strings). The PATH is a
-/// machine string, so the card that shows it sets it in mono, as the sidebar
-/// and History do. jsdom never runs Tailwind, so these assert classes.
-describe('DirSwitcher: the folder name is sans, the path in its card is mono', () => {
+/// The footer is sans (principle 3: mono is for machine strings), and so is the
+/// folder in its card: it is a reading like the card's others, written as the
+/// app writes a folder everywhere (`FooterCardPath`). jsdom never runs Tailwind,
+/// so these assert classes and markup; the face itself is measured in Chromium
+/// (footerCard.browser.test.tsx).
+describe('DirSwitcher: the folder name and the path in its card are both sans', () => {
+  /** A folder the card writes (`FooterCardPath`), found by the absolute path it stands for. */
+  const byPath = (container: Element | Document, absolute: string) =>
+    [...container.querySelectorAll<HTMLElement>('[data-path]')].find(
+      (node) => node.dataset.path === absolute
+    ) ?? null;
+
   it('sets neither chip in monospace', () => {
     const { rerender } = render(
       <DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
@@ -384,18 +418,19 @@ describe('DirSwitcher: the folder name is sans, the path in its card is mono', (
     expect(screen.getByText('Desktop').closest('.font-mono')).toBeNull();
   });
 
-  it('sets the path in the card in monospace, on the path itself', async () => {
+  it('writes the path in the card as a value, with nothing in monospace', async () => {
     const user = userEvent.setup();
     render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     await user.hover(screen.getByTestId('dir-switcher-locked'));
     const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
 
-    // On the node that holds the path, not on the surface: mono on the box
-    // would set the card's sentences in mono too.
-    const path = [...card.querySelectorAll('*')].find((node) => node.textContent === WORKING_DIR);
-    expect(path).toBeDefined();
-    expect(path!.className).toMatch(/font-mono/);
+    const path = byPath(card, WORKING_DIR);
+    expect(path).not.toBeNull();
+    expect(path).toHaveTextContent(WORKING_DIR);
+    expect(path).toHaveClass('br-footer-card__value', 'br-footer-card__path');
+    expect(path).not.toHaveClass('break-all');
+    expect(card.querySelector('.font-mono')).toBeNull();
     expect(card.className).not.toMatch(/font-mono/);
   });
 });

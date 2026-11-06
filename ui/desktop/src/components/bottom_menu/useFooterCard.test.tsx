@@ -23,8 +23,9 @@ import {
 /**
  * The footer cards' primitive (`useFooterCard`, `FooterCardTrigger`, `FooterCard`), on stand-in
  * items, for what the line's behaviour table does not reach: an item's own click running before
- * the pin, Radix's focus wrap inside a card, a group of none, the anchor and grace geometry, and
- * the suppression the folder chip needs (#50).
+ * the pin, Radix's focus wrap inside a card, a group of none, the group's kept rule on its own
+ * (`keptElsewhere`), the anchor and grace geometry, and the suppression the folder chip needs
+ * (#50).
  *
  * Every rule the three real items must share (hover, leaving, Tab, click, tap and keys, a press
  * inside, closing and focus, one card at a time, a window switch, scroll, the trigger's state) is
@@ -159,6 +160,81 @@ describe('what the line’s contract does not reach', () => {
     fireEvent.click(trigger('left'), { detail: 1 });
     hoverOpen('right');
     expect(isOpen('left')).toBe(true);
+    expect(isOpen('right')).toBe(true);
+  });
+});
+
+/**
+ * The group's kept rule on its own (`keptElsewhere`): a hover opens nothing beside a card the
+ * group holds as kept, and the group's answer follows the card's state the moment it changes,
+ * both ways. The three real items' version of it is the contract's rule 7.
+ */
+describe('the group’s kept rule', () => {
+  const marked = (name: string) => trigger(name).hasAttribute('data-pinned');
+
+  it('opens nothing on a hover beside a kept card, and a hover beside a preview replaces it', () => {
+    vi.useFakeTimers();
+    render(<Line />);
+    fireEvent.click(trigger('left'), { detail: 1 });
+    expect(marked('left')).toBe(true);
+    hoverOpen('right');
+    expect(isOpen('right')).toBe(false);
+    expect(isOpen('left')).toBe(true);
+    fireEvent.pointerLeave(trigger('right'), { pointerType: 'mouse' });
+    // Back to a preview: the second click closes it, and a hover opens it unkept.
+    fireEvent.click(trigger('left'), { detail: 1 });
+    hoverOpen('left');
+    expect(isOpen('left')).toBe(true);
+    expect(marked('left')).toBe(false);
+    fireEvent.pointerLeave(trigger('left'), { pointerType: 'mouse' });
+    hoverOpen('right');
+    expect(isOpen('right')).toBe(true);
+    expect(isOpen('left')).toBe(false);
+  });
+
+  it('opens a hover again once the kept card has closed', async () => {
+    const user = userEvent.setup();
+    render(<Line />);
+    await user.click(trigger('left'));
+    expect(marked('left')).toBe(true);
+    await user.keyboard('{Escape}');
+    expect(isOpen('left')).toBe(false);
+    // Nothing still counts the closed card as kept: the next hover beside it opens.
+    await user.hover(trigger('right'));
+    await waitFor(() => expect(isOpen('right')).toBe(true));
+    expect(marked('right')).toBe(false);
+  });
+
+  it('counts a card kept by a press inside, as by a click', () => {
+    vi.useFakeTimers();
+    render(<Line />);
+    hoverOpen('left');
+    expect(marked('left')).toBe(false);
+    fireEvent.pointerDown(surface('left')!, { pointerType: 'mouse' });
+    fireEvent.pointerUp(surface('left')!, { pointerType: 'mouse' });
+    expect(marked('left')).toBe(true);
+    fireEvent.pointerLeave(trigger('left'), { pointerType: 'mouse' });
+    hoverOpen('right');
+    expect(isOpen('right')).toBe(false);
+    expect(isOpen('left')).toBe(true);
+  });
+
+  it('counts a suppressed card as not kept', () => {
+    vi.useFakeTimers();
+    function Pair({ suppressed }: { suppressed: boolean }) {
+      return (
+        <FooterCardGroup>
+          <TestItem name="left" suppressed={suppressed} />
+          <TestItem name="right" align="end" />
+        </FooterCardGroup>
+      );
+    }
+    const view = render(<Pair suppressed={false} />);
+    fireEvent.click(trigger('left'), { detail: 1 });
+    expect(marked('left')).toBe(true);
+    view.rerender(<Pair suppressed />);
+    expect(marked('left')).toBe(false);
+    hoverOpen('right');
     expect(isOpen('right')).toBe(true);
   });
 });

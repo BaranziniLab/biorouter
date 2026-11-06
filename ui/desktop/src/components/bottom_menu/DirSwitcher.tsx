@@ -3,6 +3,8 @@ import React, { useId, useState } from 'react';
 import { Folder } from '../icons/app-icons';
 import { updateWorkingDir } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
+import { folderName, homeFolder } from '../../utils/folderPath';
+import { isBrowserSurface } from '../../utils/surface';
 import { toastError } from '../../toasts';
 import { ChatState } from '../../types/chatState';
 import { FOOTER_COPY } from './copy';
@@ -32,19 +34,6 @@ interface DirSwitcherProps {
   onWorkingDirChange?: (newDir: string) => void;
   onRestartStart?: () => void;
   onRestartEnd?: () => void;
-}
-
-/**
- * The short display name for a working directory: its basename ("Desktop" for
- * /Users/wgu/Desktop). A filesystem root ("/", "C:\") has no basename and is
- * shown as-is; the home directory shows its own basename (e.g. "wgu"), which
- * stays unambiguous alongside the full path in the chip's card.
- */
-export function workingDirLabel(dir: string): string {
-  // A Windows drive root ("C:\", "C:/") is a root, not a folder named "C:".
-  if (/^[A-Za-z]:[\\/]+$/.test(dir)) return dir;
-  const segments = dir.split(/[/\\]+/).filter(Boolean);
-  return segments.length > 0 ? segments[segments.length - 1] : dir;
 }
 
 /**
@@ -107,8 +96,12 @@ export function deriveWorkingDirLocked(params: {
  *   stuck open over a native dialog, nothing armed during it opens after).
  * - Locked (#44, the chat has messages): the card says the folder is fixed,
  *   and nothing here opens the chooser or calls `updateWorkingDir`.
- * - Cmd/Ctrl-click opens a known folder in the file manager, in any state (an
- *   accelerator: it neither pins the card nor changes the folder).
+ * - Cmd-click on macOS, Ctrl-click on Windows and Linux, opens a known folder
+ *   in the file manager, in any state (an accelerator: it neither pins the card
+ *   nor changes the folder). It is the only modifier click in the interface. In
+ *   a `biorouter serve` browser there is no file manager to open
+ *   (`openDirectoryInExplorer` is a no-op there), so it is a plain click and
+ *   pins the card.
  * - Folder not known yet (`workingDir` null, an existing chat): the folder
  *   glyph and no name, and the same card, so Revoke never depends on the
  *   folder's row having answered.
@@ -200,21 +193,25 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
       event.preventDefault();
       return;
     }
-    if ((event.metaKey || event.ctrlKey) && workingDir !== null) {
+    // macOS's Ctrl-click is a secondary click, so the chord is Cmd there.
+    const revealChord = window.electron?.platform === 'darwin' ? event.metaKey : event.ctrlKey;
+    if (revealChord && workingDir !== null && !isBrowserSurface()) {
       event.preventDefault();
       card.close();
       void window.electron.openDirectoryInExplorer(workingDir);
     }
   };
 
-  // The footer shows the folder's NAME in its sans (spec 3.7, principle 10:
-  // names, not paths); the full path is in the card, in mono, because a path is
-  // a machine string. `<bdi>` keeps a right-to-left folder name from reordering
-  // the line around it.
+  // The footer shows the folder's NAME (spec 3.7, principle 10: names, not
+  // paths), the word the sidebar's folder groups use (`~` for home, `Crew` for
+  // the Crew task folder); the card writes where it is, ending in this same name
+  // (`FooterCardPath`). `<bdi>` keeps a right-to-left folder name from
+  // reordering the line around it.
+  const shownName = workingDir === null ? null : folderName(workingDir, homeFolder());
   const name =
-    workingDir === null ? null : (
+    shownName === null ? null : (
       <span className="br-footline__name">
-        <bdi>{workingDirLabel(workingDir)}</bdi>
+        <bdi>{shownName}</bdi>
       </span>
     );
 
@@ -236,9 +233,11 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
               : 'dir-switcher'
         }
         // The chip's name carries the full path, so a screen reader has it
-        // without opening the card.
+        // without opening the card, and the word the chip shows (WCAG 2.5.3).
         aria-label={
-          workingDir === null ? FOOTER_COPY.folderUnknownLabel : FOOTER_COPY.folderLabel(workingDir)
+          workingDir === null
+            ? FOOTER_COPY.folderUnknownLabel
+            : FOOTER_COPY.folderLabel(workingDir, shownName ?? undefined)
         }
         onClick={onChipClick}
       >

@@ -3,6 +3,11 @@ import { chatDateBucket, type ChatDateBucket } from '../../utils/chatDateBuckets
 import { isDefaultSessionName } from '../../utils/sessionNameSync';
 import { isCrewTask } from '../chats/chatKind';
 import { historyRowTitle } from '../sessions/historyRow';
+import { normalizeFolder, tildePath } from '../../utils/folderPath';
+
+// Moved to utils/folderPath.ts, the one rule for writing a folder; re-exported so every import
+// from here keeps working.
+export { normalizeFolder, tildePath };
 
 /**
  * How the sidebar arranges its chats (owner message 3): grouped by date (the
@@ -162,27 +167,8 @@ export function groupSidebarChatsByDate(
 
 // ── Folders ───────────────────────────────────────────────────────────────
 
-/** Trailing separators off, except on a root (`/`, `C:\`). */
-export function normalizeFolder(path: string | null | undefined): string {
-  const trimmed = (path ?? '').trim();
-  if (!trimmed) return '';
-  const stripped = trimmed.replace(/[\\/]+$/, '');
-  return stripped || trimmed.slice(0, 1);
-}
-
 function segmentsOf(path: string): string[] {
   return path.split(/[\\/]+/).filter(Boolean);
-}
-
-/** The path with the home folder written as `~`. */
-export function tildePath(path: string, homeDir?: string | null): string {
-  const home = normalizeFolder(homeDir);
-  if (!home || !path) return path;
-  if (path === home) return '~';
-  if (path.startsWith(`${home}/`) || path.startsWith(`${home}\\`)) {
-    return `~${path.slice(home.length)}`;
-  }
-  return path;
 }
 
 /**

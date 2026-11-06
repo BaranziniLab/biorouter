@@ -61,6 +61,15 @@ const BASE: ComposerFooterProps = {
   ],
 };
 
+/**
+ * A folder the folder card writes (`FooterCardPath`), found by the absolute path it stands for: its
+ * names sit in separate `<bdi>`s, so no text query finds the path whole.
+ */
+const byPath = (container: Element | Document, absolute: string) =>
+  [...container.querySelectorAll<HTMLElement>('[data-path]')].find(
+    (node) => node.dataset.path === absolute
+  ) ?? null;
+
 /** Let the cost tracker's pricing fetch land, so its state update is inside act. */
 async function settle() {
   await act(async () => {});
@@ -154,7 +163,7 @@ describe('ComposerFooter (spec 3.7)', () => {
       fireEvent.click(screen.getByTestId('dir-switcher-unknown'), { detail: 1 });
       const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
       expect(card).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolderUnknown);
-      await within(card).findByText(grant.folder);
+      await waitFor(() => expect(byPath(card, grant.folder)).toHaveTextContent(grant.folder));
       fireEvent.click(
         within(card).getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(grant.folder) })
       );

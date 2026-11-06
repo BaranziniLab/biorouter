@@ -1,6 +1,8 @@
 import './pickers.css';
 import * as React from 'react';
 import { cn } from '../../utils';
+import { homeFolder, tildePath } from '../../utils/folderPath';
+import { PathSegments } from '../ui/path-segments';
 import { Popover, PopoverAnchor, PopoverContent } from '../ui/popover';
 import { Button } from '../ui/button';
 import {
@@ -128,6 +130,10 @@ export interface FooterCardProps {
  * composer card's top, so the card hangs over the transcript and never over the draft or its
  * controls. Sections stack 12px apart. The room above caps the height (Radix's available height in `.br-footer-card`'s `max-height`,
  * which honours the collision padding), so a tall card in a short window scrolls inside itself.
+ *
+ * It looks the same whether a hover previews it or a click keeps it: the kept state is the
+ * trigger's to show (`data-pinned`, the strong fill), as an open menu's is. The surface carries
+ * `data-pinned` too, unstyled, so a test can read the state off either end.
  */
 export function FooterCard({ card, id, label, align, testId, children }: FooterCardProps) {
   return (
@@ -139,6 +145,7 @@ export function FooterCard({ card, id, label, align, testId, children }: FooterC
       collisionPadding={FOOTER_CARD_COLLISION_PADDING}
       aria-label={label}
       data-testid={testId}
+      data-pinned={card.pinned ? 'true' : undefined}
       className="br-footer-card"
       {...card.contentHandlers}
     >
@@ -168,26 +175,40 @@ export function FooterCardSection({
   );
 }
 
-/**
- * A section's primary reading, in the default ink with tabular figures. `mono` is for a machine
- * string (a path): set in mono, and wrapped anywhere rather than widening the card or being cut.
- */
+/** A section's primary reading, in the default ink with tabular figures. */
 export function FooterCardValue({
-  mono = false,
+  className,
   children,
   ...rest
-}: { mono?: boolean; children: React.ReactNode } & React.HTMLAttributes<HTMLParagraphElement>) {
-  if (mono) {
-    return (
-      <p dir="ltr" data-mono="" {...rest} className="br-footer-card__value font-mono break-all">
-        {children}
-      </p>
-    );
-  }
+}: { children: React.ReactNode } & React.HTMLAttributes<HTMLParagraphElement>) {
   return (
-    <p {...rest} className="br-footer-card__value">
+    <p {...rest} className={cn('br-footer-card__value', className)}>
       {children}
     </p>
+  );
+}
+
+/**
+ * A folder, as a reading: a `FooterCardValue` like any other (the same 13/18, the same default
+ * ink, the card's own face), written as the app writes a folder everywhere, `~` for the home
+ * folder and absolute elsewhere (`tildePath(path, homeFolder())`, utils/folderPath.ts). The whole
+ * location in one ink, never truncated: the card is the one place it is read in full.
+ *
+ * - Drawn by `PathSegments` (ui/path-segments.tsx), as the transcript's folder-access approval
+ *   draws its folder: each name its own `<bdi>` with the separators outside it, in a
+ *   left-to-right paragraph, so a right-to-left name cannot reorder the separators around it.
+ * - It breaks only after a separator, and inside a name only when that name is wider than the
+ *   card: each name and the separator after it are one atomic piece (`.br-path-piece` in
+ *   `.br-footer-card__path`, pickers.css), so a hyphen or a space in a name that fits a line is no
+ *   break point. A leading separator belongs to the first name, so a root never ends a line alone.
+ * - `data-path` holds the absolute path it stands for; a selection copies what is drawn, `~` and
+ *   all, with nothing added (the pieces and `<bdi>`s add no characters).
+ */
+export function FooterCardPath({ path }: { path: string }) {
+  return (
+    <FooterCardValue dir="ltr" data-path={path} className="br-footer-card__path">
+      <PathSegments path={tildePath(path, homeFolder())} />
+    </FooterCardValue>
   );
 }
 

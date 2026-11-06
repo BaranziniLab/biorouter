@@ -12,14 +12,19 @@ import { useRef } from 'react';
  * row that names the odd one out.
  *
  * The blocks are numbered as the rules are in docs/desktop-ui/shared-controls.md ("Composer
- * footer cards"): 1 hover, 2 leaving and the pointer's way across, 3 Tab, 4 click, tap, Enter and
+ * footer cards"): 1 hover, 2 leaving and the pointer's way across (up from the trigger to the card,
+ * and back down from the card to the trigger), 3 Tab, 4 click, tap, Enter and
  * Space, 5 a press inside, 6 Escape, Shift+Tab and an outside press, 7 one card at a time (every
- * ordered pair of items), 8 the trigger's blur and a window switch (a card pinned from its trigger,
- * or by a press inside while focus was in the draft), 9 scroll, 10 the trigger's open state, 11
- * the composer each card hangs above; and, last, rule 3 where nothing tabbable follows the line
- * (Home), so a Tab moves into the card. The folder's own two rules (#50, #44) are
- * `FolderAccessCard.test.tsx`'s. A new rule goes into this table, so it holds for all three items
- * at once; a new item on the line goes into `ITEMS`.
+ * ordered pair of items: a hover replaces a preview and opens nothing over a KEPT card, focus and
+ * a typed key in it included, while a click, Enter, Space or a Tab still replaces it), 8 the
+ * trigger's blur and a window switch (a card pinned from its trigger, or by a press inside while
+ * focus was in the draft), 9 scroll, 10 the trigger's open state and its KEPT mark (hover peeks,
+ * click pins: `data-pinned` on the trigger and the surface for a kept card, never for a preview,
+ * gone on every close, and absent while the folder's chooser is open, #50), 11 the composer each
+ * card hangs above; and, last, rule 3 where nothing tabbable follows the line (Home), so a Tab
+ * moves into the card. The folder's own two rules (#50, #44) are `FolderAccessCard.test.tsx`'s. A
+ * new rule goes into this table, so it holds for all three items at once; a new item on the line
+ * goes into `ITEMS`. How each state LOOKS on the trigger is `footerCard.browser.test.tsx`'s.
  *
  * The real `ComposerFooter` is rendered under a composer stand-in, with all three items present,
  * exactly as `ChatInput` wires it (the composer card passed as `composerRef`), and a button on
@@ -58,6 +63,7 @@ vi.mock('../../utils/pricing', () => ({ fetchModelPricing: vi.fn(async () => nul
 import { ComposerFooter, type ComposerFooterProps } from './ComposerFooter';
 import { CONTEXT_CARD_COPY, COST_CARD_COPY, FOLDER_ACCESS_COPY, FOOTER_COPY } from './copy';
 import { FOOTER_CARD_CLOSE_GRACE_MS, FOOTER_CARD_OPEN_DELAY_MS } from './useFooterCard';
+import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 
 const WORKING_DIR = '/Users/wgu/Projects/kdps';
 const GRANT = {
@@ -148,6 +154,19 @@ const LABEL = {
   get: (card: HTMLElement) => card.querySelector<HTMLElement>('.br-footer-card__label')!,
 };
 
+/**
+ * A folder the folder card writes (`FooterCardPath`), found by the absolute path it stands for:
+ * its names sit in separate `<bdi>`s, so no text query finds the path whole. It throws when the
+ * card writes no such folder, so a press can never land on nothing.
+ */
+function byPath(container: Element | Document, absolute: string): HTMLElement {
+  const node = [...container.querySelectorAll<HTMLElement>('[data-path]')].find(
+    (candidate) => candidate.dataset.path === absolute
+  );
+  if (!node) throw new Error(`the card writes no folder ${absolute}`);
+  return node;
+}
+
 const ITEMS: Item[] = [
   {
     name: 'folder',
@@ -160,7 +179,7 @@ const ITEMS: Item[] = [
       screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(GRANT.folder) }),
     pressTargets: [
       LABEL,
-      { name: 'a granted folder’s path', get: (card) => within(card).getByText(GRANT.folder) },
+      { name: 'a granted folder’s path', get: (card) => byPath(card, GRANT.folder) },
     ],
     // A chat with messages and no other approved folders: no Choose folder…, no Revoke.
     withoutControls: () => mocks.list.mockResolvedValue({ data: [] }),
@@ -200,9 +219,16 @@ const ITEMS: Item[] = [
   },
 ];
 
+const [FOLDER] = ITEMS;
+
 /** Every ordered pair of different items, for the one-at-a-time rule. */
 const PAIRS = ITEMS.flatMap((first) =>
   ITEMS.filter((then) => then !== first).map((then) => ({ first, then }))
+);
+
+/** The pairs a single Tab or Shift+Tab moves between: the items side by side on the line. */
+const NEIGHBOURS = PAIRS.filter(
+  ({ first, then }) => Math.abs(ITEMS.indexOf(first) - ITEMS.indexOf(then)) === 1
 );
 
 beforeAll(() => {
@@ -234,6 +260,18 @@ const trigger = (item: Item) => screen.getByTestId(item.trigger);
 const surface = (item: Item) => document.querySelector<HTMLElement>(`[data-testid="${item.card}"]`);
 const isOpen = (item: Item) => surface(item)?.getAttribute('data-state') === 'open';
 const openCards = () => ITEMS.filter(isOpen).map((item) => item.name);
+
+/**
+ * Where the item says its card is KEPT (`data-pinned`): on the trigger, which pickers.css paints,
+ * and on the surface, unstyled. Read off both, so the two can never disagree. A card that has
+ * closed, or never opened, has no surface to mark.
+ */
+const marks = (item: Item) => ({
+  trigger: trigger(item).hasAttribute('data-pinned'),
+  surface: surface(item)?.hasAttribute('data-pinned') ?? false,
+});
+const UNMARKED = { trigger: false, surface: false };
+const MARKED = { trigger: true, surface: true };
 
 /** Settle what mounting or opening started (the pricing fetch, the grant read). */
 const flush = () => act(async () => {});
@@ -403,6 +441,91 @@ describe.each(ITEMS)('the $name item', (item) => {
         await advance(strideMs);
         if ((step + 1) * strideMs > FOOTER_CARD_CLOSE_GRACE_MS) {
           expect(isOpen(item), `closed ${(step + 1) * strideMs}ms in, still moving`).toBe(false);
+        }
+      }
+    });
+
+    // The way back: the same grace, from the card down to its trigger. Without it, a person who
+    // reads the card and heads back to the trigger (to click it and pin the card) loses the card
+    // on the way across the composer.
+    const CARD = new DOMRect(100, 100, 320, 270);
+    /** Where the pointer leaves the card: its bottom edge, straight above the trigger. */
+    const EXIT = { x: 160, y: CARD.bottom };
+    const STRIDE_MS = 50;
+
+    /**
+     * Hover the card open, then move the pointer up into it and rest there past the grace. jsdom
+     * places nothing, so the card and the trigger get the boxes a real layout would give them: the
+     * card above the composer, the trigger on the line under it.
+     */
+    async function restInCard(): Promise<HTMLElement> {
+      await hoverOpen(item);
+      const card = surface(item)!;
+      vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(CARD);
+      vi.spyOn(trigger(item), 'getBoundingClientRect').mockReturnValue(
+        new DOMRect(130, 540, 60, 20)
+      );
+      fireEvent.pointerLeave(trigger(item), { pointerType: 'mouse', clientX: 160, clientY: 540 });
+      fireEvent.pointerEnter(card, { pointerType: 'mouse' });
+      await advance(FOOTER_CARD_CLOSE_GRACE_MS * 2);
+      expect(isOpen(item), 'resting in the card').toBe(true);
+      return card;
+    }
+
+    /** One move on the way down from the card to the trigger, `step` strides along. */
+    const moveDown = (step: number) =>
+      fireEvent.pointerMove(document, {
+        pointerType: 'mouse',
+        clientX: EXIT.x,
+        clientY: EXIT.y + 15 + step * 25,
+      });
+
+    it('stays open for a pointer moving from the card back down to its trigger, and once it is there', async () => {
+      vi.useFakeTimers();
+      await renderLine();
+      const card = await restInCard();
+      fireEvent.pointerLeave(card, { pointerType: 'mouse', clientX: EXIT.x, clientY: EXIT.y });
+      // A move every 50ms, for far longer than the grace: each one, on the way, re-arms it.
+      const steps = 7;
+      expect(steps * STRIDE_MS).toBeGreaterThan(FOOTER_CARD_CLOSE_GRACE_MS * 2);
+      for (let step = 0; step < steps; step++) {
+        await advance(STRIDE_MS);
+        moveDown(step);
+        expect(isOpen(item), `${(step + 1) * STRIDE_MS}ms on the way down`).toBe(true);
+      }
+      // On the trigger: the card stays for as long as the pointer does.
+      fireEvent.pointerEnter(trigger(item), { pointerType: 'mouse' });
+      expect(isOpen(item), 'arriving on the trigger').toBe(true);
+      await advance(FOOTER_CARD_CLOSE_GRACE_MS * 4);
+      expect(isOpen(item), 'resting on the trigger').toBe(true);
+      // Not a card that closed on the way and that the arrival opened again after the delay.
+      expect(surface(item), 'the same card, never closed').toBe(card);
+    });
+
+    it('closes for a pointer that leaves the card and strays off its way down, while it is still moving', async () => {
+      vi.useFakeTimers();
+      await renderLine();
+      const card = await restInCard();
+      fireEvent.pointerLeave(card, { pointerType: 'mouse', clientX: EXIT.x, clientY: EXIT.y });
+      // A little way down first, which holds it...
+      for (let step = 0; step < 2; step++) {
+        await advance(STRIDE_MS);
+        moveDown(step);
+      }
+      expect(isOpen(item), 'on its way down').toBe(true);
+      // ...then off to the side, below the card and nowhere near the trigger, never stopping: the
+      // grace the last move on the way armed runs out while the moves keep coming.
+      for (let step = 0; step < 8; step++) {
+        fireEvent.pointerMove(document, {
+          pointerType: 'mouse',
+          clientX: 500 + step * 20,
+          clientY: CARD.bottom + 50,
+        });
+        await advance(STRIDE_MS);
+        if ((step + 1) * STRIDE_MS > FOOTER_CARD_CLOSE_GRACE_MS) {
+          expect(isOpen(item), `closed ${(step + 1) * STRIDE_MS}ms off its way, still moving`).toBe(
+            false
+          );
         }
       }
     });
@@ -737,6 +860,162 @@ describe.each(ITEMS)('the $name item', (item) => {
       shows(false);
       await flush();
     });
+
+    // HOVER PEEKS, CLICK PINS. `aria-expanded` is true for a preview and a kept card alike (above);
+    // only a kept card is marked, and the mark is what the trigger paints.
+    it('marks nothing while a hover or a Tab only previews the card', async () => {
+      const user = userEvent.setup();
+      await renderLine();
+      expect(marks(item), 'at rest').toEqual(UNMARKED);
+      await user.hover(trigger(item));
+      await waitFor(() => expect(isOpen(item)).toBe(true));
+      expect(trigger(item)).toHaveAttribute('aria-expanded', 'true');
+      expect(marks(item), 'a hover preview').toEqual(UNMARKED);
+      // The pointer on its way into the card, and resting there: still a preview.
+      await user.unhover(trigger(item));
+      await user.hover(surface(item)!);
+      await wait(FOOTER_CARD_CLOSE_GRACE_MS * 2);
+      expect(isOpen(item)).toBe(true);
+      expect(marks(item), 'the pointer in the card').toEqual(UNMARKED);
+      await user.unhover(surface(item)!);
+      await waitFor(() => expect(isOpen(item)).toBe(false));
+      act(() => before(item).focus());
+      await user.tab();
+      expect(isOpen(item)).toBe(true);
+      expect(trigger(item)).toHaveAttribute('aria-expanded', 'true');
+      expect(marks(item), 'a Tab preview').toEqual(UNMARKED);
+      await flush();
+    });
+
+    const KEEPS: {
+      how: string;
+      keep: (user: ReturnType<typeof userEvent.setup>) => Promise<void>;
+    }[] = [
+      { how: 'a click', keep: (user) => user.click(trigger(item)) },
+      {
+        how: 'a tap',
+        keep: (user) => user.pointer({ keys: '[TouchA]', target: trigger(item) }),
+      },
+      {
+        how: 'Enter',
+        keep: async (user) => {
+          act(() => trigger(item).focus());
+          await user.keyboard('{Enter}');
+          await waitFor(() => expect(surface(item)).toHaveFocus());
+        },
+      },
+      {
+        how: 'Space',
+        keep: async (user) => {
+          act(() => trigger(item).focus());
+          await user.keyboard(' ');
+          await waitFor(() => expect(surface(item)).toHaveFocus());
+        },
+      },
+      {
+        how: 'a click on a hover preview',
+        keep: async (user) => {
+          await user.hover(trigger(item));
+          await waitFor(() => expect(isOpen(item)).toBe(true));
+          expect(marks(item), 'before the click').toEqual(UNMARKED);
+          await user.click(trigger(item));
+        },
+      },
+      {
+        how: 'a press inside a hover preview',
+        keep: async (user) => {
+          await user.hover(trigger(item));
+          await waitFor(() => expect(isOpen(item)).toBe(true));
+          expect(marks(item), 'before the press').toEqual(UNMARKED);
+          await user.pointer({ keys: '[MouseLeft]', target: LABEL.get(surface(item)!) });
+        },
+      },
+      {
+        how: 'focus entering a Tab preview',
+        keep: async (user) => {
+          act(() => before(item).focus());
+          await user.tab();
+          expect(isOpen(item)).toBe(true);
+          expect(marks(item), 'before focus enters').toEqual(UNMARKED);
+          act(() => surface(item)!.focus());
+        },
+      },
+    ];
+
+    it.each(KEEPS)(
+      'marks the card kept, on the trigger and the surface alike, once $how keeps it',
+      async ({ keep }) => {
+        const user = userEvent.setup();
+        await renderLine();
+        expect(marks(item)).toEqual(UNMARKED);
+        await keep(user);
+        await flush();
+        expect(isOpen(item)).toBe(true);
+        expect(marks(item)).toEqual(MARKED);
+        expect(trigger(item)).toHaveAttribute('data-pinned', 'true');
+        expect(trigger(item)).toHaveAttribute('aria-expanded', 'true');
+        // A disclosure, not a toggle: the mark is never a pressed state.
+        expect(trigger(item)).not.toHaveAttribute('aria-pressed');
+        // And it holds once the pointer has gone: a kept card ignores the pointer.
+        fireEvent.pointerLeave(trigger(item), { pointerType: 'mouse' });
+        fireEvent.pointerLeave(surface(item)!, { pointerType: 'mouse' });
+        await wait(FOOTER_CARD_CLOSE_GRACE_MS * 2);
+        expect(marks(item), 'the pointer gone').toEqual(MARKED);
+      }
+    );
+
+    const CLOSES: {
+      how: string;
+      close: (user: ReturnType<typeof userEvent.setup>) => Promise<void>;
+      /** How the card is kept first: a click, or Enter (focus in the card). */
+      from: 'click' | 'keyboard';
+    }[] = [
+      { how: 'a second click', from: 'click', close: (user) => user.click(trigger(item)) },
+      { how: 'Escape', from: 'keyboard', close: (user) => user.keyboard('{Escape}') },
+      {
+        how: 'Shift+Tab off its surface',
+        from: 'keyboard',
+        close: (user) => user.keyboard('{Shift>}{Tab}{/Shift}'),
+      },
+      {
+        how: 'an outside press',
+        from: 'click',
+        close: (user) => user.click(screen.getByText('Transcript text')),
+      },
+      {
+        how: 'a press into the draft',
+        from: 'click',
+        close: (user) => user.click(screen.getByRole('textbox', { name: 'Draft' })),
+      },
+      { how: 'focus moving elsewhere (a Tab away)', from: 'click', close: (user) => user.tab() },
+    ];
+
+    it.each(CLOSES)('drops the mark when $how closes the kept card', async ({ from, close }) => {
+      const user = userEvent.setup();
+      await renderLine();
+      if (from === 'click') await user.click(trigger(item));
+      else await pinFromKeyboard(user, item);
+      await flush();
+      expect(marks(item), 'kept').toEqual(MARKED);
+      await close(user);
+      await flush();
+      expect(isOpen(item)).toBe(false);
+      expect(marks(item)).toEqual(UNMARKED);
+    });
+
+    it('comes back from a hover as a preview after a kept card closed, unmarked', async () => {
+      const user = userEvent.setup();
+      await renderLine();
+      await user.click(trigger(item));
+      expect(marks(item)).toEqual(MARKED);
+      await user.keyboard('{Escape}');
+      expect(isOpen(item)).toBe(false);
+      await user.unhover(trigger(item));
+      await user.hover(trigger(item));
+      await waitFor(() => expect(isOpen(item)).toBe(true));
+      expect(marks(item), 'a preview again').toEqual(UNMARKED);
+      await flush();
+    });
   });
 
   describe('11. where it hangs', () => {
@@ -755,8 +1034,11 @@ describe.each(ITEMS)('the $name item', (item) => {
 });
 
 describe('7. one card at a time on the line', () => {
+  // HOVER PEEKS, CLICK PINS: a hover never replaces a card the person KEPT. While one is kept, a
+  // hover on another trigger opens nothing at all, however long it rests, and the kept card stays
+  // kept, with its focus. A click, Enter, Space or a Tab on the other trigger still replaces it.
   it.each(PAIRS)(
-    'closes the pinned $first.name card when a hover opens the $then.name card, moving no focus',
+    'opens nothing on a hover over the $then.name trigger while the $first.name card is kept, which stays kept',
     async ({ first, then }) => {
       vi.useFakeTimers();
       await renderLine();
@@ -764,14 +1046,123 @@ describe('7. one card at a time on the line', () => {
       fireEvent.click(trigger(first), { detail: 1 });
       await flush();
       expect(openCards()).toEqual([first.name]);
-      await hoverOpen(then);
-      expect(openCards()).toEqual([then.name]);
+      fireEvent.pointerLeave(trigger(first), { pointerType: 'mouse' });
+      fireEvent.pointerEnter(trigger(then), { pointerType: 'mouse' });
+      await advance(FOOTER_CARD_OPEN_DELAY_MS * 3);
+      expect(openCards(), 'nothing opened over the kept card').toEqual([first.name]);
+      expect(trigger(then)).toHaveAttribute('aria-expanded', 'false');
+      expect(marks(first)).toEqual(MARKED);
       expect(trigger(first)).toHaveFocus();
+      // The pointer moving on from there changes nothing either.
+      fireEvent.pointerLeave(trigger(then), { pointerType: 'mouse' });
+      await advance(FOOTER_CARD_CLOSE_GRACE_MS * 4);
+      expect(openCards()).toEqual([first.name]);
+      expect(marks(first)).toEqual(MARKED);
     }
   );
 
+  // (Enter's click claims the line, which also cancels every other card's waiting hover.)
   it.each(PAIRS)(
-    'closes the pinned $first.name card when a click pins the $then.name card',
+    'opens nothing for a hover on the $then.name trigger that was already waiting when Enter kept the $first.name card',
+    async ({ first, then }) => {
+      vi.useFakeTimers();
+      await renderLine();
+      fireEvent.pointerEnter(trigger(then), { pointerType: 'mouse' });
+      await advance(FOOTER_CARD_OPEN_DELAY_MS / 2);
+      // Enter on the focused $first trigger (a keyboard click, detail 0), with the pointer still
+      // resting on $then and its open delay still running.
+      act(() => trigger(first).focus());
+      fireEvent.click(trigger(first), { detail: 0 });
+      await flush();
+      expect(openCards()).toEqual([first.name]);
+      await advance(FOOTER_CARD_OPEN_DELAY_MS * 2);
+      expect(openCards(), 'the waiting hover opened nothing').toEqual([first.name]);
+      expect(marks(first)).toEqual(MARKED);
+    }
+  );
+
+  // A card kept WITHOUT a claim, by focus entering it: nothing cancelled the other trigger's
+  // waiting hover, so the hover itself must find the card kept when its delay runs out. Where the
+  // ring ends the line, the Tab after it moves into its card.
+  it('opens nothing for a hover that was waiting when focus moved into the previewed card beside it', async () => {
+    const user = userEvent.setup();
+    render(<Composer props={{ ...PROPS, modelCostRows: undefined }} after={false} />);
+    await flush();
+    const [folder, context] = ITEMS;
+    act(() => trigger(folder).focus());
+    await user.tab();
+    expect(openCards(), 'a Tab previews the ring’s card').toEqual(['context']);
+    expect(marks(context)).toEqual(UNMARKED);
+    // The pointer comes to rest on the folder chip while the ring's card is only a preview.
+    fireEvent.pointerEnter(trigger(folder), { pointerType: 'mouse' });
+    await wait(FOOTER_CARD_OPEN_DELAY_MS / 3);
+    // Then the Tab into the ring's card: focus entering it keeps it.
+    await user.tab();
+    const slider = context.firstControl!();
+    expect(slider).toHaveFocus();
+    expect(marks(context)).toEqual(MARKED);
+    await wait(FOOTER_CARD_OPEN_DELAY_MS * 2);
+    expect(openCards(), 'the waiting hover opened nothing').toEqual(['context']);
+    expect(slider).toHaveFocus();
+  });
+
+  it.each(PAIRS)(
+    'opens nothing on a hover over the $then.name trigger while the kept $first.name card holds focus, which stays',
+    async ({ first, then }) => {
+      const user = userEvent.setup();
+      await renderLine();
+      await pinFromKeyboard(user, first);
+      // On its first control where it has one, else on its surface.
+      if (first.firstControl) await user.tab();
+      const focused = document.activeElement;
+      expect(surface(first)!.contains(focused), 'focus is in the card').toBe(true);
+      await user.hover(trigger(then));
+      await wait(FOOTER_CARD_OPEN_DELAY_MS * 2);
+      expect(openCards(), 'nothing opened over the kept card').toEqual([first.name]);
+      expect(document.activeElement, 'focus stayed where the person put it').toBe(focused);
+      await user.unhover(trigger(then));
+      await wait(FOOTER_CARD_CLOSE_GRACE_MS * 2);
+      expect(openCards()).toEqual([first.name]);
+      expect(document.activeElement).toBe(focused);
+      expect(marks(first)).toEqual(MARKED);
+    }
+  );
+
+  /**
+   * The case that made the rule: in a `biorouter serve` browser the folder card holds a field for
+   * the approval key, and a pointer that rested on the ring or the cost for 300ms used to close
+   * the card, take the typed key with it (it is cleared on close) and move focus off the field.
+   */
+  describe('while the folder card holds a typed approval key (a biorouter serve browser)', () => {
+    beforeEach(() => {
+      document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    });
+    afterEach(() => {
+      delete document.documentElement.dataset.biorouterSurface;
+    });
+
+    it.each(ITEMS.filter((item) => item !== FOLDER))(
+      'opens nothing on a hover over the $name trigger, and the key and its focus stay',
+      async (then) => {
+        const user = userEvent.setup();
+        await renderLine();
+        await user.click(trigger(FOLDER));
+        const key = await screen.findByLabelText(FOLDER_ACCESS_COPY.approvalKey);
+        await user.click(key);
+        await user.keyboard('typed-approval-key');
+        expect(key).toHaveValue('typed-approval-key');
+        await user.hover(trigger(then));
+        await wait(FOOTER_CARD_OPEN_DELAY_MS * 2);
+        expect(openCards()).toEqual(['folder']);
+        expect(key).toHaveFocus();
+        expect(key).toHaveValue('typed-approval-key');
+        expect(marks(FOLDER)).toEqual(MARKED);
+      }
+    );
+  });
+
+  it.each(PAIRS)(
+    'replaces the kept $first.name card when a click keeps the $then.name card',
     async ({ first, then }) => {
       const user = userEvent.setup();
       await renderLine();
@@ -779,11 +1170,50 @@ describe('7. one card at a time on the line', () => {
       expect(openCards()).toEqual([first.name]);
       await user.click(trigger(then));
       expect(openCards()).toEqual([then.name]);
+      expect(marks(then)).toEqual(MARKED);
+      expect(marks(first)).toEqual(UNMARKED);
       // The click put focus on its own trigger; no card took it.
       expect(trigger(then)).toHaveFocus();
     }
   );
 
+  it.each(PAIRS.flatMap((pair) => ['Enter', 'Space'].map((key) => ({ ...pair, key }))))(
+    'replaces the kept $first.name card when $key on the $then.name trigger keeps that one',
+    async ({ first, then, key }) => {
+      const user = userEvent.setup();
+      await renderLine();
+      await user.click(trigger(first));
+      expect(marks(first)).toEqual(MARKED);
+      // Focus reaching the other trigger, then the key on it.
+      act(() => trigger(then).focus());
+      await user.keyboard(key === 'Enter' ? '{Enter}' : ' ');
+      await waitFor(() => expect(surface(then)).toHaveFocus());
+      await flush();
+      expect(openCards()).toEqual([then.name]);
+      expect(marks(then)).toEqual(MARKED);
+      expect(marks(first)).toEqual(UNMARKED);
+    }
+  );
+
+  it.each(NEIGHBOURS)(
+    'replaces the kept $first.name card when a Tab moves onto the $then.name trigger beside it, as a preview',
+    async ({ first, then }) => {
+      const user = userEvent.setup();
+      await renderLine();
+      await user.click(trigger(first));
+      expect(marks(first)).toEqual(MARKED);
+      const forward = ITEMS.indexOf(then) > ITEMS.indexOf(first);
+      await user.tab({ shift: !forward });
+      expect(trigger(then)).toHaveFocus();
+      expect(openCards()).toEqual([then.name]);
+      // A Tab previews: the card it opened is open and not kept.
+      expect(marks(then)).toEqual(UNMARKED);
+      expect(marks(first)).toEqual(UNMARKED);
+      await flush();
+    }
+  );
+
+  // A PREVIEW holds nothing, so a hover still replaces it.
   it.each(PAIRS)(
     'closes the $first.name card a Tab opened when a hover opens the $then.name card',
     async ({ first, then }) => {
@@ -800,18 +1230,69 @@ describe('7. one card at a time on the line', () => {
   );
 
   it.each(PAIRS)(
-    'hands focus back to the $first.name trigger when its card, holding focus, gives way to the $then.name card',
+    'closes the $first.name card a hover opened when a hover opens the $then.name card',
     async ({ first, then }) => {
-      const user = userEvent.setup();
+      vi.useFakeTimers();
       await renderLine();
-      await pinFromKeyboard(user, first);
-      await user.hover(trigger(then));
-      await waitFor(() => expect(isOpen(then)).toBe(true));
+      await hoverOpen(first);
+      fireEvent.pointerLeave(trigger(first), { pointerType: 'mouse' });
+      await hoverOpen(then);
       expect(openCards()).toEqual([then.name]);
-      // Not dropped on the page, and not moved to the card that opened.
-      expect(trigger(first)).toHaveFocus();
+      expect(marks(then)).toEqual(UNMARKED);
     }
   );
+});
+
+/**
+ * #50 for the mark: while the folder chip's native chooser is open the card is shut, so the chip
+ * is not marked kept, and nothing a click or a hover did while the chooser was up marks it after.
+ */
+describe('10. the folder chip’s mark while its chooser is open (#50)', () => {
+  const original = window.electron;
+  afterEach(() => {
+    window.electron = original;
+  });
+
+  it('drops the mark while the chooser is up, and nothing done then marks the chip after', async () => {
+    let answer: ((value: { canceled: boolean; filePaths: string[] }) => void) | undefined;
+    const electron = {
+      platform: 'darwin',
+      directoryChooser: vi.fn(
+        () =>
+          new Promise<{ canceled: boolean; filePaths: string[] }>((resolve) => {
+            answer = resolve;
+          })
+      ),
+      addRecentDir: vi.fn(),
+      openDirectoryInExplorer: vi.fn(),
+    };
+    window.electron = electron as unknown as typeof window.electron;
+    const user = userEvent.setup();
+    // Home: the folder alone, unlocked and known, so its card offers Choose folder….
+    render(<Composer props={{ ...PROPS, sessionId: null, workingDirLocked: false }} />);
+    await flush();
+    const chip = screen.getByTestId('dir-switcher');
+    const card = () => document.querySelector<HTMLElement>('[data-testid="folder-access-card"]');
+    await user.click(chip);
+    expect(chip).toHaveAttribute('data-pinned', 'true');
+    expect(card()).toHaveAttribute('data-pinned', 'true');
+    await user.click(screen.getByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder }));
+    expect(electron.directoryChooser).toHaveBeenCalledTimes(1);
+    expect(chip).not.toHaveAttribute('data-pinned');
+    expect(chip).toHaveAttribute('aria-expanded', 'false');
+    // While it is up: a click, a hover.
+    await user.click(chip);
+    expect(chip).not.toHaveAttribute('data-pinned');
+    await user.hover(chip);
+    await wait(FOOTER_CARD_OPEN_DELAY_MS * 2);
+    expect(chip).not.toHaveAttribute('data-pinned');
+    expect(card()?.getAttribute('data-state') ?? 'absent').not.toBe('open');
+    // Gone: still unmarked, and still shut.
+    await act(async () => answer?.({ canceled: true, filePaths: [] }));
+    await wait(FOOTER_CARD_OPEN_DELAY_MS * 2);
+    expect(chip).not.toHaveAttribute('data-pinned');
+    expect(card()?.getAttribute('data-state') ?? 'absent').not.toBe('open');
+  });
 });
 
 /**

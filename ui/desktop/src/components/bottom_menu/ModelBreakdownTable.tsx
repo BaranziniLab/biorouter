@@ -1,6 +1,7 @@
 import type { ModelCostRow } from '../../hooks/useCostTracking';
-import { UNKNOWN_MODEL_LABEL } from '../../hooks/useCostTracking';
+import { modelRowKey } from '../../hooks/useCostTracking';
 import { billedTokens, knownBilledTokens } from '../../utils/usageAccounting';
+import { MODEL_NOT_RECORDED } from './copy';
 import { formatTooltipMoney } from './CostTracker';
 
 interface ModelBreakdownTableProps {
@@ -8,10 +9,13 @@ interface ModelBreakdownTableProps {
   currency?: string;
 }
 
-/** Label a row's model, folding the null/unknown bucket to a readable name. */
+/**
+ * Label a row's model for a person: `provider/model`, or `MODEL_NOT_RECORDED` for the bucket of
+ * turns saved without a model. A label is copy, never a key: key a row by `modelRowKey`.
+ */
 export function modelLabel(row: Pick<ModelCostRow, 'provider' | 'model'>): string {
   if (!row.model) {
-    return UNKNOWN_MODEL_LABEL;
+    return MODEL_NOT_RECORDED;
   }
   return row.provider ? `${row.provider}/${row.model}` : row.model;
 }
@@ -62,7 +66,7 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
       <tbody>
         {rows.map((row) => (
           <tr
-            key={modelLabel(row)}
+            key={modelRowKey(row.provider, row.model)}
             className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
           >
             <td className="pr-3">{modelLabel(row)}</td>

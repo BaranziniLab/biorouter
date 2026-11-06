@@ -157,6 +157,16 @@ async function chooseFromCard(chip: HTMLElement) {
   });
 }
 
+/**
+ * A folder the footer's folder card writes (`FooterCardPath`), found by the absolute path it stands
+ * for: its names sit in separate `<bdi>`s, so no text query finds the path whole, and a negative
+ * text query would pass whatever the card showed.
+ */
+const byPath = (container: Element | Document, absolute: string) =>
+  [...container.querySelectorAll<HTMLElement>('[data-path]')].find(
+    (node) => node.dataset.path === absolute
+  ) ?? null;
+
 /** Every folder name the footer has shown, in order ('' for none). */
 function recordFolders(): string[] {
   const footer = screen.getByTestId('composer-footer');
@@ -208,9 +218,14 @@ describe('ChatInput working-directory lock once the chat has messages (#44)', ()
     // Basename of the chat's own folder ('/Users/wgu/Projects/kdps' -> 'kdps'),
     // never the interactive full-path chooser button.
     const label = await screen.findByTestId('dir-switcher-locked');
+    // Exactly the name: `toHaveTextContent` alone matches a substring, which the full path holds.
+    expect(label.querySelector('bdi')?.textContent).toBe('kdps');
     expect(label).toHaveTextContent('kdps');
     expect(screen.queryByTestId('dir-switcher')).not.toBeInTheDocument();
+    // No path anywhere before the card opens: not in the chip's own text (which is one text node,
+    // so a text query finds it whole), and no card value.
     expect(screen.queryByText(SESSION_DIR)).not.toBeInTheDocument();
+    expect(byPath(document.body, SESSION_DIR)).toBeNull();
 
     // The card hangs above the composer card, so it is placed against it.
     const composerCard = document.querySelector<HTMLElement>('.biorouter-composer-card')!;
@@ -219,13 +234,17 @@ describe('ChatInput working-directory lock once the chat has messages (#44)', ()
     fireEvent.click(label);
     expect(window.electron.directoryChooser).not.toHaveBeenCalled();
     expect(updateWorkingDir).not.toHaveBeenCalled();
-    // The path reaches the screen only inside the card, set in mono.
+    // The path reaches the screen only inside the card, as one of its values (sans, like the rest
+    // of the card).
     const card = await screen.findByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
     await waitFor(() => expect(measured).toHaveBeenCalled());
     expect(card).toHaveTextContent(FOLDER_ACCESS_COPY.lockedNote);
     expect(screen.queryByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder })).toBeNull();
-    expect(screen.getByText(SESSION_DIR)).toHaveClass('font-mono');
-    expect(card).toContainElement(screen.getByText(SESSION_DIR));
+    const path = byPath(card, SESSION_DIR);
+    expect(path).toHaveTextContent(SESSION_DIR);
+    expect(path).toHaveClass('br-footer-card__path');
+    expect(path).not.toHaveClass('font-mono');
+    expect(byPath(document.body, SESSION_DIR)).toBe(path);
     await waitFor(() =>
       expect(listFolderAccess).toHaveBeenCalledWith(
         expect.objectContaining({ query: { session_id: 'session-1' } })

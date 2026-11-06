@@ -47,6 +47,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const CSS_PATH = join(here, '..', 'src', 'styles', 'main.css');
 
 const css = await readFile(CSS_PATH, 'utf8');
+const PICKERS_PATH = join(here, '..', 'src', 'components', 'bottom_menu', 'pickers.css');
+const pickersCss = await readFile(PICKERS_PATH, 'utf8');
 const SCOPES = buildScopes(css);
 const FAMILIES = discoverFamilies(css);
 
@@ -175,6 +177,108 @@ function assertOffTrackOnRows(at, scope) {
     Number(parts[2]) / 100,
     '--background-default',
     1.08,
+    scope
+  );
+}
+
+/**
+ * The context card's empty track on its footer card (pickers.css `.br-footer-card`). The neutral
+ * progress track paints `var(--br-track-ground, <fallback>)` (main.css `.br-progress-track`), and
+ * the card is a popover surface, so in dark it sits on the LIFTED ground. With no ground of its
+ * own the track took the fallback, `--background-muted`, the dark popover's rest fill: 1.13:1 off
+ * the card, all but invisible (1.10:1 in light). The card now names its track ground, and this
+ * row resolves exactly what the two stylesheets declare, the card's `--br-track-ground` when it
+ * has one and the progress track's fallback when it does not, so dropping the card's rule fails
+ * here rather than passing on a copy.
+ *
+ * The floor, 1.18, is the popover's other mark-carrying track: the off Switch's
+ * (`--control-track-off`, 1.19:1 on a light popover and 1.23:1 on a dark one, where "popover
+ * fill" sinks it to the same well). The fills' visible-step floor, 1.08, is not enough here: the
+ * faint track cleared it. The ceiling, 1.5, keeps the track a ground under the bar rather than a
+ * second bar, the strong step's own ceiling in a dark popover. Chromium measures the same pair,
+ * with the bar's fill and marker, in `bottom_menu/footerCardTrack.browser.test.tsx`.
+ */
+const FOOTER_CARD_DECLS = Object.assign(
+  {},
+  ...blocks(pickersCss, (sel) => sel === '.br-footer-card').map((b) => parseDecls(b.body))
+);
+const PROGRESS_TRACK_FALLBACK = (() => {
+  const body = blocks(css, (sel) => sel === '.br-progress-track')
+    .map((b) => b.body)
+    .join('\n');
+  return (
+    /background-color:\s*var\(--br-track-ground,\s*var\((--[\w-]+)\)\)/.exec(body)?.[1] ?? null
+  );
+})();
+
+function assertFooterCardTrack(at, scope) {
+  const label = `${at}: footer card track is a visible step off the card`;
+  if (!PROGRESS_TRACK_FALLBACK) {
+    failures++;
+    rows.push([
+      'UNRESOLVED',
+      '',
+      label,
+      '.br-progress-track no longer paints var(--br-track-ground, var(--token))',
+    ]);
+    return;
+  }
+  const track = FOOTER_CARD_DECLS['--br-track-ground'] ?? `var(${PROGRESS_TRACK_FALLBACK})`;
+  const inside = {
+    decls: { ...scope.decls, '--br-footer-card-track': track },
+    theme: scope.theme,
+  };
+  assert(label, '--br-footer-card-track', '--background-default', 1.18, inside);
+  assertAtMost(
+    `${at}: footer card track stays a ground under its bar`,
+    '--br-footer-card-track',
+    '--background-default',
+    1.5,
+    inside
+  );
+}
+
+/**
+ * The context ring's track on a KEPT footer item (pickers.css, "hover peeks, click pins"). A kept
+ * item paints the strong fill, and the ring's resting track ink, `--border-subtle`, measured
+ * 1.06:1 there in light and 1.05:1 in dark, so the ring lost its circle and only the arc was left.
+ * A kept ring's track takes its own ink. This row resolves exactly what pickers.css declares, the
+ * kept item's `background` and the kept track's `color`, so dropping or retargeting either rule
+ * fails here rather than passing on a copy.
+ *
+ * The floor, 1.18, is the other tracks' (the context card's bar above, the off Switch's): the
+ * circle must still show. The ceiling, 1.5, keeps it a track under the arc rather than a second
+ * arc. At rest the track is about 1.28:1 on the page; kept it is 1.26:1 in light and 1.29:1 in
+ * dark. Chromium measures the same pair in `bottom_menu/footerCard.browser.test.tsx`.
+ */
+const KEPT_ITEM = '.br-footline__item[data-pinned]';
+const keptVar = (selector, property) => {
+  const body = blocks(pickersCss, (sel) => sel === selector)
+    .map((b) => b.body)
+    .join('\n');
+  return new RegExp(`(?:^|[;\\s])${property}:\\s*var\\((--[\\w-]+)\\)`).exec(body)?.[1] ?? null;
+};
+const KEPT_ITEM_FILL = keptVar(`button${KEPT_ITEM}`, 'background');
+const KEPT_RING_TRACK = keptVar(`button${KEPT_ITEM} .br-footline__ring-track`, 'color');
+
+function assertKeptRingTrack(at, scope) {
+  const label = `${at}: a kept ring's track is a visible step off the kept fill`;
+  if (!KEPT_ITEM_FILL || !KEPT_RING_TRACK) {
+    failures++;
+    rows.push([
+      'UNRESOLVED',
+      '',
+      label,
+      `pickers.css no longer paints ${!KEPT_ITEM_FILL ? `button${KEPT_ITEM}'s background` : "a kept ring track's color"} with var(--token)`,
+    ]);
+    return;
+  }
+  assert(label, KEPT_RING_TRACK, KEPT_ITEM_FILL, 1.18, scope);
+  assertAtMost(
+    `${at}: a kept ring's track stays a track under its arc`,
+    KEPT_RING_TRACK,
+    KEPT_ITEM_FILL,
+    1.5,
     scope
   );
 }
@@ -738,6 +842,8 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
     );
     assert(`${theme}: focus edge (border-focus) on ${name}`, '--border-focus', fill, 3.0, scope);
   }
+  // A kept footer item (the strong fill) and the context ring's track on it.
+  assertKeptRingTrack(theme, scope);
   assert(
     `${theme}: text-subtle on background-fill`,
     '--text-subtle',
@@ -843,10 +949,13 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
       3.0,
       inside
     );
+    // The context card's bar on the lifted ground.
+    assertFooterCardTrack(at, inside);
   } else {
     // Light has no popover rule: a popover there paints the page's own ground, so these rows
     // hold the track on every light list, and the highlighted row (1.09) is the binding case.
     assertOffTrackOnRows(`${theme} popover`, scope);
+    assertFooterCardTrack(`${theme} popover`, scope);
   }
 
   // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to

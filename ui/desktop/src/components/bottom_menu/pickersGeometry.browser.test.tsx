@@ -28,6 +28,8 @@ const MAIN_CSS = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
 const PICKERS_CSS = readFileSync(resolve(here, 'pickers.css'), 'utf8');
 
 const TOKEN_NAMES = [
+  // An open chip's ground: the strong fill every trigger whose surface a click opened wears.
+  '--background-fill-strong',
   '--control-compact',
   '--control-sm',
   '--control-md',
@@ -436,26 +438,54 @@ describe('the composer pickers in a real layout engine (spec 3.7, 5.7)', () => {
     }
   });
 
-  it('holds the ground and turns the chevron of a chip whose popover or menu is open', async (ctx) => {
+  it('holds the strong fill and turns the chevron of a chip whose popover or menu is open', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
+      // Read each state at once, not mid-transition.
+      await tab.emulateMedia({ reducedMotion: 'reduce' });
       // Open is `aria-expanded`: the tooltip around each trigger overwrites
       // `data-state`, so a `[data-state='open']` rule never matched.
-      await tab.waitForTimeout(250);
+      const ground = (id: string) =>
+        tab.evaluate(
+          (want) => getComputedStyle(document.getElementById(want)!).backgroundColor,
+          id
+        );
       const m = await tab.evaluate(() => {
         const style = (id: string) => getComputedStyle(document.getElementById(id)!);
         return {
           ground: style('open-chip').backgroundColor,
+          ink: style('open-chip').color,
           restingGround: style('tools').backgroundColor,
           turned: style('open-chevron').transform,
           restingChevron: style('tools-chevron').transform,
         };
       });
-      expect(m.ground).toBe('rgba(0, 0, 0, 0.05)');
+      // Hover peeks, click pins: open is the strong fill (#eaeae6), a step past the hover wash.
+      expect(m.ground).toBe('rgb(234, 234, 230)');
+      expect(m.ink).toBe('rgb(17, 17, 17)');
       expect(m.restingGround).toBe('rgba(0, 0, 0, 0)');
       expect(m.turned).toBe('matrix(-1, 0, 0, -1, 0, 0)');
       expect(m.restingChevron).toBe('none');
+      const centre = (id: string) =>
+        tab.evaluate((want) => {
+          const b = document.getElementById(want)!.getBoundingClientRect();
+          return { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 };
+        }, id);
+      // The pointer on a closed chip: the hover wash, which is not the open fill.
+      const tools = await centre('tools');
+      await tab.mouse.move(tools.x, tools.y);
+      const hover = await ground('tools');
+      expect(hover).toBe('rgba(0, 0, 0, 0.05)');
+      expect(hover).not.toBe(m.ground);
+      // The pointer on the open chip: it keeps the open fill (the rule comes after the hover's).
+      const openChip = await centre('open-chip');
+      await tab.mouse.move(openChip.x, openChip.y);
+      expect(await ground('open-chip')).toBe('rgb(234, 234, 230)');
+      // A press shows the pressed wash at once, open or not (`:active` comes last).
+      await tab.mouse.down();
+      expect(await ground('open-chip')).toBe('rgba(0, 0, 0, 0.1)');
+      await tab.mouse.up();
     } finally {
       await tab.close();
     }

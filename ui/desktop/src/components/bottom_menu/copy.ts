@@ -9,6 +9,10 @@
  * ellipsis is "…", and nothing here is punctuated with a dash. Help text is at
  * most two sentences, because it is read in an InfoTip.
  *
+ * One string here is not the footer's own: `MODEL_NOT_RECORDED`, re-exported from the usage
+ * surfaces' copy (`components/usage/copy.ts`), so the cost card names a row with no model exactly
+ * as Home's usage card and Settings > App > Usage do.
+ *
  * Not here: the privacy sentences the daemon serves, the locked privacy copy in
  * `components/privacy/**`, and the effort labels and descriptions, which live
  * beside the store that owns the values (`store/reasoningEffort.ts`).
@@ -168,8 +172,14 @@ export const FOLDER_ACCESS_COPY = {
 } as const;
 
 export const FOOTER_COPY = {
-  /** The folder item's name: the full path, which the line itself does not show. */
-  folderLabel: (dir: string) => `Working folder: ${dir}`,
+  /**
+   * The folder item's name: the full path, which the line itself does not show, and the word the
+   * line DOES show (`shown`), so the name contains the visible text (WCAG 2.5.3). Where that word
+   * is not in the path (`~` for the home folder, `Crew` for the Crew task folder), it comes first:
+   * "Working folder: ~ (/Users/me)".
+   */
+  folderLabel: (dir: string, shown?: string) =>
+    shown && !dir.includes(shown) ? `Working folder: ${shown} (${dir})` : `Working folder: ${dir}`,
   /** The folder item's name while an existing chat's folder is not known yet. */
   folderUnknownLabel: 'Working folder: not known yet',
   folderUpdateFailedTitle: 'Working folder update failed',
@@ -222,22 +232,89 @@ export const CONTEXT_CARD_COPY = {
 } as const;
 
 /**
+ * What the cost card's By model list (`modelLabel` in ModelBreakdownTable.tsx) calls the ledger's
+ * `null` model bucket. Not declared here: the usage surfaces' copy owns the name, so this card,
+ * Home's usage card and Settings > App > Usage never name the bucket differently. It is only what a
+ * person reads: row keys and the legacy cost map's keys keep `UNKNOWN_MODEL_LABEL`
+ * (`hooks/useCostTracking.ts`).
+ */
+export { MODEL_NOT_RECORDED } from '../usage/copy';
+
+/**
+ * The tokens the cost card lists for the chat or for one model: the ledger's four disjoint
+ * buckets (`ModelUsageRow`), which add up to the billed total the summary's Tokens value and
+ * Settings > App > Usage show. A cache bucket is `null` (or absent) where it was not recorded: the
+ * live price's counters never split it out, and history from before cache accounting has none.
+ */
+export interface CostCardTokens {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+}
+
+/** A no-break space: a figure keeps its word, as a number keeps its unit. */
+const NBSP = '\u00a0';
+
+/** "65,408 cache read", in one piece. */
+function tokenBucket(count: number, word: string): string {
+  return `${count.toLocaleString()} ${word}`.replace(/ /g, NBSP);
+}
+
+/**
+ * Buckets joined by "·", each separator held to the bucket before it, so the only place a line
+ * can break is after a "·". Measured in Chromium at the card's 294px column: an unpriced model's
+ * row ("Unavailable · 20,000 in · 1,500 out · 300,000 cache read") and a chat of millions broke
+ * between "cache" and "read" with plain spaces; with these they break after the last "·" that fits.
+ */
+function joinBuckets(parts: string[]): string {
+  return parts.join(`${NBSP}· `);
+}
+
+/**
+ * A detail's lines: `lead`, then each cache bucket that holds tokens, in Settings > App > Usage's
+ * order (in, out, cache read, cache write). A bucket with none, or not recorded, says nothing.
+ * Input, output and one cache bucket fit the card's 294px column on one line (284px at a million
+ * input tokens and ten million cache read, 12px Arial), so they stay on one. With both cache
+ * buckets the line runs to 355px at an ordinary chat's counts, so the cache takes a second line of
+ * its own instead of breaking wherever the column ends.
+ */
+function costTokenLines(lead: string[], tokens: CostCardTokens): string[] {
+  const cacheRead = tokens.cacheReadTokens ?? 0;
+  const cacheWrite = tokens.cacheCreationTokens ?? 0;
+  const cache = [
+    ...(cacheRead > 0 ? [tokenBucket(cacheRead, 'cache read')] : []),
+    ...(cacheWrite > 0 ? [tokenBucket(cacheWrite, 'cache write')] : []),
+  ];
+  return cache.length > 1
+    ? [joinBuckets(lead), joinBuckets(cache)]
+    : [joinBuckets([...lead, ...cache])];
+}
+
+/**
  * The cost figure's card (`CostTracker`, a `FooterCard`): the chat's total and its tokens, then
  * the cost per model. Money comes in already formatted (`formatCostEstimate` and
  * `formatTooltipMoney` in CostTracker.tsx, which print "Unavailable" for an unknown price); token
- * counts come in as numbers and are grouped here.
+ * counts come in as numbers and are grouped here. A detail is one line, or two (`costTokenLines`),
+ * drawn as one muted paragraph.
  */
 export const COST_CARD_COPY = {
   /** The card's accessible name (it is a `dialog`). */
   cardLabel: 'Cost',
   section: 'Cost of this chat',
-  /** The muted line under the total. */
-  tokens: (input: number, output: number) =>
-    `${input.toLocaleString()} input tokens · ${output.toLocaleString()} output tokens`,
+  /** The muted line under the total: "22,788 input · 382 output · 65,408 cache read". */
+  tokens: (tokens: CostCardTokens) =>
+    costTokenLines(
+      [tokenBucket(tokens.inputTokens, 'input'), tokenBucket(tokens.outputTokens, 'output')],
+      tokens
+    ),
   /** When the estimate is partial: a price or a count is missing. */
   partialNote: 'This is a conservative estimate from the token counts and prices available.',
   byModel: 'By model',
-  /** The muted line under a model's name. */
-  modelDetail: (cost: string, input: number, output: number) =>
-    `${cost} · ${input.toLocaleString()} in · ${output.toLocaleString()} out`,
+  /** The muted line under a model's name: "$0.14 · 22,788 in · 382 out · 65,408 cache read". */
+  modelDetail: (cost: string, tokens: CostCardTokens) =>
+    costTokenLines(
+      [cost, tokenBucket(tokens.inputTokens, 'in'), tokenBucket(tokens.outputTokens, 'out')],
+      tokens
+    ),
 } as const;

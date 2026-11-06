@@ -611,6 +611,8 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
         data-testid="context-window-indicator"
       >
         <svg viewBox="0 0 16 16" aria-hidden="true">
+          {/* The track: authored ink (`.br-footline__ring-track`, pickers.css), which a kept
+              trigger deepens so the circle still shows on its strong fill. */}
           <circle
             cx="8"
             cy="8"
@@ -618,7 +620,8 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
-            className="text-border-subtle"
+            className="br-footline__ring-track"
+            data-testid="context-ring-track"
           />
           <circle
             cx="8"

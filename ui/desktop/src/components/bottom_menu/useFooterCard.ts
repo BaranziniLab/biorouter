@@ -37,11 +37,22 @@ import { isFocusFromTabKey } from '../ui/Tooltip';
  *     from the card's own surface reaches its first control; in a card that holds none (the cost
  *     card) it closes the card and carries on from the trigger, rather than doing nothing;
  *   - ONE CARD AT A TIME: inside a `FooterCardGroup` (the footer line), a card that opens, by
- *     hover, focus or pin, closes every other card in the group at once. Focus is never moved to
- *     the card that opened; a card that closes while it holds focus hands it back to its own
- *     trigger, as any close of it would, rather than dropping it on the page;
+ *     hover, focus or pin, closes every other card in the group at once. Except over a KEPT card
+ *     (below): while one is kept, a hover on another trigger opens nothing and leaves the kept
+ *     card as it is, focus and anything typed in it included, and a hover that was already
+ *     waiting when it was kept opens nothing either. A click, Enter or Space on another trigger,
+ *     or a Tab onto it, still replaces it. Focus is never moved to the card that opened; a card
+ *     that closes while it holds focus hands it back to its own trigger, as any close of it would,
+ *     rather than dropping it on the page;
  *   - while `suppressed` (the folder chip's native chooser is open) it is shut, and nothing a
  *     hover, a focus or a click armed during that time opens it once the chooser closes (#50).
+ *
+ * HOVER PEEKS, CLICK PINS: a card a hover or a Tab opened is a PREVIEW, which leaves no mark on its
+ * trigger; one a click, a tap, Enter, Space, or a press or focus inside holds open is KEPT, marked
+ * `data-pinned` on the trigger (`footerCardTriggerProps`, which pickers.css paints with the strong
+ * fill) and on the surface (`FooterCard`, unstyled: the card looks the same either way).
+ * `aria-expanded` is true for both, and never `aria-pressed`. The same rule, and the same
+ * attribute, as InfoTip's kept tip.
  *
  * InfoTip itself is untouched: it shares the approach, not the code, so its behaviour cannot move.
  */
@@ -175,6 +186,16 @@ export function isPointInPolygon(point: Point, polygon: Point[]): boolean {
   return inside;
 }
 
+/** What a card tells its group: how to close it, and whether it is kept right now. */
+export interface FooterCardGroupMember {
+  close: () => void;
+  /**
+   * Open and pinned, from the card's own mirror of its state, which is written where the state
+   * is set, so it is never a render behind.
+   */
+  kept: () => boolean;
+}
+
 /**
  * What the footer line shares with each of its cards (`FooterCardGroup`, in `FooterCard.tsx`): the
  * composer card they all hang above, and the rule that only one of them is open at a time.
@@ -184,8 +205,10 @@ export interface FooterCardGroupValue {
   clearOf?: React.RefObject<HTMLElement | null>;
   /** A card in the group is opening: every other one closes. */
   opened(id: string): void;
-  /** Adds a card's close to the group, until the returned function removes it. */
-  register(id: string, close: () => void): () => void;
+  /** Whether a card in the group other than this one is kept: a hover then opens nothing. */
+  keptElsewhere(id: string): boolean;
+  /** Adds a card to the group, until the returned function removes it. */
+  register(id: string, member: FooterCardGroupMember): () => void;
 }
 
 export const FooterCardGroupContext = React.createContext<FooterCardGroupValue | null>(null);
@@ -194,17 +217,19 @@ export const FooterCardGroupContext = React.createContext<FooterCardGroupValue |
 export function useFooterCardGroupValue(
   clearOf?: React.RefObject<HTMLElement | null>
 ): FooterCardGroupValue {
-  const cards = React.useRef(new Map<string, () => void>());
+  const cards = React.useRef(new Map<string, FooterCardGroupMember>());
   return React.useMemo(
     () => ({
       clearOf,
       opened: (id: string) => {
-        for (const [other, close] of [...cards.current]) if (other !== id) close();
+        for (const [other, member] of [...cards.current]) if (other !== id) member.close();
       },
-      register: (id: string, close: () => void) => {
-        cards.current.set(id, close);
+      keptElsewhere: (id: string) =>
+        [...cards.current].some(([other, member]) => other !== id && member.kept()),
+      register: (id: string, member: FooterCardGroupMember) => {
+        cards.current.set(id, member);
         return () => {
-          if (cards.current.get(id) === close) cards.current.delete(id);
+          if (cards.current.get(id) === member) cards.current.delete(id);
         };
       },
     }),
@@ -215,7 +240,11 @@ export function useFooterCardGroupValue(
 export interface FooterCard {
   /** Whether the card shows (never while suppressed). */
   open: boolean;
-  /** Whether a press inside the card or the trigger's click holds it open. */
+  /**
+   * Whether the card is KEPT: open, and held there by the trigger's click (a tap, Enter or Space
+   * too) or by a press or focus inside it. A preview (a hover or a Tab) is open and not pinned.
+   * The trigger and the surface carry it as `data-pinned`.
+   */
   pinned: boolean;
   /** The trigger: hover and focus open from here, and focus returns here. */
   triggerRef: React.RefCallback<HTMLElement>;
@@ -251,7 +280,18 @@ export function useFooterCard({ suppressed = false }: { suppressed?: boolean } =
   const id = React.useId();
   const trigger = React.useRef<HTMLElement | null>(null);
   const contentRef = React.useRef<HTMLDivElement | null>(null);
-  const [state, setState] = React.useState<CardState>(CLOSED);
+  const [state, setRenderedState] = React.useState<CardState>(CLOSED);
+  /**
+   * The state as of now, written in the same call that sets it, for the group to read
+   * (`keptElsewhere`). Mirrored in an effect it would be a render behind the click that kept this
+   * card, so a hover in the same task would arm its open timer against a card already kept.
+   */
+  const stateNow = React.useRef<CardState>(CLOSED);
+  const setState = React.useCallback((next: CardState | ((current: CardState) => CardState)) => {
+    const value = typeof next === 'function' ? next(stateNow.current) : next;
+    stateNow.current = value;
+    setRenderedState(value);
+  }, []);
   const openTimer = React.useRef<number | null>(null);
   const closeTimer = React.useRef<number | null>(null);
   /** A keyboard pin asked for focus before the card had mounted: its open auto-focus does it. */
@@ -331,10 +371,18 @@ export function useFooterCard({ suppressed = false }: { suppressed?: boolean } =
     queueMicrotask(() => {
       restoringFocus.current = false;
     });
-  }, [clearTimers, endTransit]);
+  }, [clearTimers, endTransit, setState]);
 
-  // One card at a time: the group closes this one when another opens.
-  React.useEffect(() => group?.register(id, close), [group, id, close]);
+  // One card at a time: the group closes this one when another opens, and asks it whether it is
+  // kept before a hover elsewhere opens anything.
+  React.useEffect(
+    () =>
+      group?.register(id, {
+        close,
+        kept: () => stateNow.current.pinned && !suppressedNow.current,
+      }),
+    [group, id, close]
+  );
 
   /** This card is opening: the group's others close first, so two are never on screen. */
   const claim = () => group?.opened(id);
@@ -357,7 +405,7 @@ export function useFooterCard({ suppressed = false }: { suppressed?: boolean } =
       endTransit();
       setState((current) => (current.pinned ? current : CLOSED));
     }, FOOTER_CARD_CLOSE_GRACE_MS);
-  }, [endTransit]);
+  }, [endTransit, setState]);
 
   /** The pointer left one surface for the other: keep the grace alive while it is on its way. */
   const startTransit = (exit: Point, toward: Element | null) => {
@@ -382,7 +430,7 @@ export function useFooterCard({ suppressed = false }: { suppressed?: boolean } =
     endTransit();
     focusOnOpen.current = false;
     setState(CLOSED);
-  }, [suppressed, clearTimers, endTransit]);
+  }, [suppressed, clearTimers, endTransit, setState]);
 
   // A scroll that moves the trigger closes an unpinned card (Radix Tooltip's rule); a scroll
   // inside the card, or in a scroller beside the trigger, leaves it alone.
@@ -407,9 +455,15 @@ export function useFooterCard({ suppressed = false }: { suppressed?: boolean } =
       cancelClose();
       endTransit();
       if (state.open || openTimer.current !== null) return;
+      // Hover peeks, click pins: a hover never replaces a card the person kept on the line, so
+      // while one is kept it opens nothing, and the kept card, the focus in it and anything typed
+      // there stay as they are. A click, a key or a Tab on this trigger still replaces it.
+      if (group?.keptElsewhere(id)) return;
       openTimer.current = window.setTimeout(() => {
         openTimer.current = null;
-        if (suppressedNow.current) return;
+        // Kept while this hover waited (Enter on another trigger, from the keyboard): still
+        // nothing opens.
+        if (suppressedNow.current || group?.keptElsewhere(id)) return;
         claim();
         setState((current) => (current.open ? current : HOVER_OPEN));
       }, FOOTER_CARD_OPEN_DELAY_MS);
@@ -542,9 +596,10 @@ export function useFooterCard({ suppressed = false }: { suppressed?: boolean } =
     if (!next) close();
   };
 
+  const open = state.open && !suppressed;
   return {
-    open: state.open && !suppressed,
-    pinned: state.pinned,
+    open,
+    pinned: open && state.pinned,
     triggerRef,
     contentRef,
     anchor,
@@ -562,6 +617,12 @@ export function useFooterCard({ suppressed = false }: { suppressed?: boolean } =
  * focus handlers, and the click that pins. `detail` is 0 for Enter, Space and an assistive
  * technology's click: those also move focus into the card, so its controls can be reached from
  * the keyboard. `FooterCardTrigger` (FooterCard.tsx) renders the button with these.
+ *
+ * `aria-expanded` is true while the card shows, preview or kept alike: to assistive technology
+ * both are an open dialog, and what tells them apart there is where focus is (a keyboard pin moves
+ * it into the card). `data-pinned` marks a KEPT card only, and is what pickers.css paints (the
+ * strong fill); a preview leaves the trigger at rest. Never `aria-pressed`: the trigger is a
+ * disclosure, not a toggle.
  */
 export function footerCardTriggerProps(card: FooterCard, cardId: string) {
   return {
@@ -569,6 +630,7 @@ export function footerCardTriggerProps(card: FooterCard, cardId: string) {
     'aria-haspopup': 'dialog' as const,
     'aria-expanded': card.open,
     'aria-controls': card.open ? cardId : undefined,
+    'data-pinned': card.pinned ? ('true' as const) : undefined,
     ...card.triggerHandlers,
     onClick: (event: React.MouseEvent) => card.togglePin({ moveFocus: event.detail === 0 }),
   };

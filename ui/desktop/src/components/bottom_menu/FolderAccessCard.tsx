@@ -13,6 +13,7 @@ import {
   FooterCardDetail,
   FooterCardList,
   FooterCardNote,
+  FooterCardPath,
   FooterCardRow,
   FooterCardSection,
   FooterCardValue,
@@ -200,7 +201,7 @@ export function FolderAccessCard({
         {workingDir === null ? (
           <FooterCardValue>{FOLDER_ACCESS_COPY.workingFolderUnknown}</FooterCardValue>
         ) : (
-          <FooterCardValue mono>{workingDir}</FooterCardValue>
+          <FooterCardPath path={workingDir} />
         )}
         {locked && <FooterCardNote>{FOLDER_ACCESS_COPY.lockedNote}</FooterCardNote>}
         {/* `DirSwitcher` alone decides whether the folder can be chosen (#44), so the card has
@@ -239,7 +240,7 @@ export function FolderAccessCard({
                     </FooterCardAction>
                   }
                 >
-                  <FooterCardValue mono>{grant.folder}</FooterCardValue>
+                  <FooterCardPath path={grant.folder} />
                   <FooterCardDetail>
                     {FOLDER_ACCESS_COPY.grantDetail(grant.access, grant.descendants)}
                   </FooterCardDetail>
@@ -254,7 +255,8 @@ export function FolderAccessCard({
           )}
           {browser && grants !== null && grants.length > 0 && (
             <div className="br-footer-card__key">
-              <label htmlFor={approvalKeyId} className="text-supporting text-text-default">
+              {/* A card label like every other: the muted 12/16 of a section's label. */}
+              <label htmlFor={approvalKeyId} className="br-footer-card__label">
                 {FOLDER_ACCESS_COPY.approvalKey}
               </label>
               <Input

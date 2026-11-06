@@ -576,12 +576,30 @@ describe('one card at a time on the footer line', () => {
     </FooterCardGroup>
   );
 
-  it('closes another item’s pinned card when the ring’s card opens on a hover, without moving focus', () => {
+  // Hover peeks, click pins: a hover never replaces a card a click kept (footerCards.contract
+  // rule 7), and still replaces a card that is only a preview.
+  it('opens nothing on a hover over the ring while another item’s card is kept, which keeps it and its focus', () => {
     vi.useFakeTimers();
     render(line);
     act(() => screen.getByTestId('other').focus());
     fireEvent.click(screen.getByTestId('other'), { detail: 1 });
     expect(otherOpen()).toBe(true);
+    hoverOpenRing();
+    expect(cardOpen()).toBe(false);
+    expect(otherOpen()).toBe(true);
+    expect(screen.getByTestId('other')).toHaveFocus();
+  });
+
+  it('closes another item’s preview when the ring’s card opens on a hover, without moving focus', () => {
+    vi.useFakeTimers();
+    render(line);
+    act(() => screen.getByTestId('other').focus());
+    fireEvent.pointerEnter(screen.getByTestId('other'), { pointerType: 'mouse' });
+    act(() => {
+      vi.advanceTimersByTime(FOOTER_CARD_OPEN_DELAY_MS + 10);
+    });
+    expect(otherOpen()).toBe(true);
+    fireEvent.pointerLeave(screen.getByTestId('other'), { pointerType: 'mouse' });
     hoverOpenRing();
     expect(cardOpen()).toBe(true);
     expect(otherOpen()).toBe(false);

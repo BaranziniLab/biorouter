@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { Fragment, useEffect, useId, useState } from 'react';
 import { useModelAndProvider } from '../ModelAndProviderContext';
 import { COST_CARD_COPY, FOOTER_COPY } from './copy';
 import './pickers.css';
@@ -85,14 +85,41 @@ export function costIsWorthShowing(estimate: CostEstimate): boolean {
  * Everything the cost card shows, whichever of the three data paths produced it, so the three
  * draw ONE card: the ledger's per-model rows, the legacy per-model map, or the counters priced at
  * the current model's rate.
+ *
+ * The tokens are the ledger's four disjoint buckets, so on the ledger path they add up to the
+ * billed total the summary's Tokens value (`mostCompleteBilledTokens`) and Settings > App > Usage
+ * show: a card that listed input and output alone read "22,788 input · 382 output" beside a
+ * Tokens value of 89k, the other 65,408 being cache reads.
  */
 export interface CostSummary {
   estimate: CostEstimate;
   currency: string;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Prompt tokens read from the cache, summed over the rows that recorded them; `null` where no
+   * row did. The counters the live price reads never split them out, so that path says nothing.
+   */
+  cacheReadTokens: number | null;
+  /** Prompt tokens written to the cache, the same way. */
+  cacheCreationTokens: number | null;
   /** The ledger's rows, one per model, for the card's By model section; empty on the other paths. */
   models: ModelCostRow[];
+}
+
+/**
+ * One cache bucket summed over the rows that recorded it, or `null` when none did. A row whose
+ * history predates cache accounting adds nothing rather than a guess, so the sum is then a lower
+ * bound; such a row's cost is partial too, and the card says the total is an estimate.
+ */
+export function recordedTokenSum(values: (number | null | undefined)[]): number | null {
+  let sum: number | null = null;
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      sum = (sum ?? 0) + value;
+    }
+  }
+  return sum;
 }
 
 /**
@@ -123,6 +150,8 @@ export function costSummary({
       currency: '$',
       inputTokens: modelCostRows.reduce((sum, row) => sum + row.inputTokens, 0),
       outputTokens: modelCostRows.reduce((sum, row) => sum + row.outputTokens, 0),
+      cacheReadTokens: recordedTokenSum(modelCostRows.map((row) => row.cacheReadTokens)),
+      cacheCreationTokens: recordedTokenSum(modelCostRows.map((row) => row.cacheCreationTokens)),
       models: modelCostRows,
     };
   }
@@ -136,6 +165,9 @@ export function costSummary({
       currency: '$',
       inputTokens: legacyRows.reduce((sum, row) => sum + row.inputTokens, 0),
       outputTokens: legacyRows.reduce((sum, row) => sum + row.outputTokens, 0),
+      // The map's rows carry the cache buckets only where their writer set them.
+      cacheReadTokens: recordedTokenSum(legacyRows.map((row) => row.cacheReadTokens)),
+      cacheCreationTokens: recordedTokenSum(legacyRows.map((row) => row.cacheCreationTokens)),
       models: [],
     };
   }
@@ -148,13 +180,41 @@ export function costSummary({
     partial: true,
   };
   if (!costIsWorthShowing(estimate)) return null;
-  return { estimate, currency: pricing.currency, inputTokens, outputTokens, models: [] };
+  return {
+    estimate,
+    currency: pricing.currency,
+    inputTokens,
+    outputTokens,
+    // The counters hold input and output alone: nothing to say about the cache.
+    cacheReadTokens: null,
+    cacheCreationTokens: null,
+    models: [],
+  };
+}
+
+/**
+ * A detail of one or two lines (`COST_CARD_COPY.tokens` and `modelDetail`) as ONE muted
+ * paragraph, so a second line keeps the detail's own 16px rhythm instead of taking the section's
+ * 4px gap and reading as a separate fact. Selected and copied, the lines come out on two lines.
+ */
+function TokenDetail({ lines }: { lines: string[] }) {
+  if (lines.length === 1) return <FooterCardDetail>{lines[0]}</FooterCardDetail>;
+  return (
+    <FooterCardDetail>
+      {lines.map((line, index) => (
+        <Fragment key={index}>
+          {index > 0 && <br />}
+          <span>{line}</span>
+        </Fragment>
+      ))}
+    </FooterCardDetail>
+  );
 }
 
 /**
  * The footer's cost: the figure on the line (sans with tabular numbers, `.br-footline__item`) and
  * the card it opens, one of the footer's three `FooterCard`s, which open and close alike
- * (`useFooterCard`): the chat's total and its tokens, then the cost per model.
+ * (`useFooterCard`): the chat's total and its tokens, then the cost and tokens per model.
  */
 function CostFigure({ summary }: { summary: CostSummary }) {
   const card = useFooterCard();
@@ -185,9 +245,7 @@ function CostFigure({ summary }: { summary: CostSummary }) {
       >
         <FooterCardSection label={COST_CARD_COPY.section}>
           <FooterCardValue>{label}</FooterCardValue>
-          <FooterCardDetail>
-            {COST_CARD_COPY.tokens(summary.inputTokens, summary.outputTokens)}
-          </FooterCardDetail>
+          <TokenDetail lines={COST_CARD_COPY.tokens(summary)} />
           {estimate.partial && <FooterCardNote>{COST_CARD_COPY.partialNote}</FooterCardNote>}
         </FooterCardSection>
         {models.length > 0 && (
@@ -196,13 +254,12 @@ function CostFigure({ summary }: { summary: CostSummary }) {
               {models.map((row, index) => (
                 <FooterCardRow key={`${modelRowKey(row.provider, row.model)}:${index}`}>
                   <FooterCardValue>{modelLabel(row)}</FooterCardValue>
-                  <FooterCardDetail>
-                    {COST_CARD_COPY.modelDetail(
+                  <TokenDetail
+                    lines={COST_CARD_COPY.modelDetail(
                       formatTooltipMoney(row.totalCost, currency),
-                      row.inputTokens,
-                      row.outputTokens
+                      row
                     )}
-                  </FooterCardDetail>
+                  />
                 </FooterCardRow>
               ))}
             </FooterCardList>

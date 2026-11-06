@@ -10,7 +10,8 @@ import type { ComponentProps } from 'react';
  * `useFooterCard.test.tsx`'s); this file pins what is the folder's own: the chip's click pins the
  * card in EVERY state (the contract renders a chat with messages only), Choose folder… is the only
  * way to the chooser and only while the chat is empty (#44), the card stays shut while the chooser
- * is open (#50), Cmd or Ctrl-click, and the grants. It replaced the footer's "Folder access"
+ * is open (#50), Cmd-click on macOS and Ctrl-click elsewhere, how a folder is written (`~`,
+ * isolated names), and the grants. It replaced the footer's "Folder access"
  * button and dialog, so every behaviour `FolderAccess.test.tsx` pinned lives here now: grants load
  * only when the card opens, Revoke acts on the selected grant in its own chat with the proof
  * header, a refused revoke stays visible, and the browser's approval key is labelled, described,
@@ -104,6 +105,31 @@ const chooseButton = () => screen.queryByRole('button', { name: FOLDER_ACCESS_CO
 
 /** Let the grant read (a resolved mock) land inside act. */
 const flush = () => act(async () => {});
+
+/**
+ * A folder the card writes (`FooterCardPath`), found by the absolute path it stands for. Its names
+ * sit in separate `<bdi>`s, so no text query can find the path whole, and a negative text query
+ * would pass whatever the card showed. Every path query here goes through these, and each "it is
+ * gone" check follows a find of the same kind.
+ */
+const byPath = (container: Element | Document, absolute: string) =>
+  [...container.querySelectorAll<HTMLElement>('[data-path]')].find(
+    (node) => node.dataset.path === absolute
+  ) ?? null;
+const getPath = (absolute: string, container: Element | Document = document.body) => {
+  const node = byPath(container, absolute);
+  if (!node) throw new Error(`the card writes no folder ${absolute}`);
+  return node;
+};
+const findPath = (absolute: string, container: Element | Document = document.body) =>
+  waitFor(() => getPath(absolute, container));
+
+/** The config the main process gives the desktop's windows, with the home folder known. */
+const HOME = '/Users/wgu';
+const desktopConfig = (extra: Record<string, unknown> = {}) => ({
+  get: (key: string) =>
+    ({ BIOROUTER_HOME_DIR: HOME, BIOROUTER_LOCAL_BACKEND: true, ...extra })[key],
+});
 
 function hoverOpen(target: HTMLElement) {
   fireEvent.pointerEnter(target, { pointerType: 'mouse' });
@@ -207,6 +233,8 @@ describe('choosing a folder (only from the card, only while the chat is empty)',
 
   it('closes the card, opens the chooser, and keeps the card shut while the chooser is open (#50)', async () => {
     vi.useFakeTimers();
+    // macOS, so the Cmd-click below would reveal the folder were the chooser not open.
+    window.electron.platform = 'darwin';
     const answer = holdChooser();
     render(<Page locked={false} sessionId={undefined} />);
     fireEvent.click(chip(), { detail: 1 });
@@ -307,22 +335,59 @@ describe('choosing a folder (only from the card, only while the chat is empty)',
   });
 });
 
-describe('Cmd or Ctrl-click (an accelerator)', () => {
+describe('Cmd-click on macOS, Ctrl-click elsewhere (an accelerator)', () => {
+  const onPlatform = (platform: string) => {
+    window.electron.platform = platform;
+  };
+
   it.each([
     ['an empty chat', { locked: false }],
     ['a chat with messages', { locked: true }],
-  ] as const)('opens the folder of %s in the file manager, and pins nothing', (_state, props) => {
-    render(<Page {...props} />);
-    fireEvent.click(chip(), { metaKey: true, detail: 1 });
-    expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledWith(WORKING_DIR);
+  ] as const)(
+    'opens the folder of %s in the file manager on macOS by Cmd-click, and pins nothing',
+    (_state, props) => {
+      onPlatform('darwin');
+      render(<Page {...props} />);
+      fireEvent.click(chip(), { metaKey: true, detail: 1 });
+      expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledWith(WORKING_DIR);
+      expect(isOpen()).toBe(false);
+      expect(window.electron.directoryChooser).not.toHaveBeenCalled();
+      expect(mocks.update).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['win32', 'linux'])('opens it by Ctrl-click on %s, and pins nothing', (platform) => {
+    onPlatform(platform);
+    render(<Page />);
     fireEvent.click(chip(), { ctrlKey: true, detail: 1 });
-    expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledTimes(2);
+    expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledWith(WORKING_DIR);
     expect(isOpen()).toBe(false);
-    expect(window.electron.directoryChooser).not.toHaveBeenCalled();
-    expect(mocks.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Ctrl on macOS, its secondary click', 'darwin', { ctrlKey: true }],
+    ['Cmd elsewhere, where it is the system key', 'win32', { metaKey: true }],
+  ] as const)('treats %s as a plain click, which pins', async (_case, platform, keys) => {
+    onPlatform(platform);
+    render(<Page />);
+    fireEvent.click(chip(), { ...keys, detail: 1 });
+    expect(window.electron.openDirectoryInExplorer).not.toHaveBeenCalled();
+    expect(isOpen()).toBe(true);
+    await flush();
+  });
+
+  it('is a plain click in a browser, where there is no file manager to open', async () => {
+    mocks.browser = true;
+    onPlatform('darwin');
+    render(<Page />);
+    fireEvent.click(chip(), { metaKey: true, detail: 1 });
+    expect(window.electron.openDirectoryInExplorer).not.toHaveBeenCalled();
+    expect(isOpen()).toBe(true);
+    await flush();
   });
 
   it('has no folder to open while the folder is not known, so it is an ordinary click', async () => {
+    onPlatform('darwin');
     render(<Page workingDir={null} locked={false} />);
     fireEvent.click(chip(), { metaKey: true, detail: 1 });
     expect(window.electron.openDirectoryInExplorer).not.toHaveBeenCalled();
@@ -341,7 +406,7 @@ describe('a chat whose working folder is not known yet', () => {
     await user.click(unknown);
     const dialog = screen.getByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
     expect(dialog).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolderUnknown);
-    await screen.findByText(RESULTS.folder);
+    await findPath(RESULTS.folder);
     mocks.list.mockResolvedValueOnce({ data: [] });
     await user.click(
       screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(RESULTS.folder) })
@@ -357,7 +422,7 @@ describe('a chat whose working folder is not known yet', () => {
 });
 
 describe('what the card says', () => {
-  it('shows the full working folder in mono, and the chip only its name', async () => {
+  it('shows the full working folder as a value in the card’s own face, and the chip only its name', async () => {
     const user = userEvent.setup();
     render(<Page />);
     expect(chip()).toHaveTextContent('kdps');
@@ -366,17 +431,107 @@ describe('what the card says', () => {
     const dialog = screen.getByRole('dialog', { name: FOLDER_ACCESS_COPY.cardLabel });
     expect(FOLDER_ACCESS_COPY.cardLabel).toBe('Working folder');
     expect(dialog).toHaveTextContent(FOLDER_ACCESS_COPY.workingFolder);
-    const path = within(dialog).getByText(WORKING_DIR);
-    expect(path).toHaveClass('font-mono');
-    expect(path).toHaveClass('break-all');
+    const path = getPath(WORKING_DIR, dialog);
+    // No home folder is known here, so the path is written whole.
+    expect(path).toHaveTextContent(WORKING_DIR);
+    expect(path).toHaveClass('br-footer-card__value', 'br-footer-card__path');
+    expect(path).not.toHaveClass('font-mono');
+    expect(path).not.toHaveClass('break-all');
+    expect(dialog.querySelector('.font-mono')).toBeNull();
     await flush();
+  });
+
+  it('writes a folder under home from `~`, and keeps the absolute path for the record', async () => {
+    Object.assign(window, { appConfig: desktopConfig() });
+    mocks.list.mockResolvedValue({
+      data: [{ ...NOTES, folder: '/Users/wgu/Desktop/BioRouter' }, RESULTS],
+    });
+    const user = userEvent.setup();
+    render(<Page />);
+    await user.click(chip());
+    const working = getPath(WORKING_DIR, card()!);
+    expect(working.textContent).toBe('~/Projects/kdps');
+    const granted = await findPath('/Users/wgu/Desktop/BioRouter', card()!);
+    expect(granted.textContent).toBe('~/Desktop/BioRouter');
+    // A folder outside home stays absolute.
+    const outside = getPath(RESULTS.folder, card()!);
+    expect(outside.textContent).toBe(RESULTS.folder);
+    // A line breaks only between pieces, each a name with the separator after it, and the
+    // leading separator belongs to the first name, so `/` never ends a line alone.
+    const pieces = (path: Element) =>
+      [...path.querySelectorAll('.br-path-piece')].map((piece) => piece.textContent);
+    expect(pieces(outside)).toEqual(['/synthetic/', 'results']);
+    expect(pieces(working)).toEqual(['~/', 'Projects/', 'kdps']);
+    expect(pieces(granted)).toEqual(['~/', 'Desktop/', 'BioRouter']);
+    // Revoke names the exact folder for a screen reader.
+    expect(
+      screen.getByRole('button', {
+        name: FOLDER_ACCESS_COPY.revokeLabel('/Users/wgu/Desktop/BioRouter'),
+      })
+    ).toBeInTheDocument();
+  });
+
+  it('writes the home folder itself as `~`, and the chip reads `~` too', async () => {
+    Object.assign(window, { appConfig: desktopConfig() });
+    const user = userEvent.setup();
+    render(<Page workingDir={HOME} />);
+    expect(chip()).toHaveTextContent('~');
+    expect(chip()).toHaveAccessibleName(FOOTER_COPY.folderLabel(HOME, '~'));
+    await user.click(chip());
+    expect(getPath(HOME, card()!).textContent).toBe('~');
+    await flush();
+  });
+
+  it('keeps every path absolute when the daemon may be on another machine', async () => {
+    for (const config of [
+      desktopConfig({ BIOROUTER_LOCAL_BACKEND: false }),
+      { get: (key: string) => (key === 'BIOROUTER_HOME_DIR' ? HOME : undefined) },
+    ]) {
+      Object.assign(window, { appConfig: config });
+      const user = userEvent.setup();
+      const view = render(<Page />);
+      await user.click(chip());
+      expect(getPath(WORKING_DIR, card()!).textContent).toBe(WORKING_DIR);
+      expect(chip()).toHaveTextContent('kdps');
+      await flush();
+      view.unmount();
+    }
+  });
+
+  it('isolates each name and leaves the separators between them, in a left-to-right line', async () => {
+    const rtl = '/Users/wgu/מסמכים/نتائج 2026';
+    mocks.list.mockResolvedValue({ data: [{ ...RESULTS, folder: rtl }] });
+    Object.assign(window, { appConfig: desktopConfig() });
+    const user = userEvent.setup();
+    render(<Page />);
+    await user.click(chip());
+    const path = await findPath(rtl, card()!);
+    expect(path).toHaveAttribute('dir', 'ltr');
+    expect([...path.querySelectorAll('bdi')].map((name) => name.textContent)).toEqual([
+      '~',
+      'מסמכים',
+      'نتائج 2026',
+    ]);
+    // The separators are text outside every isolate, each after its name in the same piece.
+    const own: string[] = [];
+    const walker = document.createTreeWalker(path, NodeFilter.SHOW_TEXT);
+    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+      if (!text.parentElement?.closest('bdi')) own.push(text.textContent ?? '');
+    }
+    expect(own).toEqual(['/', '/']);
+    expect([...path.querySelectorAll('.br-path-piece')].map((piece) => piece.textContent)).toEqual([
+      '~/',
+      'מסמכים/',
+      'نتائج 2026',
+    ]);
+    expect(path.textContent).toBe('~/מסמכים/نتائج 2026');
   });
 
   it('builds the card from the shared pieces: labelled sections, then the note last', async () => {
     const user = userEvent.setup();
     render(<Page />);
     await user.click(chip());
-    await screen.findByText(RESULTS.folder);
+    await findPath(RESULTS.folder);
     const surface = card()!;
     expect(surface).toHaveClass('br-footer-card');
     const labels = [
@@ -411,7 +566,7 @@ describe('what the card says', () => {
     hoverOpen(chip());
     await flush();
     expect(isOpen()).toBe(true);
-    expect(card()).toHaveTextContent(WORKING_DIR);
+    expect(getPath(WORKING_DIR, card()!)).toHaveTextContent(WORKING_DIR);
     expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
     expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
     expect(mocks.list).not.toHaveBeenCalled();
@@ -426,7 +581,7 @@ describe('what the card says', () => {
     await user.click(chip());
     await flush();
     expect(isOpen()).toBe(true);
-    expect(card()).toHaveTextContent(WORKING_DIR);
+    expect(getPath(WORKING_DIR, card()!)).toHaveTextContent(WORKING_DIR);
     expect(chooseButton()).toBeInTheDocument();
     expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
     expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.loading);
@@ -435,7 +590,7 @@ describe('what the card says', () => {
 
     // The chat gets its session while the card is open: the section appears and reads it.
     view.rerender(<Page sessionId="chat-a" locked={false} />);
-    expect(await within(card()!).findByText(RESULTS.folder)).toBeInTheDocument();
+    expect(await findPath(RESULTS.folder, card()!)).toBeInTheDocument();
     expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
     expect(mocks.list).toHaveBeenCalledTimes(1);
     expect(mocks.list).toHaveBeenCalledWith({ query: { session_id: 'chat-a' }, headers: PROOF });
@@ -480,7 +635,8 @@ describe('what the card says', () => {
     expect(rows[1]).toHaveTextContent('Read and write · listed files only');
     // A value this build does not know is shown as the backend wrote it.
     expect(rows[2]).toHaveTextContent('append · includes subfolders');
-    expect(within(rows[0]).getByText('/synthetic/results')).toHaveClass('font-mono');
+    expect(getPath('/synthetic/results', rows[0])).toHaveClass('br-footer-card__path');
+    expect(getPath('/synthetic/results', rows[0])).not.toHaveClass('font-mono');
     expect(
       within(rows[1]).getByRole('button', { name: 'Revoke access to /synthetic/notes' })
     ).toHaveTextContent(FOLDER_ACCESS_COPY.revoke);
@@ -500,7 +656,7 @@ describe('what the card says', () => {
     await user.click(chip());
     expect(screen.getByRole('status')).toHaveTextContent(FOLDER_ACCESS_COPY.loading);
     await act(async () => answer?.({ data: [RESULTS] }));
-    expect(screen.getByText(RESULTS.folder)).toBeInTheDocument();
+    expect(getPath(RESULTS.folder)).toBeInTheDocument();
     await user.click(chip());
     expect(isOpen()).toBe(false);
 
@@ -513,7 +669,7 @@ describe('what the card says', () => {
     );
     await user.click(chip());
     expect(mocks.list).toHaveBeenCalledTimes(2);
-    expect(screen.getByText(RESULTS.folder)).toBeInTheDocument();
+    expect(getPath(RESULTS.folder)).toBeInTheDocument();
     expect(screen.queryByRole('status')).toBeNull();
     await act(async () => answer?.({ data: [] }));
     expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.none);
@@ -544,7 +700,7 @@ describe('what the card says', () => {
     const user = userEvent.setup();
     render(<Page />);
     await user.click(chip());
-    await screen.findByText(RESULTS.folder);
+    await findPath(RESULTS.folder);
     expect(card()).toHaveTextContent('desktop app quits');
   });
 });
@@ -555,7 +711,7 @@ describe('revoking (the only revoke control in the interface)', () => {
     const user = userEvent.setup();
     render(<Page />);
     await user.click(chip());
-    await screen.findByText(NOTES.folder);
+    await findPath(NOTES.folder);
     mocks.list.mockResolvedValueOnce({ data: [RESULTS] });
     await user.click(
       screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(NOTES.folder) })
@@ -567,8 +723,8 @@ describe('revoking (the only revoke control in the interface)', () => {
       })
     );
     expect(mocks.revoke).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(screen.queryByText(NOTES.folder)).toBeNull());
-    expect(screen.getByText(RESULTS.folder)).toBeInTheDocument();
+    await waitFor(() => expect(byPath(document.body, NOTES.folder)).toBeNull());
+    expect(getPath(RESULTS.folder)).toBeInTheDocument();
     expect(mocks.list).toHaveBeenLastCalledWith({
       query: { session_id: 'chat-a' },
       headers: PROOF,
@@ -588,12 +744,12 @@ describe('revoking (the only revoke control in the interface)', () => {
     const user = userEvent.setup();
     render(<Page />);
     await user.click(chip());
-    await screen.findByText(RESULTS.folder);
+    await findPath(RESULTS.folder);
     await user.click(
       screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(RESULTS.folder) })
     );
     expect(await screen.findByRole('alert')).toHaveTextContent(FOLDER_ACCESS_COPY.revokeFailed);
-    expect(screen.getByText(RESULTS.folder)).toBeInTheDocument();
+    expect(getPath(RESULTS.folder)).toBeInTheDocument();
     expect(isOpen()).toBe(true);
   });
 
@@ -609,7 +765,7 @@ describe('revoking (the only revoke control in the interface)', () => {
     const user = userEvent.setup();
     render(<Page />);
     await user.click(chip());
-    await screen.findByText(NOTES.folder);
+    await findPath(NOTES.folder);
     await user.click(
       screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(NOTES.folder) })
     );
@@ -624,11 +780,13 @@ describe('revoking (the only revoke control in the interface)', () => {
     const user = userEvent.setup();
     render(<Page />);
     await user.click(chip());
-    await screen.findByText(RESULTS.folder);
+    await findPath(RESULTS.folder);
     // A browser's grants live as long as the backend, not the tab.
     expect(card()).toHaveTextContent('backend restarts');
     expect(card()).not.toHaveTextContent('desktop app quits');
     const key = screen.getByLabelText(FOLDER_ACCESS_COPY.approvalKey);
+    // Labelled like every other line that names something in the card: muted, 12/16.
+    expect(card()!.querySelector(`label[for="${key.id}"]`)).toHaveClass('br-footer-card__label');
     expect(key).toHaveAttribute('type', 'password');
     expect(key).toHaveAttribute('autocomplete', 'off');
     expect(key).toHaveAccessibleName(FOLDER_ACCESS_COPY.approvalKey);
@@ -666,11 +824,11 @@ describe('revoking (the only revoke control in the interface)', () => {
     const user = userEvent.setup();
     render(<Page />);
     await user.click(chip());
-    await screen.findByText(RESULTS.folder);
+    await findPath(RESULTS.folder);
     await user.type(screen.getByLabelText(FOLDER_ACCESS_COPY.approvalKey), 'typed-then-left');
     await user.keyboard('{Escape}');
     await user.click(chip());
-    await screen.findByText(RESULTS.folder);
+    await findPath(RESULTS.folder);
     expect(screen.getByLabelText(FOLDER_ACCESS_COPY.approvalKey)).toHaveValue('');
   });
 });
@@ -694,15 +852,16 @@ describe('one chat at a time', () => {
     });
 
     view.rerender(<Page sessionId="chat-b" />);
-    expect(await screen.findByText(NOTES.folder)).toBeInTheDocument();
+    expect(await findPath(NOTES.folder)).toBeInTheDocument();
     expect(mocks.list).toHaveBeenLastCalledWith({
       query: { session_id: 'chat-b' },
       headers: PROOF,
     });
 
-    // Chat A's answer arrives after the switch: it is not shown under chat B.
+    // Chat A's answer arrives after the switch: it is not shown under chat B, which still is.
     await act(async () => answerA?.({ data: [RESULTS] }));
-    expect(screen.queryByText(RESULTS.folder)).toBeNull();
+    expect(getPath(NOTES.folder)).toBeInTheDocument();
+    expect(byPath(document.body, RESULTS.folder)).toBeNull();
 
     // And Revoke acts on chat B.
     await user.click(
@@ -720,12 +879,12 @@ describe('one chat at a time', () => {
     const user = userEvent.setup();
     const view = render(<Page />);
     await user.click(chip());
-    await screen.findByText(RESULTS.folder);
+    await findPath(RESULTS.folder);
 
     mocks.list.mockImplementationOnce(() => new Promise(() => {}));
     view.rerender(<Page sessionId="chat-b" />);
     await flush();
-    expect(screen.queryByText(RESULTS.folder)).toBeNull();
+    expect(byPath(document.body, RESULTS.folder)).toBeNull();
     expect(screen.getByRole('status')).toHaveTextContent(FOLDER_ACCESS_COPY.loading);
   });
 });
