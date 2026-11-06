@@ -75,7 +75,8 @@ import {
 import { chatDateBucket } from '../../utils/chatDateBuckets';
 import { exportConversation } from '../../utils/exportConversation';
 import { useDiverge } from '../../hooks/useDiverge';
-import { folderName, historyRowTitle } from './historyRow';
+import { historyRowTitle } from './historyRow';
+import { folderName, homeFolder, tildePath } from '../../utils/folderPath';
 import {
   applyHeldHistory,
   holdHistory,
@@ -449,7 +450,11 @@ const HistoryRow = React.memo(function HistoryRow({
     [session.extension_data]
   );
   const billedTokenEstimate = billedSessionTokenEstimate(session);
-  const folder = folderName(session.working_dir);
+  // Named and written as the sidebar's folder groups and the composer's folder chip write it
+  // (utils/folderPath.ts): `~` for the home folder, `Crew` for the Crew task folder, else the
+  // folder's own name; the whole location `~/Desktop/BioRouter`, absolute outside home.
+  const home = homeFolder();
+  const folder = session.working_dir ? folderName(session.working_dir, home) : '';
   const title = historyRowTitle(session);
   const parentName = session.diverged_from
     ? (sessionNameById.get(session.diverged_from) ?? session.diverged_from)
@@ -522,9 +527,10 @@ const HistoryRow = React.memo(function HistoryRow({
                         {folder}
                       </span>
                     </TooltipTrigger>
-                    {/* The path is a machine string: mono, and only in a tooltip. */}
+                    {/* The whole location, only in a tooltip: in the tooltip's own sans and
+                        from `~`, as the sidebar's chat hover card writes it. */}
                     <TooltipContent side="bottom" align="start">
-                      <span className="font-mono">{session.working_dir}</span>
+                      {tildePath(session.working_dir, home)}
                     </TooltipContent>
                   </Tooltip>
                 </span>
@@ -617,13 +623,15 @@ const HistoryRow = React.memo(function HistoryRow({
 
 // The stored name AND the title the row shows: "living news" finds the chat drawn as
 // "Living news router" (stored `app:living-news-router`), and "subagent" still finds a run
-// whose row no longer says it.
+// whose row no longer says it. The folder likewise, as stored and as its tooltip writes it, so
+// "~/desktop" finds what the tooltip calls `~/Desktop`.
 function matchesFilter(session: Session, needle: string): boolean {
   return (
     session.name.toLowerCase().includes(needle) ||
     historyRowTitle(session).toLowerCase().includes(needle) ||
     session.id.toLowerCase().includes(needle) ||
-    session.working_dir.toLowerCase().includes(needle)
+    session.working_dir.toLowerCase().includes(needle) ||
+    tildePath(session.working_dir, homeFolder()).toLowerCase().includes(needle)
   );
 }
 

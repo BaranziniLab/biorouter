@@ -30,6 +30,7 @@ import { ReadableContent } from '../Layout/ReadableContent';
 import { ModalShell } from '../ModalShell';
 import { EmptyState } from '../ui/empty-state';
 import { useTransientFlag } from '../../hooks/useTransientFlag';
+import { homeFolder, tildePath } from '../../utils/folderPath';
 import {
   BACK,
   CHAT_LOAD_ERROR_TITLE,
@@ -422,7 +423,14 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
                 title={session.name}
                 onBack={onBack}
                 backLabel={BACK}
-                info={session.working_dir ? ranIn(session.working_dir) : undefined}
+                // The person's own chat, so its folder is written as everywhere else in the
+                // app, `~` for the home folder (utils/folderPath.ts). SharedSessionView keeps
+                // the sharer's absolute path.
+                info={
+                  session.working_dir
+                    ? ranIn(tildePath(session.working_dir, homeFolder()))
+                    : undefined
+                }
                 adornment={
                   tier || facts.length > 0 ? (
                     <span className="flex min-w-0 items-center gap-2">

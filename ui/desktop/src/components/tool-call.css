@@ -119,6 +119,35 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* A folder-access approval's folder and files (`ToolCallPreview`, `folderAccess`). Mono and
+   absolute, because the path is the exact argument of the decision, and it breaks only after a
+   separator: `PathSegments` draws each name with the separator after it as one atomic box no
+   wider than the line, and a line breaks between two boxes, so a hyphen or a space inside a name
+   is no break point while the name fits a line. Never `word-break: break-all`, which split a
+   folder's name between any two letters; only a name wider than the line breaks inside its box,
+   and `anywhere` is the last resort there. The footer folder card draws its folders the same
+   way (`.br-footer-card__path`, pickers.css). */
+.br-tool-preview-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.br-tool-preview-path .br-path-piece {
+  display: inline-block;
+  max-width: 100%;
+}
+
+/* A name's spaces are characters of the name, and this card shows the folder
+   being granted, which a model chooses. A name that starts with a space begins
+   its piece, and so a line of that atomic box, where a collapsible space is
+   dropped: "/Users/me/ .ssh" was drawn and copied as "/Users/me/.ssh", another
+   folder. `pre-wrap` keeps every space, a run of them too, and still lets a name
+   wider than the line wrap at its own spaces. Only the names hold spaces; a
+   separator is slashes. */
+.br-tool-preview-path bdi {
+  white-space: pre-wrap;
+}
 /* @ws WS-TOOLS end: action card */
 
 /* @ws WS-TOOLS begin: artifact card */

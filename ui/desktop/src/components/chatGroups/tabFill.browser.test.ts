@@ -391,17 +391,63 @@ describe('the document tabs are fills, not lines (R-27)', () => {
     }
   });
 
-  it('hovers the "+" and the ▾ on the band’s fill step', async (ctx) => {
+  it('hovers the "+" on the band’s fill step', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const mode of ['light', 'dark'] as const) {
       const page = await open(mode);
       try {
         const strong = await paint(page, 'var(--background-fill-strong)');
-        for (const id of ['#chat-new', '#preview-more']) {
-          await page.hover(id);
-          await settle(page);
-          expect((await look(page, id)).ground, `${mode} ${id}`).toBe(strong);
-        }
+        await page.hover('#chat-new');
+        await settle(page);
+        expect((await look(page, '#chat-new')).ground, `${mode} #chat-new`).toBe(strong);
+      } finally {
+        await page.close();
+      }
+    }
+  });
+
+  /**
+   * Hover peeks, click pins (H4). The ▾ opens a menu, so a hover is the ghost hover and only an
+   * open menu holds the fill step; both used to be the fill, so a hovered ▾ read as an open one.
+   * "Open" is `aria-expanded`, which the menu trigger sets (and a wrapping tooltip cannot
+   * overwrite, as it does `data-state`).
+   */
+  it('hovers the ▾ with the ghost hover and holds the fill step only while its menu is open', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const page = await open(mode);
+      try {
+        const clear = await paint(page, 'transparent');
+        const hover = await paint(page, 'var(--overlay-hover)');
+        const strong = await paint(page, 'var(--background-fill-strong)');
+        const ground = await page.evaluate(
+          () => getComputedStyle(document.querySelector('.br-tabstrip')!).backgroundColor
+        );
+        expect((await look(page, '#preview-more')).ground, `${mode}: at rest`).toBe(clear);
+
+        await page.hover('#preview-more');
+        await settle(page);
+        const hovered = (await look(page, '#preview-more')).ground;
+        expect(hovered, `${mode}: the ghost hover`).toBe(hover);
+        expect(
+          ratio(over(hovered, ground), over(strong, ground)),
+          `${mode}: a hovered ▾ does not read as an open one`
+        ).toBeGreaterThanOrEqual(1.02);
+
+        await page.$eval('#preview-more', (el) => el.setAttribute('aria-expanded', 'true'));
+        await settle(page);
+        expect((await look(page, '#preview-more')).ground, `${mode}: open, pointer on it`).toBe(
+          strong
+        );
+        await page.mouse.move(950, 390);
+        await settle(page);
+        expect((await look(page, '#preview-more')).ground, `${mode}: open, pointer away`).toBe(
+          strong
+        );
+
+        await page.$eval('#preview-more', (el) => el.setAttribute('aria-expanded', 'false'));
+        await settle(page);
+        expect((await look(page, '#preview-more')).ground, `${mode}: closed again`).toBe(clear);
       } finally {
         await page.close();
       }

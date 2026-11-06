@@ -28,6 +28,7 @@ import { getProviderMetadata } from '../modelInterface';
 import { Alert } from '../../../alerts';
 import BottomMenuAlertPopover from '../../../bottom_menu/BottomMenuAlertPopover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
+import { useSurfaceTriggerHint } from '../../../ui/surfaceTriggerHint';
 import { PrivacyBadge } from '../../../ui/PrivacyBadge';
 import { AffiliationBadge } from '../../../ui/AffiliationBadge';
 import {
@@ -258,6 +259,10 @@ export default function ModelsBottomBar({
   const [displayModelName, setDisplayModelName] = useState<string>('Select Model');
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
   const [isLeadWorkerModalOpen, setIsLeadWorkerModalOpen] = useState(false);
+  // The model menu, controlled for the chip's whole life so its hint can stay shut over it: the
+  // chip's tooltip names the model on a hover and never comes back over the open menu (H2).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuHint = useSurfaceTriggerHint(menuOpen);
   const [providerDefaultModel, setProviderDefaultModel] = useState<string | null>(null);
   /**
    * V2-R8-1. What the catalog said about each provider, KEYED BY THE PROVIDER
@@ -692,9 +697,9 @@ export default function ModelsBottomBar({
   return (
     <div className="relative flex min-w-0 items-center" ref={dropdownRef}>
       {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
-      <DropdownMenu>
-        <Tooltip>
-          <TooltipTrigger asChild>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+        <Tooltip {...menuHint.tooltip}>
+          <TooltipTrigger asChild {...menuHint.trigger}>
             <DropdownMenuTrigger
               // The parenthetical belongs to the MODEL; the sentence after the
               // period belongs to the CHAT. The old label put the chat's tier

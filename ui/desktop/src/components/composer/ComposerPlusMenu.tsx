@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Plus } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import {
@@ -9,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { useSurfaceTriggerHint } from '../ui/surfaceTriggerHint';
 import { COMPOSER_COPY } from './copy';
 
 const COPY = COMPOSER_COPY.plus;
@@ -34,6 +35,10 @@ export function ComposerPlusMenu({
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chosenTrigger = useRef<ComposerTrigger | null>(null);
+  // Controlled for its whole life, so the label hint can know the menu is open and stay shut
+  // over it (H2).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const hint = useSurfaceTriggerHint(menuOpen);
 
   return (
     <>
@@ -52,9 +57,9 @@ export function ComposerPlusMenu({
           event.target.value = '';
         }}
       />
-      <DropdownMenu>
-        <Tooltip>
-          <TooltipTrigger asChild>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+        <Tooltip {...hint.tooltip}>
+          <TooltipTrigger asChild {...hint.trigger}>
             <DropdownMenuTrigger asChild>
               <Button
                 type="button"
