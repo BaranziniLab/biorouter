@@ -291,6 +291,18 @@ int32_t br_token_eot(struct whisper_context *ctx) {
     }
 }
 
+int32_t br_tokenize(struct whisper_context *ctx, const char *text, int32_t *tokens, int32_t cap) {
+    if (ctx == nullptr || text == nullptr || tokens == nullptr || cap <= 0) {
+        return -1;
+    }
+    try {
+        const int n = whisper_tokenize(ctx, text, tokens, cap);
+        return n < 0 ? -1 : n;
+    } catch (...) {
+        return -1;
+    }
+}
+
 int32_t br_token_bytes(struct whisper_context *ctx, int32_t id, char *buf, int32_t cap) {
     if (ctx == nullptr || id < 0 || id >= whisper_n_vocab(ctx)) {
         return -1;

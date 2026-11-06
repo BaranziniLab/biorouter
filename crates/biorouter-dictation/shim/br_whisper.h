@@ -105,6 +105,10 @@ int32_t br_n_vocab(struct whisper_context *ctx);
 bool br_is_multilingual(struct whisper_context *ctx);
 int32_t br_token_eot(struct whisper_context *ctx);
 int32_t br_token_bytes(struct whisper_context *ctx, int32_t id, char *buf, int32_t cap); /* the token's length; -1 for an unknown id */
+/* whisper_tokenize: the greedy longest match whisper.cpp applies to initial_prompt text.
+   Biorouter never decodes with it (PR-14 sends canonical BPE ids); the tests hold the
+   canonical encoder's counts against it. The token count, or -1 when more than cap. */
+int32_t br_tokenize(struct whisper_context *ctx, const char *text, int32_t *tokens, int32_t cap);
 
 /* decoding: at most 25 s of samples per call */
 int32_t br_full(struct whisper_context *ctx, const br_decode *d, const br_vad *v,

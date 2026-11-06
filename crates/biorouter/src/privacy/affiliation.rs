@@ -1179,6 +1179,30 @@ pub fn dictionary_row_institutions(
     }
 }
 
+/// The allowlists a private dictionary row's stored institutions stand for when the bias
+/// set asks whether a target's model may use the row (PR-14, O-35, P-16): one single
+/// institution allowlist per stored id, one empty allowlist for `[]` (unknown), and none
+/// for `null` (no institution claims the row).
+///
+/// ⚠ **One allowlist per institution, never one allowlist of the union.** A row's
+/// institutions are the owners of what its chat held, so every one of them must admit the
+/// target, which is the union of owners rule chat recall and conversation ingest apply to
+/// the same column (`affiliation_clause`). Read as one allowlist, the union would widen a
+/// row each time its chat touched another institution. The caller asks
+/// [`gate_cross_affiliation_warning`] once per allowlist, so the extension gate's own
+/// lifts (the master switch, the mixing policy `open`) apply unchanged; this function
+/// compares nothing.
+pub fn dictionary_row_allowlists(stored: Option<&[String]>) -> Vec<ExtensionAffiliation> {
+    match stored {
+        None => Vec::new(),
+        Some([]) => vec![ExtensionAffiliation::Institutions(BTreeSet::new())],
+        Some(ids) => ids
+            .iter()
+            .map(|id| ExtensionAffiliation::institution(InstitutionId::new(id)))
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2525,6 +2549,25 @@ mod tests {
         assert_eq!(
             owners(&["UCSF", "stanford"]).stored_ids(),
             Some(vec!["stanford".to_string(), "ucsf".to_string()])
+        );
+    }
+
+    /// PR-14: `null` asks nothing, `[]` asks once with an empty allowlist, and each stored
+    /// id is its own one institution allowlist, normalized as every institution id is.
+    #[test]
+    fn dictionary_row_allowlists_are_one_per_institution() {
+        assert_eq!(dictionary_row_allowlists(None), Vec::new());
+        assert_eq!(
+            dictionary_row_allowlists(Some(&[])),
+            vec![ExtensionAffiliation::Institutions(BTreeSet::new())]
+        );
+        let stored = ["ucsf".to_string(), "Stanford".to_string()];
+        assert_eq!(
+            dictionary_row_allowlists(Some(&stored)),
+            vec![
+                ExtensionAffiliation::institution(inst("ucsf")),
+                ExtensionAffiliation::institution(inst("stanford")),
+            ]
         );
     }
 }

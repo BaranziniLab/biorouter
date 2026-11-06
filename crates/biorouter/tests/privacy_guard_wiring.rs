@@ -1164,11 +1164,43 @@ const REGISTRY: &[Guard] = &[
                 what: "`readable`, the gate on ingesting a conversation into a knowledge base",
             },
             Site {
+                file: "crates/biorouter/src/dictation/bias.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`bias_set` (PR-14, DD-36): which dictionary rows a dictation may use, \
+                       a row's tier read as a classification against the reach its target \
+                       and its caller's standing give",
+            },
+            Site {
                 file: VISIBILITY,
                 counts: c(3, 0, 1),
                 kind: SiteKind::Guard,
                 what: "`may_read`, `may_write` and `appears_in_list` are each defined as VIS \
                        (plus lineage, for write), and the `use super::` that brings it in",
+            },
+        ],
+    },
+    Guard {
+        ident: "bias_set",
+        defined_in: "crates/biorouter/src/dictation/bias.rs",
+        decides: "which dictionary rows a dictation may use (PR-14, DD-36): the one value the \
+                  token prompt, the decoder bonus, the aliases, the exact keys and the fuzzy \
+                  matcher all read, filtered by tier through `visible_to` and by institution \
+                  through the extension gate",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-cli/src/commands/transcribe.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`biorouter transcribe`, with the target and standing of DD-77's terminal \
+                       rule, and the `use` that brings it in",
+            },
+            Site {
+                file: "crates/biorouter/src/dictation/mod.rs",
+                counts: c(0, 0, 1),
+                kind: SiteKind::Guard,
+                what: "the `pub use` re-export",
             },
         ],
     },

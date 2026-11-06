@@ -22,11 +22,15 @@ use super::exit;
 use crate::audio;
 use crate::build_info;
 use crate::cpu::{self, HardwareClass};
+use crate::engine::booster::BonusTable;
+use crate::engine::bpe::Vocab;
 use crate::engine::{self, Engine, LoadOptions};
 use crate::protocol::{
-    self, ErrorCode, ErrorMsg, FrameError, FromWorker, Hello, Load, Loaded, SegmentText, Segments,
-    Timings, ToWorker, Transcribe, TranscribeResult, VadOptions, VadSegments, PROTOCOL_VERSION,
+    self, BiasReady, ErrorCode, ErrorMsg, FrameError, FromWorker, Hello, Load, Loaded, SegmentText,
+    Segments, SetBias, Timings, ToWorker, Transcribe, TranscribeResult, VadOptions, VadSegments,
+    BIAS_TABLES, PROTOCOL_VERSION,
 };
+use crate::recognize::prompt;
 
 /// How many recent `cancel` ids the reader remembers for requests not yet started.
 const REMEMBERED_CANCELS: usize = 64;
@@ -140,6 +144,9 @@ pub fn run<R: Read + Send + 'static>(input: R, mut out: FrameWriter) -> i32 {
         engine: None,
         loaded: None,
         pcm: Vec::new(),
+        vocab: None,
+        tables: VecDeque::new(),
+        last_prompt: None,
     };
     let code = worker.serve(&rx);
     // Frees the model, the detectors and the Metal device before the process exits.
@@ -202,9 +209,10 @@ impl Shared {
 /// Messages the reader thread hands to the engine thread.
 enum Incoming {
     Load(Load),
+    SetBias(SetBias),
     Transcribe(Transcribe, Vec<u8>),
     Vad(VadSegments, Vec<u8>),
-    /// `set_bias` (PR-14) or a type this worker does not know.
+    /// A type this worker does not know.
     Unsupported(Option<u64>),
     /// A known type whose fields could not be read.
     Unreadable(Option<u64>),
@@ -242,7 +250,8 @@ fn read_loop<R: Read>(mut input: R, shared: &Shared, tx: &mpsc::Sender<Incoming>
             Ok(ToWorker::Load(load)) => Incoming::Load(load),
             Ok(ToWorker::Transcribe(t)) => Incoming::Transcribe(t, frame.payload),
             Ok(ToWorker::VadSegments(v)) => Incoming::Vad(v, frame.payload),
-            Ok(ToWorker::SetBias(_) | ToWorker::Unknown) => Incoming::Unsupported(id),
+            Ok(ToWorker::SetBias(set)) => Incoming::SetBias(set),
+            Ok(ToWorker::Unknown) => Incoming::Unsupported(id),
         };
         if tx.send(incoming).is_err() {
             return;
@@ -266,6 +275,16 @@ struct EngineThread {
     loaded: Option<(Load, Loaded)>,
     /// The request's samples, reused: the capacity stays, the samples are zeroed.
     pcm: Vec<f32>,
+    /// The loaded model's text vocabulary, read once per load, for the prompt encoder
+    /// and the decoder bonus.
+    vocab: Option<Arc<Vocab>>,
+    /// Built decoder bonus tables by (scope, revision), least recently used first; at
+    /// most [`BIAS_TABLES`]. Cleared by every load, because a table is built over one
+    /// model's vocabulary.
+    tables: VecDeque<(String, u64, BonusTable)>,
+    /// The last prompt encoded: its terms, its budget, its ids and how many terms they
+    /// hold. Cleared with the vocabulary.
+    last_prompt: Option<(Vec<String>, usize, Vec<i32>, usize)>,
 }
 
 impl EngineThread {
@@ -287,6 +306,7 @@ impl EngineThread {
                 }
                 _ if stopping => continue,
                 Incoming::Load(load) => self.load(load),
+                Incoming::SetBias(set) => self.set_bias(&set),
                 Incoming::Transcribe(request, mut payload) => {
                     let reply = self.transcribe(&request, &payload);
                     clear_audio(&mut payload, &mut self.pcm);
@@ -322,9 +342,13 @@ impl EngineThread {
                 return FromWorker::Loaded(answer.clone());
             }
         }
-        // The previous model's memory is returned before the next one is read.
+        // The previous model's memory is returned before the next one is read, and its
+        // vocabulary and bonus tables with it.
         self.engine = None;
         self.loaded = None;
+        self.vocab = None;
+        self.tables.clear();
+        self.last_prompt = None;
         let bare_ascii = !load.vad_file.is_empty()
             && load.vad_file.is_ascii()
             && !load.vad_file.contains(['/', '\\'])
@@ -337,6 +361,11 @@ impl EngineThread {
                 "voice detector file name must be ASCII",
             );
         }
+        // The first bonus table reads the English word list, and the supervisor sends
+        // `set_bias` right after `loaded`, ahead of the first detector request and decode.
+        // Decoded there, the list cost a one shot `transcribe` about 20 ms on its path from
+        // file to text in a debug build [M]; decoded here, it overlaps the model load.
+        warm_word_list();
         let model_path = PathBuf::from(&load.model_path);
         let vad_path = Path::new(&load.vad_dir).join(&load.vad_file);
         let options = LoadOptions {
@@ -350,6 +379,9 @@ impl EngineThread {
             Ok(engine) => engine,
             Err(e) => return error(None, ErrorCode::ModelLoadFailed, &e.to_string()),
         };
+        // Read here, while the person is still speaking, so neither the first prompt nor
+        // the first bonus table pays for it.
+        self.vocab = Some(Arc::new(engine.vocabulary()));
         let report = engine.load_report();
         let answer = Loaded {
             load_ms: (report.model_ms + report.detector_ms).round() as u64,
@@ -365,30 +397,96 @@ impl EngineThread {
         FromWorker::Loaded(answer)
     }
 
+    /// Builds a decoder bonus table over the loaded model's vocabulary and keeps it under
+    /// its (scope, revision), the least recently used of [`BIAS_TABLES`] going first.
+    /// Answered `bias_ready`; with no model loaded nothing is kept and `nodes` is 0, and a
+    /// `transcribe` naming the table then decodes without the bonus.
+    fn set_bias(&mut self, set: &SetBias) -> FromWorker {
+        let started = std::time::Instant::now();
+        let ready = |nodes: usize, started: std::time::Instant| {
+            FromWorker::BiasReady(BiasReady {
+                revision: set.revision,
+                scope: set.scope.clone(),
+                nodes: nodes as u64,
+                build_ms: started.elapsed().as_millis() as u64,
+            })
+        };
+        let Some(vocab) = self.vocab.as_ref().filter(|_| self.engine.is_some()) else {
+            return ready(0, started);
+        };
+        let table = BonusTable::build(set, Arc::clone(vocab));
+        let nodes = table.nodes();
+        self.tables
+            .retain(|(scope, revision, _)| !(*scope == set.scope && *revision == set.revision));
+        self.tables
+            .push_back((set.scope.clone(), set.revision, table));
+        while self.tables.len() > BIAS_TABLES {
+            self.tables.pop_front();
+        }
+        ready(nodes, started)
+    }
+
     fn transcribe(&mut self, request: &Transcribe, payload: &[u8]) -> FromWorker {
         let id = Some(request.id);
         let Some(engine) = self.engine.as_mut() else {
             return error(id, ErrorCode::Internal, "no model loaded");
         };
-        // The prompt and the decoder bonus arrive with PR-14.
-        if !request.prompt_terms.is_empty()
-            || request.bias.is_some()
-            || request.decode.strategy != "greedy"
-        {
+        if request.decode.strategy != "greedy" {
             return error(id, ErrorCode::Internal, "unsupported message");
         }
         if let Err(e) = audio::validate_s16le(payload, protocol::MAX_TRANSCRIBE_SAMPLES) {
             return error(id, ErrorCode::BadAudio, &e.to_string());
         }
+        // The prompt: canonical BPE over this model's vocabulary, cut from the head to the
+        // budget (DD-45).
+        // A stream's segments all carry the same prompt, so the last one encoded is kept and
+        // the tail segment decoded at stop does not encode it again.
+        let budget = request
+            .prompt_budget_tokens
+            .min(protocol::PROMPT_BUDGET_TOKENS) as usize;
+        let cached = self
+            .last_prompt
+            .as_ref()
+            .filter(|(terms, b, _, _)| *terms == request.prompt_terms && *b == budget)
+            .map(|(_, _, ids, used)| (ids.clone(), *used));
+        let (prompt_ids, prompt_used) = match (&self.vocab, cached) {
+            (_, Some(hit)) => hit,
+            (Some(vocab), None) if !request.prompt_terms.is_empty() => {
+                let fitted = prompt::fit(&request.prompt_terms, budget, |text| vocab.encode(text));
+                self.last_prompt = Some((
+                    request.prompt_terms.clone(),
+                    budget,
+                    fitted.0.clone(),
+                    fitted.1,
+                ));
+                fitted
+            }
+            _ => (Vec::new(), 0),
+        };
+        // The bonus table the request names, touched as the most recently used; one the
+        // worker no longer holds means a decode without the bonus.
+        let table_at = request.bias.as_ref().and_then(|bias| {
+            self.tables
+                .iter()
+                .position(|(scope, revision, _)| *scope == bias.scope && *revision == bias.revision)
+        });
+        if let Some(at) = table_at {
+            if let Some(entry) = self.tables.remove(at) {
+                self.tables.push_back(entry);
+            }
+        }
+        let bonus = table_at.and_then(|_| self.tables.back()).map(|(_, _, t)| t);
         audio::s16le_to_f32(payload, &mut self.pcm);
         if !self.shared.begin(request.id) {
             self.shared.end();
             return error(id, ErrorCode::Cancelled, "cancelled");
         }
-        let decoded = engine.transcribe(
+        let decoded = engine.transcribe_with(
             &self.pcm,
             &decode_params(request),
             &vad_params(&request.vad),
+            &prompt_ids,
+            bonus,
             &self.shared.abort,
         );
         self.shared.end();
@@ -405,7 +503,7 @@ impl EngineThread {
                         text: s.text,
                     })
                     .collect(),
-                prompt_terms_used: 0,
+                prompt_terms_used: prompt_used as u32,
                 timings: Timings {
                     vad_ms: output.timings.vad_ms,
                     encode_ms: output.timings.encode_ms,
@@ -457,6 +555,17 @@ fn clear_audio(payload: &mut Vec<u8>, pcm: &mut Vec<f32>) {
     payload.clear();
     pcm.fill(0.0);
     pcm.clear();
+}
+
+/// Starts decoding the English word list on a thread of its own, once per process. A thread
+/// that cannot be started leaves the decode to the first table that reads the list.
+fn warm_word_list() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("word-list".into())
+            .spawn(crate::recognize::words::warm);
+    });
 }
 
 fn error(id: Option<u64>, code: ErrorCode, message: &str) -> FromWorker {
@@ -881,32 +990,48 @@ mod tests {
         assert_eq!(error_of(worker.recv()).1, ErrorCode::BadAudio);
         worker.send(&transcribe(5), &vec![0; 2 * 400_001]);
         assert_eq!(error_of(worker.recv()).1, ErrorCode::BadAudio);
-        let mut prompted = transcribe(6);
-        if let ToWorker::Transcribe(t) = &mut prompted {
-            t.prompt_terms = vec!["EPAS1".into()];
-        }
-        worker.send(&prompted, &jfk);
-        assert_eq!(
-            error_of(worker.recv()),
-            (
-                Some(6),
-                ErrorCode::Internal,
-                "unsupported message".to_string()
-            )
-        );
+        // PR-14: a bonus table is built and answered, and a request with a prompt and the
+        // table is decoded, the whole prompt fitting the budget.
         worker.send(
             &ToWorker::SetBias(protocol::SetBias {
                 revision: 1,
                 scope: "public".into(),
-                entries: vec![],
-                params: serde_json::json!({}),
+                entries: vec![protocol::BiasEntry {
+                    written: "EPAS1".into(),
+                    bias: "auto".into(),
+                }],
+                params: protocol::BonusParams::default(),
             }),
             &[],
         );
-        assert_eq!(
-            error_of(worker.recv()),
-            (None, ErrorCode::Internal, "unsupported message".to_string())
-        );
+        let FromWorker::BiasReady(ready) = worker.recv() else {
+            panic!("expected bias_ready")
+        };
+        assert_eq!((ready.revision, ready.scope.as_str()), (1, "public"));
+        assert!(ready.nodes > 1);
+        let mut prompted = transcribe(6);
+        if let ToWorker::Transcribe(t) = &mut prompted {
+            t.prompt_terms = vec!["Biorouter".into(), "EPAS1".into()];
+            t.bias = Some(protocol::BiasRef {
+                revision: 1,
+                scope: "public".into(),
+            });
+        }
+        worker.send(&prompted, &jfk);
+        let FromWorker::Result(result) = worker.recv() else {
+            panic!("expected a result")
+        };
+        assert_eq!((result.id, result.prompt_terms_used), (6, 2));
+        // A table the worker does not hold decodes without the bonus.
+        let mut unknown = transcribe(7);
+        if let ToWorker::Transcribe(t) = &mut unknown {
+            t.bias = Some(protocol::BiasRef {
+                revision: 9,
+                scope: "all".into(),
+            });
+        }
+        worker.send(&unknown, &jfk);
+        assert!(matches!(worker.recv(), FromWorker::Result(r) if r.id == 7));
         worker.send_raw(&protocol::frame_head(br#"{"type":"warm_up","id":9}"#, 0).expect("head"));
         assert_eq!(
             error_of(worker.recv()),

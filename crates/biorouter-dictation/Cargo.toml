@@ -58,6 +58,13 @@ chrono = { version = "0.4.38", default-features = false, features = ["clock", "s
 unicode-normalization = "0.1.25"
 uuid = { version = "1.19.0", features = ["v4"] }
 csv = "1.3"
+# Recognition with the dictionary (PR-14, DD-49): the alias automaton, the fuzzy
+# matcher's edit distance, and the embedded English word list, which is zstd compressed.
+# All three are already in Cargo.lock (zstd 0.13 and zstd-sys through reqwest's
+# decompression); no default features, so nothing beyond decoding is built.
+aho-corasick = "1.1.4"
+strsim = "0.11.1"
+zstd = { version = "0.13.3", default-features = false }
 
 # `sysctlbyname` for the Rosetta and macOS version checks of the CPU gate,
 # `dup`/`dup2` so the self test's one stdout line and the worker's frames cannot

@@ -103,6 +103,48 @@ miniaudio
   upstream's examples, and shares that tree's pin and hash manifest.
 
 
+English Speller Database word list
+----------------------------------
+  Used for:  local dictation: the English word list that keeps dictionary
+             correction off ordinary words, compiled into biorouter and
+             biorouterd
+  Licence:   the ESDB (previously SCOWL) permission notice, below
+  Copyright: Copyright 2000-2026 by Kevin Atkinson; Australian English data
+             Copyright 2016 by Benjamin Titze
+  Upstream:  https://wordlist.aspell.net, one export from
+             https://app.aspell.net/create (size 60, spellings US GB CA AU,
+             variant level 6, special hacker and roman-numerals, diacritics
+             both; ESDB git revision 1e5b7d3)
+  Version:   the export with SHA-256
+             c500ee2f68e7254e07c4d90abdc2c8d00c146a5cf1f812108423bb6bbc71993a,
+             which scripts/dictation/make-english-words.py checks before it
+             builds the list and refuses any other file
+  Notice text:
+    in this repository   the "#" lines at the head of
+                         crates/biorouter-dictation/assets/english-words.zst,
+                         which travel with the list into every binary
+
+  Copyright 2000-2026 by Kevin Atkinson
+
+  Permission to use, copy, modify, distribute, and sell any part of the English
+  Speller Database (ESDB, previously known as SCOWLv2), or word lists
+  created from it, is hereby granted without fee, provided that the above
+  copyright notice appears in all copies and that both the above copyright
+  notice and this notice appear in supporting documentation.  Kevin Atkinson
+  makes no representations about the suitability of this database for any
+  purpose.  It is provided "as is" without express or implied warranty.
+
+  Copyright 2016 by Benjamin Titze
+
+  Permission to use, copy, modify, distribute and sell this array, the
+  associated software, and its documentation for any purpose is hereby
+  granted without fee, provided that the above copyright notice appears
+  in all copies and that both that copyright notice and this permission
+  notice appear in supporting documentation. Benjamin Titze makes no
+  representations about the suitability of this array for any
+  purpose. It is provided "as is" without express or implied warranty.
+
+
 Speech models downloaded on request
 -----------------------------------
   Used for:  local dictation, only after a person installs a model with

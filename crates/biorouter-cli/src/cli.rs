@@ -2080,6 +2080,20 @@ enum Command {
         /// A speech model id from `biorouter dictation list` (default: the model in use)
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
+
+        /// The chat the transcript is for: its private dictionary terms are used only when
+        /// the chat is private, you run this at a terminal, and a private model is configured
+        #[arg(long, value_name = "SESSION_ID")]
+        session: Option<String>,
+
+        /// Text the recording is about (at most 4 KB read), which ranks the dictionary
+        /// terms that bias the transcript; it is never sent anywhere
+        #[arg(long = "context-file", value_name = "FILE")]
+        context_file: Option<std::path::PathBuf>,
+
+        /// Transcribe without the personal dictionary
+        #[arg(long = "no-dictionary")]
+        no_dictionary: bool,
     },
 
     /// The personal dictionary dictation spells your words from, kept on this computer
@@ -3599,6 +3613,9 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             output,
             language,
             model,
+            session,
+            context_file,
+            no_dictionary,
         }) => {
             crate::commands::transcribe::handle_transcribe(
                 crate::commands::transcribe::TranscribeArgs {
@@ -3607,6 +3624,9 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
                     output,
                     language,
                     model,
+                    session,
+                    context_file,
+                    no_dictionary,
                 },
             )
             .await

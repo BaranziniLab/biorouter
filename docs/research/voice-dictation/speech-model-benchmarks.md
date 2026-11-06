@@ -1,10 +1,10 @@
 # Speech model benchmarks
 
 > **What this is.** The record of four measurement studies that compared local speech engines, speech models and dictionary biasing methods for Biorouter's planned dictation: the setup, material, metrics and results of each study, and what the numbers decide.
-> **Status:** Current: measurements taken 2026-11-04; the material and versions are listed with each study
+> **Status:** Current: four studies taken 2026-11-04 and the plan's M-22 on 2026-11-06; the material and versions are listed with each study
 > **Audience:** developers building Biorouter's dictation engine, speech model catalog and personal dictionary, and maintainers choosing model tiers.
 
-Biorouter's dictation plan transcribes speech on the person's own machine and steers the result toward a personal dictionary of rare terms such as UCSF, EPAS1 and natalizumab. Four studies, all run on 2026-11-04, measured how well that works. The prompt study measured whisper.cpp with the dictionary as a decoder prompt on synthetic speech. The engine study compared five runtimes and nine models on the same clips plus noisy and reverberant copies. The logit study prototyped a booster that raises the decoder's token scores for dictionary terms, up to 1,000 terms. The real speech study repeated the key experiments on recorded human speech. This document records each study so a later change can be measured against the same baseline, then states which design choices the numbers settle and which they leave open. The plan that applies these results is in [voice dictation](../../dictation/README.md).
+Biorouter's dictation plan transcribes speech on the person's own machine and steers the result toward a personal dictionary of rare terms such as UCSF, EPAS1 and natalizumab. Four studies, all run on 2026-11-04, measured how well that works. The prompt study measured whisper.cpp with the dictionary as a decoder prompt on synthetic speech. The engine study compared five runtimes and nine models on the same clips plus noisy and reverberant copies. The logit study prototyped a booster that raises the decoder's token scores for dictionary terms, up to 1,000 terms. The real speech study repeated the key experiments on recorded human speech. On 2026-11-06 the plan's measurement M-22 ran the shipped mechanism's channels on public real speech and synthetic speech and decided DD-44's default. This document records each study so a later change can be measured against the same baseline, then states which design choices the numbers settle and which they leave open. The plan that applies these results is in [voice dictation](../../dictation/README.md).
 
 ## How to read these numbers
 
@@ -12,7 +12,7 @@ Every load bearing claim carries one of three labels.
 
 | Label | Meaning |
 |---|---|
-| **[measured]** | Produced by a run in one of the four studies. Every table cell is measured unless it says otherwise. |
+| **[measured]** | Produced by a run in one of the studies. Every table cell is measured unless it says otherwise. |
 | **[code]** | Read in the source of a pinned upstream release or commit, listed in the setup. |
 | **[inferred]** | Reasoning from measured or read facts, not tested. |
 
@@ -21,7 +21,7 @@ Four limits apply to everything below.
 - **Most of the speech is synthetic.** Three studies used macOS `say` text to speech (TTS). TTS is clean, evenly paced and pronounces a term the same way every time. The relative effects (prompt against no prompt, VAD against no VAD) are the useful output. Absolute recall on real dictation is lower. The real speech study is the check, and it overturned three synthetic conclusions: that `small.en` matches turbo, that the correction pass makes no false edits, and that decoding with timestamps off is safe for short clips.
 - **The samples are small.** The synthetic set has 81 target term occurrences per model and condition, so a difference of 2 to 4 points is noise. The two real speech sets have 85 and 78 occurrences, so 5 points is noise unless the paired test says otherwise.
 - **One shared machine.** Every run used one Apple M4 Max that other agents were also using. The 1 minute load average ranged from 4 to 255 depending on the run. Latency figures are upper bounds for an idle M4 Max. No x86 machine was measured. A portable CPU build on 4 Apple cores stands in for Intel Mac, Windows and Linux.
-- **Table labels.** Tables carry the letter of their study: P (prompt study), E (engine study), L (logit study), R (real speech study).
+- **Table labels.** Tables carry the letter of their study: P (prompt study), E (engine study), L (logit study), R (real speech study), M (the M-22 channel decision, which also used the Fareez et al. 2022 interviews and ran on Biorouter's own engine code rather than a test program).
 
 Terms used throughout:
 
@@ -870,6 +870,73 @@ From this material the study wrote a protocol, since withdrawn, for the lab's ow
 - The canonical id prompt, the logit booster, Qwen3-ASR or sherpa-onnx on real speech.
 - Turbo q8_0 or `small.en-q5_1` on real speech; only `small.en` f16 and turbo q5_0 ran.
 
+## The M-22 channel decision (2026-11-06)
+
+### Question
+
+DD-44's measurement M-22: with the shipped mechanism (the canonical id prompt of at most 30 terms, the decoder bonus over the bias set, and correction), does the token prompt and the decoder bonus together stay the default, or does the declared fallback ship, the token prompt alone with the bonus built but off? And for the two other settings, `temperature_inc` 0 against 0.2 and timestamps off against on for `small.en`, does either replace the default? The rules were fixed before the numbers in [dictation testing and release](../../dictation/testing-and-release.md#the-m-22-decision-and-its-fallback-dd-44).
+
+### Setup
+
+- PR-14's code on branch `feat/local-dictation` (on top of `78d5ca159`), through `m22_arms` in `crates/biorouter/tests/dictation_accuracy.rs`: the real service and worker, the catalog files `whisper-small.en-q8_0` and `whisper-large-v3-turbo-q5_0`, Silero v6.2.0, Metal, one Apple M4 Max shared with other work.
+- The test binary is a debug build, so the decoder bonus callback ran at debug speed (about 235 µs a decoder step, against 10.7 µs in a release build); whisper.cpp itself is always a release build. Lint and test runs shared the machine during part of the run. The medians below are for orientation only; no rule reads them.
+- The dictionary: 58 public terms, all the terms of the three term lists (PriMock57's 26, the Fareez subset's and the synthetic set's 14), taken in turn so each list has its share of the prompt, every term stamped one second apart so the ranking is the same in every arm and every run. One eligible set feeds every arm, so every arm that carries a prompt sends the same 30 terms, best last: loratadine, VHL, colchicine, sertraline, azithromycin, Biorouter, atorvastatin, thyroxine, scRNA-seq, ocrelizumab, amlodipine, naproxen, natalizumab, salbutamol, OMOP, Voltaren, clindamycin, Implanon, Baranzini, Tylenol, Clenil, UCSF, Synthroid, Ventolin, HIF-2α, Spiriva, EGLN1, Claritin, EPAS1, Advil.
+
+### Material and its limits
+
+| Set | Clips | Term occurrences | Notes |
+|---|---|---|---|
+| PriMock57 subset (`eval-primock57-subset-r1`, CC BY 4.0) | 60 speech and 16 gaps | 85 | Tier 1's set |
+| Fareez et al. 2022 subset (CC0), built by `scripts/dictation/fetch-fareez-subset.sh` | 80 | 104 | built on the maintainer's machine, never committed |
+| Synthetic dictation set | 42 | 81 (14 terms, five gene symbols) | macOS `say` voices |
+| Synthetic nonspeech | 2 | none | silence and noise |
+| Synthetic probes | 75 | none expected | near misses such as UCSD |
+| Reversed speech | 36 | none | the `s*` dictation clips played backwards |
+
+The two real sets hold 189 occurrences together, so rule 1's margin is 3 points. Gene symbols on real speech were not measured: no licensed public recording of real speech with gene symbols exists, and the owner ruled out lab recordings (O-23) and MultiMed (O-38).
+
+### Method
+
+Every clip goes through `transcribe_recording_with` once per arm: no dictionary, the token prompt, the decoder bonus, both, each scored before and after correction; and, with both channels on, `temperature_inc` 0 for both models and timestamps off for `small.en`. Strict recall counts the reference's term occurrences found as written (whole words, case kept on the synthetic set; the evaluation set's rule on the real sets). An insertion is a dictionary term in a probe or reversed clip that its reference does not hold. Rule 1 compares both channels with each channel alone on the corrected text; rule 2 compares each alternative setting with the default, with both channels on, the arms it was run with. Transcripts, tables and `m22-summary.json` stay on the maintainer's machine.
+
+### Results
+
+**Table M1. `whisper-small.en-q8_0`, recall before and after correction [measured]**
+
+| Arm | Real (189) | Synthetic (81) | Nonspeech outputs | Insertions | Collapses | Median ms |
+|---|---|---|---|---|---|---|
+| none | 63.0 / 72.5 % | 38.3 / 85.2 % | 0 | 0 | 0 | 113 |
+| prompt | 78.3 / 79.9 % | 75.3 / 90.1 % | 0 | 1 | 0 | 125 |
+| bonus | 72.0 / 75.7 % | 61.7 / 87.7 % | 0 | 0 | 0 | 115 |
+| both | 80.4 / 82.0 % | 77.8 / 93.8 % | 0 | 1 | 0 | 147 |
+| both, `temperature_inc` 0 | 81.5 / 83.1 % | 77.8 / 93.8 % | 0 | 7 | 0 | 131 |
+| both, timestamps off | 81.0 / 82.5 % | 77.8 / 93.8 % | 0 | 3 | 0 | 129 |
+
+**Table M2. `whisper-large-v3-turbo-q5_0`, recall before and after correction [measured]**
+
+| Arm | Real (189) | Synthetic (81) | Nonspeech outputs | Insertions | Collapses | Median ms |
+|---|---|---|---|---|---|---|
+| none | 79.9 / 84.1 % | 43.2 / 80.2 % | 1 | 0 | 0 | 288 |
+| prompt | 86.2 / 87.3 % | 77.8 / 87.7 % | 1 | 0 | 0 | 300 |
+| bonus | 82.0 / 85.7 % | 65.4 / 88.9 % | 1 | 0 | 0 | 299 |
+| both | 87.8 / 88.4 % | 77.8 / 90.1 % | 1 | 5 | 0 | 303 |
+| both, `temperature_inc` 0 | 87.8 / 88.4 % | 77.8 / 90.1 % | 1 | 93 | 0 | 302 |
+
+The nonspeech output of turbo is the same `Mm-hmm.` on one PriMock57 gap in every arm, the baseline's one allowed gap.
+
+**The decision.** Both channels together had the best recall on both models and the real sets' sign tests found it worse than neither channel, but rule 1 also asks that its insertions be no higher than either channel's, and they were higher on both models: `small.en` 1 against the bonus's 0 (`Voltaren` written in a reversed clip, where the prompt arm wrote it too), and turbo 5 against 0 and 0 (`UCSF` for the probe's UCSD three times, and `EGLN1` and `salbutamol` in two reversed clips). So the **declared fallback ships: the token prompt only, with the decoder bonus built but off.** Under rule 2 neither alternative replaces the default: `temperature_inc` 0 raised insertions (7 against 1 on `small.en`; 93 against 5 on turbo, where two reversed clips looped on dictionary terms), and timestamps off raised them on `small.en` (3 against 1), each despite higher real recall on `small.en`. So `temperature_inc` stays 0.2 and timestamps stay on. The changed default lands in its own pull request with the Tier 1 floors set again.
+
+An earlier run the same day, before this one, reached the same decision but is superseded: it built a separate store per arm, and with no context and no usage the 30 prompt terms were then chosen by random ids, so its arms sent different prompts.
+
+The dictionary arm of Tier 1 (`primock57_dictionary`, the shipped mechanism before the fallback, both channels and the set's own 26 terms) measured in the same run: `small.en` 65 of 85 (76.5 %) against the baseline's 41 (48.2 %), turbo 77 of 85 (90.6 %) against 63 (74.1 %), with no collapse and the gap floors held.
+
+### What the evidence does not show
+
+- Gene symbols on real speech, which no licensed public recording holds.
+- The bonus with a different gate or cap: only DD-46's frozen parameters ran, so whether a tighter bonus keeps the recall without the insertions is open.
+- Dictation into a composer, accents beyond the sets', and Biorouter's own capture path.
+- Latency of a release build: the medians include a debug build's bonus callback.
+
 ## What the numbers support
 
 Each conclusion names the tables that support it. Where the numbers do not settle a point, it says so. The decisions themselves are made in the [implementation plan](../../dictation/implementation-plan.md)'s decision register.
@@ -933,7 +1000,7 @@ Each conclusion names the tables that support it. Where the numbers do not settl
 ## Measurements still missing
 
 1. **The lab recording set: withdrawn.** The owner decided on 2026-11-05 that Biorouter records no real voices for evaluation (O-23), so the lab recording set (50 to 100 dictated sentences from 3 to 5 Baranzini Lab members) will not be made: no `BaranziniLab/biorouter-dictation-evalset`, no IRB step and no consent form. Biorouter never publishes an accuracy figure for dictation in user documentation, release notes, announcements or the interface. Design measurements in `docs/dictation/` and `docs/research/`, this document among them, stay, labeled measured and dated. The [inferred] and synthetic only results above are checked instead on PriMock57, the Fareez et al. 2022 interviews and synthetic speech (M-22, Tier 1 and Tier 2 in [dictation testing and release](../../dictation/testing-and-release.md); the owner's decision O-38); what those cannot reach stays unsettled: gene symbols on real speech (no licensed public recording of real speech with gene symbols exists, and lab recordings are ruled out), accents beyond the public sets, and Biorouter's own capture path.
-2. **The canonical id prompt and the logit booster on real speech,** each alone and together, with entries that collide with English words excluded from the booster. The canonical id prompt plus the booster was never run on synthetic speech either. The plan's measurement M-22 runs them on the PriMock57 subset, a subset of the Fareez et al. 2022 interviews and synthetic speech, gene symbols only as synthetic speech; the owner ruled MultiMed out on 2026-11-05 (O-38), so the combination on real gene speech stays unmeasured.
+2. **The canonical id prompt and the logit booster on real gene speech.** M-22 ran them, each alone and together, on PriMock57, the Fareez et al. 2022 subset and synthetic speech on 2026-11-06 ([The M-22 channel decision](#the-m-22-channel-decision-2026-11-06)); gene symbols ran only as synthetic speech, because the owner ruled MultiMed out on 2026-11-05 (O-38), so the combination on real gene speech stays unmeasured.
 3. **x86 CPU latency** for `small.en-q8_0`, turbo q8_0 with the encoder window sized to the utterance, and `base.en` on an AVX2 laptop, a Windows machine and a Linux server, and Metal latency on base M1 or M2 Macs. All latency here is from one M4 Max.
 4. **Turbo q5_0 against q8_0, and `small.en-q5_1` against f16, on real speech.**
 5. **A true cold disk load:** model load from disk with the page cache purged. The Metal shader compile is no longer missing: the prompt study saw about 2.5 s once (P6), and a later measurement put the first worker at 3.0 to 4.2 s to ready (4,168 ms after the cache entry was evicted), of which 2.8 to 3.9 s was the compile. It recurs after a model install, an app update that changes ggml's kernel sources, or eviction from the shared Metal cache, not after a reboot; the cost measured after a reboot was about 1.3 s for the first run of `biorouterd` (see [dictation engine and models](../../dictation/engine-and-models.md)).

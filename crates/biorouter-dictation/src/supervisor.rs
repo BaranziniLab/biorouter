@@ -48,8 +48,9 @@ use tokio::time::Instant;
 use crate::audio::{self, PcmSlice, Span};
 use crate::cpu;
 use crate::protocol::{
-    self, BiasRef, DecodeOptions, ErrorCode, FrameError, FromWorker, Hello, Load, Loaded, ToWorker,
-    Transcribe, TranscribeResult, VadOptions, VadSegments, PROMPT_BUDGET_TOKENS, PROTOCOL_VERSION,
+    self, BiasRef, DecodeOptions, ErrorCode, FrameError, FromWorker, Hello, Load, Loaded, SetBias,
+    ToWorker, Transcribe, TranscribeResult, VadOptions, VadSegments, BIAS_TABLES,
+    PROMPT_BUDGET_TOKENS, PROTOCOL_VERSION,
 };
 use crate::worker::exit;
 
@@ -272,11 +273,14 @@ pub struct TranscribeParams {
     pub language: String,
     pub decode: DecodeOptions,
     pub vad: VadOptions,
-    /// Ordered, best last. Empty until PR-14.
+    /// Ordered, best last.
     pub prompt_terms: Vec<String>,
     pub prompt_budget_tokens: u32,
-    /// `None` until PR-14.
-    pub bias: Option<BiasRef>,
+    /// The decoder bonus table, or `None` for a decode without one. The supervisor makes
+    /// sure the worker holds it before the decode is written (DD-46); a caller that
+    /// installed it with [`Supervisor::install_bias`] when the dictation started has it
+    /// built already.
+    pub bias: Option<Arc<SetBias>>,
 }
 
 impl TranscribeParams {
@@ -451,6 +455,7 @@ enum Command {
         reply: oneshot::Sender<Result<Loaded, SupervisorError>>,
     },
     SpawnAhead,
+    InstallBias(Arc<SetBias>),
     Submit(Box<Job>),
     Cancel(u64),
     CancelStream(StreamKey),
@@ -551,6 +556,7 @@ impl Supervisor {
             unload_waiters: Vec::new(),
             deadline: None,
             idle_since: Instant::now(),
+            bias_tables: VecDeque::new(),
         };
         tokio::spawn(actor.run());
         Supervisor {
@@ -600,6 +606,15 @@ impl Supervisor {
             return Err(SupervisorError::Stopped);
         }
         answer.await.unwrap_or(Err(SupervisorError::Stopped))
+    }
+
+    /// Has the worker build `table` now, so a dictation's first decode finds it ready:
+    /// called when a stream or a file starts, never at stop (DD-46). A loaded worker gets
+    /// it at once; a worker that is starting gets it right after its model loads, and so
+    /// does every later worker, so a restart or an idle unload costs no table. The
+    /// supervisor keeps the [`BIAS_TABLES`] most recent tables. Returns at once.
+    pub fn install_bias(&self, table: Arc<SetBias>) {
+        let _ = self.commands.send(Command::InstallBias(table));
     }
 
     /// Queues a transcription of at most 25 s and returns at once.
@@ -954,6 +969,10 @@ struct Worker {
     /// The spec being loaded, as sent (`use_gpu` already reflects `force_cpu`).
     loading: Option<Arc<LoadSpec>>,
     loaded: Option<(Arc<LoadSpec>, Loaded)>,
+    /// The bonus tables this worker was sent since its model loaded, as (scope,
+    /// revision), least recently used first: the worker's own list, touched in the same
+    /// order.
+    bias_sent: VecDeque<(String, u64)>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -962,6 +981,34 @@ impl Worker {
         let _ = self
             .outgoing
             .send(Outgoing::Message(protocol::to_json(message)));
+    }
+
+    /// Sends `table` unless the worker holds it. `used` marks it most recently used, as
+    /// the worker does when a decode names it; an install of a table the worker holds
+    /// touches nothing, as the worker would not. Only a worker with a model loaded builds
+    /// a table, so this runs only then.
+    fn give_bias(&mut self, table: &SetBias, used: bool) {
+        let at = self
+            .bias_sent
+            .iter()
+            .position(|(scope, revision)| *scope == table.scope && *revision == table.revision);
+        match at {
+            Some(at) => {
+                if used {
+                    if let Some(key) = self.bias_sent.remove(at) {
+                        self.bias_sent.push_back(key);
+                    }
+                }
+            }
+            None => {
+                self.send(&ToWorker::SetBias(table.clone()));
+                self.bias_sent
+                    .push_back((table.scope.clone(), table.revision));
+                while self.bias_sent.len() > BIAS_TABLES {
+                    self.bias_sent.pop_front();
+                }
+            }
+        }
     }
 }
 
@@ -1031,6 +1078,9 @@ struct Actor {
     unload_waiters: Vec<oneshot::Sender<()>>,
     deadline: Option<(Instant, Timer)>,
     idle_since: Instant,
+    /// The most recently installed bonus tables, oldest first, at most [`BIAS_TABLES`]:
+    /// what every newly loaded worker is sent before its first decode.
+    bias_tables: VecDeque<Arc<SetBias>>,
 }
 
 /// What the engine needs on `platform` that the worker's own CPUID view lacks.
@@ -1196,6 +1246,21 @@ impl Actor {
                     && matches!(self.phase, Phase::Stopped | Phase::Failed)
                 {
                     self.start_worker();
+                }
+            }
+            Command::InstallBias(table) => {
+                self.bias_tables
+                    .retain(|t| !(t.scope == table.scope && t.revision == table.revision));
+                self.bias_tables.push_back(Arc::clone(&table));
+                while self.bias_tables.len() > BIAS_TABLES {
+                    self.bias_tables.pop_front();
+                }
+                // A worker with its model loaded builds it now, behind any decode it is
+                // running; one still loading gets it when `loaded` arrives.
+                if matches!(self.phase, Phase::Ready | Phase::Busy) {
+                    if let Some(worker) = self.worker.as_mut().filter(|w| w.loaded.is_some()) {
+                        worker.give_bias(&table, false);
+                    }
                 }
             }
             Command::Submit(job) => {
@@ -1405,6 +1470,7 @@ impl Actor {
             hello: None,
             loading: None,
             loaded: None,
+            bias_sent: VecDeque::new(),
             tasks,
         });
         self.phase = Phase::Spawning;
@@ -1464,10 +1530,20 @@ impl Actor {
                 .as_ref()
                 .and_then(|w| w.loaded.as_ref())
                 .is_some_and(|(_, l)| l.backend == "metal");
+        if let (JobKind::Transcribe { params, .. }, Some(worker)) =
+            (&job.kind, self.worker.as_mut())
+        {
+            if let Some(table) = &params.bias {
+                worker.give_bias(table, true);
+            }
+        }
         let message = match &job.kind {
             JobKind::Transcribe { params, .. } => ToWorker::Transcribe(Transcribe {
                 id: job.id,
-                bias: params.bias.clone(),
+                bias: params.bias.as_ref().map(|table| BiasRef {
+                    revision: table.revision,
+                    scope: table.scope.clone(),
+                }),
                 prompt_terms: params.prompt_terms.clone(),
                 prompt_budget_tokens: params.prompt_budget_tokens,
                 language: params.language.clone(),
@@ -1516,6 +1592,13 @@ impl Actor {
                     return;
                 };
                 worker.loaded = Some((Arc::clone(&spec), loaded.clone()));
+                // A load replaces the worker's tables, which were built over the previous
+                // model's vocabulary: every installed table is built again now, before any
+                // decode is dispatched.
+                worker.bias_sent.clear();
+                for table in &self.bias_tables {
+                    worker.give_bias(table, false);
+                }
                 self.deadline = None;
                 self.phase = Phase::Ready;
                 self.last_error = None;
@@ -1904,11 +1987,15 @@ mod tests {
                 load.use_gpu,
                 if load.warm_up { "" } else { " no-warm-up" }
             ),
-            ToWorker::Transcribe(t) => format!("transcribe {}", t.id),
+            ToWorker::Transcribe(t) => match &t.bias {
+                Some(bias) => format!("transcribe {} bias {} {}", t.id, bias.scope, bias.revision),
+                None => format!("transcribe {}", t.id),
+            },
             ToWorker::VadSegments(v) => format!("vad {}", v.id),
             ToWorker::Cancel { id } => format!("cancel {id}"),
             ToWorker::Shutdown => "shutdown".into(),
-            ToWorker::SetBias(_) | ToWorker::Unknown => "other".into(),
+            ToWorker::SetBias(set) => format!("set_bias {} {}", set.scope, set.revision),
+            ToWorker::Unknown => "other".into(),
         };
         log.lock().expect("log").events.push(event);
     }
@@ -2983,5 +3070,106 @@ mod tests {
         assert!(events(&log).contains(&format!("cancel {}", running.0)));
         // The other stream's segment runs next.
         other.await.expect("answered").expect("a result");
+    }
+
+    fn bias_table(scope: &str, revision: u64) -> Arc<SetBias> {
+        Arc::new(SetBias {
+            revision,
+            scope: scope.into(),
+            entries: vec![protocol::BiasEntry {
+                written: "EPAS1".into(),
+                bias: "auto".into(),
+            }],
+            params: protocol::BonusParams::default(),
+        })
+    }
+
+    /// PR-14: a table installed when a dictation starts is built right after the model
+    /// loads, before the first decode is written, and a decode that names it sends it no
+    /// second time; a restarted worker gets every installed table again after its load.
+    #[tokio::test(start_paused = true)]
+    async fn installed_bias_tables_are_built_before_the_first_decode() {
+        let (supervisor, log) = start(Script::default());
+        let spec = model("aa", false);
+        let table = bias_table("public", 3);
+        supervisor.spawn_ahead();
+        supervisor.install_bias(Arc::clone(&table));
+        supervisor.prepare(Arc::clone(&spec)).await.expect("ready");
+        let mut with_bias = params();
+        with_bias.bias = Some(Arc::clone(&table));
+        let (job, answer) =
+            supervisor.submit_transcribe(Arc::clone(&spec), 1, audio(1.0), with_bias.clone());
+        answer.await.expect("answered").expect("a result");
+        assert_eq!(
+            events(&log),
+            [
+                "load aa gpu=false".to_string(),
+                "set_bias public 3".to_string(),
+                format!("transcribe {} bias public 3", job.0),
+            ]
+        );
+
+        // A table never installed is sent with its first decode, right before it.
+        let other = bias_table("private:local", 4);
+        let mut with_other = params();
+        with_other.bias = Some(Arc::clone(&other));
+        let (job, answer) =
+            supervisor.submit_transcribe(Arc::clone(&spec), 1, audio(1.0), with_other);
+        answer.await.expect("answered").expect("a result");
+        let tail: Vec<String> = events(&log).split_off(3);
+        assert_eq!(
+            tail,
+            [
+                "set_bias private:local 4".to_string(),
+                format!("transcribe {} bias private:local 4", job.0),
+            ]
+        );
+
+        // A crash and a fresh worker: the installed table again, after the load.
+        supervisor.kill_worker();
+        wait_for_state(&supervisor, WorkerState::Stopped).await;
+        let before = events(&log).len();
+        let (job, answer) =
+            supervisor.submit_transcribe(Arc::clone(&spec), 1, audio(1.0), with_bias);
+        answer.await.expect("answered").expect("a result");
+        let tail: Vec<String> = events(&log).split_off(before);
+        assert_eq!(
+            tail,
+            [
+                "load aa gpu=false".to_string(),
+                "set_bias public 3".to_string(),
+                format!("transcribe {} bias public 3", job.0),
+            ]
+        );
+    }
+
+    /// The supervisor's list of what a worker holds is the worker's: four tables, least
+    /// recently used out, so a fifth sends the first one again when it is next used.
+    #[tokio::test(start_paused = true)]
+    async fn a_worker_holds_four_tables() {
+        let (supervisor, log) = start(Script::default());
+        let spec = model("aa", false);
+        supervisor.prepare(Arc::clone(&spec)).await.expect("ready");
+        for revision in 1..=5 {
+            let mut p = params();
+            p.bias = Some(bias_table("public", revision));
+            let (_, answer) = supervisor.submit_transcribe(Arc::clone(&spec), 1, audio(1.0), p);
+            answer.await.expect("answered").expect("a result");
+        }
+        let sets = |log: &Mutex<Log>| {
+            events(log)
+                .into_iter()
+                .filter(|e| e.starts_with("set_bias"))
+                .count()
+        };
+        assert_eq!(sets(&log), 5);
+        // Revision 2 is still held; revision 1 was evicted by the fifth.
+        for (revision, sent) in [(2, 5), (1, 6)] {
+            let mut p = params();
+            p.bias = Some(bias_table("public", revision));
+            let (_, answer) = supervisor.submit_transcribe(Arc::clone(&spec), 1, audio(1.0), p);
+            answer.await.expect("answered").expect("a result");
+            assert_eq!(sets(&log), sent, "revision {revision}");
+        }
     }
 }

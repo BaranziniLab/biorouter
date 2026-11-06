@@ -7,6 +7,8 @@
 //!
 //! Only a worker process uses this module (DD-4): a `GGML_ASSERT` ends in `abort()`.
 
+pub mod booster;
+pub mod bpe;
 pub mod ffi;
 
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -404,6 +406,21 @@ impl Engine {
         v: &VadParams,
         abort: &AtomicI32,
     ) -> Result<EngineOutput, EngineError> {
+        self.transcribe_with(pcm, d, v, &[], None, abort)
+    }
+
+    /// [`Engine::transcribe`] with the dictionary (PR-14): `prompt` is the canonical token
+    /// ids passed as `prompt_tokens` (`initial_prompt` stays unset), and `bonus`, when
+    /// given, is installed as the decoder bonus for this call alone.
+    pub fn transcribe_with(
+        &mut self,
+        pcm: &[f32],
+        d: &DecodeParams,
+        v: &VadParams,
+        prompt: &[i32],
+        bonus: Option<&booster::BonusTable>,
+        abort: &AtomicI32,
+    ) -> Result<EngineOutput, EngineError> {
         if pcm.len() > MAX_TRANSCRIBE_SAMPLES {
             return Err(EngineError::TooLong);
         }
@@ -411,7 +428,20 @@ impl Engine {
         let c_decode = d.to_c(&language);
         let c_vad = v.to_c(&self.vad_file);
         let mut timings = ffi::BrTimings::default();
-        // SAFETY: every pointer is valid for the call; the shim reads `abort` atomically.
+        let (callback, user): (ffi::BrLogitsCb, *mut c_void) = match bonus {
+            Some(table) => (
+                Some(booster::bonus_callback),
+                std::ptr::from_ref(table).cast_mut().cast(),
+            ),
+            None => (None, std::ptr::null_mut()),
+        };
+        let (prompt_ptr, n_prompt) = if prompt.is_empty() {
+            (std::ptr::null(), 0)
+        } else {
+            (prompt.as_ptr(), prompt.len() as i32)
+        };
+        // SAFETY: every pointer is valid for the call; the shim reads `abort` atomically,
+        // and the bonus table outlives the call, which is the only time the callback runs.
         let rc = unsafe {
             ffi::br_full(
                 self.ctx,
@@ -419,10 +449,10 @@ impl Engine {
                 &c_vad,
                 pcm.as_ptr(),
                 pcm.len() as i32,
-                std::ptr::null(),
-                0,
-                None,
-                std::ptr::null_mut(),
+                prompt_ptr,
+                n_prompt,
+                callback,
+                user,
                 abort.as_ptr().cast_const(),
                 &mut timings,
             )
@@ -506,7 +536,54 @@ impl Engine {
         }
     }
 
-    /// The bytes of one vocabulary token, for the prompt encoder of PR-14.
+    /// The model's text vocabulary, every id below end of text, for the prompt encoder and
+    /// the decoder bonus (PR-14). Read once per load, with one buffer.
+    pub fn vocabulary(&self) -> bpe::Vocab {
+        let eot = self.token_eot().max(0);
+        let mut buf = vec![0u8; 256];
+        let mut tokens = Vec::with_capacity(eot as usize);
+        for id in 0..eot {
+            let mut bytes = Vec::new();
+            loop {
+                // SAFETY: the buffer holds `buf.len()` bytes; `ctx` is live.
+                let len = unsafe {
+                    ffi::br_token_bytes(self.ctx, id, buf.as_mut_ptr().cast(), buf.len() as i32)
+                };
+                if len < 0 {
+                    break;
+                }
+                let len = len as usize;
+                if len <= buf.len() {
+                    bytes.extend_from_slice(buf.get(..len).unwrap_or_default());
+                    break;
+                }
+                buf.resize(len, 0);
+            }
+            tokens.push(bytes);
+        }
+        bpe::Vocab::new(tokens, eot)
+    }
+
+    /// `whisper_tokenize`: the greedy longest match whisper.cpp applies to prompt text.
+    /// Never used to decode; the tests hold the canonical encoder against it.
+    pub fn whisper_tokenize(&self, text: &str) -> Option<Vec<i32>> {
+        let text = CString::new(text).ok()?;
+        let mut tokens = vec![0i32; text.as_bytes().len() + 16];
+        // SAFETY: the buffer holds `tokens.len()` ids; `ctx` is live.
+        let n = unsafe {
+            ffi::br_tokenize(
+                self.ctx,
+                text.as_ptr(),
+                tokens.as_mut_ptr(),
+                tokens.len() as i32,
+            )
+        };
+        let n = usize::try_from(n).ok()?;
+        tokens.truncate(n);
+        Some(tokens)
+    }
+
+    /// The bytes of one vocabulary token.
     pub fn token_bytes(&self, id: i32) -> Option<Vec<u8>> {
         let mut buf = vec![0u8; 64];
         loop {

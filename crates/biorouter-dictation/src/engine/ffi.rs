@@ -109,6 +109,12 @@ extern "C" {
     pub fn br_is_multilingual(ctx: *mut WhisperContext) -> bool;
     pub fn br_token_eot(ctx: *mut WhisperContext) -> i32;
     pub fn br_token_bytes(ctx: *mut WhisperContext, id: i32, buf: *mut c_char, cap: i32) -> i32;
+    pub fn br_tokenize(
+        ctx: *mut WhisperContext,
+        text: *const c_char,
+        tokens: *mut i32,
+        cap: i32,
+    ) -> i32;
 
     #[allow(clippy::too_many_arguments)]
     pub fn br_full(

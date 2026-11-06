@@ -333,13 +333,69 @@ pub struct Loaded {
     pub multilingual: bool,
 }
 
-/// PR-14 builds the decoder bonus from this; until then the worker refuses it.
+/// A decoder bonus table to build (DD-46): the entries the bonus may start, unranked, the
+/// key the worker keeps it under, and the frozen parameters. The worker answers
+/// `bias_ready`. Frames are handled in order, so a `set_bias` written before a
+/// `transcribe` is built before that decode starts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SetBias {
     pub revision: u64,
     pub scope: String,
     pub entries: Vec<BiasEntry>,
-    pub params: serde_json::Value,
+    pub params: BonusParams,
+}
+
+/// The decoder bonus's parameters (DD-46), frozen until M-22: `b_start = gate_start =
+/// 2.0`, `b_cont = gate_cont = 5.0`, `ramp = 2`, `first = 0`, `alias_factor = 0`,
+/// `min_start = 2`, the prefix steal guard on, `cap = 5.0`. English start pieces are
+/// skipped unless they are the whole term. A field the parent leaves out takes its frozen
+/// value.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BonusParams {
+    /// The bonus for a token that starts a form, and how far below the row's best logit
+    /// it may be.
+    pub b_start: f32,
+    pub gate_start: f32,
+    /// The bonus for a token that continues a form, and its gate.
+    pub b_cont: f32,
+    pub gate_cont: f32,
+    /// The continuation bonus and gate scale by `min(1, matched bytes / ramp)`.
+    pub ramp: f32,
+    /// The start bonus's factor at a window's first text step.
+    pub first: f32,
+    /// Aliases are never boosted.
+    pub alias_factor: f32,
+    /// A start piece covers at least this many characters, unless it is the whole form.
+    pub min_start: u32,
+    /// A continuation needs at least this many matched bytes.
+    pub min_cont: u32,
+    /// The bonus per token is the largest over its sources, clamped here.
+    pub cap: f32,
+    /// Never boost a candidate whose bytes are a strict prefix of the model's current top
+    /// token when that token is not itself a candidate.
+    pub prefix_guard: bool,
+    /// Skip a start piece that is an English word unless it is the whole form.
+    pub skip_word_starts: bool,
+}
+
+impl Default for BonusParams {
+    fn default() -> BonusParams {
+        BonusParams {
+            b_start: 2.0,
+            gate_start: 2.0,
+            b_cont: 5.0,
+            gate_cont: 5.0,
+            ramp: 2.0,
+            first: 0.0,
+            alias_factor: 0.0,
+            min_start: 2,
+            min_cont: 1,
+            cap: 5.0,
+            prefix_guard: true,
+            skip_word_starts: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +434,11 @@ pub struct Transcribe {
 
 /// The token budget of a prompt (DD-47).
 pub const PROMPT_BUDGET_TOKENS: u32 = 150;
+
+/// How many decoder bonus tables a worker keeps, least recently used first out. The
+/// supervisor keeps the same count of what it sent, touched in the same order, so it knows
+/// which tables a worker still holds without asking (DD-46).
+pub const BIAS_TABLES: usize = 4;
 
 /// Every language code the vendored whisper.cpp knows (`g_lang` in `src/whisper.cpp`), in
 /// its order. `transcribe.language` is one of these or `"auto"` (DD-15); a test reads the
@@ -729,10 +790,24 @@ mod tests {
                     written: "EPAS1".into(),
                     bias: "auto".into(),
                 }],
-                params: json!({"bonus": 2.0}),
+                params: BonusParams::default(),
             }),
             json!({"type":"set_bias","revision":4,"scope":"public",
-                   "entries":[{"written":"EPAS1","bias":"auto"}],"params":{"bonus":2.0}}),
+                   "entries":[{"written":"EPAS1","bias":"auto"}],
+                   "params":{"b_start":2.0,"gate_start":2.0,"b_cont":5.0,"gate_cont":5.0,
+                             "ramp":2.0,"first":0.0,"alias_factor":0.0,"min_start":2,
+                             "min_cont":1,"cap":5.0,"prefix_guard":true,
+                             "skip_word_starts":true}}),
+        );
+        // A parent that leaves a parameter out gets the frozen value.
+        let partial: BonusParams =
+            serde_json::from_value(json!({"b_start": 1.0})).expect("partial params");
+        assert_eq!(
+            partial,
+            BonusParams {
+                b_start: 1.0,
+                ..BonusParams::default()
+            }
         );
         golden(
             FromWorker::BiasReady(BiasReady {

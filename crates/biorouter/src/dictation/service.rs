@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use biorouter_dictation::audio::{PcmSlice, Span};
 use biorouter_dictation::cpu::{self, CpuReport, HardwareClass};
-use biorouter_dictation::protocol::{Hello, Loaded, TranscribeResult, VadOptions};
+use biorouter_dictation::protocol::{DecodeOptions, Hello, Loaded, TranscribeResult, VadOptions};
 use biorouter_dictation::supervisor::{
     CommandSpawner, LoadSpec, Supervisor, SupervisorConfig, SupervisorError, SupervisorStatus,
     TranscribeParams, WorkerState,
@@ -37,6 +37,11 @@ use tokio_util::sync::CancellationToken;
 use biorouter_dictation::catalog::{SttCatalogEntry, CATALOG};
 use biorouter_dictation::hardware::{self, BenchRecord};
 
+use biorouter_dictation::protocol::SetBias;
+use biorouter_dictation::recognize::correct::Change;
+use biorouter_dictation::recognize::BiasScope;
+
+use super::bias::DictionaryRequest;
 use super::file::RecordingTranscript;
 use super::paths::{self, Installed, Roots};
 use crate::config::paths::Paths;
@@ -248,12 +253,29 @@ impl From<SupervisorError> for DictationError {
     }
 }
 
-/// A transcription request other than its audio. PR-14 adds the bias set and the
-/// context.
-#[derive(Clone, Debug)]
+/// A transcription request other than its audio: its language, its cancellation, and the
+/// dictionary it may use (PR-14), prepared when the dictation started.
+#[derive(Clone)]
 pub struct TranscribeRequest {
     pub language: String,
     pub cancel: CancellationToken,
+    /// The bias set's value with its plan, corrector and bonus table; `None` decodes and
+    /// reports with no dictionary at all.
+    pub dictionary: Option<Arc<DictionaryRequest>>,
+    /// Decode options other than DD-47's, for the measurements that compare them (M-22:
+    /// `temperature_inc`, timestamps); `None` everywhere else. The thread count stays the
+    /// service's.
+    pub decode: Option<DecodeOptions>,
+}
+
+impl std::fmt::Debug for TranscribeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never the dictionary's terms (P-12).
+        f.debug_struct("TranscribeRequest")
+            .field("language", &self.language)
+            .field("dictionary", &self.dictionary.is_some())
+            .finish()
+    }
 }
 
 impl TranscribeRequest {
@@ -261,8 +283,40 @@ impl TranscribeRequest {
         TranscribeRequest {
             language: language.into(),
             cancel: CancellationToken::new(),
+            dictionary: None,
+            decode: None,
         }
     }
+
+    /// The decode parameters for this request: DD-47 and DD-48, and the dictionary's
+    /// prompt and bonus table when it has them.
+    fn params(&self, n_threads: u32) -> TranscribeParams {
+        let mut params = TranscribeParams::new(self.language.clone(), n_threads);
+        if let Some(decode) = &self.decode {
+            params.decode = DecodeOptions {
+                n_threads,
+                ..decode.clone()
+            };
+        }
+        if let Some(dictionary) = &self.dictionary {
+            params.prompt_terms = dictionary.prompt_terms();
+            params.bias = dictionary.bias_table();
+        }
+        params
+    }
+}
+
+/// A recording's transcript with the dictionary's corrections (PR-14): `transcript.text`
+/// is the corrected text and `transcript.raw_text` what the engine wrote; each segment's
+/// text is corrected too.
+#[derive(Clone, Debug)]
+pub struct DictatedRecording {
+    pub transcript: RecordingTranscript,
+    /// Every change, its offsets in characters of `transcript.text`.
+    pub changes: Vec<Change>,
+    pub bias_scope: BiasScope,
+    /// How long correction took, in microseconds: the dictionary's share of stop to text.
+    pub correct_us: u64,
 }
 
 /// What [`DictationService::warm_up`] measured.
@@ -352,7 +406,7 @@ impl DictationService {
         if spec.n_threads == 0 {
             spec.n_threads = self.request_threads(&supervisor).await;
         }
-        let params = TranscribeParams::new(req.language, spec.n_threads);
+        let params = req.params(spec.n_threads);
         let (job, answer) = supervisor.submit_transcribe(Arc::new(spec), stream, pcm, params);
         tokio::select! {
             answer = answer => answer.unwrap_or(Err(SupervisorError::Stopped)).map_err(Into::into),
@@ -396,14 +450,61 @@ impl DictationService {
         mut spec: LoadSpec,
         pcm: Arc<[i16]>,
         req: TranscribeRequest,
-    ) -> Result<RecordingTranscript, DictationError> {
+    ) -> Result<DictatedRecording, DictationError> {
         let supervisor = self.ready_supervisor()?;
         if spec.n_threads == 0 {
             spec.n_threads = self.request_threads(&supervisor).await;
         }
-        let params = TranscribeParams::new(req.language, spec.n_threads);
-        super::file::transcribe_recording(&supervisor, Arc::new(spec), pcm, params, &req.cancel)
-            .await
+        let params = req.params(spec.n_threads);
+        let prompt = params.prompt_terms.clone();
+        let mut transcript = super::file::transcribe_recording(
+            &supervisor,
+            Arc::new(spec),
+            pcm,
+            params,
+            &req.cancel,
+        )
+        .await?;
+        let Some(dictionary) = req.dictionary else {
+            return Ok(DictatedRecording {
+                transcript,
+                changes: Vec::new(),
+                bias_scope: BiasScope::Public,
+                correct_us: 0,
+            });
+        };
+        // Correction runs once over the joined text, so the changes refer to the final
+        // text; each segment is corrected on its own for the subtitle formats. The fuzzy
+        // matcher's prompt piece guard reads the whole prompt: a term the worker cut was
+        // never in the decoder's context, and counting it too only makes the guard
+        // stricter.
+        let started = Instant::now();
+        let corrected = dictionary.correct(&transcript.raw_text, &prompt);
+        transcript.text = corrected.text;
+        for segment in &mut transcript.segments {
+            segment.text = dictionary.correct_piece(&segment.text, &prompt);
+        }
+        Ok(DictatedRecording {
+            transcript,
+            changes: corrected.changes,
+            bias_scope: dictionary.scope(),
+            correct_us: started.elapsed().as_micros() as u64,
+        })
+    }
+
+    /// Has the worker build `dictionary`'s decoder bonus table now, when a dictation
+    /// starts, so its first decode finds it ready (DD-46). Returns at once; a worker still
+    /// loading builds it right after its model.
+    pub fn install_bias(&self, dictionary: &DictionaryRequest) -> Result<(), DictationError> {
+        if let Some(table) = dictionary.bias_table() {
+            self.install_table(table)?;
+        }
+        Ok(())
+    }
+
+    fn install_table(&self, table: Arc<SetBias>) -> Result<(), DictationError> {
+        self.ready_supervisor()?.install_bias(table);
+        Ok(())
     }
 
     /// A request's thread count: the loaded worker's, read from memory, so the path

@@ -1,17 +1,21 @@
 //! Local dictation in the host process: the one [`service::DictationService`] per
 //! `biorouterd` or interactive `biorouter`, which owns the supervisor of the engine's
 //! worker (`docs/dictation/engine-and-models.md`, "Supervisor and service API"),
-//! [`paths`], the order in which the folders that may hold speech models are read, and
-//! [`file`], which transcribes a whole recording (`biorouter transcribe`).
+//! [`paths`], the order in which the folders that may hold speech models are read,
+//! [`file`], which transcribes a whole recording (`biorouter transcribe`), [`bias`], the
+//! one producer of the dictionary entries a dictation may use (DD-36), and [`target`],
+//! which decides whether a dictation is aimed at a private chat (DD-30, DD-77).
 //!
 //! The engine itself never runs here (DD-4): it runs in a worker process that the
 //! service starts from this binary with a hidden first argument. A build without the
 //! `local-dictation` feature still has this module; its status answers `no_engine` and
 //! every request answers [`MSG_NO_ENGINE`].
 
+pub mod bias;
 pub mod file;
 pub mod paths;
 pub mod service;
+pub mod target;
 
 /// The catalog, the installer and the suitability rules, from the leaf crate, so a
 /// caller built without the engine reaches them too; the PCM helpers and the recognizer
@@ -20,13 +24,15 @@ pub use biorouter_dictation::{audio, catalog, hardware, models, recognize};
 
 pub use file::{RecordingTimings, RecordingTranscript, TimedText};
 
+pub use bias::{bias_set, BiasChannels, BiasTarget, DictionaryRequest, Standing};
 pub use biorouter_dictation::audio::{PcmSlice, Span};
 pub use biorouter_dictation::protocol::{Hello, Loaded, TranscribeResult};
 pub use biorouter_dictation::supervisor::LoadSpec;
 pub use service::{
-    service, DictationError, DictationService, EngineBuild, EngineState, EngineStatus,
-    TranscribeRequest, WarmUp, WorkerProbe,
+    service, DictatedRecording, DictationError, DictationService, EngineBuild, EngineState,
+    EngineStatus, TranscribeRequest, WarmUp, WorkerProbe,
 };
+pub use target::{chat_reach, cli_bias, ChatReach, CliTerminal};
 
 /// MSG-NO-ENGINE.
 pub const MSG_NO_ENGINE: &str = "This build of Biorouter has no local dictation engine.";

@@ -11,9 +11,16 @@
 //! detector and every segment is decoded as soon as it is cut, with one model load for
 //! all of it (`biorouter::dictation::file`). `--format json` reports where the time went.
 //!
-//! No dictionary yet: PR-14 adds `--session`, `--context-file` and `--no-dictionary`.
-//! Until then every transcription is public only, so `bias_scope` is `"public"` and
-//! `changes` is empty.
+//! The personal dictionary shapes the transcript (PR-14, DD-36, DD-77): its terms bias the
+//! decoder through the token prompt and the decoder bonus, and correction rewrites what
+//! was misheard, every change listed in `changes`. Which terms may be used follows DD-77:
+//! public terms only, unless `--session` names a private chat, the run is at an
+//! interactive terminal, the configured model is private and `BIOROUTER_TERMINAL` is
+//! unset, so an agent's shell never gets a private term whatever its flags.
+//! `--context-file` ranks the terms (at most 4 KB of it is read, and it goes nowhere);
+//! `--no-dictionary` turns all of it off. The dictionary is prepared while the model loads,
+//! and its decoder bonus table is built in the worker right after the load, so none of it
+//! waits for the decode.
 //!
 //! Exit codes are those of [`crate::dictation::exit`]: 0 text, 1 a failure, 2 declined
 //! to start, 3 nothing heard, 4 cancelled with Ctrl-C.
@@ -55,6 +62,12 @@ pub struct TranscribeArgs {
     pub output: Option<PathBuf>,
     pub language: Option<String>,
     pub model: Option<String>,
+    /// `--session`: the chat the transcript is for (DD-77).
+    pub session: Option<String>,
+    /// `--context-file`: text that ranks the dictionary's terms.
+    pub context_file: Option<PathBuf>,
+    /// `--no-dictionary`.
+    pub no_dictionary: bool,
 }
 
 /// A piece of the transcript in seconds, as the HTTP `Transcript` writes it.
@@ -65,7 +78,8 @@ pub struct JsonSegment {
     pub text: String,
 }
 
-/// One correction, as the HTTP `Transcript` writes it. Empty until PR-14.
+/// One correction, as the HTTP `Transcript` writes it: `start` and `end` count characters
+/// of `text` and bound `to`; `stage` is `alias`, `exact` or `fuzzy`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct JsonChange {
     pub start: usize,
@@ -105,6 +119,12 @@ pub struct JsonTimings {
     pub decodes: u32,
     /// `metal` or `cpu`.
     pub backend: String,
+    /// The command's start to the dictionary prepared: the bias set, its ranking, the
+    /// corrector and the bonus table's terms, all while the model loads.
+    pub dictionary_ms: u64,
+    /// Correction of the decoded text, in microseconds: the dictionary's share of the time
+    /// after the last decode.
+    pub correct_us: u64,
 }
 
 /// `--format json`, schema 1: the HTTP `Transcript`'s names for every field the two share
@@ -236,6 +256,23 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
         Ok::<_, DictationError>((spec, loaded, resolved, started.elapsed()))
     });
 
+    // The dictionary, prepared while the model loads and the file decodes: the bias set
+    // under DD-77, its ranking against the context, the corrector, and the decoder bonus
+    // table, which the worker builds right after the model loads.
+    let context = match &args.context_file {
+        Some(path) => Some(read_context(path)?),
+        None => None,
+    };
+    let dictionary = {
+        let session = args.session.clone();
+        let no_dictionary = args.no_dictionary;
+        tokio::spawn(async move {
+            let request = prepare_dictionary(no_dictionary, session, context).await;
+            let _ = svc.install_bias(&request);
+            (Arc::new(request), started.elapsed())
+        })
+    };
+
     let input = args.input.clone();
     let decoding = tokio::task::spawn_blocking(move || {
         if input == "-" {
@@ -265,17 +302,25 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
         () = cancel.cancelled() => return Err(cancelled()),
     };
     let model_id = service::model_id(&spec);
+    let (dictionary, dictionary_ready) = tokio::select! {
+        ready = dictionary => ready
+            .map_err(|_| Failure::new(Outcome::EngineFailed, messages::MSG_ENGINE_FAILED))?,
+        () = cancel.cancelled() => return Err(cancelled()),
+    };
     let pcm: Arc<[i16]> = decoded.samples.into();
     let transcribing = std::time::Instant::now();
     let request = TranscribeRequest {
         language: language.clone(),
         cancel,
+        dictionary: Some(dictionary),
+        decode: None,
     };
-    let transcript = svc
+    let dictated = svc
         .transcribe_recording_with(spec, pcm, request)
         .await
         .map_err(failure_of)?;
     let transcribe_ms = transcribing.elapsed().as_millis() as u64;
+    let transcript = &dictated.transcript;
     if transcript.no_speech {
         return Err(Failure::new(Outcome::NoSpeech, messages::MSG_NO_SPEECH));
     }
@@ -284,7 +329,18 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
         schema: crate::dictation::SCHEMA,
         text: transcript.text.clone(),
         raw_text: transcript.raw_text.clone(),
-        changes: Vec::new(),
+        changes: dictated
+            .changes
+            .iter()
+            .map(|c| JsonChange {
+                start: c.start,
+                end: c.end,
+                from: c.from.clone(),
+                to: c.to.clone(),
+                stage: c.stage.as_str().to_string(),
+                entry_id: Some(c.entry_id.clone()),
+            })
+            .collect(),
         segments: transcript
             .segments
             .iter()
@@ -298,12 +354,14 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
         language,
         audio_s: transcript.audio_ms as f64 / 1_000.0,
         elapsed_ms: total_ms,
-        bias_scope: "public".into(),
+        bias_scope: dictated.bias_scope.as_str().into(),
         retried: transcript.retried.map(|reason| JsonRetried {
             reason: reason.as_str().into(),
         }),
         no_speech: false,
         timings: JsonTimings {
+            dictionary_ms: dictionary_ready.as_millis() as u64,
+            correct_us: dictated.correct_us,
             total_ms,
             read_ms,
             resolve_ms: resolved.as_millis() as u64,
@@ -325,6 +383,118 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
         None => write_stdout(rendered.as_bytes(), &mut std::io::stdout().lock())?,
     }
     Ok(())
+}
+
+/// `--context-file`, at most [`MAX_CONTEXT_BYTES`] of it, cut at a character boundary.
+/// The context only ranks the dictionary's terms; it never reaches the prompt or a log.
+///
+/// [`MAX_CONTEXT_BYTES`]: biorouter::dictation::recognize::select::MAX_CONTEXT_BYTES
+#[cfg(feature = "dictation")]
+fn read_context(path: &std::path::Path) -> Result<String, Failure> {
+    use std::io::Read;
+
+    use biorouter::dictation::recognize::select::{clip_context, MAX_CONTEXT_BYTES};
+
+    let shown = path.display().to_string();
+    let file = std::fs::File::open(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            Failure::new(Outcome::NotFound, messages::msg_not_found(&shown))
+        }
+        _ => Failure::new(Outcome::Unreadable, messages::msg_unreadable(&shown)),
+    })?;
+    let mut bytes = Vec::with_capacity(MAX_CONTEXT_BYTES);
+    file.take(MAX_CONTEXT_BYTES as u64 + 4)
+        .read_to_end(&mut bytes)
+        .map_err(|_| Failure::new(Outcome::Unreadable, messages::msg_unreadable(&shown)))?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(clip_context(&text).to_string())
+}
+
+/// The dictionary for this transcription (DD-36, DD-77). Public terms only, unless
+/// `--session` names a private chat, the run is at an interactive terminal, the configured
+/// model is private and `BIOROUTER_TERMINAL` is unset. The chat's row and the configured
+/// model are read only when everything else would admit private terms, and a chat that
+/// cannot be read leaves the transcription public, whatever the reason, so the answer says
+/// nothing about which chats exist. A store that cannot be read gives no terms.
+#[cfg(feature = "dictation")]
+async fn prepare_dictionary(
+    no_dictionary: bool,
+    session: Option<String>,
+    context: Option<String>,
+) -> biorouter::dictation::DictionaryRequest {
+    use biorouter::dictation::recognize::EligibleEntries;
+    use biorouter::dictation::{bias_set, cli_bias, BiasChannels, DictionaryRequest};
+    use biorouter::security::dictionary_store;
+
+    if no_dictionary {
+        return DictionaryRequest::none();
+    }
+    let terminal = sample_terminal(
+        session,
+        std::env::var_os(super::dictation::AGENT_SHELL_ENV),
+        super::needs_terminal::prompt_can_run(),
+        || async {
+            crate::session::privacy::caller_capability()
+                .await
+                .is_private()
+        },
+        |id| async move {
+            biorouter::session::SessionManager::instance()
+                .get_session(&id, false)
+                .await
+                .ok()
+                .map(|s| s.privacy_tier)
+        },
+    )
+    .await;
+    let (target, standing) = cli_bias(terminal);
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    let context = context.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let eligible = match dictionary_store::open_store().view() {
+            Ok(view) => bias_set(&view, &target, standing, enforced),
+            Err(_) => EligibleEntries::empty(),
+        };
+        DictionaryRequest::new(eligible, &context, BiasChannels::DEFAULT)
+    })
+    .await
+    .unwrap_or_else(|_| DictionaryRequest::none())
+}
+
+/// What DD-77 reads for one transcription, each sampled once: `agent_shell` is
+/// `BIOROUTER_TERMINAL`'s value (any value but an empty one is an agent's shell, as for
+/// `dictation` and `dictionary`), `interactive` is `prompt_can_run()`. The configured model
+/// is asked (`caller_private`) only when a `--session` was given, a person is at the
+/// terminal and this is not an agent's shell, and the chat's stored tier (`chat_tier`,
+/// `None` when its row cannot be read) only when that model is private. A function of its
+/// inputs, so the rule's wiring is tested without a terminal, a chat or a model.
+#[cfg(feature = "dictation")]
+async fn sample_terminal<C, CF, S, SF>(
+    session: Option<String>,
+    agent_shell: Option<std::ffi::OsString>,
+    interactive: bool,
+    caller_private: C,
+    chat_tier: S,
+) -> biorouter::dictation::CliTerminal
+where
+    C: FnOnce() -> CF,
+    CF: std::future::Future<Output = bool>,
+    S: FnOnce(String) -> SF,
+    SF: std::future::Future<Output = Option<biorouter::privacy::SessionClassification>>,
+{
+    let mut terminal = biorouter::dictation::CliTerminal {
+        session: None,
+        interactive,
+        caller_private: false,
+        agent_shell: agent_shell.is_some_and(|v| !v.is_empty()),
+    };
+    if let Some(id) = session.filter(|_| terminal.interactive && !terminal.agent_shell) {
+        terminal.caller_private = caller_private().await;
+        if terminal.caller_private {
+            terminal.session = chat_tier(id).await;
+        }
+    }
+    terminal
 }
 
 /// The transcript on standard output. A failed write (a full disk under `> notes.txt`)
@@ -464,6 +634,8 @@ mod tests {
                 decode_ms: 120,
                 decodes: 2,
                 backend: "metal".into(),
+                dictionary_ms: 30,
+                correct_us: 90,
             },
         }
     }
@@ -569,5 +741,85 @@ mod tests {
         let mut written = Vec::new();
         assert!(write_stdout(b"text\n", &mut written).is_ok());
         assert_eq!(written, b"text\n");
+    }
+
+    /// DD-77's wiring, from the sampled inputs to the bias target and standing: with
+    /// `BIOROUTER_TERMINAL` set, a run at a terminal, for a private chat, with a private
+    /// model configured, is public, and neither the model nor the chat is even read. The
+    /// same run without it, or with it empty, is private, so the variable alone separates
+    /// the two.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn an_agent_shell_samples_to_a_public_target() {
+        use std::cell::Cell;
+        use std::ffi::OsString;
+
+        use biorouter::dictation::cli_bias;
+        use biorouter::privacy::SessionClassification;
+
+        let private_chat = Some(SessionClassification::Private);
+        let run = |agent_shell: Option<&str>,
+                   session: Option<&str>,
+                   interactive: bool,
+                   caller_private: bool,
+                   chat: Option<SessionClassification>| {
+            let asked = Cell::new((false, false));
+            let terminal = futures::executor::block_on(sample_terminal(
+                session.map(str::to_string),
+                agent_shell.map(OsString::from),
+                interactive,
+                || {
+                    asked.set((true, asked.get().1));
+                    std::future::ready(caller_private)
+                },
+                |id| {
+                    assert_eq!(id, "20261106_1");
+                    asked.set((asked.get().0, true));
+                    std::future::ready(chat)
+                },
+            ));
+            let (target, standing) = cli_bias(terminal);
+            assert_eq!(target.private, standing.is_private());
+            (target.private, asked.get())
+        };
+        let id = Some("20261106_1");
+        // Every condition met: private, and both the model and the chat were read.
+        assert_eq!(
+            run(None, id, true, true, private_chat),
+            (true, (true, true))
+        );
+        assert_eq!(
+            run(Some(""), id, true, true, private_chat),
+            (true, (true, true)),
+            "an empty value is unset"
+        );
+        // An agent's shell: public, and nothing else was read.
+        for value in ["1", "true", "0"] {
+            assert_eq!(
+                run(Some(value), id, true, true, private_chat),
+                (false, (false, false)),
+                "BIOROUTER_TERMINAL={value}"
+            );
+        }
+        // No terminal, no `--session`: public, nothing read.
+        assert_eq!(
+            run(None, id, false, true, private_chat),
+            (false, (false, false))
+        );
+        assert_eq!(
+            run(None, None, true, true, private_chat),
+            (false, (false, false))
+        );
+        // A public model: the chat is never read. A chat that cannot be read, or a public
+        // one, leaves the run public.
+        assert_eq!(
+            run(None, id, true, false, private_chat),
+            (false, (true, false))
+        );
+        assert_eq!(run(None, id, true, true, None), (false, (true, true)));
+        assert_eq!(
+            run(None, id, true, true, Some(SessionClassification::Public)),
+            (false, (true, true))
+        );
     }
 }

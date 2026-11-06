@@ -333,6 +333,17 @@ const EXPECTED: &[Site] = &[
     },
     Site {
         needle: "affiliation::gate_cross_affiliation",
+        file: "crates/biorouter/src/dictation/bias.rs",
+        count: 1,
+        what: "the dictation bias set (PR-14, O-35, P-16): a private dictionary row stands in \
+               for a private extension whose allowlist is one of its institutions, asked \
+               once per institution inside the loop over the row's allowlists, so a row \
+               reaches dictation aimed at a model only when every institution it names \
+               admits that model. A dictation makes no tool call, so there is no admitted \
+               capability to inherit; the target's model is read once with its tier",
+    },
+    Site {
+        needle: "affiliation::gate_cross_affiliation",
         file: "crates/biorouter/src/agents/subagent_tool.rs",
         count: 1,
         what: "DR-26 bypassing path 2, the subagent spawn's extension filter, which \

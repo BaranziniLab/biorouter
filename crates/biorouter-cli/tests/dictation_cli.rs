@@ -30,7 +30,10 @@
 //! Ignored, for the accuracy workflow and by hand: an MP3 encoded by `ffmpeg` decodes to
 //! the expected length and an M4A and an Ogg Vorbis file are refused with the `ffmpeg`
 //! line, and `transcribe` with the real catalog models in
-//! `BIOROUTER_DICTATION_MODELS_DIR` writes the JFK sentence and reports its timings.
+//! `BIOROUTER_DICTATION_MODELS_DIR` writes the JFK sentence and reports its timings; and
+//! (PR-14, DD-77) `transcribe --session <a private chat>` at a pseudo terminal with a
+//! private model configured reaches the private terms, while the same run in an agent's
+//! shell (`BIOROUTER_TERMINAL=1`) is public and writes none of them.
 //!
 //! The vendored detector fixture is byte identical to the production detector, so it
 //! stands in for a real catalog file. A speech model is 264 MB or more, so the cases
@@ -1019,6 +1022,326 @@ fn mp3_decodes_to_the_expected_length_and_m4a_is_refused() {
             "{name} on stdin"
         );
         assert!(refused.message(name).contains("ffmpeg -i"));
+    }
+}
+
+/// PR-14's flags: `--session`, `--context-file` and `--no-dictionary` are accepted, a
+/// context file that is not there is `not_found` (exit 1) before the model is needed, and a
+/// `--session` naming no chat leaves the run as it was.
+#[test]
+fn transcribe_takes_the_dictionary_flags() {
+    if !can_install() {
+        return;
+    }
+    let root = sandbox();
+    let model = vendored("models/for-tests-ggml-base.en.bin");
+    let env = [("BIOROUTER_DICTATION_TEST_MODEL", model.to_str().unwrap())];
+    let jfk = jfk_wav();
+    let jfk = jfk.to_str().unwrap();
+    let missing = root.path().join("no-such-context.txt");
+    let output = transcribe(
+        root.path(),
+        &[
+            jfk,
+            "--format",
+            "json",
+            "--context-file",
+            missing.to_str().unwrap(),
+        ],
+        &env,
+        None,
+    );
+    assert_json_error(&output, 1, "not_found");
+    let context = root.path().join("context.txt");
+    std::fs::write(&context, "EPAS1 and HIF-2α in the Tibetan cohort").unwrap();
+    for args in [
+        vec![jfk, "--format", "json", "--no-dictionary"],
+        vec![jfk, "--format", "json", "--session", "20261106_1"],
+        vec![
+            jfk,
+            "--format",
+            "json",
+            "--context-file",
+            context.to_str().unwrap(),
+        ],
+    ] {
+        let output = transcribe(root.path(), &args, &env, None);
+        assert_json_error(&output, 3, "no_speech");
+    }
+}
+
+/// Imports `rows` (the export JSON's entries) into the sandbox's dictionary through a pipe,
+/// the one write a run without a terminal may make.
+fn import_rows(root: &Path, rows: Value) {
+    let export = serde_json::json!({
+        "format": "biorouter.dictionary", "version": 1,
+        "exported_at": "2026-11-06T00:00:00Z", "entries": rows,
+    });
+    let mut child = Command::new(biorouter())
+        .args(["dictionary", "import", "-"])
+        .env("BIOROUTER_PATH_ROOT", root)
+        .env("HOME", root.join("home"))
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        .env_remove("BIOROUTER_TERMINAL")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run biorouter");
+    {
+        use std::io::Write;
+        let mut pipe = child.stdin.take().expect("stdin");
+        pipe.write_all(export.to_string().as_bytes())
+            .expect("write");
+    }
+    let output = child.wait_with_output().expect("biorouter ends");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+}
+
+/// A 16 kHz mono WAV of `pcm`.
+fn wav_of(pcm: &[i16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(44 + pcm.len() * 2);
+    let data = (pcm.len() * 2) as u32;
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&16_000u32.to_le_bytes());
+    out.extend_from_slice(&32_000u32.to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data.to_le_bytes());
+    for s in pcm {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+/// Creates a chat in the sandbox's session store and raises it to Private the way a real
+/// chat gets there, by a turn on a private provider, and returns its id.
+fn private_chat(root: &Path) -> String {
+    use biorouter::model::ModelConfig;
+    use biorouter::privacy::SessionClassification;
+    use biorouter::session::session_manager::SessionType;
+    use biorouter::session::SessionManager;
+
+    let data = root.join("data");
+    tokio::runtime::Runtime::new()
+        .expect("a runtime")
+        .block_on(async {
+            let manager = SessionManager::new(data.clone());
+            let chat = manager
+                .create_session(data.clone(), "Cohort notes".into(), SessionType::User)
+                .await
+                .expect("a chat");
+            manager
+                .update(&chat.id)
+                .provider_name("versa_azure")
+                .model_config(ModelConfig::new("gpt-5.5").expect("a model"))
+                .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+                .apply()
+                .await
+                .expect("raised");
+            let stored = manager
+                .get_session(&chat.id, false)
+                .await
+                .expect("the chat");
+            assert_eq!(stored.privacy_tier, SessionClassification::Private);
+            manager.close().await;
+            chat.id
+        })
+}
+
+/// [`transcribe`] with standard input and standard error on a pseudo terminal, so the
+/// command's `prompt_can_run()` is true, as for a person at a terminal. Standard output
+/// stays a pipe for the JSON. What the command writes to the terminal is drained while it
+/// runs and returned as `stderr`.
+#[cfg(unix)]
+fn transcribe_at_a_terminal(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::sync::{Arc, Mutex};
+
+    let (mut master, mut slave) = (-1, -1);
+    // SAFETY: openpty writes two new descriptors into `master` and `slave`; the name, the
+    // terminal settings and the window size are not asked for.
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+    // SAFETY: both descriptors are open and owned by nothing else.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    let mut command = Command::new(biorouter());
+    command
+        .arg("transcribe")
+        .args(args)
+        .env("BIOROUTER_PATH_ROOT", root)
+        .env("HOME", root.join("home"))
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        .env_remove("BIOROUTER_TERMINAL")
+        .env_remove("BIOROUTER_DICTATION_MODELS_DIR")
+        .env_remove("BIOROUTER_DICTATION_TEST_MODEL")
+        .env_remove("BIOROUTER_DICTATION_WORKER")
+        .stdin(Stdio::from(slave.try_clone().expect("a second descriptor")))
+        .stderr(Stdio::from(slave))
+        .stdout(Stdio::piped());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let child = command.spawn().expect("run biorouter");
+    // The command holds this process's copies of the terminal's other end; dropping it
+    // closes them, so the terminal ends when the child and its worker do.
+    drop(command);
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let reader = {
+        let written = Arc::clone(&written);
+        std::thread::spawn(move || {
+            let mut terminal = std::fs::File::from(master);
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = terminal.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                written.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        })
+    };
+    let mut output = child.wait_with_output().expect("biorouter ends");
+    // A worker that outlives the command could keep the terminal open; wait a little for
+    // the drain, never for ever.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !reader.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    output.stderr = written.lock().unwrap().clone();
+    output
+}
+
+/// PR-14, DD-77: in an agent's shell (`BIOROUTER_TERMINAL=1`), `transcribe --session` is
+/// public only, whatever else holds. The run is set up so that everything else admits
+/// private terms: the chat is a real private chat in the sandbox's store, the command runs
+/// at a (pseudo) terminal, and the configured model is a private one. A control run of the
+/// same command without `BIOROUTER_TERMINAL` must report `bias_scope: "private"`, so the
+/// variable alone separates the two outcomes. The private terms are ones the token prompt
+/// and the decoder bonus carry (none collides with an English word); on JFK's speech
+/// played backwards, and forwards, none may come out of the agent's shell, and nothing
+/// may be corrected there.
+#[cfg(unix)]
+#[test]
+#[ignore = "needs the real speech models"]
+fn an_agent_shell_never_gets_private_terms() {
+    let models = std::env::var("BIOROUTER_DICTATION_MODELS_DIR")
+        .expect("set BIOROUTER_DICTATION_MODELS_DIR to a folder holding the catalog models");
+    let root = sandbox();
+    std::fs::create_dir_all(root.path().join("config")).unwrap();
+    // A private provider's name: only its declared tier is read, nothing is sent to it.
+    std::fs::write(
+        root.path().join("config").join("config.yaml"),
+        "BIOROUTER_PROVIDER: versa_azure\nBIOROUTER_MODEL: gpt-5.5\n",
+    )
+    .unwrap();
+    let chat = private_chat(root.path());
+    let private: Vec<&str> = vec!["EPAS1", "EGLN1", "natalizumab", "ocrelizumab", "Biorouter"];
+    for term in &private {
+        assert!(
+            !biorouter::dictation::recognize::collides(term),
+            "{term} collides, so the prompt and the bonus would leave it out anyway"
+        );
+    }
+    import_rows(
+        root.path(),
+        Value::Array(
+            private
+                .iter()
+                .map(|w| serde_json::json!({"written": w, "tier": "private", "affiliation": null}))
+                .collect(),
+        ),
+    );
+    let bytes = std::fs::read(jfk_wav()).unwrap();
+    let mut pcm = biorouter::dictation::audio::parse_wav_s16(&bytes)
+        .expect("16 bit PCM")
+        .to_16k_mono();
+    pcm.reverse();
+    let reversed = root.path().join("reversed.wav");
+    std::fs::write(&reversed, wav_of(&pcm)).unwrap();
+    let forward = jfk_wav();
+    let selected: Vec<String> = std::env::var("BIOROUTER_DICTATION_ACCURACY_MODELS")
+        .ok()
+        .filter(|list| !list.trim().is_empty())
+        .map(|list| list.split(',').map(|id| id.trim().to_string()).collect())
+        .unwrap_or_else(|| vec![SMALL_EN.to_string(), TURBO.to_string()]);
+    for model in selected.iter().map(String::as_str) {
+        for audio in [reversed.to_str().unwrap(), forward.to_str().unwrap()] {
+            let is_forward = audio == forward.to_str().unwrap();
+            let args = [
+                audio,
+                "--model",
+                model,
+                "--format",
+                "json",
+                "--session",
+                chat.as_str(),
+            ];
+            // The control: a person at a terminal, a private chat, a private model.
+            let control = transcribe_at_a_terminal(
+                root.path(),
+                &args,
+                &[("BIOROUTER_DICTATION_MODELS_DIR", models.as_str())],
+            );
+            let code = control.status.code();
+            assert!(
+                matches!(code, Some(0) | Some(3)) && (code == Some(0) || !is_forward),
+                "{model} control: {}",
+                stderr(&control)
+            );
+            let transcript = json(&control);
+            if code == Some(0) {
+                assert_eq!(
+                    transcript["bias_scope"], "private",
+                    "{model}: the control run must reach the private terms"
+                );
+            }
+            println!(
+                "{model} {audio} control: {:?}",
+                transcript["text"].as_str().unwrap_or_default()
+            );
+
+            // The same run, in an agent's shell.
+            let output = transcribe_at_a_terminal(
+                root.path(),
+                &args,
+                &[
+                    ("BIOROUTER_DICTATION_MODELS_DIR", models.as_str()),
+                    ("BIOROUTER_TERMINAL", "1"),
+                ],
+            );
+            let code = output.status.code();
+            assert!(
+                matches!(code, Some(0) | Some(3)) && (code == Some(0) || !is_forward),
+                "{model}: {}",
+                stderr(&output)
+            );
+            let transcript = json(&output);
+            if code == Some(0) {
+                assert_eq!(transcript["bias_scope"], "public", "{model}");
+                let changes = transcript["changes"].as_array().unwrap();
+                assert!(changes.is_empty(), "{model}: {changes:?}");
+            }
+            let text = transcript["text"].as_str().unwrap_or_default();
+            for term in &private {
+                assert!(!text.contains(term), "{model} wrote {term}: {text}");
+            }
+            println!("{model} {audio} agent shell: {text:?}");
+        }
     }
 }
 
