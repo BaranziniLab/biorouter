@@ -518,6 +518,10 @@ pub struct Connection {
     /// The person whose signed device last spoke on this connection, for presence. A member's
     /// bridge holds one connection for as long as their computer is connected.
     principal: Option<String>,
+    /// The UID this connection is counted under once it made a request, for the host's
+    /// `account.status` `others_connected` (AO-3).
+    #[cfg(feature = "join-by-name")]
+    counted_uid: Option<u32>,
 }
 impl Connection {
     pub fn new() -> Self {
@@ -855,13 +859,15 @@ const ADMIN_METHODS: [&str; 8] = [
 /// Operations that only take access away. Anyone may use the administrative headroom for them,
 /// so a full workspace never keeps a person in a channel or an agent running: each adds at
 /// most a bounded idempotency result, and one member's results are capped. Deleting a channel
-/// or a team also shrinks the state.
-const ACCESS_REMOVAL_METHODS: [&str; 5] = [
+/// or a team also shrinks the state. `device.revoke` (AO-5) is also not counted against the
+/// member's journal share, so a person past it can still revoke a lost computer.
+const ACCESS_REMOVAL_METHODS: [&str; 6] = [
     "run.revoke",
     "membership.revoke",
     "channel.archive",
     "channel.delete",
     "team.delete",
+    "device.revoke",
 ];
 /// Methods that add records to the actor's share of the state: a member past
 /// [`Quotas::member_state_bytes`] is refused them. Everything else changes records in place,
@@ -953,6 +959,8 @@ const WORKER_HISTORY_BYTES: usize = CONTEXT_MANIFEST_BYTES;
 /// double it to. Only control characters escape to more.
 const MESSAGE_ESCAPED_BYTES: usize = 2 * 65_536;
 
+#[cfg(feature = "join-by-name")]
+mod account;
 #[cfg(feature = "join-by-name")]
 mod join;
 #[derive(Clone)]
@@ -1157,11 +1165,28 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
         removed_runs,
     })
 }
+/// What `start`, `serve` and [`Broker::open`] say when a state directory holds no workspace
+/// and they were not asked to create one (AO-7).
+const NO_WORKSPACE: &str = "not_found: This state directory holds no workspace. To start a new workspace there, pass --create.";
+/// [`NO_WORKSPACE`] unless `root` holds a journal: checked before anything is created there,
+/// not even `root` itself.
+fn refuse_without_journal(root: &Path) -> Result<()> {
+    match fs::symlink_metadata(root.join("journal.jsonl")) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => bail!(NO_WORKSPACE),
+        Err(error) => Err(error).context("unsafe_storage: cannot read the journal"),
+    }
+}
+/// The workspace state replayed from the journal, or a new workspace when the journal holds
+/// none and `may_create` allows one (AO-7: only with `--bootstrap-key` or `--create`). A new
+/// workspace stores `bootstrap_key` as given, the empty string when none was: never null or
+/// absent, so an older broker still replays it, and `auth.bootstrap` admits nobody then.
 fn recovered_state(
     state_value: Value,
     sequence: u64,
     bootstrap_key: &str,
     initial_name: Option<&str>,
+    may_create: bool,
 ) -> Result<State> {
     let recovered = if sequence > 0 {
         Some(
@@ -1187,10 +1212,13 @@ fn recovered_state(
             s
         }
         None => {
-            let key: [u8; 32] = hex::decode(bootstrap_key)?
-                .try_into()
-                .map_err(|_| anyhow!("bootstrap_key must be a 32-byte Ed25519 public key"))?;
-            VerifyingKey::from_bytes(&key)?;
+            ensure!(may_create, NO_WORKSPACE);
+            if !bootstrap_key.is_empty() {
+                let key: [u8; 32] = hex::decode(bootstrap_key)?
+                    .try_into()
+                    .map_err(|_| anyhow!("bootstrap_key must be a 32-byte Ed25519 public key"))?;
+                VerifyingKey::from_bytes(&key)?;
+            }
             State {
                 workspace: Workspace {
                     id: id(),
@@ -1316,16 +1344,44 @@ impl Broker {
     pub fn state_json(&self) -> Value {
         serde_json::to_value(&self.state).expect("state serializes")
     }
+    /// Create a workspace with no bootstrap key, as `start --create` without `--bootstrap-key`
+    /// does (AO-7): the key is stored empty, so the host's first device can only come from
+    /// `auth.account`. An existing workspace is opened as it is. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn create_with_directory(
+        root: &Path,
+        directory: Box<dyn Directory + Send>,
+    ) -> Result<Self> {
+        Self::open_inner_with(root, "", directory, None, true)
+    }
     /// Open (or initialize) a workspace. `initial_name` names a workspace this call creates; an
-    /// existing workspace keeps its stored name.
+    /// existing workspace keeps its stored name. A workspace is created only when a bootstrap
+    /// key is given; see [`Broker::open_inner_with`].
     fn open_inner(
         root: &Path,
         bootstrap_key: &str,
         directory: Box<dyn Directory + Send>,
         initial_name: Option<&str>,
     ) -> Result<Self> {
+        let may_create = !bootstrap_key.is_empty();
+        Self::open_inner_with(root, bootstrap_key, directory, initial_name, may_create)
+    }
+    /// [`Broker::open_inner`], creating a workspace only when `root` holds none and
+    /// `may_create` (AO-7: `--bootstrap-key` or `--create`). Without it, a directory with no
+    /// journal is refused [`NO_WORKSPACE`] before anything is created in it, not even the
+    /// directory itself.
+    fn open_inner_with(
+        root: &Path,
+        bootstrap_key: &str,
+        directory: Box<dyn Directory + Send>,
+        initial_name: Option<&str>,
+        may_create: bool,
+    ) -> Result<Self> {
         if let Some(name) = initial_name {
             validate_workspace_name(name).map_err(|error| anyhow!(error.wire()))?;
+        }
+        if !may_create {
+            refuse_without_journal(root)?;
         }
         private_dir(root)?;
         let canonical_root = fs::canonicalize(root)?;
@@ -1375,7 +1431,13 @@ impl Broker {
             actor_bytes,
             removed_runs,
         } = replay_journal(&journal)?;
-        let state = recovered_state(state_value, sequence, bootstrap_key, initial_name)?;
+        let state = recovered_state(
+            state_value,
+            sequence,
+            bootstrap_key,
+            initial_name,
+            may_create,
+        )?;
         if let Some(torn_bytes) = torn_tail {
             let tail = root.join(format!("torn-tail-{}", id()));
             let mut file = private_file(&tail, false)?;
@@ -1616,6 +1678,8 @@ impl Broker {
         if let Some(principal) = connection.principal.take() {
             self.release_presence(&principal);
         }
+        #[cfg(feature = "join-by-name")]
+        account::connection_closed(self, connection);
     }
     /// The active people who are online: a connection they signed on is open, or they made a
     /// signed request within the presence window.
@@ -1654,6 +1718,9 @@ impl Broker {
         })
     }
     pub fn handle(&mut self, uid: u32, connection: &mut Connection, request: Request) -> Response {
+        // Counted for the host's `account.status` (AO-3) until `connection_closed`.
+        #[cfg(feature = "join-by-name")]
+        account::note_connection(self, uid, connection);
         let result = self.process(uid, connection, &request);
         match result {
             Ok(value) => Response {
@@ -1690,6 +1757,12 @@ impl Broker {
         // `auth.*`: the kernel UID and (for `auth.join`) a signature by the claimed key.
         #[cfg(feature = "join-by-name")]
         if let Some(result) = join::pre_auth(self, uid, conn, req) {
+            return result;
+        }
+        // `auth.account` and `account.status` (AO-2, AO-3) likewise: the kernel UID and (for
+        // `auth.account`) a signature by the key it adds.
+        #[cfg(feature = "join-by-name")]
+        if let Some(result) = account::pre_auth(self, uid, conn, req) {
             return result;
         }
         let actor = match self.authenticate_actor(uid, conn, req)? {
@@ -1889,7 +1962,10 @@ impl Broker {
         let allowance = Allowance {
             state_headroom: administrative || ACCESS_REMOVAL_METHODS.contains(&method),
             journal_headroom: administrative,
-            member: !host,
+            // A person revoking one of their own devices (AO-5) is never stopped by their
+            // journal share. Each revoke removes one of their devices, so the records it can
+            // write are bounded by the devices they hold.
+            member: !host && method != "device.revoke",
         };
         let committed = (|| -> Result<()> {
             let share = self.quotas.member_state_bytes;
@@ -2029,6 +2105,10 @@ impl Broker {
             .to_bytes(),
         );
         let mut hello = json!({"protocol":1,"workspace_id":workspace.id,"host_uid":workspace.host_uid,"mode":workspace.mode,"institution_id":workspace.institution_id,"policy_epoch":workspace.policy_epoch,"name":workspace.name,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"signature_v2":signature_v2,"capabilities":capabilities,"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]});
+        // Unsigned, like `state` (AO-4): the broker's package version, for display and for
+        // setup's decision to restart an older broker. Neither signature covers it, and a
+        // reader that predates it ignores it.
+        hello["version"] = json!(env!("CARGO_PKG_VERSION"));
         // Unsigned: whether this broker is still saving changes, or the host deleted the
         // workspace and it is about to erase itself. The storage state is for display only; a
         // member's daemon ends the connection on `deleted` (L7), as it does on the equally
@@ -2067,8 +2147,10 @@ impl Broker {
             "remote_access_v1",
             "wide_runs_v1",
         ];
+        // `account_identity_v1` (AO-4) comes last, after `join_by_name_v1`, so the v2 signature
+        // covers it; both are compiled only with `join-by-name`.
         #[cfg(feature = "join-by-name")]
-        capabilities.push("join_by_name_v1");
+        capabilities.extend(["join_by_name_v1", "account_identity_v1"]);
         capabilities
     }
     fn challenge(&self, uid: u32, conn: &mut Connection, req: &Request) -> Result<Value> {
@@ -2136,9 +2218,13 @@ impl Broker {
         let public_key = text(&req.params, "public_key")?;
         let mut existing_principal_id = None;
         if req.method == "auth.bootstrap" {
+            // A workspace created without `--bootstrap-key` stores it empty (AO-7), and an
+            // empty stored key admits nobody: the host's first device then comes from
+            // `auth.account`.
             ensure!(
                 uid == self.state.workspace.host_uid
                     && self.state.devices.is_empty()
+                    && !self.state.bootstrap_key.is_empty()
                     && public_key == self.state.bootstrap_key,
                 "forbidden: bootstrap key/identity mismatch or already enrolled"
             );
@@ -2609,7 +2695,8 @@ impl Broker {
         // Stored only when open; said either way here, so a client never has to infer it.
         workspace["governance"] = json!(s.workspace.governance);
         let principals = self.snapshot_principals(s, &index, host);
-        let actor_wire = Self::actor_wire(s, &index, &actor.id);
+        let signing_device = req.auth.as_ref().map(|auth| auth.device_id.as_str());
+        let actor_wire = Self::actor_wire(s, &index, &actor.id, signing_device);
         // The actor's live runs only (a revoked, expired or superseded run grants nothing),
         // newest first.
         let mut runs: Vec<&Run> = s
@@ -2955,9 +3042,15 @@ impl Broker {
         (positions, unread)
     }
     /// The actor's own principal with its display name and its devices
-    /// (`{fingerprint, added_at, added_via}`; the fingerprint is the grouped first 16 hex digits
-    /// of the device ID). Nobody else's devices are ever projected.
-    fn actor_wire(s: &State, index: &PeopleIndex, actor_id: &str) -> Option<Value> {
+    /// (`{fingerprint, added_at, added_via, this_device}`; the fingerprint is the grouped first
+    /// 16 hex digits of the device ID, and `this_device` says whether it is `signing_device`,
+    /// the key that signed this request, AO-5). Nobody else's devices are ever projected.
+    fn actor_wire(
+        s: &State,
+        index: &PeopleIndex,
+        actor_id: &str,
+        signing_device: Option<&str>,
+    ) -> Option<Value> {
         s.principals.get(actor_id).map(|principal| {
             let mut wire = index.principal_wire(principal);
             wire["devices"] = Value::Array(
@@ -2969,6 +3062,7 @@ impl Broker {
                             "fingerprint": crate::invitation::grouped_fingerprint(device_id),
                             "added_at": device.added_at,
                             "added_via": device.added_via,
+                            "this_device": signing_device == Some(device_id.as_str()),
                         })
                     })
                     .collect(),
@@ -3414,6 +3508,10 @@ impl Broker {
             "blob.begin" => self.mutate_blob_begin(s, actor, req),
             "blob.chunk" => self.mutate_blob_chunk(s, actor, req),
             "blob.finish" => self.mutate_blob_finish(s, actor, req),
+            // AO-5: compiled with the rest of the account path, so a broker without it answers
+            // as an older one does.
+            #[cfg(feature = "join-by-name")]
+            "device.revoke" => account::revoke_device(s, actor, req),
             _ => bail!("unsupported: operation is not supported by this broker"),
         }
     }
@@ -6012,8 +6110,10 @@ impl Drop for ConnectionPermit {
 }
 /// Run the broker in the foreground. `name` names a workspace this call initializes, or an
 /// existing workspace that has no name yet; a workspace already named otherwise is refused
-/// (rename it with `workspace.rename`).
-pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()> {
+/// (rename it with `workspace.rename`). A workspace is created only when `root` holds none and
+/// `bootstrap_key` is given or `create` is set (AO-7); otherwise an empty `root` is refused
+/// `not_found`.
+pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>, create: bool) -> Result<()> {
     ensure!(
         cfg!(target_os = "linux"),
         "unsupported: serve requires Linux"
@@ -6029,22 +6129,15 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
         return Ok(());
     }
     let node_id = node_identity()?;
-    let mut broker = Broker::open_inner(root, bootstrap_key, Box::new(SystemDirectory), name)?;
+    let (create, directory) = (
+        create || !bootstrap_key.is_empty(),
+        Box::new(SystemDirectory),
+    );
+    let mut broker = Broker::open_inner_with(root, bootstrap_key, directory, name, create)?;
     if broker.state.workspace.deleted_at.is_some() {
         // The broker stopped between the tombstone and the erase (OW-5). Nobody can be
         // connected to a broker that is starting, so the erase is finished now.
-        let workspace_id = broker.state.workspace.id.clone();
-        let runtime = broker.state.runtime_basename.clone();
-        let leftovers = erase_store(&broker.root, &workspace_id)?;
-        if let Some(basename) = runtime {
-            let uid = broker.state.workspace.host_uid;
-            retire_runtime(&broker.runtime_root, uid, &basename, &workspace_id);
-        }
-        println!(
-            "{}",
-            json!({"deleted": true, "workspace_id": workspace_id, "leftovers": leftovers})
-        );
-        return Ok(());
+        return erase_tombstoned(&broker);
     }
     if let Some(name) = name {
         match broker.state.workspace.name.as_deref() {
@@ -6076,7 +6169,9 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
         .try_into()
         .map_err(|_| anyhow!("storage_corrupt: workspace identity"))?;
     let public_key = SigningKey::from_bytes(&secret).verifying_key().to_bytes();
-    let info = json!({"pid":std::process::id(),"socket":socket,"workspace_id":broker.workspace().id,"host_uid":uid,"protocol":1,"node_id":node_id,"workspace_public_key":hex::encode(public_key),"workspace_key_fingerprint":digest(&public_key)});
+    // `version` (AO-4) is the broker's package version, for `workspaces` and setup to tell a
+    // workspace still running an older program. A reader that predates it ignores it.
+    let info = json!({"pid":std::process::id(),"socket":socket,"workspace_id":broker.workspace().id,"host_uid":uid,"protocol":1,"node_id":node_id,"workspace_public_key":hex::encode(public_key),"workspace_key_fingerprint":digest(&public_key),"version":env!("CARGO_PKG_VERSION")});
     let state_root = broker.root.clone();
     let root = state_root.as_path();
     write_runtime(root, &info)?;
@@ -6114,6 +6209,22 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
             let _ = serve_client(stream, uid, shared);
         });
     }
+    Ok(())
+}
+/// Finish erasing a workspace whose broker stopped after its tombstone went in (OW-5), and
+/// print what was erased.
+fn erase_tombstoned(broker: &Broker) -> Result<()> {
+    let workspace_id = broker.state.workspace.id.clone();
+    let runtime = broker.state.runtime_basename.clone();
+    let leftovers = erase_store(&broker.root, &workspace_id)?;
+    if let Some(basename) = runtime {
+        let uid = broker.state.workspace.host_uid;
+        retire_runtime(&broker.runtime_root, uid, &basename, &workspace_id);
+    }
+    println!(
+        "{}",
+        json!({"deleted": true, "workspace_id": workspace_id, "leftovers": leftovers})
+    );
     Ok(())
 }
 /// How often a running broker checks that its socket path still leads to the socket it bound.
@@ -6642,7 +6753,19 @@ pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
     let mut input = BufReader::new(File::from(std::io::stdin().as_fd().try_clone_to_owned()?));
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
-    relay(&mut input, &mut output, stream, reader, &reconnect).map_err(|error| {
+    // A bridge started inside a full-access job carries the mark its supervisor set
+    // (accident prevention, see `relay_from`).
+    let inside_job = std::env::var_os(crate::remote_full::JOB_ENVIRONMENT)
+        .is_some_and(|value| !value.is_empty());
+    relay_from(
+        &mut input,
+        &mut output,
+        stream,
+        reader,
+        &reconnect,
+        inside_job,
+    )
+    .map_err(|error| {
         // A broker that went because its host deleted the workspace left the tombstone in its
         // directory before it stopped: say so, so a member connected through the grace period
         // learns it now (L7).
@@ -6696,12 +6819,33 @@ const BROKER_GONE: &str =
 /// `bridge.*` requests are the bridge's own (design OW-6, OW-8) and are answered here, never
 /// forwarded, an unknown one with a local refusal. `reconnect` opens the second broker
 /// connection a full-access transfer runs on.
+#[cfg(test)]
 fn relay(
+    input: &mut BufReader<File>,
+    output: &mut impl Write,
+    stream: UnixStream,
+    reader: BufReader<UnixStream>,
+    reconnect: &crate::remote_full::Connect,
+) -> Result<()> {
+    relay_from(input, output, stream, reader, reconnect, false)
+}
+/// The methods a bridge running inside a full-access job never forwards: adding a device for
+/// the account and revoking one (account ownership, Security position).
+const JOB_REFUSED_METHODS: [&str; 2] = ["auth.account", "device.revoke"];
+/// What such a bridge answers them, under the code `agent_session_refused`.
+const AGENT_SESSION_REFUSED: &str = "agent_session_refused: An agent's job on the server cannot add or remove your devices. Do this from Biorouter on your computer.";
+/// [`relay`] for a bridge that may run inside a full-access job (`inside_job`, from the mark
+/// the job supervisor puts in each job's environment). Such a bridge answers
+/// [`JOB_REFUSED_METHODS`] itself with [`AGENT_SESSION_REFUSED`] and never forwards them. This
+/// is accident prevention, not a boundary: a job that opens the broker's socket itself is not
+/// stopped.
+fn relay_from(
     input: &mut BufReader<File>,
     output: &mut impl Write,
     mut stream: UnixStream,
     mut reader: BufReader<UnixStream>,
     reconnect: &crate::remote_full::Connect,
+    inside_job: bool,
 ) -> Result<()> {
     loop {
         if input.buffer().is_empty() {
@@ -6720,7 +6864,19 @@ fn relay(
             return Ok(());
         };
         let request: Request = serde_json::from_slice(&frame)?;
-        if request.method.starts_with("bridge.") {
+        if inside_job && JOB_REFUSED_METHODS.contains(&request.method.as_str()) {
+            write_response(
+                output,
+                Response {
+                    id: request.id,
+                    result: None,
+                    error: Some(ProtocolError {
+                        code: "agent_session_refused".into(),
+                        message: AGENT_SESSION_REFUSED.into(),
+                    }),
+                },
+            )?;
+        } else if request.method.starts_with("bridge.") {
             let response = match crate::probe::bridge_method(&request.method) {
                 Ok(value) => Response {
                     id: request.id,
@@ -6874,11 +7030,21 @@ fn write_not_delivered(output: &mut impl Write, frame: &[u8]) -> Result<()> {
     output.flush()?;
     Ok(())
 }
+// Starting and restarting a workspace by its ID (AO-7), and listing the workspaces on this
+// server for this account (AO-6). Both are children of this module so they use its helpers
+// as they are; their entry points are associated functions of `Broker`. (`by_id` is named
+// apart from the `lifecycle` function so the crate's re-export of that function is plain.)
+#[path = "broker/lifecycle.rs"]
+mod by_id;
+#[path = "workspaces.rs"]
+mod workspaces;
+
 /// `start`, `status` or `stop` a broker for the state directory `root`. `name` (`start` only)
-/// names the workspace; see [`serve`].
+/// names the workspace; see [`serve`]. `start` creates a workspace only when `key` is given;
+/// [`Broker::start_state_dir`] also takes `--create`.
 pub fn lifecycle(command: &str, root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
     match command {
-        "start" => start(root, key, name),
+        "start" => start(root, key, name, false, &std::env::current_exe()?),
         "status" => {
             let info = existing_runtime_descriptor(root)?.ok_or_else(|| anyhow!(NOT_RUNNING))?;
             let socket = PathBuf::from(text(&info, "socket")?);
@@ -7035,14 +7201,69 @@ fn status_answer(root: &Path, mut info: Value, hello: &Value) -> Result<Value> {
 /// How long `start` waits for the broker it launched to answer `hello`.
 const START_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Launch `serve` detached, wait until it answers `hello`, and print the workspace's
-/// invitation line (`brcrew1:…`) for the host to paste into Crew. A name is validated and
-/// checked against the host account's running sibling workspaces **before** anything is
-/// spawned.
-fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
+/// Whether `root` holds a journal with something in it: a workspace `start` would open rather
+/// than create.
+fn holds_journal(root: &Path) -> bool {
+    fs::symlink_metadata(root.join("journal.jsonl"))
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+}
+
+/// What `start` launches: `program serve --state-dir root`, in a session of its own, with
+/// `--bootstrap-key`, `--create` and `--name` only when given (`serve` creates a workspace only
+/// with a key or `--create`).
+fn serve_command(
+    program: &Path,
+    root: &Path,
+    key: &str,
+    name: Option<&str>,
+    create: bool,
+) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new(program);
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // `restart` ignores SIGHUP while it runs; the broker it starts does not inherit that.
+            libc::signal(libc::SIGHUP, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    command.arg("serve").arg("--state-dir").arg(root);
+    if !key.is_empty() {
+        command.arg("--bootstrap-key").arg(key);
+    }
+    if create {
+        command.arg("--create");
+    }
+    if let Some(name) = name {
+        command.arg("--name").arg(name);
+    }
+    command
+}
+
+/// Launch `program` as `serve`, detached, wait until it answers `hello`, and print the
+/// workspace's invitation line (`brcrew1:…`) for the host to paste into Crew. A name is
+/// validated and checked against the host account's running sibling workspaces **before**
+/// anything is spawned.
+///
+/// A new workspace is created only when `root` holds none and `key` is given or `create` is
+/// set (AO-7); otherwise such a `root` is refused [`NO_WORKSPACE`] and nothing is created, not
+/// even the directory. The answer carries `created: true` when this start wrote a new journal.
+fn start(
+    root: &Path,
+    key: &str,
+    name: Option<&str>,
+    create: bool,
+    program: &Path,
+) -> Result<Value> {
     if let Some(name) = name {
         validate_workspace_name(name).map_err(|error| anyhow!(error.wire()))?;
     }
+    let existed = holds_journal(root);
+    let create = create || !key.is_empty();
+    ensure!(existed || create, NO_WORKSPACE);
     private_dir(root)?;
     // A deleted workspace an erase did not finish is never started; `serve` would finish the
     // erase, which is `delete`'s to say.
@@ -7076,26 +7297,7 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
         .flatten()
         .and_then(|info| info.get("socket").cloned());
     let log = private_file(&root.join("broker.log"), true)?;
-    use std::os::unix::process::CommandExt;
-    let mut command = std::process::Command::new(std::env::current_exe()?);
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    command
-        .arg("serve")
-        .arg("--state-dir")
-        .arg(root)
-        .arg("--bootstrap-key")
-        .arg(key);
-    if let Some(name) = name {
-        command.arg("--name").arg(name);
-    }
-    let mut child = command
+    let mut child = serve_command(program, root, key, name, create && !existed)
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
@@ -7118,6 +7320,7 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
                         "status_command": "status",
                         "workspace_id": hello["workspace_id"],
                         "name": hello["name"],
+                        "created": !existed,
                     });
                     if previous_socket
                         .as_ref()
@@ -7140,7 +7343,10 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
             }
         }
         if Instant::now() >= deadline {
-            return Ok(json!({"started_pid":pid,"state":"starting","status_command":"status"}));
+            let created = !existed && holds_journal(root);
+            return Ok(
+                json!({"started_pid":pid,"state":"starting","status_command":"status","created":created}),
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     }
