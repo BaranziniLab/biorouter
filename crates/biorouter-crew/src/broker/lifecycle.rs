@@ -603,6 +603,8 @@ mod tests {
         }
     }
 
+    /// A second restart is refused `busy` while the first holds the lock, and the lock can be
+    /// taken once the first has ended.
     #[test]
     fn the_restart_lock_admits_one_restart_at_a_time() {
         let store = private_temp("lock");
@@ -612,7 +614,22 @@ mod tests {
             .expect("a second restart waits its turn");
         assert!(error.to_string().starts_with("busy: "), "{error}");
         drop(held);
-        restart_lock(&store).expect("free again once the first one ends");
+        // A flock belongs to the open file description, and a fork gives the child a share of
+        // every description the process has open, O_CLOEXEC or not, until the child execs or
+        // exits. Other tests in this binary fork on their own threads (a bare `fork`, and
+        // `Command` with `pre_exec`), so one of their children can still hold the first lock
+        // for a moment after `drop(held)`. The lock must come free, so this waits a bounded
+        // time for it. The busy check above stays strict: a fork only ever prolongs a lock. The
+        // restart command never meets this, because it holds the lock with one thread and
+        // `spawn` returns only once its child has exec'd.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while let Err(error) = restart_lock(&store) {
+            assert!(
+                error.to_string().starts_with("busy: ") && Instant::now() < deadline,
+                "free again once the first one ends: {error}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let _ = fs::remove_dir_all(&store);
     }
 }

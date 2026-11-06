@@ -8,7 +8,7 @@ use super::keepalive::KeepaliveTiming;
 use super::*;
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const WORKSPACE_ID: &str = "4b4b4b4b-4b4b-44b4-84b4-4b4b4b4b4b4b";
 const CONNECTION_ID: &str = "keepalive-connection";
@@ -2487,6 +2487,160 @@ fn the_reconnecting_sentence_names_a_wait_longer_than_a_moment() {
     );
 }
 
+// The three W2-DMN-6 tests below depend on how long a dial takes. A drop found less than the
+// first retry gap after the daemon's own dial waits the gap; one found later is rightly dialled at
+// once, since the daemon's own dials only have to be the gap apart. Each `ssh` the fixture spawns
+// is a shell script that forks for most lines it reads, and a dial with the request or two around
+// it took from 0.3 s to 51 s, depending on how loaded the machine was. So no fixed gap makes a dial
+// "fresh" when its drop is found. These tests choose the gap from what they measure instead, and
+// never count spawns while a dial may be on its way.
+
+/// The gap the two tight-loop tests start from. Each one doubles it while the machine is too
+/// slow for a dial and its drop to fit inside it ([`until_a_dial_is_held_back`]), up to
+/// [`LAST_OWN_DIAL_GAP`].
+const FIRST_OWN_DIAL_GAP: Duration = Duration::from_secs(4);
+
+/// The largest gap [`until_a_dial_is_held_back`] gives the daemon: a machine on which a dial
+/// and its drop take longer than this fails the test rather than waiting any longer.
+const LAST_OWN_DIAL_GAP: Duration = Duration::from_secs(256);
+
+/// Wait up to `limit` for `condition`; `what` names it if it never holds.
+async fn until_within(limit: Duration, what: &str, mut condition: impl AsyncFnMut() -> bool) {
+    let deadline = Instant::now() + limit;
+    while !condition().await {
+        assert!(Instant::now() < deadline, "{what} never held in {limit:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Wait until the fixture's bridge has ended (its `ssh` exited), as the next request will find
+/// it: a request asks the same `Transport::has_ended` before it writes anything.
+async fn until_the_bridge_has_ended(manager: &CrewManager) {
+    until_within(Duration::from_secs(60), "the bridge ending", async || {
+        let bridge = manager.transports.lock().await.get(CONNECTION_ID).cloned();
+        match bridge {
+            Some(bridge) => bridge.lock().await.has_ended(),
+            None => false,
+        }
+    })
+    .await;
+}
+
+/// When the daemon last dialled the fixture's connection by itself, if it has.
+fn last_own_dial(manager: &CrewManager) -> Option<std::time::SystemTime> {
+    manager
+        .own_dials
+        .lock()
+        .unwrap()
+        .get(CONNECTION_ID)
+        .copied()
+}
+
+/// Whether the daemon is holding back its next dial of the fixture's connection: no bridge is
+/// up, and the retries are armed with their next try at least `margin` away. Nothing is being
+/// dialled while this holds, so spawns counted then are not racing a dial on its way.
+async fn held_back(manager: &CrewManager, margin: Duration) -> bool {
+    !manager.transports.lock().await.contains_key(CONNECTION_ID)
+        && manager
+            .next_redial_in(CONNECTION_ID)
+            .is_some_and(|next| next >= margin)
+}
+
+/// For the two tight-loop tests, whose every bridge breaks right after it is dialled: follow the
+/// daemon from its first own dial until it holds a dial back, and return the gap it held for and
+/// the own dial it held back after. The fixture starts at [`FIRST_OWN_DIAL_GAP`], and `timing`
+/// gives the fixture's timing for any gap.
+///
+/// Each drop is found right after the daemon's own dial. When the dial and its drop took longer
+/// than the gap, the daemon dials again at once; that dial is checked against the rule that the
+/// daemon's own dials are at least the gap apart, and the gap is doubled. A drop that comes inside
+/// the gap is held back.
+async fn until_a_dial_is_held_back(
+    f: &Fixture,
+    timing: impl Fn(Duration) -> KeepaliveTiming,
+) -> (Duration, std::time::SystemTime) {
+    let manager = &f.manager;
+    until_within(
+        Duration::from_secs(60),
+        "the daemon's own dial",
+        async || last_own_dial(manager).is_some(),
+    )
+    .await;
+    let mut last = last_own_dial(manager).unwrap();
+    let mut gap = FIRST_OWN_DIAL_GAP;
+    // The smallest gap the daemon can have judged the latest drop by: a doubled gap may only
+    // reach it after that drop was found.
+    let mut judged_by = gap;
+    loop {
+        let mut again = None;
+        until_within(
+            gap + Duration::from_secs(60),
+            "a dial held back, or another own dial",
+            async || {
+                again = last_own_dial(manager).filter(|at| *at != last);
+                again.is_some() || held_back(manager, judged_by / 2).await
+            },
+        )
+        .await;
+        let Some(at) = again else {
+            return (judged_by, last);
+        };
+        let apart = at.duration_since(last).unwrap_or_default();
+        assert!(
+            apart >= judged_by,
+            "the daemon dialled again {apart:?} after its own dial, inside the {judged_by:?} gap"
+        );
+        assert!(
+            gap < LAST_OWN_DIAL_GAP,
+            "no drop was held back, with dials {apart:?} apart"
+        );
+        last = at;
+        judged_by = gap;
+        gap *= 2;
+        manager.set_keepalive_timing(timing(gap));
+    }
+}
+
+/// The end of both tight-loop tests below, once the daemon has dialled a dropped bridge by
+/// itself. A drop so soon after the daemon's own dial waits the gap: no bridge is up, the next
+/// try is due no sooner than the gap after that own dial, and nothing is dialled for half of the
+/// wait. A Disconnect then ends the retries: nothing is dialled past the time the next try was
+/// due.
+async fn held_back_then_stopped_by_a_disconnect(
+    f: &Fixture,
+    timing: impl Fn(Duration) -> KeepaliveTiming,
+) {
+    let (gap, own_dial) = until_a_dial_is_held_back(f, timing).await;
+    let due = f
+        .manager
+        .next_redial_in(CONNECTION_ID)
+        .expect("the retries are armed");
+    let next_try = std::time::SystemTime::now() + due;
+    let after_the_dial = next_try.duration_since(own_dial).unwrap_or_default();
+    assert!(
+        after_the_dial >= gap,
+        "the next try is due {after_the_dial:?} after the daemon's own dial, inside the {gap:?} gap"
+    );
+    let dialled = spawns(&f.root);
+    tokio::time::sleep(due / 2).await;
+    assert_eq!(
+        (spawns(&f.root), last_own_dial(&f.manager)),
+        (dialled, Some(own_dial)),
+        "nothing dialled while the next try is held back"
+    );
+    let due = f
+        .manager
+        .next_redial_in(CONNECTION_ID)
+        .expect("the retries are still armed");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(due + Duration::from_secs(1)).await;
+    assert_eq!(
+        (spawns(&f.root), last_own_dial(&f.manager)),
+        (dialled, Some(own_dial)),
+        "nothing after a Disconnect"
+    );
+}
+
 /// W2-DMN-6 (review): a bridge that breaks right after every connect (each one answers `hello`
 /// and drops the next request, as a relay that resets new sessions would) is never dialled in a
 /// tight loop. The drop a request finds is dialled at once; that dial's membership check breaks
@@ -2498,12 +2652,7 @@ async fn a_bridge_that_breaks_after_every_connect_is_never_dialled_in_a_tight_lo
         return;
     }
     let plan = [&["drop-after-3"][..], &["drop-after-1"; 60][..]].concat();
-    let f = fixture(
-        "request-flapping",
-        &plan,
-        request_finds(Duration::from_millis(1500)),
-    )
-    .await;
+    let f = fixture("request-flapping", &plan, request_finds(FIRST_OWN_DIAL_GAP)).await;
     f.manager.connect(CONNECTION_ID).await.unwrap();
     // A member: the workspace accepted a signed request, so every dial is followed by a
     // membership check.
@@ -2511,38 +2660,40 @@ async fn a_bridge_that_breaks_after_every_connect_is_never_dialled_in_a_tight_lo
         .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
         .await
         .unwrap();
+    // Dialled at once: the daemon had not dialled this connection itself. Every drop after that
+    // comes right after one of its own dials.
     f.manager
         .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
         .await
         .unwrap_err();
-    let root = f.root.clone();
-    // Dialled at once: the daemon had not dialled this connection itself.
-    until(async || spawns(&root) >= 2).await;
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-    let dialled = spawns(&f.root);
-    // The immediate dial, then one dial per 1.5 s gap at most.
-    assert!((2..=4).contains(&dialled), "{dialled} dials in 2.5 s");
-    f.manager.disconnect(CONNECTION_ID).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(1600)).await;
-    assert_eq!(spawns(&f.root), dialled, "nothing after a Disconnect");
+    held_back_then_stopped_by_a_disconnect(&f, request_finds).await;
 }
 
 /// W2-DMN-6 (review): a request that finds a bridge ended right after the daemon dialled it
 /// does not dial it again at once. The bridge is retired, the retries are armed, and the request
 /// is told the connection is coming back, with nothing sent; the connection comes back after the
-/// first gap.
+/// first gap, and not before.
+///
+/// "Right after" is set up rather than assumed. The gap is chosen once the daemon's dial and
+/// the request it carried are done: the time since just before the dial, plus the time the next
+/// request is allowed to take to find the bridge ended. So the dial is younger than the gap at
+/// that moment, however long it took.
 #[tokio::test]
 async fn a_request_that_finds_a_fresh_redial_ended_waits_the_gap() {
     if !crate::test_sandbox::in_a_process_of_its_own() {
         return;
     }
+    // The second request writes nothing and starts no process before it finds the bridge ended.
+    const ALLOWED: Duration = Duration::from_secs(5);
     let f = fixture(
         "request-finds-fresh-redial-ended",
         &["end-after-1", "end-after-3", "serve"],
-        request_finds(Duration::from_millis(1500)),
+        request_finds(FIRST_OWN_DIAL_GAP),
     )
     .await;
-    connect_then_lose_the_bridge(&f).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    until_the_bridge_has_ended(&f.manager).await;
+    let before_dial = Instant::now();
     // Finds the connect's bridge ended: the daemon had not dialled, so it dials at once, and
     // the new bridge carries the request, then ends.
     f.manager
@@ -2550,22 +2701,47 @@ async fn a_request_that_finds_a_fresh_redial_ended_waits_the_gap() {
         .await
         .unwrap();
     assert_eq!(spawns(&f.root), 2);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    until_the_bridge_has_ended(&f.manager).await;
     let asked = requests(&f.root).len();
-    let error = f
+    let before_second = Instant::now();
+    let gap = before_second.duration_since(before_dial) + ALLOWED;
+    f.manager.set_keepalive_timing(request_finds(gap));
+    let answer = f
         .manager
         .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
-        .await
-        .unwrap_err();
+        .await;
+    let took = before_second.elapsed();
+    // A slow answer that is right is still right: the time only explains a request that was
+    // carried, which a request taking longer than allowed could rightly be.
+    let error = match answer {
+        Ok(value) => panic!(
+            "the request was carried ({value}) after {took:?}; the test allowed {ALLOWED:?} \
+             for it to find the bridge ended while the dial was fresh"
+        ),
+        Err(error) => error,
+    };
     let typed = super::CrewRefusal::find(&error).expect("typed");
     assert_eq!(typed.code(), "crew_reconnecting", "{error}");
     assert_eq!(spawns(&f.root), 2, "not dialled again at once");
     assert_eq!(requests(&f.root).len(), asked, "nothing written");
     let root = f.root.clone();
     let manager = Arc::clone(&f.manager);
-    until(async || spawns(&root) == 3 && status(&manager).await == ("connected".to_owned(), None))
-        .await;
-    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    // The schedule is disarmed just after the status reads connected, so it is waited for too.
+    until_within(
+        gap + Duration::from_secs(60),
+        "the connection coming back, with no retries left armed",
+        async || {
+            spawns(&root) == 3
+                && status(&manager).await == ("connected".to_owned(), None)
+                && manager.idle_redial.lock().unwrap().is_empty()
+        },
+    )
+    .await;
+    let waited = before_second.elapsed();
+    assert!(
+        waited >= gap,
+        "dialled again {waited:?} after the request, inside the {gap:?} gap"
+    );
 }
 
 /// W2-DMN-6 (review): the same bound holds for a bridge the keepalive finds ended: one whose
@@ -2577,25 +2753,21 @@ async fn a_bridge_that_ends_after_every_connect_is_never_dialled_in_a_tight_loop
     if !crate::test_sandbox::in_a_process_of_its_own() {
         return;
     }
+    let timing = |gap| KeepaliveTiming {
+        ended_check: Duration::from_millis(40),
+        retry_delays: [gap; 3],
+        ..quiet()
+    };
     let f = fixture(
         "ended-flapping",
         &["end-after-1"; 60],
-        KeepaliveTiming {
-            ended_check: Duration::from_millis(40),
-            retry_delays: [Duration::from_millis(1500); 3],
-            ..quiet()
-        },
+        timing(FIRST_OWN_DIAL_GAP),
     )
     .await;
+    // The keepalive finds the connect's bridge ended and dials at once: the daemon had not
+    // dialled this connection itself. Every drop after that comes right after one of its own.
     f.manager.connect(CONNECTION_ID).await.unwrap();
-    let root = f.root.clone();
-    until(async || spawns(&root) >= 2).await;
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-    let dialled = spawns(&f.root);
-    assert!((2..=4).contains(&dialled), "{dialled} dials in 2.5 s");
-    f.manager.disconnect(CONNECTION_ID).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(1600)).await;
-    assert_eq!(spawns(&f.root), dialled, "nothing after a Disconnect");
+    held_back_then_stopped_by_a_disconnect(&f, timing).await;
 }
 
 /// W2-DMN-7: a request that could have changed something, lost with its frame written, is an
