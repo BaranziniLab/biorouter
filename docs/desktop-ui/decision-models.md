@@ -164,10 +164,21 @@ The list sits over the detail in a narrow panel and beside it from 720px (a cont
 ## The Monitors dialog
 
 `components/decisions/MonitorsDialog.tsx` lists the chat's monitors and adds, edits or removes
-them. A monitor has a name, a question, yes or no or one of several options (with the option
-that fires it), a model, a threshold (a slider from 0.50 to 0.99), an action (notify, tell the
-agent, stop the turn), when it checks (after each step, or when the turn ends) and an on switch.
-Save writes the whole list with `PUT /sessions/{id}/decision-settings`.
+them. A monitor has a name, a question, yes or no or one of several options (with the answer
+that fires it: Yes or No, or one option), a model, a threshold (a slider from 0.50 to 0.99), an
+action (notify, tell the agent, stop the turn), when it checks (after each step, or when the turn
+ends) and an on switch. Save writes the whole list with `PUT /sessions/{id}/decision-settings`.
+
+- **Each row says what the daemon compares.** The line under a monitor's name reads its
+  `option` as `MonitorCriterion::pass_threshold` does (`monitorThreshold` in
+  `utils/sessionDecisions.ts`) and words it as the decision card words the same threshold:
+  `P(yes) ≥ 0.85`, `P(no) ≥ 0.85` for a yes/no monitor that watches No, `P(rrms) ≥ 0.70`, and
+  `P(level ≥ mild) ≥ 0.85` for a score monitor, whose level is named by its label whether the
+  record stores the label or its index.
+- **A score monitor keeps its score.** The dialog makes no score monitor, but one set over HTTP
+  opens with a third Score segment selected, its levels listed lowest first and the level it
+  fires on, all read only. Editing its other fields saves the score question and its level
+  unchanged; only choosing Yes or no, or One of several options, converts it.
 
 - **Two ways in.** The summary's Decisions section has a Monitors row, but that section is drawn
   only once a chat has a decision call or a monitor, so the composer's `+` menu also carries
@@ -198,6 +209,16 @@ Save writes the whole list with `PUT /sessions/{id}/decision-settings`.
   model", which the catalog's `sessionUnavailableReason` gives because no row stands for it, so
   the dialog saves no monitor there that every check would refuse. Where the daemon gave no reason, a public model is
   still refused for a private chat.
+- **A model list that cannot be read is said under the picker.** The picker would otherwise offer
+  only "The chat's decision model" with nothing to say why. A daemon without the route (404, an
+  older Biorouter service, which answers a bare 404) is told apart from an empty list
+  (`fetchDecisionCatalog`'s `missing`) and gets a sentence asking for a restart to finish
+  updating. The route's own 404 carries a sentence ("There is no chat with that id.", for a chat
+  deleted in another window) and is shown as a failure with that sentence instead. A 401 or 403 says Biorouter refused
+  to list the models, with the daemon's own sentence when it gave one, and any other failure says
+  the models could not be loaded, with the error's message or the status. Those two carry a Retry
+  link that reads the list again and keeps the monitor being edited; a new read clears the
+  sentence until it answers.
 - **The proof.** Save needs the person's proof on a daemon that holds a user-action key (the
   desktop app's) and none on a daemon that holds none (`biorouter serve`), so the dialog works
   the same in a browser, steer monitors included. On a daemon with no key the one write refused is
@@ -305,6 +326,7 @@ never shows one, and the calls are never rows of their own.
 | 2,000 rows scrolled to the end in Chromium: every page loaded, 44px rows, a bounded window | `components/decisions/decisionHistory.browser.test.tsx` |
 | The `decisions` kind in the side panel | `components/decisions/decisionsArtifact.test.tsx` |
 | The Monitors dialog's validation, save, privacy reasons, the browser, its read on every open (a caller's older copy is not what it saves) and its filled rows | `components/decisions/MonitorsDialog.test.tsx` |
+| The Monitors list naming P(no), a choice and a score level; a score monitor kept through an edit; Fires on Yes or No; the model list's missing route, refusal and failure with Retry | `components/decisions/MonitorsDialog.test.tsx`, `utils/sessionDecisions.test.ts` |
 | The composer's `+` row that opens the dialog, only in a chat that exists | `components/ChatInput.decisionMonitors.test.tsx` |
 | The History count on top-level rows only | `components/sessions/SessionListView.decisionCount.test.tsx` |
 | The `decide` card's per-question line, the to-review count on a choice with a threshold, the review fields read under their own names, the questions read as the tool reads them (`question`, inferred and synonym types), and the model named by its alias in the head | `components/decisions/DecideToolSummary.test.tsx`, `components/decisions/decisionWire.test.ts` |

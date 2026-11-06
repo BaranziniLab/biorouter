@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { ModalShell } from '../ModalShell';
 import { Button } from '../ui/button';
-import { Field } from '../ui/field';
+import { Field, fieldLabelId } from '../ui/field';
 import { Input } from '../ui/input';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Select } from '../ui/Select';
@@ -11,14 +11,19 @@ import { Textarea } from '../ui/textarea';
 import { Pencil, Plus, Trash2, X } from '../icons/app-icons';
 import {
   DEFAULT_MONITOR_WINDOW,
+  DecisionRequestError,
   MAX_MONITORS,
   MONITOR_NAME_MAX,
   decisionModelLabel,
   fetchDecisionCatalog,
   fetchDecisionSettings,
   formatProbability,
+  monitorThreshold,
+  outcomeLabel,
   refusalText,
   saveDecisionSettings,
+  scoreLevelIndex,
+  thresholdSummary,
   type DecisionModelEntry,
   type DecisionModelRef,
   type DecisionSettings,
@@ -49,6 +54,12 @@ export const MONITORS_COPY = {
   answerType: 'Answers',
   yesNo: 'Yes or no',
   choice: 'One of several options',
+  score: 'Score',
+  yes: 'Yes',
+  no: 'No',
+  levels: 'Levels, lowest first',
+  scoreFiresOn: (level: string) => `${level} or a higher level`,
+  scoreReadOnly: "This dialog cannot change a score question's levels or the level it watches.",
   options: 'Options',
   optionName: (n: number) => `Option ${n}`,
   addOption: 'Add an option',
@@ -57,13 +68,26 @@ export const MONITORS_COPY = {
   optionsDuplicate: 'Each option needs its own name.',
   firesOn: 'Fires on',
   firesOnHelp: 'The option whose probability is compared with the threshold.',
+  firesOnAnswerHelp: 'The answer whose probability is compared with the threshold.',
   firesOnMissing: 'Choose the option that fires the monitor.',
   model: 'Model',
   chatDefault: "The chat's decision model",
   modelPublicRefused: 'This chat is private, so a public model may not read it.',
   modelHelp: 'Only a private model may read a private chat.',
+  catalogMissing:
+    'This Biorouter service is older than the app, so it cannot list decision models. Restart Biorouter to finish updating.',
+  catalogRefused: (reason: string | null) =>
+    reason
+      ? `Biorouter refused to list the decision models. ${reason}`
+      : 'Biorouter refused to list the decision models.',
+  catalogFailed: (detail: string | null) =>
+    detail
+      ? `Could not load the decision models. ${detail}`
+      : 'Could not load the decision models.',
+  catalogStatus: (status: number) => `Biorouter answered with status ${status}.`,
+  retry: 'Retry',
   threshold: 'Fires at',
-  thresholdHelp: 'P(yes), or P(option), at or above this.',
+  thresholdHelp: 'The probability of the answer it fires on, at or above this.',
   action: 'Then',
   actions: { stop: 'Stop the turn', notify: 'Notify me', steer: 'Tell the agent' } as Record<
     MonitorAction,
@@ -201,12 +225,17 @@ function hasErrors(errors: MonitorErrors): boolean {
   return Object.values(errors).some(Boolean);
 }
 
-/** One line under a monitor's name: its threshold, action, timing and model. */
+/**
+ * One line under a monitor's name: its threshold, action, timing and model. The
+ * threshold reads as the decision card and history read the same monitor's calls
+ * (`thresholdSummary`): `P(no) ≥ 0.85`, `P(rrms) ≥ 0.70`, `P(level ≥ mild) ≥ 0.85`.
+ */
 export function monitorSummary(monitor: MonitorCriterion): string {
-  const target =
-    monitor.question.kind.type === 'choice' && monitor.option ? `P(${monitor.option})` : 'P(yes)';
+  const threshold = monitorThreshold(monitor);
   return [
-    `${target} ≥ ${formatProbability(monitor.threshold)}`,
+    threshold
+      ? thresholdSummary(threshold, monitor.question)
+      : `P(${monitor.option ?? 'yes'}) ≥ ${formatProbability(monitor.threshold)}`,
     copy.actions[monitor.action],
     copy.timings[monitor.timing],
     decisionModelLabel(monitor.model) ?? copy.chatDefault,
@@ -222,6 +251,25 @@ interface ModelOption {
 
 const menuPortalTarget = typeof document === 'undefined' ? undefined : document.body;
 
+/** Why the model list could not be read, said by the model picker, and whether Retry can help. */
+interface CatalogProblem {
+  text: string;
+  retry: boolean;
+}
+
+/** A refused or failed `GET /decisions/models`, in the dialog's words. */
+function catalogProblemFor(error: unknown): CatalogProblem {
+  if (error instanceof DecisionRequestError) {
+    if (error.status === 401 || error.status === 403) {
+      return { text: copy.catalogRefused(error.reason), retry: true };
+    }
+    const detail = error.reason ?? (error.status ? copy.catalogStatus(error.status) : null);
+    return { text: copy.catalogFailed(detail), retry: true };
+  }
+  const detail = error instanceof Error ? error.message.trim() || null : refusalText(error);
+  return { text: copy.catalogFailed(detail), retry: true };
+}
+
 function modelKey(model: DecisionModelRef | null): string {
   return model ? `${model.provider}/${model.model}` : '';
 }
@@ -233,6 +281,8 @@ function MonitorEditor({
   models,
   chatTier,
   chatRefusal,
+  catalogProblem,
+  onRetryCatalog,
   readOnly,
 }: {
   draft: MonitorCriterion;
@@ -242,6 +292,9 @@ function MonitorEditor({
   chatTier: DecisionTier | null;
   /** Why this chat may use no decision model at all (a Crew grant), or `null`. */
   chatRefusal: string | null;
+  /** Why the model list could not be read, or `null`. */
+  catalogProblem: CatalogProblem | null;
+  onRetryCatalog: () => void;
   readOnly: boolean;
 }) {
   const base = useId();
@@ -307,6 +360,15 @@ function MonitorEditor({
     });
   };
   const choiceOptions = kind.type === 'choice' ? kind.options : [];
+  // A score monitor (set over HTTP; neither this dialog nor the CLI writes one)
+  // keeps its levels and watched level: shown here, and saved as they are.
+  const scoreLevels = kind.type === 'score' ? kind.levels : [];
+  const watchedLevel = scoreLevelIndex(scoreLevels, draft.option);
+  // Named as the summary line names it (`thresholdSummary`): the label, or "Level n".
+  const watchedLevelLabel =
+    watchedLevel === null
+      ? (draft.option ?? '')
+      : outcomeLabel(draft.question, String(watchedLevel));
   const setOption = (index: number, name: string) => {
     if (kind.type !== 'choice') return;
     const previous = kind.options[index]?.name;
@@ -357,16 +419,61 @@ function MonitorEditor({
         </span>
         <SegmentedControl
           aria-labelledby={`${base}-kind`}
-          value={kind.type === 'choice' ? 'choice' : 'binary'}
+          value={kind.type}
           disabled={readOnly}
           data-testid="monitor-kind"
           options={[
             { value: 'binary', label: copy.yesNo },
             { value: 'choice', label: copy.choice },
+            // Only for a monitor that already asks for a score: this dialog makes none.
+            ...(kind.type === 'score' ? [{ value: 'score', label: copy.score }] : []),
           ]}
-          onValueChange={(value) => setKind(value as 'binary' | 'choice')}
+          onValueChange={(value) => {
+            if (value === 'binary' || value === 'choice') setKind(value);
+          }}
         />
       </div>
+      {kind.type === 'binary' ? (
+        <Field id={`${base}-fires-on`} label={copy.firesOn} helper={copy.firesOnAnswerHelp}>
+          <SegmentedControl
+            aria-labelledby={fieldLabelId(`${base}-fires-on`)}
+            value={draft.option?.toLowerCase() === 'no' ? 'no' : 'yes'}
+            disabled={readOnly}
+            data-testid="monitor-fires-on"
+            options={[
+              { value: 'yes', label: copy.yes },
+              { value: 'no', label: copy.no },
+            ]}
+            // Yes is the default the daemon reads from no option at all.
+            onValueChange={(value) => onChange({ ...draft, option: value === 'no' ? 'no' : null })}
+          />
+        </Field>
+      ) : null}
+      {kind.type === 'score' ? (
+        <>
+          <div className="br-form-field flex min-w-0 flex-col gap-1.5">
+            <span className="text-label text-text-default" id={`${base}-levels`}>
+              {copy.levels}
+            </span>
+            <ol
+              className="br-monitors__levels"
+              aria-labelledby={`${base}-levels`}
+              data-testid="monitor-levels"
+            >
+              {scoreLevels.map((level, index) => (
+                <li key={index}>{level}</li>
+              ))}
+            </ol>
+          </div>
+          <div className="br-form-field flex min-w-0 flex-col gap-1.5">
+            <span className="text-label text-text-default">{copy.firesOn}</span>
+            <p className="br-monitors__value" data-testid="monitor-score-fires-on">
+              {copy.scoreFiresOn(watchedLevelLabel)}
+            </p>
+            <p className="br-monitors__note">{copy.scoreReadOnly}</p>
+          </div>
+        </>
+      ) : null}
       {kind.type === 'choice' ? (
         <>
           <Field id={`${base}-options`} label={copy.options} error={errors.options}>
@@ -437,6 +544,7 @@ function MonitorEditor({
             error={errors.option}
           >
             <SegmentedControl
+              aria-labelledby={fieldLabelId(`${base}-fires-on`)}
               value={draft.option ?? ''}
               disabled={readOnly}
               data-testid="monitor-fires-on"
@@ -476,6 +584,24 @@ function MonitorEditor({
             onChange({ ...draft, model: (raw as ModelOption | null)?.model ?? null })
           }
         />
+        {catalogProblem ? (
+          <p className="br-monitors__error" role="alert" data-testid="monitor-models-error">
+            {catalogProblem.text}
+            {catalogProblem.retry ? (
+              <>
+                {' '}
+                <button
+                  type="button"
+                  className="br-dh-link"
+                  data-testid="monitor-models-retry"
+                  onClick={onRetryCatalog}
+                >
+                  {copy.retry}
+                </button>
+              </>
+            ) : null}
+          </p>
+        ) : null}
         {errors.model ? (
           <p className="br-monitors__error" role="alert">
             {errors.model}
@@ -610,6 +736,10 @@ export function MonitorsDialog({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [fetchedModels, setFetchedModels] = useState<DecisionModelEntry[]>([]);
   const [fetchedChatRefusal, setFetchedChatRefusal] = useState<string | null>(null);
+  // Why the model list could not be read; and Retry's count, which reads it again
+  // without touching the monitor being edited.
+  const [catalogIssue, setCatalogIssue] = useState<CatalogProblem | null>(null);
+  const [catalogAttempt, setCatalogAttempt] = useState(0);
   const models = givenModels ?? fetchedModels;
   // A Crew grant rules out every model, the chat's decision model included: no
   // row stands for that one, so the catalog says it once for the chat.
@@ -655,16 +785,22 @@ export function MonitorsDialog({
   useEffect(() => {
     if (!open || givenModels) return;
     const controller = new AbortController();
+    // A new read says nothing until it answers: no sentence about an older answer.
+    setCatalogIssue(null);
     // Named, so each model carries the daemon's own reason this chat may not use it.
     fetchDecisionCatalog(controller.signal, sessionId || undefined)
       .then((catalog) => {
         if (controller.signal.aborted) return;
         setFetchedModels(catalog.models);
         setFetchedChatRefusal(catalog.sessionUnavailableReason);
+        // An older daemon lists nothing because it cannot; Retry would get the same answer.
+        if (catalog.missing) setCatalogIssue({ text: copy.catalogMissing, retry: false });
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setCatalogIssue(catalogProblemFor(error));
+      });
     return () => controller.abort();
-  }, [open, givenModels, sessionId]);
+  }, [open, givenModels, sessionId, catalogAttempt]);
 
   const draftErrors = useMemo(
     () => (editing ? validateMonitor(editing.draft, { chatTier, models, chatRefusal }) : {}),
@@ -840,6 +976,8 @@ export function MonitorsDialog({
               models={models}
               chatTier={chatTier}
               chatRefusal={chatRefusal}
+              catalogProblem={catalogIssue}
+              onRetryCatalog={() => setCatalogAttempt((attempt) => attempt + 1)}
               readOnly={readOnly}
               onChange={(draft) => setEditing({ ...editing, draft })}
             />

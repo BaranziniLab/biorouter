@@ -3,12 +3,20 @@ import { join } from 'node:path';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DecisionRequestError,
   parseDecisionCatalog,
   parseDecisionModelEntries,
   parseDecisionSettings,
   type DecisionSettings,
+  type MonitorCriterion,
 } from '../../utils/sessionDecisions';
-import { MonitorsDialog, monitorSlug, newMonitor, validateMonitor } from './MonitorsDialog';
+import {
+  MonitorsDialog,
+  monitorSlug,
+  monitorSummary,
+  newMonitor,
+  validateMonitor,
+} from './MonitorsDialog';
 
 const mocks = vi.hoisted(() => ({ save: vi.fn(), catalog: vi.fn(), settings: vi.fn() }));
 vi.mock('../../utils/sessionDecisions', async (original) => ({
@@ -438,5 +446,273 @@ describe('MonitorsDialog', () => {
     expect(
       await screen.findByText('Your institution does not cover this model.')
     ).toBeInTheDocument();
+  });
+});
+
+/** A monitor as `PUT /sessions/{id}/decision-settings` takes it, parsed as the dialog reads it. */
+function storedMonitor(wire: Record<string, unknown>): MonitorCriterion {
+  return parseDecisionSettings({
+    defaultModel: null,
+    monitors: [
+      {
+        id: 'm1',
+        name: 'Watcher',
+        question: { instructions: 'q', kind: { binary: {} } },
+        threshold: 0.85,
+        action: 'stop',
+        ...wire,
+      },
+    ],
+  })!.monitors[0];
+}
+
+const SEVERITY = {
+  id: 'severity',
+  name: 'Severity',
+  question: {
+    instructions: 'How severe is the reported relapse?',
+    kind: { score: { levels: ['none', 'mild', 'severe'] } },
+  },
+};
+
+/**
+ * The line under a monitor's name says the answer it watches, as the daemon
+ * reads `option` (`MonitorCriterion::pass_threshold`) and as the decision card
+ * names the same threshold, for monitors this dialog did not make.
+ */
+describe('the summary of a monitor', () => {
+  it('names P(no) for a yes/no monitor watching no, in any case', () => {
+    expect(monitorSummary(storedMonitor({ option: 'no' }))).toMatch(/^P\(no\) ≥ 0\.85 · /);
+    expect(monitorSummary(storedMonitor({ option: 'NO' }))).toMatch(/^P\(no\) ≥ 0\.85 · /);
+    expect(monitorSummary(storedMonitor({ option: 'yes' }))).toMatch(/^P\(yes\) ≥ 0\.85 · /);
+    expect(monitorSummary(storedMonitor({ option: null }))).toMatch(/^P\(yes\) ≥ 0\.85 · /);
+  });
+
+  it('names a score monitor’s level by its label, whether stored as the label or its index', () => {
+    expect(monitorSummary(storedMonitor({ ...SEVERITY, option: 'mild' }))).toBe(
+      "P(level ≥ mild) ≥ 0.85 · Stop the turn · After each step · The chat's decision model"
+    );
+    expect(monitorSummary(storedMonitor({ ...SEVERITY, option: '2' }))).toMatch(
+      /^P\(level ≥ severe\) ≥ 0\.85 · /
+    );
+  });
+
+  it('names a choice monitor’s option', () => {
+    const course = storedMonitor({
+      question: {
+        instructions: 'Which course?',
+        kind: { choice: { options: { rrms: null, spms: null } } },
+      },
+      option: 'spms',
+      threshold: 0.7,
+    });
+    expect(monitorSummary(course)).toMatch(/^P\(spms\) ≥ 0\.70 · /);
+  });
+});
+
+describe('a monitor the dialog did not make', () => {
+  it('shows a score monitor as a score with its levels, and saves it unchanged after a rename', async () => {
+    const severity = parseDecisionSettings({
+      defaultModel: null,
+      monitors: [{ ...SEVERITY, threshold: 0.8, action: 'notify', option: '1' }],
+    })!;
+    mocks.settings.mockResolvedValue({ data: severity, missing: false });
+    await drawReady({ settings: severity });
+    expect(screen.getByTestId('monitor-item')).toHaveTextContent('P(level ≥ mild) ≥ 0.80');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Severity' }));
+
+    const editor = screen.getByTestId('monitor-editor');
+    expect(within(editor).getByRole('radio', { name: 'Score' })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+    expect(within(editor).getByRole('radio', { name: 'Yes or no' })).toHaveAttribute(
+      'aria-checked',
+      'false'
+    );
+    expect(
+      within(screen.getByTestId('monitor-levels'))
+        .getAllByRole('listitem')
+        .map((item) => item.textContent)
+    ).toEqual(['none', 'mild', 'severe']);
+    expect(screen.getByTestId('monitor-score-fires-on')).toHaveTextContent(
+      'mild or a higher level'
+    );
+
+    fireEvent.change(screen.getByTestId('monitor-name'), { target: { value: 'Relapse severity' } });
+    fireEvent.click(screen.getByTestId('monitor-done'));
+    fireEvent.click(screen.getByTestId('monitors-save'));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    const saved = (mocks.save.mock.calls[0][1] as DecisionSettings).monitors[0];
+    expect(saved.name).toBe('Relapse severity');
+    expect(saved.option).toBe('1');
+    expect(saved.question.kind).toEqual({ type: 'score', levels: ['none', 'mild', 'severe'] });
+  });
+
+  it('converts a score monitor only when the person picks another kind', async () => {
+    const severity = parseDecisionSettings({
+      defaultModel: null,
+      monitors: [{ ...SEVERITY, threshold: 0.8, action: 'notify', option: 'mild' }],
+    })!;
+    mocks.settings.mockResolvedValue({ data: severity, missing: false });
+    await drawReady({ settings: severity });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Severity' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Yes or no' }));
+    expect(screen.queryByRole('radio', { name: 'Score' })).toBeNull();
+    expect(screen.queryByTestId('monitor-levels')).toBeNull();
+    fireEvent.click(screen.getByTestId('monitor-done'));
+    fireEvent.click(screen.getByTestId('monitors-save'));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    const saved = (mocks.save.mock.calls[0][1] as DecisionSettings).monitors[0];
+    expect(saved.question.kind).toEqual({ type: 'binary' });
+    expect(saved.option).toBeNull();
+  });
+
+  it('shows a yes/no monitor that watches no, and Fires on sets no and back to yes', async () => {
+    const watchingNo = parseDecisionSettings({
+      defaultModel: null,
+      monitors: [
+        {
+          id: 'form-reached',
+          name: 'Form reached',
+          question: {
+            instructions: 'Has the agent reached the consent form?',
+            kind: { binary: {} },
+          },
+          threshold: 0.85,
+          action: 'stop',
+          option: 'no',
+        },
+      ],
+    })!;
+    mocks.settings.mockResolvedValue({ data: watchingNo, missing: false });
+    await drawReady({ settings: watchingNo });
+    expect(screen.getByTestId('monitor-item')).toHaveTextContent('P(no) ≥ 0.85');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Form reached' }));
+    const firesOn = screen.getByTestId('monitor-fires-on');
+    expect(within(firesOn).getByRole('radio', { name: 'No' })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+
+    // Back to yes: no option, the default the daemon reads.
+    fireEvent.click(within(firesOn).getByRole('radio', { name: 'Yes' }));
+    fireEvent.click(screen.getByTestId('monitor-done'));
+    expect(screen.getByTestId('monitor-item')).toHaveTextContent('P(yes) ≥ 0.85');
+    fireEvent.click(screen.getByTestId('monitors-save'));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    expect((mocks.save.mock.calls[0][1] as DecisionSettings).monitors[0].option).toBeNull();
+  });
+
+  it('sets a new yes/no monitor to fire on no', async () => {
+    await drawReady();
+    fireEvent.click(screen.getByTestId('monitor-add'));
+    const firesOn = screen.getByTestId('monitor-fires-on');
+    expect(within(firesOn).getByRole('radio', { name: 'Yes' })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+    fireEvent.change(screen.getByTestId('monitor-name'), { target: { value: 'Still open' } });
+    fireEvent.change(screen.getByTestId('monitor-question'), {
+      target: { value: 'Has the form been submitted?' },
+    });
+    fireEvent.click(within(firesOn).getByRole('radio', { name: 'No' }));
+    fireEvent.click(screen.getByTestId('monitor-done'));
+    fireEvent.click(screen.getByTestId('monitors-save'));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    const saved = (mocks.save.mock.calls[0][1] as DecisionSettings).monitors[1];
+    expect(saved).toMatchObject({ name: 'Still open', option: 'no' });
+    expect(saved.question.kind).toEqual({ type: 'binary' });
+  });
+});
+
+/**
+ * The model list used to fail silently: the picker then offered only the chat's
+ * decision model, with nothing said and nothing to retry.
+ */
+describe('when the model list cannot be read', () => {
+  async function openEditor() {
+    await drawReady({ models: undefined });
+    await waitFor(() => expect(mocks.catalog).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('monitor-add'));
+    return screen.getByTestId('monitor-model');
+  }
+
+  it('says an older service cannot list them, and offers no Retry that cannot help', async () => {
+    mocks.catalog.mockResolvedValue({ models: [], sessionUnavailableReason: null, missing: true });
+    const field = await openEditor();
+    expect(await within(field).findByTestId('monitor-models-error')).toHaveTextContent(
+      'This Biorouter service is older than the app, so it cannot list decision models. Restart Biorouter to finish updating.'
+    );
+    expect(within(field).queryByTestId('monitor-models-retry')).toBeNull();
+  });
+
+  it('says a refusal, with the daemon’s reason when it gave one', async () => {
+    mocks.catalog.mockRejectedValue(
+      new DecisionRequestError(
+        'Open this chat in the app to see it.',
+        403,
+        'Open this chat in the app to see it.'
+      )
+    );
+    const field = await openEditor();
+    expect(await within(field).findByTestId('monitor-models-error')).toHaveTextContent(
+      'Biorouter refused to list the decision models. Open this chat in the app to see it.'
+    );
+  });
+
+  it('says a refusal without a reason in one sentence', async () => {
+    mocks.catalog.mockRejectedValue(
+      new DecisionRequestError('Decision models unavailable', 401, null)
+    );
+    const field = await openEditor();
+    const error = await within(field).findByTestId('monitor-models-error');
+    expect(error.firstChild?.textContent).toBe('Biorouter refused to list the decision models.');
+  });
+
+  it('says a failure with its message, and Retry reads again keeping the monitor being edited', async () => {
+    mocks.catalog
+      .mockRejectedValueOnce(new DecisionRequestError('Decision models unavailable', 500, null))
+      .mockResolvedValue({ models: MODELS, sessionUnavailableReason: null, missing: false });
+    const field = await openEditor();
+    fireEvent.change(screen.getByTestId('monitor-name'), { target: { value: 'Task achieved' } });
+    fireEvent.change(screen.getByTestId('monitor-question'), {
+      target: { value: 'Has the agent finished what was asked?' },
+    });
+    expect(await within(field).findByTestId('monitor-models-error')).toHaveTextContent(
+      'Could not load the decision models. Biorouter answered with status 500.'
+    );
+
+    fireEvent.click(within(field).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(mocks.catalog).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(within(field).queryByTestId('monitor-models-error')).toBeNull());
+    expect(screen.getByTestId('monitor-name')).toHaveValue('Task achieved');
+    expect(screen.getByTestId('monitor-question')).toHaveValue(
+      'Has the agent finished what was asked?'
+    );
+    // The models the retry read are offered now.
+    fireEvent.keyDown(within(field).getByRole('combobox'), { key: 'ArrowDown' });
+    expect(await screen.findByText('tev1:0.8b · Private · this computer')).toBeInTheDocument();
+  });
+
+  it('shows no old failure while a retry is still reading', async () => {
+    mocks.catalog
+      .mockRejectedValueOnce(new DecisionRequestError('Decision models unavailable', 500, null))
+      .mockReturnValueOnce(new Promise(() => {}));
+    const field = await openEditor();
+    expect(await within(field).findByTestId('monitor-models-error')).toBeInTheDocument();
+
+    fireEvent.click(within(field).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(mocks.catalog).toHaveBeenCalledTimes(2));
+    expect(within(field).queryByTestId('monitor-models-error')).toBeNull();
+  });
+
+  it('says a request that never reached the service with its message', async () => {
+    mocks.catalog.mockRejectedValue(new TypeError('Failed to fetch'));
+    const field = await openEditor();
+    expect(await within(field).findByTestId('monitor-models-error')).toHaveTextContent(
+      'Could not load the decision models. Failed to fetch'
+    );
+    expect(within(field).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 });

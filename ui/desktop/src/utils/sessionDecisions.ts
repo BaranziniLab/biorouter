@@ -258,7 +258,11 @@ export interface MonitorCriterion {
   window: MonitorWindow;
   /** Fires when P(wanted answer) is at least this. */
   threshold: number;
-  /** A choice question's option whose probability is compared; binary compares P(yes). */
+  /**
+   * The answer whose probability is compared ({@link monitorThreshold}): `yes` (or
+   * `null`) or `no` for a yes/no question, an option's name for a choice, and the
+   * lowest level that counts for a score, by its label or its index (`"0"`).
+   */
   option: string | null;
   consecutive: number;
   rearmBelow: number | null;
@@ -964,6 +968,49 @@ export function thresholdSummary(threshold: Threshold, question?: Question | nul
   }
 }
 
+/**
+ * The index of the score level a monitor's `option` names: a level's label
+ * first, then its index (`"0"` is the lowest), as `MonitorCriterion::pass_threshold`
+ * in `settings.rs` reads it. `null` when it names none.
+ */
+export function scoreLevelIndex(levels: readonly string[], option: string | null): number | null {
+  if (option === null) return null;
+  const wanted = option.trim();
+  const byLabel = levels.findIndex((level) => level.trim() === wanted);
+  if (byLabel >= 0) return byLabel;
+  if (!/^\d+$/.test(wanted)) return null;
+  const index = Number(wanted);
+  return index < levels.length ? index : null;
+}
+
+/**
+ * A monitor's firing rule as the daemon applies it (`MonitorCriterion::pass_threshold`
+ * in `settings.rs`): P(yes), or P(no) when a yes/no monitor watches `no`; P(option)
+ * for a choice; P(level at or above `option`) for a score. `null` when the option
+ * fits no answer of its question, which the daemon refuses to save.
+ */
+export function monitorThreshold(monitor: MonitorCriterion): Threshold | null {
+  const p = monitor.threshold;
+  const option = monitor.option;
+  const kind = monitor.question.kind;
+  switch (kind.type) {
+    case 'binary': {
+      const watched = option?.toLowerCase() ?? 'yes';
+      if (watched === 'yes') return { type: 'yes', p };
+      if (watched === 'no') return { type: 'no', p };
+      return null;
+    }
+    case 'choice':
+      return option !== null && kind.options.some((entry) => entry.name === option)
+        ? { type: 'option', name: option, p }
+        : null;
+    case 'score': {
+      const level = scoreLevelIndex(kind.levels, option);
+      return level === null ? null : { type: 'at_least_level', level, p };
+    }
+  }
+}
+
 /** Two decimals: `0.93`. A probability that rounds to 1 or 0 but is not says so: `>0.99`. */
 export function formatProbability(p: number | null | undefined): string {
   if (p === null || p === undefined || !Number.isFinite(p)) return '';
@@ -1357,10 +1404,13 @@ export function decisionQuery(
 
 export class DecisionRequestError extends Error {
   status: number | null;
-  constructor(message: string, status: number | null) {
+  /** The sentence the daemon gave with its refusal, or `null` when it gave none. */
+  reason: string | null;
+  constructor(message: string, status: number | null, reason: string | null = null) {
     super(message);
     this.name = 'DecisionRequestError';
     this.status = status;
+    this.reason = reason;
   }
 }
 
@@ -1381,7 +1431,8 @@ function settle(result: ClientResult, what: string): { data: unknown; missing: b
   const status = result.response?.status ?? null;
   if (status === 404) return { data: null, missing: true };
   if (result.error !== undefined || result.data === undefined) {
-    throw new DecisionRequestError(refusalText(result.error) ?? `${what} unavailable`, status);
+    const reason = refusalText(result.error);
+    throw new DecisionRequestError(reason ?? `${what} unavailable`, status, reason);
   }
   return { data: result.data, missing: false };
 }
@@ -1501,18 +1552,30 @@ export async function fetchDecisionModels(
  * {@link fetchDecisionModels}, with the reason the named chat may use no
  * decision model at all (`sessionUnavailableReason`), for a choice no row
  * stands for: a monitor left on the chat's decision model.
+ *
+ * `missing` is a daemon that predates the route (404): it lists no models
+ * because it cannot, which the caller says rather than showing an empty list as
+ * if there were none. A refusal or a failure is thrown as a
+ * {@link DecisionRequestError} carrying the status and the daemon's sentence.
  */
 export async function fetchDecisionCatalog(
   signal?: AbortSignal,
   sessionId?: string
-): Promise<DecisionCatalog> {
+): Promise<DecisionCatalog & { missing: boolean }> {
   const headers = await userActionHeaders();
   const result = (await listDecisionModels({
     ...(sessionId ? { query: { sessionId } } : {}),
     headers,
     signal,
   })) as ClientResult;
+  // The route answers 404 itself, with a sentence, when the named chat is gone;
+  // only a bare 404 is a daemon without the route.
+  const goneReason = result.response?.status === 404 ? refusalText(result.error) : null;
+  if (goneReason) throw new DecisionRequestError(goneReason, 404, goneReason);
   const { data, missing } = settle(result, 'Decision models');
-  if (missing) return { models: [], sessionUnavailableReason: null };
-  return parseDecisionCatalog(data) ?? { models: [], sessionUnavailableReason: null };
+  if (missing) return { models: [], sessionUnavailableReason: null, missing };
+  return {
+    ...(parseDecisionCatalog(data) ?? { models: [], sessionUnavailableReason: null }),
+    missing,
+  };
 }

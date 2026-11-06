@@ -44,6 +44,8 @@ import {
   decisionRevision,
   decisionSettingsToWire,
   decisionSourceRows,
+  DecisionRequestError,
+  fetchDecisionCatalog,
   fetchDecisionDetail,
   fetchDecisionModels,
   fetchDecisionPage,
@@ -54,6 +56,8 @@ import {
   formatProbability,
   messageDecisionId,
   messageDecisionMarker,
+  monitorThreshold,
+  scoreLevelIndex,
   parseDecision,
   parseDecisionCatalog,
   parseDecisionDetail,
@@ -751,5 +755,113 @@ describe('requests carry the person’s proof', () => {
         headers: expect.objectContaining({ 'X-User-Action': 'synthetic-proof' }),
       })
     );
+  });
+});
+
+/**
+ * A monitor's `option` read as `MonitorCriterion::pass_threshold` (`settings.rs`)
+ * reads it, so the dialog names the answer the daemon compares.
+ */
+describe('a monitor’s threshold, as the daemon reads its option', () => {
+  const monitor = (wire: Record<string, unknown>) =>
+    parseDecisionSettings({
+      defaultModel: null,
+      monitors: [
+        {
+          id: 'm',
+          name: 'M',
+          question: { instructions: 'q', kind: { binary: {} } },
+          threshold: 0.85,
+          ...wire,
+        },
+      ],
+    })!.monitors[0];
+  const score = {
+    question: { instructions: 'q', kind: { score: { levels: ['none', 'mild', 'severe'] } } },
+  };
+
+  it('reads yes, no (any case) and no option on a yes/no question', () => {
+    expect(monitorThreshold(monitor({ option: null }))).toEqual({ type: 'yes', p: 0.85 });
+    expect(monitorThreshold(monitor({ option: 'Yes' }))).toEqual({ type: 'yes', p: 0.85 });
+    expect(monitorThreshold(monitor({ option: 'no' }))).toEqual({ type: 'no', p: 0.85 });
+    expect(monitorThreshold(monitor({ option: 'NO' }))).toEqual({ type: 'no', p: 0.85 });
+    expect(monitorThreshold(monitor({ option: 'maybe' }))).toBeNull();
+  });
+
+  it('reads a choice’s option by its exact name', () => {
+    const choice = {
+      question: { instructions: 'q', kind: { choice: { options: { rrms: null } } } },
+    };
+    expect(monitorThreshold(monitor({ ...choice, option: 'rrms' }))).toEqual({
+      type: 'option',
+      name: 'rrms',
+      p: 0.85,
+    });
+    expect(monitorThreshold(monitor({ ...choice, option: 'RRMS' }))).toBeNull();
+    expect(monitorThreshold(monitor({ ...choice, option: null }))).toBeNull();
+  });
+
+  it('reads a score level by its label first, then its index', () => {
+    expect(monitorThreshold(monitor({ ...score, option: 'mild' }))).toEqual({
+      type: 'at_least_level',
+      level: 1,
+      p: 0.85,
+    });
+    expect(monitorThreshold(monitor({ ...score, option: ' 2 ' }))).toMatchObject({ level: 2 });
+    expect(monitorThreshold(monitor({ ...score, option: '7' }))).toBeNull();
+    expect(monitorThreshold(monitor({ ...score, option: null }))).toBeNull();
+    // A label that looks like an index is read as the label.
+    expect(scoreLevelIndex(['2', '1', '0'], '0')).toBe(2);
+    expect(scoreLevelIndex(['a', 'b'], '-1')).toBeNull();
+  });
+});
+
+describe('the decision model list', () => {
+  it('tells a daemon without the route from an empty list', async () => {
+    // An unknown route answers a bare 404, with no body.
+    mocks.get.mockResolvedValueOnce({
+      data: undefined,
+      error: '',
+      response: { status: 404 },
+    });
+    await expect(fetchDecisionCatalog(undefined, 's1')).resolves.toEqual({
+      models: [],
+      sessionUnavailableReason: null,
+      missing: true,
+    });
+    mocks.get.mockResolvedValueOnce({
+      data: { models: [] },
+      error: undefined,
+      response: { status: 200 },
+    });
+    await expect(fetchDecisionCatalog(undefined, 's1')).resolves.toEqual({
+      models: [],
+      sessionUnavailableReason: null,
+      missing: false,
+    });
+  });
+
+  it('throws the route’s own 404 for a chat that is gone, not an older daemon', async () => {
+    const reason = 'There is no chat with that id.';
+    mocks.get.mockResolvedValueOnce({ data: undefined, error: reason, response: { status: 404 } });
+    const gone = await fetchDecisionCatalog(undefined, 's1').catch((error: unknown) => error);
+    expect(gone).toBeInstanceOf(DecisionRequestError);
+    expect(gone).toMatchObject({ status: 404, reason, message: reason });
+  });
+
+  it('throws a refusal with its status and the daemon’s own sentence, or none', async () => {
+    const reason = 'Open this chat in the app to see it.';
+    mocks.get.mockResolvedValueOnce({ data: undefined, error: reason, response: { status: 403 } });
+    const refused = await fetchDecisionCatalog(undefined, 's1').catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(DecisionRequestError);
+    expect(refused).toMatchObject({ status: 403, reason, message: reason });
+
+    mocks.get.mockResolvedValueOnce({ data: undefined, error: '', response: { status: 500 } });
+    const failed = await fetchDecisionCatalog(undefined, 's1').catch((error: unknown) => error);
+    expect(failed).toMatchObject({
+      status: 500,
+      reason: null,
+      message: 'Decision models unavailable',
+    });
   });
 });
