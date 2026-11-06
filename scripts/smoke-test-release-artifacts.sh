@@ -14,6 +14,39 @@ require_file() {
   [ -f "$1" ] || die "missing artifact: $1"
 }
 
+# The microphone (dictation, DD-65), read back out of the signed app: the four
+# files `macSignOptionsForFile` in ui/desktop/forge.config.ts signs with
+# `com.apple.security.device.audio-input`, and its `NSMicrophoneUsageDescription`.
+# Under the hardened runtime a missing entitlement means no prompt and every
+# request denied, with nothing else failing. The same check as
+# `check_mac_microphone` in scripts/release.sh; prints each problem, returns 1
+# if there is one.
+MAC_MICROPHONE_USAGE="Biorouter uses the microphone only while you dictate, and does not save the recording."
+mac_microphone_problems() { # <Biorouter.app>
+  local app="$1" target usage bad=0
+  for target in "$app" \
+                "$app/Contents/Frameworks/Biorouter Helper.app" \
+                "$app/Contents/Resources/bin/biorouter" \
+                "$app/Contents/Resources/bin/biorouterd"; do
+    if ! codesign -d --entitlements - --xml "$target" 2>/dev/null | python3 -c '
+import plistlib, sys
+try:
+    entitlements = plistlib.loads(sys.stdin.buffer.read())
+except Exception:
+    sys.exit(1)
+sys.exit(0 if entitlements.get("com.apple.security.device.audio-input") is True else 1)'; then
+      printf 'com.apple.security.device.audio-input is not in the signed entitlements of %s\n' "$target"
+      bad=1
+    fi
+  done
+  usage="$(plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist" 2>/dev/null || true)"
+  if [ "$usage" != "$MAC_MICROPHONE_USAGE" ]; then
+    printf 'NSMicrophoneUsageDescription is "%s", expected "%s"\n' "$usage" "$MAC_MICROPHONE_USAGE"
+    bad=1
+  fi
+  return "$bad"
+}
+
 smoke_mac() (
   local arch="$1" dmg="$2" mount="" tmp="" runner=(/usr/bin/env)
   local pid="" daemon_pid="" failure="" mounted=false
@@ -96,6 +129,8 @@ smoke_mac() (
   codesign --verify --deep --strict --verbose=2 "$app"
   spctl --assess --type execute --verbose "$app"
   xcrun stapler validate "$app"
+  local microphone=""
+  microphone="$(mac_microphone_problems "$app")" || die "$arch microphone: $microphone"
   if [ "$arch" = x64 ]; then
     arch -x86_64 /usr/bin/true >/dev/null 2>&1 || die "Rosetta is required for Intel runtime verification"
     runner=(arch -x86_64)
@@ -155,7 +190,7 @@ PYKEY
   cleanup_mac
   trap - EXIT
   [ -z "$failure" ] || die "$failure"
-  log "macOS $arch DMG, CLI, daemon, silent shared startup, and desktop shutdown passed"
+  log "macOS $arch DMG, microphone entitlement and prompt sentence, CLI, daemon, silent shared startup, and desktop shutdown passed"
 )
 
 # Both packages use the same bounded silent-startup, replacement, fatal-error shutdown,

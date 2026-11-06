@@ -205,7 +205,6 @@ export default function UserMessage({
   const initializeEditMode = useCallback(() => {
     setEditContent(editableText(displayText));
     setError(null);
-    window.electron.logInfo(`Entering edit mode with content: ${displayText}`);
   }, [displayText]);
 
   // Handle edit button click
@@ -253,7 +252,6 @@ export default function UserMessage({
       const newContent = joinComposerText(joinLeadingCommand(editCommand, value), editRefs);
       setEditContent(newContent);
       setError(null); // Clear any previous errors
-      window.electron.logInfo(`Content changed: ${newContent}`);
     },
     [editCommand, editRefs]
   );

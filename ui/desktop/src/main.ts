@@ -6329,13 +6329,22 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
       permission,
       details.requestingUrl || requestingOrigin,
       appEntryUrl,
-      [details.mediaType ?? 'unknown']
+      [details.mediaType ?? 'unknown'],
+      // The microphone goes to the main frame only (DD-65): no artifact or
+      // preview frame may ever hold it.
+      details.isMainFrame
     )
   );
   ses.setPermissionRequestHandler((_webContents, permission, callback, details) => {
     const mediaTypes = 'mediaTypes' in details ? (details.mediaTypes ?? []) : [];
     callback(
-      isAllowedRendererPermission(permission, details.requestingUrl, appEntryUrl, mediaTypes)
+      isAllowedRendererPermission(
+        permission,
+        details.requestingUrl,
+        appEntryUrl,
+        mediaTypes,
+        details.isMainFrame
+      )
     );
   });
 

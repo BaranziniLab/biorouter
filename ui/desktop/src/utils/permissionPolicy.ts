@@ -93,7 +93,13 @@ export function isAllowedArtifactFrameNavigation(candidate: string): boolean {
  *   to the app, the same bare write succeeded. So granting `clipboard-read`
  *   (for a paste feature, say) also lets the renderer write the clipboard with
  *   no click at all. Decide those two together.
- * - **`media`, audio only**, for dictation.
+ * - **`media`, audio only, and only to the main frame**, for dictation. Every
+ *   frame the renderer creates is a `srcdoc` artifact or document preview, and
+ *   none of them may ever reach the microphone, whatever URL it reports.
+ *   `main.ts` passes each handler's own `details.isMainFrame`, and anything but
+ *   `true` refuses (DD-65 in docs/dictation/implementation-plan.md). Both
+ *   handlers were measured receiving `isMainFrame: true` for the main frame,
+ *   and a refusal reaches the page as `NotAllowedError: Permission denied`.
  *
  * `clipboard-read` (and `deprecated-sync-clipboard-read`) stay DENIED. A read
  * sees whatever the user last copied anywhere on the machine, and nothing in
@@ -115,11 +121,13 @@ export function isAllowedRendererPermission(
   permission: string,
   requestingUrl: string,
   appUrl: URL,
-  mediaTypes: ReadonlyArray<string>
+  mediaTypes: ReadonlyArray<string>,
+  isMainFrame: boolean
 ): boolean {
   if (permission === 'clipboard-sanitized-write') return isAppOrigin(requestingUrl, appUrl);
   return (
     permission === 'media' &&
+    isMainFrame === true &&
     mediaTypes.length > 0 &&
     mediaTypes.every((type) => type === 'audio') &&
     isAppOrigin(requestingUrl, appUrl)

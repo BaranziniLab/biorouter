@@ -866,6 +866,42 @@ check_bundled_crew_broker() { # <resources bin dir> <version>
   fi
 }
 
+# ── microphone (dictation, DD-65) ──────────────────────────────────────────────
+# Reads the signed app back, not forge.config.ts: under the hardened runtime a
+# file without `com.apple.security.device.audio-input` gets no prompt and every
+# microphone request is denied, and nothing else fails. The four files are the
+# ones `macSignOptionsForFile` in ui/desktop/forge.config.ts signs with it; the
+# sentence is its `NSMicrophoneUsageDescription`. `mac_microphone_problems` in
+# scripts/smoke-test-release-artifacts.sh runs the same check on the app inside
+# each dmg, and ui/desktop/src/styles/forgeMacUsage.test.ts holds all three to
+# the same sentence and entitlement.
+MAC_MICROPHONE_USAGE="Biorouter uses the microphone only while you dictate, and does not save the recording."
+check_mac_microphone() { # <Biorouter.app>
+  local app="$1" target usage bad=0
+  for target in "$app" \
+                "$app/Contents/Frameworks/Biorouter Helper.app" \
+                "$app/Contents/Resources/bin/biorouter" \
+                "$app/Contents/Resources/bin/biorouterd"; do
+    if ! codesign -d --entitlements - --xml "$target" 2>/dev/null | python3 -c '
+import plistlib, sys
+try:
+    entitlements = plistlib.loads(sys.stdin.buffer.read())
+except Exception:
+    sys.exit(1)
+sys.exit(0 if entitlements.get("com.apple.security.device.audio-input") is True else 1)'; then
+      printf 'com.apple.security.device.audio-input is not in the signed entitlements of %s\n' "$target"
+      bad=1
+    fi
+  done
+  usage="$(plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist" 2>/dev/null || true)"
+  if [ "$usage" != "$MAC_MICROPHONE_USAGE" ]; then
+    printf 'NSMicrophoneUsageDescription of %s is "%s", expected "%s"\n' "$app" "$usage" "$MAC_MICROPHONE_USAGE"
+    bad=1
+  fi
+  [ "$bad" = 0 ] || return 1
+  log "microphone entitlement on the app, its helper and both backends, and the usage sentence ✓ (${app#"$DESK"/})"
+}
+
 cmd_verify() {
   local v="$1" ok=1
   assert_release_source "$v"
@@ -905,6 +941,14 @@ cmd_verify() {
       check_bundled_crew_broker "$app/Contents/Resources/bin" "$v" || ok=0
     fi
   done
+  # ── microphone (dictation, DD-65): its own block; see check_mac_microphone ──
+  for app in "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" \
+             "$DESK/out/Biorouter-darwin-x64/Biorouter.app"; do
+    if [ -d "$app" ]; then
+      check_mac_microphone "$app" || ok=0
+    fi
+  done
+  # ── end microphone block ──
   # ── minimum macOS (dictation, DD-11): the backends inside the signed apps ──
   # Read from the packaged bin/ rather than target/: these are the bytes users
   # get, after staging, signing and notarization.
