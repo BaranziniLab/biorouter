@@ -54,6 +54,11 @@ pub struct PlatformDirs {
     /// `None` on Windows, where `Paths` falls back to `data`.
     pub state: Option<PathBuf>,
     pub cache: PathBuf,
+    /// Per user data that must not roam: large files such as speech models,
+    /// which a roaming profile would copy at every logon (DD-19). On Windows
+    /// it is `<local root>\data`, beside `cache` under `%LOCALAPPDATA%`; on
+    /// macOS and Linux it is `data`, because the XDG data folder never roams.
+    pub local_data: PathBuf,
 }
 
 /// [`PlatformDirs`] for this machine.
@@ -76,9 +81,11 @@ pub fn platform_dirs() -> Result<PlatformDirs, HomeDirError> {
         ))
     } else {
         let strategy = choose_app_strategy(crate::APP_STRATEGY.clone())?;
+        let data = strategy.data_dir();
         Ok(PlatformDirs {
             config: strategy.config_dir(),
-            data: strategy.data_dir(),
+            local_data: data.clone(),
+            data,
             state: strategy.state_dir(),
             cache: strategy.cache_dir(),
         })
@@ -103,9 +110,15 @@ pub fn windows_platform_dirs(
 }
 
 /// The Windows layout under the two bases etcetera's Windows strategy reads
-/// (`%APPDATA%` and `%LOCALAPPDATA%`): `<root>\config`, `<root>\data` and
-/// `<local root>\cache`, each root resolved by [`crate::app_folder::AppRoot::resolve`].
-/// Compiled everywhere, so the layout is tested on every OS.
+/// (`%APPDATA%` and `%LOCALAPPDATA%`): `<root>\config`, `<root>\data`,
+/// `<local root>\cache` and `<local root>\data`, each root resolved by
+/// [`crate::app_folder::AppRoot::resolve`]. Compiled everywhere, so the layout
+/// is tested on every OS.
+///
+/// `local_data` has no etcetera counterpart (its Windows strategy has one data
+/// folder, the roaming one). It sits beside `cache` under the same resolved
+/// local root, so the legacy folder rule, the daemon's move of the local base
+/// and the lock a resolver holds on it all apply to it unchanged.
 pub fn windows_dirs(roaming_base: &Path, local_base: &Path) -> PlatformDirs {
     use crate::app_folder::AppRoot;
     let roaming = AppRoot::under(roaming_base).resolve().to_path_buf();
@@ -115,6 +128,7 @@ pub fn windows_dirs(roaming_base: &Path, local_base: &Path) -> PlatformDirs {
         data: roaming.join("data"),
         state: None,
         cache: local.join("cache"),
+        local_data: local.join("data"),
     }
 }
 
@@ -208,6 +222,214 @@ mod tests {
         );
         assert_eq!(daemon.roaming.unwrap().outcome.token(), "in-use");
         assert!(legacy.exists());
+    }
+
+    /// On Windows the local data folder sits under `%LOCALAPPDATA%`, beside
+    /// the cache, and never under the roaming base: a speech model of 0.3 to
+    /// 0.6 GB there would be copied at every logon on a roaming profile.
+    #[test]
+    fn the_windows_local_data_folder_is_beside_the_cache_and_never_roams() {
+        use crate::app_folder::{APP_AUTHOR, APP_NAME};
+        let roaming = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        let dirs = windows_dirs(roaming.path(), local.path());
+        assert_eq!(
+            dirs.local_data,
+            local.path().join(APP_AUTHOR).join(APP_NAME).join("data")
+        );
+        assert_eq!(dirs.local_data.parent(), dirs.cache.parent());
+        assert!(!dirs.local_data.starts_with(roaming.path()));
+        assert_ne!(dirs.local_data, dirs.data);
+    }
+
+    /// The XDG data folder does not roam, so on macOS and Linux the local
+    /// data folder is the data folder itself.
+    #[cfg(not(windows))]
+    #[test]
+    fn off_windows_the_local_data_folder_is_the_data_folder() {
+        let dirs = platform_dirs().expect("a home dir");
+        assert_eq!(dirs.local_data, dirs.data);
+    }
+
+    /// `<base>/<token>/<rest>` for the path tokens `resolution-cases.json`
+    /// defines (its `about` field spells them out).
+    fn case_path(base: &Path, spec: &str) -> PathBuf {
+        use crate::app_folder::{APP_AUTHOR, APP_NAME, LEGACY_APP_AUTHOR, MOVE_LOCK, MOVE_MARKER};
+        let spec = spec.trim_end_matches('/');
+        let (head, rest) = spec.split_once('/').unwrap_or((spec, ""));
+        let root = match head {
+            "current" => base.join(APP_AUTHOR).join(APP_NAME),
+            "legacy" => base.join(LEGACY_APP_AUTHOR).join(APP_NAME),
+            "currentParent" => base.join(APP_AUTHOR),
+            "legacyParent" => base.join(LEGACY_APP_AUTHOR),
+            "lookalike" => base.join(format!("{LEGACY_APP_AUTHOR}2")).join(APP_NAME),
+            other => panic!("unknown path token {other:?}"),
+        };
+        rest.split('/')
+            .filter(|segment| !segment.is_empty())
+            .fold(root, |path, segment| {
+                path.join(match segment {
+                    "marker" => MOVE_MARKER,
+                    "lock" => MOVE_LOCK,
+                    other => other,
+                })
+            })
+    }
+
+    /// Directories a case makes unreadable, given their permissions back on
+    /// drop so a failed assertion leaves nothing undeletable behind.
+    struct Unreadable(Vec<PathBuf>);
+
+    impl Unreadable {
+        /// `None` where the case cannot be set up: not unix, or permissions
+        /// that are not enforced (running as root).
+        fn make(dirs: Vec<PathBuf>) -> Option<Self> {
+            if dirs.is_empty() {
+                return Some(Self(dirs));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                for dir in &dirs {
+                    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+                }
+                let guard = Self(dirs);
+                if guard.0.iter().any(|dir| std::fs::read_dir(dir).is_ok()) {
+                    return None;
+                }
+                Some(guard)
+            }
+            #[cfg(not(unix))]
+            {
+                drop(dirs);
+                None
+            }
+        }
+    }
+
+    impl Drop for Unreadable {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            for dir in &self.0 {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+
+    /// The local data folder obeys the legacy folder rule: every resolution
+    /// state of the shared table, built under the LOCAL base, puts it in the
+    /// folder the table names. The table needs no row of its own for it,
+    /// because each case describes one base and the local base was already
+    /// one (its cache lives there).
+    #[test]
+    fn the_local_data_folder_follows_every_resolution_case_of_the_local_base() {
+        let table: serde_json::Value =
+            serde_json::from_str(include_str!("app_folder/resolution-cases.json")).unwrap();
+        let cases = table["resolution"].as_array().expect("resolution cases");
+        assert!(cases.len() >= 8, "the table lost resolution cases");
+        let strings = |case: &serde_json::Value, key: &str| -> Vec<String> {
+            case[key]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| item.as_str().unwrap().to_owned())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let roaming = tempfile::tempdir().unwrap();
+            let local = tempfile::tempdir().unwrap();
+            for spec in strings(case, "before") {
+                let path = case_path(local.path(), &spec);
+                if spec.ends_with('/') {
+                    std::fs::create_dir_all(&path).unwrap();
+                } else {
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(&path, &spec).unwrap();
+                }
+            }
+            let unreadable = strings(case, "unreadable")
+                .iter()
+                .map(|spec| case_path(local.path(), spec))
+                .collect();
+            let Some(_unreadable) = Unreadable::make(unreadable) else {
+                eprintln!("skipped here: {name}");
+                continue;
+            };
+            let resolved = case_path(local.path(), case["resolves"].as_str().unwrap());
+            let dirs = windows_dirs(roaming.path(), local.path());
+            assert_eq!(
+                dirs.local_data,
+                resolved.join("data"),
+                "{name}: the local data folder is not in the folder the rule resolves"
+            );
+            assert_eq!(dirs.cache, resolved.join("cache"), "{name}");
+        }
+    }
+
+    /// A legacy local folder is held while a resolver answers with it, so the
+    /// daemon cannot move a model folder out from under a process using it;
+    /// once nothing holds it, the move takes the folder whole and the layout
+    /// follows it.
+    #[test]
+    fn the_local_data_folder_is_held_and_then_moved_with_the_local_base() {
+        use crate::app_folder::{move_for_process, Pins, MOVE_MARKER, PRODUCTION_OPS};
+        let roaming = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        let legacy = case_path(local.path(), "legacy");
+        let model = std::path::Path::new("dictation")
+            .join("models")
+            .join("example")
+            .join("model.bin");
+        std::fs::create_dir_all(legacy.join("data").join(model.parent().unwrap())).unwrap();
+        std::fs::write(legacy.join("data").join(&model), b"weights").unwrap();
+
+        let pins = Pins::new();
+        let dirs = windows_platform_dirs(roaming.path(), local.path(), false, &pins);
+        assert_eq!(dirs.local_data, legacy.join("data"));
+        assert!(
+            !pins.is_empty(),
+            "a resolver answering with the legacy local folder did not hold it"
+        );
+
+        let ops = crate::app_folder::MoveOps {
+            rename: PRODUCTION_OPS.rename,
+            retry_delays: &[],
+        };
+        let bases = || Some((roaming.path().to_path_buf(), local.path().to_path_buf()));
+        // Each report is dropped at the end of its statement: a report keeps
+        // the locks of the legacy folders it still resolves, and the first
+        // one still resolves this one.
+        let first = move_for_process(None, bases, &ops)
+            .local
+            .unwrap()
+            .outcome
+            .token();
+        assert_eq!(first, "in-use");
+        assert!(legacy.join("data").join(&model).is_file());
+
+        drop(pins);
+        let second = move_for_process(None, bases, &ops)
+            .local
+            .unwrap()
+            .outcome
+            .token();
+        assert_eq!(second, "moved");
+        let current = case_path(local.path(), "current");
+        let dirs = windows_dirs(roaming.path(), local.path());
+        assert_eq!(dirs.local_data, current.join("data"));
+        assert_eq!(
+            std::fs::read(dirs.local_data.join(&model)).unwrap(),
+            b"weights"
+        );
+        assert!(
+            !current.join(MOVE_MARKER).exists(),
+            "the local base holds no stored paths, so its move leaves no marker"
+        );
     }
 
     #[test]
