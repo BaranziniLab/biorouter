@@ -73,7 +73,7 @@ use super::types::{
 };
 use crate::config::Config;
 use crate::privacy::affiliation::{owners_compatible, InstitutionId};
-use crate::privacy::alt_provider::assert_alt_tier_allowed;
+use crate::privacy::alt_provider::{assert_alt_tier_allowed, DownwardAdvice};
 use crate::privacy::{ProviderTier, SessionClassification};
 use crate::providers::decision::catalog::{rank_local_first, ConfiguredDecisionModels};
 use crate::session::SessionManager;
@@ -90,8 +90,47 @@ pub const MAX_BATCH_CHUNKS: usize = 1_000;
 const TOKEN_ESTIMATE_MARGIN: f64 = 1.15;
 /// Tokens each question adds beyond its own text (type, separators).
 const PER_QUESTION_OVERHEAD: usize = 8;
-/// The env key a refusal names as the way out.
+/// The env key a refusal names as the way out when the configured default
+/// chose the model.
 const MODEL_KEY: &str = "BIOROUTER_DECISION_MODEL";
+/// The way out a refusal names when the caller named the model (a `decide`
+/// call, a monitor, a gate, the chat's own default), where setting the
+/// configured default would not change the model asked.
+const NAMED_MODEL_ADVICE: &str = "Name a private decision model (decision_models lists them)";
+
+/// Where the model a decision runs on came from, which decides what a privacy
+/// refusal advises. A caller that resolves the model itself and pins it for a
+/// run (`biorouter decide`) takes this from [`Self::of`] before it pins, and
+/// hands it to [`DecisionService::decide_pinned`]: to the service a pinned
+/// model is a named one, so without it a model the configured default chose
+/// would be refused with the advice for a model the caller named.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ModelSource {
+    /// The caller named it, or the chat's own default did.
+    Named,
+    /// The configured default, or the automatic choice.
+    #[default]
+    Configured,
+}
+
+impl ModelSource {
+    /// Where the model [`DecisionService::resolve`] opens for `session` and
+    /// `wanted` comes from, by its own order.
+    pub fn of(session: Option<&DecisionSession>, wanted: Option<&DecisionModelRef>) -> Self {
+        if wanted.is_some() || matches!(chat_default_model(session), Ok(Some(_))) {
+            Self::Named
+        } else {
+            Self::Configured
+        }
+    }
+
+    fn advice(self) -> DownwardAdvice<'static> {
+        match self {
+            Self::Named => DownwardAdvice::Instead(NAMED_MODEL_ADVICE),
+            Self::Configured => DownwardAdvice::SetKey(MODEL_KEY),
+        }
+    }
+}
 
 /// The chat a decision is about, as its caller sampled it.
 #[derive(Clone)]
@@ -259,6 +298,15 @@ pub trait DecisionUseGate: Send + Sync {
         session: &DecisionSession,
         model: &dyn DecisionModel,
     ) -> DecisionResult<()>;
+
+    /// Why `session` may reach no decision model at all, whichever is named,
+    /// or `None`. A listing ([`DecisionService::models_for`]) gives it as
+    /// every model's reason, so a picker says what [`Self::check`] would
+    /// refuse before anything is tried. A gate whose rule depends on the
+    /// model answers `None` here and refuses in `check`.
+    async fn session_refusal(&self, _session: &DecisionSession) -> Option<String> {
+        None
+    }
 }
 
 /// Refuses a decision in a Crew-scoped chat: a grant fixes the one model the
@@ -273,21 +321,34 @@ impl DecisionUseGate for CrewUseGate {
         session: &DecisionSession,
         _model: &dyn DecisionModel,
     ) -> DecisionResult<()> {
-        let manager = crate::crew::manager().map_err(|e| {
-            DecisionError::Refused(format!(
-                "The Crew registry could not be read, so no decision model was asked: {e}"
-            ))
-        })?;
-        if manager.is_scoped_session(&session.session_id).await {
-            return Err(DecisionError::Refused(
-                "This chat works under a Crew grant, which fixes the one model its content may \
-                 reach, so a decision model cannot read it."
-                    .to_string(),
-            ));
+        match self.session_refusal(session).await {
+            Some(reason) => Err(DecisionError::Refused(reason)),
+            None => Ok(()),
         }
-        Ok(())
+    }
+
+    /// The Crew rule holds for every model, so it is the session's: one
+    /// sentence for the refusal and for every listing.
+    async fn session_refusal(&self, session: &DecisionSession) -> Option<String> {
+        let manager = match crate::crew::manager() {
+            Ok(manager) => manager,
+            Err(e) => {
+                return Some(format!(
+                    "The Crew registry could not be read, so no decision model was asked: {e}"
+                ))
+            }
+        };
+        manager
+            .is_scoped_session(&session.session_id)
+            .await
+            .then(|| CREW_SCOPED_REFUSAL.to_string())
     }
 }
+
+/// Why a Crew-scoped chat reaches no decision model.
+pub const CREW_SCOPED_REFUSAL: &str =
+    "This chat works under a Crew grant, which fixes the one model its content may reach, so a \
+     decision model cannot read it.";
 
 /// What happened to one decision call, for the decision log.
 #[derive(
@@ -394,6 +455,11 @@ struct Attempt<'a> {
     /// the chat's (privacy or Crew), and the batch logs one row for every
     /// chunk it stopped.
     defer_refusal: bool,
+    /// Chunks a batch's one stopped row stands for (zero reads as one), so the
+    /// turn's tally counts each of them as the tool's own result does.
+    stopped_chunks: usize,
+    /// Where the model came from, for what a privacy refusal advises.
+    source: ModelSource,
 }
 
 impl<'a> Attempt<'a> {
@@ -410,6 +476,7 @@ impl<'a> Attempt<'a> {
 struct Batch<'a> {
     session: Option<&'a DecisionSession>,
     model: &'a dyn DecisionModel,
+    source: ModelSource,
     questions: &'a IndexMap<String, Question>,
     batch_id: &'a str,
     stopped: Mutex<Stopped>,
@@ -500,32 +567,57 @@ impl DecisionService {
     }
 
     /// [`Self::models`], each with the reason `session` may not use it, or
-    /// `None` when it may: Gate H's downward rule and affiliation, answered by
-    /// the same check [`Self::decide`] asks before it sends anything, then
-    /// the server's own refusal to load the model
+    /// `None` when it may: the workspace's own rule for the chat (a Crew grant,
+    /// [`DecisionUseGate::session_refusal`]), then Gate H's downward rule and
+    /// affiliation, answered by the same checks [`Self::decide`] asks before
+    /// it sends anything, then the server's own refusal to load the model
     /// ([`DecisionModelEntry::load_refusal`]), which holds with or without a
     /// session. With no session every model that loads is usable. Advisory
-    /// only, for pickers and listings: the gate is asked again, on the
+    /// only, for pickers and listings: the gates are asked again, on the
     /// classification as it stands then, before every call, and a model the
-    /// caller names is still opened and asked.
+    /// caller names is still opened and asked. A row is a model one would
+    /// name, so its privacy reason advises naming a private one.
     pub async fn models_for(
         &self,
         session: Option<&DecisionSession>,
     ) -> Vec<(super::model::DecisionModelEntry, Option<String>)> {
+        let workspace = match session {
+            Some(session) => self.session_refusal(session).await,
+            None => None,
+        };
         self.models()
             .await
             .into_iter()
             .map(|entry| {
-                let reason = session
-                    .and_then(|session| {
-                        privacy_allows(session, &entry.display_name, entry.tier, entry.affiliation)
+                let reason = workspace
+                    .clone()
+                    .or_else(|| {
+                        session.and_then(|session| {
+                            privacy_allows(
+                                session,
+                                &entry.display_name,
+                                entry.tier,
+                                entry.affiliation,
+                                ModelSource::Named,
+                            )
                             .err()
                             .map(|error| error.to_string())
+                        })
                     })
                     .or_else(|| entry.load_refusal.clone());
                 (entry, reason)
             })
             .collect()
+    }
+
+    /// Why `session` may reach no decision model at all, whichever is named
+    /// or chosen for it (a Crew grant, [`DecisionUseGate::session_refusal`]),
+    /// or `None`. [`Self::models_for`] gives it as every row's reason; this is
+    /// for a choice that names no model, such as a monitor left on the chat's
+    /// decision model, which no row stands for. Advisory, as a listing is:
+    /// every call asks the gate again.
+    pub async fn session_refusal(&self, session: &DecisionSession) -> Option<String> {
+        self.use_gate.session_refusal(session).await
     }
 
     /// Answer `request`'s questions over its state.
@@ -539,7 +631,25 @@ impl DecisionService {
         model: Option<&DecisionModelRef>,
         request: &DecisionRequest,
     ) -> DecisionResult<Vec<Decision>> {
-        self.decide_single(model, request, Attempt::single(session, None))
+        let source = ModelSource::of(session, model);
+        self.decide_single(model, request, Attempt::single(session, None), source)
+            .await
+    }
+
+    /// [`Self::decide`] on `model`, which the caller resolved by the service's
+    /// own order ([`Self::model_entry_for`], [`Self::resolve_for`]) and pinned
+    /// for a run, with `source` saying where it came from
+    /// ([`ModelSource::of`] for what the caller named), so a privacy refusal
+    /// advises what would change the model rather than treating every pinned
+    /// model as one the caller named.
+    pub async fn decide_pinned(
+        &self,
+        session: Option<&DecisionSession>,
+        model: &DecisionModelRef,
+        source: ModelSource,
+        request: &DecisionRequest,
+    ) -> DecisionResult<Vec<Decision>> {
+        self.decide_single(Some(model), request, Attempt::single(session, None), source)
             .await
     }
 
@@ -556,8 +666,14 @@ impl DecisionService {
         request: &DecisionRequest,
         request_id: &str,
     ) -> DecisionResult<Vec<Decision>> {
-        self.decide_single(model, request, Attempt::single(session, Some(request_id)))
-            .await
+        let source = ModelSource::of(session, model);
+        self.decide_single(
+            model,
+            request,
+            Attempt::single(session, Some(request_id)),
+            source,
+        )
+        .await
     }
 
     async fn decide_single(
@@ -565,6 +681,7 @@ impl DecisionService {
         model: Option<&DecisionModelRef>,
         request: &DecisionRequest,
         attempt: Attempt<'_>,
+        source: ModelSource,
     ) -> DecisionResult<Vec<Decision>> {
         request.validate().map_err(DecisionError::Invalid)?;
         let resolved = match self.resolve(attempt.session, model).await {
@@ -582,7 +699,8 @@ impl DecisionService {
                 return Err(error);
             }
         };
-        self.decide_one(resolved.as_ref(), request, attempt).await
+        self.decide_one(resolved.as_ref(), request, Attempt { source, ..attempt })
+            .await
     }
 
     /// Answer the same questions over many states, one request per chunk, with
@@ -605,6 +723,21 @@ impl DecisionService {
             .await
     }
 
+    /// [`Self::decide_many`] on a model the caller pinned, with where it came
+    /// from, as [`Self::decide_pinned`] is to [`Self::decide`].
+    pub async fn decide_many_pinned(
+        &self,
+        session: Option<&DecisionSession>,
+        model: &DecisionModelRef,
+        source: ModelSource,
+        questions: &IndexMap<String, Question>,
+        chunks: Vec<DecisionChunk>,
+    ) -> DecisionResult<Vec<ChunkOutcome>> {
+        let batch_id = uuid::Uuid::now_v7().to_string();
+        self.decide_batch_from(session, Some(model), source, questions, chunks, &batch_id)
+            .await
+    }
+
     /// [`Self::decide_many`] with the caller's own batch id, so the caller can
     /// name the batch (the `decide` tool's result does, and the decision
     /// history filters on it) before or after it runs.
@@ -612,6 +745,20 @@ impl DecisionService {
         &self,
         session: Option<&DecisionSession>,
         model: Option<&DecisionModelRef>,
+        questions: &IndexMap<String, Question>,
+        chunks: Vec<DecisionChunk>,
+        batch_id: &str,
+    ) -> DecisionResult<Vec<ChunkOutcome>> {
+        let source = ModelSource::of(session, model);
+        self.decide_batch_from(session, model, source, questions, chunks, batch_id)
+            .await
+    }
+
+    async fn decide_batch_from(
+        &self,
+        session: Option<&DecisionSession>,
+        model: Option<&DecisionModelRef>,
+        source: ModelSource,
         questions: &IndexMap<String, Question>,
         chunks: Vec<DecisionChunk>,
         batch_id: &str,
@@ -644,7 +791,8 @@ impl DecisionService {
         let checks = async {
             self.check_kinds(resolved.as_ref(), &caps, questions)?;
             if let Some(session) = session {
-                self.check_privacy(session, resolved.as_ref()).await?;
+                self.check_privacy(session, resolved.as_ref(), source)
+                    .await?;
             }
             Ok(())
         };
@@ -665,6 +813,7 @@ impl DecisionService {
         let batch = Batch {
             session,
             model: resolved.as_ref(),
+            source,
             questions,
             batch_id,
             stopped: Mutex::new(Stopped::default()),
@@ -674,36 +823,47 @@ impl DecisionService {
             .buffered(parallel)
             .collect::<Vec<_>>()
             .await;
+        self.record_stopped(&batch, total).await;
+        Ok(outcomes)
+    }
+
+    /// The one row for every chunk of `batch` a refusal partway stopped, when
+    /// one did. It names them rather than holding them, because none was sent.
+    async fn record_stopped(&self, batch: &Batch<'_>, total: usize) {
         let Stopped {
             error,
             chunks: mut held,
-        } = batch
-            .stopped
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(error) = &error {
-            held.sort_by_key(|(index, _)| *index);
-            let ids: Vec<&str> = held.iter().map(|(_, id)| id.as_str()).collect();
-            let request = DecisionRequest {
-                questions: questions.clone(),
-                context: DecisionContext::Text(unsent_partway_text(total, &ids)),
-            };
-            let attempt = Attempt {
-                session,
-                batch_id: Some(batch_id),
-                ..Attempt::default()
-            };
-            self.record_failure(
-                session,
-                Some(resolved.as_ref()),
-                &request,
-                error,
-                Some(&attempt),
-                DecisionUsage::default(),
-            )
-            .await;
-        }
-        Ok(outcomes)
+        } = std::mem::take(
+            &mut *batch
+                .stopped
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let Some(error) = error else {
+            return;
+        };
+        held.sort_by_key(|(index, _)| *index);
+        let ids: Vec<&str> = held.iter().map(|(_, id)| id.as_str()).collect();
+        let request = DecisionRequest {
+            questions: batch.questions.clone(),
+            context: DecisionContext::Text(unsent_partway_text(total, &ids)),
+        };
+        let attempt = Attempt {
+            session: batch.session,
+            batch_id: Some(batch.batch_id),
+            stopped_chunks: held.len(),
+            source: batch.source,
+            ..Attempt::default()
+        };
+        self.record_failure(
+            batch.session,
+            Some(batch.model),
+            &request,
+            &error,
+            Some(&attempt),
+            DecisionUsage::default(),
+        )
+        .await;
     }
 
     /// One chunk of a batch. A chunk the chat's privacy or Crew rule refuses
@@ -736,6 +896,8 @@ impl DecisionService {
                     chunk_id: Some(&chunk.id),
                     request_id: None,
                     defer_refusal: true,
+                    stopped_chunks: 0,
+                    source: batch.source,
                 };
                 self.decide_one(batch.model, &request, attempt).await
             }
@@ -934,6 +1096,7 @@ impl DecisionService {
         &self,
         session: &DecisionSession,
         model: &dyn DecisionModel,
+        source: ModelSource,
     ) -> DecisionResult<()> {
         let mut effective = session.clone();
         if let Some(live) = &session.live {
@@ -949,6 +1112,7 @@ impl DecisionService {
             &model.display_name(),
             model.tier(),
             model.affiliation(),
+            source,
         )?;
         self.use_gate.check(&effective, model).await
     }
@@ -1066,7 +1230,7 @@ impl DecisionService {
             usage,
             privacy_enforced: session.is_some_and(|s| s.enforced),
         };
-        self.record(entry, Some(&request_id)).await;
+        self.record(entry, Some(&request_id), 1).await;
         Ok(decisions)
     }
 
@@ -1081,7 +1245,7 @@ impl DecisionService {
     ) -> DecisionResult<()> {
         self.check_kinds(model, caps, &request.questions)?;
         if let Some(session) = attempt.session {
-            self.check_privacy(session, model).await?;
+            self.check_privacy(session, model, attempt.source).await?;
         }
         check_size(model, caps, request, attempt.chunk_id).await
     }
@@ -1161,6 +1325,7 @@ impl DecisionService {
         let attempt = Attempt {
             session,
             batch_id: Some(batch_id),
+            stopped_chunks: chunks.len(),
             ..Attempt::default()
         };
         self.record_failure(
@@ -1213,14 +1378,18 @@ impl DecisionService {
             usage,
             privacy_enforced: session.is_some_and(|s| s.enforced),
         };
-        self.record(entry, attempt.and_then(|a| a.request_id)).await;
+        let chunks = attempt.map_or(1, |a| a.stopped_chunks);
+        self.record(entry, attempt.and_then(|a| a.request_id), chunks)
+            .await;
     }
 
     /// Hand `entry` to the sink, under `id` when the caller chose one.
-    async fn record(&self, entry: DecisionLogEntry, id: Option<&str>) {
+    /// `chunks` is how many chunks the row stands for: one, or every chunk of
+    /// a batch the row records as stopped.
+    async fn record(&self, entry: DecisionLogEntry, id: Option<&str>, chunks: usize) {
         // Counted per turn and origin in process, for the one transcript
         // marker a turn gets; never one row per call (owner rule A1).
-        super::monitor::note_decision(&entry);
+        super::monitor::note_decision_chunks(&entry, chunks.max(1) as u64);
         let sink = self.sink.read().ok().and_then(|sink| sink.clone());
         if let Some(sink) = sink {
             let written = match id {
@@ -1240,6 +1409,7 @@ fn privacy_allows(
     name: &str,
     tier: ProviderTier,
     affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+    source: ModelSource,
 ) -> DecisionResult<()> {
     assert_alt_tier_allowed(
         "this decision",
@@ -1247,7 +1417,7 @@ fn privacy_allows(
         tier,
         session.classification,
         session.enforced,
-        MODEL_KEY,
+        source.advice(),
     )
     .map_err(|e| DecisionError::Refused(e.to_string()))?;
     if session.enforced && !owners_compatible(affiliation, &session.affiliations) {
@@ -1275,7 +1445,14 @@ fn automatic_choice<'a>(
         .filter(|entry| entry.load_refusal.is_none())
         .find(|entry| {
             session.is_none_or(|session| {
-                privacy_allows(session, &entry.display_name, entry.tier, entry.affiliation).is_ok()
+                privacy_allows(
+                    session,
+                    &entry.display_name,
+                    entry.tier,
+                    entry.affiliation,
+                    ModelSource::Configured,
+                )
+                .is_ok()
             })
         })
 }
@@ -1401,43 +1578,86 @@ fn shown_ids(ids: &[&str]) -> String {
     shown.join(", ")
 }
 
+/// The shared o200k counter once a size check (or [`load_token_counter`])
+/// has loaded it, so a window can be fitted by the check's own count without
+/// waiting ([`estimate_tokens_now`]).
+static LOADED_COUNTER: std::sync::OnceLock<Arc<crate::token_counter::TokenCounter>> =
+    std::sync::OnceLock::new();
+
 /// The token estimate for a request: the state and every question's text,
 /// through the shared o200k counter with the non-OpenAI margin.
 pub async fn estimate_tokens(request: &DecisionRequest) -> usize {
-    let mut text = request.context.render_text();
-    for (name, question) in &request.questions {
-        text.push('\n');
-        text.push_str(name);
-        text.push('\n');
-        text.push_str(&question.instructions);
-        match &question.kind {
-            DecisionKind::Binary {} => {}
-            DecisionKind::Choice { options } => {
-                for (option, description) in options {
-                    text.push('\n');
-                    text.push_str(option);
-                    if let Some(description) = description {
-                        text.push_str(": ");
-                        text.push_str(description);
-                    }
-                }
-            }
-            DecisionKind::Score { levels } => {
-                for level in levels {
-                    text.push('\n');
-                    text.push_str(level);
-                }
-            }
-        }
-    }
+    let text = request_text(request);
     let raw = match crate::token_counter::shared_token_counter().await {
-        Ok(counter) => counter.count_tokens(&text),
+        Ok(counter) => LOADED_COUNTER.get_or_init(|| counter).count_tokens(&text),
         // The tokenizer failed to load: the four-characters-a-token estimate
         // the context budget uses, which errs low, so the margin below matters.
         Err(_) => crate::context_budget::estimate_tokens(&text),
     } + extra_digit_tokens(&text);
-    ((raw as f64) * TOKEN_ESTIMATE_MARGIN).ceil() as usize
-        + PER_QUESTION_OVERHEAD * request.questions.len()
+    with_margin(raw, request.questions.len())
+}
+
+/// [`estimate_tokens`] without waiting, for fitting a state while a lock is
+/// held: the same count once the shared tokenizer is loaded, and before that
+/// three characters a token, which counts more than the four the check falls
+/// back to, with the same per-digit charge, margin and overhead.
+pub(crate) fn estimate_tokens_now(request: &DecisionRequest) -> usize {
+    let text = request_text(request);
+    let raw = match LOADED_COUNTER.get() {
+        Some(counter) => counter.count_tokens(&text),
+        None => text.chars().count().div_ceil(3),
+    } + extra_digit_tokens(&text);
+    with_margin(raw, request.questions.len())
+}
+
+/// Load the shared tokenizer for [`estimate_tokens_now`]. A tokenizer that
+/// cannot load leaves the three-characters-a-token count in place.
+pub(crate) async fn load_token_counter() {
+    if let Ok(counter) = crate::token_counter::shared_token_counter().await {
+        LOADED_COUNTER.get_or_init(|| counter);
+    }
+}
+
+/// The text [`estimate_tokens`] counts: the state, then every question.
+fn request_text(request: &DecisionRequest) -> String {
+    let mut text = request.context.render_text();
+    for (name, question) in &request.questions {
+        push_question_text(&mut text, name, question);
+    }
+    text
+}
+
+/// A raw count with the non-OpenAI factor and the per-question overhead.
+fn with_margin(raw: usize, questions: usize) -> usize {
+    ((raw as f64) * TOKEN_ESTIMATE_MARGIN).ceil() as usize + PER_QUESTION_OVERHEAD * questions
+}
+
+/// A question's text as [`estimate_tokens`] counts it: its name, its
+/// instructions and its options or levels, one to a line.
+fn push_question_text(text: &mut String, name: &str, question: &Question) {
+    text.push('\n');
+    text.push_str(name);
+    text.push('\n');
+    text.push_str(&question.instructions);
+    match &question.kind {
+        DecisionKind::Binary {} => {}
+        DecisionKind::Choice { options } => {
+            for (option, description) in options {
+                text.push('\n');
+                text.push_str(option);
+                if let Some(description) = description {
+                    text.push_str(": ");
+                    text.push_str(description);
+                }
+            }
+        }
+        DecisionKind::Score { levels } => {
+            for level in levels {
+                text.push('\n');
+                text.push_str(level);
+            }
+        }
+    }
 }
 
 /// The tokens a per-digit tokenizer spends on `text`'s numbers beyond what
@@ -1445,8 +1665,10 @@ pub async fn estimate_tokens(request: &DecisionRequest) -> usize {
 /// Qwen-family tokenizers decision models use give every digit its own, so
 /// the flat margin alone under-counted lab values: live on 2026-11-05, a labs
 /// note this estimate put at joey-1's window was refused by Baseten as over
-/// it (HTTP 422), while prose at the same estimate was well inside.
-fn extra_digit_tokens(text: &str) -> usize {
+/// it (HTTP 422), while prose at the same estimate was well inside. A window
+/// fitted to a model ([`state_budget_tokens`], the monitor's fit) charges
+/// digits by this same count, so a fitted window passes the check.
+pub(crate) fn extra_digit_tokens(text: &str) -> usize {
     let mut extra = 0;
     let mut run = 0usize;
     for ch in text.chars().chain(std::iter::once(' ')) {
@@ -1469,31 +1691,21 @@ pub fn context_margin(context_tokens: usize) -> usize {
 /// The tokens a state may take beside `questions` in a model of
 /// `context_tokens`, by the arithmetic the size check before sending applies
 /// (its margin, its per-question overhead and its non-OpenAI factor), with
-/// the questions' own text counted at three characters a token. For building
-/// a state that fits, such as a monitor's window; the check still judges.
+/// the questions' own text counted at three characters a token plus the
+/// check's per-digit charge ([`extra_digit_tokens`]). For building a state
+/// that fits, such as a monitor's window; the check still judges.
 pub fn state_budget_tokens(context_tokens: usize, questions: &IndexMap<String, Question>) -> usize {
     let overhead = context_margin(context_tokens) + PER_QUESTION_OVERHEAD * questions.len();
     let estimated_room = context_tokens.saturating_sub(overhead) as f64 / TOKEN_ESTIMATE_MARGIN;
     let question_tokens: usize = questions
         .iter()
-        .map(|(name, question)| (name.len() + question_text_len(question)).div_ceil(3))
+        .map(|(name, question)| {
+            let mut text = String::new();
+            push_question_text(&mut text, name, question);
+            text.len().div_ceil(3) + extra_digit_tokens(&text)
+        })
         .sum();
     (estimated_room.floor() as usize).saturating_sub(question_tokens)
-}
-
-/// Bytes of a question's text as [`estimate_tokens`] renders it.
-fn question_text_len(question: &Question) -> usize {
-    let kind = match &question.kind {
-        DecisionKind::Binary {} => 0,
-        DecisionKind::Choice { options } => options
-            .iter()
-            .map(|(option, description)| {
-                option.len() + 3 + description.as_ref().map_or(0, String::len)
-            })
-            .sum(),
-        DecisionKind::Score { levels } => levels.iter().map(|level| level.len() + 1).sum(),
-    };
-    question.instructions.len() + 2 + kind
 }
 
 async fn check_size(
@@ -1788,6 +2000,130 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].outcome, DecisionOutcome::Refused);
         assert!(rows[0].privacy_enforced);
+    }
+
+    /// The refusal's way out follows where the model came from: a model the
+    /// caller named (a monitor, a gate, a `decide` call, the chat's own
+    /// default, a listing row) is refused with what to name instead, since
+    /// the configured default would not change it; only a model the
+    /// configured default chose names that setting.
+    #[tokio::test]
+    async fn a_refusal_advises_by_where_the_public_model_came_from() {
+        let named_advice =
+            "Name a private decision model (decision_models lists them), or start this work in \
+             a public chat.";
+        let key_advice =
+            "Set BIOROUTER_DECISION_MODEL to a private model, or start this work in a public chat.";
+        let cloud = DecisionModelRef::new("test_decision", "cloud");
+        let (svc, calls) = service(
+            vec![entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let refusal = |result: DecisionResult<Vec<Decision>>| match result {
+            Err(DecisionError::Refused(why)) => why,
+            other => panic!("not refused: {other:?}"),
+        };
+
+        let why = refusal(
+            svc.decide(Some(&private_chat()), Some(&cloud), &request("x", None))
+                .await,
+        );
+        assert!(why.ends_with(named_advice), "{why}");
+        let batch = svc
+            .decide_batch(
+                Some(&private_chat()),
+                Some(&cloud),
+                &request("", None).questions,
+                chunks(2),
+                "batch-named",
+            )
+            .await;
+        assert!(
+            matches!(&batch, Err(DecisionError::Refused(why)) if why.ends_with(named_advice)),
+            "{batch:?}"
+        );
+        let mut chat_default = private_chat();
+        chat_default.chat_default_model = Ok(Some(cloud.clone()));
+        let why = refusal(
+            svc.decide(Some(&chat_default), None, &request("x", None))
+                .await,
+        );
+        assert!(why.ends_with(named_advice), "{why}");
+        let listed = svc.models_for(Some(&private_chat())).await;
+        let why = listed[0].1.as_deref().expect("a public model is refused");
+        assert!(why.ends_with(named_advice), "{why}");
+
+        let (configured, _) = service(
+            vec![entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let configured = configured.with_default_model(Some(cloud.clone()));
+        let why = refusal(
+            configured
+                .decide(Some(&private_chat()), None, &request("x", None))
+                .await,
+        );
+        assert!(why.ends_with(key_advice), "{why}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing may be sent");
+    }
+
+    /// A workspace rule that holds for the whole chat (a Crew grant) is every
+    /// model's reason in a listing, ahead of privacy and a server's refusal to
+    /// load, so a picker says what every call would be refused with.
+    #[tokio::test]
+    async fn a_listing_gives_the_workspace_gates_reason_for_every_model() {
+        struct Scoped;
+        #[async_trait]
+        impl DecisionUseGate for Scoped {
+            async fn check(
+                &self,
+                s: &DecisionSession,
+                _: &dyn DecisionModel,
+            ) -> DecisionResult<()> {
+                match self.session_refusal(s).await {
+                    Some(why) => Err(DecisionError::Refused(why)),
+                    None => Ok(()),
+                }
+            }
+            async fn session_refusal(&self, session: &DecisionSession) -> Option<String> {
+                (session.session_id == "scoped").then(|| CREW_SCOPED_REFUSAL.to_string())
+            }
+        }
+        let mut stale = entry("stale", ProviderTier::Private, true);
+        stale.load_refusal = Some("Ollama cannot load this copy.".into());
+        let (svc, calls) = service(
+            vec![
+                entry("cloud", ProviderTier::Public, false),
+                entry("local", ProviderTier::Private, true),
+                stale,
+            ],
+            Duration::ZERO,
+        );
+        let svc = svc.with_use_gate(Arc::new(Scoped));
+        let scoped = DecisionSession::new("scoped", SessionClassification::Private, true);
+        let listed = svc.models_for(Some(&scoped)).await;
+        assert_eq!(listed.len(), 3);
+        assert!(
+            listed
+                .iter()
+                .all(|(_, why)| why.as_deref() == Some(CREW_SCOPED_REFUSAL)),
+            "{listed:?}"
+        );
+        let other = DecisionSession::new("other", SessionClassification::Private, true);
+        let listed = svc.models_for(Some(&other)).await;
+        let local = listed.iter().find(|(e, _)| e.model == "local").unwrap();
+        assert_eq!(local.1, None, "another chat keeps its own reasons");
+        let named = DecisionModelRef::new("test_decision", "local");
+        let err = svc
+            .decide(Some(&scoped), Some(&named), &request("x", None))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            CREW_SCOPED_REFUSAL,
+            "the call says the same"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -2142,9 +2478,10 @@ mod tests {
         let log = Arc::new(Log::default());
         svc.set_sink(log.clone());
         let named = DecisionModelRef::new("test_decision", "cloud");
+        let turn = "turn-refused-before-sending";
         let err = svc
             .decide_batch(
-                Some(&private_chat()),
+                Some(&private_chat().with_turn(Some(turn.into()))),
                 Some(&named),
                 &request("", None).questions,
                 chunks(50),
@@ -2154,6 +2491,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, DecisionError::Refused(_)), "{err:?}");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing may be sent");
+        // The turn's marker counts every chunk the one row stands for.
+        let tally = super::super::monitor::take_turn_tally(turn);
+        assert_eq!(tally.len(), 1, "{tally:?}");
+        assert_eq!((tally[0].count, tally[0].errors), (50, 50));
         let rows = log.0.lock().unwrap();
         assert_eq!(rows.len(), 1, "one row for the batch");
         let row = &rows[0];
@@ -2250,8 +2591,10 @@ mod tests {
         let log = Arc::new(Log::default());
         svc.set_sink(log.clone());
         let live = Arc::new(RaisedAfter(AtomicUsize::new(0)));
-        let session =
-            DecisionSession::new("s", SessionClassification::Public, true).with_live(live.clone());
+        let turn = "turn-raised-mid-batch";
+        let session = DecisionSession::new("s", SessionClassification::Public, true)
+            .with_live(live.clone())
+            .with_turn(Some(turn.into()));
         let outcomes = svc
             .decide_batch(
                 Some(&session),
@@ -2305,6 +2648,11 @@ mod tests {
             live.0.load(Ordering::SeqCst) < 9,
             "the stopped rest is not read again chunk by chunk"
         );
+        // The marker names the batch's 8 chunks, as the tool's result does,
+        // with every stopped one an error, not one error for the row.
+        let tally = super::super::monitor::take_turn_tally(turn);
+        assert_eq!(tally.len(), 1, "{tally:?}");
+        assert_eq!((tally[0].count, tally[0].errors), (8, stopped.len() as u64));
     }
 
     /// Every decision of one request carries that request's id, and the log
@@ -2832,5 +3180,15 @@ mod tests {
         assert!(budget < 4_096 - context_margin(4_096));
         assert!(budget > 3_000, "{budget}");
         assert_eq!(state_budget_tokens(100, &questions), 0, "never negative");
+
+        // A question's digits are charged as the size check charges them.
+        let asked = |instructions: &str| {
+            let mut questions = request("", None).questions;
+            questions[0].instructions = instructions.to_string();
+            state_budget_tokens(4_096, &questions)
+        };
+        let letters = asked("Is any lot number above abcdefghijkl?");
+        let digits = asked("Is any lot number above 123456789012?");
+        assert_eq!(letters - digits, extra_digit_tokens("123456789012"));
     }
 }

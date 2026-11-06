@@ -397,12 +397,14 @@ mod tests {
                 total_tokens: Some(1_200_600),
                 cost: Some(0.12),
                 has_unpriced: false,
+                has_unmetered: true,
             }),
         };
         let json = serde_json::to_value(&row).unwrap();
         assert_eq!(json["decisionRequests"], 600);
         assert_eq!(json["decisions"]["totalTokens"], 1_200_600);
         assert_eq!(json["decisions"]["hasUnpriced"], false);
+        assert_eq!(json["decisions"]["hasUnmetered"], true);
         row.decisions = None;
         assert!(serde_json::to_value(&row).unwrap()["decisions"].is_null());
     }

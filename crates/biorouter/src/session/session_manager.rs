@@ -1012,11 +1012,19 @@ pub struct DecisionUsageSubtotal {
     /// Billed tokens, or `None` when a request behind it reported neither count.
     pub total_tokens: Option<i64>,
     /// Dollar cost of the priced decision requests, or `None` when none is
-    /// priced (an Ollama decision model has no meter). Never "$0" for unknown.
+    /// priced. Never "$0" for unknown: `hasUnmetered` and `hasUnpriced` say
+    /// which kind of unpriced request is behind a `None`.
     pub cost: Option<f64>,
-    /// `true` when at least one decision request has no price. Unlike the
+    /// `true` when at least one request went to a hosted decision model
+    /// (Baseten) Biorouter has no price for, or reported incomplete counts:
+    /// the provider billed it at a rate Biorouter does not know. Unlike the
     /// bucket's own `hasUnpriced`, it says nothing about the chat totals.
     pub has_unpriced: bool,
+    /// `true` when at least one request went to a decision model with no
+    /// meter (a local Ollama model). It cost nothing, so it is "not metered",
+    /// never "unavailable".
+    #[serde(default)]
+    pub has_unmetered: bool,
 }
 
 /// One bucket of the usage report.
@@ -1234,11 +1242,16 @@ struct DecisionAcc {
     total_tokens: Option<i64>,
     cost_sum: f64,
     priced_any: bool,
+    /// A hosted request with no known price, or one priced from incomplete
+    /// counts.
     unpriced_any: bool,
+    /// An unpriced request to a decision model with no meter (Ollama), as
+    /// [`BucketAcc::unmetered_any`] tells it apart.
+    unmetered_any: bool,
 }
 
 impl DecisionAcc {
-    fn add(&mut self, row: &UsageGrainRow, price: &GrainPrice) {
+    fn add(&mut self, row: &UsageGrainRow, price: &GrainPrice, unmetered: bool) {
         let first_row = self.rows == 0;
         self.rows += 1;
         self.input_tokens += row.input_tokens;
@@ -1254,10 +1267,16 @@ impl DecisionAcc {
                 self.priced_any = true;
                 self.unpriced_any |= price.incomplete;
             }
+            // A local model's request is not metered; a Baseten request with
+            // no price was billed at a rate Biorouter does not know.
+            None if unmetered => self.unmetered_any = true,
             None => self.unpriced_any = true,
         }
     }
 
+    /// `cost` stays `None` unless something is priced, so a span of local
+    /// requests alone reads "not metered" (`hasUnmetered`) and a span of
+    /// unpriced Baseten requests reads "unavailable" (`hasUnpriced`), never $0.
     fn subtotal(&self) -> Option<DecisionUsageSubtotal> {
         (self.rows > 0).then(|| DecisionUsageSubtotal {
             input_tokens: self.input_tokens,
@@ -1266,6 +1285,7 @@ impl DecisionAcc {
             cost: (self.priced_any && !(self.unpriced_any && self.cost_sum == 0.0))
                 .then_some(self.cost_sum),
             has_unpriced: self.unpriced_any,
+            has_unmetered: self.unmetered_any,
         })
     }
 }
@@ -1301,7 +1321,7 @@ impl BucketAcc {
             provider.is_some_and(crate::providers::decision::chat::is_unmetered_decision_provider);
         if decision {
             self.decision_requests += row.turns;
-            self.decisions.add(row, &price);
+            self.decisions.add(row, &price, unmetered);
         } else {
             self.turns += row.turns;
         }
@@ -13068,7 +13088,11 @@ mod tests {
         assert_eq!(totals.total_tokens, Some(1_040_020));
         let decisions = totals.decisions.expect("a decision subtotal");
         assert_eq!(decisions.cost, None, "not metered is not $0");
-        assert!(decisions.has_unpriced);
+        assert!(decisions.has_unmetered, "a local model is not metered");
+        assert!(
+            !decisions.has_unpriced,
+            "nothing was billed at an unknown rate"
+        );
 
         // A plain Ollama chat model still marks the totals partial, as before.
         let chat_on_ollama = vec![
@@ -13124,7 +13148,33 @@ mod tests {
         let totals = totals_from_grain(&grain);
         assert!(approx(totals.cost, 1.40), "got {:?}", totals.cost);
         assert!(totals.has_unpriced, "billed dollars are missing");
-        assert!(totals.decisions.expect("a subtotal").has_unpriced);
+        let decisions = totals.decisions.expect("a subtotal");
+        assert_eq!(decisions.cost, None);
+        assert!(
+            decisions.has_unpriced,
+            "Baseten billed it at an unknown rate"
+        );
+        assert!(
+            !decisions.has_unmetered,
+            "a billed request is unavailable, never not metered"
+        );
+
+        // Beside a priced Baseten model and a local one, the line can say
+        // which part is unavailable and which is not metered.
+        let mixed = vec![
+            grain_row(
+                "baseten_decision",
+                "decision-models/baseten-mammoth-27b-latest",
+                1_200_000,
+                600,
+                600,
+            ),
+            grain_row("ollama_decision", "tev1:0.8b", 40_000, 20, 20),
+        ];
+        let decisions = totals_from_grain(&mixed).decisions.expect("a subtotal");
+        assert!(decisions.cost.is_some_and(|cost| cost > 0.0));
+        assert!(decisions.has_unmetered);
+        assert!(!decisions.has_unpriced);
 
         let by_model = rollup_report(&grain, UsageGroup::Model);
         let unlisted = by_model

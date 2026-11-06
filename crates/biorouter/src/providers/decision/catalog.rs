@@ -112,6 +112,25 @@ pub fn baseten_display_name(slug: &str) -> String {
         })
 }
 
+/// A decision model's name for a person: a Baseten model's alias
+/// ([`baseten_display_name`]: joey-1, or the slug without its prefix), else
+/// its model id. Records, the decision log and the wire keep the slug; only
+/// what a person reads says the alias, and the alias still names the model
+/// wherever a model is asked for.
+pub fn decision_model_short_name(model: &DecisionModelRef) -> String {
+    if model.provider == BASETEN_DECISION_PROVIDER {
+        baseten_display_name(&model.model)
+    } else {
+        model.model.clone()
+    }
+}
+
+/// [`decision_model_short_name`] behind its provider, as
+/// `baseten_decision/joey-1`.
+pub fn decision_model_display_label(model: &DecisionModelRef) -> String {
+    format!("{}/{}", model.provider, decision_model_short_name(model))
+}
+
 /// A Baseten decision model entry.
 pub fn baseten_entry(slug: &str, context_tokens: usize) -> DecisionModelEntry {
     DecisionModelEntry {

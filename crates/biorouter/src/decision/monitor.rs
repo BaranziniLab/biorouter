@@ -45,7 +45,8 @@ use indexmap::IndexMap;
 use super::error::{DecisionError, DecisionResult};
 use super::log::{DecisionTurnMarker, DecisionTurnMarkerItem};
 use super::service::{
-    state_budget_tokens, DecisionLogEntry, DecisionOutcome, DecisionService, DecisionSession,
+    context_margin, estimate_tokens_now, load_token_counter, state_budget_tokens, DecisionLogEntry,
+    DecisionOutcome, DecisionService, DecisionSession,
 };
 use super::settings::{
     DecisionSettings, MonitorAction, MonitorCriterion, MonitorErrorPolicy, MonitorTiming,
@@ -271,11 +272,66 @@ fn fit_window(
 ) -> WindowSpec {
     let budget = state_budget_tokens(context_tokens, questions);
     let fitted = spec.fitted_to(budget, WINDOW_PREAMBLE_TOKENS);
-    let floor = (MIN_WINDOW_CHARS as usize).min(spec.max_chars);
     WindowSpec {
-        max_chars: fitted.max_chars.max(floor),
+        max_chars: fitted.max_chars.max(window_floor(spec)),
         ..fitted
     }
+}
+
+/// The fewest characters a fitted window keeps.
+fn window_floor(spec: WindowSpec) -> usize {
+    (MIN_WINDOW_CHARS as usize).min(spec.max_chars)
+}
+
+/// Rounds of narrowing [`build_fitted_window`] makes before it sends what it
+/// has to the size check.
+const FIT_ROUNDS: usize = 6;
+
+/// The window at `spec` (already [`fit_window`]ed), narrowed further until
+/// the size check's own estimate of it beside `questions` fits a model of
+/// `context_tokens`. Three characters a token is only a first guess: a
+/// tokenizer that splits numbers spends a token on every digit, and the
+/// spaces and punctuation between lab values and timestamps take a token
+/// each, so a numeric window fitted by it alone was refused as too large.
+/// Each round cuts the oldest lines by the share of the window the overflow
+/// is, so a window only ever shrinks; one that reaches the floor is sent as
+/// it is and judged by the check.
+fn build_fitted_window(
+    conversation: &Conversation,
+    mut spec: WindowSpec,
+    iteration: u32,
+    context_tokens: usize,
+    questions: IndexMap<String, Question>,
+) -> Option<super::window::WindowState> {
+    let floor = window_floor(spec);
+    let allowed = context_tokens.saturating_sub(context_margin(context_tokens));
+    let mut state = build_window(conversation, spec, iteration)?;
+    let mut request = DecisionRequest {
+        questions,
+        context: state.context.clone(),
+    };
+    for _ in 0..FIT_ROUNDS {
+        let tokens = estimate_tokens_now(&request);
+        if tokens <= allowed || state.chars <= floor {
+            break;
+        }
+        let state_tokens = estimate_tokens_now(&DecisionRequest {
+            questions: IndexMap::new(),
+            context: state.context.clone(),
+        });
+        let cut = ((tokens - allowed) * state.chars).div_ceil(state_tokens.max(1));
+        let max_chars = state.chars.saturating_sub(cut).max(floor);
+        if max_chars >= state.chars {
+            break;
+        }
+        spec.max_chars = max_chars;
+        let Some(narrower) = build_window(conversation, spec, iteration) else {
+            break;
+        };
+        state = narrower;
+        request.context = state.context.clone();
+    }
+    Some(state)
 }
 
 /// One request an evaluation point will make: every due criterion that shares
@@ -458,9 +514,10 @@ impl MonitorRegistry {
     ///
     /// `context_tokens` names the window of the model a group asks (see
     /// [`context_windows`]); a group whose model's window is known has its
-    /// window narrowed to fit beside its questions ([`fit_window`]), so a
-    /// small model is asked about the newest lines rather than refused as
-    /// too large. The unchanged-window check reads the narrowed window.
+    /// window narrowed to fit beside its questions by the size check's own
+    /// estimate ([`fit_window`], then [`build_fitted_window`]), so a small
+    /// model is asked about the newest lines rather than refused as too
+    /// large. The unchanged-window check reads the narrowed window.
     pub fn plan_fitted(
         &self,
         session_id: &str,
@@ -498,18 +555,24 @@ impl MonitorRegistry {
                 max_chars: max_chars as usize,
                 tool_calls,
             };
-            if let Some(tokens) = context_tokens(model.as_ref()) {
-                let questions: IndexMap<String, Question> = criteria
-                    .iter()
-                    .filter_map(|criterion| {
-                        monitor_question(criterion)
-                            .ok()
-                            .map(|question| (criterion.id.clone(), question))
-                    })
-                    .collect();
-                spec = fit_window(spec, tokens, &questions);
-            }
-            let Some(state) = build_window(conversation, spec, iteration) else {
+            let state = match context_tokens(model.as_ref()) {
+                Some(tokens) => {
+                    // Fitted beside every question the group could ask, so a
+                    // request asking fewer of them fits too.
+                    let questions: IndexMap<String, Question> = criteria
+                        .iter()
+                        .filter_map(|criterion| {
+                            monitor_question(criterion)
+                                .ok()
+                                .map(|question| (criterion.id.clone(), question))
+                        })
+                        .collect();
+                    spec = fit_window(spec, tokens, &questions);
+                    build_fitted_window(conversation, spec, iteration, tokens, questions)
+                }
+                None => build_window(conversation, spec, iteration),
+            };
+            let Some(state) = state else {
                 continue;
             };
             let mut questions = IndexMap::new();
@@ -660,6 +723,8 @@ pub async fn context_windows(
     base: &DecisionSession,
     models: Vec<Option<DecisionModelRef>>,
 ) -> HashMap<Option<DecisionModelRef>, usize> {
+    // The fit counts with the size check's own tokenizer, without waiting.
+    load_token_counter().await;
     let mut windows = HashMap::new();
     for model in models {
         if let Some(tokens) = service.context_tokens_for(Some(base), model.as_ref()).await {
@@ -882,6 +947,15 @@ pub fn take_turn_decision_spend(turn_id: &str) -> f64 {
 /// the turn's spend. The decision service calls this for every entry it hands
 /// its sink; an entry without a turn id (an ad hoc decision) is not counted.
 pub fn note_decision(entry: &DecisionLogEntry) {
+    note_decision_chunks(entry, 1);
+}
+
+/// [`note_decision`] for a row that stands for `chunks` chunks: the one row a
+/// `decide` batch writes for the chunks a refusal stopped, or for a whole
+/// batch stopped before anything was sent. The tally counts every one of
+/// them, so the turn's marker names as many chunks as the tool's own result
+/// does. The cost is counted once: such a row has no usage.
+pub fn note_decision_chunks(entry: &DecisionLogEntry, chunks: u64) {
     let Some(turn_id) = entry.turn_id.as_deref() else {
         return;
     };
@@ -926,11 +1000,11 @@ pub fn note_decision(entry: &DecisionLogEntry) {
         }
     };
     let item = &mut items[index];
-    item.count += 1;
+    item.count += chunks;
     match entry.outcome {
-        DecisionOutcome::Passed => item.passed += 1,
-        DecisionOutcome::Failed => item.failed += 1,
-        DecisionOutcome::Error | DecisionOutcome::Refused => item.errors += 1,
+        DecisionOutcome::Passed => item.passed += chunks,
+        DecisionOutcome::Failed => item.failed += chunks,
+        DecisionOutcome::Error | DecisionOutcome::Refused => item.errors += chunks,
         DecisionOutcome::Decided => {}
     }
     if let Some(p) = super::log::lowest_pass_probability(&entry.decisions) {
@@ -1712,6 +1786,48 @@ mod tests {
             "never narrowed to nothing"
         );
         assert!(floor.iter().all(|plan| chars(plan) < chars(&unfitted[1])));
+    }
+
+    /// The fit counts as the size check does: a per-digit tokenizer spends a
+    /// token on every digit, so a window of lab values and timestamps fitted
+    /// at three characters a token was refused as too large on the default
+    /// 2,048-token model (3,464 tokens). The fitted window passes the check's
+    /// own estimate and still holds the newest line.
+    #[tokio::test]
+    async fn a_digit_heavy_window_is_fitted_by_the_size_checks_own_count() {
+        use crate::decision::service::estimate_tokens;
+        // What `context_windows` does before every evaluation point.
+        load_token_counter().await;
+        let registry = MonitorRegistry::default();
+        registry.begin_turn("s", "t1");
+        let mut labs = criterion(0.8);
+        labs.question.instructions =
+            "Has the agent reported a sodium below 135 or a potassium above 5.5 since 2026?".into();
+        registry.cache_settings("s", settings(vec![labs]));
+
+        let texts: Vec<String> = (0..24)
+            .map(|i| {
+                format!(
+                    "result {i}: 2026-11-05T09:{i:02}:13Z sample 4410{i:03} Na 138 mmol/L \
+                     K 4.12 mmol/L Cr 1.02 mg/dL WBC 7.43 Hgb 13.8 PLT 251000 \
+                     glucose 104 HbA1c 6.1 eGFR 87 lot 88123 pos 1204 of 1876"
+                )
+            })
+            .collect();
+        let conv = conversation(&texts.iter().map(String::as_str).collect::<Vec<_>>());
+        let window = 2_048;
+        let fitted = registry.plan_fitted("s", MonitorTiming::PostIteration, &conv, 1, |_| {
+            Some(window)
+        });
+        assert_eq!(fitted.len(), 1);
+        let tokens = estimate_tokens(&fitted[0].request).await;
+        assert!(
+            tokens + context_margin(window) <= window,
+            "the fitted window passes the size check ({tokens} tokens)"
+        );
+        let text = fitted[0].request.context.render_text();
+        assert!(text.contains("result 23:"), "the newest line is kept");
+        assert!(!text.contains("result 0:"), "the oldest lines are dropped");
     }
 
     /// Every `decide` call is its own batch, but the turn's marker shows the

@@ -35,7 +35,7 @@ pub use error::{DecisionError, DecisionResult};
 pub use model::{DecisionCaps, DecisionModel, DecisionModelEntry, DecisionModelSource};
 pub use service::{
     global, DecisionLogEntry, DecisionOutcome, DecisionService, DecisionSession, DecisionSink,
-    DecisionUseGate, LiveClassification,
+    DecisionUseGate, LiveClassification, ModelSource,
 };
 pub use types::{
     Answer, ChunkOutcome, Decision, DecisionAdapter, DecisionChunk, DecisionContext, DecisionKind,

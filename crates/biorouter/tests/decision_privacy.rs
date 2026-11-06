@@ -148,8 +148,25 @@ async fn a_private_chat_with_a_public_decision_model_makes_zero_requests() {
         "{text}"
     );
     assert!(
-        text.contains("BIOROUTER_DECISION_MODEL"),
-        "the refusal names the fix: {text}"
+        text.contains("Name a private decision model (decision_models lists them)"),
+        "the refusal names the fix for a model the caller named: {text}"
+    );
+    assert!(
+        !text.contains("BIOROUTER_DECISION_MODEL"),
+        "setting the default would not change a named model: {text}"
+    );
+
+    // Taken from the configured default: the refusal names that setting.
+    let err = service(&server)
+        .with_default_model(Some(named.clone()))
+        .decide(Some(&session), None, &request())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DecisionError::Refused(_)), "{err:?}");
+    assert!(
+        err.to_string()
+            .contains("Set BIOROUTER_DECISION_MODEL to a private model"),
+        "{err}"
     );
 
     // A batch: refused as a whole, before any chunk is sent.

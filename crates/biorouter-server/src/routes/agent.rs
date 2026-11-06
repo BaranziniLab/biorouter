@@ -362,12 +362,17 @@ pub(crate) fn classify_provider_bind_failure(
 /// a private chat may be switched to.
 ///
 /// Read from the same registry the settings grid reads, so the card can never
-/// offer a model the grid does not show.
+/// offer a model the grid does not show. A decision model's provider is left
+/// out, as the grid leaves it out: it answers with a choice and its
+/// probabilities, not text, so it is no way forward for an ordinary chat.
 async fn available_private_providers() -> Vec<String> {
     let mut names: Vec<String> = biorouter::providers::providers()
         .await
         .into_iter()
         .filter(|(metadata, _)| metadata.tier.is_private())
+        .filter(|(metadata, _)| {
+            !biorouter::providers::decision::chat::is_decision_chat_provider(&metadata.name)
+        })
         .map(|(metadata, _)| metadata.name)
         .collect();
     names.sort();
@@ -6191,7 +6196,10 @@ mod privacy_barrier_tests {
     //! the handler applies — rather than through `AppState`, which opens the
     //! ONE shared session database.
 
-    use super::{classify_provider_bind_failure, PrivacyBarrierBody, ProviderBindFailure};
+    use super::{
+        available_private_providers, classify_provider_bind_failure, PrivacyBarrierBody,
+        ProviderBindFailure,
+    };
     use axum::http::StatusCode;
     use biorouter::privacy::refusal::PrivacyRefusal;
     use biorouter::privacy::{ProviderTier, SessionClassification};
@@ -6220,6 +6228,31 @@ mod privacy_barrier_tests {
         assert_eq!(
             body.available_private_providers,
             ["llamacpp", "versa_azure"]
+        );
+    }
+
+    /// The barrier card never offers a decision model as the way forward: it
+    /// is registered as a private provider, but it is not a chat model, and
+    /// the provider grid does not show it either.
+    #[tokio::test]
+    async fn the_private_models_offered_leave_out_decision_models() {
+        let registered: Vec<_> = biorouter::providers::providers().await;
+        assert!(
+            registered
+                .iter()
+                .any(|(metadata, _)| metadata.tier.is_private()
+                    && biorouter::providers::decision::chat::is_decision_chat_provider(
+                        &metadata.name
+                    )),
+            "a private decision provider is registered"
+        );
+        let offered = available_private_providers().await;
+        assert!(!offered.is_empty(), "private chat models are offered");
+        assert!(
+            offered
+                .iter()
+                .all(|name| !biorouter::providers::decision::chat::is_decision_chat_provider(name)),
+            "{offered:?}"
         );
     }
 

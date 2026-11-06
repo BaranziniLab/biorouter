@@ -26,7 +26,7 @@ use indexmap::IndexMap;
 use rmcp::model::Tool;
 
 use super::catalog::{
-    baseten_display_name, baseten_entries, discover_ollama, ollama_base_url,
+    baseten_entries, decision_model_short_name, discover_ollama, ollama_base_url,
     BASETEN_DECISION_CONTEXT, BASETEN_DECISION_MODELS, BASETEN_DECISION_PROVIDER,
     OLLAMA_DECISION_PROVIDER, OLLAMA_DEFAULT_DECISION_CONTEXT,
 };
@@ -407,11 +407,7 @@ fn how_to_ask() -> String {
 
 /// A model's short name for a reply line: the Baseten alias, else the model id.
 fn model_label(model: &DecisionModelRef) -> String {
-    if model.provider == BASETEN_DECISION_PROVIDER {
-        baseten_display_name(&model.model)
-    } else {
-        model.model.clone()
-    }
+    decision_model_short_name(model)
 }
 
 /// The reply's text, readable on every surface: the answer, its probability,

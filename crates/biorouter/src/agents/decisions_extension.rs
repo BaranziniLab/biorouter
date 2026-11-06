@@ -51,6 +51,7 @@ use crate::decision::{
     DecisionModelRef, DecisionOrigin, DecisionService, DecisionSession, Question, Threshold,
 };
 use crate::privacy::ProviderTier;
+use crate::providers::decision::catalog::decision_model_display_label;
 
 pub static EXTENSION_NAME: &str = "decisions";
 const EXTENSION_TITLE: &str = "Decisions";
@@ -868,7 +869,8 @@ pub fn render_summary(
     let model = match (&summary.model, summary.tier) {
         (Some(model), Some(tier)) => format!(
             " with {} ({}{})",
-            model.label(),
+            // A Baseten model by its alias, which `model` also takes.
+            decision_model_display_label(model),
             tier_word(tier),
             match summary.calibrated {
                 Some(false) => ", uncalibrated",
@@ -1018,7 +1020,7 @@ impl DecisionsClient {
             let names: Vec<String> = listed
                 .iter()
                 .filter(|(_, reason)| reason.is_none())
-                .map(|(entry, _)| entry.model_ref().label())
+                .map(|(entry, _)| decision_model_display_label(&entry.model_ref()))
                 .collect();
             return Err(format!(
                 "`{wanted}` is not a decision model this computer offers. Models this chat may \
@@ -1113,25 +1115,13 @@ impl DecisionsClient {
         enforced: bool,
     ) -> Result<CallToolResult, String> {
         let session = self.session(session_id, enforced).await?;
-        let crew_scoped = match crate::crew::manager() {
-            Ok(manager) => manager.is_scoped_session(session_id).await,
-            Err(_) => true,
-        };
+        // The service's listing gives each model the reason its own gates
+        // would refuse it with, a Crew grant included, so this tool,
+        // `GET /decisions/models` and the Monitors dialog say the same thing.
         let listed = self.service.models_for(Some(&session)).await;
         let rows: Vec<ModelRow> = listed
             .into_iter()
-            .map(|(entry, reason)| {
-                let reason = if crew_scoped {
-                    Some(
-                        "This chat works under a Crew grant, which fixes the one model its \
-                         content may reach."
-                            .to_string(),
-                    )
-                } else {
-                    reason
-                };
-                ModelRow::from_entry(&entry, reason)
-            })
+            .map(|(entry, reason)| ModelRow::from_entry(&entry, reason))
             .collect();
         let private_chat = enforced && session.classification.is_private();
         let text = render_models(&rows, private_chat);
@@ -1786,6 +1776,46 @@ mod tests {
         }))
         .unwrap();
         assert!(build_batch(&bad_name).unwrap_err().contains("has ms"));
+    }
+
+    /// The text a person and the model read names a Baseten model by its
+    /// alias, which `model` also takes; the structured result keeps the
+    /// slug the decision log records.
+    #[test]
+    fn the_decide_text_names_a_baseten_model_by_its_alias() {
+        let slug = "decision-models/baseten-joey-2b-latest";
+        let summary = DecideSummary {
+            kind: "decide_batch".into(),
+            batch_id: "batch-1".into(),
+            chunks: 1,
+            decided: 1,
+            errors: 0,
+            model: Some(DecisionModelRef::new("baseten_decision", slug)),
+            tier: Some(ProviderTier::Public),
+            calibrated: Some(true),
+            elapsed_ms: 10,
+            questions: Vec::new(),
+            error_groups: Vec::new(),
+        };
+        let text = render_summary(&summary, &IndexMap::new(), &[]);
+        assert!(
+            text.contains(" with baseten_decision/joey-1 (public)"),
+            "{text}"
+        );
+        assert!(!text.contains("decision-models/"), "{text}");
+        let unknown = DecideSummary {
+            model: Some(DecisionModelRef::new(
+                "baseten_decision",
+                "decision-models/baseten-newer-4b-latest",
+            )),
+            ..summary.clone()
+        };
+        let text = render_summary(&unknown, &IndexMap::new(), &[]);
+        assert!(
+            text.contains(" with baseten_decision/baseten-newer-4b-latest (public)"),
+            "an unknown slug loses only its prefix: {text}"
+        );
+        assert_eq!(summary.model.map(|m| m.model).as_deref(), Some(slug));
     }
 
     /// The owner rule: a big batch is ONE compact result. Per question it

@@ -223,12 +223,25 @@ pub fn assert_alt_provider_matches_session(
     ))
 }
 
+/// What a downward refusal of an alternate model tells the person to do
+/// instead, by where the model came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownwardAdvice<'a> {
+    /// The model came from a setting, so the refusal names the key to set to
+    /// a private model ("Set KEY to a private model").
+    SetKey(&'a str),
+    /// The caller named the model, so naming a setting would not help; the
+    /// refusal gives this instruction instead, such as "Name a private
+    /// decision model (decision_models lists them)".
+    Instead(&'a str),
+}
+
 /// [`assert_alt_provider_allowed`] for an alternate model that is not a
 /// [`Provider`]: a decision model (`crate::decision`), whose adapters declare a
 /// tier of their own rather than implementing the chat trait. Same rule, same
 /// sentence, one predicate.
 ///
-/// Two differences from the sibling, both forced by its callers:
+/// Three differences from the sibling, all forced by its callers:
 ///
 /// * The model is named by `model_name` and its tier passed in, because there
 ///   is no `Provider` to ask. The caller passes the tier the adapter
@@ -240,6 +253,10 @@ pub fn assert_alt_provider_matches_session(
 ///   where the service samples `privacy_tiers_enabled()` once per decision call
 ///   and threads it. A second read here would be the two-reads race
 ///   `CallCapability` exists to close.
+/// * `advice` follows where the model came from. A monitor, a gate or a
+///   `decide` call often names its model, and telling its author to set the
+///   configured default would not change the model it asks; only a model
+///   taken from the configured default gets [`DownwardAdvice::SetKey`].
 ///
 /// It is the DOWNWARD half only, like the sibling: a decision's output is an
 /// answer and a probability that lands back in the same chat (a tool result, a
@@ -261,12 +278,12 @@ pub fn assert_alt_tier_allowed(
     tier: ProviderTier,
     session: SessionClassification,
     enforced: bool,
-    env_key_to_name: &str,
+    advice: DownwardAdvice<'_>,
 ) -> Result<()> {
     if !enforced {
         return Ok(());
     }
-    refuse_downward_tier(what, model_name, tier, session, env_key_to_name)
+    refuse_downward_tier(what, model_name, tier, session, advice)
 }
 
 /// Gate A's rule, and the one sentence that states it. Shared so both public
@@ -284,7 +301,7 @@ fn refuse_downward(
         provider.get_name(),
         provider.tier(),
         session,
-        env_key_to_name,
+        DownwardAdvice::SetKey(env_key_to_name),
     )
 }
 
@@ -296,14 +313,18 @@ fn refuse_downward_tier(
     name: &str,
     tier: ProviderTier,
     session: SessionClassification,
-    env_key_to_name: &str,
+    advice: DownwardAdvice<'_>,
 ) -> Result<()> {
     if bind_allowed(tier, session) {
         return Ok(());
     }
+    let way_out = match advice {
+        DownwardAdvice::SetKey(key) => format!("Set {key} to a private model"),
+        DownwardAdvice::Instead(instead) => instead.to_string(),
+    };
     Err(anyhow!(
         "This chat is private, so {what} cannot run on `{name}`, which is a public model. \
-         Set {env_key_to_name} to a private model, or start this work in a public chat."
+         {way_out}, or start this work in a public chat."
     ))
 }
 
@@ -488,14 +509,40 @@ mod tests {
             let by_provider =
                 assert_alt_provider_allowed("this monitor", &provider_at(tier), session, "KEY")
                     .map_err(|e| e.to_string());
+            let key = DownwardAdvice::SetKey("KEY");
             let by_tier =
-                assert_alt_tier_allowed("this monitor", "planner", tier, session, true, "KEY")
+                assert_alt_tier_allowed("this monitor", "planner", tier, session, true, key)
                     .map_err(|e| e.to_string());
             assert_eq!(by_tier, by_provider, "{session:?} + {tier:?}");
             assert!(
-                assert_alt_tier_allowed("x", "planner", tier, session, false, "KEY").is_ok(),
+                assert_alt_tier_allowed("x", "planner", tier, session, false, key).is_ok(),
                 "with the switch OFF nothing is refused: {session:?} + {tier:?}"
             );
         }
+    }
+
+    /// A model the caller named is refused with what to name instead, not
+    /// with a setting that would not change the model it asks.
+    #[test]
+    fn a_named_model_is_refused_with_what_to_name_instead() {
+        let named =
+            DownwardAdvice::Instead("Name a private decision model (decision_models lists them)");
+        let refusal = assert_alt_tier_allowed(
+            "this decision",
+            "joey-1",
+            ProviderTier::Public,
+            SessionClassification::Private,
+            true,
+            named,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            refusal,
+            "This chat is private, so this decision cannot run on `joey-1`, which is a public \
+             model. Name a private decision model (decision_models lists them), or start this \
+             work in a public chat."
+        );
+        assert!(!refusal.contains("Set "), "{refusal}");
     }
 }

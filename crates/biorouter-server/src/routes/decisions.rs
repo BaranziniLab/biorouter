@@ -172,6 +172,13 @@ pub struct DecisionModelsResponse {
     pub models: Vec<DecisionModelInfo>,
     /// The chat `unavailableReason` was worked out for, when one was named.
     pub session_id: Option<String>,
+    /// Why the named chat may use no decision model at all, whichever is
+    /// named or chosen for it (a Crew grant on it), or `null` when nothing
+    /// rules out every model, and always when no chat was named. Every
+    /// model's `unavailableReason` says the same; this one also covers a
+    /// choice that names no model, such as a monitor left on the chat's
+    /// decision model.
+    pub session_unavailable_reason: Option<String>,
 }
 
 /// `GET /decisions/models`'s query.
@@ -457,6 +464,10 @@ pub async fn list_decision_models(
         }
         None => None,
     };
+    let session_unavailable_reason = match &session {
+        Some(session) => routes.service.session_refusal(session).await,
+        None => None,
+    };
     let models = routes
         .service
         .models_for(session.as_ref())
@@ -477,6 +488,7 @@ pub async fn list_decision_models(
     Json(DecisionModelsResponse {
         models,
         session_id: query.session_id,
+        session_unavailable_reason,
     })
     .into_response()
 }

@@ -1694,6 +1694,15 @@ export type DecisionModelsResponse = {
      * The chat `unavailableReason` was worked out for, when one was named.
      */
     sessionId?: string | null;
+    /**
+     * Why the named chat may use no decision model at all, whichever is
+     * named or chosen for it (a Crew grant on it), or `null` when nothing
+     * rules out every model, and always when no chat was named. Every
+     * model's `unavailableReason` says the same; this one also covers a
+     * choice that names no model, such as a monitor left on the chat's
+     * decision model.
+     */
+    sessionUnavailableReason?: string | null;
 };
 
 /**
@@ -6967,11 +6976,20 @@ export type UsageReportRow = {
     decisions?: {
         /**
          * Dollar cost of the priced decision requests, or `None` when none is
-         * priced (an Ollama decision model has no meter). Never "$0" for unknown.
+         * priced. Never "$0" for unknown: `hasUnmetered` and `hasUnpriced` say
+         * which kind of unpriced request is behind a `None`.
          */
         cost?: number | null;
         /**
-         * `true` when at least one decision request has no price. Unlike the
+         * `true` when at least one request went to a decision model with no
+         * meter (a local Ollama model). It cost nothing, so it is "not metered",
+         * never "unavailable".
+         */
+        hasUnmetered?: boolean;
+        /**
+         * `true` when at least one request went to a hosted decision model
+         * (Baseten) Biorouter has no price for, or reported incomplete counts:
+         * the provider billed it at a rate Biorouter does not know. Unlike the
          * bucket's own `hasUnpriced`, it says nothing about the chat totals.
          */
         hasUnpriced: boolean;
@@ -7067,11 +7085,20 @@ export type UsageTotals = {
     decisions?: {
         /**
          * Dollar cost of the priced decision requests, or `None` when none is
-         * priced (an Ollama decision model has no meter). Never "$0" for unknown.
+         * priced. Never "$0" for unknown: `hasUnmetered` and `hasUnpriced` say
+         * which kind of unpriced request is behind a `None`.
          */
         cost?: number | null;
         /**
-         * `true` when at least one decision request has no price. Unlike the
+         * `true` when at least one request went to a decision model with no
+         * meter (a local Ollama model). It cost nothing, so it is "not metered",
+         * never "unavailable".
+         */
+        hasUnmetered?: boolean;
+        /**
+         * `true` when at least one request went to a hosted decision model
+         * (Baseten) Biorouter has no price for, or reported incomplete counts:
+         * the provider billed it at a rate Biorouter does not know. Unlike the
          * bucket's own `hasUnpriced`, it says nothing about the chat totals.
          */
         hasUnpriced: boolean;

@@ -1360,3 +1360,79 @@ async fn the_catalog_names_why_a_private_chat_may_not_use_a_model() {
         "a listing asks no model"
     );
 }
+
+/// A workspace rule that holds for one chat whatever model is asked.
+struct ScopedTo(String);
+
+#[async_trait]
+impl DecisionUseGate for ScopedTo {
+    async fn check(&self, session: &DecisionSession, _: &dyn DecisionModel) -> DecisionResult<()> {
+        match self.session_refusal(session).await {
+            Some(why) => Err(DecisionError::Refused(why)),
+            None => Ok(()),
+        }
+    }
+
+    async fn session_refusal(&self, session: &DecisionSession) -> Option<String> {
+        (session.session_id == self.0)
+            .then(|| biorouter::decision::service::CREW_SCOPED_REFUSAL.to_string())
+    }
+}
+
+/// A chat under a Crew grant reaches no decision model, so the catalog says so
+/// once for the chat as well as on every row: a monitor left on the chat's
+/// decision model names no row, and the Monitors dialog must still refuse it
+/// before it is saved. Another chat, and no chat, get `null`.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn the_catalog_names_a_refusal_that_holds_for_the_whole_chat() {
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let scoped = seed(&state, SessionClassification::Public).await;
+    let other = seed(&state, SessionClassification::Public).await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let service: &'static DecisionService = Box::leak(Box::new(
+        DecisionService::new(Arc::new(FakeSource {
+            calls: calls.clone(),
+        }))
+        .with_use_gate(Arc::new(ScopedTo(scoped.id.clone())))
+        .with_default_model(None),
+    ));
+    let app = || routes_with_service(state.clone(), service);
+    let crew = biorouter::decision::service::CREW_SCOPED_REFUSAL;
+
+    let uri = format!("/decisions/models?sessionId={}", scoped.id);
+    let (status, body) = send(app(), "GET", &uri, None, &[PROOF]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed = json_of(&body);
+    assert_eq!(listed["sessionUnavailableReason"], crew, "{body}");
+    assert!(
+        listed["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["unavailableReason"] == crew),
+        "{body}"
+    );
+
+    let uri = format!("/decisions/models?sessionId={}", other.id);
+    let (status, body) = send(app(), "GET", &uri, None, &[PROOF]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        json_of(&body)["sessionUnavailableReason"].is_null(),
+        "{body}"
+    );
+
+    let (status, body) = send(app(), "GET", "/decisions/models", None, &[]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed = json_of(&body);
+    assert!(
+        listed
+            .as_object()
+            .unwrap()
+            .contains_key("sessionUnavailableReason")
+            && listed["sessionUnavailableReason"].is_null(),
+        "{body}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "a listing asks no model");
+}

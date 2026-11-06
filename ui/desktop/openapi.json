@@ -13801,6 +13801,11 @@
             "type": "string",
             "description": "The chat `unavailableReason` was worked out for, when one was named.",
             "nullable": true
+          },
+          "sessionUnavailableReason": {
+            "type": "string",
+            "description": "Why the named chat may use no decision model at all, whichever is\nnamed or chosen for it (a Crew grant on it), or `null` when nothing\nrules out every model, and always when no chat was named. Every\nmodel's `unavailableReason` says the same; this one also covers a\nchoice that names no model, such as a monitor left on the chat's\ndecision model.",
+            "nullable": true
           }
         }
       },
@@ -24361,12 +24366,16 @@
                   "cost": {
                     "type": "number",
                     "format": "double",
-                    "description": "Dollar cost of the priced decision requests, or `None` when none is\npriced (an Ollama decision model has no meter). Never \"$0\" for unknown.",
+                    "description": "Dollar cost of the priced decision requests, or `None` when none is\npriced. Never \"$0\" for unknown: `hasUnmetered` and `hasUnpriced` say\nwhich kind of unpriced request is behind a `None`.",
                     "nullable": true
+                  },
+                  "hasUnmetered": {
+                    "type": "boolean",
+                    "description": "`true` when at least one request went to a decision model with no\nmeter (a local Ollama model). It cost nothing, so it is \"not metered\",\nnever \"unavailable\"."
                   },
                   "hasUnpriced": {
                     "type": "boolean",
-                    "description": "`true` when at least one decision request has no price. Unlike the\nbucket's own `hasUnpriced`, it says nothing about the chat totals."
+                    "description": "`true` when at least one request went to a hosted decision model\n(Baseten) Biorouter has no price for, or reported incomplete counts:\nthe provider billed it at a rate Biorouter does not know. Unlike the\nbucket's own `hasUnpriced`, it says nothing about the chat totals."
                   },
                   "inputTokens": {
                     "type": "integer",
@@ -24526,12 +24535,16 @@
                   "cost": {
                     "type": "number",
                     "format": "double",
-                    "description": "Dollar cost of the priced decision requests, or `None` when none is\npriced (an Ollama decision model has no meter). Never \"$0\" for unknown.",
+                    "description": "Dollar cost of the priced decision requests, or `None` when none is\npriced. Never \"$0\" for unknown: `hasUnmetered` and `hasUnpriced` say\nwhich kind of unpriced request is behind a `None`.",
                     "nullable": true
+                  },
+                  "hasUnmetered": {
+                    "type": "boolean",
+                    "description": "`true` when at least one request went to a decision model with no\nmeter (a local Ollama model). It cost nothing, so it is \"not metered\",\nnever \"unavailable\"."
                   },
                   "hasUnpriced": {
                     "type": "boolean",
-                    "description": "`true` when at least one decision request has no price. Unlike the\nbucket's own `hasUnpriced`, it says nothing about the chat totals."
+                    "description": "`true` when at least one request went to a hosted decision model\n(Baseten) Biorouter has no price for, or reported incomplete counts:\nthe provider billed it at a rate Biorouter does not know. Unlike the\nbucket's own `hasUnpriced`, it says nothing about the chat totals."
                   },
                   "inputTokens": {
                     "type": "integer",
