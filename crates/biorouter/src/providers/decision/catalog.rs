@@ -58,8 +58,9 @@ const LOGPROB_MAX_CONTEXT: usize = 32_768;
 
 const TAGS_TIMEOUT: Duration = Duration::from_secs(3);
 const SHOW_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long one discovery answers `list`. A model pulled in the meantime shows
-/// up on the next one.
+/// How long one discovery answers `list` while the server lists the same
+/// copies. A pull or a removal changes the list `/api/tags` returns, which is
+/// asked every time, so it shows up at once.
 const DISCOVERY_TTL: Duration = Duration::from_secs(60);
 const SHOW_CONCURRENCY: usize = 4;
 
@@ -475,31 +476,48 @@ async fn discover_one(
     Some(entry)
 }
 
-type Discovery = (Instant, String, Vec<DecisionModelEntry>);
+/// When, for which server and which pulled copies, and what was found.
+type Discovery = (Instant, DiscoveryKey, Vec<DecisionModelEntry>);
+/// The server's address and every pulled copy (name and version), sorted.
+type DiscoveryKey = (String, Vec<(String, Option<String>)>);
 static DISCOVERED: LazyLock<Mutex<Option<Discovery>>> = LazyLock::new(|| Mutex::new(None));
+
+/// What a discovery's answer depends on: the server and the copies it lists.
+/// The address alone was not enough: a server started later on the same
+/// address (a restarted Ollama, or in tests a mock server on a port a finished
+/// one had) was handed the old server's models for a minute.
+fn discovery_key(base_url: &Url, pulled: &[PulledModel]) -> DiscoveryKey {
+    let mut copies: Vec<(String, Option<String>)> = pulled
+        .iter()
+        .map(|model| (model.name.clone(), model.version.clone()))
+        .collect();
+    copies.sort();
+    (base_url.to_string(), copies)
+}
 
 /// Every decision model pulled on the Ollama server at `base_url`, from
 /// `/api/tags` and each model's `/api/show`, with a copy Ollama will not load
 /// marked ([`ollama_load_refusal`]) and listed last. An unreachable server
 /// lists none.
 pub async fn discover_ollama(base_url: &Url) -> Vec<DecisionModelEntry> {
-    let key = base_url.to_string();
-    if let Ok(cache) = DISCOVERED.lock() {
-        if let Some((at, base, entries)) = cache.as_ref() {
-            if *base == key && at.elapsed() < DISCOVERY_TTL {
-                return entries.clone();
-            }
-        }
-    }
     let Ok(client) = ollama_client(base_url, TAGS_TIMEOUT.max(SHOW_TIMEOUT)) else {
         return Vec::new();
     };
     let Some(tags) = ollama_tags(&client).await else {
         return Vec::new();
     };
+    let pulled = pulled_models(&tags);
+    let key = discovery_key(base_url, &pulled);
+    if let Ok(cache) = DISCOVERED.lock() {
+        if let Some((at, known, entries)) = cache.as_ref() {
+            if *known == key && at.elapsed() < DISCOVERY_TTL {
+                return entries.clone();
+            }
+        }
+    }
     use futures::StreamExt;
     let client = &client;
-    let mut entries: Vec<DecisionModelEntry> = futures::stream::iter(pulled_models(&tags))
+    let mut entries: Vec<DecisionModelEntry> = futures::stream::iter(pulled)
         .map(|pulled| discover_one(client, base_url, pulled))
         .buffer_unordered(SHOW_CONCURRENCY)
         .filter_map(|entry| async move { entry })

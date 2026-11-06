@@ -482,14 +482,81 @@ async fn an_oversized_chunk_is_named_and_nothing_is_sent_for_it() {
     );
 }
 
+/// Discovery's cache answers for one server and the copies it lists, not for
+/// an address. A second server on the same address (a restarted Ollama, or a
+/// mock server on a port a finished test had, which is how CI caught it) used
+/// to be handed the first one's models for a minute.
+#[tokio::test]
+async fn a_server_listing_other_copies_at_the_same_address_is_asked_again() {
+    let server = MockServer::start().await;
+    let decision_show = |context: u64| {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "capabilities": ["decision"],
+            "parameters": format!("num_ctx {context}"),
+        }))
+    };
+    let probe = ResponseTemplate::new(400)
+        .set_body_json(json!({"error": "questions must contain 1-64 fields"}));
+    Mock::given(method("GET"))
+        .and(path("/api/tags"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"name": "same-address-first:1b", "model": "same-address-first:1b", "digest": "same-address-1"}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(decision_show(4096))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(probe.clone())
+        .mount(&server)
+        .await;
+    let base = Url::parse(&server.uri()).unwrap();
+    let first = discover_ollama(&base).await;
+    assert_eq!(
+        first.iter().map(|e| e.model.as_str()).collect::<Vec<_>>(),
+        ["same-address-first:1b"]
+    );
+
+    // The same address now lists another copy: the next discovery sees it at
+    // once, inside the cache's minute.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/api/tags"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"name": "same-address-second:1b", "model": "same-address-second:1b", "digest": "same-address-2"}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(decision_show(8192))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(probe)
+        .mount(&server)
+        .await;
+    let second = discover_ollama(&base).await;
+    assert_eq!(
+        second.iter().map(|e| e.model.as_str()).collect::<Vec<_>>(),
+        ["same-address-second:1b"]
+    );
+    assert_eq!(second[0].context_tokens, 8192);
+}
+
 #[tokio::test]
 async fn ollama_discovery_lists_only_decision_models() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/tags"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
-            {"name": "clef-flash:latest", "model": "clef-flash:latest", "digest": "a"},
-            {"name": "qwen3.8:27b", "model": "qwen3.8:27b", "digest": "b"}
+            {"name": "clef-flash:latest", "model": "clef-flash:latest", "digest": "listing-a"},
+            {"name": "qwen3.8:27b", "model": "qwen3.8:27b", "digest": "listing-b"}
         ]})))
         .mount(&server)
         .await;
@@ -632,9 +699,9 @@ async fn a_copy_ollama_cannot_load_is_listed_last_with_the_fix() {
     Mock::given(method("GET"))
         .and(path("/api/tags"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
-            {"name": "clef-flash:latest", "model": "clef-flash:latest", "digest": "a"},
-            {"name": "bespoke:1b", "model": "bespoke:1b", "digest": "b"},
-            {"name": "tev1:0.8b", "model": "tev1:0.8b", "digest": "c"}
+            {"name": "clef-flash:latest", "model": "clef-flash:latest", "digest": "refused-a"},
+            {"name": "bespoke:1b", "model": "bespoke:1b", "digest": "refused-b"},
+            {"name": "tev1:0.8b", "model": "tev1:0.8b", "digest": "refused-c"}
         ]})))
         .mount(&server)
         .await;
