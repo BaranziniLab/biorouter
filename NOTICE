@@ -62,6 +62,47 @@ llama.cpp
   the pinned build and refuses to package without it.
 
 
+whisper.cpp
+-----------
+  Used for:  local dictation: the speech recognition engine built into
+             biorouter and biorouterd
+  Licence:   MIT
+  Copyright: Copyright (c) 2023-2026 The ggml authors
+  Upstream:  https://github.com/ggml-org/whisper.cpp
+  Version:   pinned at commit 4da27c41cebadb3cbbcd2563e9c7cbc8d84bdcad
+             (2026-11-03, ggml 0.28.0)
+  Licence text and notice:
+    in this repository   vendor/whisper.cpp/{LICENSE,NOTICE}
+
+  The files the build reads are vendored at vendor/whisper.cpp/source, so a
+  build needs no network. They are upstream's text byte for byte: a hash
+  manifest beside them is checked in CI, and Biorouter's own changes (there
+  are none) would sit in vendor/whisper.cpp/patches and be applied to a copy
+  at build time. A few vendored files carry their own MIT notices, from the
+  Mozilla Foundation, Arm, Intel, and Jeffrey Quesnelle and Bowen Peng;
+  vendor/whisper.cpp/NOTICE lists them.
+
+  Four of upstream's test files are vendored with it for offline tests and
+  are never shipped: two vocabulary-only Whisper models (MIT, OpenAI), the
+  Silero VAD v6.2.0 voice detector (MIT, Silero Team) and a speech sample.
+
+
+miniaudio
+---------
+  Used for:  microphone capture for dictation in the terminal (biorouter)
+  Licence:   MIT No Attribution, chosen from the author's offer of the
+             Unlicense (public domain) or MIT No Attribution
+  Copyright: Copyright 2025 David Reid
+  Upstream:  https://github.com/mackron/miniaudio
+  Version:   0.11.24
+  Licence text:
+    in this repository   the end of
+                         vendor/whisper.cpp/source/examples/miniaudio.h
+
+  It arrives inside the vendored whisper.cpp tree, which carries it for
+  upstream's examples, and shares that tree's pin and hash manifest.
+
+
 JavaScript and CSS libraries compiled into the binary
 -----------------------------------------------------
   Used for:  Auto Visualiser figures, which inline these so a figure works

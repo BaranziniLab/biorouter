@@ -1,0 +1,7 @@
+{
+  "upstream": "ggml-org/whisper.cpp",
+  "commit": "4da27c41cebadb3cbbcd2563e9c7cbc8d84bdcad",
+  "contains": ["60c0be6"],
+  "ggml": "0.28.0",
+  "date": "2026-11-03"
+}

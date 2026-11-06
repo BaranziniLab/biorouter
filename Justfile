@@ -26,6 +26,10 @@ check-everything:
     @echo "  → Checking the capability is called Biorouter Copilot everywhere a person reads it..."
     ./scripts/check-computer-use-naming.sh
     ./scripts/check-vendored-computer-use.sh
+    @echo "  → Checking the vendored whisper.cpp source matches its manifest and pin..."
+    ./scripts/check-vendored-whisper-cpp.sh
+    @echo "  → Checking the dictation test fixtures stay inside their size budget..."
+    ./scripts/check-dictation-fixtures.sh
     @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."
     ./scripts/check-no-cross-drift.sh
     @echo "  → Checking the BAAM registry generator and the Baseten feed builder still refuse what they must..."

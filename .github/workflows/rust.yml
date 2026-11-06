@@ -96,6 +96,23 @@ jobs:
       - name: Vendored Open Computer Use source
         run: ./scripts/check-vendored-computer-use.sh
 
+      # The vendored whisper.cpp subset (the local dictation engine, DD-3) must match
+      # its manifest both ways, be committable and exempt from end-of-line conversion,
+      # and name a pin that contains the CVE-2026-110810 loader fix. The self test
+      # proves the check fails on an edited, missing, extra or gitignored file.
+      - name: Vendored whisper.cpp source
+        run: |
+          ./scripts/check-vendored-whisper-cpp.sh
+          ./scripts/check-vendored-whisper-cpp.sh --self-test
+
+      # Dictation fixtures stay within 2.75 MiB in all, 1 MiB per file and 0.75 MiB of
+      # audio; real speech models belong in release assets. The self test proves a
+      # 1.1 MiB dummy fails.
+      - name: Dictation fixture size budget
+        run: |
+          ./scripts/check-dictation-fixtures.sh
+          ./scripts/check-dictation-fixtures.sh --self-test
+
   # ── 2. Cross COMPILE gate — the BR-70 core. Docker, the SAME images/flags as
   #      scripts/release.sh (both source scripts/cross-env.sh). ubuntu-latest is
   #      just the docker HOST; the TARGET triple is what is being proven.

@@ -1,0 +1,67 @@
+Biorouter's local dictation includes whisper.cpp
+https://github.com/ggml-org/whisper.cpp
+Pinned source: 4da27c41cebadb3cbbcd2563e9c7cbc8d84bdcad (2026-11-03), ggml 0.28.0
+Copyright (c) 2023-2026 The ggml authors. Distributed under the MIT license (see LICENSE).
+
+
+What is vendored
+----------------
+source/ holds upstream's files at the pinned commit, unmodified, limited to
+what the build reads: CMakeLists.txt, cmake/, include/, src/, LICENSE,
+examples/miniaudio.h, and ggml/ (its CMakeLists.txt, cmake/, include/ and
+src/, keeping only the CPU and Metal backend folders). The other ggml backend
+folders and upstream's tests, examples, bindings, scripts and documentation are
+left out. source-manifest.json lists every file kept, with its size and
+SHA-256, and every folder left out.
+
+Four of upstream's own test files are vendored for Biorouter's offline tests.
+No installer or package carries them.
+
+  models/for-tests-ggml-base.en.bin, models/for-tests-ggml-tiny.bin
+      Whisper's English and multilingual vocabularies and model settings, with
+      no weights. Whisper is MIT licensed, Copyright (c) 2022 OpenAI.
+  models/for-tests-silero-v6.2.0-ggml.bin
+      The Silero VAD v6.2.0 voice detector in ggml form, byte identical to the
+      detector Biorouter downloads on request. Silero VAD is MIT licensed,
+      Copyright (c) 2020-present Silero Team.
+  samples/jfk.wav
+      Upstream's 11 second sample from John F. Kennedy's 1961 inaugural
+      address.
+
+
+Files that carry their own notices
+----------------------------------
+These files sit inside the vendored tree under licences as permissive as
+upstream's own:
+
+  ggml/src/ggml-cpu/llamafile/sgemm.cpp
+      MIT, Copyright 2024 Mozilla Foundation
+  ggml/src/ggml-cpu/kleidiai/
+      MIT, Copyright 2025-2026 Arm Limited and/or its affiliates
+  ggml/src/ggml-cpu/ops.cpp and ggml/src/ggml-metal/kernels/rope.metal
+      the rope_yarn functions: MIT, Copyright (c) 2023 Jeffrey Quesnelle and
+      Bowen Peng
+  ggml/include/ggml-sycl.h
+      MIT, Copyright (C) 2024 Intel Corporation
+  cmake/FindFFmpeg.cmake
+      BSD, Copyright (c) 2006 Matthias Kretz, (c) 2008 Alexander Neundorf,
+      (c) 2011 Michael Jansen. A CMake module for upstream's examples; the
+      build never reads it.
+
+
+miniaudio
+---------
+examples/miniaudio.h is miniaudio 0.11.24 (2026-01-17) by David Reid,
+https://github.com/mackron/miniaudio. Upstream carries it for its examples;
+Biorouter compiles it for the terminal's microphone capture. Its author offers
+it under a choice of two licences: the Unlicense (public domain) or MIT No
+Attribution. Biorouter takes it under MIT No Attribution, Copyright 2025
+David Reid, because that grant holds in every jurisdiction, including those
+that do not recognise a dedication to the public domain. MIT No Attribution
+asks for no notice; this one names it anyway.
+
+
+Biorouter's changes
+-------------------
+None. patches/ is empty. A future patch would be applied to a copy of the tree
+at build time, never to source/.
