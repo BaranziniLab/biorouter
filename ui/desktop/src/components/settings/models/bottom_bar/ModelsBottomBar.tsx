@@ -18,7 +18,7 @@ import { InfoTip, useInfoTipId } from '../../../ui/info-tip';
 import { MODEL_COPY } from '../../../bottom_menu/copy';
 import { friendlyModelName } from '../../../bottom_menu/modelLabel';
 import { useReasoningEffortValue } from '../../../bottom_menu/BottomMenuReasoningEffort';
-import { EffortSection, moveFocusAcrossEffort } from '../../../bottom_menu/EffortSection';
+import { EffortSection, moveFocusAcrossMenuStops } from '../../../bottom_menu/EffortSection';
 import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORT_LABELS,
@@ -751,8 +751,9 @@ export default function ModelsBottomBar({
           align="end"
           className="w-72"
           aria-describedby={notes ? notesId : undefined}
-          // The menu's arrow keys visit rows only; this includes the selected effort segment.
-          onKeyDownCapture={(event) => moveFocusAcrossEffort(event, effortControlRef.current)}
+          // The menu's arrow keys visit rows only, and Tab leaves the menu; this adds the selected
+          // effort segment and the InfoTips (the two About glyphs, the affiliation badge).
+          onKeyDownCapture={(event) => moveFocusAcrossMenuStops(event, effortControlRef.current)}
         >
           <div className="px-3 pt-2 pb-1.5">
             <div className="flex items-center text-supporting text-text-muted">

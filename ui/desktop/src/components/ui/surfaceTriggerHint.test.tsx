@@ -90,4 +90,61 @@ describe('useSurfaceTriggerHint', () => {
       'Plain hint'
     );
   });
+
+  // Escape on a menu hands focus back to its trigger by script. `Tooltip`'s Tab gate declines the
+  // open that focus asks for, but inside `onOpenChange`, after Radix has told the shared provider
+  // a tooltip opened and with no close to follow: the next label tooltip anywhere opened at once
+  // (12ms measured in the app, against 512ms after a press outside).
+  it('refuses a script focus at the trigger, so the next tooltip keeps its 500ms delay', async () => {
+    function Page() {
+      return (
+        <AppTooltipProvider>
+          <Harness surfaceOpen={false} />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button">Plain</button>
+            </TooltipTrigger>
+            <TooltipContent>Plain hint</TooltipContent>
+          </Tooltip>
+        </AppTooltipProvider>
+      );
+    }
+    render(<Page />);
+    // A menu closing with Escape: focus put back on the trigger by script, not by Tab.
+    act(() => screen.getByRole('button', { name: 'Tools' }).focus());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole('tooltip'), 'a script focus opens nothing').toBeNull();
+
+    // Past the provider's 300ms skip window, a hover on another tooltip waits its 500ms.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    fireEvent.pointerMove(screen.getByRole('button', { name: 'Plain' }), { pointerType: 'mouse' });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(screen.queryByRole('tooltip'), 'no tooltip before the delay').toBeNull();
+    expect(await screen.findByRole('tooltip', {}, { timeout: 2000 })).toHaveTextContent(
+      'Plain hint'
+    );
+  });
+
+  it('still shows the hint for a Tab onto the trigger, and not while the surface is open', async () => {
+    function Page({ surfaceOpen }: { surfaceOpen: boolean }) {
+      return (
+        <AppTooltipProvider>
+          <button type="button">Before</button>
+          <Harness surfaceOpen={surfaceOpen} />
+        </AppTooltipProvider>
+      );
+    }
+    const user = userEvent.setup();
+    const { rerender } = render(<Page surfaceOpen={true} />);
+    act(() => screen.getByRole('button', { name: 'Before' }).focus());
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Tools' })).toHaveFocus();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.queryByRole('tooltip'), 'no hint over the open surface').toBeNull();
+
+    rerender(<Page surfaceOpen={false} />);
+    await user.tab({ shift: true });
+    await user.tab();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Tools hint');
+  });
 });

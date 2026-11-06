@@ -60,6 +60,7 @@ import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { useSurfaceTriggerHint } from '../ui/surfaceTriggerHint';
 import { Badge } from '../ui/badge';
 import { importSession, Session, ExtensionConfig, ExtensionData } from '../../api';
 import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
@@ -468,6 +469,10 @@ const HistoryRow = React.memo(function HistoryRow({
    */
   const declassifyOnHost = declassifyBrowserReason();
   const [menuOpen, setMenuOpen] = useState(false);
+  // "More actions" names the `⋯` on a hover and never comes back over its open menu (H2), the
+  // rule `RowActions` keeps; this row draws its own cluster because its menu is the shared chat
+  // row menu, not a list of items.
+  const moreHint = useSurfaceTriggerHint(menuOpen);
 
   const open = useCallback(() => onSelectSession(session.id), [onSelectSession, session.id]);
 
@@ -753,8 +758,8 @@ const HistoryRow = React.memo(function HistoryRow({
                 onSelect={() => onRename(session)}
               />
               <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
+                <Tooltip {...moreHint.tooltip}>
+                  <TooltipTrigger asChild {...moreHint.trigger}>
                     <DropdownMenuTrigger asChild>
                       <Button
                         type="button"
@@ -763,6 +768,8 @@ const HistoryRow = React.memo(function HistoryRow({
                         size={actionSize}
                         aria-label={moreActionsLabel(title)}
                         data-row-action=""
+                        // Holds the kept step while its menu is open (main.css).
+                        className="br-surface-trigger"
                         onClick={(event) => event.stopPropagation()}
                       >
                         <MoreHorizontal aria-hidden="true" />

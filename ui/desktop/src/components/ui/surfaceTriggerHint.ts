@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { isFocusFromTabKey } from './Tooltip';
 
 /**
  * The label hint on a trigger that opens a menu or a popover: "hover peeks, click pins" for an
@@ -19,6 +20,17 @@ import * as React from 'react';
  * A default-prevented `pointermove` is skipped by Radix's own handler, so the provider never
  * hears of it (`PreviewTip` in `artifacts/PreviewBar.tsx` refuses the same way, for the same
  * reason).
+ *
+ * ⚠ **A focus is refused at the trigger too, for the same reason.** Radix opens a tooltip on any
+ * focus a press did not start, and a closing menu or popover hands focus back to its trigger by
+ * script: Escape on the model chip's menu, the `+` menu or a row's `⋯`. `Tooltip`'s Tab gate
+ * (Q2-56) declines that open, but inside `onOpenChange`, after Radix has told the provider a
+ * tooltip opened and with no close to follow, so the next label tooltip anywhere opened in 12ms
+ * instead of 500 (measured in Chromium, `surfaceTriggerHint.browser.test.tsx`). Here the focus
+ * event is cancelled before Radix's own handler reads it, which `Tooltip` cannot do for every
+ * trigger (a tab or a roving item acts on its focus) but these triggers can: a menu or popover
+ * trigger does nothing on focus, so the cancelled event skips only the tooltip. A Tab focus
+ * still shows the hint, unless the surface is open.
  *
  * A press also holds the hint shut until the pointer leaves the trigger, which is what Radix
  * does for a plain button: a click that CLOSES the surface does not hand the trigger its name
@@ -74,6 +86,11 @@ export function useSurfaceTriggerHint(surfaceOpen: boolean) {
       onPointerLeave: () => {
         pressed.current = false;
       },
+      // Runs before Radix's focus handler (`Tooltip`'s trigger calls it first), so a cancelled
+      // focus never reaches the provider.
+      onFocus: (event: React.FocusEvent) => {
+        if (surfaceOpenRef.current || !isFocusFromTabKey()) event.preventDefault();
+      },
     },
   };
 }
@@ -88,6 +105,6 @@ export function useSurfaceTriggerHint(surfaceOpen: boolean) {
  */
 const RADIX_TOOLTIP_OPEN_EVENT = 'tooltip.open';
 
-function closeShowingTooltips() {
+export function closeShowingTooltips() {
   document.dispatchEvent(new CustomEvent(RADIX_TOOLTIP_OPEN_EVENT));
 }

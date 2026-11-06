@@ -21,7 +21,8 @@
  * Nothing here needs the app's CSS: a hint is judged by `role="tooltip"` in the DOM, and the
  * content unmounts as soon as it closes because no stylesheet gives it an exit animation.
  */
-import { dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, type Plugin } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -30,6 +31,29 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 
 const MODEL = 'gpt-5.6-sol-2026-07-09';
+
+const MAIN_CSS = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+
+/** A token's first declaration in main.css (its light, base value), as written. */
+function declaration(name: string): string {
+  const match = MAIN_CSS.match(new RegExp(`\\n\\s*${name.replace(/-/g, '\\-')}:\\s*([^;]+);`));
+  if (!match) throw new Error(`main.css does not declare ${name}`);
+  return match[1].trim();
+}
+
+/**
+ * The kept step a ghost trigger holds while its menu is open (`.br-surface-trigger` in main.css,
+ * read verbatim, with the tokens it names), on a page whose buttons rest clear as the ghost
+ * button's own utilities make them in the app (Tailwind does not run here).
+ */
+function keptTriggerCss(): string {
+  const rules = MAIN_CSS.match(/\n\.br-surface-trigger\[[^{]*\{[^}]*\}/g) ?? [];
+  if (rules.length === 0) throw new Error('main.css has no .br-surface-trigger rule');
+  const tokens = ['--background-fill-strong', '--text-default', '--text-muted', '--overlay-pressed']
+    .map((name) => `${name}: ${declaration(name)};`)
+    .join(' ');
+  return `:root { ${tokens} } button { background: transparent; color: var(--text-muted); }${rules.join('')}`;
+}
 
 /** Stand-ins for the modules that read the daemon. Everything else is the app's own code. */
 const STUBS: Record<string, string> = {
@@ -225,7 +249,7 @@ describe('a label hint never comes back over its own open menu or popover (H2)',
     await browser?.close();
   }, 120_000);
 
-  async function load(): Promise<Page> {
+  async function load(extraCss = ''): Promise<Page> {
     const page = await browser!.newPage({ viewport: { width: 1000, height: 700 } });
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -233,6 +257,7 @@ describe('a label hint never comes back over its own open menu or popover (H2)',
       `<!doctype html><html><head><style>
         body { margin: 0; font: 14px Arial, sans-serif; }
         button { min-width: 28px; min-height: 28px; }
+        ${extraCss}
       </style></head><body><div id="root"></div></body></html>`
     );
     await page.addScriptTag({ content: script });
@@ -346,10 +371,8 @@ describe('a label hint never comes back over its own open menu or popover (H2)',
         await sleep(100);
         await pointAt(page, site.trigger);
         await sleep(PAST_THE_DELAY_MS);
-        // Closed by a press outside, which hands focus back to nobody. Escape would put focus
-        // back on the trigger, and that script focus is refused by `Tooltip`'s own Q2-56 gate
-        // inside `onOpenChange`, which leaves the provider's skip flag set on its own; that is
-        // the wrapper's to fix, and it is not what this case measures.
+        // Closed by a press outside, which hands focus back to nobody. Escape, which hands it
+        // back to the trigger, is the next case.
         await page.mouse.click(AWAY.x, AWAY.y);
         await page.waitForSelector(site.surface, { state: 'detached', timeout: 3000 });
 
@@ -362,6 +385,87 @@ describe('a label hint never comes back over its own open menu or popover (H2)',
         expect(await hints(page), 'no tooltip before the delay').toBe(0);
         await sleep(PAST_THE_DELAY_MS);
         expect(await hints(page), 'the plain hint after its delay').toBe(1);
+      } finally {
+        await page.close();
+      }
+    });
+  }
+
+  // Escape hands focus back to the trigger by script. `Tooltip`'s Tab gate declined the open that
+  // focus asked for, but inside `onOpenChange`, after Radix had told the shared provider a tooltip
+  // opened and with no close to follow, so the next label tooltip anywhere opened in 12ms instead
+  // of 500 (measured in the app on the model chip and the `+`). The hook refuses that focus at the
+  // trigger.
+  for (const site of SITES) {
+    it(`${site.name}: closed with Escape, which hands focus back to it, it leaves the next tooltip its delay`, async (ctx) => {
+      if (!browser) return ctx.skip();
+      const page = await load();
+      try {
+        await page.locator(site.trigger).click();
+        await page.waitForSelector(site.surface, { timeout: 3000 });
+        await page.mouse.move(AWAY.x, AWAY.y);
+        await sleep(100);
+        await page.keyboard.press('Escape');
+        await page.waitForSelector(site.surface, { state: 'detached', timeout: 3000 });
+        expect(
+          await page.evaluate((sel) => document.activeElement?.matches(sel) ?? false, site.trigger),
+          'Escape put focus back on the trigger'
+        ).toBe(true);
+        expect(await hints(page), 'the focus Escape put back shows no hint').toBe(0);
+
+        await sleep(1000);
+        await pointAt(page, '[data-testid="plain"]');
+        await sleep(150);
+        expect(await hints(page), 'no tooltip before the delay').toBe(0);
+        await sleep(PAST_THE_DELAY_MS);
+        expect(await hints(page), 'the plain hint after its delay').toBe(1);
+      } finally {
+        await page.close();
+      }
+    });
+  }
+
+  // Only a click leaves a mark (H4): while its menu is open the trigger holds the kept step, with
+  // the pointer off it, as the Tools chip beside the `+` does. The `+` and a row's `⋯` rested clear
+  // and muted under their open menus.
+  for (const site of SITES.filter((s) => s.trigger.includes('plus') || s.trigger.includes('row'))) {
+    it(`${site.name}: holds the kept step while its menu is open, and rests clear once it closes`, async (ctx) => {
+      if (!browser) return ctx.skip();
+      const page = await load(keptTriggerCss());
+      try {
+        const look = () =>
+          page.evaluate((sel) => {
+            const node = document.querySelector(sel)!;
+            const probe = document.createElement('div');
+            probe.style.backgroundColor = 'var(--background-fill-strong)';
+            probe.style.color = 'var(--text-default)';
+            document.body.append(probe);
+            const kept = getComputedStyle(probe);
+            const out = {
+              background: getComputedStyle(node).backgroundColor,
+              color: getComputedStyle(node).color,
+              keptBackground: kept.backgroundColor,
+              keptColor: kept.color,
+            };
+            probe.remove();
+            return out;
+          }, site.trigger);
+
+        await page.mouse.move(AWAY.x, AWAY.y);
+        const rest = await look();
+        expect(rest.background, 'at rest, clear').toBe('rgba(0, 0, 0, 0)');
+
+        await page.locator(site.trigger).click();
+        await page.waitForSelector(site.surface, { timeout: 3000 });
+        await page.mouse.move(AWAY.x, AWAY.y);
+        await sleep(100);
+        const kept = await look();
+        expect(kept.background, 'open, the strong fill').toBe(kept.keptBackground);
+        expect(kept.color, 'open, the default ink').toBe(kept.keptColor);
+
+        await page.mouse.click(AWAY.x, AWAY.y);
+        await page.waitForSelector(site.surface, { state: 'detached', timeout: 3000 });
+        expect((await look()).background, 'closed, clear again').toBe('rgba(0, 0, 0, 0)');
       } finally {
         await page.close();
       }

@@ -609,7 +609,7 @@ const RecentChatRow = memo(function RecentChatRow({
       </Tooltip>
       <LazyMenuButton
         label={sidebarCopy.chats.moreActions(title)}
-        className="br-chat-row-more no-drag text-text-muted hover:text-text-default"
+        className="br-chat-row-more br-surface-trigger no-drag text-text-muted hover:text-text-default"
         testId={`recent-chat-more-${session.id}`}
         tabIndex={tabIndex}
         onFocus={() => onRowFocus(key)}
@@ -732,7 +732,7 @@ function FolderHeader({
         {group.workingDir ? (
           <LazyMenuButton
             label={sidebarCopy.folder.moreActions(group.label)}
-            className="no-drag text-text-muted hover:text-text-default"
+            className="br-surface-trigger no-drag text-text-muted hover:text-text-default"
             tabIndex={tabIndex}
             onFocus={() => onRowFocus(key)}
             onOpenChange={(open) => {

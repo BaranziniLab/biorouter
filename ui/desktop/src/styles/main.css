@@ -5983,6 +5983,25 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   }
 }
 
+/* A ghost trigger whose menu a click opened holds the kept step while the menu is open (H4,
+   "hover peeks, click pins"): `--background-fill-strong` with `--text-default`, whether or not
+   the pointer is on it, as the composer chips, the tab overflow ▾ and the artifact preview's `⋯`
+   do. Worn by the composer's `+`, a row's `⋯` (RowActions, History) and the sidebar's chat-row
+   and folder `⋯`, which rested transparent and muted beside an open menu while the Tools chip
+   next to the `+` held its fill. "Open" is `aria-expanded`: the label tooltip around each
+   trigger writes its own `data-state` over the menu's. The shorthand also clears the ghost
+   button's hover tint (a background-image), so a pointer on the open trigger does not deepen
+   the fill; a press shows the pressed overlay at once. Before `.biorouter-focus-surface` in this
+   file, so keyboard focus (D-15) still wins. */
+.br-surface-trigger[aria-expanded='true'] {
+  background: var(--background-fill-strong);
+  color: var(--text-default);
+}
+
+.br-surface-trigger[aria-expanded='true']:active {
+  background: var(--overlay-pressed);
+}
+
 /* Spinner: one glyph, one period (`--dur-slow × 2`), linear; still under reduced motion. */
 @keyframes br-spin {
   to {

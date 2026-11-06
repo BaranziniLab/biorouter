@@ -77,43 +77,61 @@ export function EffortSection({ scope, effort, controlRef }: EffortSectionProps)
 const MENU_ROW_SELECTOR =
   '[role="menuitem"]:not([data-disabled]), [role="menuitemradio"]:not([data-disabled]), [role="menuitemcheckbox"]:not([data-disabled])';
 
+/** An InfoTip's trigger: its glyph, or a badge it made focusable (`ui/info-tip.tsx`). */
+const INFO_TIP_TRIGGER_SELECTOR = '[data-slot="info-tip-trigger"]';
+
 /**
- * Radix menus only visit menu rows. Include the selected effort segment in that vertical order,
- * before the radio group's own key handler can interpret Up or Down as a value change.
+ * Radix menus visit only menu rows with Up and Down, and Tab leaves an open menu (Q2-50), so
+ * anything else in a menu that takes focus is out of the keyboard's reach unless it joins that
+ * order. This puts the selected effort segment and every InfoTip in the menu (the model menu's
+ * "About this model" and "About effort" glyphs and its affiliation badge, whose help was
+ * reachable by the pointer alone) among the rows in document order, and moves focus to them
+ * before the radio group's own key handler can read Up or Down as a value change. Row to row
+ * stays Radix's own move. A focus moved here is a script's, so it previews nothing (H1); Enter
+ * or Space keeps the tip, and a screen reader hears its words through `aria-describedby`.
  */
-export function moveFocusAcrossEffort(
+export function moveFocusAcrossMenuStops(
   event: React.KeyboardEvent<HTMLElement>,
   control: HTMLElement | null
 ): void {
-  if (!control || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-  const selected = control.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
-  if (!selected) return;
   const menu = event.currentTarget;
   const target = event.target as HTMLElement;
+  const selected =
+    control?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ?? null;
+  const extras = Array.from(menu.querySelectorAll<HTMLElement>(INFO_TIP_TRIGGER_SELECTOR));
+  if (selected) extras.push(selected);
+  if (extras.length === 0) return;
   const rows = Array.from(menu.querySelectorAll<HTMLElement>(MENU_ROW_SELECTOR));
-  const stops = [...rows, selected].sort((a, b) =>
+  const stops = [...rows, ...extras].sort((a, b) =>
     a === b ? 0 : a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
   );
   const step = event.key === 'ArrowDown' ? 1 : -1;
 
   let next: HTMLElement | undefined;
-  if (control.contains(target)) {
-    next = stops[stops.indexOf(selected) + step];
-    // At the menu edge, keep the value and focus where they are.
-    if (!next) {
+  if (target === menu) {
+    // Focus on the menu itself (the pointer left a row): Radix goes to a row; with no row, the
+    // first or the last of the other stops.
+    if (rows.length > 0) return;
+    next = step > 0 ? stops[0] : stops[stops.length - 1];
+  } else {
+    const current = selected && control?.contains(target) ? selected : target;
+    const at = stops.indexOf(current);
+    if (at === -1) return;
+    const neighbour = stops[at + step];
+    if (rows.includes(current)) {
+      // From a row to a row is Radix's move; to anything else, this one's.
+      if (!neighbour || rows.includes(neighbour)) return;
+      next = neighbour;
+    } else if (!neighbour) {
+      // At the menu edge, keep the value and focus where they are.
       event.preventDefault();
       event.stopPropagation();
       return;
+    } else {
+      next = neighbour;
     }
-  } else if (target === menu) {
-    // Focus on the menu itself (the pointer left a row): with no row to go to, the selection.
-    if (rows.length > 0) return;
-    next = selected;
-  } else {
-    const at = stops.indexOf(target);
-    if (at === -1 || stops[at + step] !== selected) return;
-    next = selected;
   }
   event.preventDefault();
   event.stopPropagation();

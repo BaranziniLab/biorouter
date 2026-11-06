@@ -17,9 +17,14 @@
  * open nearly all the time; keyed on `aria-expanded` alone, it would have sat on the fill for
  * good.
  *
- * The header is drawn with the real `PreviewTip`, `PreviewIconButton`, `DropdownMenu` and
- * `buttonVariants`, composed as `ArtifactViewer` composes them (the viewer itself is too large to
- * bundle here). `styles/main.css` is compiled by Tailwind with the classes the bundle uses, so the
+ * Its label tooltip also never comes back over the menu it opened (H2), and Escape, which hands
+ * focus back to it by script, leaves the next tooltip its delay: the `⋯` is the one menu trigger
+ * that is not on `useSurfaceTriggerHint`, so `PreviewTip` carries the same refusals
+ * (`surfaceOpen`). In the app a pointer that left the open `⋯` and came back put "More actions"
+ * over the menu's first item.
+ *
+ * The header is drawn with the real `PreviewMoreMenu` (what `ArtifactViewer` mounts) and
+ * `PreviewIconButton` (the viewer itself is too large to bundle here). `styles/main.css` is compiled by Tailwind with the classes the bundle uses, so the
  * ghost button's own layered utilities (`bg-transparent`, `tint-interactive`) are in the cascade
  * the authored rule has to beat, and `preview-panel.css` is appended as Vite would. Colours are
  * compared with probes that paint the token itself.
@@ -39,43 +44,19 @@ const requireFromDesktop = createRequire(resolve(here, '../../../package.json'))
 const ENTRY = `
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
-import { cn } from '../../utils';
-import { ChevronUp, MoreHorizontal } from '../icons/app-icons';
+import { ChevronUp } from '../icons/app-icons';
 import { AppTooltipProvider } from '../ui/Tooltip';
-import { buttonVariants } from '../ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
-import { PreviewIconButton, PreviewTip } from './PreviewBar';
+import { DropdownMenuItem } from '../ui/dropdown-menu';
+import { PreviewIconButton, PreviewMoreMenu } from './PreviewBar';
 
 function App() {
   return (
     <AppTooltipProvider>
       <div className="br-preview-actions" style={{ position: 'fixed', top: 40, right: 40 }}>
-        {/* The header's ⋯, composed as ArtifactViewer composes it. */}
-        <DropdownMenu>
-          <PreviewTip content="More actions">
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="More actions"
-                data-testid="artifact-more-actions"
-                className={cn(
-                  buttonVariants({ variant: 'ghost', shape: 'round' }),
-                  'br-preview-icon-button no-drag'
-                )}
-              >
-                <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-              </button>
-            </DropdownMenuTrigger>
-          </PreviewTip>
-          <DropdownMenuContent align="end" className="min-w-[180px] max-w-[320px]">
-            <DropdownMenuItem>Reveal in Finder</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {/* The header's ⋯: the component ArtifactViewer mounts. */}
+        <PreviewMoreMenu label="More actions" data-testid="artifact-more-actions">
+          <DropdownMenuItem>Reveal in Finder</DropdownMenuItem>
+        </PreviewMoreMenu>
         <PreviewIconButton
           data-testid="artifact-fold-toggle"
           aria-expanded={true}
@@ -106,6 +87,9 @@ const launchChromium = async (): Promise<Browser | null> => {
 const MORE = '[data-testid="artifact-more-actions"]';
 const FOLD = '[data-testid="artifact-fold-toggle"]';
 const AWAY = { x: 20, y: 380 };
+/** Past the app's 500ms label-tooltip delay. */
+const PAST_THE_DELAY_MS = 750;
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
 describe('the preview panel’s ⋯ shows its open menu (H4)', () => {
   let browser: Browser | null = null;
@@ -258,4 +242,81 @@ describe('the preview panel’s ⋯ shows its open menu (H4)', () => {
       }
     });
   }
+  /** The pointer onto the centre of `selector` in one move, then a 2px nudge inside it. */
+  async function pointAt(page: Page, selector: string) {
+    const box = await page.locator(selector).boundingBox();
+    if (!box) throw new Error(`nothing at ${selector}`);
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await sleep(30);
+    await page.mouse.move(x + 2, y);
+  }
+
+  /** The label tooltips on screen, once any closing one has finished its exit animation. */
+  const hints = async (page: Page) => {
+    await settle(page);
+    return page.locator('[role="tooltip"]').count();
+  };
+
+  it('its label shows on a hover and never comes back over its open menu (H2)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await load('light');
+    try {
+      await pointAt(page, MORE);
+      await sleep(PAST_THE_DELAY_MS);
+      expect(await hints(page), 'the hover shows the label').toBe(1);
+
+      await page.click(MORE);
+      await page.waitForSelector('[role="menu"]');
+      expect(await hints(page), 'the press closes the label').toBe(0);
+
+      // Off the ⋯ and back onto it, the menu still open.
+      await page.mouse.move(AWAY.x, AWAY.y);
+      await sleep(100);
+      await pointAt(page, MORE);
+      await sleep(PAST_THE_DELAY_MS);
+      expect(await page.locator('[role="menu"]').count(), 'the hover leaves the menu open').toBe(1);
+      expect(await page.locator(MORE).getAttribute('aria-expanded')).toBe('true');
+      expect(await hints(page), 'no label over the open menu').toBe(0);
+
+      // Closed again, the label comes back on the next hover.
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[role="menu"]', { state: 'detached' });
+      await page.mouse.move(AWAY.x, AWAY.y);
+      await sleep(100);
+      await pointAt(page, MORE);
+      await sleep(PAST_THE_DELAY_MS);
+      expect(await hints(page), 'the label comes back once the menu has closed').toBe(1);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('closed with Escape, which hands focus back to it, it leaves the next tooltip its delay', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await load('light');
+    try {
+      await page.click(MORE);
+      await page.waitForSelector('[role="menu"]');
+      await page.mouse.move(AWAY.x, AWAY.y);
+      await sleep(100);
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[role="menu"]', { state: 'detached' });
+      expect(
+        await page.evaluate((sel) => document.activeElement?.matches(sel) ?? false, MORE),
+        'Escape put focus back on the ⋯'
+      ).toBe(true);
+      expect(await hints(page), 'the focus Escape put back shows no label').toBe(0);
+
+      await sleep(1000);
+      await pointAt(page, FOLD);
+      await sleep(150);
+      expect(await hints(page), 'no tooltip before the delay').toBe(0);
+      await sleep(PAST_THE_DELAY_MS);
+      expect(await hints(page), 'the fold toggle’s label after its delay').toBe(1);
+    } finally {
+      await page.close();
+    }
+  });
 });

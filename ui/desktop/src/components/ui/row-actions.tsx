@@ -47,7 +47,8 @@ import { uiCopy } from './copy';
  *   opacity changes, so every action stays in the tab order.
  * - One primary icon action at most, then a `⋯` button (ghost round, Tooltip "More actions")
  *   that opens the items as a DropdownMenu. The tooltip closes on the press and never comes
- *   back over the open menu (`useSurfaceTriggerHint`, H2).
+ *   back over the open menu (`useSurfaceTriggerHint`, H2), and the `⋯` holds the kept step
+ *   while the menu is open (`.br-surface-trigger`, main.css).
  * - `RowContextMenu` makes the same items a ContextMenu on the row: right-click, Shift+F10 or
  *   the ContextMenu key (macOS Chromium never turns the keys into `contextmenu`, so the row
  *   dispatches it; see `keyboardContextMenu.ts`).
@@ -249,6 +250,8 @@ export function RowActions({
                   aria-label={menuLabel}
                   data-testid={menuTestId}
                   data-row-action=""
+                  // Holds the kept step while its menu is open (main.css).
+                  className="br-surface-trigger"
                   onClick={(event) => event.stopPropagation()}
                 >
                   <MoreHorizontal aria-hidden />

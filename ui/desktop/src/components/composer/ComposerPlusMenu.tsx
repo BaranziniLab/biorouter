@@ -76,7 +76,9 @@ export function ComposerPlusMenu({
                 shape="round"
                 aria-label={COPY.label}
                 data-testid="composer-plus"
-                className="text-text-muted hover:text-text-default"
+                // Muted at rest; the kept step while its menu is open, beside the Tools chip's
+                // (`.br-surface-trigger`, main.css).
+                className="br-surface-trigger text-text-muted hover:text-text-default"
               >
                 <Plus aria-hidden />
               </Button>
