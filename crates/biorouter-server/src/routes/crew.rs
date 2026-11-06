@@ -253,6 +253,12 @@ impl CrewRouteError {
         }
     }
 
+    /// The refusal's code and sentence, for a caller that words it itself (a chat's person
+    /// tools, `routes::crew_tools`).
+    pub(crate) fn code_and_sentence(&self) -> (&str, &str) {
+        (&self.code, &self.error)
+    }
+
     /// Add a field beside `code` and `error`, which it can never replace.
     fn with(mut self, key: &str, value: impl Serialize) -> Self {
         if key != "code" && key != "error" {
@@ -377,7 +383,7 @@ fn require_person(headers: &HeaderMap) -> Result<(), CrewRouteError> {
 /// `biorouter::crew::server_label`), and `last_error_code`, which types `last_error` when the
 /// daemon has a code for it (Q3-12: `crew_membership_ended`), so a client never has to match
 /// the sentence.
-async fn connection_view(
+pub(crate) async fn connection_view(
     connection: &biorouter::crew::Connection,
 ) -> anyhow::Result<CrewConnectionView> {
     let crew = manager()?;
@@ -390,6 +396,7 @@ async fn connection_view(
     // AO-10. Only a connection removed meanwhile is refused here; it reports nothing new.
     view.new_devices = crew.new_devices(&connection.id).await.unwrap_or_default();
     view.account_identity = crew.account_identity(&connection.id);
+    view.server_version = crew.server_version(&connection.id);
     Ok(view)
 }
 
@@ -410,6 +417,7 @@ fn saved_connection_view(
         workspace_deleted: false,
         new_devices: Vec::new(),
         account_identity: None,
+        server_version: None,
     }
 }
 
@@ -418,7 +426,7 @@ fn saved_connection_view(
     operation_id = "crew_list_connections",
     path = "/crew/connections",
     responses(
-        (status = 200, description = "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known. `server_access` says what agents can do on the server as the last connect found (whether full access is available, whether commands can be confined, the bridge's version, account and home); `null` before the first connect. `workspace_deleted` is `true` once the workspace answered `crew_workspace_deleted`: its host deleted it, so the person can only remove it from this computer. `new_devices` lists devices of the person's account added since this computer last saw them, with how and when each was added, until `POST /crew/connections/{id}/devices/acknowledge`. `account_identity` is `true` when the workspace's server takes joining by account (any computer that signs in to the server as the account can open the workspace again, so removing the host's last computer no longer ends the host controls), `false` for an older server, and `null` while not connected", body = CrewConnectionList),
+        (status = 200, description = "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known. `server_access` says what agents can do on the server as the last connect found (whether full access is available, whether commands can be confined, the bridge's version, account and home); `null` before the first connect. `workspace_deleted` is `true` once the workspace answered `crew_workspace_deleted`: its host deleted it, so the person can only remove it from this computer. `new_devices` lists devices of the person's account added since this computer last saw them, with how and when each was added, until `POST /crew/connections/{id}/devices/acknowledge`. `account_identity` is `true` when the workspace's server takes joining by account (any computer that signs in to the server as the account can open the workspace again, so removing the host's last computer no longer ends the host controls), `false` for an older server, and `null` while not connected. `server_version` is the workspace broker's version as its last verified `hello` said (unsigned, display only), `null` while not connected or from an older broker that does not say", body = CrewConnectionList),
         (status = 400, description = "`crew_request_refused`: Crew's saved settings could not be read", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
@@ -441,7 +449,7 @@ pub async fn list_connections(headers: HeaderMap) -> CrewResult<CrewConnectionLi
     path = "/crew/connections/{id}",
     params(("id" = String, Path, description = "The saved connection")),
     responses(
-        (status = 200, description = "The connection, in the shape `GET /crew/connections` lists it, `new_devices` and `account_identity` included", body = CrewConnectionView),
+        (status = 200, description = "The connection, in the shape `GET /crew/connections` lists it, `new_devices`, `account_identity` and `server_version` included", body = CrewConnectionView),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError)
     ),
@@ -1025,12 +1033,23 @@ fn check_run_channels(
     )
 }
 
-fn run_policy(body: &StartRunRequest) -> biorouter::crew::RunPolicy {
+/// Where a task's request came from, as the run's policy carries it. The route starts a task for
+/// the person and says nothing more; a chat's `tasks_ask` (`routes::crew_tools`) starts one for
+/// a chat, which a Private chat marks `restricted`, with its affiliations, so a public model is
+/// refused as a grant to that chat would be (AO-12).
+#[derive(Clone, Default)]
+pub(crate) struct RunOrigin {
+    pub(crate) restricted: bool,
+    pub(crate) institution_ids: std::collections::BTreeSet<String>,
+}
+
+fn run_policy(body: &StartRunRequest, origin: &RunOrigin) -> biorouter::crew::RunPolicy {
     biorouter::crew::RunPolicy {
+        origin_restricted: origin.restricted,
         expected_mode: body.expected_mode,
         expected_policy_epoch: body.expected_policy_epoch,
         expected_workspace_policy_epoch: body.expected_workspace_policy_epoch,
-        ..Default::default()
+        origin_institution_ids: origin.institution_ids.clone(),
     }
 }
 
@@ -1060,6 +1079,17 @@ pub async fn start_run(
     CrewJson(body): CrewJson<StartRunRequest>,
 ) -> CrewResult<RunView> {
     require_person(&headers)?;
+    start_owned_run(state, id, body, RunOrigin::default()).await
+}
+
+/// [`start_run`] once a person's proof is checked: the route's whole start, shared with a
+/// chat's `tasks_ask`, which passes the chat as the task's `origin`.
+pub(crate) async fn start_owned_run(
+    state: Arc<AppState>,
+    id: String,
+    body: StartRunRequest,
+    origin: RunOrigin,
+) -> CrewResult<RunView> {
     require_valid(
         body.posting_grant,
         "Grant this task permission to publish in the selected channel.",
@@ -1120,7 +1150,7 @@ pub async fn start_run(
             &body.channel_id,
             &body.context_channels,
             provider.as_ref(),
-            &run_policy(&body),
+            &run_policy(&body, &origin),
         )
         .await
     {
@@ -1146,6 +1176,7 @@ pub async fn start_run(
         state,
         id,
         body,
+        origin,
         ledger.clone(),
         request_key,
         provider,
@@ -1365,10 +1396,12 @@ async fn record_admission_affiliation(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn launch_run(
     state: Arc<AppState>,
     id: String,
     body: StartRunRequest,
+    origin: RunOrigin,
     ledger: Arc<RunLedger>,
     request_key: String,
     provider: Arc<dyn biorouter::providers::base::Provider>,
@@ -1378,7 +1411,7 @@ async fn launch_run(
     let agent = state.agent_manager.new_scoped_agent();
     agent.ensure_crew_compatible()?;
     let crew = manager()?;
-    let policy = run_policy(&body);
+    let policy = run_policy(&body, &origin);
     let admission = match crew
         .begin_run_with_policy(
             &session_id,
@@ -2192,13 +2225,18 @@ pub async fn cancel_run(
     Path((id, run_id)): Path<(String, String)>,
 ) -> CrewResult<CrewRunCancellation> {
     require_person(&headers)?;
+    cancel_owned_task(&id, &run_id).await
+}
+
+/// [`cancel_run`] once a person's proof is checked, shared with a chat's `tasks_cancel`.
+pub(crate) async fn cancel_owned_task(id: &str, run_id: &str) -> CrewResult<CrewRunCancellation> {
     // No run this daemon started has any other shape (RENDERER-2).
     require_valid(
-        biorouter::crew::is_run_id(&run_id),
+        biorouter::crew::is_run_id(run_id),
         "Crew run IDs contain only letters, digits, hyphens and underscores",
     )?;
     let ledger = run_ledger().await?;
-    cancellation_response(cancel_owned_run(&ledger, &id, &run_id).await?)
+    cancellation_response(cancel_owned_run(&ledger, id, run_id).await?)
 }
 
 /// What stopping one of this device's owned tasks achieved.

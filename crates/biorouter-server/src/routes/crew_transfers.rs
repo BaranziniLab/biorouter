@@ -21,6 +21,13 @@ type TransferResult<T> = Result<Json<T>, TransferError>;
 /// The code every refusal carries unless it has a more specific one.
 const TRANSFER_REFUSED_CODE: &str = "crew_transfer_refused";
 pub struct TransferError(StatusCode, String, &'static str);
+impl TransferError {
+    /// The refusal's code and sentence, for a caller that words it itself (a chat's person
+    /// tools, `routes::crew_tools`).
+    pub(crate) fn code_and_sentence(&self) -> (&'static str, &str) {
+        (self.2, &self.1)
+    }
+}
 impl From<anyhow::Error> for TransferError {
     /// A credential refusal (Q3-01) and a named selection refusal (FILES-F3, FILES-F9: a dotted
     /// name, a shared folder, a folder given as the file, an existing file, a program) keep

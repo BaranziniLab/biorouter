@@ -231,6 +231,19 @@ const REGISTRY: &[Guard] = &[
                        filter. Plus its import",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/crew_tools/mod.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`Ctx::lists_chat`, the one filter every Crew person-tool action that \
+                       names another chat asks before it does (account ownership AO-12): \
+                       `crew__read grants_list` and `crew__change grants_revoke` name chats \
+                       holding a grant, and `crew__read tasks_list` and `tasks_watch` show a \
+                       task whose conversation is a chat of its own. A model's call, not an HTTP \
+                       caller, so it is `workspace_list`'s rule on the call's one sampled \
+                       capability rather than `lists_session`, which needs the person's proof. \
+                       Plus its import",
+            },
+            Site {
                 file: "crates/biorouter/src/agents/schedule_tool.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,

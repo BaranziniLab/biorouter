@@ -390,6 +390,12 @@ pub struct CrewConnectionView {
     /// `hello` (not connected). Display and the removal guard only: the workspace decides
     /// every join.
     pub account_identity: Option<bool>,
+    /// The workspace broker's package version, as its last verified `hello` said (AO-4), so a
+    /// client can tell when the server runs an older Crew than the one this build carries.
+    /// `null` while this computer holds no verified `hello` (not connected) and for an older
+    /// broker that does not say, when a client falls back to `account_identity`. Display only:
+    /// the server's word, unsigned.
+    pub server_version: Option<String>,
 }
 
 /// `GET /crew/connections`.

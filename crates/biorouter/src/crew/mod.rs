@@ -369,6 +369,29 @@ pub struct BrokerHello {
     /// server is saving, or is an older one that does not say.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage: Option<ServerStorage>,
+    /// The broker's package version, as this `hello` said (AO-4). Unsigned under either
+    /// signature, like `storage`, so it is shown and compared with this build's broker for the
+    /// version notice, and never relied on. `None` for an older broker that does not say, and
+    /// for anything that does not read as a version ([`broker_version_from_hello`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// The longest broker version [`broker_version_from_hello`] keeps.
+const MAX_BROKER_VERSION_LEN: usize = 64;
+
+/// `hello`'s unsigned `version` (AO-4), kept only when it reads as a package version: it starts
+/// with a digit, is at most [`MAX_BROKER_VERSION_LEN`] bytes, and holds only ASCII letters,
+/// digits, `.`, `-` and `+`. Anything else, a missing field included, is `None`, as from a
+/// broker that predates the field. Never part of a signature check.
+fn broker_version_from_hello(hello: &Value) -> Option<String> {
+    let version = hello.get("version")?.as_str()?;
+    let readable = version.len() <= MAX_BROKER_VERSION_LEN
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'));
+    readable.then(|| version.to_owned())
 }
 
 /// A workspace server that has stopped saving changes (its disk or quota is full, or it could
@@ -1613,6 +1636,7 @@ impl HelloV2Fields {
             institution_id: self.institution_id,
             policy_epoch: Some(self.policy_epoch),
             storage: None,
+            version: None,
         })
     }
 }
@@ -1637,6 +1661,7 @@ impl BrokerHello {
             institution_id: None,
             policy_epoch: None,
             storage: None,
+            version: None,
         }
     }
 }
@@ -2281,6 +2306,14 @@ impl CrewManager {
             return None;
         }
         self.broker_hello(&connection.id)?.storage
+    }
+    /// The workspace broker's package version, as its last verified `hello` said (AO-4):
+    /// served as a saved connection's `server_version`, which the desktop compares with the
+    /// broker this build carries for its version notice. `None` while this process holds no
+    /// verified `hello` for the connection (it is not connected), and for an older broker that
+    /// does not say. Unsigned and display only: the workspace decides every request.
+    pub fn server_version(&self, id: &str) -> Option<String> {
+        self.broker_hello(id)?.version
     }
     /// A request the workspace refused because its server could not save it (`storage_full`,
     /// `storage_failed`): ask `hello` again, in the background, so the connection says whether
@@ -3502,8 +3535,11 @@ impl CrewManager {
             }
             None => BrokerHello::unsigned(hello),
         };
+        // The unsigned display fields are read only after every signature verified, and from
+        // fields neither signature covers, so they can never change what verified.
         let broker = BrokerHello {
             storage: ServerStorage::from_hello(hello),
+            version: broker_version_from_hello(hello),
             ..broker
         };
         Ok(VerifiedHello {
@@ -8982,6 +9018,7 @@ mod tests {
                     institution_id: None,
                     policy_epoch: Some(1),
                     storage: None,
+                    version: None,
                 },
             );
         };
@@ -11287,6 +11324,7 @@ done
                 institution_id: None,
                 policy_epoch: (version == 2).then_some(1),
                 storage: None,
+                version: None,
             },
         };
         assert_eq!(manager.capabilities(connection_id), None);
@@ -11337,6 +11375,39 @@ done
 
         manager.disconnect(connection_id).await.unwrap();
         assert_eq!(manager.capabilities(connection_id), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// What the routes serve as `server_version` (AO-4): the version the last verified `hello`
+    /// said, `None` from a broker that says none, and `None` once this process holds no
+    /// verified `hello` for the connection.
+    #[test]
+    fn server_version_is_the_last_verified_hellos() {
+        let root = fixture_root("server-version");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let id = "7c7c7c7c-7c7c-47c7-87c7-7c7c7c7c7c7c";
+        assert_eq!(manager.server_version(id), None);
+        let hello = |version: Option<&str>| BrokerHello {
+            signature_version: 2,
+            capabilities: vec![],
+            workspace_name: None,
+            mode: None,
+            institution_id: None,
+            policy_epoch: None,
+            storage: None,
+            version: version.map(str::to_owned),
+        };
+        manager.remember_broker(id, hello(Some("1.94.2")));
+        assert_eq!(manager.server_version(id).as_deref(), Some("1.94.2"));
+        manager.remember_broker(id, hello(None));
+        assert_eq!(
+            manager.server_version(id),
+            None,
+            "an older broker says none"
+        );
+        manager.remember_broker(id, hello(Some("1.94.2")));
+        manager.forget_broker(id);
+        assert_eq!(manager.server_version(id), None, "not connected");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -11417,6 +11488,7 @@ done
                 institution_id: Some("ucsf".into()),
                 policy_epoch: Some(4),
                 storage: None,
+                version: None,
             }
         );
         assert_eq!(
@@ -11439,7 +11511,50 @@ done
                 institution_id: None,
                 policy_epoch: None,
                 storage: None,
+                version: None,
             }
+        );
+
+        // `version` (AO-4) sits outside both signed payloads: kept as the broker said it, under
+        // either signature, and never a reason to fail. A broker that predates it sends none,
+        // which reads as `None`, and so does anything that does not read as a version.
+        assert_eq!(both.broker.version, None, "an older broker says no version");
+        for (signed, label) in [
+            (hello.clone(), "both"),
+            (without("signature_v2"), "v1 only"),
+        ] {
+            let mut versioned = signed.clone();
+            versioned["version"] = json!("1.94.2");
+            let kept = verify(&versioned).unwrap().broker;
+            assert_eq!(kept.version.as_deref(), Some("1.94.2"), "{label}");
+            assert_eq!(
+                BrokerHello {
+                    version: None,
+                    ..kept
+                },
+                verify(&signed).unwrap().broker,
+                "{label}: the version changes nothing else"
+            );
+        }
+        for unreadable in [
+            json!(null),
+            json!(194),
+            json!(["1.94.2"]),
+            json!(""),
+            json!("latest"),
+            json!("1.94.2 (beta)"),
+            json!("1.94.2\n"),
+            json!("1".repeat(MAX_BROKER_VERSION_LEN + 1)),
+        ] {
+            let mut odd = hello.clone();
+            odd["version"] = unreadable.clone();
+            assert_eq!(verify(&odd).unwrap().broker.version, None, "{unreadable}");
+        }
+        let mut prerelease = hello.clone();
+        prerelease["version"] = json!("1.95.0-dev+abc");
+        assert_eq!(
+            verify(&prerelease).unwrap().broker.version.as_deref(),
+            Some("1.95.0-dev+abc")
         );
 
         // Any field v2 signs, altered, removed, reordered or added to, fails verification.
@@ -12965,6 +13080,7 @@ done
             institution_id: institution.map(str::to_owned),
             policy_epoch: (version >= 2).then_some(1),
             storage: None,
+            version: None,
         };
         // Only a v2 signature covers the institution; a v1 `hello` says nothing about it.
         manager

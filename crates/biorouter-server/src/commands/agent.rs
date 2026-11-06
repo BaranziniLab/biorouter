@@ -546,6 +546,9 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // runner and (Slice 2) the GUI bridge. Without this the tools degrade to
     // their headless behaviour even inside the daemon.
     crate::workspace::services::install_workspace_services(app_state.clone());
+    // AO-12: a chat's person tools (`crew__read`, `crew__change`) run through the same
+    // functions as the Crew routes. Without this the `crew` extension does not offer them.
+    crate::routes::crew_tools::install(app_state.clone());
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {

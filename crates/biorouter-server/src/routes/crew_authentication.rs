@@ -389,11 +389,11 @@ pub const ACKNOWLEDGE_FAILED: &str = "Biorouter couldn't save that you have seen
 /// refusal carries a code, so a client can tell a refusal from a daemon without the route.
 #[derive(Debug)]
 pub struct AdmissionRefusal {
-    status: StatusCode,
-    code: String,
-    error: String,
+    pub(crate) status: StatusCode,
+    pub(crate) code: String,
+    pub(crate) error: String,
     /// A list, empty and unallocated for most refusals, so the error stays small.
-    fields: Vec<(String, Value)>,
+    pub(crate) fields: Vec<(String, Value)>,
 }
 
 impl AdmissionRefusal {
@@ -512,7 +512,7 @@ fn require_connected(connection: &Connection) -> Result<(), AdmissionRefusal> {
 /// words are unauthenticated, and the join screen shows a daemon's words verbatim beside the
 /// device code, so a process in the joiner's bridge path could otherwise write "your code is
 /// …" on it. The text goes to the log, escaped, and never into the answer, not even `detail`.
-async fn core_refusal(
+pub(crate) async fn core_refusal(
     crew: &CrewManager,
     connection_id: Option<&str>,
     error: anyhow::Error,
@@ -702,7 +702,7 @@ pub struct InvitationSummary {
 }
 
 impl InvitationSummary {
-    fn new(preview: InvitationPreview, pasted: &str) -> Self {
+    pub(crate) fn new(preview: InvitationPreview, pasted: &str) -> Self {
         // The core parsed this text a moment ago; parse it again only for the hints its
         // summary folds into the save plan. A paste the codec now refuses cannot happen, and
         // would only leave the hints out.

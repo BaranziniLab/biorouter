@@ -1021,6 +1021,7 @@ pub mod crew_authentication;
 pub mod crew_observation;
 pub mod crew_profile;
 pub mod crew_setup;
+pub mod crew_tools;
 pub mod crew_transfers;
 pub mod decisions;
 pub mod errors;

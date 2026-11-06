@@ -4729,6 +4729,7 @@ done
                 institution_id: signed.then(|| "ucsf".into()),
                 policy_epoch: signed.then_some(1),
                 storage: None,
+                version: None,
             },
         );
     }
@@ -5866,6 +5867,7 @@ fi
                 institution_id: None,
                 policy_epoch: Some(1),
                 storage: None,
+                version: None,
             },
         );
         (root, connection, manager, env)

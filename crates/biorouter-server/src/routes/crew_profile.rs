@@ -56,10 +56,10 @@ pub const READ_CONSENT_NOT_SAVED: &str = "Stopped on this computer, but Bioroute
 
 /// A refusal: `{code, error}` plus any fields a route adds beside them (`detail`, …).
 pub struct Refusal {
-    status: StatusCode,
-    code: &'static str,
-    error: String,
-    fields: Map<String, Value>,
+    pub(crate) status: StatusCode,
+    pub(crate) code: &'static str,
+    pub(crate) error: String,
+    pub(crate) fields: Map<String, Value>,
 }
 impl Refusal {
     fn new(status: StatusCode, code: &'static str, error: impl Into<String>) -> Self {
@@ -271,6 +271,14 @@ pub async fn grants(
     Path(id): Path<String>,
 ) -> Result<CrewGrantList> {
     person(&headers)?;
+    grant_list(&state, &id).await
+}
+
+/// `GET /crew/connections/{id}/grants` after its proof check: the one listing the route and a
+/// chat's `crew__read grants_list` (account ownership AO-12) both answer. The chat tool filters
+/// the rows to the chats its caller may list; the route lists them all to the person.
+pub(crate) async fn grant_list(state: &AppState, id: &str) -> Result<CrewGrantList> {
+    let id = id.to_owned();
     let crew = manager()?;
     let listed = crew.session_grant_rows(&id).await?;
     let tasks: Option<HashSet<(String, String)>> = match owned_run_views(&id).await {
@@ -298,7 +306,7 @@ pub async fn grants(
     for grant in listed.grants {
         grants.push(CrewGrantView {
             kind: kind(&grant),
-            session_name: session_name(&state, &grant.session_id).await,
+            session_name: session_name(state, &grant.session_id).await,
             grant,
         });
     }
@@ -318,7 +326,7 @@ pub async fn grants(
         }
         person_reads.push(CrewPersonReadView {
             session_name: consent_session_name(
-                &state,
+                state,
                 &row.session_id,
                 row.consent.session_incarnation,
             )
@@ -474,6 +482,13 @@ pub async fn revoke(
     Path((id, session)): Path<(String, String)>,
 ) -> Result<CrewRevocation> {
     person(&headers)?;
+    revoke_grant(id, session).await
+}
+
+/// `POST /crew/connections/{id}/sessions/{session_id}/revoke` after its proof check: the one
+/// revocation the route and a chat's `crew__change grants_revoke` (account ownership AO-12)
+/// both run, the chat's only after the person allowed it on its card.
+pub(crate) async fn revoke_grant(id: String, session: String) -> Result<CrewRevocation> {
     let crew = manager()?;
     let Some(metadata) = crew.run_metadata(&session).await else {
         return Err(grant_not_found());
