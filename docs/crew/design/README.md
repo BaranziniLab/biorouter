@@ -13,6 +13,7 @@ This folder is for developers and reviewers of Crew. If you use Crew, read the [
 | [SSH hop policy](ssh-hop-policy.md) | The rules Crew applies to every SSH hop before it signs in: the configuration each hop needs, host-key trust, multiplexing, and what is refused |
 | [Linux portability](linux-portability.md) | How the Linux broker is built for the release target and its glibc floor, how every Biorouter build carries it for the setup service (`scripts/build-crew-broker-linux.sh`, `scripts/stage-crew-broker.sh`), how to qualify and install it without administrator access, and one dated rootless smoke |
 | [Open workspaces and automatic setup](open-workspaces-and-automatic-setup.md) | The October 2026 contract for automatic server setup, open (shared) governance, deletion of channels, teams and workspaces, `@agent` from the composer, the model for Crew tasks, the three agent access levels with full access on the server, and the workspace context document (decisions OW-1 to OW-12) |
+| [Account ownership](account-ownership.md) | The November 2026 contract that makes a workspace belong to server accounts instead of computers: `auth.account`, `account.status`, device revocation, the server's workspace list, setup that reports workspaces and keeps Crew current, adding a computer again, pruning old chat-access records, and the chat tools that do what the Crew view does (decisions AO-1 to AO-12) |
 
 ## Related documentation
 
