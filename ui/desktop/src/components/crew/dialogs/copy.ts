@@ -361,6 +361,13 @@ export const inviteCopy = {
   installCommandsLabel: 'install commands',
   nextStep: (first: string) =>
     `When ${first} sends you a code, choose Let in… next to their name in the sidebar.`,
+  /**
+   * The same on a workspace that belongs to accounts (account ownership AO-2): the invitation
+   * names the account, and signing in as it is the proof. Let in… stays for an older Biorouter's
+   * code.
+   */
+  nextStepAccount: (first: string) =>
+    `${first} gets in by opening the workspace while signed in to the server as themselves. If their Biorouter shows a code instead, choose Let in… next to their name in the sidebar.`,
   /** After `nextStep`: when the invitation runs out (QA Q4-36). `phrase` is `expiryPhrase`'s. */
   expires: (phrase: string) => `This invitation ${phrase}.`,
   done: 'Done',
@@ -379,6 +386,12 @@ export const inviteCopy = {
      */
     alreadyMember: (username: string, workspace: string) =>
       `@${username} is already in ${workspace}. To add this computer of theirs, Add another device for @${username} is now on: choose Invite again.`,
+    /**
+     * The same refusal from a workspace that belongs to accounts (account ownership AO-1): a
+     * member's new computer needs nothing from the host, so nothing is turned on.
+     */
+    alreadyMemberAccount: (username: string, workspace: string) =>
+      `@${username} is already in ${workspace}. A new computer of theirs gets in when they open ${workspace} on it, signed in to the server as @${username}.`,
     canonical: (canonical: string) =>
       `Invite @${canonical} instead: that’s the account’s exact name.`,
   },
@@ -750,6 +763,8 @@ export const keysCopy = {
     bootstrap: 'when the workspace was created',
     token: 'with an invitation token',
     invitation_code: 'with an invitation',
+    /** A computer that signed in to the server as the account (account ownership AO-2). */
+    account: 'by signing in to the server',
   } as Record<string, string>,
   vaultToggle: 'Use an encrypted vault instead',
   vaultNote: 'Only for a new Crew profile. Existing identities aren’t moved.',
@@ -808,7 +823,12 @@ export const confirmCopy = {
   },
   removePerson: {
     title: (person: string, workspace: string) => `Remove ${person} from ${workspace}?`,
-    description: 'Removes all of their devices and agent access. Their messages stay in history.',
+    /**
+     * Account ownership (AO-2): a removed account cannot open the workspace again by signing in to
+     * the server; only a new invitation brings it back.
+     */
+    description:
+      'Removes all of their devices and agent access. Their messages stay in history. Signing in to the server as them no longer opens the workspace: to let them back in, invite them again.',
     confirm: (workspace: string) => `Remove from ${workspace}`,
     /** The case-sensitive check on top of the primitive's case-folded one. */
     mismatch: 'Type the exact username to remove access.',
@@ -849,6 +869,20 @@ export const confirmCopy = {
     onlyHostDescription: (workspace: string, username: string | null) =>
       `You host ${workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again. To keep them, first invite another computer of yours with Add another device for ${username ? `@${username}` : 'yourself'}.`,
     onlyHostConfirm: 'Remove and give up hosting',
+    /**
+     * Against a server older than account ownership (AO-9): the host-only guard stays, and says
+     * that updating Crew there first makes the host controls follow the account.
+     */
+    onlyHostUpdateFirst: (login: string) =>
+      `Updating Crew on the server first (biorouter crew setup --server ${login}) makes the host controls follow your account instead.`,
+    /**
+     * A workspace that belongs to accounts (AO-9, AO-11): nothing is given up for good, since any
+     * computer that signs in as the account opens it again, host controls and all. Chats granted
+     * through this connection cannot be granted through a new one, and a lost key has a better
+     * way back that keeps the connection.
+     */
+    accountDescription: (workspace: string, server: string, username: string | null) =>
+      `It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. You can open ${workspace} again from any computer that signs in to ${server || 'the server'}${username ? ` as ${username}` : ''}. Chats given Crew access through this connection can’t be given access through a new one. If this computer lost its key, choose Add this computer again instead: it keeps the connection.`,
     /**
      * A workspace its host deleted (OW-5): no host controls, messages or way back are left to
      * warn about, only what goes from this computer.

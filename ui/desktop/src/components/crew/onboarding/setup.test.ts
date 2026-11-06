@@ -242,6 +242,10 @@ describe('setupRunFrom', () => {
       workFolder: '/home/alice/crew-work/lab',
       remoteAccess: null,
       contextDraft: '# hpc.ucsf.edu',
+      // Account ownership AO-8: nothing restarted, outdated or failed when the daemon lists none.
+      restarted: [],
+      outdated: [],
+      restartFailed: [],
     });
     expect(setupActive(run)).toBe(false);
     expect(plainStage(run)).toBe('ready');

@@ -12,6 +12,7 @@
 export { Welcome } from './Welcome';
 export { JoinDialog, type JoinDialogProps } from './JoinDialog';
 export { HostDialog, type HostDialogProps } from './HostDialog';
+export { OpenWorkspaceDialog, type OpenWorkspaceDialogProps } from './OpenWorkspaceDialog';
 export { JoinStatusCard, JOIN_POLL_INTERVAL_MS, LEGACY_JOIN_STATUS } from './JoinStatusCard';
 export { LegacyJoinForm } from './LegacyJoinForm';
 export { SetupChecklist } from './SetupChecklist';

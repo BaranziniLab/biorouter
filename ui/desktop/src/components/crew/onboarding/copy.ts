@@ -14,6 +14,96 @@ export const welcomeCopy = {
   body: 'Chat, share files and run agents with your lab.',
   join: 'Join a workspace',
   host: 'Host a new workspace',
+  /** Account ownership: a workspace this account hosts or belongs to, found by signing in. */
+  open: 'Open a workspace on a server',
+} as const;
+
+/**
+ * Open a workspace on a server (account ownership, "Desktop"; AO-6, AO-8, AO-9): sign in to a server
+ * as the account, see the workspaces there that the account hosts or belongs to, and open one, start
+ * one that is stopped, or update the Crew one runs. The host of every workspace offered is named
+ * (AO-6's trust rule).
+ */
+export const openCopy = {
+  title: 'Open a workspace on a server',
+  intro:
+    'Sign in to a server as yourself to see the workspaces you host or belong to there. You need no invitation or code for those.',
+  login: 'Your server login',
+  loginPlaceholder: 'you@server.example.edu',
+  loginHelper: 'The account you sign in to the server with, as in ssh you@server.',
+  loginInvalid: 'Use a login such as you@server.example.edu.',
+  advanced: 'Advanced',
+  look: 'Look for workspaces',
+  looking: 'Looking…',
+  lookAgain: 'Look again',
+  cancel: 'Cancel',
+  close: 'Close',
+  /** The list, under the steps. `server` is the dialog's word for the server. */
+  foundHeading: (server: string) => `Workspaces on ${server}`,
+  none: (server: string) =>
+    `There are no workspaces for you on ${server}. To join someone else’s, ask them to invite you.`,
+  /** AO-6's trust rule: every workspace offered names its host. */
+  hostedBy: (workspace: string, host: string) => `${workspace}, hosted by @${host}`,
+  hostedByYou: (workspace: string) => `${workspace}, hosted by you`,
+  unnamed: 'A workspace without a name',
+  role: {
+    host: 'You host it',
+    member: 'You’re a member',
+    invited: 'You’re invited',
+    removed: 'You were removed',
+  } as Record<string, string>,
+  state: {
+    running: 'Running',
+    stopped: 'Stopped',
+    deleted: 'Deleted',
+    storage_failed: 'Stopped saving changes',
+    unknown: 'Couldn’t be read',
+  } as Record<string, string>,
+  version: (version: string) => `Crew ${version}`,
+  thisComputer: {
+    connected: 'Open on this computer',
+    saved: 'Saved on this computer',
+    not_saved: '',
+  } as Record<string, string>,
+  open: 'Open',
+  openLabel: (workspace: string) => `Open ${workspace}`,
+  opening: 'Opening…',
+  start: 'Start',
+  startLabel: (workspace: string) => `Start ${workspace}`,
+  update: 'Update Crew',
+  updateLabel: (workspace: string) => `Update Crew for ${workspace}`,
+  /** AO-8: a restart ends what members had running there. */
+  othersConnected: (count: number) =>
+    count === 1
+      ? '1 person is connected. Their running agent commands will stop.'
+      : `${count} people are connected. Their running agent commands will stop.`,
+  updateAnyway: 'Update and restart',
+  keepRunning: 'Not now',
+  /** Under a workspace that runs an older Crew than this computer has. */
+  outdated: (running: string | null, installed: string | null) =>
+    running && installed
+      ? `Runs Crew ${running}; ${installed} is available.`
+      : 'Runs an older Crew.',
+  /** A removed account cannot open it; AO-2's words. */
+  removed: (workspace: string) =>
+    `You were removed from ${workspace}. Ask a member to invite you again.`,
+  /** Two hosts have a workspace of one name: never pick between them by name (AO-6). */
+  sameName: (workspace: string) =>
+    `Two people host a workspace named ${workspace} here. Check the host before you open one.`,
+  notesTruncated: 'Some workspaces may not be listed: the server had more than Crew looks through.',
+  /** What finished, from the job's outcome. */
+  restarted: (workspace: string, version: string | null) =>
+    version ? `Restarted ${workspace} on Crew ${version}.` : `Restarted ${workspace}.`,
+  started: (workspace: string, version: string | null) =>
+    version ? `Started ${workspace} on Crew ${version}.` : `Started ${workspace}.`,
+  restartFailed: (workspace: string, message: string) => `${workspace} didn’t restart: ${message}`,
+  restartCommand: 'start command',
+  /** No invitation line came with it: nothing to open it from. */
+  cantOpen:
+    'Crew on the server didn’t say how to open this workspace. Update Crew there, then look again.',
+  /** The daemon predates the server target (AO-8). */
+  outdatedDaemon:
+    'Opening a workspace this way needs a newer Biorouter background service. Quit and reopen Biorouter.',
 } as const;
 
 export const joinCopy = {
@@ -290,6 +380,31 @@ export const joinStateCopy = {
   removedTitle: (workspace: string) => `You’re no longer in ${workspace}`,
   removedBody: (workspace: string, person: string) =>
     `This computer or your account was removed from ${workspace}. If you didn’t expect that, ask ${person}.`,
+  /**
+   * The workspace removed this account (account ownership AO-2, join state `removed`): AO-2's
+   * sentence, exactly.
+   */
+  removedAccount: (workspace: string) =>
+    `You were removed from ${workspace}. Ask a member to invite you again.`,
+  /**
+   * The account may join with no code (AO-9, join state `ready`): signing in to the server as the
+   * account is the proof. Joins at once when the person opened or joined the workspace; otherwise
+   * it waits for Join.
+   */
+  readyTitle: (workspace: string) => `You can join ${workspace}`,
+  readyBody: (user: string | null, server: string) =>
+    user
+      ? `You sign in to ${server} as ${user}, so this computer can join without a code.`
+      : `You sign in to ${server} with an account the workspace knows, so this computer can join without a code.`,
+  readyAction: (workspace: string) => `Join ${workspace}`,
+  readyJoining: (workspace: string) => `Joining ${workspace}…`,
+  theServer: 'the server',
+  /**
+   * On a server whose workspaces belong to accounts (AO-9), a member's new computer joins by
+   * signing in, so a person the card calls not invited is not a member at all: one ask.
+   */
+  notInvitedAccountMessage: (first: string | null, username: string | null, workspace: string) =>
+    `${first ? `Hi ${first}, please` : 'Please'} invite ${username ? `@${username}` : 'me'} to ${workspace} in Crew.`,
   expired: (person: string) => `This invitation expired. Ask ${person} to invite you again.`,
   yourHost: 'your host',
   /** "your host" at the start of a sentence. */
@@ -464,8 +579,12 @@ export const hostCopy = {
   back: 'Back',
   // Step 3
   createHeading: (workspace: string, server: string) => `${workspace} on ${server}`,
+  /**
+   * Account ownership: the host is the server account, not this computer, so any computer that
+   * signs in to the server as the host opens the workspace as its host.
+   */
   createBody: (workspace: string) =>
-    `Creating ${workspace} makes this computer its first admin device.`,
+    `Creating ${workspace} makes your server account its host. Any computer that signs in as you can open it as host later.`,
   /**
    * Under `createBody` when Name chose Private and an institution (G4): Create also writes that
    * institution as the workspace's own label with `policy.set`, as `biorouter crew host` does, so
@@ -640,6 +759,8 @@ export const setupCopy = {
     checking: 'Checking server',
     'signing-in': 'Signing in',
     installing: 'Installing Crew in your account',
+    finding: 'Looking for workspaces',
+    updating: 'Updating running workspaces',
     starting: 'Starting workspace',
     connecting: 'Connecting',
     ready: 'Ready',
@@ -668,6 +789,18 @@ export const setupCopy = {
   fixStorage: 'Fix it for me',
   fixStorageHint:
     'Fix it for me takes write access for other people off exactly those folders (chmod go-w), then carries on setting up.',
+  /**
+   * `crew_host_name_in_use` (AO-9): the account already hosts a workspace of that name there.
+   * The daemon's sentence says so; this opens it.
+   */
+  openExisting: 'Open it on this computer',
+  /**
+   * The workspaces the job found (AO-8), under its steps, in the Host and Join dialogs.
+   * `server` is the dialog's word for the server.
+   */
+  foundLabel: (server: string) => `Your workspaces on ${server}`,
+  /** The server program could not list them; the job went on. */
+  workspacesNote: (note: string) => `Crew couldn’t list the workspaces on the server: ${note}`,
   /** The daemon's bounded detail of a stopped job: what the server or OpenSSH said. */
   output: 'Show details',
   outputLabel: 'What the server said',

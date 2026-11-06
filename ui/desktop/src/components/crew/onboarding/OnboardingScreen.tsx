@@ -12,6 +12,7 @@ import { HostDialog } from './HostDialog';
 import { JoinDialog } from './JoinDialog';
 import { JoinStatusCard } from './JoinStatusCard';
 import { NotSetUpPane } from './NotSetUpPane';
+import { OpenWorkspaceDialog } from './OpenWorkspaceDialog';
 import { TrustPane } from './TrustPane';
 import { Welcome } from './Welcome';
 
@@ -67,12 +68,16 @@ export function OnboardingScreen() {
   }
 }
 
-/** The Join and Host dialogs, each opened by its dialog intent (`{kind: 'join' | 'host'}`). */
+/**
+ * The Join, Host and Open a workspace on a server dialogs, each opened by its dialog intent
+ * (`{kind: 'join' | 'host' | 'open-workspace'}`).
+ */
 export function OnboardingDialogs() {
   return (
     <>
       <JoinDialog />
       <HostDialog />
+      <OpenWorkspaceDialog />
     </>
   );
 }

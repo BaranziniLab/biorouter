@@ -4,10 +4,21 @@ import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import { parseRefusal, refusalText, type RefusalViewer } from '../dialogs/refusals';
-import { CREW_RECONNECTING } from '../api/errors';
+import {
+  CREW_DEVICE_KEY_MISSING,
+  CREW_DEVICE_NOT_RECOGNIZED,
+  CREW_RECONNECTING,
+  CREW_REJOIN_CODES,
+} from '../api/errors';
+import { acknowledgeNewDevices, rejoinConnection, type CrewRejoined } from '../account/api';
+import { useBuildBrokerVersion } from '../account/brokerVersion';
+import { ChatSetupJobNotes } from '../account/ChatSetupJobs';
+import { newDevicesCopy, rejoinCopy, versionCopy } from '../account/copy';
+import { clearNeedsRejoin, useNeedsRejoin } from '../account/rejoinMarks';
 import { buildPeopleDirectory, personLabel } from '../identity';
 import { useJoinContext } from '../onboarding/joinContext';
 import { sshUsername } from '../onboarding/joinText';
+import { versionOlder } from '../onboarding/setup';
 import { serverLabel } from '../sidebar/sidebarView';
 import {
   connectFailureHost,
@@ -171,6 +182,16 @@ export interface ConnectionBarProps {
  * settings…" stay.
  * 4. the new-device notice, until it is reviewed.
  *
+ * Account ownership (docs/crew/design/account-ownership.md, "Desktop") adds, each said once:
+ * **Add this computer again** first, on `crew_device_key_missing`, `crew_device_not_recognized` or
+ * a device the person removed in Keys, in place of the error that said it; the older-Crew notice
+ * once a verified server runs an older Crew than this build carries (its `server_version` below
+ * this build's broker's, or, from a broker that says no version, a `hello` without
+ * `account_identity_v1`), with Update Crew for the host and whom to ask for everyone else; setups a
+ * chat or a terminal started, with Sign in; and the daemon's new devices
+ * (`new_devices`) with Review and Acknowledge, which replace this computer's own record when the
+ * daemon sends them.
+ *
  * Each message renders here exactly once: an action error reaches this bar only when the
  * controller's resolver says its own surface is not mounted, and a connect failure that is shown as
  * an error is not repeated as a need. Security state never animates here; notes appear in place.
@@ -197,6 +218,49 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
     connectionId,
     verified?.actor.id ?? null,
     verified ? (verified.actor.devices ?? null) : null
+  );
+
+  // ── Account ownership (docs/crew/design/account-ownership.md, "Desktop") ──────────────────
+  // Add this computer again (AO-9): the person removed this computer in Keys, or the daemon said
+  // its key is missing or the workspace no longer knows it while the account is a member.
+  const markedForRejoin = useNeedsRejoin(connectionId);
+  const rejoinCode =
+    [
+      connection?.last_error_code ?? null,
+      crew.refreshErrorCode ?? null,
+      error?.code ?? null,
+      failure?.code ?? null,
+    ].find((code): code is string => code !== null && CREW_REJOIN_CODES.includes(code)) ?? null;
+  const [rejoin, setRejoin] = useState<{
+    connectionId: string;
+    pending: boolean;
+    error: string | null;
+    done: CrewRejoined | null;
+  } | null>(null);
+  const rejoinHere = rejoin?.connectionId === connectionId ? rejoin : null;
+  // The daemon's new devices on the person's account (AO-10), until they are acknowledged. A
+  // daemon from before AO-10 sends none, and the notice falls back to this computer's own record.
+  const daemonDevices = Array.isArray(connection?.new_devices) ? connection.new_devices : null;
+  const [acknowledged, setAcknowledged] = useState<{ connectionId: string; seen: string[] }>({
+    connectionId: '',
+    seen: [],
+  });
+  const unseenDevices = (daemonDevices ?? []).filter(
+    (device) =>
+      !(
+        acknowledged.connectionId === connectionId && acknowledged.seen.includes(device.fingerprint)
+      )
+  );
+  const [ackError, setAckError] = useState<string | null>(null);
+  // The workspace's server runs an older Crew than the one this build carries (AO-4): the version
+  // its verified `hello` said (`server_version`) is below this build's broker's. A broker from
+  // before AO-4 says no version; then a verified `hello` without `account_identity_v1` is what says
+  // it is older. Said once the view is verified, until dismissed.
+  const [versionDismissed, setVersionDismissed] = useState<string | null>(null);
+  const serverVersion =
+    typeof connection?.server_version === 'string' ? connection.server_version : null;
+  const buildBrokerVersion = useBuildBrokerVersion(
+    serverVersion !== null && connection?.status === 'connected'
   );
 
   const barError = error && (errorSlotFor('global') || errorSlotFor('observer')) ? error : null;
@@ -270,6 +334,89 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
     actionError.code === CHANNEL_LOST_ERROR_CODE &&
     (!WORKSPACE_SCREENS.includes(crew.screen) || crew.reconnecting === true);
 
+  // Add this computer again: never for a deleted workspace, and never while the app cannot reach
+  // its background service.
+  const showRejoin =
+    !daemonAway &&
+    Boolean(connectionId) &&
+    !workspaceDeleted &&
+    (markedForRejoin || rejoinCode !== null || Boolean(rejoinHere?.pending || rejoinHere?.error));
+  const rejoinText =
+    rejoinCode === CREW_DEVICE_KEY_MISSING
+      ? rejoinCopy.keyMissing(workspace)
+      : rejoinCode === CREW_DEVICE_NOT_RECOGNIZED
+        ? rejoinCopy.notRecognized(workspace)
+        : rejoinCopy.removedHere(workspace);
+  // The rejoin note says what the refusal said, with its action: the same words are not repeated
+  // as an error or an observation note.
+  const errorSaidByRejoin =
+    showRejoin && actionError?.code !== undefined && CREW_REJOIN_CODES.includes(actionError.code);
+  const observationSaidByRejoin =
+    showRejoin &&
+    crew.refreshErrorCode != null &&
+    CREW_REJOIN_CODES.includes(crew.refreshErrorCode);
+  const addThisComputerAgain = async () => {
+    if (!connectionId || rejoinHere?.pending) return;
+    const id = connectionId;
+    setRejoin({ connectionId: id, pending: true, error: null, done: null });
+    try {
+      // The daemon adds a computer again over a live connection (it never dials under the
+      // connection's guard): connect first, as the person.
+      if (connection?.status !== 'connected') await crew.connect({ userInitiated: true });
+      const done = await rejoinConnection(id);
+      clearNeedsRejoin(id);
+      if (error?.code && CREW_REJOIN_CODES.includes(error.code)) crew.dismissError();
+      setRejoin({ connectionId: id, pending: false, error: null, done });
+      await crew.refresh().catch(() => undefined);
+    } catch (thrown) {
+      setRejoin({
+        connectionId: id,
+        pending: false,
+        error: actionErrorText(
+          thrown instanceof Error && thrown.message ? thrown.message : rejoinCopy.failed,
+          host,
+          { isHost: crew.isHost }
+        ),
+        done: null,
+      });
+    }
+  };
+
+  const acknowledgeDevices = async () => {
+    if (!connectionId || unseenDevices.length === 0) return;
+    const id = connectionId;
+    const seen = unseenDevices.map((device) => device.fingerprint);
+    setAckError(null);
+    try {
+      await acknowledgeNewDevices(id);
+      setAcknowledged({ connectionId: id, seen });
+      crew.reloadConnections?.();
+    } catch {
+      setAckError(newDevicesCopy.acknowledgeFailed);
+    }
+  };
+  const newestDevice = unseenDevices.reduce<(typeof unseenDevices)[number] | null>(
+    (newest, device) =>
+      newest === null || (device.added_at ?? 0) > (newest.added_at ?? 0) ? device : newest,
+    null
+  );
+
+  const olderCrew =
+    serverVersion !== null
+      ? versionOlder(serverVersion, buildBrokerVersion)
+      : connection?.account_identity === false;
+  const olderServer =
+    !daemonAway &&
+    connection?.status === 'connected' &&
+    olderCrew &&
+    verified !== null &&
+    versionDismissed !== connectionId;
+  const versionHost = (() => {
+    if (!olderServer || crew.isHost) return null;
+    const dir = buildPeopleDirectory(verified);
+    return dir.host && !dir.host.isFormer ? `@${dir.host.username}` : null;
+  })();
+
   const tryAgain = (
     <Button
       type="button"
@@ -342,7 +489,56 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
           </p>
         </Note>
       )}
-      {showObservationError && (
+      {showRejoin && (
+        <Note
+          tone={rejoinHere?.error ? 'danger' : 'warning'}
+          role="alert"
+          icon={KeyRound}
+          testId="crew-rejoin"
+          action={
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              aria-disabled={rejoinHere?.pending || undefined}
+              onClick={(event) => keepingFocus(event, addThisComputerAgain)}
+            >
+              {rejoinHere?.pending ? rejoinCopy.pending : rejoinCopy.action}
+            </Button>
+          }
+        >
+          <p>{rejoinHere?.error ?? rejoinText}</p>
+        </Note>
+      )}
+      {rejoinHere?.done && !showRejoin && (
+        <Note
+          tone="info"
+          role="status"
+          icon={KeyRound}
+          testId="crew-rejoined"
+          action={
+            <Button
+              type="button"
+              variant="ghost"
+              shape="round"
+              size="xs"
+              aria-label={connectionBarCopy.dismiss}
+              className="size-5"
+              onClick={(event) => keepingFocus(event, () => setRejoin(null))}
+            >
+              <X aria-hidden="true" />
+            </Button>
+          }
+        >
+          <p>
+            {rejoinCopy.done(workspace)}
+            {rejoinHere.done.evictedFingerprint
+              ? ` ${rejoinCopy.evicted(rejoinHere.done.evictedFingerprint)}`
+              : null}
+          </p>
+        </Note>
+      )}
+      {showObservationError && !observationSaidByRejoin && (
         <Note
           tone="warning"
           role="alert"
@@ -388,7 +584,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
         </Note>
       )}
 
-      {actionError && !staleChannelLoss && !redialShownBelow && (
+      {actionError && !staleChannelLoss && !redialShownBelow && !errorSaidByRejoin && (
         <Note
           tone="danger"
           role="alert"
@@ -467,7 +663,103 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
         </Note>
       )}
 
-      {devices.notice && (
+      {olderServer && (
+        <Note
+          tone="neutral"
+          role="status"
+          icon={AlertTriangle}
+          testId="crew-older-server"
+          action={
+            <div className="flex items-center gap-1">
+              {crew.isHost && connection ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() =>
+                    crew.openDialog({
+                      kind: 'open-workspace',
+                      route: {
+                        ssh_target: connection.ssh_target,
+                        port: connection.port ?? null,
+                        identity_file: connection.identity_file ?? null,
+                        proxy_jump: connection.proxy_jump ?? null,
+                      },
+                      check: true,
+                    })
+                  }
+                >
+                  {versionCopy.update}
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                shape="round"
+                size="xs"
+                aria-label={versionCopy.dismiss}
+                className="size-5"
+                onClick={(event) => keepingFocus(event, () => setVersionDismissed(connectionId))}
+              >
+                <X aria-hidden="true" />
+              </Button>
+            </div>
+          }
+        >
+          <p>
+            {versionCopy.older(workspace)}
+            {crew.isHost ? null : ` ${versionCopy.askHost(versionHost)}`}
+          </p>
+        </Note>
+      )}
+
+      <ChatSetupJobNotes />
+
+      {daemonDevices !== null && unseenDevices.length > 0 && (
+        <Note
+          tone="info"
+          role="status"
+          icon={KeyRound}
+          testId="crew-new-devices"
+          action={
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                aria-label={newDevicesCopy.reviewName}
+                onClick={() => crew.openDialog({ kind: 'keys' })}
+              >
+                {newDevicesCopy.review}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={(event) => keepingFocus(event, acknowledgeDevices)}
+              >
+                {newDevicesCopy.acknowledge}
+              </Button>
+            </div>
+          }
+        >
+          <p>
+            {unseenDevices.length === 1
+              ? newDevicesCopy.one(
+                  typeof newestDevice?.added_at === 'number'
+                    ? calendarDate(newestDevice.added_at)
+                    : null
+                )
+              : newDevicesCopy.many(unseenDevices.length)}
+            {unseenDevices.length === 1 && newestDevice?.added_via === 'account'
+              ? ` ${newDevicesCopy.viaAccount}`
+              : null}
+          </p>
+          {ackError ? <p className="text-text-danger">{ackError}</p> : null}
+        </Note>
+      )}
+
+      {daemonDevices === null && devices.notice && (
         <Note
           tone="info"
           role="status"

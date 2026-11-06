@@ -6,9 +6,10 @@ import { welcomeCopy } from './copy';
 import { SetupScreen } from './parts';
 
 /**
- * First run: no saved workspace. One accent action — Join a workspace — and hosting as a quiet
- * link, because most people join a workspace someone else hosts. Privacy is stated where it is
- * chosen (the Join and Host dialogs), not here.
+ * First run: no saved workspace. One accent action, Join a workspace, and two quiet links:
+ * opening a workspace the person already hosts or belongs to on a server (account ownership: a
+ * new computer signs in as the account, with no invitation), and hosting a new one. Privacy is
+ * stated where it is chosen (the Join and Host dialogs), not here.
  */
 export function Welcome() {
   const { openDialog } = useCrew();
@@ -22,6 +23,13 @@ export function Welcome() {
           <div className="flex flex-col items-center gap-2">
             <Button type="button" onClick={() => openDialog({ kind: 'join' })}>
               {welcomeCopy.join}
+            </Button>
+            <Button
+              type="button"
+              variant="link"
+              onClick={() => openDialog({ kind: 'open-workspace' })}
+            >
+              {welcomeCopy.open}
             </Button>
             <Button type="button" variant="link" onClick={() => openDialog({ kind: 'host' })}>
               {welcomeCopy.host}

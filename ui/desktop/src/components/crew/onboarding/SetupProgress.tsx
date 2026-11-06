@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Check } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
@@ -12,9 +12,15 @@ import { hostCopy, setupCopy } from './copy';
 import { useMounted } from './fields';
 import { Spinner } from './parts';
 import {
+  HOST_KEY_CODES,
+  SetupHostKeyHelp,
+  SetupWorkspaceList,
+  workspacesNoteText,
+} from './SetupWorkspaces';
+import {
   manualInstallCommands,
   plainStage,
-  plainStages,
+  plainStagesFor,
   readSetup,
   readSetupArtifact,
   setupActive,
@@ -295,13 +301,16 @@ export function useSetupJob({
 
 type StepState = 'done' | 'current' | 'next' | 'failed';
 
-/** The plain steps to show: Signing in only for a job that asked for it. */
+/**
+ * The plain steps to show: Signing in only for a job that asked for it, and Looking for workspaces
+ * and Updating running workspaces where the job has them (AO-8, `plainStagesFor`).
+ */
 function shownStages(intent: SetupIntent, job: SetupJob): PlainSetupStage[] {
   const signIn = job.run?.stages.find((stage) => stage.name === 'sign_in');
   const signedIn =
     job.askedToSignIn ||
     (signIn !== undefined && signIn.state !== 'skipped' && signIn.state !== 'pending');
-  return plainStages(intent).filter((stage) => stage !== 'signing-in' || signedIn);
+  return plainStagesFor(intent, job.run).filter((stage) => stage !== 'signing-in' || signedIn);
 }
 
 /**
@@ -315,11 +324,20 @@ export function SetupProgress({
   intent,
   server,
   testId,
+  showWorkspaces = true,
+  problemAction,
 }: {
   job: SetupJob;
   intent: SetupIntent;
   server: string;
   testId?: string;
+  /**
+   * List the workspaces the job found on the server (AO-8), under its steps. Off where the caller
+   * lists them itself, with its own actions (Open a workspace on a server).
+   */
+  showWorkspaces?: boolean;
+  /** One more way on beside Try again, for a refusal the caller can answer (Open, AO-9). */
+  problemAction?: ReactNode;
 }) {
   const fixHintId = useId();
   if (job.phase === 'idle' || job.phase === 'outdated') return null;
@@ -424,6 +442,7 @@ export function SetupProgress({
                   {setupCopy.fixStorage}
                 </Button>
               ) : null}
+              {problemAction}
               <Button type="button" variant="secondary" size="sm" onClick={() => void job.retry()}>
                 {setupCopy.tryAgain}
               </Button>
@@ -437,6 +456,19 @@ export function SetupProgress({
             </p>
           ) : null}
         </Note>
+      ) : null}
+      {/* The server's host key could not be verified: how to verify it, as Join's trust pane
+          says (Crew never accepts a key). */}
+      {job.problem?.code && HOST_KEY_CODES.includes(job.problem.code) ? (
+        <SetupHostKeyHelp code={job.problem.code} detail={job.problem.output} server={server} />
+      ) : null}
+      {showWorkspaces && job.run?.workspaces ? (
+        <SetupWorkspaceList workspaces={job.run.workspaces} label={setupCopy.foundLabel(server)} />
+      ) : null}
+      {workspacesNoteText(job.run?.workspacesNote ?? null) ? (
+        <p className="text-supporting text-text-muted" data-testid="crew-setup-workspaces-note">
+          {workspacesNoteText(job.run?.workspacesNote ?? null)}
+        </p>
       ) : null}
       {job.problem?.output ? (
         <Disclosure label={setupCopy.output}>

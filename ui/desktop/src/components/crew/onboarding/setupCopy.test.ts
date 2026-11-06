@@ -42,6 +42,9 @@ describe('setupCopy (OW-9)', () => {
       checking: 'Checking server',
       'signing-in': 'Signing in',
       installing: 'Installing Crew in your account',
+      // Account ownership AO-8's two new stages, in the contract's words.
+      finding: 'Looking for workspaces',
+      updating: 'Updating running workspaces',
       starting: 'Starting workspace',
       connecting: 'Connecting',
       ready: 'Ready',

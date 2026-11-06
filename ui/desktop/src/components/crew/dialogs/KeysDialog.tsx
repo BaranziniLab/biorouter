@@ -5,7 +5,10 @@ import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { FileText, KeyRound, Lock } from '../../icons/app-icons';
-import type { CrewConnection, CrewDevice } from '../crewApi';
+import { InlineConfirm } from '../access/RevokeControls';
+import { deviceCopy } from '../account/copy';
+import { markNeedsRejoin } from '../account/rejoinMarks';
+import { ACCOUNT_IDENTITY_CAPABILITY, type CrewConnection, type CrewDevice } from '../crewApi';
 import { useInitialFocus } from '../onboarding/fields';
 import type { ErrorSource } from '../state/types';
 import { keysCopy as copy } from './copy';
@@ -96,6 +99,57 @@ export interface KeysDialogProps {
   onClose(): void;
 }
 
+/**
+ * A device row's Remove, and in its place while asked, the inline two-step question with AO-5's
+ * warning: a lost computer keeps signing in as the person while it has their SSH key or password,
+ * so revoking its device is the second step. Removing this computer says what follows.
+ */
+function DeviceRemoval({
+  device,
+  isThis,
+  confirming,
+  pending,
+  onAsk,
+  onCancel,
+  onConfirm,
+}: {
+  device: CrewDevice;
+  isThis: boolean;
+  confirming: boolean;
+  pending: boolean;
+  onAsk(): void;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  if (confirming)
+    return (
+      <InlineConfirm
+        className="w-full pt-1"
+        question={isThis ? deviceCopy.confirmThis : deviceCopy.confirm(device.fingerprint)}
+        detail={
+          isThis ? `${deviceCopy.sshWarning} ${deviceCopy.thisFollows}` : deviceCopy.sshWarning
+        }
+        confirmLabel={deviceCopy.confirmAction}
+        cancelLabel={deviceCopy.keep}
+        pending={pending}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />
+    );
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="xs"
+      aria-label={isThis ? deviceCopy.removeThisLabel : deviceCopy.removeLabel(device.fingerprint)}
+      disabled={pending}
+      onClick={onAsk}
+    >
+      {deviceCopy.remove}
+    </Button>
+  );
+}
+
 const HEX_DIGEST = /^[0-9a-f]{64}$/i;
 
 /**
@@ -126,6 +180,10 @@ function useDeviceFingerprint(connection: CrewConnection | null): string | null 
  * not filled in, and the first key must not copy anything. Done keeps that focus while the menu
  * that opened the dialog finishes closing (`useInitialFocus`): opened with the pointer from the You
  * menu, focus used to drop to `<body>` a quarter of a second later (QA Q4-33).
+ *
+ * On a workspace that belongs to accounts (account ownership AO-5), every device row has Remove,
+ * this computer's included, behind an inline question that says SSH access goes first. Removing
+ * this computer marks the connection for Add this computer again in the connection bar.
  */
 export function KeysDialog({ onClose }: KeysDialogProps) {
   const { crew, snapshot } = useDialogView();
@@ -145,6 +203,35 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
     thisDevice !== null && devices.length === 1 && devices[0].fingerprint === thisDevice;
   const doneRef = React.useRef<HTMLButtonElement>(null);
   useInitialFocus(doneRef, true);
+
+  // Removing one of the account's devices (AO-5): a signed request of the person's own, only on a
+  // verified view of a workspace that takes it. Removing this computer leaves the connection
+  // needing Add this computer again.
+  const canRevoke =
+    snapshot !== null &&
+    Boolean(crew.connectionId) &&
+    (crew.capabilities?.includes(ACCOUNT_IDENTITY_CAPABILITY) === true ||
+      connection?.account_identity === true);
+  const [confirming, setConfirming] = React.useState<string | null>(null);
+  const [removed, setRemoved] = React.useState<string | null>(null);
+  const revokeKey = 'mutate:device.revoke';
+  const revoking = crew.isPending(revokeKey);
+  const revoke = async (device: CrewDevice, isThis: boolean) => {
+    const connectionId = crew.connectionId;
+    const done = await act(SOURCE, revokeKey, async () => {
+      await crew.request('device.revoke', { fingerprint: device.fingerprint }, { mutation: true });
+      return true;
+    });
+    if (!done) return;
+    setConfirming(null);
+    if (isThis) {
+      markNeedsRejoin(connectionId);
+      setRemoved(deviceCopy.removedThis);
+      return;
+    }
+    setRemoved(deviceCopy.removed(device.fingerprint));
+    await crew.refresh().catch(() => undefined);
+  };
 
   const readStatus = React.useCallback(async () => {
     const generation = ++reads.current;
@@ -253,6 +340,17 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
                 {deviceMeta(devices[0])}
               </p>
             ) : null}
+            {onlyThisDevice && canRevoke ? (
+              <DeviceRemoval
+                device={devices[0]}
+                isThis
+                confirming={confirming === devices[0].fingerprint}
+                pending={revoking}
+                onAsk={() => setConfirming(devices[0].fingerprint)}
+                onCancel={() => setConfirming(null)}
+                onConfirm={() => void revoke(devices[0], true)}
+              />
+            ) : null}
           </div>
         ) : null}
 
@@ -262,6 +360,9 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
             <ul className="biorouter-settings-list">
               {devices.map((device) => {
                 const meta = deviceMeta(device);
+                const isThis =
+                  device.this_device === true ||
+                  (thisDevice !== null && device.fingerprint === thisDevice);
                 return (
                   <li
                     key={device.fingerprint}
@@ -274,7 +375,7 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
                       >
                         {device.fingerprint}
                       </span>
-                      {thisDevice && device.fingerprint === thisDevice ? (
+                      {isThis ? (
                         <Badge tone="neutral" variant="badge">
                           {copy.thisDevice}
                         </Badge>
@@ -287,11 +388,32 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
                         {meta}
                       </span>
                     ) : null}
+                    {canRevoke ? (
+                      <DeviceRemoval
+                        device={device}
+                        isThis={isThis}
+                        confirming={confirming === device.fingerprint}
+                        pending={revoking}
+                        onAsk={() => setConfirming(device.fingerprint)}
+                        onCancel={() => setConfirming(null)}
+                        onConfirm={() => void revoke(device, isThis)}
+                      />
+                    ) : null}
                   </li>
                 );
               })}
             </ul>
           </section>
+        ) : null}
+
+        {removed ? (
+          <p
+            role="status"
+            className="text-supporting text-text-default"
+            data-testid="crew-device-removed"
+          >
+            {removed}
+          </p>
         ) : null}
 
         {status?.backend === 'keyring' ? (

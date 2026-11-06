@@ -9,6 +9,7 @@ import { Skeleton } from '../../ui/skeleton';
 import { Switch } from '../../ui/switch';
 import { AlertTriangle } from '../../icons/app-icons';
 import { getInvitation, type CrewEnrollmentInvite } from '../api/join';
+import { ACCOUNT_IDENTITY_CAPABILITY } from '../crewApi';
 import { joinerPerson, PersonName } from '../identity';
 import type { ErrorSource } from '../state/types';
 import { inviteCopy as copy } from './copy';
@@ -75,12 +76,15 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
       : null;
   const typed = typedUsername(username);
   const refusalId = `${formId}-refusal`;
+  // A workspace that belongs to accounts (account ownership): a member's new computer gets in by
+  // signing in to the server as them, so Add another device is never offered there.
+  const accountBroker = crew.capabilities?.includes(ACCOUNT_IDENTITY_CAPABILITY) === true;
   // The broker refused a plain invitation for a member (F3): the way on is Add another device,
   // which the refusal's sentence names, so it is turned on for the next Invite.
   const alreadyMember = refusal?.alreadyMember === true;
   React.useEffect(() => {
-    if (alreadyMember) setAddDevice(true);
-  }, [alreadyMember]);
+    if (alreadyMember && !accountBroker) setAddDevice(true);
+  }, [alreadyMember, accountBroker]);
   const usernameRef = React.useRef<HTMLInputElement>(null);
   const [again, setAgain] = React.useState(false);
 
@@ -217,7 +221,7 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
             </div>
           </Disclosure>
           <p className="text-supporting text-text-muted">
-            {copy.nextStep(first)}
+            {accountBroker ? copy.nextStepAccount(first) : copy.nextStep(first)}
             {expires ? ` ${copy.expires(expires)}` : null}
           </p>
         </div>
@@ -270,7 +274,7 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
               }}
             />
           </Field>
-          {refusal?.alreadyMember || addDevice ? (
+          {!accountBroker && (refusal?.alreadyMember || addDevice) ? (
             <div className="flex min-w-0 items-center justify-between gap-3">
               <label htmlFor={deviceId} className="text-label text-text-default">
                 {typed ? copy.addDevice(typed) : copy.addDeviceUnnamed}
@@ -281,11 +285,13 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
           <div id={refusalId}>
             <DialogErrorNote
               source={SOURCE}
-              render={(message) =>
-                lastAction === 'invite'
-                  ? inviteRefusal(message, typedUsername(username), workspace).text
-                  : refusalText(message)
-              }
+              render={(message) => {
+                if (lastAction !== 'invite') return refusalText(message);
+                const answer = inviteRefusal(message, typedUsername(username), workspace);
+                return accountBroker && answer.alreadyMember
+                  ? copy.refusal.alreadyMemberAccount(typedUsername(username), workspace)
+                  : answer.text;
+              }}
             />
           </div>
         </form>
