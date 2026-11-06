@@ -412,6 +412,69 @@ jobs:
           BIOROUTER_DISABLE_KEYRING: "true"
         run: cargo test --workspace --lib --bins --locked --no-fail-fast --timings
 
+      # Minimum macOS of the backends (dictation plan, DD-11). .cargo/config.toml
+      # sets MACOSX_DEPLOYMENT_TARGET=12.0 for every cargo build; without it rustc
+      # stamps 11.0 while the `cc` crate compiles C at the SDK's version, and a
+      # strong import newer than the Mac makes dyld refuse the whole binary. The
+      # self test proves the check fails on a binary built with the variable
+      # cleared, and that the config file is what carries it.
+      #
+      # The binaries checked are the real `biorouterd` and `biorouter`, not the
+      # test executables the step above linked for those bin targets. A test
+      # executable's entry point is the test runner, so the linker's dead
+      # stripping drops every path only `main` reaches, and that path's imports
+      # with it: measured on 2026-11-05, the `biorouter` test executable had 148
+      # imports and the real binary 434. Engine code that only the real worker
+      # entry reaches would vanish the same way, strong imports included.
+      #
+      # cargo builds a package's bins for its integration tests, inside the unit
+      # graph of the step above (the same workspace features, dev-dependencies
+      # included, and the same test profile). So asking for one small std-only
+      # integration test per package, the two sandbox guards, compiles only the
+      # bin targets of those two packages and the two tests again. A plain
+      # `cargo build` would resolve
+      # features without the dev-dependencies, use the dev profile's debug info,
+      # and compile most of the graph a second time. A renamed guard makes cargo
+      # fail here ("no test target named"), not pass.
+      #
+      # They are unstripped, but --require-imports holds either way: the check
+      # reads a stripped binary's imports with nm, which is how release.sh's
+      # build_mac_backends and verify check the stripped binaries that ship.
+      - name: Backends declare macOS 12.0
+        if: matrix.os == 'macos-latest' && !cancelled()
+        timeout-minutes: 15
+        shell: bash
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: |
+          set -euo pipefail
+          scripts/check-macos-deployment.sh --self-test
+          cargo test --workspace --locked --no-run --message-format=json \
+            --test every_test_binary_is_sandboxed --test cli_test_binaries_are_sandboxed \
+            > "$RUNNER_TEMP/backend-artifacts.jsonl"
+          python3 - "$RUNNER_TEMP/backend-artifacts.jsonl" > "$RUNNER_TEMP/backend-executables" <<'PY'
+          import json, sys
+          found = {}
+          with open(sys.argv[1], encoding="utf-8") as artifacts:
+              for line in artifacts:
+                  try:
+                      message = json.loads(line)
+                  except ValueError:
+                      continue
+                  if message.get("reason") != "compiler-artifact" or not message.get("executable"):
+                      continue
+                  target = message["target"]
+                  # The real executable: a bin target built as a program, not as a test.
+                  if ("bin" in target["kind"] and target["name"] in ("biorouterd", "biorouter")
+                          and not message["profile"]["test"]):
+                      found[target["name"]] = message["executable"]
+          if set(found) != {"biorouterd", "biorouter"}:
+              sys.exit(f"expected the biorouterd and biorouter executables, found {sorted(found)}")
+          for name in sorted(found):
+              print(found[name])
+          PY
+          xargs scripts/check-macos-deployment.sh --require-imports < "$RUNNER_TEMP/backend-executables"
+
       - name: Copilot hostname lookup never creates a Windows child console
         if: runner.os == 'Windows'
         timeout-minutes: 10

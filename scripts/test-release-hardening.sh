@@ -46,11 +46,14 @@ SOURCE_SHA="$(git -C "$ROOT" rev-parse HEAD)"
   activate_hermit() { :; }
   cargo() { printf 'cargo %s\n' "$*" >>"$MAC_TRACE"; }
   build_computer_use_helper() { printf 'helper %s\n' "$1" >>"$MAC_TRACE"; }
+  assert_mac_deployment_target() { printf 'guard %s\n' "$*" >>"$MAC_TRACE"; }
   ensure_docker() { fail "mac-backends unexpectedly requested Docker"; }
   run_cross_release() { fail "mac-backends unexpectedly cross-compiled a CI target"; }
   cmd_mac-backends "$VERSION"
-  expected="$(printf '%s\n' 'cargo build --release' 'cargo build --release --target x86_64-apple-darwin' 'helper darwin-arm64' 'helper darwin-x64')"
-  [ "$(cat "$MAC_TRACE")" = "$expected" ] || fail "mac-backends did not build both architectures and helpers"
+  expected="$(printf '%s\n' 'cargo build --release' 'cargo build --release --target x86_64-apple-darwin' \
+    "guard $ROOT/target/release/biorouter $ROOT/target/release/biorouterd $ROOT/target/x86_64-apple-darwin/release/biorouter $ROOT/target/x86_64-apple-darwin/release/biorouterd" \
+    'helper darwin-arm64' 'helper darwin-x64')"
+  [ "$(cat "$MAC_TRACE")" = "$expected" ] || fail "mac-backends did not build both architectures, check all four backends' minimum macOS, and build the helpers"
   assert_release_source "$VERSION"
   mutating_mac_build() {
     cargo() { printf 'source changed\n' >"$ROOT/changed-during-build.txt"; }

@@ -427,6 +427,18 @@ run_cross_release() { # <cross function> <target volume> <cargo command> <post c
   return "$rc"
 }
 
+# ── minimum macOS (dictation, DD-11) ──
+# .cargo/config.toml sets MACOSX_DEPLOYMENT_TARGET=12.0 for every cargo build, but
+# a value already in the environment wins over it, and dyld refuses to start a
+# backend whose minimum (or a strong import) is newer than the Mac it runs on. The
+# release binaries are stripped; the check reads their imports with nm when
+# dyld_info cannot, and --require-imports makes an unread import table a failure,
+# so the binaries that ship get both checks.
+assert_mac_deployment_target() { # <binary>...
+  "$ROOT/scripts/check-macos-deployment.sh" --require-imports "$@"
+}
+# ── end minimum macOS ──
+
 build_mac_backends() {
   local v="$1" helper_target
   activate_hermit
@@ -434,6 +446,12 @@ build_mac_backends() {
   cargo build --release
   log "compiling mac x64 release backend"
   cargo build --release --target x86_64-apple-darwin
+  # ── minimum macOS (dictation, DD-11): checked minutes into a release, not on a user's macOS 12 ──
+  assert_mac_deployment_target \
+    "$ROOT/target/release/biorouter" "$ROOT/target/release/biorouterd" \
+    "$ROOT/target/x86_64-apple-darwin/release/biorouter" "$ROOT/target/x86_64-apple-darwin/release/biorouterd" \
+    || die "a macOS backend does not declare macOS 12.0, or imports a newer symbol strongly (see above); unset any MACOSX_DEPLOYMENT_TARGET in this shell and rebuild"
+  # ── end minimum macOS ──
   for helper_target in darwin-arm64 darwin-x64; do
     build_computer_use_helper "$helper_target"
   done
@@ -887,6 +905,21 @@ cmd_verify() {
       check_bundled_crew_broker "$app/Contents/Resources/bin" "$v" || ok=0
     fi
   done
+  # ── minimum macOS (dictation, DD-11): the backends inside the signed apps ──
+  # Read from the packaged bin/ rather than target/: these are the bytes users
+  # get, after staging, signing and notarization.
+  for app in "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" \
+             "$DESK/out/Biorouter-darwin-x64/Biorouter.app"; do
+    if [ -d "$app" ]; then
+      if assert_mac_deployment_target \
+           "$app/Contents/Resources/bin/biorouter" "$app/Contents/Resources/bin/biorouterd"; then
+        log "bundled backends declare macOS 12.0 and import nothing newer strongly ✓ (${app#"$DESK"/})"
+      else
+        ok=0
+      fi
+    fi
+  done
+  # ── end minimum macOS block ──
   # The electron-updater manifest is generated at publish time; verify it if
   # already present (and that it references both arch zips).
   local yml="$DESK/out/make/latest-mac.yml"
