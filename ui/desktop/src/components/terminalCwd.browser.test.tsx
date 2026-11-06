@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { build } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TerminalCwd } from './TerminalCwd';
@@ -154,6 +155,172 @@ describe('the terminal dock’s working folder in a real layout engine', () => {
     const tab = await open(LONG, 600, 600);
     try {
       expect((await measure(tab)).display).toBe('none');
+    } finally {
+      await tab.close();
+    }
+  });
+});
+
+/**
+ * Where the ellipsis ends and the name begins, as drawn. `text-overflow: ellipsis` hides whole
+ * glyphs and draws the ellipsis right after the last one that fits, so the rest of the box the
+ * strip gave the leading part stayed empty, and the dock read `~/bi… /home`: 2 to 8px between the
+ * ellipsis and the name at 12px, varying with the width. `fitCwdLead` cuts the box to the glyphs it
+ * keeps. Only painted pixels can show the gap (no DOM node holds the ellipsis), so the page is
+ * captured and read back, and the REAL component runs, bundled with esbuild, so its layout effect
+ * and its ResizeObserver are what fit the box.
+ */
+describe('the terminal folder’s ellipsis against the name, as painted', () => {
+  let browser: Browser | null = null;
+  let script = '';
+  let css = '';
+
+  const ENTRY = `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { TerminalCwd } from './TerminalCwd';
+    const widths = (window as any).__WIDTHS__ as number[];
+    const cwd = (window as any).__CWD__ as string;
+    createRoot(document.getElementById('root')!).render(
+      <>
+        {widths.map((width) => (
+          <div key={width} className="strip" data-width={width} style={{ width }}>
+            <div className="tabs"><div className="tab">BioRouter</div></div>
+            <TerminalCwd cwd={cwd} />
+          </div>
+        ))}
+      </>
+    );
+  `;
+
+  beforeAll(async () => {
+    browser = await launchChromium();
+    if (!browser) return;
+    const bundle = await build({
+      stdin: { contents: ENTRY, loader: 'tsx', resolveDir: here, sourcefile: 'entry.tsx' },
+      bundle: true,
+      write: false,
+      format: 'iife',
+      jsx: 'automatic',
+      platform: 'browser',
+      loader: { '.css': 'empty' },
+      define: { 'process.env.NODE_ENV': '"production"' },
+      logLevel: 'silent',
+    });
+    script = bundle.outputFiles[0].text;
+    css = readFileSync(resolve(here, 'terminal-dock.css'), 'utf8');
+  }, 120_000);
+
+  afterAll(async () => {
+    await browser?.close();
+  }, 120_000);
+
+  /** Every strip width from 300 to 440px in 7px steps: the gap varies with the width. */
+  const WIDTHS = Array.from({ length: 21 }, (_, i) => 300 + i * 7);
+
+  async function mount(cwd: string): Promise<Page> {
+    const tab = await browser!.newPage({
+      viewport: { width: 1000, height: 1000 },
+      deviceScaleFactor: 1,
+    });
+    await tab.setContent(
+      `<!doctype html><html><head><style>${PAGE}${css}
+        .strip { margin: 0 0 4px; background: #fff; }</style></head>` +
+        `<body><div id="root"></div></body></html>`
+    );
+    await tab.evaluate(
+      ({ widths, cwd }) => Object.assign(window, { __WIDTHS__: widths, __CWD__: cwd }),
+      { widths: WIDTHS, cwd }
+    );
+    await tab.addScriptTag({ content: script });
+    await tab.waitForSelector('.br-terminal-cwd__lead');
+    return tab;
+  }
+
+  /**
+   * For each strip: whether the leading part is cut, and the empty columns between the last ink
+   * left of the name's box (the ellipsis) and the first ink in it. Ink is any pixel darker than
+   * the white ground.
+   */
+  async function gaps(tab: Page) {
+    const shot = (await tab.screenshot()).toString('base64');
+    return tab.evaluate(async (png) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${png}`;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(image, 0, 0);
+      return [...document.querySelectorAll<HTMLElement>('.strip')].map((strip) => {
+        const lead = strip.querySelector<HTMLElement>('.br-terminal-cwd__lead')!;
+        const name = strip.querySelector<HTMLElement>('.br-terminal-cwd__name')!;
+        const leadBox = lead.getBoundingClientRect();
+        const nameBox = name.getBoundingClientRect();
+        const x0 = Math.floor(leadBox.left);
+        const x1 = Math.ceil(nameBox.right);
+        const y0 = Math.floor(nameBox.top);
+        const height = Math.ceil(nameBox.height);
+        const data = context.getImageData(x0, y0, x1 - x0, height).data;
+        const split = Math.round(nameBox.left) - x0;
+        let leadInk = -1;
+        let nameInk = Infinity;
+        for (let x = 0; x < x1 - x0; x++) {
+          for (let y = 0; y < height; y++) {
+            const at = (y * (x1 - x0) + x) * 4;
+            if (data[at] + data[at + 1] + data[at + 2] > 600) continue;
+            if (x < split) leadInk = Math.max(leadInk, x);
+            else nameInk = Math.min(nameInk, x);
+          }
+        }
+        return {
+          width: Number(strip.dataset.width),
+          cut: lead.scrollWidth > lead.clientWidth || lead.style.maxWidth !== '',
+          gap: nameInk - leadInk - 1,
+        };
+      });
+    }, shot);
+  }
+
+  const LONG_CWD = '/Volumes/shared/research/projects/cohorts/2026/BioRouter';
+
+  it('draws the ellipsis against the name at every width, as glyphs sit in a word', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await mount(LONG_CWD);
+    try {
+      // The space between two glyphs of the path itself, drawn whole: the measure of "touching".
+      const measured = await gaps(tab);
+      const cut = measured.filter((strip) => strip.cut);
+      expect(cut.length, 'the leading part is cut at every width here').toBe(WIDTHS.length);
+      for (const strip of cut) {
+        expect(
+          strip.gap,
+          `the space after the ellipsis in a ${strip.width}px strip`
+        ).toBeLessThanOrEqual(2);
+      }
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('fits again when the strip is resized, wider and narrower', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await mount(LONG_CWD);
+    try {
+      for (const delta of [5, -9]) {
+        await tab.evaluate((by) => {
+          for (const strip of document.querySelectorAll<HTMLElement>('.strip')) {
+            strip.style.width = `${Number(strip.dataset.width) + by}px`;
+            strip.dataset.width = String(Number(strip.dataset.width) + by);
+          }
+        }, delta);
+        // The ResizeObserver's callback runs before the next paint.
+        await tab.evaluate(() => new Promise((done) => requestAnimationFrame(() => done(null))));
+        for (const strip of await gaps(tab)) {
+          expect(strip.gap, `after a resize, a ${strip.width}px strip`).toBeLessThanOrEqual(2);
+        }
+      }
     } finally {
       await tab.close();
     }
