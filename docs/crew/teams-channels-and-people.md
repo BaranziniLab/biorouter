@@ -1,7 +1,7 @@
 # Teams, channels and people
 
 > **What this is.** Who may do what in an open or a managed workspace, how to use the Crew sidebar, create, join, manage and delete teams and channels, add and remove people, and set your name.
-> **Status:** Current. Checked against the Crew code on 2026-10-16.
+> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
 > **Audience:** Lab members who use Crew in the Biorouter desktop app. No terminal experience is needed.
 
 A workspace holds teams, and each team holds channels where you post messages and share files. Crew has no direct messages. Text in braces stands for a name Crew fills in, such as {team}.
@@ -24,7 +24,7 @@ A workspace is **open** or **managed**, and the host chooses which ([Choose who 
 | Invite people to the workspace and let them in | The host only | Any member |
 | Remove someone from the workspace, rename it, change its privacy or governance, or delete it | The host only | The host only |
 
-The host runs the workspace and has a "Host" badge. Like everyone else, the host sees only the teams and channels the host is in, so for any other team or channel in a managed workspace, ask its owner. A channel's owner starts as its creator and has a "Channel owner" badge. Agents cannot add people, delete anything or change who manages. Nobody can leave a team, or remove someone from one.
+The host runs the workspace and has a "Host" badge. Like everyone else, the host sees only the teams and channels the host is in, so for any other team or channel in a managed workspace, ask its owner. A channel's owner starts as its creator and has a "Channel owner" badge. An agent's task, or a chat connected to a channel with `/crew`, cannot add people, delete anything or change who manages. Any other chat can do these for you, as you, but only after you allow each change on its card ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). Nobody can leave a team, or remove someone from one.
 
 In an open workspace, a person let in is added to every team and every channel that is not archived, a new team gets every member, and a new channel gets every member of its team. So everyone usually sees everything, and adding people there does not end anyone's agent access.
 
@@ -47,7 +47,7 @@ Up, Down, Home and End move between teams and channels. Left and Right collapse 
 
 ### The You row
 
-The bottom row shows your avatar, name and "on {server}". It opens **Edit profile…**, **Keys and security…** and **Copy my username**, which copies it without the `@`.
+The bottom row shows your avatar, name and "on {server}". It opens **Edit profile…**, **Keys and security…**, which lists your computers in the workspace ([Your computers](privacy-and-security.md#your-computers)), and **Copy my username**, which copies it without the `@`.
 
 ## Create and manage teams
 

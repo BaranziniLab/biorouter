@@ -1692,6 +1692,90 @@ test('dashes: an em or en dash anywhere in docs/crew is refused', () => {
   );
 });
 
+test("account-sentences: the first pass's words, written from the design, are refused (account ownership)", () => {
+  const JOINING_PAGE = 'docs/crew/joining-a-workspace.md';
+  const ACCOUNT_COPY = 'ui/desktop/src/components/crew/account/copy.ts';
+  const TOOL_HOST = 'crates/biorouter-server/src/routes/crew_tools/mod.rs';
+  const AGENT_ROUTES = 'crates/biorouter-server/src/routes/agent.rs';
+  // The badge, buttons and card answer the first pass named, which no screen shows.
+  assertCaught(
+    { [PRIVACY]: (text) => text.replaceAll('**This device**', '**This computer**') },
+    'account-sentences',
+    /privacy-and-security\.md does not name the control .* shows as \*\*This device\*\*/
+  );
+  assertCaught(
+    { [HOSTING]: (text) => text.replaceAll('**Open it on this computer**', '**Open**') },
+    'account-sentences',
+    /hosting-a-workspace\.md does not name the control .* shows as \*\*Open it on this computer\*\*/
+  );
+  assertCaught(
+    { [AGENTS]: (text) => text.replaceAll('**Allow once**', '**Allow**') },
+    'account-sentences',
+    /agents-and-chat-access\.md does not name the control .* shows as \*\*Allow once\*\*/
+  );
+  // A quote of the chat's refusal in other words than the code's.
+  assertCaught(
+    {
+      [AGENTS]: swap(
+        '| "This chat uses a public model, so it can\'t read this workspace as you. Its connection and the workspace both have to be Public. Choose a private model to read it." |',
+        '| "This chat uses a public model, so it can\'t read this workspace. Choose a private model." |'
+      ),
+    },
+    'account-sentences',
+    /quotes "This chat uses a public model, so it can't read this workspace\. Choose a private model\.", which is not how PUBLIC_MODEL_READ/
+  );
+  // The code rewords a bar note and the manual keeps the old words.
+  assertCaught(
+    {
+      [ACCOUNT_COPY]: swap(
+        'Choose Add this computer again to make a new one.',
+        'Choose Add this computer again to get a new key.'
+      ),
+    },
+    'account-sentences',
+    /joining-a-workspace\.md quotes "This computer no longer has its key for \{workspace\}\. Choose Add this computer again to make a new one\.", which is not how the Add this computer again notes/
+  );
+  // A page a reader is sent to drops a sentence it must quote.
+  assertCaught(
+    {
+      [JOINING_PAGE]: swap(
+        ' Crew says "Two people host a workspace named chen-lab here. Check the host before you open one.", and names each host in the list.',
+        ' Crew names each host in the list.'
+      ),
+    },
+    'account-sentences',
+    /joining-a-workspace\.md does not quote Open a workspace on a server's note for two hosts of one name/
+  );
+  // A control renamed in the code, and the manual still names the old one.
+  assertCaught(
+    { [ACCOUNT_COPY]: swap("confirmAction: 'Remove device',", "confirmAction: 'Revoke device',") },
+    'account-sentences',
+    /account\/copy\.ts no longer shows "Remove device"/
+  );
+  // A constant reworded in the code fails every quote of its old words.
+  assertCaught(
+    {
+      [AGENT_ROUTES]: swap(
+        "so they run only in a chat's own turn, where their approval cards can be shown.",
+        'so they run only inside a chat.'
+      ),
+    },
+    'account-sentences',
+    /agents-and-chat-access\.md quotes "crew__read and crew__change act as you, so they run only in a chat's own turn/
+  );
+  // A family whose words are gone from the code fails instead of passing.
+  assertCaught(
+    {
+      [TOOL_HOST]: swap(
+        '"Let this chat read {workspace} as you\\nIt can then read',
+        '"Allow this chat to read {workspace} as you\\nIt can then read'
+      ),
+    },
+    'account-sentences',
+    /found no the read-consent card's first line/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

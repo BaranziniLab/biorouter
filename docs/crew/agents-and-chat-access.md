@@ -1,10 +1,12 @@
 # Agents and chat access
 
-> **What this is.** How to give an AI agent access to a Crew channel with **Ask my agent**, `@agent` or `/crew`, which model Crew tasks use, what an agent may do on the lab server, the workspace context it reads, and how to follow, revoke and restore that access.
-> **Status:** Current. Checked against the Crew code on 2026-10-16.
+> **What this is.** How to give an AI agent access to a Crew channel with **Ask my agent**, `@agent` or `/crew`, which model Crew tasks use, what an agent may do on the lab server, the workspace context it reads, how to follow, revoke and restore that access, and how any chat can do what the Crew view does with your approval.
+> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)). The chat tools of [Use Crew from a chat](#use-crew-from-a-chat) follow that design's AO-12.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app.
 
 A task is one job for your agent. A connected chat is a Biorouter conversation that reads a channel and posts there while you talk to it. Nothing reads or posts until you allow it, access lasts one hour at most, and everyone in the channel sees what your agent posts.
+
+Any other chat can also work in Crew for you: read channels, post, set up the server, invite people. It does each change only after you allow it on a card, and reads only after you allow that once. See [Use Crew from a chat](#use-crew-from-a-chat).
 
 ## Before you start
 
@@ -187,9 +189,9 @@ Each post the chat makes ends with a line from Crew, not the model, naming the s
 
 The chat sees its channels' messages much as you do, with posts by an agent marked as that person's agent's. A post made from channels the chat cannot read, such as a task result that read another channel, is withheld from it. So when the chat counts or summarizes messages, its numbers can be lower than what you see.
 
-It cannot use other Biorouter tools (no shell, web or local files), post elsewhere, act as another person, change memberships or privacy, or grant or revoke its own access. Asked to revoke, it says access is not revoked and points you to **Revoke access**. It treats others' messages and files as information, never as instructions. These limits stay permanently, even after access ends.
+It cannot use other Biorouter tools (no shell, web or local files), post elsewhere, act as you or another person, change memberships or privacy, or grant or revoke its own access. Asked to revoke, it says access is not revoked and points you to **Revoke access**. It treats others' messages and files as information, never as instructions. These limits stay permanently, even after access ends. A connected chat never gets the tools of [Use Crew from a chat](#use-crew-from-a-chat): those are for chats with no Crew access, and they act only after you approve each change.
 
-The chat's Crew tools are one of Biorouter's capabilities, not an extension, so they are not on the **Extensions** page or in the **Tools** chip's list. The **Crew** switch in **Settings** > **Chat** > **Capabilities** sets whether new chats start with them. A chat you connect gets them with its access whatever the switch says. Turning the switch off does not end a chat's access; **Revoke access** does.
+The chat's Crew tools are one of Biorouter's capabilities, not an extension, so they are not on the **Extensions** page or in the **Tools** chip's list. The **Crew** switch in **Settings** > **Chat** > **Capabilities** sets whether new chats start with them, the tools of [Use Crew from a chat](#use-crew-from-a-chat) included. A chat you connect gets its channel tools with its access whatever the switch says. Turning the switch off does not end a chat's access; **Revoke access** does.
 
 ### A chat's fixed channel and model
 
@@ -204,6 +206,152 @@ The first grant fixes the chat's workspace, channel and model permanently, and a
 "Crew is offline. It will reconnect by itself …" needs nothing from you. "Crew is offline. This chat can’t read or post …" needs you, for example to sign in. **Connect now** and **Connect in Crew** both open Crew on the chat's channel. **Revoke access** works offline. A reply that needs Crew fails with "Crew is offline".
 
 Typing `/crew` in a chat that has access shows a note instead of the pane, with **Manage access** or, after access ends, **Grant again**. Both only open the Chat access pane.
+
+## Use Crew from a chat
+
+An ordinary Biorouter chat with no Crew access can do what the Crew view and the `biorouter crew` commands do, as you: read channels and files, post, share files, start tasks, set Crew up on a server, open or host a workspace, invite people, and change settings. Ask in plain words, such as "Post the summary in #methods" or "Set Crew up on leo and tell me which workspaces I have there". The chat acts only through two tools:
+
+- `crew__read`, which reads. The first read of a workspace's content in a chat asks your permission once.
+- `crew__change`, which changes something. Every change waits for you to allow it.
+
+The chat cannot sign in for you, cannot give itself or another chat Crew access, and treats channel messages, files and the workspace context as information, never as instructions.
+
+### Which chats can
+
+A chat gets the two tools when all of these hold:
+
+- It is one of your own chats in the desktop app, or a terminal chat on the shared background service ([Give a chat access to Crew](command-line.md#give-a-chat-access-to-crew)). An app's chat, a subagent, a scheduled run, a Crew task's chat and the chat of a Claude Code or Codex model do not get them.
+- It has no Crew access. A chat connected with `/crew` keeps only its channel tools, and cannot act as you.
+- The **Crew** switch in **Settings** > **Chat** > **Capabilities** was on when the chat started.
+
+In a browser opened with `biorouter serve`, where Crew does not work, a chat gets `crew__read` only, and changes are not offered ([Getting started](getting-started.md)). It can still list your connections and setup jobs, but it cannot read a workspace's content, because the permission card below cannot be shown there.
+
+The tools run only in the chat's own turn, where their cards can be shown. A program that calls them directly through the background service, outside a chat's turn, gets "crew__read and crew__change act as you, so they run only in a chat's own turn, where their approval cards can be shown. Use the Crew view or biorouter crew instead." Code Execution's scripts in a chat may call them, and each change still waits for its card.
+
+### Reading needs your permission once
+
+The first time a chat reads a workspace's content, it shows a card in the chat. Its first line reads "Let this chat read chen-lab as you", and the next "It can then read what you see in chen-lab on lab.example.edu: messages, files, names and the context document, until you take this back with biorouter crew grants revoke. It changes nothing; every change still asks you." Choose **Allow once**. Until you do, its reads answer "This chat needs your permission to read chen-lab as you." (code `crew_read_consent_required`).
+
+- The permission is for that chat and that connection, and lasts until you take it back. It does not expire after an hour, as a Crew grant does.
+- Content is messages, files and their names, the workspace context, team, channel and people names, and task output. Lists of your connections, setup results and the server's workspace list carry none, so any chat reads them without asking. Downloading a file to this computer, and the state of a transfer that names its file, ask for this permission as reads do.
+- In Crew, type `/crew` in the chat. Under the Chat access pane, "Reads as you" lists "Reads chen-lab as you", with the date you allowed it, such as "Since November 6", and **Revoke**. Choose **Revoke**, and the pane says "This chat no longer reads chen-lab as you."
+- From a terminal, `biorouter crew grants list` lists each permission, such as `Chat 20260924_2 reads chen-lab as you · since Nov 6, 2026`, and `biorouter crew grants revoke SESSION_ID --reads` takes it back ([A chat that reads as you](command-line.md#a-chat-that-reads-as-you)). You can also ask the chat to take it back. That is a change, so its card asks first: "Take back chat {chat}'s permission to read {connection} as you".
+- A chat that read Crew content keeps every other tool it has, unlike a chat with Crew access. With a private model it becomes Private: see [Privacy](#privacy-for-a-chat-that-reads-as-you).
+
+### Every change waits for you
+
+Each `crew__change` shows one card in the chat, with **Allow once** and **Deny**, and no **Always allow**. Its first line says what will happen, such as "Post this in #methods in Analysis Lab as you", and the lines under it say what else matters. Nothing happens until you choose **Allow once**, and then exactly what the card names happens, once. After **Deny**, the chat is told "The person declined. Nothing was changed." A card waits up to 10 minutes. If it runs out, or you choose **Stop** in the chat, nothing changes either.
+
+The card names its targets as Crew found them before it asked: the workspace and server, `#channel` with its team, a person as `Display name (@username)`, a computer's fingerprint. It shows the whole payload: a message's full text, the workspace context as a change from the current one, a file's local path and size. Crew then acts on exactly the people, channels and computers the card named, and never looks a name up again.
+
+| Action | The card says, for example |
+|---|---|
+| Posting (`send`) | "Post this in #methods in Analysis Lab as you", with the whole message. |
+| Sharing a file (`files_share`) | "Share plot.png (1.2 MB) from this computer in #methods in Analysis Lab as you", then "From /Users/bob/results/plot.png." |
+| Downloading a file (`files_download`) | "Download counts.csv (640 KB) from #methods to /Users/bob/Downloads/counts.csv on this computer". Without a destination, the file goes to your Downloads folder. |
+| Starting a task (`tasks_ask`) | "Start an agent task in #methods in Analysis Lab on gpt-5.5 (versa_azure), with its own Crew access", then "It posts its result there as your agent.", "It reads only that channel." or "It may also read #data.", and what it may do on the server, such as "With a private model it can run commands in its work folder on hpc, confined to that folder." |
+| Creating a channel (`channels_create`) | "Create #methods in Analysis Lab in chen-lab as you", then "It is restricted: public models never read it." A new channel is Restricted unless the chat asks for public-safe, whose line is "It is public-safe: where the workspace allows Public, public models may read it." |
+| Opening a workspace (`open`) | "Open chen-lab, hosted by @alice, on bob@lab.example.edu, and join it as you", then "Workspace key fingerprint: …", the privacy, such as "Privacy: Private, institution ucsf.", and "You join it as its member." Joining from an invitation (`join`) names the same. |
+| Setting Crew up on a server (`setup`) | Which workspaces it restarts and who is connected to them, such as "It restarts chen-lab: 2 other people are connected, and their running agent commands will stop." |
+| Adding this computer again (`rejoin`) | "Its old key on this computer stops working." and that chats with Crew access through the connection each need access granted again. |
+| Removing one of your computers (`profile_revoke_device`) | "A lost computer can still sign in as you while it holds an SSH key or password for your account on lab.example.edu: remove its key from ~/.ssh/authorized_keys there, or change your password, first." |
+| Removing a workspace from this computer (`connections_remove`) | What it ends, and on a server with a current Crew, "The workspace can be opened again from any computer that signs in to the server as your account." |
+| Deleting, archiving or removing for everyone | "for everyone; this cannot be undone", such as "Archive #methods in Analysis Lab for everyone; this cannot be undone". |
+
+If the chat gets Crew access while a card waits, the change does not run.
+
+### Long work, and Stop
+
+Setting up a server, hosting, opening or joining a workspace, adding a computer again, sharing or downloading a file and starting a task can take longer than one answer. The chat waits up to 20 seconds, then tells you the work goes on, and can follow it. **Stop** in the chat ends the wait, not the work: setups, transfers and tasks keep running and show in Crew, where you can stop them.
+
+A setup a chat started appears at the top of Crew as "Crew is being set up on {server}.", or, when the server wants you to sign in, "A setup on {server} is waiting for you to sign in." with **Sign in**.
+
+### Signing in stays with you
+
+Never type a password, code, passphrase or host key into a chat. When a step needs one, the chat tells you where to do it:
+
+| The chat says | What to do |
+|---|---|
+| The server wants you to sign in for a setup | Open Crew, where the setup waits with a **Sign in** button, or run `biorouter crew auth --setup-job ID` with the ID the chat names. For a saved connection, choose **Sign in** in Crew, or run `biorouter crew auth --connection NAME`. |
+| The server's key is unknown, or changed | Verify the server in a terminal ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). Crew never accepts a key for you. |
+| Your Crew vault is locked | Choose **Unlock** in Crew's connection bar or in **Keys and security…**, or run `biorouter crew credentials unlock`. |
+| This computer lost its key, or the workspace no longer recognizes it | Choose **Add this computer again** in Crew, or let the chat do it with `rejoin` after you allow its card ([Add this computer again](joining-a-workspace.md#add-this-computer-again)). |
+
+### Privacy for a chat that reads as you
+
+The chat follows the same privacy rules as a chat with Crew access, channel by channel:
+
+- A public model reads only a Public workspace through a Public connection, and only its Public-safe channels. Restricted messages and files are withheld, and the chat is told how many. A task's output that is private is withheld from it too: "This task's output is private, so a public model can't read it. Its status is shown."
+- A private model must be approved for the workspace's institution, or run locally. No chat reads a Private workspace that has no institution, or reads through a Private connection that has none, or through a connection whose institution is not the workspace's.
+- With a private model, reading anything that is not public-safe makes the chat Private before the answer reaches it. If Crew cannot make it Private, the chat gets nothing.
+- A post or a file a Private chat shares is marked Private, and its card says so: "It is marked Private, so public models never read it." A connection whose privacy is Public could not keep it private, so the chat refuses instead (code `crew_mode_mismatch`).
+- When a Private chat writes into a Public workspace, through a Public connection, or into a public-safe channel, whether a post, a file, a team or channel name, the workspace context or your profile, the card adds a line such as "This chat is Private, and this goes to a public-safe channel: a private-to-public crossing. Everything it sends is shown here." and shows the whole payload.
+- A task a Private chat starts is Private too, and its card says "This chat is Private, so the task is too: a public model is refused."
+- The chat's lists of chats with access, and of tasks, show only the chats it could list itself, so a chat on a public model never sees a Private chat there. Refusals never name a workspace, channel or person the chat may not see.
+
+### When the chat says it cannot
+
+A refusal the chat reads ends with its code, such as "(code: crew_read_consent_required)", and, when a step needs you, that step.
+
+| The chat says | Why, and what to do |
+|---|---|
+| "This chat needs your permission to read {workspace} as you." | You have not allowed the read card yet, or chose **Deny**. Ask again, and choose **Allow once**. |
+| "This chat uses a public model, so it can't read this workspace as you. Its connection and the workspace both have to be Public. Choose a private model to read it." | Code `crew_public_model_refused`. Use a private model, or read it in Crew. |
+| "This workspace has private or restricted content and no institution, so a chat can't read it. Its host can set one with privacy_set_workspace, or read it in the Crew view." | The host marks the workspace with its institution ([Mark the workspace with your institution](hosting-a-workspace.md#mark-the-workspace-with-your-institution)). |
+| "This connection is Private and has no institution set, so a chat can't read through it. Set one with privacy_set_personal." | Set **Institution** in **Connection settings…**. |
+| "This connection and its workspace are set to different institutions, so a chat can't read it. Set the connection's institution to the workspace's with privacy_set_personal." | Code `crew_institution_mismatch`. Use the workspace's institution in **Connection settings…**. |
+| "Biorouter couldn't mark this chat Private, so it returned nothing from the workspace. Try again." | Ask again. |
+| "This chat is Private, and your connection to {workspace} is Public, so what it writes there couldn't be kept private. Write it from a chat that isn't Private, or make the connection Private with crew__change action privacy_set_personal." | Code `crew_mode_mismatch`. Post from a chat that is not Private, or make the connection Private in **Connection settings…**. |
+| "This chat can't download that file: it is restricted, or in a channel this chat can't read." | Download it in the **Files** tab, or from a chat on a private model. |
+| "Open a workspace from a server checked in this chat: run crew__read action setup_check with the server first." | `open` takes the workspaces that a chat's `setup_check` of a server login found, once the check finished. A check run in the Crew view or a terminal, or before the background service restarted, does not count. Ask the chat to check the server, then to open the workspace. |
+| "Reading a workspace as you needs your permission once per chat, which this Biorouter can't ask you for here. Read it in the Crew view of the desktop app or with biorouter crew in a terminal." | Code `crew_read_consent_required`. The chat runs where the permission card cannot be shown ([Which chats can](#which-chats-can)). Read it in Crew in the desktop app, or from a terminal. |
+| "This needs your approval, which this Biorouter can't ask you for here. Do it in the Crew view of the desktop app or with biorouter crew in a terminal." | The chat runs where no card can be shown ([Which chats can](#which-chats-can)). Make the change in Crew in the desktop app, or from a terminal. |
+
+### Do it in Crew, in a terminal, or in a chat
+
+Each row is one task, with the Crew view's control, the command, and the chat action that does it. Read actions use `crew__read`, and the others `crew__change`. `crew__read` action `describe` tells the chat any action's parameters.
+
+| Task | Crew view | Command line | Chat action |
+|---|---|---|---|
+| See your connections | Workspace menu, status row | `status`, `connections list`, `connections show` | `status`, `connections_show` |
+| Read an invitation before saving it | Join dialog summary | `connections join-invitation --preview` | `connections_preview` |
+| Check a server, and list its workspaces | **Open a workspace on a server** | `setup --check`, `doctor` | `setup_check` |
+| Set up or update Crew on a server | **Set up Crew for my account**, **Update Crew** | `setup` | `setup`, `setup_status`, `setup_cancel` |
+| Host a workspace | **Host a new workspace** | `host` | `host` |
+| Open a workspace your account has | **Open a workspace on a server** | `open` | `open` |
+| Join with an invitation | **Join a workspace**, **Join {workspace}** | `connections join-invitation`, `join` | `join` |
+| Add this computer again | **Add this computer again** | `rejoin` | `rejoin` |
+| Connect or disconnect | **Connect to {workspace}**, **Disconnect** | `connect`, `disconnect` | `connect`, `disconnect` |
+| Change a connection | **Connection settings…** | `connections update`, `connections set-access` | `connections_update`, `connections_set_access` |
+| Remove a workspace from this computer | **Remove {workspace} from this computer…** | `connections remove` | `connections_remove` |
+| See the workspace and its people | "{workspace} settings", **People…** | `workspace show`, `members` | `workspace_show`, `members` |
+| Rename, delete or govern the workspace | **General** tab | `workspace rename`, `workspace delete`, `workspace governance` | `workspace_rename`, `workspace_delete`, `workspace_governance` |
+| Read or save the workspace context | **Context** tab | `workspace context show`, `workspace context set` | `context_show`, `context_set` |
+| Invite, cancel, let in or remove a person | **Invite people to {workspace}…**, **Cancel invitation**, **Let in…**, **Remove from {workspace}…** | `enroll invite`, `enroll cancel`, `enroll approve`, `enroll revoke`, `enroll pending` | `enroll_invite`, `enroll_cancel`, `enroll_approve`, `enroll_revoke`, `enroll_pending` |
+| Add people to teams and channels | **Add people to {team}…** | `members add` | `members_add` |
+| Teams | **Create team**, **Rename…**, **Join {team}**, **Delete team…** | `teams list`, `teams create`, `teams rename`, `teams join`, `teams delete` | `teams_list`, `teams_create`, `teams_rename`, `teams_join`, `teams_delete` |
+| Channels | **Create channel**, **Rename…**, **Archive channel…**, **Browse channels…**, **Delete channel…** | `channels list`, `channels create`, `channels rename`, `channels archive`, `channels join`, `channels delete`, `channels mark-read` | `channels_list`, `channels_create`, `channels_rename`, `channels_archive`, `channels_join`, `channels_delete`, `channels_read` |
+| Team and channel invitations | **Join {team}** | `invites list`, `invites create`, `invites accept` | `invites_list`, `invites_send`, `invites_accept` |
+| Hand over a channel, or remove someone from it | **Transfer ownership…**, **Remove** | `ownership offer`, `ownership accept`, `remove-member` | `ownership_offer`, `ownership_accept`, `remove_member` |
+| Read and search messages | The channel | `history`, `watch`, `search` | `history` (with `after` to follow), `search` |
+| Post | The message box | `send` | `send` |
+| Files | **Upload a file…**, **Share**, the **Files** tab | `files list`, `files status`, `files upload`, `files download`, `files reference` | `files_list`, `files_status`, `files_share`, `files_download`, `files_reference` |
+| Tasks | **Ask my agent**, `@agent`, **Stop** | `ask`, `tasks start`, `tasks list`, `tasks watch`, `tasks cancel` | `tasks_ask`, `tasks_list`, `tasks_watch`, `tasks_cancel` |
+| Chats with access, and permissions to read | **Agent access** tab, **Revoke**, "Reads as you" in the Chat access pane | `grants list`, `context SESSION_ID`, `grants revoke` | `grants_list`, `grants_revoke` |
+| Privacy | **Privacy…**, **Connection settings…** | `privacy show`, `privacy set-personal`, `privacy set-workspace` | `privacy_show`, `privacy_set_personal`, `privacy_set_workspace` |
+| Your profile and computers | **Edit profile…**, **Keys and security…** | `profile show`, `profile set`, `profile devices`, `profile revoke-device` | `profile_show`, `profile_set`, `profile_devices`, `profile_revoke_device` |
+| The model for Crew tasks | **Settings** > **Models** > **Crew tasks** | `defaults show`, `defaults set`, `defaults clear` | `defaults_show`, `defaults_set`, `defaults_clear` |
+
+`setup_check` against a server that no saved connection names, `open` and `join` are changes, so they show a card too. `open` needs a finished `setup_check` of the server login from a chat first ([When the chat says it cannot](#when-the-chat-says-it-cannot)).
+
+A few things stay with you, on purpose, and no chat does them:
+
+- Starting and stopping the background service, which the chat itself runs in.
+- The vault's `credentials init`, `credentials unlock` and `credentials lock`: they need your passphrase, and a lock would cut off every other chat's Crew access.
+- Signing in to a server (`auth`).
+- Pausing, resuming and forgetting file transfers, which the **Files** tab keeps.
+- The steps the setup and join flows run for you: `workspace bootstrap`, `enroll prepare`, `enroll accept`, `connections prepare` and `connections save`.
+- Giving a chat Crew access: type `/crew` ([Connect a chat with /crew](#connect-a-chat-with-crew)). A chat can start a new task for you with its own access, after you allow the card that names its channel, model and server access.
 
 ## What your agent may do on the server
 
@@ -235,7 +383,7 @@ The closed space needs a Linux kernel with Landlock ABI 3 (Linux 6.2 or newer). 
 
 At **As me on the server**, your agent runs commands as your own account on the server, through your own Crew there: in your login shell, with your network, your programs and modules, and any file your account can reach. It can start jobs that keep running after its task ends. Commands start in the connection's work folder, which Biorouter creates as `~/crew-work/{workspace}` when you leave it empty.
 
-> **Warning.** Crew shows this before you choose it: "Your agent will run commands as {you} on {server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust." If you host the workspace from that account, your agent can also read everything the workspace keeps on the server, including channels you are not in.
+> **Warning.** Crew shows this before you choose it: "Your agent will run commands as {you} on {server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust." If you host the workspace from that account, your agent can also read everything the workspace keeps on the server, including channels you are not in, and it holds your host authority: see the end of this section.
 
 What the agent can do there:
 
@@ -250,7 +398,9 @@ Every command the agent runs is announced in the task's steps by its program and
 
 The agent is told to run heavy computation on the server rather than in its reply: it writes a script with `remote.write`, runs it with `remote.shell`, and starts long work as a detached job. It reads the [workspace context](#the-workspace-context) first, to learn the server's storage, software and how jobs run there.
 
-Ending access, by revoking a chat or when a task finishes, stops new commands, but a detached job keeps running in your account. Check it, or stop it yourself with `kill` on the server. Full access does not let the agent act as you in Crew: your device keys stay on this computer.
+Ending access, by revoking a chat or when a task finishes, stops new commands, but a detached job keeps running in your account. Check it, or stop it yourself with `kill` on the server.
+
+Crew treats every program running as your server account as you, because that is how it knows you ([You are your server account](joining-a-workspace.md#you-are-your-server-account)). So full access lets a command of your agent's add a computer to your account in Crew and post as you, with no "agent" mark, and, on the account that hosts the workspace, act as its host. Crew's own program on the server refuses to add or remove your computers from inside an agent's job ("An agent's job on the server cannot add or remove your devices. Do this from Biorouter on your computer."), but that is a guard against mistakes, not a barrier: a command that reaches the workspace another way is not stopped. Give full access only with a model you trust, and check your computers in **Keys and security…** ([Your computers](privacy-and-security.md#your-computers)). An agent **In a folder** cannot reach the workspace at all.
 
 ## The workspace context
 
@@ -323,7 +473,7 @@ The chat's note says whether access was removed, expired after an hour (even off
 
 Access ends when:
 
-- your connection's privacy, settings or institution change;
+- your connection's privacy, settings or institution change, or you add this computer again with **Add this computer again**;
 - someone is removed from the workspace or a channel;
 - someone is added to a team or channel in a managed workspace, or accepts a team or channel invitation;
 - a channel is archived, or its ownership is offered or accepted;

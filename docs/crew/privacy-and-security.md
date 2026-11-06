@@ -1,7 +1,7 @@
 # Privacy and security
 
-> **What this is.** The Crew manual page on privacy and security: which AI models may read your work, what other people can see, and what full agent access and open workspaces risk.
-> **Status:** Current. Checked against the Crew code on 2026-10-16.
+> **What this is.** The Crew manual page on privacy and security: which AI models may read your work, what other people can see, your computers and how to remove one, and what full agent access and open workspaces risk.
+> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
 > **Audience:** Lab members who use Crew in the Biorouter desktop app, and workspace hosts.
 
 Privacy in Crew decides which AI models may read your lab's messages and files, never which people see them. Only people who were let in see a workspace, by the host or in an open workspace by any member, and only a channel's members see the channel. The host is the member who runs the workspace on the server. A word in braces, such as {workspace}, stands for a name Crew fills in.
@@ -22,7 +22,7 @@ Crew protects what an agent reads when your privacy is Private, when a channel i
 
 Protected content also needs a workspace institution that matches your connection's. In a Private workspace with no institution, people can chat and share files, but no agent can work.
 
-In **Ask my agent**, a model that is not approved shows "Not approved for {institution}", and **Start my agent and allow posting here** stays unavailable. A public model on a Restricted channel is refused when you start. A chat connected with `/crew` keeps its model. See [Agents and chat access](agents-and-chat-access.md).
+In **Ask my agent**, a model that is not approved shows "Not approved for {institution}", and **Start my agent and allow posting here** stays unavailable. A public model on a Restricted channel is refused when you start. A chat connected with `/crew` keeps its model. A chat that reads Crew as you, with your permission, follows the same rules channel by channel, and with a private model becomes Private once it reads workspace content ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). See [Agents and chat access](agents-and-chat-access.md).
 
 ## Where each rule is enforced
 
@@ -95,13 +95,25 @@ When Crew refuses an agent or a setting for privacy, the message names the rule.
 
 ## Keys, fingerprints and codes
 
-You send your code, such as `7QK2-M9XA-3JTP-WZ4D`, to the host to be let in. Your computer makes it, so the server cannot change it. The workspace fingerprint, such as `3F2A 9C1E 77B0 D4E1`, is never sent. To check an invitation, open **Check this invitation (optional)** when you join, and join only if your host reads the same fingerprint from Crew.
+Crew knows you by your account on the lab server ([You are your server account](joining-a-workspace.md#you-are-your-server-account)). Each computer that uses a workspace as you has its own device key for it. The key's private half never leaves that computer, and the key signs every request the computer sends. On a server with a current Crew, a computer that signs in to the server as your account can add its own key to your account by itself, with no code and no other computer. So whoever can sign in to the server as you can use Crew as you: keep your SSH keys and password to yourself.
 
-Your device key's private half never leaves your computer. **Keys and security…**, in the You menu at the bottom of the Crew sidebar, shows where your keys are stored and each device on your account.
+On a server with an older Crew, you send your code, such as `7QK2-M9XA-3JTP-WZ4D`, to the host to be let in. Your computer makes it, so the server cannot change it. The workspace fingerprint, such as `3F2A 9C1E 77B0 D4E1`, is never sent. To check an invitation, open **Check this invitation (optional)** when you join, and join only if your host reads the same fingerprint from Crew.
 
-### New device notice
+### Your computers
 
-When a device joins your account, the connection bar says "A new device was added to your account on {date}." Choose **Review**, and tell your host about any device you do not recognize.
+**Keys and security…**, in the You menu at the bottom of the Crew sidebar, shows where your keys are stored and, under "Devices on your account", each computer enrolled as you in the workspace, with its fingerprint and when and how it was added, such as "Added November 6" and "by signing in to the server". **This device** marks the one you are using. From a terminal, run `biorouter crew profile devices` ([Your computers](command-line.md#your-computers)).
+
+When a computer is added to your account, every other computer of yours is told at its next connection, even one that was offline then. The connection bar says "A new device was added to your account on {date}.", adding "It signed in to the server as you." when it was added that way, or "{count} new devices were added to your account." for several. **Review** opens **Keys and security…**, and **Acknowledge** marks them seen, so the note goes away. `biorouter crew status` names the new computer too, until you mark it seen.
+
+To remove a computer you do not recognize, or a lost one, on a server with a current Crew:
+
+1. Take its SSH access to the server away first. A computer that can still sign in to the server as you can add itself again. Remove its key from `~/.ssh/authorized_keys` on the server, or change your password there. Ask IT if you are not sure how.
+2. In **Keys and security…**, choose **Remove** on the computer's row. The row asks "Remove {fingerprint} from your account?" and repeats the warning: "A lost computer can still sign in as you while it has an SSH key or password for your account. First remove its key from ~/.ssh/authorized_keys on the server, or change your password. Then remove it here."
+3. Choose **Remove device**, or **Keep** to leave it. Crew says "Removed {fingerprint}."
+
+From a terminal, run `biorouter crew profile revoke-device` with its fingerprint.
+
+You can remove the computer marked **This device** too. Its question is "Remove this computer from your account?", and it adds "This computer stops reaching the workspace until you choose Add this computer again." Afterwards Crew says "Removed this computer. Choose Add this computer again to use the workspace here.", and the connection bar offers **Add this computer again** ([Add this computer again](joining-a-workspace.md#add-this-computer-again)). Removing a whole person from the workspace stays the host's task.
 
 ### Use an encrypted vault
 
@@ -135,11 +147,12 @@ What it risks:
 - **Your whole account.** The agent can read and change anything your account can, use the network, and start programs that keep running after its access ends. A misled agent could delete files, send data off the server, or replace your own copy of Crew there.
 - **Other people's words.** Messages, files and the workspace context written by other members reach your agent. Crew tells it to treat them as information, never as instructions, but a crafted message can still try to steer it. Use a private model you trust, and give tasks that say what to touch.
 - **Host accounts.** If you host the workspace from that account, your agent can read everything the workspace stores, including channels you are not in.
+- **You in Crew.** A program running as your server account is you to Crew. A command of your agent's can add a computer to your account and act as you in the workspace, posting with no "agent" mark, and on the account that hosts the workspace it holds the host's authority. Crew's program on the server refuses to add or remove your computers from inside an agent's job, as a guard against mistakes, but a command that reaches the workspace another way is not stopped. Check **Keys and security…** for computers you did not add ([Your computers](#your-computers)).
 
 What it does not change:
 
 - A public model never gets any server access, whatever the level.
-- Your device keys stay on this computer, so the agent still cannot sign in to Crew as you, change memberships or privacy, or approve its own access.
+- An agent **In a folder**, or with **Off**, cannot reach the workspace on the server, so it cannot act as you in Crew.
 - Each command is announced in the task's steps by its program and length, never its text, and the secret guard still refuses credential files and withholds credentials from results.
 - Revoking a chat, or a task's end, stops new commands. A detached job keeps running until it ends or you stop it.
 

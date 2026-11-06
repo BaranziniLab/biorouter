@@ -1,7 +1,7 @@
 # Crew UI redesign specification
 
 > **What this is.** The final design for the BioRouter Crew desktop GUI: a clean, Slack-like, layered interface built only from BioRouter's design system. It covers the layout, every screen and control mapped from the current UI, the component and file architecture, progressive disclosure, the full copy deck, identity rules, revoke, privacy, motion, accessibility, theming, the regression-test migration and the acceptance criteria novice reviewers will apply.
-> **Status:** Current. Approved design, 2026-09-23, now built: every package of [plan §16](../../history/biorouter-crew/implementation-plan.md#work-packages-and-order) is implemented, and [implementation status](../../history/biorouter-crew/implementation-status.md) records what was measured. Three later decisions changed it, and each changed row says so: files can be dragged in or pasted after a native confirmation ([D-DROP](../../history/biorouter-crew/implementation-plan.md#live-qa-round-2-design-changes-2026-09-24)), message bodies render as Markdown ([UI-TIMELINE outcome](../../history/biorouter-crew/implementation-plan.md#work-packages-and-order)), and each file control is named for its file (Q3-13). After the merge, a live QA of the merged build on 2026-09-27 was followed by two rounds of fixes, and the second round (wave 2, committed 2026-09-27) changed more rows. Each of those rows says *Amended by wave 2* and names the QA finding it answers: where the timeline opens, how it pages and what it marks read (M6, M7), unread counts and mentions outside the Crew sidebar (M2), who is online (M18), the SSH failure table and the screens it drives (F5, R-7), the Chat access consent (AG-F1), and the remove-member and remove-connection confirmations (M11, CLI-1). The [open workspaces and automatic setup](open-workspaces-and-automatic-setup.md) change of 2026-10-16 changed more rows, each marked *Amended by OW-n* with its decision: automatic setup in the Host, Join and Not set up flows (OW-9), the three agent access levels (OW-6), open governance with Browse channels (OW-1 to OW-3), deletion (OW-4, OW-5), the composer's `@agent` (OW-10), the model for Crew tasks (OW-11) and the Context tab (OW-8). Where this spec and the code disagree, the code is what shipped.
+> **Status:** Current. Approved design, 2026-09-23, now built: every package of [plan §16](../../history/biorouter-crew/implementation-plan.md#work-packages-and-order) is implemented, and [implementation status](../../history/biorouter-crew/implementation-status.md) records what was measured. Three later decisions changed it, and each changed row says so: files can be dragged in or pasted after a native confirmation ([D-DROP](../../history/biorouter-crew/implementation-plan.md#live-qa-round-2-design-changes-2026-09-24)), message bodies render as Markdown ([UI-TIMELINE outcome](../../history/biorouter-crew/implementation-plan.md#work-packages-and-order)), and each file control is named for its file (Q3-13). After the merge, a live QA of the merged build on 2026-09-27 was followed by two rounds of fixes, and the second round (wave 2, committed 2026-09-27) changed more rows. Each of those rows says *Amended by wave 2* and names the QA finding it answers: where the timeline opens, how it pages and what it marks read (M6, M7), unread counts and mentions outside the Crew sidebar (M2), who is online (M18), the SSH failure table and the screens it drives (F5, R-7), the Chat access consent (AG-F1), and the remove-member and remove-connection confirmations (M11, CLI-1). The [open workspaces and automatic setup](open-workspaces-and-automatic-setup.md) change of 2026-10-16 changed more rows, each marked *Amended by OW-n* with its decision: automatic setup in the Host, Join and Not set up flows (OW-9), the three agent access levels (OW-6), open governance with Browse channels (OW-1 to OW-3), deletion (OW-4, OW-5), the composer's `@agent` (OW-10), the model for Crew tasks (OW-11) and the Context tab (OW-8). The [account ownership](account-ownership.md) change of November 2026 changed more rows, each marked *Amended for account ownership (AO-n)*: **Open a workspace on a server** (AO-6, AO-8), the join states without a code (AO-9), **Add this computer again** (AO-9), device rows with **Remove** in Keys and security (AO-5, AO-10), the host's first device and the removal confirmation (AO-9, AO-11), and the version notice (AO-4). Where this spec and the code disagree, the code is what shipped.
 > **Audience:** Implementers of the Crew GUI (`ui/desktop/src/components/crew/`), the daemon, broker and CLI implementers whose data it shows, reviewers who judge it with a novice walkthrough, and whoever migrates the Crew regression tests.
 
 Crew today is one 2,175-line component (`CrewView.tsx`) that renders a form wearing a page header: a native
@@ -500,6 +500,18 @@ old `/host|SSH|key|authentication/i` match is deleted because it sent every SSH 
   only other place "Connected · identity verified" is visible, and it mounts only while the menu is open.
 - **You menu** (`side="top"`): the display name and `@username · alice@hpc.ucsf.edu`, then **Edit profile…**,
   **Keys and security…** (credential storage and the vault), **Copy my username**.
+- *Amended for account ownership (AO-5, AO-6):* **Add a workspace** offers **Open a workspace on a server…** beside
+  **Join a workspace…** and **Host a new workspace…**, as the welcome screen offers **Open a workspace on a server**
+  as a link beside **Host a new workspace**. On a workspace whose broker advertises `account_identity_v1`,
+  **Keys and security…** lists every device on the person's account, each with its fingerprint, "Added {date}" and
+  how ("by signing in to the server" for `added_via: account`), and **Remove**, the one marked **This device**
+  included. **Remove** turns the row into an inline question, "Remove {fingerprint} from your account?" ("Remove this
+  computer from your account?" for this one), with AO-5's warning: "A lost computer can still sign in as you while it
+  has an SSH key or password for your account. First remove its key from ~/.ssh/authorized_keys on the server, or
+  change your password. Then remove it here." This computer's adds "This computer stops reaching the workspace until
+  you choose Add this computer again." The answers are **Remove device** and **Keep**, and the result reads
+  "Removed {fingerprint}." or "Removed this computer. Choose Add this computer again to use the workspace here."
+  Removing this computer marks the connection as needing **Add this computer again**.
 
 ### The channel header and channel menu
 
@@ -732,6 +744,43 @@ rows: Confirm the institution (**Set institution to {id}…**), Create a team (*
 | `joined` | Transitions into the workspace; the first-join note offers "Use “Bob Lee” as your name in lab?" **Use** / **Edit…** (the name on the server account is offered, never applied silently) | None |
 | Legacy broker (no `join_by_name_v1`), or **Other ways to join** opened | "Join with an invitation token". "Send this join request to your host:" a `CopyField` holding the join request (username and this device's key). Then a `SecretInput` (accessible name **Enrollment invitation**, placeholder "Invitation token") and **Join workspace** | `auth.enroll` |
 
+*Amended for account ownership (AO-9):* when the verified `hello` advertises `account_identity_v1`, the join status
+comes from `account.status`, and no code is shown:
+
+| Join status | Card | Action |
+|---|---|---|
+| `ready` | Joins at once when the person started the flow (Join, Open), as "Joining {workspace}…"; otherwise "You can join {workspace}", "You sign in to {server} as {user}, so this computer can join without a code." and **Join {workspace}** | `auth.account` through `POST …/join` |
+| `removed` | "You’re no longer in {workspace}" with "You were removed from {workspace}. Ask a member to invite you again." | None |
+| `not_invited` | As above, without the "If you were in {workspace} before…" line, and the message to the host reads "Hi {first}, please invite @{username} to {workspace} in Crew." | None |
+| `expired`, `joined` | As above | As above |
+
+On the host's side a pending join reads "Waiting for @bob to open the workspace", and **Let in…** stays only for an
+older joiner's code. Against a broker without the capability every row above applies unchanged.
+
+**Open a workspace on a server** (*added for account ownership, AO-6, AO-8, AO-9*): **Your server login** (with
+**Advanced** for the route) and **Look for workspaces**, which prepares a device and runs a check job on the server
+target, verifying the host key as Join does. Under "Workspaces on {server}" it lists what `SetupStatus.workspaces`
+holds, each titled with its host ("lab, hosted by @alice", or "lab, hosted by you") and described by role ("You host
+it", "You’re a member", "You’re invited", "You were removed"), state ("Running", "Stopped", "Deleted"), "Crew
+{version}" and "Open on this computer" or "Saved on this computer". It offers **Open** (running, not removed: save
+from the entry's `invitation`, connect, join), **Start** (stopped, hosted by the person: an install job with
+`start_workspaces`) and **Update Crew** (running, hosted by the person, older than this app's Crew or naming no
+version: an install job; when others are connected it asks first, "{n} people are connected. Their running agent
+commands will stop.", with **Update and restart** and **Not now**). A removed entry reads "You were removed from
+{workspace}. Ask a member to invite you again.", two hosts with one name raise "Two people host a workspace named
+{workspace} here. Check the host before you open one.", and an empty list reads "There are no workspaces for you on
+{server}. To join someone else’s, ask them to invite you."
+
+**Add this computer again** (*added for account ownership, AO-9*) sits on the connection bar for
+`crew_device_key_missing` ("This computer no longer has its key for {workspace}. Choose Add this computer again to
+make a new one."), `crew_device_not_recognized` ("{workspace} no longer recognizes this computer. Choose Add this
+computer again while you are still a member.") and a connection whose own device the person removed in Keys ("You
+removed this computer from {workspace}. Choose Add this computer again to use it here."). It connects first when
+the connection is down, reads "Adding this computer…" while it works, and sends
+`POST /crew/connections/{id}/rejoin`. Done, the bar says "This computer is back in {workspace}. Chats that had Crew
+access through it need access again.", adding "To make room, the workspace removed your oldest device,
+{fingerprint}." when the cap of 32 evicted one. "Reconnect" stays the word for dialling again.
+
 **Other ways to join** is a `Disclosure` under the invited and not-invited cards, so the legacy path is reachable
 without appearing on the default path. "Enter workspace details manually" (socket path, workspace ID, host user ID,
 workspace key with `pattern="[a-fA-F0-9]{64}"`, fixing L8) lives in the Join dialog's Advanced.
@@ -759,8 +808,18 @@ workspace key with `pattern="[a-fA-F0-9]{64}"`, fixing L8) lives in the Join dia
      **Crew isn’t on {server} yet?** holds **Save Crew’s server program…** and the manual install. Each refusal code
      has its sentence, and **What the server printed** holds the server's own words. A `crew_host_storage_unsafe`
      refusal offers **Fix it for me**, which runs the job again with `fix_storage_permissions`.
+   - *Amended for account ownership (AO-8, AO-9):* the setup stages add "Looking for workspaces" and "Updating
+     running workspaces", the dialog shows `SetupStatus.workspaces`, and a name the account already hosts is refused
+     with `crew_host_name_in_use` ("You already host {name} on {server}. Open it on this computer instead.", or the
+     stopped form naming `--start`), answered with **Open it on this computer**, which opens **Open a workspace on a
+     server** for the same login and looks at once. The workspaces the job found are listed under the steps as "Your
+     workspaces on {server}".
    - **Create:** "lab on hpc.ucsf.edu", the fingerprint `CopyField`, "Creating lab makes this computer its first admin
-     device." **Create workspace** saves (with the `preparation_id`), connects, and runs `auth.bootstrap`. This is the
+     device." **Create workspace** saves (with the `preparation_id`), connects, and runs `auth.bootstrap`.
+     *Amended for account ownership (AO-9):* the "first admin device" copy is rewritten for the account model, as
+     "Creating lab makes your server account its host. Any computer that signs in as you can open it as host later.":
+     against a broker with `account_identity_v1` the host controls belong to the account, so any computer that signs
+     in as it can act as host, and a bootstrap answered "already enrolled" falls back to `auth.account`. This is the
      confirmation "Initialize as workspace host" never had (fixes L3). *Amended by OW-1 and OW-8:* after bootstrap,
      Create sets governance to open and saves the context draft the setup job made; either failing leaves a working
      workspace and says so.
@@ -792,6 +851,14 @@ workspace key with `pattern="[a-fA-F0-9]{64}"`, fixing L8) lives in the Join dia
 3. Success: "Approved. Bob joins as soon as his Crew checks in." and one secondary button per team the host created:
    **Add Bob to Analysis Lab** (sends `invitation.create`). When Bob's daemon joins, a toast: "Bob Lee (@bob) joined
    lab".
+*Amended for account ownership (AO-9):* against a broker with `account_identity_v1`, an invited account is admitted
+when its computer claims, so steps 2 and 3 apply only to an older joiner's code, and **Add another device for
+@{name}** is hidden: a member adds a computer with **Open a workspace on a server**. The invitation's next step
+reads "{first} gets in by opening the workspace while signed in to the server as themselves. If their Biorouter shows
+a code instead, choose Let in… next to their name in the sidebar.", and inviting a member reads "@{username} is
+already in {workspace}. A new computer of theirs gets in when they open {workspace} on it, signed in to the server as
+@{username}."
+
 4. Legacy broker: the Invite dialog's Advanced **Invite someone using an older version of Biorouter**: paste their
    join request, enter their user ID on the server (helper `CopyField`: `id -u bob`, run by the host), then
    **Create invitation**; the token appears in a secret `CopyField` with "Send this to Bob. It works once and expires in
@@ -881,6 +948,10 @@ was added to your account on {date}." with **Review** opening Keys and security)
 | Archived | The header badge and the archived bar |
 | Trust failures | The tier-3 panes |
 | Pending admission (host) | The Waiting to join section, including the different-code warning |
+| The person's devices (*added for account ownership, AO-5, AO-10*) | **Keys and security…** lists each device with how and when it was added; a device added since this computer last looked raises the new-device notice at the next connect |
+| The server's Crew version (*added for account ownership, AO-4*) | When the connection's `server_version` (the version the verified `hello` reported) is older than the Crew server program this app carries, or, for a broker that reports no version, when its `hello` does not advertise `account_identity_v1`, the connection bar says "{workspace}’s server runs an older Crew.": **Update Crew** for the host (it opens **Open a workspace on a server** for that server and looks at once), "Ask @{host} to update Crew." for others, and × to dismiss |
+| Setups started elsewhere (*added for account ownership, AO-8, AO-12*) | A setup job this window did not start, such as a chat's, shows at the top of Crew as "Crew is being set up on {server}.", or "A setup on {server} is waiting for you to sign in." with **Sign in** |
+| A chat's read consent (*added for account ownership, AO-12*) | Under the Chat access pane, "Reads as you" lists "Reads {workspace} as you", "Since {date}" and **Revoke**, which answers "This chat no longer reads {workspace} as you." |
 
 ## Every existing screen, control and string: old to new
 
@@ -1490,7 +1561,7 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | `host.name.*` | Name your workspace · Workspace name · Lowercase letters, numbers and dashes. · Your workspace: {slug} · Your server login · Continue |
 | `host.start.*` | Start Crew on {server} · Run this in a terminal signed in to {server} as {user}: · Paste what it printed · Not signed in to the server in a terminal yet? · If your terminal asks you to confirm the server, compare the fingerprint with the one from your IT team. Type yes only if they match. · biorouter-crew isn't installed yet? · Anyone who can sign in to this server can see the workspace name. |
 | `host.start.bad` | That isn't what Crew prints. Copy everything after the command ran and paste again. |
-| `host.create.*` | {workspace} on {server} · Creating {workspace} makes this computer its first admin device. · Create workspace · Creating… |
+| `host.create.*` | {workspace} on {server} · Creating {workspace} makes your server account its host. Any computer that signs in as you can open it as host later. (*amended for account ownership, AO-9*) · Create workspace · Creating… |
 | `host.label.*` | Label {workspace} as {id}? · This can't be changed later. · Set {id} permanently · Not now |
 | `checklist.*` | Get {workspace} ready · Confirm the institution · Create a team · Invite people · Hide |
 | `invite.*` | Invite people to {workspace} · Username · bob · Invite · @{username} · {full name} (name on the server account) · invited · Send {first} this invitation: · Is Crew installed for @{username} on {server}? · When {first} sends you a code, choose Let in… next to their name in the sidebar. · Done |
@@ -1517,7 +1588,8 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | `bar.keyRefused` / `bar.brokerStopped*` | *Added by wave 2 (F5, R-7); `crew/channel/copy.ts` is the source.* {host} refused this computer's SSH key for {user}. Check Your server login in Connection settings. · Crew isn't running on {host}. Start it on the server, then connect. *(the host)* · The workspace server isn't running. Ask {host person} to start Crew. *(a member)* · Crew isn't running on {host}. Its host starts it again on the server. *(when this computer cannot tell)* |
 | `bar.vaultLocked` | Your Crew vault is locked. · Unlock |
 | `bar.reconnecting` | Reconnecting to {workspace}… |
-| `bar.newDevice` | A new device was added to your account on {date}. · Review |
+| `bar.newDevice` | A new device was added to your account on {date}. · Review *Amended for account ownership (AO-10):* raised for every device added since the daemon last saw the list, reported at each connect and snapshot until acknowledged: A new device was added to your account on {date}. · It signed in to the server as you. (for `added_via: account`) · {count} new devices were added to your account. · Review · Acknowledge · Couldn’t mark the new devices as seen. Try again. |
+| *(added for account ownership, AO-9)* | This computer no longer has its key for {workspace}. Choose Add this computer again to make a new one. · {workspace} no longer recognizes this computer. Choose Add this computer again while you are still a member. · You removed this computer from {workspace}. Choose Add this computer again to use it here. · Add this computer again · Adding this computer… · This computer is back in {workspace}. Chats that had Crew access through it need access again. · To make room, the workspace removed your oldest device, {fingerprint}. · Couldn’t add this computer again. · {workspace}'s server runs an older Crew. Update it with biorouter crew setup --server {login}. · {workspace}'s server runs an older Crew. Ask @{host} to update it. · {workspace}’s server runs an older Crew. · Update Crew · Ask @{host} to update Crew. · You were removed from {workspace}. Ask a member to invite you again. |
 | `offline.*` | {workspace} is offline · Connect to see your channels. · Connect to {workspace} |
 | `signInNeeded.*` | Sign in to {host} · The server needs your password or a verification code. · Sign in |
 
@@ -1535,7 +1607,7 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | Transfer ownership | Transfer ownership of #{channel} · New owner · They'll need to accept. · Offer ownership |
 | Rename | Rename team / Rename channel · Name · Rename |
 | Edit profile | Edit profile · Display name · Initials (optional) · Your username: @{username} · Save profile |
-| Keys and security | Keys and security · Stored in your system keychain. / Stored in an encrypted vault · Locked / … · Unlocked · Unlock · Lock · This device's key · Use an encrypted vault instead · Only for a new Crew profile. Existing identities aren't moved. · Set up vault… · Done |
+| Keys and security | Keys and security · Stored in your system keychain. / Stored in an encrypted vault · Locked / … · Unlocked · Unlock · Lock · This device's key · Use an encrypted vault instead · Only for a new Crew profile. Existing identities aren't moved. · Set up vault… · Done *Amended for account ownership (AO-5):* each device row: fingerprint · Added {date} · by signing in to the server (or its other way in) · This device, with **Remove**, its inline question (Remove {fingerprint} from your account? / Remove this computer from your account?), the SSH-access warning, **Remove device** and **Keep** |
 | Share a server path | Share a path on {host} · Path · /home/you/project/data.h5ad · Label (optional) · Add to message |
 
 | Action | Primitive | Title | Description | Confirm |
@@ -1547,7 +1619,7 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | Remove from workspace (host) | `DangerousConfirmDialog`, phrase = username, plus a case-sensitive check | Remove {person, authority} from {workspace}? | Removes all of their devices and agent access. Their messages stay in history. | Remove from {workspace} |
 | Archive channel (owner) | `ConfirmationModal` | Archive #{name} for everyone? | Nobody can post in it after this. Its history stays readable. | Archive channel |
 | Remove channel member (owner) | `ConfirmationModal` | Remove {person, authority} from #{name}? | They'll lose access to its messages and files. You can invite them again. *Amended by wave 2 (M11):* "They'll lose access to its messages and files. You can add them again with Add people.", since on a broker that adds directly the way back is Add people, with nothing to accept | Remove |
-| Remove saved connection | `ConfirmationModal` | Remove {workspace} from this computer? | Chats connected to it lose access. Your messages stay on the server, and you can add it again. *Amended by wave 2 (CLI-1):* removing deletes this computer's device key while the person stays a member, so the old invitation cannot bring it back. The description says so: "It disconnects, ends every chat's access through it and deletes this computer's key for the workspace. Your messages stay on the server. To use the workspace here again, the host has to add this computer. …". A member reads the way back instead: "…ask the host to invite you with Add another device for @{username}." The host removing it from the only computer of theirs the workspace lists gets a `DangerousConfirmDialog` with the workspace name as its phrase: "You host {workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: …", confirmed by **Remove and give up hosting** | Remove |
+| Remove saved connection | `ConfirmationModal` | Remove {workspace} from this computer? | Chats connected to it lose access. Your messages stay on the server, and you can add it again. *Amended by wave 2 (CLI-1):* removing deletes this computer's device key while the person stays a member, so the old invitation cannot bring it back. The description says so: "It disconnects, ends every chat's access through it and deletes this computer's key for the workspace. Your messages stay on the server. To use the workspace here again, the host has to add this computer. …". A member reads the way back instead: "…ask the host to invite you with Add another device for @{username}." The host removing it from the only computer of theirs the workspace lists gets a `DangerousConfirmDialog` with the workspace name as its phrase: "You host {workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: …", confirmed by **Remove and give up hosting**. *Amended for account ownership (AO-9, AO-11):* for a connection whose verified `hello` advertises `account_identity_v1`, the host-only dialog and its typed name go: the confirmation says the workspace can be opened again from any computer that signs in as the account, that chats granted through this connection cannot be granted through a new one, and points a person who lost a key to **Add this computer again**, which keeps the connection. Against an older broker the host-only dialog stays, and adds that updating Crew on the server (`biorouter crew setup --server LOGIN`) makes the host controls follow the account | Remove |
 | Stop task | `ConfirmationModal` | Stop your agent? | It stops working on this task. Anything it already did stays done. | Stop task |
 | Cancel a pending invitation (host) | inline two-step | Cancel @{username}'s invitation? | None | Cancel invitation / Keep |
 | Revoke chat access | inline two-step | [Chat access and revoke](#chat-access-and-revoke) | None | Revoke / Keep access |

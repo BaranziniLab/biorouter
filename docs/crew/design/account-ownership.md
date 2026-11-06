@@ -60,7 +60,7 @@ It never answers about another account. `host_username` and the workspace name a
 
 ### AO-4. The capability and the broker's version
 
-`hello` advertises `account_identity_v1`, compiled with `join-by-name` and placed after `join_by_name_v1` (last), so `signature_v2` covers it. The `hello_appends_the_new_capabilities_in_order` test and `scripts/check-crew-broker-join.sh` learn it. A daemon offers the account path only when the capability is present and falls back to the device-code join when it is absent, so a stripped capability only sends a new daemon down the older path the broker still accepts.
+`hello` advertises `account_identity_v1`, compiled with `join-by-name` and placed after `join_by_name_v1` (last), so `signature_v2` covers it. The `hello_appends_the_new_capabilities_in_order` test pins the order. `scripts/check-crew-broker-join.sh` checks a release binary for the account path by its `not_member` sentence, which only that feature compiles in; the capability's name cannot serve, because the always-compiled `workspaces` command spells it too. A daemon offers the account path only when the capability is present and falls back to the device-code join when it is absent, so a stripped capability only sends a new daemon down the older path the broker still accepts.
 
 `hello` and `runtime.json` carry `version`, the broker's package version, as an unsigned display field outside both signed payloads, like `state`. Readers that predate it ignore it.
 

@@ -111,6 +111,21 @@
 //     daemon's sentence once `crewFileRefusal` words the code, the general
 //     note until then, and never the other one (T3-DOC-6, round 2).
 //
+// The account ownership change of 2026-11 (docs/crew/design/account-ownership.md)
+// was documented from its design while the desktop and the chat tools were still
+// being written, and the first pass named a "This computer" badge the Keys dialog
+// calls "This device", an **Open** button the Host dialog calls **Open it on this
+// computer**, a version notice that fired on a version comparison the desktop
+// does not make, and an **Allow** button the approval card calls **Allow once**:
+//
+//   * `account-sentences`: a quote of the connection bar's Add this computer
+//     again, version, new-device and chat-setup notes, the Keys dialog's removal
+//     question, the Open a workspace on a server dialog, the join card's ready
+//     state, the Host and Invite dialogs' account words, the Chat access pane's
+//     read consent, and the chat person tools' refusals and read-consent card is
+//     that string as the code shows it, and the page a reader is sent to quotes
+//     it. The buttons and badges those pages name are names the code still shows.
+//
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
 // code and update the rule, never to delete the anchor check.
@@ -189,6 +204,16 @@ const KEEPALIVE_RS = 'crates/biorouter/src/crew/keepalive.rs';
 const SOURCE_LINE_CASES = 'ui/desktop/src/components/crew/daemonSourceLine.cases.json';
 const LOCAL_FILES_RS = 'crates/biorouter-server/src/crew/local_files.rs';
 const REMOTE_RS = 'crates/biorouter-crew/src/remote.rs';
+const PRIVACY_PAGE = 'docs/crew/privacy-and-security.md';
+/** Account ownership's desktop strings, and the chat person tools' host (AO-12). */
+const ACCOUNT_COPY = 'ui/desktop/src/components/crew/account/copy.ts';
+const SIDEBAR_COPY = 'ui/desktop/src/components/crew/sidebar/copy.ts';
+const APPROVAL_CARD_COPY = 'ui/desktop/src/components/toolCallCopy.ts';
+const CREW_TOOLS_HOST = 'crates/biorouter-server/src/routes/crew_tools/mod.rs';
+const CREW_TOOLS_PLACES = 'crates/biorouter-server/src/routes/crew_tools/places.rs';
+const CREW_TOOLS_SETUP = 'crates/biorouter-server/src/routes/crew_tools/setup.rs';
+const CREW_TOOLS_MESSAGES = 'crates/biorouter-server/src/routes/crew_tools/messages.rs';
+const AGENT_ROUTES = 'crates/biorouter-server/src/routes/agent.rs';
 /** Where the code that writes Crew's files on a member computer lives. */
 const CREW_SOURCE_DIRS = [
   'crates/biorouter/src/crew',
@@ -1166,6 +1191,276 @@ export function checkCrewManual(tree = repoTree()) {
       requiredIn: [],
     },
   ]);
+
+  // ── account-sentences ────────────────────────────────────────────────────
+  // The account ownership change's desktop words and the chat person tools' words (AO-5 to
+  // AO-12), held as app-sentences holds the others. Each family is found by its opening words, so
+  // a quote written from the design rather than the code is refused, and the page a reader meets
+  // the words on quotes them.
+  const accountCopySource = need(ACCOUNT_COPY, 'account-sentences');
+  const sidebarCopySource = need(SIDEBAR_COPY, 'account-sentences');
+  const approvalCardSource = need(APPROVAL_CARD_COPY, 'account-sentences');
+  const toolHostSource = need(CREW_TOOLS_HOST, 'account-sentences');
+  const placesSource = need(CREW_TOOLS_PLACES, 'account-sentences');
+  const toolSetupSource = need(CREW_TOOLS_SETUP, 'account-sentences');
+  const toolMessagesSource = need(CREW_TOOLS_MESSAGES, 'account-sentences');
+  const agentRoutesSource = need(AGENT_ROUTES, 'account-sentences');
+  const accountLiterals = tsLiterals(accountCopySource || '');
+  const onboardingLiterals = tsLiterals(onboardingSource || '');
+  const dialogsLiterals = tsLiterals(dialogsSource || '');
+  const hostLiterals = rustLiterals(toolHostSource || '');
+  // The read-consent card is one prompt: its first line, then the sentences under it.
+  const consentCard = opening(hostLiterals, /^Let this chat read\b/).flatMap((text) =>
+    text.split('\n')
+  );
+  const toolConst = (source, name) => (source === null ? null : rustStrConst(source, name));
+  const accountFamilies = [
+    {
+      // The daemon's two codes and the bar's own words share the first two sentences; the command
+      // line words them for a terminal, so its page is held to the command line's.
+      name: `the Add this computer again notes in ${ACCOUNT_COPY}`,
+      opens:
+        /\b(?:no longer has its key for|no longer recognizes this computer\.|You removed this computer from|is back in \S+\. Chats that had|To make room, the workspace removed)\b/,
+      templates: opening(
+        accountLiterals,
+        /\b(?:no longer has its key for|no longer recognizes this computer\.|You removed this computer from|is back in \S+\. Chats that had|To make room, the workspace removed)\b/
+      ),
+      source: accountCopySource,
+      requiredIn: [JOINING_PAGE],
+      requiredEach: true,
+      notIn: [COMMAND_LINE],
+    },
+    {
+      // The desktop's notice and the daemon's role-dependent sentence open alike.
+      name: `the older-Crew notice in ${ACCOUNT_COPY} and ${REFUSAL_RS}`,
+      opens: /\bserver runs an older Crew\b/,
+      templates: [
+        ...opening(accountLiterals, /\bserver runs an older Crew\b/),
+        ...opening(rustLiterals(refusalSource || ''), /\bserver runs an older Crew\b/),
+      ],
+      source: accountCopySource === null || refusalSource === null ? null : accountCopySource,
+      requiredIn: [TROUBLESHOOTING, HOSTING_PAGE],
+      requiredWhole: true,
+    },
+    {
+      name: `the ask-your-host line of the older-Crew notice in ${ACCOUNT_COPY}`,
+      opens: /^Ask \S+(?: host)? to update Crew\b/,
+      templates: opening(accountLiterals, /^Ask .* to update Crew\b/),
+      source: accountCopySource,
+      requiredIn: [TROUBLESHOOTING, HOSTING_PAGE],
+      requiredWhole: true,
+    },
+    {
+      name: `the new-device notice in ${ACCOUNT_COPY}`,
+      opens:
+        /^(?:A new device was added to your account|\S+ new devices were added to your account|It signed in to the server as you)\b/,
+      templates: opening(
+        accountLiterals,
+        /^(?:A new device was added to your account|\{count\} new devices were added to your account|It signed in to the server as you)\b/
+      ),
+      source: accountCopySource,
+      requiredIn: [PRIVACY_PAGE],
+    },
+    {
+      name: `the Keys dialog's removal of a device in ${ACCOUNT_COPY}`,
+      opens:
+        /^(?:Remove .+ from your account\?|This computer stops reaching the workspace|Removed this computer\.|A lost computer can still sign in as you while it has)/,
+      templates: opening(
+        accountLiterals,
+        /^(?:Remove .+ from your account\?|This computer stops reaching the workspace|Removed this computer\.|A lost computer can still sign in as you while it has)/
+      ),
+      source: accountCopySource,
+      requiredIn: [PRIVACY_PAGE],
+      requiredEach: true,
+    },
+    {
+      name: `the notes for a setup started elsewhere in ${ACCOUNT_COPY}`,
+      opens: /^(?:Crew is being set up on|A setup on .+ is waiting for you to sign in)\b/,
+      templates: opening(
+        accountLiterals,
+        /^(?:Crew is being set up on|A setup on .+ is waiting for you to sign in)\b/
+      ),
+      source: accountCopySource,
+      requiredIn: [AGENTS_PAGE, TROUBLESHOOTING],
+      requiredEach: true,
+    },
+    {
+      name: `the Chat access pane's read consent in ${ACCOUNT_COPY}`,
+      opens: /^(?:Reads \S+ as you$|This chat no longer reads)\b/,
+      templates: opening(
+        accountLiterals,
+        /^(?:Reads \{workspace\} as you$|This chat no longer reads)\b/
+      ),
+      source: accountCopySource,
+      requiredIn: [AGENTS_PAGE],
+    },
+    ...[
+      [
+        'who is connected before a restart',
+        /\b(?:people are|person is) connected\. Their running\b/,
+      ],
+      ['two hosts of one name', /^Two people host a workspace named\b/],
+      ['an empty list', /^There are no workspaces for you on\b/],
+    ].map(([what, opens]) => ({
+      name: `Open a workspace on a server's note for ${what} in ${ONBOARDING_COPY}`,
+      opens,
+      templates: opening(onboardingLiterals, opens),
+      source: onboardingSource,
+      requiredIn: [JOINING_PAGE],
+      requiredWhole: true,
+    })),
+    {
+      name: `the join card's ready state in ${ONBOARDING_COPY}`,
+      opens: /^You sign in to .*so this computer can join without a code\b/,
+      templates: opening(
+        onboardingLiterals,
+        /^You sign in to .*so this computer can join without a code\b/
+      ),
+      source: onboardingSource,
+      requiredIn: [JOINING_PAGE],
+      requiredWhole: true,
+    },
+    {
+      name: `the Host dialog's account words in ${ONBOARDING_COPY}`,
+      opens: /^Creating \S+ makes\b/,
+      templates: opening(onboardingLiterals, /^Creating \S+ makes\b/),
+      source: onboardingSource,
+      requiredIn: [HOSTING_PAGE],
+      requiredWhole: true,
+    },
+    ...[
+      ['next step', /\bgets in by opening the workspace while signed in\b/],
+      ['refusal of a member', /\bis already in .+\. A new computer of theirs\b/],
+    ].map(([what, opens]) => ({
+      name: `the Invite dialog's account ${what} in ${DIALOGS_COPY}`,
+      opens,
+      templates: opening(dialogsLiterals, opens),
+      source: dialogsSource,
+      requiredIn: [HOSTING_PAGE],
+      requiredWhole: true,
+    })),
+    ...[
+      ['NO_PROOF', /^This needs your approval, which this Biorouter can't ask\b/],
+      ['NO_PROOF_FOR_READS', /^Reading a workspace as you needs your permission\b/],
+      ['PUBLIC_MODEL_READ', /^This chat uses a public model, so it can't read this workspace\b/],
+      ['UNLABELLED_PRIVATE', /^This workspace has private or restricted content\b/],
+      ['CONNECTION_WITHOUT_INSTITUTION', /^This connection is Private and has no institution\b/],
+      ['INSTITUTIONS_DIFFER', /^This connection and its workspace are set to different\b/],
+      ['RAISE_FAILED', /^Biorouter couldn't mark this chat Private\b/],
+    ].map(([constant, opens]) => ({
+      name: `${constant} in ${CREW_TOOLS_HOST}`,
+      opens,
+      templates: [toolConst(toolHostSource, constant)],
+      source: toolHostSource,
+      requiredIn: [AGENTS_PAGE],
+      requiredWhole: true,
+    })),
+    {
+      name: `DIRECT_PERSON_TOOL_REFUSAL in ${AGENT_ROUTES}`,
+      opens: /^crew__read and crew__change act as you\b/,
+      templates: [toolConst(agentRoutesSource, 'DIRECT_PERSON_TOOL_REFUSAL')],
+      source: agentRoutesSource,
+      requiredIn: [AGENTS_PAGE],
+      requiredWhole: true,
+    },
+    {
+      name: `the crew_read_consent_required sentence in ${REFUSAL_RS}`,
+      opens: /^This chat needs your permission to read\b/,
+      templates: opening(
+        rustLiterals(refusalSource || ''),
+        /^This chat needs your permission to read\b/
+      ),
+      source: refusalSource,
+      requiredIn: [AGENTS_PAGE, COMMAND_LINE],
+      requiredWhole: true,
+    },
+    ...[
+      ['first line', /^Let this chat read \S+ as you$/],
+      ['sentences under it', /^It can then read what you see in\b/],
+    ].map(([what, opens]) => ({
+      name: `the read-consent card's ${what} in ${CREW_TOOLS_HOST}`,
+      opens,
+      templates: consentCard.filter((line) => opens.test(line.replace(/\{workspace\}/g, 'w'))),
+      source: toolHostSource,
+      requiredIn: [AGENTS_PAGE],
+    })),
+    ...[
+      [
+        CREW_TOOLS_PLACES,
+        placesSource,
+        'refusal of a Private write through a Public connection',
+        /^This chat is Private, and your connection to\b/,
+      ],
+      [
+        CREW_TOOLS_PLACES,
+        placesSource,
+        'crossing line',
+        /^This chat is Private, and this goes to\b/,
+      ],
+      [
+        CREW_TOOLS_SETUP,
+        toolSetupSource,
+        'refusal of an open without a check',
+        /^Open a workspace from a server checked\b/,
+      ],
+      [
+        CREW_TOOLS_MESSAGES,
+        toolMessagesSource,
+        'refusal of a download',
+        /^This chat can't download that file\b/,
+      ],
+    ].map(([path, source, what, opens]) => ({
+      name: `the person tools' ${what} in ${path}`,
+      opens,
+      templates: opening(rustLiterals(source || ''), opens),
+      source,
+      requiredIn: [AGENTS_PAGE],
+      requiredWhole: true,
+    })),
+  ];
+  holdToFamilies('account-sentences', accountFamilies);
+  // The controls these pages tell a reader to choose, and the badge they look for, are names the
+  // code still shows, and the page names each one.
+  const accountLabels = [
+    [
+      ONBOARDING_COPY,
+      onboardingSource,
+      'Open a workspace on a server',
+      [JOINING_PAGE, HOSTING_PAGE],
+    ],
+    [SIDEBAR_COPY, sidebarCopySource, 'Open a workspace on a server…', [JOINING_PAGE]],
+    [ONBOARDING_COPY, onboardingSource, 'Look for workspaces', [JOINING_PAGE]],
+    [ONBOARDING_COPY, onboardingSource, 'Update and restart', [JOINING_PAGE, HOSTING_PAGE]],
+    [
+      ONBOARDING_COPY,
+      onboardingSource,
+      'Open it on this computer',
+      [HOSTING_PAGE, TROUBLESHOOTING],
+    ],
+    [ACCOUNT_COPY, accountCopySource, 'Add this computer again', [JOINING_PAGE, TROUBLESHOOTING]],
+    [ACCOUNT_COPY, accountCopySource, 'Remove device', [PRIVACY_PAGE]],
+    [ACCOUNT_COPY, accountCopySource, 'Acknowledge', [PRIVACY_PAGE]],
+    [DIALOGS_COPY, dialogsSource, 'This device', [PRIVACY_PAGE]],
+    [APPROVAL_CARD_COPY, approvalCardSource, 'Allow once', [AGENTS_PAGE]],
+  ];
+  for (const [path, source, label, pages] of accountLabels) {
+    if (source === null) continue;
+    if (!tsLiterals(source).includes(label)) {
+      fail(
+        'account-sentences',
+        `${path} no longer shows "${label}"; re-read it, and rename the control in the manual with it`
+      );
+      continue;
+    }
+    for (const page of pages) {
+      if (!(tree.read(page) || '').includes(`**${label}**`)) {
+        fail(
+          'account-sentences',
+          `${page} does not name the control ${path} shows as **${label}**`
+        );
+      }
+    }
+  }
 
   // ── refusal-codes ────────────────────────────────────────────────────────
   // Every code the daemon refuses a Crew request with is in the command-line

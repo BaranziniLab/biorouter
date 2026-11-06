@@ -1,7 +1,7 @@
 # Crew command line
 
 > **What this is.** A task reference for the `biorouter crew` commands: their syntax, what they print and their exit status.
-> **Status:** Current. Checked against the Biorouter 1.93.0 Crew code on 2026-10-16.
+> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
 > **Audience:** IT staff, lab managers, and lab members who prefer a terminal or want to script Crew. You should know how to open a terminal and run a command.
 
 These commands and the desktop app share one background service on your computer, the Biorouter daemon (`biorouterd`), and its saved connections, so both show the same workspace.
@@ -15,7 +15,7 @@ You need:
 - A Mac or Linux computer. On Windows, every command stops before it asks for anything, with `Shared Crew daemon IPC is unavailable on this platform.`
 - `biorouter` and `biorouterd` in the same folder, and the same Biorouter profile as your desktop app.
 - An account on the lab's Linux server, with an SSH key, password or code from your IT team.
-- Nothing installed on the server: `setup`, `host` and `join` install `~/.local/bin/biorouter-crew` in your own account there ([Set up Crew on a server](#set-up-crew-on-a-server)).
+- Nothing installed on the server: `setup`, `host`, `open` and `join` install `~/.local/bin/biorouter-crew` in your own account there ([Set up Crew on a server](#set-up-crew-on-a-server)).
 - The server's SSH host key in your known hosts file. See [Connections and troubleshooting](connections-and-troubleshooting.md).
 - On a Linux computer with no keyring service, such as a login node you reach only over SSH, an encrypted vault set up first. See [Keep device keys in an encrypted vault](#keep-device-keys-in-an-encrypted-vault).
 
@@ -80,6 +80,9 @@ In JSON, an error has `error` and `request_id`, and usually a `code`. The code i
 | `crew_institution_required` | `host --mode private` needs `--institution ID`. Exit `2`. |
 | `crew_folder_required` | `connections set-access folder` or `full` needs a work folder, and the connection has none: add `--folder PATH`. Exit `2`. |
 | `crew_task_model_required` | `tasks start` or `ask` named no model, and none is set for Crew tasks or new chats. Add `--provider` and `--model`, or run `defaults set`. Exit `2`. |
+| `crew_join_removed` | `join` or `open` found that the workspace removed your account: ``You were removed from lab. Ask a member to invite you again.`` Ask a member for a new invitation. |
+| `crew_host_name_in_use` | `host` found a workspace of that name you already host on the server. See [Host a workspace](#host-a-workspace). |
+| `crew_host_controls_would_end` | `connections remove` refused to remove the only computer that can act as host of a workspace on a server with an older Crew. See [Change or remove a saved connection](#change-or-remove-a-saved-connection). |
 
 Text output prints a display name in double quotes, such as `"Alice Chen" (@alice)`. A name with letters outside ASCII also has two invisible direction marks (U+2068 and U+2069) inside its quotes, so right-to-left text cannot reorder the rest of the line. Scripts should read names from JSON, which has neither the quotes nor the marks.
 
@@ -125,9 +128,10 @@ Save the invitation your host sent, or only its `brcrew1:` line, in a file such 
 1. Run `biorouter crew connections join-invitation ./lab.txt --preview`. It saves nothing. `You'll join as` shows how your computer will treat the workspace. Your host can compare the fingerprint.
 2. Run it again without `--preview`. Type `y` and press Enter. It prints `Saved lab.` and the next commands to run.
 3. Run `biorouter crew setup`. It signs in, asking for your password or code in the terminal if the server wants one, installs Crew in your server account if it is missing, gives agents full access with a work folder as the desktop's Join does ([Set up Crew on a server](#set-up-crew-on-a-server)), and connects. It ends with `Connected.`
-4. Run `biorouter crew join`. It prints `Send Alice this code: 7QK2-M9XA-3JTP-WZ4D` and waits. When Crew is missing from your server account, or the server wants you to sign in at the terminal, `join` runs the same setup first. If this computer has never connected to the workspace, that setup also gives agents full access, as step 3 does, and warns you once. If it has connected before, `join` keeps what agents may do there.
-5. Send the code to your host, for example by Slack or email.
-6. When the host enters it, `join` prints `You're in lab.` If agents still have no access on the server, it adds ``Your agent can't work on hpc yet. To let it, run biorouter crew --connection lab connections set-access full.`` ([Agent access](#agent-access)).
+4. Run `biorouter crew join`. On a server whose Crew knows your account, it joins as your account at once and prints `You're in lab.` On a server with an older Crew, it prints `Send Alice this code: 7QK2-M9XA-3JTP-WZ4D` and waits: send the code to your host, for example by Slack or email, and when the host enters it, `join` prints `You're in lab.` When Crew is missing from your server account, or the server wants you to sign in at the terminal, `join` runs the same setup first. If this computer has never connected to the workspace, that setup also gives agents full access, as step 3 does, and warns you once. If it has connected before, `join` keeps what agents may do there.
+5. If agents still have no access on the server, `join` adds ``Your agent can't work on hpc yet. To let it, run biorouter crew --connection lab connections set-access full.`` ([Agent access](#agent-access)).
+
+`join --no-wait` on a computer that can join as your account prints ``This computer can join lab as your account on the server. Run biorouter crew join to join.`` An older `biorouter` talking to a newer daemon says to update Biorouter at that point.
 
 To paste the invitation, pass `-`, end with Ctrl+D, and add `--yes`. If saving fails, the message names the option to add. One computer cannot use two institutions on one server.
 
@@ -143,6 +147,7 @@ While `join` waits:
 
 | You see | What to do |
 |---|---|
+| `You were removed from lab. Ask a member to invite you again.` | The workspace removed your account. `join` exits with `1` and code `crew_join_removed`. Ask a member to invite you again. |
 | `The code Alice entered doesn't match this computer. ...` | Send the code again. |
 | `You're not in lab yet. Ask "Alice Chen" (@alice) to invite your account on the server.` | Ask the host to run `enroll invite @bob`. |
 | `This invitation expired. ...` | Ask for a new invitation. |
@@ -151,6 +156,56 @@ While `join` waits:
 Ctrl+C stops waiting and keeps the invitation open. `join --no-wait` prints the state and returns, for scripts.
 
 The first time you pass through a jump host, verify it on its own first, as step 3 of [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer) shows. IT's settings make SSH check jump hosts strictly, so SSH never asks about an unknown one.
+
+### Open a workspace from a terminal
+
+`open` opens a workspace your server account already hosts, belongs to or is invited to, with no invitation. Use it on a new computer, or after you removed the workspace from this one. It needs a current Crew on the server.
+
+```bash
+biorouter crew open lab --server bob@hpc.example.edu
+```
+
+1. It prepares a device key for this computer and runs a setup check on the server, signing in once, asking in the terminal if the server wants a password or a code. The check installs nothing.
+2. It lists the workspaces on the server for your account and picks the one you named. Case does not matter.
+3. It saves the workspace on this computer from what the server reports, with your login and route, and prints `Saved lab.`
+4. It connects and joins as your account, and ends with `You're in lab as a member.` or `You're in lab as its host.` With `--agent-access off`, the default, it adds the line that names `connections set-access` ([Agent access](#agent-access)).
+
+| Option | Effect |
+|---|---|
+| `--server LOGIN` | Your SSH login or an alias from your SSH settings. Required. |
+| `--host USERNAME` | The host's username, when two hosts on the server have a workspace of that name. |
+| `--port`, `--identity-file`, `--proxy-jump` | The route, as for `setup`. |
+| `--agent-access off`, `folder` or `full` | What agents may do on the server through the new connection. Default `off`. `folder` and `full` run a member setup after saving, as `setup` does. |
+| `--name LOCAL_NAME` | This computer's name for the connection. Default: the workspace's name. |
+
+`open` takes no `--connection`. A workspace already saved on this computer is joined in place, with no second save. It refuses before it saves anything, with a sentence that says why:
+
+| You see | What to do |
+|---|---|
+| `No workspace named lab on bob@hpc.example.edu is yours or invites you.` | Check the name and the login. A workspace whose server runs an older Crew cannot say whether you belong to it, so open it with the invitation its host sends. |
+| `More than one host on bob@hpc.example.edu has a workspace named lab: @alice, @carol. Choose one with --host USERNAME.` | Add `--host`. |
+| `lab is stopped. Start it with biorouter crew setup --server bob@hpc.example.edu --start lab, then open it.` | You host it: run that command, then `open` again. |
+| `lab isn't running on bob@hpc.example.edu. Ask @alice to start it.` | Ask the host. |
+| `lab on bob@hpc.example.edu was deleted by its host.` | Nothing is left to open. |
+| `You were removed from lab. Ask a member to invite you again.` | Code `crew_join_removed`. Ask for a new invitation. |
+| ``lab's server runs an older Crew. Ask @alice to update it.`` | Code `crew_account_unsupported`. A host reads ``lab's server runs an older Crew. Update it with biorouter crew setup --server bob@hpc.example.edu.`` and runs that command. |
+
+A workspace found this way is trusted because the server vouches for it: its socket is in a folder only the host's account controls, answered by a program running as that account. `open` names the workspace's host before it saves.
+
+### Add this computer again from a terminal
+
+`rejoin` gives the selected connection a new device key, as your account on the server, and keeps the connection, its ID and its settings. Use it when the computer lost its key or the workspace no longer recognizes it:
+
+- ``This computer no longer has its key for lab. Run biorouter crew rejoin to make a new one.`` (code `crew_device_key_missing`)
+- ``lab no longer recognizes this computer. Run biorouter crew rejoin while you are still a member.`` (code `crew_device_not_recognized`)
+
+```bash
+biorouter crew --connection lab rejoin
+```
+
+It connects first when the connection is down, then prints a line such as ``Added this computer to lab again as "Bob Lee" (@bob), with a new device key.`` When the workspace already keeps 32 computers for you, it adds ``lab keeps up to 32 computers for each person, so it removed your oldest one:`` and that computer's fingerprint. Every chat's Crew access through the connection ends, and the last line says so: ``Chats that had Crew access through this connection need it given again: biorouter crew grants grant SESSION CHANNEL.``
+
+If the workspace refuses, the old key stays. If the answer was lost, run `rejoin` again: it sends the same new key, and the workspace takes it once. `rejoin` needs a current Crew on the server (code `crew_account_unsupported` otherwise) and a current daemon: an older one answers ``Restart the shared Biorouter daemon to use your server account for Crew.``
 
 ### Join from the workspace's own server
 
@@ -167,7 +222,9 @@ When the invitation names this machine, by its name or one of its addresses, Cre
 
 - `status` or `connections list` prints one line per connection, such as `lab · bob@hpc.example.edu · Connected · Private (ucsf)`, plus the last error. The privacy is the one in force: a Public connection to a workspace that is Private for everyone reads `Private because lab is Private for everyone · your connection: Public`. `connections show` details one. A connection your host has not let in yet reads `Not joined yet` where a joined one reads `Connected`.
 - When the workspace server has stopped saving changes, `status` and `connections show` add ``The workspace server has stopped saving changes. Reading still works.`` The host also gets what to run on the server, such as ``You host this workspace. Free space on hpc, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir.`` See [Server storage full or failing](administration.md#server-storage-full-or-failing).
+- When a computer was added to your account since you last looked, `status` and `connections show` add a line under the connection, such as `New computer on your account: 3F2A 9C1E 77B0 D4E1 · added Nov 6, 2026 · via account sign-in. Check it with biorouter crew --connection lab profile devices.` See [Your computers](#your-computers).
 - `auth` signs in inside your terminal and connects.
+- `auth --setup-job ID` signs in for a setup that waits for someone to sign in, such as one a chat started ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). It prints `Signed in to bob@hpc.example.edu. The setup goes on by itself.` A setup that no longer waits is refused with ``This setup isn't waiting for anyone to sign in.`` (code `crew_setup_not_waiting_for_sign_in`).
 - `connect` connects without prompts. If the server wants a password or code, it fails with `The server wants your password or a verification code. Run biorouter crew auth to sign in.`
 - `disconnect` closes the connection until you connect again.
 
@@ -194,15 +251,19 @@ A connection whose workspace the host deleted reads that way in `status` and `co
 
 ## Change or remove a saved connection
 
-`connections remove` asks you to type the connection's name first. In a script, add `--confirm NAME`. It disconnects, ends every chat's access through that connection, and deletes this computer's device key for the workspace. When the connection is up, it first asks the workspace to revoke that access. It never connects to do so, so a workspace that was offline keeps honoring that access on the server until it expires, an hour at most. Your messages stay on the server, and you stay a member, so your old invitation does not bring the workspace back. To use it here again, follow [Add this computer to your existing account](joining-a-workspace.md#add-this-computer-to-your-existing-account), or from a terminal:
+`connections remove` asks you to type the connection's name first. In a script, add `--confirm NAME`. It disconnects, ends every chat's access through that connection, and deletes this computer's device key for the workspace. When the connection is up, it first asks the workspace to revoke that access. It never connects to do so, so a workspace that was offline keeps honoring that access on the server until it expires, an hour at most. Your messages stay on the server, and you stay a member, so your old invitation does not bring the workspace back.
 
-1. Ask the host to run `enroll invite @bob --add-device` and send you the new invitation.
-2. Run `connections join-invitation` with it, then `auth` and `join`, as in [Join a workspace](#join-a-workspace).
-3. Send the new code to the host. When the host enters it, `join` prints `You're in lab.`
+Before it asks, it says ``Chats given Crew access through it can't get it through a new connection. If this computer only lost its key, run biorouter crew rejoin instead: it keeps the connection.`` A chat stays bound to the connection it was granted through, so a new connection of the same workspace cannot grant it again. When this computer only lost its key, run `rejoin` ([Add this computer again from a terminal](#add-this-computer-again-from-a-terminal)) instead of removing.
 
-For a connection whose workspace the host deleted, `connections remove` asks only for the name and does not warn about host controls. If you host the workspace and no other computer of yours can act as its host, `connections remove` refuses and names the `enroll invite @alice --add-device` command that adds one. `--give-up-host-controls` removes it anyway, and then nothing can restore the host controls. Read [Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role) first.
+On a server whose Crew knows your account, removing never ends the host controls, and it says how to come back, such as ``You can open lab again from any computer that signs in as your account on hpc, with biorouter crew open lab --server bob@hpc.example.edu.``, or for the host, ``You host lab. The host controls stay with your account on hpc: open it again from any computer that signs in as it, with biorouter crew open lab --server alice@hpc.example.edu.`` `--give-up-host-controls` is accepted there and does nothing. To use the workspace here again, run that `open` command ([Open a workspace from a terminal](#open-a-workspace-from-a-terminal)).
 
-If the workspace lists another computer enrolled as you, `connections remove` goes ahead once you confirm, but first it lists those computers by fingerprint and the date each was added. The host controls continue only if one of them still has the workspace saved. A computer stays on that list after its connection is removed there, so the list alone does not prove it can still act as host. Run `connections list` on that computer before you go on. With `--confirm` or in a script, the list is printed on stderr.
+On a server with an older Crew, the host's last computer is guarded:
+
+- If you host the workspace and no other computer of yours can act as its host, `connections remove` refuses (code `crew_host_controls_would_end`), names the `enroll invite @alice --add-device` command that adds one, and adds ``Or first update Crew on hpc with biorouter crew setup --server alice@hpc.example.edu: then the host controls follow your account there, from any computer that signs in as it.`` `--give-up-host-controls` removes it anyway, and then nothing can restore the host controls until Crew on the server is updated. Read [Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role) first.
+- If the workspace lists another computer enrolled as you, `connections remove` goes ahead once you confirm, but first it lists those computers by fingerprint and the date each was added. The host controls continue only if one of them still has the workspace saved. A computer stays on that list after its connection is removed there, so the list alone does not prove it can still act as host. Run `connections list` on that computer before you go on. With `--confirm` or in a script, the list is printed on stderr.
+- To use the workspace here again as a member, ask the host to run `enroll invite @bob --add-device`, run `connections join-invitation` with the new invitation, then `auth` and `join`, and send the host the new code.
+
+For a connection whose workspace the host deleted, `connections remove` asks only for the name and does not warn about host controls.
 
 `connections save FILE` adds a connection from a JSON description, and `connections update FILE` replaces the selected one. The fields are listed in [Save a connection from a descriptor](design/cli-guide.md#save-a-connection-from-a-descriptor). The output of `connections show` is not valid input.
 
@@ -212,7 +273,7 @@ If the workspace lists another computer enrolled as you, `connections remove` go
 
 - `off` removes the work folder. It prints ``Agents can't work on hpc through lab now.``
 - `folder` confines agents to one folder. `--folder PATH` names it, as a full path or `~/` once this computer has connected, and the connection's own folder is the default. On a server whose kernel cannot confine commands, it says that commands there need full access.
-- `full` lets agents run commands as your account, starting in that folder. It asks first, naming what full access allows; add `--yes` where there is no terminal to ask in. It is refused when the Crew in your server account is too old for it: run `setup --replace-existing` first.
+- `full` lets agents run commands as your account, starting in that folder. It asks first, naming what full access allows; add `--yes` where there is no terminal to ask in. It is refused when the Crew in your server account is too old for it: run `setup` first, which updates it.
 
 Without a folder, `folder` and `full` exit with `2` and code `crew_folder_required`. A change of level ends every chat's and task's access through the connection, and the command says so.
 
@@ -221,11 +282,46 @@ Without a folder, `folder` and `full` exit with `2` and code `crew_folder_requir
 `setup` installs or updates Crew's server program, `~/.local/bin/biorouter-crew`, in your own account on a server, over SSH, as the desktop app does ([How Biorouter installs Crew](administration.md#how-biorouter-installs-crew)).
 
 - `setup` with a saved connection (the selected one, or `--connection NAME`) installs Crew if it is missing, then connects. With no work folder on the connection yet, it also gives agents full access, starting in a new `~/crew-work/WORKSPACE` folder, as joining in the desktop app does. `--agent-access off`, `folder` or `full` chooses the level instead, and a connection that already has a folder keeps its level unless you name one. `off` changes nothing and makes no folder.
-- `setup --server LOGIN` installs Crew for a server you have no connection to yet, such as `bob@hpc.example.edu`, and does nothing more. `--port`, `--identity-file` and `--proxy-jump` set the route.
-- `--replace-existing` replaces an older copy, or a file Biorouter did not put there, keeping the old one as `biorouter-crew.previous`. Without it, setup keeps an older copy that runs. A newer copy is never replaced.
-- `setup --check`, or `doctor` with the same options, checks the server and changes nothing. It prints the server's system and glibc, whether Crew is installed and which version, and, when the kernel cannot confine commands to a folder, ``Agents can run commands there only with full access: its kernel can't confine them to a folder.``
+- `setup --server LOGIN` sets Crew up for your account on a server, such as `bob@hpc.example.edu`, whether or not this computer has a connection there. It makes no device key and saves nothing. `--port`, `--identity-file` and `--proxy-jump` set the route.
+- An older copy is replaced by default, and the old one kept as `biorouter-crew.previous`. A newer copy is never replaced.
+- `--keep-older` keeps an older copy that still runs.
+- `--replace-existing` also replaces a copy that does not run or does not say its version, or a file Biorouter did not put there.
+- `setup --check`, or `doctor` with the same options, checks the server and changes nothing. It prints the server's system and glibc, whether Crew is installed and which version, the workspaces your account has there, and, when the kernel cannot confine commands to a folder, ``Agents can run commands there only with full access: its kernel can't confine them to a folder.`` When the server's Crew is older than this computer's, it says so, such as `Crew 1.94.1 is installed in your account there. This computer has Crew 1.94.2; biorouter crew setup updates it.`
 
-`setup` prints one line per step as it starts, such as checking the server, signing in and installing, then a summary such as `Installed Crew 1.93.0 in your account on hpc.` or `Crew 1.93.0 was already installed in your account on hpc.`. A same-version copy with other bytes is replaced, and the summary names both copies. If the server asks for a password or a code, it asks in the terminal, and that one sign-in covers the rest. Ctrl+C stops the setup, and running the same command again finishes it. With `--output-format stream-json`, each step is one JSON value.
+`setup` prints one line per step as it starts, such as checking the server, signing in, installing, looking for workspaces and updating running workspaces, then a summary such as `Installed Crew 1.94.2 in your account on hpc.` or `Crew 1.94.2 was already installed in your account on hpc.`. A same-version copy with other bytes is replaced, and the summary names both copies. If the server asks for a password or a code, it asks in the terminal, and that one sign-in covers the rest. Ctrl+C stops the setup, and running the same command again finishes it. With `--output-format stream-json`, each step is one JSON value.
+
+### Workspaces on the server
+
+`setup` and `setup --check` list the workspaces your account has on the server: the ones it hosts, and the ones of other accounts it is a member of, invited to or was removed from. Each line names the workspace, your role, its state and Crew version, and what this computer has:
+
+```text
+Workspaces on bob@hpc.example.edu for your account:
+  lab · hosted by @alice, you're a member · running · connected on this computer
+  old-lab · you host it · stopped · not on this computer
+```
+
+A workspace this computer cannot reach yet ends the summary with what to run, such as ``You host old-lab here (stopped). This computer has no connection to it. Start it with biorouter crew setup --server bob@hpc.example.edu --start old-lab, then open it.`` or ``You are a member of lab, hosted by @alice. This computer has no connection to it. Open it with biorouter crew open lab --server bob@hpc.example.edu.`` A workspace on a server with an older Crew cannot say whether you belong to it, so it is counted, not listed, and you open it with the invitation its host sends. When the server holds more than setup looks through at once, the summary says the list may not be complete. The listing needs a current Crew in your account there; with an older one, setup says it is too old to list workspaces and goes on.
+
+### Restart and start workspaces you host
+
+After it installs a newer Crew, `setup` restarts each workspace your account hosts that still runs the older program, when nobody else is connected to it, and says, for example, `Restarted lab: it ran Crew 1.94.1 and now runs Crew 1.94.2.` Members' computers reconnect by themselves. A restart ends what members had running there: agent commands that were not detached, file transfers and requests.
+
+| Option | Effect |
+|---|---|
+| `--restart` | Restarts the workspaces you host even when other people are connected to them. |
+| `--no-restart` | Restarts nothing, and only says which workspaces still run an older Crew. |
+| `--start NAME` | Starts a stopped workspace you host, by its name. Repeat it for more. `setup` first lists the workspaces to find each one, and refuses a name that is unknown, ambiguous, running or deleted before it installs anything, such as ``You don't host a workspace named lab on bob@hpc.example.edu.`` |
+
+None of these goes with `--check`. A workspace setup did not restart is listed with the reason:
+
+| Line starts with | Why |
+|---|---|
+| `lab still runs Crew 1.94.1, not Crew 1.94.2, and 3 other people are connected to it` | Others are connected. Run setup again with `--restart` at a quiet time. |
+| `lab runs Crew 1.95.0, newer than Crew 1.94.2` | The running copy is newer, so it was left running. |
+| `lab still runs Crew 1.94.1, not Crew 1.94.2, and keeps its state outside ~/.local/share/biorouter-crew` | It was started with its own `--state-dir`. Restart it on the server yourself. |
+| `lab still runs Crew 1.94.1, not Crew 1.94.2. Run biorouter crew setup --server bob@hpc.example.edu to restart it.` | A check, or `--no-restart`, restarts nothing. |
+
+A restart or start that failed prints its reason and the command that starts the workspace by hand on the server, such as `To start it by hand, run this on bob@hpc.example.edu: ~/.local/bin/biorouter-crew start --workspace-id WORKSPACE_ID`. Only that step fails. See [Server commands](#server-commands).
 
 ### Setup refusals
 
@@ -242,7 +338,7 @@ A failed setup prints its sentence and exits with `1`. In JSON its `code` is one
 | `crew_setup_server_unreadable` | The server's answer could not be read, so nothing changed. |
 | `crew_setup_start_failed` | Crew is installed, but it did not start the workspace. `detail` holds what Crew printed. |
 | `crew_setup_changed` | The connection's login or route changed while the setup ran. Run it again. |
-| `crew_server_probe_unsupported` | The Crew there is too old to describe the server. Run `setup --replace-existing`. |
+| `crew_server_probe_unsupported` | The Crew there is too old to describe the server. Run `setup`, which replaces it. |
 | `crew_install_artifact_unavailable` | This Biorouter carries no Crew server program. Update Biorouter, or install Crew yourself. |
 | `crew_install_unsupported_platform` | The server is not x86_64 Linux, or the program there is not built for it. |
 | `crew_install_dependency_missing` | The server lacks a system library Crew needs. Ask IT. |
@@ -262,10 +358,11 @@ A failed setup prints its sentence and exits with `1`. In JSON its `code` is one
 | `crew_host_machine_id_unavailable` | The server has no readable `/etc/machine-id` ([Machine identity](administration.md#machine-identity)). |
 | `crew_host_setup_unknown`, `crew_host_setup_used` | The hosting preparation is unknown or already used. Run `host` again. |
 | `crew_host_start_busy`, `crew_host_start_cancelled`, `crew_host_start_timed_out` | Starting the workspace was already running, was stopped, or took too long. |
+| `crew_host_name_in_use` | You already host a workspace of that name on the server: ``You already host lab on hpc.example.edu. Open it on this computer instead.``, or for a stopped one ``You already host lab on hpc.example.edu. It is stopped: start it with biorouter crew setup --server alice@hpc.example.edu --start lab, then open it.`` `host` adds the `open` command for a running one. Choose another name to host a new workspace. |
 
 ## Host a workspace
 
-`host` does the whole job in one command: it installs Crew in your account on the server, starts the workspace, saves and connects it here, creates it with this computer as its first admin device, sets its privacy and institution, makes it open to every member, saves a [workspace context](agents-and-chat-access.md#the-workspace-context) drafted from the server, and gives your agent full access there.
+`host` does the whole job in one setup job: it installs Crew in your account on the server, starts the workspace, saves and connects it here, joins it as its host, sets its privacy and institution, makes it open to every member, saves a [workspace context](agents-and-chat-access.md#the-workspace-context) drafted from the server, and gives your agent full access there. On a server with a current Crew, the host role then belongs to your server account, so any computer that signs in as it can act as host ([Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role)).
 
 ```bash
 biorouter crew host --name lab --server alice@hpc.example.edu --institution ucsf
@@ -274,10 +371,12 @@ biorouter crew host --name lab --server alice@hpc.example.edu --institution ucsf
 - `--name` is 1 to 40 lowercase letters, numbers and dashes, starting and ending with a letter or number. `--server` is your SSH login or an alias from your SSH settings.
 - `--mode private` (the default) needs `--institution ID` (code `crew_institution_required`); `--mode public` allows Public.
 - `--port`, `--identity-file` and `--proxy-jump` set the route.
+- `--agent-access off`, `folder` or `full` sets what your agent may do on the server through the new connection. The default is `full`. `folder` saves the work folder setup makes, with commands off, and `off` saves none.
 - It lists what it will do and asks `Go ahead?`. Add `--yes` where there is no terminal to ask in.
 - If other accounts can change folders above where Crew keeps the workspace, it stops before starting, with `crew_host_storage_unsafe` and the folders. Run it again with `--fix-permissions` to let it run `chmod go-w` on exactly those folders.
+- If you already host a workspace of that name on the server, it stops before it installs anything, with `crew_host_name_in_use`. For a running one it adds the command that opens it, such as `Run biorouter crew open lab --server alice@hpc.example.edu.`; for a stopped one the sentence names the `setup --start` command. It never creates a second workspace of that name, and never changes the settings of one it did not create.
 
-It ends with lines such as `lab is Private (ucsf) and open: every member can manage teams, channels and people.`, the work folder your agent starts in, the context's revision, and `Next: invite people with biorouter crew --connection lab enroll invite @USERNAME`. A server whose Crew is older than open workspaces keeps the workspace managed, and says so. If a step after the start fails, the error names what is done and the command that finishes it.
+It ends with lines such as `lab is Private (ucsf) and open: every member can manage teams, channels and people.`, the work folder your agent starts in, the context's revision, and `Next: invite people with biorouter crew --connection lab enroll invite @USERNAME`. A server whose Crew is older than open workspaces keeps the workspace managed, and says so. If a step after the start fails, the error names what is done and lists the commands that finish it, under `To finish setting it up, run these in order:`. On a server with an older Crew, the join step there is `workspace bootstrap`.
 
 In the desktop app, choose **Host a new workspace**, then **Set up and start Crew**, as [Hosting a workspace](hosting-a-workspace.md) describes. To do each step yourself instead:
 
@@ -287,6 +386,8 @@ In the desktop app, choose **Host a new workspace**, then **Set up and start Cre
    ```bash
    "$HOME/.local/bin/biorouter-crew" start --name lab --bootstrap-key 'PUBLIC_KEY_HEX'
    ```
+
+   `start` creates a workspace only in a folder that holds none, and only with `--bootstrap-key` or `--create` ([Server commands](#server-commands)).
 
 3. On your computer, run `biorouter crew connections join-invitation ./lab-start.txt --preparation-id 'PREPARATION_ID' --ssh-target alice@hpc.example.edu --institution ucsf`. It ends with the next two commands, `auth` and `workspace bootstrap`.
 4. Run `biorouter crew auth`, then `biorouter crew workspace bootstrap`, which works once, with the key you gave `start`. It prints `Signed in to lab as @alice.` Members see your display name after you run `profile set 'Alice Chen'`.
@@ -312,12 +413,13 @@ A context saved against a version someone else replaced is refused with ``Someon
 The host runs `enroll` commands, and in an open workspace every member can.
 
 1. Run `biorouter crew enroll invite @bob`. Crew checks that this server account exists and prints an invitation message. Send the whole message to Bob. It holds no secret.
-2. When Bob sends his code, run `biorouter crew enroll approve @bob 7QK2-M9XA-3JTP-WZ4D`. Case, spaces and dashes do not matter. It prints `Code saved. @bob joins when their computer confirms the same code.`
-3. Bob is in only when his `join` prints `You're in lab.`
+2. On a server whose Crew knows accounts, Bob is in as soon as his `join` runs from a computer that signs in as `bob`. Nobody enters a code.
+3. On an older Crew, or when Bob's Biorouter is older, Bob sends you a code. Run `biorouter crew enroll approve @bob 7QK2-M9XA-3JTP-WZ4D`. Case, spaces and dashes do not matter. It prints `Code saved. @bob joins when their computer confirms the same code.` Bob is in only when his `join` prints `You're in lab.`
 
 `enroll pending` lists who is waiting. If you mistyped a code, Bob's `join` reports a mismatch and `enroll pending` warns under his row. Run `enroll approve` again with `--replace`. Approve only a code the person sent you.
 
-- `connections invitation --for @bob` prints the invitation again. `enroll invite @bob --add-device` lets a member add another computer. `enroll cancel @bob` withdraws an invitation.
+- `connections invitation --for @bob` prints the invitation again. `enroll cancel @bob` withdraws an invitation.
+- On a server whose Crew knows accounts, a member adds another computer with `open` ([Open a workspace from a terminal](#open-a-workspace-from-a-terminal)). On an older Crew, `enroll invite @bob --add-device` lets a member add another computer by code.
 - An invitation lasts 24 hours. Inviting again replaces it. At most 100 people can wait at once.
 - `enroll revoke @bob` (host only) removes a member with all their computers, and asks you to type `@bob` again. In a script, add `--confirm @bob`. It ends every agent grant in the workspace. A removed person invited again starts with no teams or channels.
 
@@ -330,6 +432,8 @@ A server whose `biorouter-crew` cannot join by code needs the older token path. 
 | Command | Notes |
 |---|---|
 | `profile show` | Your name and enrolled computers. |
+| `profile devices [--acknowledge]` | The computers enrolled as you, and which are new. See [Your computers](#your-computers). |
+| `profile revoke-device FINGERPRINT` or `--this-device` | Removes one of your computers from the workspace. See [Your computers](#your-computers). |
 | `profile set 'Bob Lee' --avatar 'BL'` | Up to 12 characters of initials or emoji. Leaving out `--avatar` removes them. |
 | `teams list`, `teams create NAME` | A new team gets a `general` channel. In an open workspace, it gets every member too. |
 | `teams rename TEAM NAME` | Team creator, or in an open workspace any member of the team. The team's handle, the name commands take, changes with it, and the old one stops working. |
@@ -343,6 +447,26 @@ A server whose `biorouter-crew` cannot join by code needs the older token path. 
 | `channels mark-read CHANNEL` | Marks the channel read. |
 
 A display name is a label only. It cannot contain `@` or `#` or match a username. Only private AI models can read a Restricted channel. See [Privacy and security](privacy-and-security.md). Name rules are in [Teams, channels and people](teams-channels-and-people.md). After ten names that were already taken within ten minutes, you get `Too many name attempts. Try again later.` Wait ten minutes. On a server whose Crew is older than open workspaces, `join` and `delete` say ``This workspace's server can't …`` and that `setup` updates it.
+
+### Your computers
+
+Every computer that signs in to the server as your account can be enrolled as you. `profile devices` lists them:
+
+```text
+Computers enrolled as you in lab:
+  3F2A 9C1E 77B0 D4E1 · added Nov 6, 2026 · via account sign-in · This computer
+  8B10 44C2 0E9F A713 · added Nov 1, 2026 · via invitation code · new
+```
+
+Each line is the computer's fingerprint, when and how it was added, and marks this computer and the ones added since you last looked. When some are new, it ends with what to do if one is not yours. `--acknowledge` marks them seen, and `status` stops naming them.
+
+To remove a computer, such as a lost laptop:
+
+1. Take its SSH access to the server away first. A computer that can still sign in to the server as you can add itself again. Remove its key from `~/.ssh/authorized_keys` on the server, or change your password there.
+2. Run `profile revoke-device 8B10 44C2 0E9F A713`, with the fingerprint `profile devices` shows. Spaces, dashes and case do not matter. Use `--this-device` for this computer.
+3. Read the warning, ``A computer that can still sign in to hpc as you can add itself to lab again. Take its SSH access away first: remove its key from ~/.ssh/authorized_keys on hpc, or change your password there.``, and type `y`. Add `--yes` where there is no terminal to ask in.
+
+It prints ``Revoked 8B10 44C2 0E9F A713. That computer can no longer use lab as you.`` Revoking this computer prints ``Revoked this computer's device for lab.`` and ``Add this computer again with biorouter crew rejoin.`` A fingerprint none of your computers has is refused before anything is sent. Removing a whole person stays the host's `enroll revoke`.
 
 ## Add people to teams and channels
 
@@ -449,6 +573,10 @@ To use a terminal chat:
 
 Without `--shared-daemon`, the chat cannot use a grant.
 
+### A chat that reads as you
+
+A chat without a Crew grant can read a workspace as you once you allow it ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). `grants list` lists each such permission, such as `Chat 20260924_2 reads lab as you · since Nov 6, 2026`. To withdraw one, run `grants revoke SESSION_ID --reads`. It prints ``Chat 20260924_2 can no longer read lab as you.``, or ``Chat 20260924_2 had no permission to read lab as you.`` (code `crew_not_found`) when there was none. Until you allow it again, the chat's reads answer `crew_read_consent_required`. An older daemon answers ``Restart the shared Biorouter daemon to withdraw a chat's permission to read as you.``
+
 ## Privacy settings
 
 `privacy show` prints the privacy in force first, then the privacy, institution and policy epoch of your connection and of the workspace, and each channel's classification. While you are disconnected, it says the workspace's setting cannot be checked. In JSON, `effective_mode` is the privacy in force, or `null` when it cannot be checked.
@@ -513,6 +641,10 @@ Your own daemon refuses some requests before they reach the workspace, each with
 | `crew_file_name_invisible` | The file's name has an invisible or formatting character. Rename the file, then share it again. |
 | `crew_destination_exists` | The file that `files download --output` names already exists. Add `--overwrite` to replace it, or choose another name. |
 | `crew_workspace_deleted` | The host deleted the workspace. Run `connections remove`. |
+| `crew_device_key_missing` | This computer no longer has its device key for the workspace: the keyring has no entry, or an unlocked vault lacks it. Run `rejoin` ([Add this computer again from a terminal](#add-this-computer-again-from-a-terminal)). A locked vault or a refused keyring keeps its own code. |
+| `crew_device_not_recognized` | The workspace no longer recognizes this computer, while your account is still its host or a member. Run `rejoin`. Your membership has not ended. |
+| `crew_account_unsupported` | The workspace's server runs a Crew from before account ownership, so opening by account, `rejoin` and the host's controls from another computer do not work there yet. The host reads ``lab's server runs an older Crew. Update it with biorouter crew setup --server alice@hpc.example.edu.``, anyone else ``lab's server runs an older Crew. Ask @alice to update it.`` In JSON, `is_host` says which, with `server_login` or `host_username`. |
+| `crew_read_consent_required` | A chat asked to read the workspace as you before you allowed it: ``This chat needs your permission to read lab as you.`` Allow it on the card in the chat. See [Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat). |
 
 ### Other daemon codes
 
@@ -529,6 +661,7 @@ The daemon answers these codes too. A command prints the sentence beside each, a
 | `crew_invitation_invalid`, `crew_invitation_conflict` | The pasted invitation cannot be read (`reason` says why), or this computer pins a different identity for that workspace. |
 | `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired` | Not let in yet, a different code, no invitation, or an expired one. See [Join a workspace](#join-a-workspace). |
 | `crew_join_replaced`, `crew_join_account_changed` | The invitation was replaced, or the server account (or the person who invited you) changed. Ask for a new invitation. |
+| `crew_join_removed` | The workspace removed your account. Ask a member to invite you again. |
 | `crew_join_unsupported` | The server cannot join by code. See [Tokens for older servers](#tokens-for-older-servers). |
 | `crew_join_device_conflict`, `crew_join_identity_conflict`, `crew_join_refused` | This computer's key is already in the workspace, another member has your username, or the workspace refused. Tell your host. |
 | `crew_idempotency_conflict` | The `--request-id` belongs to a different request. Use a new ID. |
@@ -545,9 +678,16 @@ The daemon answers these codes too. A command prints the sentence beside each, a
 
 ## Server commands
 
-The server program `biorouter-crew` runs in the host's account. Members never run it, because their daemons start it over SSH. Its commands, `start`, `status`, `stop`, `delete`, `probe` and `doctor`, are in [Administration](administration.md). `status --name` and `stop --name` take the workspace's original name.
+The server program `biorouter-crew` runs in the host's account. Members never run it, because their daemons start it over SSH. Its commands, `start`, `status`, `stop`, `delete`, `probe`, `doctor`, `workspaces` and `restart`, are in [Server commands](administration.md#server-commands). `status --name` and `stop --name` take the workspace's original name. `setup` runs the account ones for you:
 
-Nothing starts the workspace when the server boots. The host starts it again as [After the server restarts](hosting-a-workspace.md#after-the-server-restarts) shows.
+| Command | What it does |
+|---|---|
+| `biorouter-crew workspaces --output-format json` | Lists, as JSON, the workspaces this account hosts on the server and the ones of other accounts it is a member of, invited to or was removed from. Changes nothing. |
+| `biorouter-crew start --workspace-id UUID` | Starts a stopped workspace this account hosts, found by its ID. Never creates one. |
+| `biorouter-crew restart --workspace-id UUID` | Stops the workspace's running program and starts the installed one in its place. |
+| `biorouter-crew start --name NAME --create` | Creates a new workspace in a folder that holds none. `start` and `serve` create one only with `--create` or `--bootstrap-key`. |
+
+Nothing starts the workspace when the server boots. The host starts it again as [After the server restarts](hosting-a-workspace.md#after-the-server-restarts) shows, from any computer with `biorouter crew setup --server LOGIN --start NAME`.
 
 ## Related documentation
 

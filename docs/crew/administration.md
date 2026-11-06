@@ -1,7 +1,7 @@
 # Crew administration
 
-> **What this is.** What the Linux server needs for Crew, how Biorouter installs it in each account, and how to start, upgrade, delete, back up and troubleshoot a workspace.
-> **Status:** Current. Describes Biorouter 1.93.0, checked against the Crew code on 2026-10-16.
+> **What this is.** What the Linux server needs for Crew, how Biorouter installs it in each account, how Crew knows a person by their server account, and how to start, upgrade, delete, back up and troubleshoot a workspace.
+> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
 > **Audience:** Lab managers who host a workspace, and the IT staff who support its server.
 
 A Crew workspace holds a lab's channels, shared files and AI agents. The host runs `biorouter-crew` on a Linux server as their own account. This broker keeps the workspace in files owned by that account, listens only on a Unix socket under `/tmp`, and learns each caller's account from the kernel. When a member connects, Biorouter starts the same program over SSH in their account, as a bridge to that socket. Biorouter installs the program in each account itself, from the copy built into the desktop app and the command line, when the person joins or hosts ([How Biorouter installs Crew](#how-biorouter-installs-crew)). Crew needs no administrator rights, system service or open network port. For the app, see [Hosting a workspace](hosting-a-workspace.md).
@@ -43,7 +43,7 @@ Each workspace is tied to one machine. The broker reads `/etc/machine-id`, or `/
 ### Server accounts
 
 - The host runs the broker as an ordinary account. Root gets `unsupported: Crew must run as an ordinary user`.
-- Each member uses their own account. Crew sees the accounts `getent passwd` shows, directory accounts included.
+- Each member uses their own account. Crew sees the accounts `getent passwd` shows, directory accounts included. The account is the person: whoever signs in as it is that member in Crew, from any computer ([How identity works](#how-identity-works)).
 - System accounts cannot be invited: UID 0, UIDs below `UID_MIN` in `/etc/login.defs` (1000 when unset), UID 65534, and shells `nologin` or `false`.
 - Crew shows the first GECOS field as the person's full name.
 
@@ -115,9 +115,10 @@ Biorouter installs the copy itself. Joining a workspace, **Set up Crew for my ac
 1. It checks the server with fixed commands: the account, the system, glibc, free space, the tools to check a SHA-256, and any copy already installed.
 2. It signs in once. A server that wants a password or a code opens the Sign in window, and every later step reuses that SSH connection.
 3. It sends the program over the SSH session's standard input, checks its size, SHA-256 and `--version` on the server, and installs it at `~/.local/bin/biorouter-crew` with one rename. The copy it replaces stays as `biorouter-crew.previous`.
-4. It starts the workspace (for a host) or connects (for a member).
+4. It lists the workspaces the account has on the server, with `biorouter-crew workspaces`, and restarts the ones the account hosts that still run an older program, when nobody else is connected to them ([Upgrade Crew](#upgrade-crew)).
+5. It starts the workspace (for a host) or connects (for a member).
 
-It never follows a link, touches a file another account owns, or replaces a newer version with an older one. An older copy that still runs is kept unless the person asks to replace it (`biorouter crew setup --replace-existing`). A copy of the same version with a different SHA-256, such as a development build, is replaced, and setup reports both digests. No command it runs contains text a person, a renderer or an agent typed.
+It never follows a link, touches a file another account owns, or replaces a newer version with an older one. An older copy is replaced by default; `biorouter crew setup --keep-older` keeps it. A copy that does not run or does not say its version, or a file Biorouter did not put there, is replaced only with `--replace-existing`. A copy of the same version with a different SHA-256, such as a development build, is replaced, and setup reports both digests. No command it runs contains text a person, a renderer or an agent typed. A setup on a server with no saved connection (`biorouter crew setup --server LOGIN`) makes no device key and saves nothing on the computer.
 
 The program it sends is the one built into Biorouter: `crew-broker/linux-x86_64/biorouter-crew`, with its `manifest.json`, beside `biorouterd` in the desktop app, and under `/usr/libexec/biorouter/crew-broker/linux-x86_64/` in the CLI `.deb` and `.rpm` packages. The manifest records its version, SHA-256, size and glibc floor, and setup checks the file against it before sending. For development, `BIOROUTER_CREW_BROKER_DIR` names a folder holding `biorouter-crew` and, usually, its `manifest.json` ([Linux portability](design/linux-portability.md)).
 
@@ -151,6 +152,8 @@ Without a copy, a member sees "Crew isn’t set up for your account on hpc.examp
 
 In step 2 of the Host dialog, **Set up and start Crew** installs Crew and runs the start commands over SSH, or the host runs them from **Run it yourself in a terminal**. `biorouter crew host` does the same from a terminal. Their `--bootstrap-key` is the host computer's public key, used only to create the workspace.
 
+`start` and `serve` create a workspace only in a state directory that holds none, and only when `--bootstrap-key` or `--create` is given. Started on an empty or missing directory without either, they refuse with `not_found: This state directory holds no workspace. To start a new workspace there, pass --create.` and create nothing, not even the directory. Starting an existing workspace again needs neither.
+
 `start` runs the broker in the background, logs to `broker.log` in the state directory, and prints one line of JSON:
 
 - `"state":"running"` with an `invitation` line that the host pastes into Crew. If `invitation` is `null`, `invitation_error` says why.
@@ -170,6 +173,28 @@ Nothing restarts the broker when the server boots. The host starts it again with
 ```
 
 Only the host can stop it. `stop` confirms the process behind the socket is this broker, sends SIGTERM, waits up to 5 seconds and prints `"stopped":true`. After `"stopped":false`, check that the process is gone before you start again. Data is kept, and members see the workspace as offline.
+
+### Server commands
+
+These commands work on the workspaces of the account that runs them, by ID, and `biorouter crew setup` runs them over SSH for you. Run them as the host's account on the server.
+
+| Command | What it does |
+|---|---|
+| `"$HOME/.local/bin/biorouter-crew" workspaces --output-format json` | Lists the workspaces this account hosts, from `~/.local/share/biorouter-crew/` and its own runtime folders in `/tmp`, and the workspaces of other accounts it is a member of, invited to or was removed from. Changes nothing, and finishes within 20 seconds. |
+| `"$HOME/.local/bin/biorouter-crew" start --workspace-id WORKSPACE_ID` | Starts a stopped workspace this account hosts, found by its ID under `~/.local/share/biorouter-crew/`. Never creates one. |
+| `"$HOME/.local/bin/biorouter-crew" restart --workspace-id WORKSPACE_ID` | Stops the workspace's running broker, waits up to 15 seconds for it to exit, starts the installed program in its place, and checks that it answers for the same workspace. It prints `{"restarted":true,...}` with the old and new versions. It detaches from the terminal first, so a dropped SSH session does not stop it halfway. |
+
+`workspaces` finds other accounts' workspaces by asking each workspace socket under `/tmp` that belongs to its own account's folder and is answered by a broker running as that account. It asks each one only about the calling account, and lists only the ones that know it. A broker older than account ownership cannot answer, so it is counted, not listed. A workspace kept with a custom `--state-dir` is listed while it runs, from its runtime folder.
+
+Their refusals:
+
+| Message | What to do |
+|---|---|
+| `not_found: No workspace with ID … is kept in this account.` | Check the ID, and that you run it as the host's account. |
+| `busy: Another restart is running for a workspace in this account. …` | Wait for it, then try again. |
+| `stop_timeout: The workspace's broker (process …) was asked to stop and was still running after 15 seconds, …` | The new program was not started. Try again once the old one stopped: `status` says whether it still runs. |
+| `start_failed: …` | The installed program is missing or cannot run, or the new broker did not answer. The message ends with the last line of `broker.log`. Start it by hand with `start --workspace-id`. |
+| `workspace_deleted: This workspace was deleted and is erasing itself, so it is not restarted.` | Nothing to restart. |
 
 ### Server storage full or failing
 
@@ -192,10 +217,21 @@ To recover, as the host:
 
 ## How identity works
 
+The server account is the person. The broker learns each caller's account from the kernel (`SO_PEERCRED`), and every request is also signed by a device key that one of the account's computers holds. On a broker with account ownership (it advertises `account_identity_v1`), a process running as an account may add a device key for that account by itself, with no code and no other computer:
+
+- A member's new computer joins as that member, keeping their teams and channels.
+- An invited account joins with no code: the invitation names the account, and signing in as it is the proof.
+- The host's account adds a computer of its own at any time, so a lost computer never locks the host out.
+- An account nobody invited cannot join this way, and system accounts still cannot be invited. A removed member is refused with `You were removed from chen-lab. Ask a member to invite you again.`, and an account that is not a member with `This account is not a member of chen-lab. Ask a member to invite it.`
+- A person keeps at most 32 computers. A 33rd replaces the one added longest ago, and nobody is refused for having too many.
+- Each person sees their computers, with how and when each was added, and removes one ([Your computers](privacy-and-security.md#your-computers)). A computer that can still sign in as the account can add itself again, so its SSH access goes first.
+
+So whoever controls an account controls it in Crew, as on the rest of the server. That includes programs running as the account: jobs the person started, and an agent given **As me on the server**, whose posts then carry no agent mark, and which on the host's account holds the host's authority. The bridge refuses to add or remove devices from inside a full-access agent job (`agent_session_refused: An agent's job on the server cannot add or remove your devices. Do this from Biorouter on your computer.`), as a guard against mistakes; a job that opens the socket itself is not stopped. A work-folder (**In a folder**) command cannot open the broker's socket at all. Older brokers keep the device code and the host's computers as the only ways in ([Account ownership](design/account-ownership.md#security-position)).
+
 - The broker checks every request: the member is active, uses the UID they joined with, and that UID keeps its username. If not, the command line shows `Account enrollment changed.` and `biorouter crew members` shows `account no longer valid`. Usernames are unique among active members, ignoring case and lookalike letters.
 - After you rename an account, remove the old member and invite the new name. Inviting the new name first is refused with `This account joined as @bob and is now @robert…`.
 - Remove a member from every workspace before you delete their account. Crew cannot tell apart two people who get the same UID and username.
-- Only the host removes members from the workspace, and manages its name, privacy, institution and governance. In a managed workspace only the host lets people in, and in an open one every member can. Agents never can. See [Hosting a workspace](hosting-a-workspace.md).
+- Only the host removes members from the workspace, and manages its name, privacy, institution and governance. In a managed workspace only the host lets people in, and in an open one every member can. An agent's own Crew access, in a task or a connected chat, never can; a program running as the account is the account, as above. See [Hosting a workspace](hosting-a-workspace.md).
 - Removing someone ends every agent's access in the workspace. Their messages, server account and SSH access stay. Inviting them again creates a new member with no earlier teams or channels.
 
 The host's account, programs running as it and the server's administrators can read everything the workspace stores, including Restricted channels. SSH encryption alone does not make a deployment HIPAA compliant. Your institution decides endpoint approval and access review.
@@ -209,6 +245,8 @@ Crew keeps messages, files, member lists and channel names behind each member's 
 | The workspace's name | The host's `biorouter-crew serve` process shows `--name` or the state directory's path, and the state folder under the host's home has the same name. |
 | Who is connected to which workspace, and when | While a member's computer is connected, `biorouter-crew bridge` runs under the member's username with `--socket`, `--owner-uid` and `--workspace-id` on its command line. `ps` lists it for every account. |
 | The workspace's ID, name, privacy mode, institution, policy epoch and key fingerprint, and whether it has stopped saving changes | The broker's socket is mode 0666, because each member's bridge reaches it from their own account, and its `hello` answers any local account with these. |
+
+A broker with account ownership also tells any account where that account stands in the workspace (host, member, invited, removed or none) and nothing about any other account. The host's account is also told how many other accounts are connected, which setup reads before a restart.
 
 To hide other accounts' processes, mount `/proc` with `hidepid=2` on a shared server, for example with `mount -o remount,hidepid=2 /proc` and the same option in `/etc/fstab`. Check first that your monitoring tools still work, since they may need a group given with `gid=`. Nothing hides the `hello` answer, so keep patient, sample and study identifiers out of workspace names.
 
@@ -233,7 +271,8 @@ On member computers, each Biorouter background service listens on a TCP port on 
 | `~/.local/state/biorouter-crew/jobs/` | With **As me on the server** access, each command's and file copy's record and output, in each member's server account. At most 512 are kept. |
 | `~/crew-work/<workspace>` | The work folder setup creates for full access when none was given, in each member's server account. |
 | `~/.local/bin/biorouter-crew.previous` | The copy setup replaced, kept for a rollback. |
-| `~/.config/biorouter/crew/` | On each computer: saved connections, and vault files when used. Device keys stay in the system keychain. |
+| `~/.local/share/biorouter-crew/.restart-lock` | The lock `biorouter-crew restart` holds while it restarts a workspace, in the host's account. |
+| `~/.config/biorouter/crew/` | On each computer: saved connections, with the devices each last saw on your account and each chat's permission to read a workspace as you, and vault files when used. Device keys stay in the system keychain. |
 | `~/.local/state/biorouter/crew/` | On each computer: `runs.json`, the record of the agent tasks started there, and `transfers/`, the receipts of its file uploads and downloads. |
 | `~/.local/share/biorouter/crew/tasks/` | On each computer: the working folder of agent task chats. The task chats themselves are saved with your other chats, in `~/.local/share/biorouter/sessions/`. |
 | `~/.local/state/biorouter/daemon/` | On each computer: how Biorouter finds its background service. |
@@ -242,9 +281,18 @@ The first three rows are in the state directory. Computer paths are macOS and Li
 
 ## Upgrade Crew
 
-Each person's Biorouter installs a missing copy, and replaces a same-version copy whose SHA-256 differs, by itself. An older copy that still runs stays until the person runs `biorouter crew setup --replace-existing`, which installs the copy built into their Biorouter and keeps the old one as `biorouter-crew.previous`. For a member, that is the whole upgrade: it takes effect at their next connection.
+Each person's Biorouter installs a missing copy, replaces an older one, and replaces a same-version copy whose SHA-256 differs, whenever setup runs: when they join, host or open a workspace, choose **Update Crew**, or run `biorouter crew setup`. It keeps the old copy as `biorouter-crew.previous`, and never replaces a newer one. `--keep-older` keeps an older copy. For a member, that is the whole upgrade: it takes effect at their next connection.
 
-The host's copy also runs the workspace, which keeps running the old program until it restarts. Upgrade at a quiet time, because members disconnect while the broker restarts. As the host, run `biorouter crew setup --replace-existing` on your computer, then stop and start the broker on the server as in steps 2 and 3 below. Or by hand:
+The host's copy also runs the workspace, which keeps running the old program until it restarts. As the host, run `biorouter crew setup --server alice@hpc.example.edu` on your computer, or choose **Update Crew** in Crew. After installing, setup restarts each workspace you host that still runs the older program, when nobody else is connected to it, with `biorouter-crew restart --workspace-id` ([Server commands](#server-commands)). A restart ends what members had running there: agent commands that were not detached, file transfers and requests. Members' computers reconnect by themselves.
+
+- When others are connected, setup leaves the workspace running and says how many. Run it again with `--restart` at a quiet time, or choose **Update Crew** in **Open a workspace on a server**, then **Update and restart**.
+- `--no-restart` only reports which workspaces still run an older Crew.
+- A workspace started with a custom `--state-dir` is not restarted. Restart it by hand.
+- A restart that fails names the command that starts the workspace by hand, and fails only that step.
+
+In **Open a workspace on a server**, a workspace the person hosts that runs an older Crew than their Biorouter reads "Runs Crew {version}; {newer version} is available." with **Update Crew**. When a workspace's server runs an older Crew than this Biorouter carries (or, for a server too old to report its version, a Crew from before account ownership), its connection bar says "{workspace}’s server runs an older Crew.", with **Update Crew** for the host and "Ask @{host} to update Crew." for everyone else.
+
+To upgrade by hand:
 
 1. Install the new file beside the old one, and check it:
 
@@ -279,7 +327,7 @@ The new broker reads the journal as it is. To roll back, work in `~/.local/bin`:
 2. Run `mv -f biorouter-crew.previous biorouter-crew`.
 3. Run `./biorouter-crew start --state-dir "$HOME/.local/share/biorouter-crew/chen-lab"`. It prints `"state":"running"`.
 
-Members replace their own copy the same way, or with `biorouter crew setup --replace-existing`. It takes effect at their next connection. If a member reads that the server "can't let people join with a code yet" or "can't add people directly yet", or that it can't delete channels or open the workspace yet, upgrade the broker.
+Members replace their own copy the same way, or with `biorouter crew setup`. It takes effect at their next connection. If a member reads that the server "can't let people join with a code yet" or "can't add people directly yet", that it can't delete channels or open the workspace yet, or that it "runs an older Crew", upgrade the broker.
 
 After a Biorouter update, reopening Biorouter on macOS or Linux replaces an older background service automatically. A terminal command replaces a service it cannot use, while `--no-start` refuses instead. An already open window can still show "…needs a newer Biorouter background service…", or a terminal command can say `Restart the shared Biorouter daemon to …`. [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service) gives the fix. Stopping the service affects every window and terminal using it.
 
@@ -357,7 +405,7 @@ Plan for up to about 1.2 GiB of broker memory when 50 accounts post at once.
 
 | Message | What to do |
 |---|---|
-| `bootstrap_key must be a 32-byte Ed25519 public key` | The folder holds no workspace. Check the `--state-dir` path. |
+| `not_found: This state directory holds no workspace. To start a new workspace there, pass --create.` | The folder holds no workspace. Check the `--state-dir` path. Pass `--create` only to start a new workspace there. |
 | `name_mismatch: …` | Start with `--state-dir` and no `--name`. |
 | `name_taken: …` | Another workspace you run uses the name. Choose another. |
 | `not_running: …` | No broker is running from this state directory. Run `start`. |
