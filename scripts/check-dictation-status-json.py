@@ -221,14 +221,22 @@ def self_test():
     unsupported = _mutate(("engine", "state"), "unsupported_cpu")
     unsupported["engine"]["backend"] = None
     unsupported["engine"]["missing_cpu_features"] = ["avx2", "fma", "f16c", "bmi2"]
+    # From PR-25 a Linux container with no sound system answers with its capture probe.
+    unsupported["capture"] = {"available": False, "reason": "no_audio_system"}
     expect(
         "the Nehalem answer meets its expectations",
         unsupported,
         None,
         state="unsupported_cpu",
-        capture_reason="not_compiled",
+        capture_reason="no_audio_system",
         no_models=True,
         missing_features=("avx2",),
+    )
+    expect(
+        "a build without capture fails where the probe is expected",
+        GOOD,
+        "this run expects 'no_audio_system'",
+        capture_reason="no_audio_system",
     )
     no_engine = _mutate(("engine", "compiled"), False)
     no_engine["engine"].update(state="no_engine", backend=None, build=None)

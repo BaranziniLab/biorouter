@@ -902,6 +902,76 @@ sys.exit(0 if entitlements.get("com.apple.security.device.audio-input") is True 
   log "microphone entitlement on the app, its helper and both backends, and the usage sentence ✓ (${app#"$DESK"/})"
 }
 
+# ── capture absent from the daemon (dictation, P-10) ──────────────────────────
+# The terminal's microphone code lives in crates/biorouter-dictation-capture, which only
+# biorouter-cli depends on (DD-5). The release builds compile biorouterd and biorouter in
+# one Cargo invocation, which unifies features across them, so the daemon is checked as
+# this release built it, not as `cargo test -p biorouter-server` sees it: no PulseAudio
+# library name in its bytes, no audio framework in its macOS load commands, the hidden
+# capture role refused with exit 2, and no capture crate in its dependency tree.
+check_capture_not_in_daemon() {
+  local bad=0 checked=0 daemon count code tree
+  if ! tree="$(cd "$ROOT" && cargo tree --locked -p biorouter-server -e normal,build --prefix none 2>/dev/null)"; then
+    printf 'cargo tree -p biorouter-server failed, so its dependency tree was not checked for capture\n'
+    bad=1
+  elif ! printf '%s\n' "$tree" | grep -q '^biorouter-dictation '; then
+    printf 'cargo tree -p biorouter-server listed no biorouter-dictation, so the capture check read nothing\n'
+    bad=1
+  elif printf '%s\n' "$tree" | grep -q '^biorouter-dictation-capture '; then
+    printf 'biorouter-server depends on biorouter-dictation-capture: capture code would reach biorouterd\n'
+    bad=1
+  fi
+  for daemon in "$ROOT/target/release/biorouterd" \
+                "$ROOT/target/x86_64-apple-darwin/release/biorouterd" \
+                "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" \
+                "$ROOT/target/x86_64-pc-windows-gnu/release/biorouterd.exe" \
+                "$DESK/out/Biorouter-darwin-arm64/Biorouter.app/Contents/Resources/bin/biorouterd" \
+                "$DESK/out/Biorouter-darwin-x64/Biorouter.app/Contents/Resources/bin/biorouterd"; do
+    [ -f "$daemon" ] || continue
+    checked=$((checked + 1))
+    count="$(strings -a "$daemon" 2>/dev/null | grep -c libpulse || true)"
+    if [ "$count" != 0 ]; then
+      printf '%s names libpulse %s times: capture code reached the daemon\n' "${daemon#"$ROOT"/}" "$count"
+      bad=1
+    fi
+    if [ "$(uname -s)" = Darwin ] && otool -L "$daemon" >/dev/null 2>&1 \
+         && otool -L "$daemon" | grep -qE '/(CoreAudio|AudioToolbox)\.framework/'; then
+      printf '%s links an audio framework: capture code reached the daemon\n' "${daemon#"$ROOT"/}"
+      bad=1
+    fi
+  done
+  # The role itself, on the daemons this host can run.
+  for daemon in "$ROOT/target/release/biorouterd" \
+                "$DESK/out/Biorouter-darwin-arm64/Biorouter.app/Contents/Resources/bin/biorouterd"; do
+    [ -x "$daemon" ] || continue
+    code=0
+    "$daemon" __br-dictation-worker capture </dev/null >/dev/null 2>&1 || code=$?
+    if [ "$code" != 2 ]; then
+      printf '%s __br-dictation-worker capture exited %s, expected 2\n' "${daemon#"$ROOT"/}" "$code"
+      bad=1
+    fi
+  done
+  # The Linux daemon on the oldest supported distro, with the packages the shipped specs
+  # declare, as cross-build-nightly boots it.
+  local linux="$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" packages
+  if [ -x "$linux" ]; then
+    packages="$("$ROOT/scripts/check-linux-runtime-deps.sh" --print-deb-packages 2>/dev/null || true)"
+    code="$(docker run --rm -e PACKAGES="$packages" -v "$linux":/biorouterd:ro debian:bullseye sh -c '
+      apt-get update -q >/dev/null 2>&1
+      [ -z "$PACKAGES" ] || apt-get install -y --no-install-recommends $PACKAGES >/dev/null 2>&1
+      /biorouterd __br-dictation-worker capture </dev/null >/dev/null 2>&1
+      echo $?' 2>/dev/null | tail -1)"
+    if [ "$code" != 2 ]; then
+      printf 'the linux biorouterd __br-dictation-worker capture exited %s, expected 2\n' "${code:-nothing}"
+      bad=1
+    fi
+  fi
+  [ "$checked" -gt 0 ] || { printf 'no biorouterd was found to check for capture code\n'; return 1; }
+  [ "$bad" = 0 ] || return 1
+  log "capture is absent from every daemon this release built ($checked checked) ✓"
+}
+# ── end capture block ──
+
 cmd_verify() {
   local v="$1" ok=1
   assert_release_source "$v"
@@ -964,6 +1034,8 @@ cmd_verify() {
     fi
   done
   # ── end minimum macOS block ──
+  # ── capture absent from the daemon (dictation, P-10): see check_capture_not_in_daemon ──
+  check_capture_not_in_daemon || ok=0
   # The electron-updater manifest is generated at publish time; verify it if
   # already present (and that it references both arch zips).
   local yml="$DESK/out/make/latest-mac.yml"

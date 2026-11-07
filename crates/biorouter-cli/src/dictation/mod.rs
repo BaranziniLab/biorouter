@@ -1,5 +1,8 @@
-//! The terminal's dictation: `biorouter transcribe` (PR-12), and from PR-25 `biorouter
-//! dictate` and the front ends' capture (`docs/dictation/surfaces.md`, "The terminal").
+//! The terminal's dictation: `biorouter transcribe` (PR-12), and `biorouter dictate` with
+//! the terminal's own microphone (PR-25; `docs/dictation/surfaces.md`, "The terminal"):
+//! [`environment`] decides where live dictation can run before any device opens,
+//! [`consent`] mints the one key to the microphone, [`capture`] runs the capture child, and
+//! [`controller`] turns its frames into text, decoding while the person speaks.
 //!
 //! The exit codes and the `--format json` error shape are shared by `transcribe` and
 //! `dictate`, so they live here: 0 ok; 1 a failure, a failed transcription included; 2
@@ -8,12 +11,25 @@
 //! [`messages`], as the message catalog places the CLI's copy.
 
 #[cfg(feature = "dictation")]
+pub mod capture;
+/// The clipboard helper (DD-86), `src/clipboard.rs`: `dictate --copy` and the TUI's copy.
+/// Declared here, not in `lib.rs`, which PR-25 does not own; a later change may move the
+/// declaration to the crate root.
+#[path = "../clipboard.rs"]
+pub mod clipboard;
+#[cfg(feature = "dictation")]
+pub mod consent;
+#[cfg(feature = "dictation")]
+pub mod controller;
+#[cfg(feature = "dictation")]
 pub mod decode;
+#[cfg(feature = "dictation")]
+pub mod environment;
 pub mod messages;
 
 use serde::Serialize;
 
-/// `transcribe --format json`'s schema (and `dictate --format json`'s, from PR-25).
+/// `transcribe --format json`'s schema, and `dictate --format json`'s.
 pub const SCHEMA: u32 = 1;
 
 /// The exit codes of `dictate` and `transcribe`.
@@ -29,7 +45,7 @@ pub mod exit {
     pub const NOTHING_HEARD: i32 = 3;
     /// Cancelled by the person.
     pub const CANCELLED: i32 = 4;
-    /// `dictate --copy` printed the text because no clipboard was reachable (PR-25).
+    /// `dictate --copy` printed the text because no clipboard was reachable.
     pub const CLIPBOARD_FALLBACK: i32 = 5;
 }
 
@@ -56,6 +72,21 @@ pub enum Outcome {
     Unwritable,
     EngineFailed,
     Cancelled,
+    /// `dictate` in an agent's shell (MSG-AGENT-SHELL).
+    AgentShell,
+    /// `dictate` without a terminal (MSG-NO-TTY).
+    NoTerminal,
+    /// No microphone reachable here: SSH, a container, WSL, no audio system, no device.
+    NoMicrophone,
+    /// The microphone would not open (MSG-MIC-BUSY).
+    MicrophoneBusy,
+    /// `--private-terms` where DD-77 does not admit it.
+    PrivateTermsRefused,
+    /// `--copy --no-history` where the clipboard cannot keep the text out of its history
+    /// (WSL, MSG-NO-HISTORY-WSL).
+    NoHistoryRefused,
+    /// The device delivered exact zeros (MSG-TCC-ZERO, MSG-WIN-ZERO, MSG-SILENT).
+    Silence,
 }
 
 impl Outcome {
@@ -70,8 +101,14 @@ impl Outcome {
             | Outcome::NoModel
             | Outcome::NotInstalled
             | Outcome::UnknownModel
-            | Outcome::Language => exit::DECLINED,
-            Outcome::NoSpeech | Outcome::TooShort => exit::NOTHING_HEARD,
+            | Outcome::Language
+            | Outcome::AgentShell
+            | Outcome::NoTerminal
+            | Outcome::NoMicrophone
+            | Outcome::MicrophoneBusy
+            | Outcome::PrivateTermsRefused
+            | Outcome::NoHistoryRefused => exit::DECLINED,
+            Outcome::NoSpeech | Outcome::TooShort | Outcome::Silence => exit::NOTHING_HEARD,
             Outcome::Cancelled => exit::CANCELLED,
             Outcome::TooLong
             | Outcome::UnsupportedFormat
@@ -103,6 +140,13 @@ impl Outcome {
             Outcome::Unwritable => "unwritable",
             Outcome::EngineFailed => "engine_failed",
             Outcome::Cancelled => "cancelled",
+            Outcome::AgentShell => "agent_shell",
+            Outcome::NoTerminal => "no_terminal",
+            Outcome::NoMicrophone => "no_microphone",
+            Outcome::MicrophoneBusy => "microphone_busy",
+            Outcome::PrivateTermsRefused => "private_terms_refused",
+            Outcome::NoHistoryRefused => "no_history_refused",
+            Outcome::Silence => "silence",
         }
     }
 }
@@ -152,6 +196,13 @@ mod tests {
             Outcome::Unwritable,
             Outcome::EngineFailed,
             Outcome::Cancelled,
+            Outcome::AgentShell,
+            Outcome::NoTerminal,
+            Outcome::NoMicrophone,
+            Outcome::MicrophoneBusy,
+            Outcome::PrivateTermsRefused,
+            Outcome::NoHistoryRefused,
+            Outcome::Silence,
         ];
         let table: Vec<(Outcome, i32, &str)> = all
             .iter()

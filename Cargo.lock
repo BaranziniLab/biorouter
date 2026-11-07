@@ -1171,6 +1171,7 @@ dependencies = [
  "biorouter-acp",
  "biorouter-bench",
  "biorouter-dictation",
+ "biorouter-dictation-capture",
  "biorouter-mcp",
  "bytes",
  "chrono",
@@ -1273,6 +1274,17 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "zstd 0.13.3",
+]
+
+[[package]]
+name = "biorouter-dictation-capture"
+version = "1.94.1"
+dependencies = [
+ "biorouter-dictation",
+ "cc",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -816,6 +816,51 @@ jobs:
           python3 -I scripts/check-windows-imports.py --self-test
           python3 -I scripts/check-windows-imports.py target/x86_64-pc-windows-gnu/release/biorouter.exe target/x86_64-pc-windows-gnu/release/biorouterd.exe
 
+      # P-10: the terminal's microphone code is a crate only biorouter-cli depends on, but the
+      # release command above builds both binaries in one Cargo invocation, which unifies
+      # features across them. So the daemon is checked as that command built it: no
+      # PulseAudio library name in its bytes, the hidden capture role refused with exit 2 on
+      # the oldest supported distro, and no capture crate in its dependency tree. The CLI must
+      # carry capture, loaded at run time: the names are in it and DT_NEEDED holds no sound
+      # library (DD-73). release.sh verify runs the same checks on the release's own build.
+      - name: Capture is absent from the daemon (P-10)
+        env:
+          DEB_PACKAGES: ${{ steps.runtime-deps.outputs.deb_packages }}
+        run: |
+          set -euo pipefail
+          linux=target/x86_64-unknown-linux-gnu/release
+          for daemon in "$linux/biorouterd" target/x86_64-pc-windows-gnu/release/biorouterd.exe; do
+            count=$(strings -a "$daemon" | grep -c libpulse || true)
+            if [ "$count" != 0 ]; then
+              echo "$daemon names libpulse $count times: capture code reached the daemon"
+              exit 1
+            fi
+          done
+          strings -a "$linux/biorouter" | grep -q 'libpulse.so.0' \
+            || { echo "biorouter carries no capture code"; exit 1; }
+          for bin in biorouter biorouterd; do
+            if readelf -d "$linux/$bin" | grep -E 'NEEDED.*(libasound|libpulse)'; then
+              echo "$bin links a sound library at load time"
+              exit 1
+            fi
+          done
+          code=$(docker run --rm -e DEB_PACKAGES -v "$PWD":/w debian:bullseye sh -c '
+            apt-get update -q >/dev/null
+            apt-get install -y --no-install-recommends $DEB_PACKAGES >/dev/null
+            /w/target/x86_64-unknown-linux-gnu/release/biorouterd __br-dictation-worker capture </dev/null >/dev/null 2>&1
+            echo $?' | tail -1)
+          if [ "$code" != 2 ]; then
+            echo "biorouterd __br-dictation-worker capture exited $code, expected 2"
+            exit 1
+          fi
+          tree=$(cargo tree --locked -p biorouter-server -e normal,build --prefix none)
+          printf '%s\n' "$tree" | grep -q '^biorouter-dictation ' \
+            || { echo "cargo tree listed no biorouter-dictation, so the check read nothing"; exit 1; }
+          if printf '%s\n' "$tree" | grep -q '^biorouter-dictation-capture '; then
+            echo "biorouter-server depends on biorouter-dictation-capture"
+            exit 1
+          fi
+
   # The shipped mingw binaries run the dictation self test on real Windows (M-1), with the
   # fixtures in a folder whose path is not ASCII. whisper.cpp turns UTF-8 paths into UTF-16
   # only under MSVC, so a mingw build that handed it a path would fail here; Biorouter opens
@@ -873,8 +918,12 @@ jobs:
 
       # PR-10 on real Windows: `biorouter dictation status --verbose` starts the engine
       # worker over its pipes (frames on stdout, the tokio spawner, the peak working set
-      # through K32GetProcessMemoryInfo) and reads its hello. Schema 1, no model, no
-      # terminal microphone yet; the probe worker says protocol 1 and exits 0 at end of file.
+      # through K32GetProcessMemoryInfo) and reads its hello. Schema 1, no model; the probe
+      # worker says protocol 1 and exits 0 at end of file. From PR-25 the terminal's
+      # microphone comes from the capture child's probe, which a hosted runner answers
+      # honestly with no microphone: `no_device` from WASAPI with no input, or
+      # `no_audio_system` when the audio service does not answer; `dictation devices
+      # --format json` must give the same answer.
       - name: dictation status --verbose of the mingw biorouter.exe
         shell: pwsh
         run: |
@@ -892,12 +941,25 @@ jobs:
             throw "biorouter.exe dictation status --format json --verbose exited $code"
           }
           [System.IO.File]::WriteAllText($file, ($out -join "`n"))
-          python -I scripts/check-dictation-status-json.py --expect-capture-reason not_compiled --expect-no-models $file
+          python -I scripts/check-dictation-status-json.py --expect-no-models $file
           if ($LASTEXITCODE -ne 0) { throw 'the dictation status of biorouter.exe is not schema 1' }
           $status = Get-Content -Raw -LiteralPath $file | ConvertFrom-Json
           if ($status.probe.hello.protocol -ne 1 -or $status.probe.exit_code -ne 0) {
             throw "the probe worker did not say hello with protocol 1 and exit 0: $($status.probe | ConvertTo-Json -Compress -Depth 4)"
           }
+          if ($status.capture.available -ne $false -or @('no_device', 'no_audio_system') -notcontains $status.capture.reason) {
+            throw "a hosted runner has no microphone, but the capture probe answered $($status.capture | ConvertTo-Json -Compress)"
+          }
+          $devicesOut = @(& $cli dictation devices --format json 2> $errFile)
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+            throw "biorouter.exe dictation devices --format json exited $LASTEXITCODE"
+          }
+          $devices = ($devicesOut -join "`n") | ConvertFrom-Json
+          if ($devices.schema -ne 1 -or $devices.available -ne $false -or $devices.reason -ne $status.capture.reason) {
+            throw "dictation devices disagrees with the status: $($devices | ConvertTo-Json -Compress)"
+          }
+          Write-Host "biorouter.exe capture probe: $($status.capture.reason) ($($status.capture.backend))"
           Write-Host "biorouter.exe dictation status: engine $($status.engine.state), worker hello protocol $($status.probe.hello.protocol), exit $($status.probe.exit_code)"
 
       # M-1's real model run (PR-12, DD-94: `transcribe`'s gate lands with it). The shipped

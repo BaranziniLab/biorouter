@@ -43,13 +43,9 @@ pub const MSG_INSTALL_SHELL: &str = "Install the speech model yourself: run this
 /// The same refusal for `remove` and `use`, which an agent may not run either (P-7).
 pub const MSG_CHANGE_SHELL: &str = "Change speech models yourself: run this in a terminal, or use Settings > Models > Speech models.";
 
-/// MSG-OFFLINE with `<folder>` filled in.
-pub fn msg_offline(folder: &Path) -> String {
-    format!(
-        "This computer cannot reach Biorouter's model repository. On a computer that can, run `biorouter dictation urls` and download the files it lists, copy them here, then run `biorouter dictation install --from <file>` (or put them in {} and choose Rescan).",
-        folder.display()
-    )
-}
+/// MSG-OFFLINE with `<folder>` filled in: the one sentence the daemon's install job prints
+/// too, from one place.
+pub use biorouter::dictation::msg_offline;
 
 /// MSG-TURBO-CPU, from a recorded bench.
 pub fn msg_turbo_cpu(seconds: f64, audio_seconds: f64) -> String {
@@ -258,6 +254,99 @@ struct Status {
     active: Option<&'static SttCatalogEntry>,
     install: Allowance,
     other_account: Option<String>,
+    capture: CaptureStatus,
+}
+
+/// The terminal's own microphone (PR-25): whether `biorouter dictate` could record here.
+/// Read from the capture child's probe, which lists devices without opening one, so no
+/// permission prompt appears; never asked under a policy that turns live capture off.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureStatus {
+    pub available: bool,
+    /// `not_compiled`, `policy`, `no_audio_system`, `no_device` or `probe_failed`.
+    pub reason: Option<&'static str>,
+    pub backend: Option<String>,
+    pub devices: usize,
+    /// The system default's name, for the text line.
+    pub default_device: Option<String>,
+}
+
+impl CaptureStatus {
+    fn gather(policy: &DictationPolicy) -> CaptureStatus {
+        let off = |reason| CaptureStatus {
+            available: false,
+            reason: Some(reason),
+            backend: None,
+            devices: 0,
+            default_device: None,
+        };
+        if !cfg!(feature = "dictation") {
+            return off("not_compiled");
+        }
+        if !policy.enabled.is_allowed() || !policy.capture.is_allowed() {
+            return off("policy");
+        }
+        #[cfg(feature = "dictation")]
+        {
+            match crate::dictation::capture::probe_blocking() {
+                Some(probe) => CaptureStatus::of(&probe),
+                None => off("probe_failed"),
+            }
+        }
+        #[cfg(not(feature = "dictation"))]
+        {
+            off("not_compiled")
+        }
+    }
+
+    #[cfg(feature = "dictation")]
+    fn of(probe: &biorouter_dictation_capture::Probe) -> CaptureStatus {
+        let reason = crate::dictation::environment::status_reason(probe);
+        CaptureStatus {
+            available: reason.is_none(),
+            reason,
+            backend: probe.backend.clone(),
+            devices: probe.devices.len(),
+            default_device: probe
+                .devices
+                .iter()
+                .find(|d| d.default)
+                .or(probe.devices.first())
+                .map(|d| d.name.clone()),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "available": self.available,
+            "reason": self.reason,
+            "backend": self.backend,
+            "devices": self.devices,
+        })
+    }
+
+    /// The `Microphone:` line.
+    fn line(&self) -> String {
+        match (self.reason, &self.default_device) {
+            (None, Some(device)) => {
+                let more = self.devices.saturating_sub(1);
+                format!(
+                    "{device} ({}){}",
+                    self.backend.as_deref().unwrap_or("audio"),
+                    match more {
+                        0 => String::new(),
+                        1 => ", 1 more input".to_string(),
+                        n => format!(", {n} more inputs"),
+                    }
+                )
+            }
+            (Some("not_compiled"), _) => "not part of this build".to_string(),
+            (Some("policy"), _) => "turned off by your organization".to_string(),
+            (Some("no_audio_system"), _) => "no audio system here".to_string(),
+            (Some("no_device"), _) => "no input device".to_string(),
+            _ => "could not be checked".to_string(),
+        }
+    }
 }
 
 impl Status {
@@ -272,7 +361,9 @@ impl Status {
             class,
         );
         let install = install_allowance(&policy, CATALOG.default_for(class).map(|e| e.id));
+        let capture = CaptureStatus::gather(&policy);
         Status {
+            capture,
             engine: service::service().status(),
             language: service::configured_language(),
             account: service::account(),
@@ -309,8 +400,8 @@ impl Status {
             // daemon's to fill (PR-15).
             "install": self.install,
             "install_job": null,
-            // The terminal's own microphone arrives with PR-25.
-            "capture": {"available": false, "reason": "not_compiled"},
+            // The terminal's own microphone, from the capture child's probe.
+            "capture": self.capture.to_json(),
             "account": self.account,
             "host": self.host,
             "models_dir": self.models_dir,
@@ -362,7 +453,7 @@ impl Status {
                 format!("{} (account {})", self.models_dir, self.account),
             ),
             ("Policy:", policy_line(&self.policy)),
-            ("Microphone:", "not part of this build".to_string()),
+            ("Microphone:", self.capture.line()),
         ]
     }
 }
@@ -447,6 +538,94 @@ fn policy_line(p: &DictationPolicy) -> String {
         "managed by your organization; dictation is allowed".to_string()
     } else {
         reasons.join(" ")
+    }
+}
+
+/// `devices`: the input devices the terminal's microphone child can use, listed without
+/// opening any (so no permission prompt appears), or why there are none here, in the words
+/// `biorouter dictate` would use. `BIOROUTER_CLI_DICTATION_DEVICE` picks one by name.
+pub async fn handle_devices(format: &str) -> Result<()> {
+    let policy = ManagedPolicy::load().dictation().clone();
+    for rule in [&policy.enabled, &policy.capture] {
+        if let Some(reason) = rule.reason() {
+            if format == "json" {
+                let out = json!({"schema": STATUS_SCHEMA, "available": false, "reason": "policy", "backend": null, "devices": []});
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
+            return Err(refuse(reason));
+        }
+    }
+    #[cfg(not(feature = "dictation"))]
+    {
+        if format == "json" {
+            let out = json!({"schema": STATUS_SCHEMA, "available": false, "reason": "not_compiled", "backend": null, "devices": []});
+            println!("{}", serde_json::to_string_pretty(&out)?);
+            return Ok(());
+        }
+        Err(refuse(MSG_NO_ENGINE))
+    }
+    #[cfg(feature = "dictation")]
+    {
+        use crate::dictation::environment::{self, CaptureVerdict, Environment};
+        let probe = crate::dictation::capture::probe_once().await;
+        let status = probe.as_ref().map_or(
+            CaptureStatus {
+                available: false,
+                reason: Some("probe_failed"),
+                backend: None,
+                devices: 0,
+                default_device: None,
+            },
+            CaptureStatus::of,
+        );
+        let devices: Vec<Value> = probe
+            .iter()
+            .flat_map(|p| p.devices.iter())
+            .map(|d| json!({"name": d.name, "default": d.default}))
+            .collect();
+        if format == "json" {
+            let out = json!({
+                "schema": STATUS_SCHEMA,
+                "available": status.available,
+                "reason": status.reason,
+                "backend": status.backend,
+                "devices": devices,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+            return Ok(());
+        }
+        println!(
+            "  {} {}",
+            style("▌").fg(ACCENT),
+            style("Microphones").bold()
+        );
+        match &probe {
+            Some(probe) if probe.error.is_none() => {
+                for device in &probe.devices {
+                    println!(
+                        "    {}{}",
+                        device.name,
+                        if device.default { " (default)" } else { "" }
+                    );
+                }
+                println!(
+                    "    {:<15}{}",
+                    "Backend:",
+                    probe.backend.as_deref().unwrap_or("none")
+                );
+            }
+            Some(probe) => {
+                let env = Environment::sample();
+                let reason = environment::no_capture_reason(&env, probe)
+                    .unwrap_or(environment::NoCaptureReason::NoDevice);
+                for line in CaptureVerdict::NoCapture(reason).sentences(&env) {
+                    println!("    {line}");
+                }
+            }
+            None => println!("    {}", crate::dictation::messages::MSG_NO_DEVICE),
+        }
+        Ok(())
     }
 }
 
@@ -1424,10 +1603,27 @@ mod tests {
         }
         assert!(json["policy"]["managed"].is_boolean());
         assert!(json["policy"].get("allowed_models").is_some());
-        assert_eq!(
-            json["capture"],
-            json!({"available": false, "reason": "not_compiled"})
-        );
+        // The terminal's microphone, as this machine's probe found it (PR-25): available
+        // with no reason, or not with one of the known reasons.
+        let capture = &json["capture"];
+        let available = capture["available"].as_bool().expect("capture.available");
+        match capture["reason"].as_str() {
+            None => assert!(available, "{capture}"),
+            Some(reason) => {
+                assert!(!available, "{capture}");
+                assert!(
+                    [
+                        "not_compiled",
+                        "policy",
+                        "no_audio_system",
+                        "no_device",
+                        "probe_failed"
+                    ]
+                    .contains(&reason),
+                    "{capture}"
+                );
+            }
+        }
         for key in ["account", "host", "models_dir"] {
             assert!(json[key].is_string(), "{key}");
         }

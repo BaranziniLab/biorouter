@@ -2,6 +2,7 @@ pub mod apps;
 pub mod bench;
 pub mod configure;
 pub mod crew;
+pub mod dictate;
 pub mod dictation;
 pub mod dictionary;
 pub mod doctor;

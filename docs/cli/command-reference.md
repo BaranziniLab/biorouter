@@ -129,7 +129,7 @@ biorouter --version
 
 ### doctor [options]
 
-Check system prerequisites and the CLI install. It prints one status line per prerequisite (Git, uv, Python 3, Node.js, AWS CLI, `llama-server`, the Rust toolchain), says whether `biorouter` is on your PATH, and reports the local model sidecar. Its **Dictation** section prints the lines of `biorouter dictation status`, and `--format json` carries the same object as `dictation`; it never starts a dictation worker. Run it first when an extension will not start or a package runner is missing.
+Check system prerequisites and the CLI install. It prints one status line per prerequisite (Git, uv, Python 3, Node.js, AWS CLI, `llama-server`, the Rust toolchain), says whether `biorouter` is on your PATH, and reports the local model sidecar. Its **Dictation** section prints the lines of `biorouter dictation status`, and `--format json` carries the same object as `dictation`; it never starts a dictation worker, and lists microphones without opening one. Run it first when an extension will not start or a package runner is missing.
 
 **Options:**
 
@@ -153,7 +153,7 @@ A refusal that means nothing was attempted exits `2` with its sentence alone: an
 
 #### dictation status [options]
 
-Show whether this computer can dictate with Biorouter's local engine, and why: whether this build carries the engine, whether the processor can run it (with the sentence that says what it lacks), the backend and thread count, the worker's state and memory, the installed speech models and where they are, the model folder and account, and what your organization's managed policy allows. Reading the status never starts a dictation worker. It always exits 0. `biorouter doctor` prints the same lines in its **Dictation** section.
+Show whether this computer can dictate with Biorouter's local engine, and why: whether this build carries the engine, whether the processor can run it (with the sentence that says what it lacks), the backend and thread count, the worker's state and memory, the installed speech models and where they are, the model folder and account, what your organization's managed policy allows, and the terminal's microphone (`Microphone:`; in `--format json`, `capture` with `available`, `reason`, `backend` and the number of `devices`). The microphone line comes from listing the input devices without opening one, so no permission prompt appears; `reason` is `no_audio_system` where no PulseAudio, PipeWire or ALSA device answers (a server, a container), `no_device` where the audio system has no input, `policy` when your organization turned live dictation off, and `not_compiled` in a build without it. Reading the status never starts a dictation worker. It always exits 0. `biorouter doctor` prints the same lines in its **Dictation** section.
 
 **Options:**
 
@@ -231,9 +231,60 @@ Measure how fast this computer transcribes 5.5 s of the bundled sample with the 
 
 - **`--format <FORMAT>`**: `text` (default) or `json`
 
+#### dictation devices [options]
+
+List the microphones `biorouter dictate` can use, with the system default marked, without opening any of them, so no permission prompt appears. Where there are none it says why, in the words `dictate` would use: over SSH it gives the routes that work from your laptop, in a container or a WSL without WSLg it says so, and on a server with no audio system it names the alternatives. Set `BIOROUTER_CLI_DICTATION_DEVICE` to a name from this list to dictate from that device instead of the default. Under a managed policy that turns live dictation off it exits `2` with the policy's sentence.
+
+**Options:**
+
+- **`--format <FORMAT>`**: `text` (default) or `json` (`"schema": 1`, with `available`, `reason`, `backend` and each device's `name` and `default`)
+
+#### dictation test [options]
+
+Record from the microphone for a few seconds and report what arrived: the device and its rate, how much audio came in against the time it took, how soon the first audio came, and the level. Nothing is transcribed and nothing is kept. It is the first run path on macOS: the first time it opens the microphone, macOS asks your terminal app (Terminal, iTerm2, Ghostty, VS Code) for permission, and a microphone that delivers only exact silence gets the sentence that says how to allow it (exit `3`). Like `dictate`, it runs only at your own terminal, never in an agent's shell. Enter stops early and Escape cancels (exit `4`).
+
+**Options:**
+
+- **`--seconds <N>`**: How long to record, 1 to 600 (default 5)
+
+### dictate [options]
+
+Dictate from this terminal's microphone with the local engine and your personal dictionary. The microphone opens at once; the model loads while you speak, and what you have finished saying is transcribed while you go on, so after the stop only your last few seconds are left to transcribe, however long you spoke. Press Enter to stop, or Escape (or Ctrl-C) to cancel. The text is then shown for review on the terminal: Enter uses it, `e` edits it, Escape discards it. Only after that does it go to standard output (or the clipboard), so `"$(biorouter dictate)"` and a pipe send nothing you have not seen. An Enter or `e` pressed in the first 0.3 s after the text appears does not count, so a held key, or a second press of the Enter that stopped the recording, cannot send it before you have read it. Nothing leaves the computer, and the recording is never written to disk.
+
+It runs only for you, at your own terminal: in an agent's shell (`BIOROUTER_TERMINAL` set) it refuses with "Dictation records your microphone, so only you can start it, from your own terminal. Biorouter does not start it from an agent's shell.", and without a terminal it refuses and points at `biorouter transcribe`, both exit `2`. Where no microphone can be reached it says so before asking for any model: over SSH it gives the routes that work (`biorouter serve` and a tunnel, `biorouter dictate --copy` on your laptop and paste, or a recording copied over and transcribed), naming the port of a `biorouter serve` your own account already runs on that Linux computer (another account's service is never named), and on macOS over SSH it explains that macOS lets only the logged in desktop session use the microphone. A recording stops by itself at 10 minutes, with a warning 30 s before.
+
+Only your public dictionary terms shape the text unless you ask otherwise, because the text may go anywhere: `--private-terms` includes your private terms for this one recording after a warning you answer `y` to, and only at your own terminal with a private model configured.
+
+**Options:**
+
+- **`--copy`**: Put the text on the system clipboard instead of standard output. On Windows it is kept out of the cloud clipboard; on Linux, where a copy lasts only while its owner runs, it waits up to 60 s for you to paste. With no clipboard reachable (no display), the text is printed instead and the exit code is `5`
+- **`--no-history`**: With `--copy`, ask clipboard managers not to keep the text in their history. Under WSL the copy goes through `powershell.exe Set-Clipboard`, which cannot keep it out of Windows clipboard history, so `--copy --no-history` is refused there before the microphone opens (exit `2`); run without `--copy` to print the text, or without `--no-history` to copy it anyway
+- **`--format <FORMAT>`**: `text` (default) or `json` (`"schema": 1`, as `transcribe` writes it, with `destination` and the latency in `timings`: `stop_to_text_ms`, the tail that was left to decode, and the segments decoded while you spoke; on a failure `error_code` and `message`)
+- **`--seconds <N>`**: Stop after N seconds, 1 to 600
+- **`--session <SESSION_ID>`**: The chat the text is for. Its private dictionary terms are used only when the chat is private, you run this at your own terminal, and a private model is configured
+- **`--private-terms`**: Let your private dictionary terms shape this one recording, after the warning; refused, exit `2`, without a terminal, in an agent's shell, or with no private model configured
+- **`--language <LANGUAGE>`**: The language spoken, a two letter code such as `en`, or `auto`. Default: the dictation language
+- **`--model <MODEL>`**: A speech model id from `biorouter dictation list`. Default: the model in use
+- **`--no-dictionary`**: Dictate without the personal dictionary
+- **`--no-review`**, **`-y, --yes`**: Print or copy the text without showing it for review first
+
+**Environment:** `BIOROUTER_CLI_DICTATION_DEVICE` chooses an input device by the name `biorouter dictation devices` prints. On Linux, `BIOROUTER_DICTATION_RECORDER` names a command that writes raw 16 bit, 16 kHz, mono samples to its standard output, for an audio setup Biorouter's own capture does not reach, for example `BIOROUTER_DICTATION_RECORDER="arecord -q -f S16_LE -r 16000 -c 1 -t raw"`; it is started only when you start a recording.
+
+**Exit codes:** `0` the text was written; `1` the transcription failed ("Transcription failed."); `2` declined to start (no terminal, an agent's shell, no microphone reachable here, the device would not open, policy, no engine, the processor, no model, `--private-terms` not admitted, `--copy --no-history` under WSL); `3` nothing was heard: no speech, under half a second, or only exact silence, which on macOS usually means your terminal app is not allowed to use the microphone; `4` cancelled; `5` `--copy` found no clipboard and printed the text.
+
+**Usage:**
+
+```bash
+biorouter dictate
+biorouter dictate --copy
+biorouter run -t "$(biorouter dictate)"
+biorouter dictate | biorouter crew send <channel> --input -
+biorouter dictate --format json --no-review
+```
+
 ### transcribe [options] `<FILE|->`
 
-Transcribe a recording on this computer with the local engine and your personal dictionary, and print the text. Nothing leaves the computer. It reads WAV (any rate, depth and channel count), AIFF, FLAC and MP3, or `-` for standard input; M4A, AAC, Ogg, Opus and WebM are refused with an `ffmpeg` line that converts the file to WAV first (M4A, AAC and Ogg Vorbis are planned). A recording may be up to 2 hours long, and standard input up to 200 MB. The command runs in cron, scripts, Docker and an agent's shell alike; in an agent's shell it uses only your public dictionary terms and records no use of them.
+Transcribe a recording on this computer with the local engine and your personal dictionary, and print the text. Nothing leaves the computer. It reads WAV (any rate, depth and channel count), AIFF, FLAC, MP3, M4A and MP4 audio (AAC), raw AAC (ADTS) and Ogg (Vorbis or FLAC), or `-` for standard input, so a phone's or a Mac's voice memo needs no conversion; Opus, WebM and Apple Lossless are refused with an `ffmpeg` line that converts the file to WAV first. A recording may be up to 2 hours long, and standard input up to 200 MB. The command runs in cron, scripts, Docker and an agent's shell alike; in an agent's shell it uses only your public dictionary terms and records no use of them.
 
 **Options:**
 

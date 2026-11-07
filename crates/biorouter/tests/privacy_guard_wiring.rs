@@ -1374,6 +1374,14 @@ const REGISTRY: &[Guard] = &[
         status: Status::Wired,
         sites: &[
             Site {
+                file: "crates/biorouter-cli/src/commands/dictate.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`biorouter dictate`: the dictionary set for this recording, after \
+                       the terminal's DD-77 standing or the person's private terms answer \
+                       sets its target and standing, and the `use` that brings it in",
+            },
+            Site {
                 file: "crates/biorouter-cli/src/commands/transcribe.rs",
                 counts: c(1, 0, 1),
                 kind: SiteKind::Guard,

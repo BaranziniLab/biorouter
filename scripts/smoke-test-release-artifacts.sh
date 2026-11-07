@@ -434,7 +434,7 @@ smoke_cli_packages() {
     '
   local distro
   for distro in debian rocky; do
-    python3 -I "$ROOT/scripts/check-dictation-status-json.py" --expect-capture-reason not_compiled \
+    python3 -I "$ROOT/scripts/check-dictation-status-json.py" --expect-capture-reason no_audio_system \
       --expect-no-models "$status_dir/$distro.json" \
       || die "dictation status in the $distro CLI package is not schema 1"
   done

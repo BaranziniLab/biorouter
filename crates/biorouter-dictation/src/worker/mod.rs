@@ -18,6 +18,10 @@ pub mod serve;
 pub const WORKER_MARKER: &str = "__br-dictation-worker";
 /// The role that speaks the frame protocol on stdin and stdout.
 pub const ENGINE_ROLE: &str = "engine";
+/// The terminal's microphone child. `biorouter`'s `main()` answers it through
+/// `biorouter-dictation-capture` before it calls [`run_if_invoked`]; this crate never
+/// records, so here, and so in `biorouterd`, the role exits [`exit::NO_SUCH_ROLE`] (P-10).
+pub const CAPTURE_ROLE: &str = "capture";
 
 /// Windows pins the main thread's stack at 1 MiB in the executable header, which is why
 /// `run_on_agent_stack` exists; the worker gets its own thread with 8 MiB.
@@ -29,8 +33,8 @@ pub mod exit {
     /// stdin end of file or `shutdown`; a passing self test.
     pub const OK: i32 = 0;
     /// A role this binary does not have: unknown, `capture` (answered by `biorouter`'s
-    /// own `main()` from PR-25, never here), or any role in a binary built without the
-    /// engine. Also a self test usage error.
+    /// own `main()`, never here, so `biorouterd` always exits 2 for it), or any role in a
+    /// binary built without the engine. Also a self test usage error.
     pub const NO_SUCH_ROLE: i32 = 2;
     /// The CPU gate refused: MSG-CPU or MSG-CPU-ROSETTA on stderr.
     pub const UNSUPPORTED_CPU: i32 = 20;
@@ -62,7 +66,9 @@ pub fn run_if_invoked() {
         Some(ENGINE_ROLE) => on_worker_thread(serve::serve_stdio),
         #[cfg(all(feature = "engine", not(br_no_native)))]
         Some("self-test") => on_worker_thread(move || self_test::run(&rest)),
-        // "capture" is answered by biorouter's main() before this call from PR-25.
+        // Capture code is never linked here: biorouter's main() answers the role before
+        // this call, and every other binary, biorouterd among them, refuses it (P-10).
+        Some(CAPTURE_ROLE) => exit::NO_SUCH_ROLE,
         _ => exit::NO_SUCH_ROLE,
     };
     std::process::exit(code);

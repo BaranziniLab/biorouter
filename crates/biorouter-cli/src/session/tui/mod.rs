@@ -389,13 +389,11 @@ fn read_clipboard() -> Option<String> {
     clipboard.get_text().ok()
 }
 
+/// The TUI's copy, through the clipboard helper, which keeps the clipboard open while the
+/// TUI runs: on Linux a copy made with a clipboard dropped at once was gone before the
+/// paste.
 fn write_clipboard(text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        let _ = clipboard.set_text(text.to_string());
-    }
+    crate::dictation::clipboard::write_kept(text);
 }
 
 fn should_recall_history(app: &App, shift: bool) -> bool {

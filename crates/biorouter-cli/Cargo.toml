@@ -34,6 +34,10 @@ biorouter-dictation = { path = "../biorouter-dictation", optional = true, featur
 # Opus (symphonia 0.5 has no decoder), WebM, and Apple Lossless (ALAC, not in O-39) are
 # refused with an `ffmpeg` line that converts them.
 symphonia = { version = "0.5.5", optional = true, default-features = false, features = ["wav", "pcm", "aiff", "flac", "mp3", "aac", "isomp4", "vorbis", "ogg"] }
+# The terminal's microphone (PR-25, DD-5, DD-73): the child side of
+# `biorouter __br-dictation-worker capture`, over the vendored miniaudio. Only this crate
+# depends on it, so `biorouterd` never links capture code (P-10).
+biorouter-dictation-capture = { path = "../biorouter-dictation-capture", optional = true }
 biorouter-acp = { path = "../biorouter-acp" }
 biorouter-bench = { path = "../biorouter-bench" }
 biorouter-mcp = { path = "../biorouter-mcp" }
@@ -117,8 +121,9 @@ jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 # `biorouter_dictation::worker::run_if_invoked()`.
 local-dictation = ["biorouter/local-dictation", "dep:biorouter-dictation"]
 # The terminal's dictation commands: `biorouter transcribe` and its file decoders
-# (PR-12); PR-25 adds the capture crate. Without it `transcribe` answers MSG-NO-ENGINE.
-dictation = ["local-dictation", "dep:symphonia"]
+# (PR-12), and `biorouter dictate` with the capture child (PR-25). Without it
+# `transcribe` and `dictate` answer MSG-NO-ENGINE.
+dictation = ["local-dictation", "dep:symphonia", "dep:biorouter-dictation-capture"]
 
 [dev-dependencies]
 tempfile = "3"

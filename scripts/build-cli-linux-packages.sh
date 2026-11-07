@@ -79,13 +79,13 @@ scan_ggml_list() {
 
 # `biorouter dictation status --format json`, written by a smoke container to
 # $OUT/dictation-status-<distro>.json, must be schema 1 with no model installed
-# (nothing is ever installed with a package) and no terminal microphone yet
-# (`capture.reason` is `not_compiled` until PR-25). The file is removed after the check,
-# so only the packages stay in $OUT.
+# (nothing is ever installed with a package) and no terminal microphone: the capture
+# probe finds no sound system in the container (`capture.reason` is `no_audio_system`
+# from PR-25). The file is removed after the check, so only the packages stay in $OUT.
 check_dictation_status() {
   local file="$ROOT/$OUT/dictation-status-$1.json"
   [ -s "$file" ] || die "the $1 smoke container wrote no dictation status"
-  python3 -I "$ROOT/scripts/check-dictation-status-json.py" --expect-capture-reason not_compiled \
+  python3 -I "$ROOT/scripts/check-dictation-status-json.py" --expect-capture-reason no_audio_system \
     --expect-no-models "$file" || die "dictation status in the $1 package is not schema 1"
   rm -f "$file"
 }

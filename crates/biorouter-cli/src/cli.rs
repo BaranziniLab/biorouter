@@ -1214,6 +1214,30 @@ enum DictationCommand {
         #[arg(value_name = "MODEL")]
         model: String,
     },
+
+    /// The microphones `biorouter dictate` can use, listed without opening any; choose one
+    /// with BIOROUTER_CLI_DICTATION_DEVICE
+    #[command(about = "List the microphones dictation can use")]
+    Devices {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Record from the microphone for a few seconds and report what arrived: the device,
+    /// the level, and whether the operating system let any sound through. Nothing is
+    /// transcribed or kept. Run it from your own terminal: it is how macOS first asks your
+    /// terminal app for the microphone.
+    #[command(about = "Check the microphone without transcribing")]
+    Test {
+        /// How long to record, at most 600 (default 5)
+        #[arg(long, value_name = "N", default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=600))]
+        seconds: u32,
+    },
 }
 
 /// `biorouter dictionary` (DD-75). Writes need a person at an interactive terminal,
@@ -2096,6 +2120,70 @@ enum Command {
         no_dictionary: bool,
     },
 
+    /// Dictate from this terminal's microphone with the local engine and your dictionary.
+    /// Press Enter to stop; the text is shown for review (Enter uses it, e edits it, Esc
+    /// discards it), then printed, so "$(biorouter dictate)" and pipes send nothing you have
+    /// not seen. Runs only at your own terminal, never in an agent's shell.
+    /// Exit codes: 0 text, 1 failed, 2 declined to start, 3 nothing heard, 4 cancelled,
+    /// 5 --copy found no clipboard and printed the text.
+    #[command(about = "Dictate from this terminal's microphone")]
+    Dictate {
+        /// Put the text on the system clipboard instead of standard output
+        #[arg(long)]
+        copy: bool,
+
+        /// With --copy: ask clipboard managers not to keep the text in their history
+        #[arg(long = "no-history")]
+        no_history: bool,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+
+        /// Stop after N seconds, at most 600 (the limit of every recording)
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=600))]
+        seconds: Option<u32>,
+
+        /// The chat the text is for: its private dictionary terms are used only when the
+        /// chat is private and a private model is configured
+        #[arg(long, value_name = "SESSION_ID")]
+        session: Option<String>,
+
+        /// Let your private dictionary terms shape this one recording, after a warning:
+        /// only at your own terminal, with a private model configured
+        #[arg(long = "private-terms")]
+        private_terms: bool,
+
+        /// The language spoken: a two letter code such as en, or auto (default: the
+        /// language set for dictation, en unless changed)
+        #[arg(long, value_name = "LANGUAGE")]
+        language: Option<String>,
+
+        /// A speech model id from `biorouter dictation list` (default: the model in use)
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+
+        /// Dictate without the personal dictionary
+        #[arg(long = "no-dictionary")]
+        no_dictionary: bool,
+
+        /// Print or copy the text without showing it for review first
+        #[arg(long = "no-review")]
+        no_review: bool,
+
+        /// The same as --no-review
+        #[arg(short, long)]
+        yes: bool,
+
+        /// Transcribe a recording instead: the same as `biorouter transcribe FILE`
+        #[arg(long, value_name = "FILE", hide = true)]
+        file: Option<String>,
+    },
+
     /// The personal dictionary dictation spells your words from, kept on this computer
     #[command(about = "Manage the words dictation spells your way")]
     Dictionary {
@@ -2379,6 +2467,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Models { .. }) => "models",
         Some(Command::Dictation { .. }) => "dictation",
         Some(Command::Transcribe { .. }) => "transcribe",
+        Some(Command::Dictate { .. }) => "dictate",
         Some(Command::Dictionary { .. }) => "dictionary",
         Some(Command::Knowledge { .. }) => "knowledge",
         Some(Command::Extension { .. }) => "extension",
@@ -3606,7 +3695,42 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             DictationCommand::WarmUp { model } => {
                 crate::commands::dictation::handle_warm_up(&model).await
             }
+            DictationCommand::Devices { format } => {
+                crate::commands::dictation::handle_devices(&format).await
+            }
+            DictationCommand::Test { seconds } => {
+                crate::commands::dictate::handle_microphone_test(seconds).await
+            }
         },
+        Some(Command::Dictate {
+            copy,
+            no_history,
+            format,
+            seconds,
+            session,
+            private_terms,
+            language,
+            model,
+            no_dictionary,
+            no_review,
+            yes,
+            file,
+        }) => {
+            crate::commands::dictate::handle_dictate(crate::commands::dictate::DictateArgs {
+                copy,
+                no_history,
+                format: crate::commands::dictate::DictateFormat::parse(&format),
+                seconds,
+                session,
+                private_terms,
+                language,
+                model,
+                no_dictionary,
+                no_review: no_review || yes,
+                file,
+            })
+            .await
+        }
         Some(Command::Transcribe {
             input,
             format,

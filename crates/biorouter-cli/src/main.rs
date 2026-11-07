@@ -23,8 +23,16 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// 16 MiB the runtime's workers get.
 ///
 /// The dictation worker (DD-4) is answered right after the libnotify step and before
-/// everything else, so a worker never starts the runtime, logging or configuration.
+/// everything else, so a worker never starts the runtime, logging or configuration. The
+/// terminal's microphone child (`capture`, DD-5) is answered before both: only this binary
+/// links it, and `biorouterd`'s `run_if_invoked` answers the role with exit 2 (P-10). It
+/// reads only argv when the role is not asked, starting no thread and forking nothing, so
+/// every process that goes on still makes the libnotify call before any thread exists; and
+/// the worker entry stays the statement right after that call, as `worker_entry_runs_first`
+/// in the leaf crate pins.
 fn main() -> ExitCode {
+    #[cfg(feature = "dictation")]
+    biorouter_dictation_capture::run_if_invoked(); // only the capture role; returns otherwise
     biorouter::fork_safety::complete_libnotify_init(); // before any thread; see fork_safety
     #[cfg(feature = "local-dictation")]
     biorouter_dictation::worker::run_if_invoked(); // returns only when argv[1] is not the marker

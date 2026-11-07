@@ -211,7 +211,7 @@ int main(int argc, char **argv) {
            "\"enabled\":{\"allowed\":true,\"reason\":null},\"capture\":{\"allowed\":true,\"reason\":null},"
            "\"install\":{\"allowed\":true,\"reason\":null},\"external_engine\":{\"allowed\":true,\"reason\":null},"
            "\"dictionary\":{\"allowed\":true,\"reason\":null},\"agent_writes\":{\"allowed\":true,\"reason\":null},"
-           "\"allowed_models\":null},\"capture\":{\"available\":false,\"reason\":\"not_compiled\"},"
+           "\"allowed_models\":null},\"capture\":{\"available\":false,\"reason\":\"no_audio_system\"},"
            "\"account\":\"fixture\",\"host\":\"fixture\",\"models_dir\":\"/tmp/models\"}\n", PIN);
     return 0;
   }

@@ -1,0 +1,34 @@
+[package]
+name = "biorouter-dictation-capture"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+# The terminal's microphone (DD-5, DD-73 of docs/dictation/implementation-plan.md): the
+# child side of `biorouter __br-dictation-worker capture`, over miniaudio 0.11.24 from
+# the vendored `vendor/whisper.cpp/source/examples/miniaudio.h`, compiled by `build.rs`
+# with only CoreAudio, WASAPI, PulseAudio and ALSA (the Null backend, which records
+# silence, is compiled out). A crate of its own, not a feature of the engine's leaf
+# crate, because a feature there would be unified into `biorouterd` by the release
+# build's one Cargo invocation. `biorouter-cli` is its only dependent; the daemon never
+# links it (P-10), which `the_daemon_never_depends_on_capture` checks.
+[dependencies]
+# The frame codec of the worker protocol, `[u32 json_len][json][u32 payload_len][payload]`,
+# written once there. No feature: the engine is not needed here.
+biorouter-dictation = { path = "../biorouter-dictation" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }
+
+[build-dependencies]
+# Already in Cargo.lock. No bindgen: `src/lib.rs` declares the shim's functions by hand.
+cc = "1.2.64"
+
+[dev-dependencies]
+tempfile = "3"

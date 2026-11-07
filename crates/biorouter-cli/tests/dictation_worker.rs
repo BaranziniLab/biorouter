@@ -12,8 +12,9 @@
 //! * a worker run leaves the child's `BIOROUTER_PATH_ROOT` byte identical, a corrupt
 //!   `config.yaml` and a legacy folder marker included (the worker reads no
 //!   configuration and moves nothing, DD-4);
-//! * `biorouter dictation status --format json` is schema 1 and reports
-//!   `capture.reason == "not_compiled"`, and `doctor` carries the same object;
+//! * `biorouter dictation status --format json` is schema 1 and reports the terminal's
+//!   microphone from the capture child's probe (PR-25), and `doctor` carries the same
+//!   object;
 //! * under a managed `enabled: false`, `status --verbose` starts no worker and says why;
 //! * `worker_latency_real_models` and `cold_transcribe_latency` (ignored) measure the
 //!   latency plan's M1-L1 to M1-L8 against real speech models (with warm decodes of
@@ -555,10 +556,27 @@ fn assert_schema_1(status: &serde_json::Value) {
         status["policy"]["enabled"],
         serde_json::json!({"allowed": true, "reason": null})
     );
-    assert_eq!(
-        status["capture"],
-        serde_json::json!({"available": false, "reason": "not_compiled"})
-    );
+    // The capture child's probe on this machine (PR-25): available with no reason, or not
+    // with one of the known reasons (`no_audio_system` on a runner with no sound system).
+    let capture = &status["capture"];
+    let available = capture["available"].as_bool().expect("capture.available");
+    match capture["reason"].as_str() {
+        None => assert!(available, "{capture}"),
+        Some(reason) => {
+            assert!(!available, "{capture}");
+            assert!(
+                [
+                    "not_compiled",
+                    "policy",
+                    "no_audio_system",
+                    "no_device",
+                    "probe_failed"
+                ]
+                .contains(&reason),
+                "{capture}"
+            );
+        }
+    }
     for key in ["account", "host", "models_dir"] {
         assert!(status[key].as_str().is_some_and(|s| !s.is_empty()), "{key}");
     }
