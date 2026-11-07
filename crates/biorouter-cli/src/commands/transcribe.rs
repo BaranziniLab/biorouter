@@ -4,7 +4,8 @@
 //!
 //! The order is chosen for latency. After the cheap refusals, the worker process starts
 //! at once; the file is decoded on a blocking thread while the model is resolved and
-//! loaded, so the load overlaps the decode, and the load skips the encoder warm up a
+//! loaded, so the load overlaps the decode (a compressed M4A, AAC, MP3 or Ogg file
+//! included, PR-12b), and the load skips the encoder warm up a
 //! long lived worker runs, since this process decodes one recording and exits. A
 //! recording that is too short or exact zeros is answered before the model is needed.
 //! The recording is then cut by the voice
@@ -367,7 +368,7 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
             })
             .collect(),
         model: model_id,
-        language,
+        language: reported_language(language, transcript.language.as_deref()),
         audio_s: transcript.audio_ms as f64 / 1_000.0,
         elapsed_ms: total_ms,
         bias_scope: dictated.bias_scope.as_str().into(),
@@ -410,6 +411,17 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
         let _ = tokio::task::spawn_blocking(move || record_uses(&dictionary, &text)).await;
     }
     Ok(())
+}
+
+/// The `language` of `--format json`: the code the run asked for, or, for `auto`, the one
+/// the model detected for most of the speech. A worker that reports none (one built before
+/// PR-12b) leaves `auto`.
+#[cfg(feature = "dictation")]
+fn reported_language(asked: String, detected: Option<&str>) -> String {
+    match detected {
+        Some(code) if asked == "auto" => code.to_string(),
+        _ => asked,
+    }
 }
 
 /// Whether this run uses no dictionary: `--no-dictionary`, or the managed `dictionary:
@@ -842,6 +854,19 @@ mod tests {
         for value in ["1", "0", "true"] {
             assert!(is_agent_shell(Some(OsStr::new(value))), "{value}");
         }
+    }
+
+    /// `--language auto` reports the language the model detected; a code that was asked
+    /// for is reported as asked, and an older worker's result, which carries none, leaves
+    /// `auto`.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn auto_reports_the_detected_language() {
+        assert_eq!(reported_language("auto".into(), Some("de")), "de");
+        assert_eq!(reported_language("auto".into(), None), "auto");
+        assert_eq!(reported_language("en".into(), Some("en")), "en");
+        assert_eq!(reported_language("fr".into(), None), "fr");
+        assert_eq!(reported_language("fr".into(), Some("en")), "fr");
     }
 
     /// The managed `dictionary: false` key runs `transcribe` as `--no-dictionary` does: no

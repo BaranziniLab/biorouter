@@ -85,6 +85,26 @@ pub struct BrParamsView {
     pub temperature_inc: f32,
     pub suppress_nst: bool,
     pub n_threads: i32,
+    pub temperature: f32,
+    pub entropy_thold: f32,
+    pub logprob_thold: f32,
+    pub no_speech_thold: f32,
+    pub translate: bool,
+    pub suppress_blank: bool,
+    pub detect_language: bool,
+    pub token_timestamps: bool,
+    /// `p.language`, NUL terminated; empty when it is NULL.
+    pub language: [c_char; 8],
+    pub initial_prompt_set: bool,
+    pub carry_initial_prompt: bool,
+    /// `p.prompt_tokens` is the prompt the snapshot was given.
+    pub prompt_tokens_set: bool,
+    pub prompt_n_tokens: i32,
+    pub audio_ctx: i32,
+    pub max_tokens: i32,
+    /// From the context builder `br_init` uses.
+    pub flash_attn: bool,
+    pub use_gpu: bool,
 }
 
 pub const BR_OK: i32 = 0;
@@ -131,6 +151,7 @@ extern "C" {
         out: *mut BrTimings,
     ) -> i32;
     pub fn br_n_segments(ctx: *mut WhisperContext) -> i32;
+    pub fn br_full_lang(ctx: *mut WhisperContext) -> *const c_char;
     pub fn br_segment_text(ctx: *mut WhisperContext, i: i32) -> *const c_char;
     pub fn br_segment_span(ctx: *mut WhisperContext, i: i32, t0_ms: *mut i64, t1_ms: *mut i64);
     pub fn br_warmup(
@@ -139,7 +160,15 @@ extern "C" {
         n_threads: i32,
         encoder: bool,
     ) -> i32;
-    pub fn br_params_snapshot(d: *const BrDecode, v: *const BrVad, out: *mut BrParamsView);
+    pub fn br_params_snapshot(
+        d: *const BrDecode,
+        v: *const BrVad,
+        prompt: *const i32,
+        n_prompt: i32,
+        use_gpu: bool,
+        flash_attn: bool,
+        out: *mut BrParamsView,
+    );
 
     pub fn br_vad_init(model: *const BrReader, n_threads: i32) -> *mut c_void;
     pub fn br_vad_spans(

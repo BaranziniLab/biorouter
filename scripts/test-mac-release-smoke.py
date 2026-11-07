@@ -72,6 +72,18 @@ arch() {
   [[ "$*" != *--version* ]] || /usr/bin/env "$@"
 }
 file() { trace "file $*"; [ "$MODE" != architecture ] && printf 'arm64 x86_64\n'; }
+# The dictation guards (PR-11) live outside the slice above: the size ceiling and the
+# model scan are traced, and the self test is answered for the fixture's absent repo.
+check_dictation_size() { trace "size $*"; }
+scan_ggml() { trace "scan $*"; }
+sw_vers() { printf '15.0\n'; }
+bash() {
+  if [ "$1" = "$ROOT/scripts/dictation-self-test.sh" ]; then
+    trace "dictation self test ${*:2}"
+    return 0
+  fi
+  command bash "$@"
+}
 python3() {
   if [ "$1" = "$ROOT/scripts/computer-use-runtime.py" ]; then
     trace "helper $*"
@@ -190,7 +202,10 @@ class MacReleaseSmoke(unittest.TestCase):
             self.assertTrue(all('preexisting' not in line for line in trace))
             signals = [line.split() for line in trace if line.startswith('kill ')]
             if signals:
-                app_pid = next(parts[2] for parts in signals if parts[1] == '-0')
+                # The app's pid: the one `kill -0` polls, or, when a startup prompt ended
+                # the wait before any poll, the first one stopped.
+                app_pid = next((parts[2] for parts in signals if parts[1] == '-0'),
+                               signals[0][2])
                 self.assertTrue(all(parts[2] in {app_pid, '425001', '425002'}
                                     for parts in signals), signals)
                 launch = next(line for line in trace if line.startswith('launch '))
@@ -231,8 +246,17 @@ class MacReleaseSmoke(unittest.TestCase):
                 self.assertIn('--user-data-dir=', launch)
                 self.assertIn('-u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT', launch)
                 for check in ('helper ', 'codesign ', 'spctl ', 'xcrun ', 'plutil ', 'file ',
-                              'version '):
+                              'version ', 'scan ', 'dictation self test '):
                     self.assertTrue(any(line.startswith(check) for line in trace), trace)
+                # Both shipped binaries are held to their ceiling, by the platform's name.
+                sizes = [line.split()[1:] for line in trace if line.startswith('size ')]
+                self.assertEqual([(platform, path.rsplit('/', 1)[1]) for platform, path in sizes],
+                                 [('darwin-' + arch, 'biorouter'), ('darwin-' + arch, 'biorouterd')],
+                                 sizes)
+                backend = 'metal' if arch == 'arm64' else 'cpu'
+                self.assertTrue(any(line.startswith('dictation self test ')
+                                    and '--expect-backend ' + backend in line
+                                    for line in trace), trace)
                 entitlements = [line for line in trace
                                 if line.startswith('codesign -d --entitlements - --xml ')]
                 self.assertEqual([line.rsplit('/Biorouter.app', 1)[1] for line in entitlements],

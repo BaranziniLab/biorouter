@@ -141,6 +141,24 @@ whisper_full_params full_params_from(const br_decode *d, const br_vad *v) {
     return p;
 }
 
+// The prompt as token ids (PR-14), for br_full and br_params_snapshot alike.
+void apply_prompt(whisper_full_params &p, const int32_t *prompt, int32_t n_prompt) {
+    if (n_prompt > 0) {
+        p.prompt_tokens = prompt;
+        p.prompt_n_tokens = n_prompt;
+    }
+}
+
+// One builder for br_init and br_params_snapshot.
+whisper_context_params context_params_from(bool use_gpu, bool flash_attn) {
+    whisper_context_params cp = whisper_context_default_params();
+    cp.use_gpu = use_gpu;
+    cp.flash_attn = flash_attn;
+    cp.gpu_device = 0;
+    cp.dtw_token_timestamps = false;
+    return cp;
+}
+
 // ---- callbacks of br_full -------------------------------------------------------------
 
 struct full_state {
@@ -205,11 +223,7 @@ struct whisper_context *br_init(const br_reader *model, bool use_gpu, bool flash
     reader_guard guard{model, false};
     struct whisper_context *ctx = nullptr;
     try {
-        whisper_context_params cp = whisper_context_default_params();
-        cp.use_gpu = use_gpu;
-        cp.flash_attn = flash_attn;
-        cp.gpu_device = 0;
-        cp.dtw_token_timestamps = false;
+        whisper_context_params cp = context_params_from(use_gpu, flash_attn);
         whisper_model_loader loader = loader_for(guard);
         ctx = whisper_init_with_params(&loader, cp);
     } catch (...) {
@@ -340,10 +354,7 @@ int32_t br_full(struct whisper_context *ctx, const br_decode *d, const br_vad *v
     }
     try {
         whisper_full_params p = full_params_from(d, v);
-        if (n_prompt > 0) {
-            p.prompt_tokens = prompt;
-            p.prompt_n_tokens = n_prompt;
-        }
+        apply_prompt(p, prompt, n_prompt);
 
         full_state s{abort_flag, clock_type::now(), false, 0.0, cb, cb_user, false};
         p.encoder_begin_callback = on_encoder_begin;
@@ -399,6 +410,18 @@ int32_t br_n_segments(struct whisper_context *ctx) {
         return whisper_full_n_segments(ctx);
     } catch (...) {
         return 0;
+    }
+}
+
+const char *br_full_lang(struct whisper_context *ctx) {
+    if (ctx == nullptr) {
+        return "";
+    }
+    try {
+        const char *code = whisper_lang_str(whisper_full_lang_id(ctx));
+        return code != nullptr ? code : "";
+    } catch (...) {
+        return "";
     }
 }
 
@@ -483,12 +506,16 @@ int32_t br_warmup(struct whisper_context *ctx, const br_vad *v, int32_t n_thread
     }
 }
 
-void br_params_snapshot(const br_decode *d, const br_vad *v, br_params_view *out) {
-    if (d == nullptr || v == nullptr || out == nullptr) {
+void br_params_snapshot(const br_decode *d, const br_vad *v, const int32_t *prompt, int32_t n_prompt,
+                        bool use_gpu, bool flash_attn, br_params_view *out) {
+    if (d == nullptr || v == nullptr || out == nullptr || n_prompt < 0 ||
+        (prompt == nullptr && n_prompt > 0)) {
         return;
     }
     try {
-        const whisper_full_params p = full_params_from(d, v);
+        whisper_full_params p = full_params_from(d, v);
+        apply_prompt(p, prompt, n_prompt);
+        const whisper_context_params cp = context_params_from(use_gpu, flash_attn);
         out->strategy = static_cast<int32_t>(p.strategy);
         out->best_of = p.greedy.best_of;
         out->no_context = p.no_context;
@@ -502,6 +529,26 @@ void br_params_snapshot(const br_decode *d, const br_vad *v, br_params_view *out
         out->temperature_inc = p.temperature_inc;
         out->suppress_nst = p.suppress_nst;
         out->n_threads = p.n_threads;
+        out->temperature = p.temperature;
+        out->entropy_thold = p.entropy_thold;
+        out->logprob_thold = p.logprob_thold;
+        out->no_speech_thold = p.no_speech_thold;
+        out->translate = p.translate;
+        out->suppress_blank = p.suppress_blank;
+        out->detect_language = p.detect_language;
+        out->token_timestamps = p.token_timestamps;
+        std::memset(out->language, 0, sizeof(out->language));
+        if (p.language != nullptr) {
+            std::strncpy(out->language, p.language, sizeof(out->language) - 1);
+        }
+        out->initial_prompt_set = p.initial_prompt != nullptr;
+        out->carry_initial_prompt = p.carry_initial_prompt;
+        out->prompt_tokens_set = n_prompt > 0 && p.prompt_tokens == prompt;
+        out->prompt_n_tokens = p.prompt_n_tokens;
+        out->audio_ctx = p.audio_ctx;
+        out->max_tokens = p.max_tokens;
+        out->flash_attn = cp.flash_attn;
+        out->use_gpu = cp.use_gpu;
     } catch (...) {
     }
 }

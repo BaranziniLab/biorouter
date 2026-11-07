@@ -37,12 +37,13 @@ pub fn msg_too_long(input: &str) -> String {
     )
 }
 
-/// MSG-TRANSCRIBE-UNSUPPORTED: a recording kind Biorouter does not decode (M4A and AAC,
-/// Ogg, Opus, WebM, or anything else symphonia does not read), with the `ffmpeg` line that
-/// converts it (DD-78). `kind` names it when it can be named; `input` is the file as the
-/// person named it, `-` for standard input. The example writes the file's name with `.wav`,
-/// or with `-16k.wav` when the file is itself a `.wav` (an ADPCM recording, an M4A
-/// renamed), so it never writes over the file it reads: ffmpeg refuses that line.
+/// MSG-TRANSCRIBE-UNSUPPORTED: a recording kind Biorouter does not decode (Opus, WebM,
+/// Apple Lossless, or anything else symphonia does not read), with the `ffmpeg` line that
+/// converts it (DD-78; since O-39 WAV, AIFF, FLAC, MP3, M4A, AAC and Ogg Vorbis are read).
+/// `kind` names it when it can be named; `input` is the file as the person named it, `-`
+/// for standard input. The example writes the file's name with `.wav`, or with `-16k.wav`
+/// when the file is itself a `.wav` (an ADPCM recording, a WebM renamed), so it never
+/// writes over the file it reads: ffmpeg refuses that line.
 pub fn msg_unsupported_format(kind: Option<&str>, input: &str) -> String {
     let convert = if input == "-" {
         "ffmpeg -i <file> -ar 16000 -ac 1 -f wav - | biorouter transcribe -".to_string()
@@ -125,6 +126,7 @@ mod tests {
             (msg_too_long("memo.wav"), "That recording is longer than 2 hours, or larger than 200 MB on standard input. Split it into 16 kHz mono parts first, for example: ffmpeg -i memo.wav -ar 16000 -ac 1 -f segment -segment_time 3600 part%02d.wav"),
             (msg_too_long("-"), "That recording is longer than 2 hours, or larger than 200 MB on standard input. Split it into 16 kHz mono parts first, for example: ffmpeg -i <file> -ar 16000 -ac 1 -f segment -segment_time 3600 part%02d.wav"),
             (msg_unsupported_format(Some("Opus"), "memo.opus"), "Biorouter cannot read Opus recordings. Convert it to WAV first, for example: ffmpeg -i memo.opus -ar 16000 -ac 1 memo.wav"),
+            (msg_unsupported_format(Some("Apple Lossless"), "New Recording.m4a"), "Biorouter cannot read Apple Lossless recordings. Convert it to WAV first, for example: ffmpeg -i 'New Recording.m4a' -ar 16000 -ac 1 'New Recording'.wav"),
             (msg_unsupported_format(None, "notes.txt"), "Biorouter cannot read this recording. Convert it to WAV first, for example: ffmpeg -i notes.txt -ar 16000 -ac 1 notes.wav"),
             (msg_unsupported_format(None, "recorder.wav"), "Biorouter cannot read this recording. Convert it to WAV first, for example: ffmpeg -i recorder.wav -ar 16000 -ac 1 recorder-16k.wav"),
             (msg_unsupported_format(None, "-"), "Biorouter cannot read this recording. Convert it to WAV first, for example: ffmpeg -i <file> -ar 16000 -ac 1 -f wav - | biorouter transcribe -"),

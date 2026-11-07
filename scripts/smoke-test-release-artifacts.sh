@@ -183,13 +183,17 @@ smoke_mac() (
   if [ -f "$runtime" ]; then
     daemon_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$runtime")"
   fi
-  if ! kill -0 "$pid" 2>/dev/null; then
+  # A startup prompt found above is the failure to report: the checks below would read the
+  # same blocked start as "did not become ready" and hide the prompt that caused it.
+  if [ -n "$failure" ]; then
+    :
+  elif ! kill -0 "$pid" 2>/dev/null; then
     failure="$arch desktop exited during startup"
   elif grep -qs 'Fatal error during startup' "$main_log"; then
     failure="$arch desktop failed during startup"
   elif ! grep -qs 'React ready event received' "$main_log"; then
     failure="$arch desktop did not become ready within 30 s"
-  elif [ -z "$failure" ]; then
+  else
     if ! python3 - "$runtime" "$key" <<'PYKEY'
 import json, os, stat, sys
 runtime_path, key_path = sys.argv[1:]
@@ -229,25 +233,38 @@ LINUX_DESKTOP_SMOKE="$ROOT/scripts/smoke-linux-desktop.sh"
 #   `no_model_is_embedded` in crates/biorouter-dictation, which finds it by its path.
 #
 # Each ceiling is the binary's shipped size in v1.94.1 (before the engine), plus the growth
-# since, plus slack. On macOS arm64 the growth is measured [M]: this branch's release build
-# at PR-11 against v1.94.1 with its signature removed, +9,613,412 B for biorouter and
-# +8,306,152 B for biorouterd (2026-11-06), which is PR-09's spike figure of 6.69 MB plus
-# what the engine's spike left out, PR-10's supervisor and PR-11's installer and 352,078 B
-# bench clip; its slack is 1 MiB. No Linux or Intel macOS build of this branch was
-# measured, so their growth is inferred [I]: PR-09's figure for the target (Linux 2.17 MB,
-# macOS x86_64 1.69 MB) plus the same non-spike growth as arm64 (biorouter 2,923,412 B,
-# biorouterd 1,616,152 B), with 32 MiB of slack so an estimate off by a few MB does not
-# fail the release; 32 MiB still hides no speech model. Replace an inferred leg with a
-# measured one, and its slack with 1 MiB, from the first CI cross build of these binaries.
-# A pull request that grows other code raises its ceiling here, in the same change, and
-# says why.
+# since, plus slack. On macOS arm64 the growth is measured [M]: this branch's stripped
+# release build against v1.94.1 with its signature removed (164,049,820 B and 154,454,440
+# B unsigned), +12,711,092 B for biorouter and +11,023,544 B for biorouterd at PR-12b
+# (2026-11-07). That is PR-09's spike figure of 6.69 MB plus what the engine's spike left
+# out, PR-10's supervisor, PR-11's installer and 352,078 B bench clip (+9,613,412 B and
+# +8,306,152 B at PR-11), PR-12 to PERF-1's transcribe, dictionary and routes, which took
+# biorouter to +11,613,732 B and biorouterd to +11,107,928 B without raising these lines
+# (4ba336a3a, measured 2026-11-07: over the PR-11 ceilings by 611,804 B and 1,431,976 B
+# before signing, so a release from it would have failed here), and PR-12b's AAC decoder,
+# MP4 reader, Vorbis decoder and Ogg reader (O-39), +949,904 to +1,097,360 B to biorouter
+# over three release builds as PR-12b grew (the first had neither the MPEG-2 ADTS reader
+# nor the M4A trim, the last both, +982,992 B: builds of nearly the same tree differ by
+# about 150 KB here, so the ceiling takes the largest), while
+# biorouterd, which reads no file, moved by -84,384 B. Its slack is 1 MiB, which also
+# holds the code signature's growth with the binary (339,940 B on v1.94.1's biorouter
+# [M]). No Linux or Intel macOS build of this branch was measured, so their growth is
+# inferred [I]: PR-09's figure for the target (Linux 2.17 MB, macOS x86_64 1.69 MB) plus
+# the same non-spike growth as arm64 (biorouter 6,021,092 B, biorouterd 4,333,544 B), with
+# 32 MiB of slack so an estimate off by a few MB does not fail the release; 32 MiB still
+# hides no speech model. The four codecs alone add 1,115,736 B to a stripped Linux x86_64
+# probe built in the release image [M, PR-12], 1,081,624 B to a macOS x86_64 probe and
+# 1,048,096 B to a macOS arm64 one [M, PR-12b], so arm64's growth, which the inferred legs
+# take, already holds them. Replace an inferred leg with a measured one, and its slack with
+# 1 MiB, from the first CI cross build of these binaries. A pull request that grows other
+# code raises its ceiling here, in the same change, and says why.
 dictation_size_ceiling() { # <platform> <binary>
-  local slack=1048576 inferred=$((32 << 20)) more_cli=2923412 more_daemon=1616152
+  local slack=1048576 inferred=$((32 << 20)) more_cli=6021092 more_daemon=4333544
   case "$1/$2" in
     linux-x64/biorouter) echo $((187413248 + 2170000 + more_cli + inferred)) ;;
     linux-x64/biorouterd) echo $((176920720 + 2170000 + more_daemon + inferred)) ;;
-    darwin-arm64/biorouter) echo $((164389760 + 9613412 + slack)) ;;
-    darwin-arm64/biorouterd) echo $((154775664 + 8306152 + slack)) ;;
+    darwin-arm64/biorouter) echo $((164389760 + 12711092 + slack)) ;;
+    darwin-arm64/biorouterd) echo $((154775664 + 11023544 + slack)) ;;
     darwin-x64/biorouter) echo $((176538336 + 1690000 + more_cli + inferred)) ;;
     darwin-x64/biorouterd) echo $((166285184 + 1690000 + more_daemon + inferred)) ;;
     *) die "no dictation size ceiling for $1/$2" ;;

@@ -23,6 +23,9 @@ use std::time::Instant;
 pub const MAX_TRANSCRIBE_SAMPLES: usize = 25 * 16_000;
 /// The sample rate of every buffer the engine takes.
 pub const SAMPLE_RATE: u32 = 16_000;
+/// Flash attention in every whisper.cpp context (DD-47). [`params_snapshot`] reads it
+/// back through the shim's one context builder.
+pub const FLASH_ATTN: bool = true;
 
 /// The separate detector's thread count, whatever the decode uses. ggml is built without
 /// OpenMP (build rule 3), so its CPU backend starts and joins a thread pool for every
@@ -191,6 +194,9 @@ pub struct EngineOutput {
     pub text: String,
     pub segments: Vec<SegmentOut>,
     pub timings: Timings,
+    /// The language whisper.cpp detected (`"de"`), when the request's language was `auto`
+    /// and a segment was decoded; `None` when the language was given.
+    pub language: Option<String>,
 }
 
 /// Why the engine refused or failed. `Display` gives a fixed English phrase that never
@@ -318,7 +324,7 @@ impl Engine {
         file.rewind().map_err(EngineError::ModelOpen)?;
         let reader = Reader::new(file);
         // SAFETY: the reader stays valid for the call, and the shim closes it exactly once.
-        let ctx = unsafe { ffi::br_init(&reader.c, o.use_gpu, true) };
+        let ctx = unsafe { ffi::br_init(&reader.c, o.use_gpu, FLASH_ATTN) };
         if ctx.is_null() {
             return Err(EngineError::ModelLoad);
         }
@@ -485,7 +491,15 @@ impl Engine {
                 text: String::from_utf8_lossy(raw).trim().to_string(),
             });
         }
+        // Read only after a decode that produced a segment: a request whose audio the
+        // integrated detector found empty returns before whisper.cpp detects anything,
+        // and its language id is the previous decode's.
+        let language = (d.language == "auto" && n > 0)
+            // SAFETY: `ctx` is live; the code is one of whisper.cpp's static strings.
+            .then(|| unsafe { c_string(ffi::br_full_lang(self.ctx)) })
+            .filter(|code| !code.is_empty());
         Ok(EngineOutput {
+            language,
             text: String::from_utf8_lossy(&joined).trim().to_string(),
             segments,
             timings: Timings {
@@ -625,16 +639,41 @@ impl Drop for Engine {
 /// What the parameter builder puts into `whisper_full_params`.
 pub use ffi::BrParamsView as ParamsView;
 
-/// The values the shim's one parameter builder produces from `d` and `v`.
-pub fn params_snapshot(d: &DecodeParams, v: &VadParams) -> ParamsView {
+/// The values the shim's parameter builders produce: the decode's from `d` and `v` with
+/// `prompt` applied as `br_full` applies it, and the context's for `use_gpu` with
+/// [`FLASH_ATTN`], as [`Engine::load`] passes them.
+pub fn params_snapshot(
+    d: &DecodeParams,
+    v: &VadParams,
+    prompt: &[i32],
+    use_gpu: bool,
+) -> ParamsView {
     let language = CString::new(d.language.as_str()).unwrap_or_default();
     let detector = CString::new("detector.bin").unwrap_or_default();
     let c_decode = d.to_c(&language);
     let c_vad = v.to_c(&detector);
     let mut view = ParamsView::default();
-    // SAFETY: all three pointers are valid for the call.
-    unsafe { ffi::br_params_snapshot(&c_decode, &c_vad, &mut view) };
+    let (prompt_ptr, n_prompt) = if prompt.is_empty() {
+        (std::ptr::null(), 0)
+    } else {
+        (prompt.as_ptr(), prompt.len() as i32)
+    };
+    // SAFETY: every pointer is valid for the call, and `prompt` holds `n_prompt` ids.
+    unsafe {
+        ffi::br_params_snapshot(
+            &c_decode, &c_vad, prompt_ptr, n_prompt, use_gpu, FLASH_ATTN, &mut view,
+        )
+    };
     view
+}
+
+/// The language a [`ParamsView`] carries, as text.
+pub fn view_language(view: &ParamsView) -> String {
+    if !view.language.contains(&0) {
+        return String::new();
+    }
+    // SAFETY: the array holds a NUL, so the string ends inside it.
+    unsafe { c_string(view.language.as_ptr()) }
 }
 
 /// whisper.cpp's system information: the ggml backends and their compiled features.
@@ -1108,7 +1147,7 @@ mod tests {
             assert!(!log_should_forward(level, &short), "level {level}");
         }
 
-        let view = params_snapshot(&decode_params("en", 6), &vad_params());
+        let view = params_snapshot(&decode_params("en", 6), &vad_params(), &[], true);
         assert_eq!(
             (
                 view.print_special,

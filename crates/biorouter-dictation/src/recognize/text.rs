@@ -102,13 +102,92 @@ pub fn piece_has_words(piece: &str) -> bool {
 }
 
 /// The pieces joined in order with one space, each trimmed, those without words left out.
+///
+/// Each piece is a decode of its own, which starts with no context (DD-47's
+/// `no_context`), so a piece that follows a finished sentence sometimes begins in lower
+/// case ("phenotypes. normalize the counts"). The first word of such a piece is
+/// capitalized ([`capitalize_after_sentence`]); inside a piece, and after a piece that
+/// does not end a sentence, nothing changes.
 pub fn join<'a>(pieces: impl IntoIterator<Item = &'a str>) -> String {
-    pieces
-        .into_iter()
-        .filter(|piece| piece_has_words(piece))
-        .flat_map(str::split_whitespace)
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::new();
+    for piece in pieces.into_iter().filter(|piece| piece_has_words(piece)) {
+        let mut words = piece.split_whitespace();
+        let Some(first) = words.next() else {
+            continue;
+        };
+        if out.is_empty() {
+            out.push_str(first);
+        } else {
+            let ended = out.rsplit(' ').next().is_some_and(ends_sentence);
+            out.push(' ');
+            if ended {
+                out.push_str(&capitalize_after_sentence(first));
+            } else {
+                out.push_str(first);
+            }
+        }
+        for word in words {
+            out.push(' ');
+            out.push_str(word);
+        }
+    }
+    out
+}
+
+/// Short words written with a period that do not end a sentence ("Dr. Patel", "vs. the").
+const ABBREVIATIONS: &[&str] = &["dr", "mr", "mrs", "ms", "prof", "st", "vs", "cf", "approx"];
+
+/// Whether `word`, the last word written, ends a sentence: a full stop, a question mark or
+/// an exclamation mark, before any closing quotes or brackets. An ellipsis trails off
+/// rather than ends, and the period of an abbreviation, of a single letter ("J.") or of a
+/// word with a period inside it ("U.S.", "e.g.", "a.m.") is not a sentence end; a decimal
+/// point ("2.5.") is not such a period.
+fn ends_sentence(word: &str) -> bool {
+    let bare = word.trim_end_matches(['"', '\'', ')', ']', '\u{201d}', '\u{2019}']);
+    if bare.ends_with('?') || bare.ends_with('!') {
+        return true;
+    }
+    let Some(stem) = bare.strip_suffix('.') else {
+        return false;
+    };
+    let stem = stem.trim_start_matches(['"', '\'', '(', '[', '\u{201c}', '\u{2018}']);
+    let chars: Vec<char> = stem.chars().collect();
+    let digit_at = |i: Option<usize>| {
+        i.and_then(|i| chars.get(i))
+            .is_some_and(|c| c.is_ascii_digit())
+    };
+    let inner_period = chars
+        .iter()
+        .enumerate()
+        .any(|(i, &c)| c == '.' && !(digit_at(i.checked_sub(1)) && digit_at(Some(i + 1))));
+    if stem.is_empty() || stem.ends_with('\u{2026}') || inner_period {
+        return false;
+    }
+    let lower = stem.to_lowercase();
+    if chars.len() == 1 && chars.iter().all(|c| c.is_alphabetic()) {
+        return false;
+    }
+    !ABBREVIATIONS.contains(&lower.as_str())
+}
+
+/// `word` with its first letter capitalized, when the word is written all in lower case
+/// ("normalize", "metformin"). A word with a capital or a digit after its first letter
+/// ("mRNA", "pH", "eGFR", "scRNA-seq", "x2") is a spelling to keep, so it is left as it
+/// is, as is a word that does not start with a letter.
+fn capitalize_after_sentence(word: &str) -> String {
+    let mut chars = word.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let rest = chars.as_str();
+    let plain = first.is_lowercase()
+        && rest
+            .chars()
+            .all(|c| !c.is_alphanumeric() || (c.is_alphabetic() && !c.is_uppercase()));
+    if !plain {
+        return word.to_string();
+    }
+    first.to_uppercase().chain(rest.chars()).collect()
 }
 
 /// The words of `text` for the rate checks: the whitespace separated tokens that hold a
@@ -225,6 +304,85 @@ mod tests {
             "Okay. Start metformin."
         );
         assert_eq!(join(["[Music]", "(applause)"]), "");
+    }
+
+    /// A piece that follows a finished sentence starts one, so a lower case first word is
+    /// capitalized there (`small.en` wrote "phenotypes. normalize the ..."). Never inside a
+    /// piece, never after a piece that does not end a sentence, and never a spelling that
+    /// is not all lower case.
+    #[test]
+    fn a_piece_after_a_sentence_end_starts_with_a_capital() {
+        let cases: &[(&[&str], &str)] = &[
+            (
+                &["We saw three phenotypes.", "normalize the counts first."],
+                "We saw three phenotypes. Normalize the counts first.",
+            ),
+            (&["Is it EPAS1?", "yes, it is."], "Is it EPAS1? Yes, it is."),
+            (
+                &["Stop the infusion!", "then call."],
+                "Stop the infusion! Then call.",
+            ),
+            (
+                &["He said \"done.\"", "next patient."],
+                "He said \"done.\" Next patient.",
+            ),
+            (
+                &["We rule it out (for now.)", "then image."],
+                "We rule it out (for now.) Then image.",
+            ),
+            (
+                &["Increase to 2.5.", "review in a week."],
+                "Increase to 2.5. Review in a week.",
+            ),
+            // Inside a piece, nothing changes.
+            (&["one. two three."], "one. two three."),
+            // Not a sentence end: no period, a comma, an ellipsis, an abbreviation, an
+            // initial, a period inside the word.
+            (
+                &["We start metformin", "and review."],
+                "We start metformin and review.",
+            ),
+            (&["After the scan,", "we call."], "After the scan, we call."),
+            (&["And then...", "we waited."], "And then... we waited."),
+            (
+                &["And then\u{2026}", "we waited."],
+                "And then\u{2026} we waited.",
+            ),
+            (&["Ask Dr.", "patel to review."], "Ask Dr. patel to review."),
+            (&["Compare vs.", "baseline."], "Compare vs. baseline."),
+            (
+                &["Signed by J.", "smith today."],
+                "Signed by J. smith today.",
+            ),
+            (
+                &["Flew in from the U.S.", "last week."],
+                "Flew in from the U.S. last week.",
+            ),
+            (
+                &["Use a statin, e.g.", "atorvastatin."],
+                "Use a statin, e.g. atorvastatin.",
+            ),
+            // Spellings that are not all lower case stay as written.
+            (
+                &["That is settled.", "mRNA levels rose."],
+                "That is settled. mRNA levels rose.",
+            ),
+            (&["Check it.", "pH was 7.2."], "Check it. pH was 7.2."),
+            (&["Next.", "eGFR fell."], "Next. eGFR fell."),
+            (&["Done.", "scRNA-seq next."], "Done. scRNA-seq next."),
+            (&["Done.", "x2 daily."], "Done. x2 daily."),
+            (&["Done.", "x-ray today."], "Done. X-ray today."),
+            (&["Done.", "50 mg daily."], "Done. 50 mg daily."),
+            (&["Gut.", "\u{fc}ber alles."], "Gut. \u{dc}ber alles."),
+            // A piece without words between two others changes nothing.
+            (
+                &["Okay.", "[BLANK_AUDIO]", "start metformin."],
+                "Okay. Start metformin.",
+            ),
+        ];
+        for (pieces, joined) in cases {
+            assert_eq!(join(pieces.iter().copied()), *joined, "{pieces:?}");
+        }
     }
 
     #[test]

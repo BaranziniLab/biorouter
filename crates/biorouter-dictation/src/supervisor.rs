@@ -23,10 +23,18 @@
 //! 20 x audio seconds) on the CPU. Only a transcription counts as a GPU job:
 //! `vad_segments` runs on the separate detector, which the shim always opens on the CPU.
 //! A GPU job whose worker dies or misses its deadline is retried once in a fresh worker
-//! on the CPU, which then stays on the CPU until the next idle unload. A GPU `load` that
-//! fails the same way, or answers `model_load_failed`, is sent once more on the CPU,
-//! because the Metal warm up runs inside `load`; when that load fails too, the GPU was
-//! not the cause, and the next load asks for it again. Exit code 20, or a `hello` whose
+//! on the CPU. A GPU `load` that fails the same way, or answers `model_load_failed`, is
+//! sent once more on the CPU, because the Metal warm up runs inside `load`; when that load
+//! fails too, the GPU was not the cause, and the next load asks for it again. DD-7 asks
+//! for "one CPU retry", and the supervisor reads that strictly: once the CPU has answered
+//! [`GPU_RETURN_AFTER_CPU_JOBS`] transcription and nothing is running, a second worker
+//! loads the same model on the GPU while the CPU worker keeps serving, and takes over
+//! between two jobs once its model and warm up are done, so a person who dictates more
+//! often than the idle unload is not left on the CPU (small.en 503 ms there against about
+//! 125 ms on Metal, turbo about 4.5 s), and no request ever waits for the swap. A second
+//! GPU fault before the GPU has answered a transcription, the standby's own load
+//! included, leaves the CPU worker serving until the next idle unload. Exit code 20, or a
+//! `hello` whose
 //! CPU lacks a feature the engine needs, marks the supervisor unsupported for the life
 //! of the process.
 
@@ -208,6 +216,10 @@ pub const STDERR_LINES: usize = 64;
 pub const STDERR_LINE_BYTES: usize = 200;
 /// How long a worker that closed its stdout gets to exit before it is killed.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
+/// After a first GPU fault, the transcriptions the CPU answers before a second worker
+/// loads the GPU beside it: one, DD-7's "one CPU retry" read strictly (the retried job, or
+/// after a GPU load fault the first job the CPU load serves).
+pub const GPU_RETURN_AFTER_CPU_JOBS: u32 = 1;
 
 /// What to load. The parent verified the file's SHA-256 before building this (DD-17).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -415,7 +427,9 @@ pub struct SupervisorStatus {
     pub threads: Option<u32>,
     pub rss_bytes: Option<u64>,
     pub pid: Option<u32>,
-    /// A GPU fault moved this supervisor to the CPU until its next idle unload.
+    /// A GPU fault moved this supervisor to the CPU: after the first fault until the GPU
+    /// worker it then loads beside the CPU one takes over, after a second until its next
+    /// idle unload (DD-7).
     pub force_cpu: bool,
     pub missing_cpu_features: Vec<String>,
     pub queue: QueueStatus,
@@ -546,6 +560,10 @@ impl Supervisor {
             phase: Phase::Stopped,
             force_cpu: false,
             cpu_load_retry: false,
+            gpu_faults: 0,
+            cpu_jobs: 0,
+            gpu_spec: None,
+            standby: None,
             unsupported: None,
             last_error: None,
             vad_queue: VecDeque::new(),
@@ -1054,6 +1072,33 @@ struct Running {
     gpu: bool,
 }
 
+/// A worker loading the GPU model beside the CPU worker that serves meanwhile (DD-7's
+/// return to the GPU). Nothing waits for it: every request goes to the CPU worker until
+/// the standby's model has loaded, warm up included, and the CPU worker is between jobs.
+struct Standby {
+    worker: Worker,
+    spec: Arc<LoadSpec>,
+    /// When its `hello`, then its `loaded`, is due; `None` once it has loaded.
+    deadline: Option<Instant>,
+}
+
+/// `spec` as a worker loads it while a GPU fault holds.
+fn cpu_twin(spec: &LoadSpec) -> LoadSpec {
+    LoadSpec {
+        use_gpu: false,
+        ..spec.clone()
+    }
+}
+
+/// Lets `worker` go without waiting for it: `shutdown`, and on a task of its own, a kill
+/// after `grace` unless it has exited, then the reap. A worker that faulted gets no grace.
+fn retire(mut worker: Worker, grace: Duration) {
+    worker.send(&ToWorker::Shutdown);
+    tokio::spawn(async move {
+        let _ = reap(worker.child.as_mut(), grace).await;
+    });
+}
+
 struct Actor {
     spawner: Arc<dyn WorkerSpawner>,
     config: SupervisorConfig,
@@ -1068,6 +1113,17 @@ struct Actor {
     /// The load under way is the one CPU retry of a GPU load that failed. Should it
     /// fail too, `force_cpu` is cleared again.
     cpu_load_retry: bool,
+    /// GPU faults since the last idle unload with no GPU transcription answered after
+    /// them. At one the supervisor loads the GPU beside the CPU after its CPU job; at two
+    /// (the standby's own load counts) it stays on the CPU until the idle unload (DD-7).
+    gpu_faults: u32,
+    /// Transcriptions the CPU answered for a GPU spec since `force_cpu` was last set.
+    cpu_jobs: u32,
+    /// The GPU spec those transcriptions asked for: what the return to the GPU loads.
+    gpu_spec: Option<Arc<LoadSpec>>,
+    /// The return to the GPU under way: a second worker loading `gpu_spec` while the CPU
+    /// worker keeps serving. It takes over once loaded.
+    standby: Option<Standby>,
     unsupported: Option<Vec<String>>,
     last_error: Option<String>,
     vad_queue: VecDeque<Job>,
@@ -1098,6 +1154,18 @@ async fn next_event(worker: &mut Option<Worker>) -> WorkerEvent {
     }
 }
 
+async fn next_standby_event(standby: &mut Option<Standby>) -> WorkerEvent {
+    match standby {
+        Some(standby) => standby
+            .worker
+            .events
+            .recv()
+            .await
+            .unwrap_or(WorkerEvent::Closed),
+        None => std::future::pending().await,
+    }
+}
+
 async fn sleep_until(at: Option<Instant>) {
     match at {
         Some(at) => tokio::time::sleep_until(at).await,
@@ -1110,6 +1178,7 @@ impl Actor {
         loop {
             self.publish();
             let wake = self.next_wake();
+            let standby_due = self.standby.as_ref().and_then(|s| s.deadline);
             tokio::select! {
                 biased;
                 event = next_event(&mut self.worker) => match event {
@@ -1125,13 +1194,16 @@ impl Actor {
                     }
                 },
                 () = sleep_until(wake) => self.on_timer().await,
+                event = next_standby_event(&mut self.standby) => self.on_standby_event(event),
+                () = sleep_until(standby_due) => self.standby_faulted(),
             }
         }
     }
 
-    /// The handle was dropped: kill the worker and answer everyone.
+    /// The handle was dropped: kill the workers and answer everyone.
     async fn stop_everything(&mut self) {
-        if let Some(mut worker) = self.worker.take() {
+        let standby = self.standby.take().map(|s| s.worker);
+        for mut worker in self.worker.take().into_iter().chain(standby) {
             let _ = worker.child.start_kill();
             let _ = worker.child.wait().await;
         }
@@ -1262,6 +1334,12 @@ impl Actor {
                         worker.give_bias(&table, false);
                     }
                 }
+                // A standby that has loaded holds every table before it takes over.
+                if let Some(standby) = self.standby.as_mut() {
+                    if standby.worker.loaded.is_some() {
+                        standby.worker.give_bias(&table, false);
+                    }
+                }
             }
             Command::Submit(job) => {
                 let job = *job;
@@ -1297,6 +1375,8 @@ impl Actor {
                 self.cancel_running(|job| job.stream() == Some(stream));
             }
             Command::Unload(reply) => {
+                // An unload asked for is an unload: a return to the GPU under way stops too.
+                self.retire_standby();
                 for job in self.remove_queued(|_| true) {
                     job.fail(SupervisorError::Cancelled);
                 }
@@ -1319,8 +1399,7 @@ impl Actor {
                     if self.phase != Phase::Unsupported {
                         self.phase = Phase::Stopped;
                     }
-                    self.force_cpu = false;
-                    self.cpu_load_retry = false;
+                    self.clear_gpu_fault();
                     let _ = reply.send(());
                 }
             }
@@ -1434,8 +1513,8 @@ impl Actor {
     }
 
     fn start_worker(&mut self) {
-        let process = match self.spawner.spawn() {
-            Ok(process) => process,
+        let worker = match self.spawn_worker() {
+            Ok(worker) => worker,
             Err(e) => {
                 let error = SupervisorError::Spawn(e);
                 self.last_error = Some(error.to_string());
@@ -1445,6 +1524,14 @@ impl Actor {
                 return;
             }
         };
+        self.worker = Some(worker);
+        self.phase = Phase::Spawning;
+        self.deadline = Some((Instant::now() + self.config.deadlines.hello, Timer::Hello));
+    }
+
+    /// A new worker process and its three tasks, waiting for its `hello`.
+    fn spawn_worker(&self) -> io::Result<Worker> {
+        let process = self.spawner.spawn()?;
         let WorkerProcess {
             stdin,
             stdout,
@@ -1462,7 +1549,7 @@ impl Actor {
                 self.config.stderr_lines,
             )),
         ];
-        self.worker = Some(Worker {
+        Ok(Worker {
             outgoing,
             events,
             pid: child.pid(),
@@ -1472,9 +1559,7 @@ impl Actor {
             loaded: None,
             bias_sent: VecDeque::new(),
             tasks,
-        });
-        self.phase = Phase::Spawning;
-        self.deadline = Some((Instant::now() + self.config.deadlines.hello, Timer::Hello));
+        })
     }
 
     fn send_load(&mut self, spec: Arc<LoadSpec>) {
@@ -1499,6 +1584,8 @@ impl Actor {
         if self.phase != Phase::Ready || self.running.is_some() {
             return;
         }
+        // Between jobs: a standby whose GPU model has loaded serves from here on.
+        self.take_over_from_the_standby();
         let Some(loaded) = self.loaded_spec() else {
             return;
         };
@@ -1511,7 +1598,9 @@ impl Actor {
                 .find(|spec| !spec.same_model(&loaded));
             if let Some(spec) = other {
                 self.send_load(spec);
+                return;
             }
+            self.begin_return_to_the_gpu();
             return;
         };
         let wanted = self.effective(&job.spec);
@@ -1636,7 +1725,14 @@ impl Actor {
                 self.make_progress();
             }
             (Phase::Busy, FromWorker::Result(result)) if self.is_running(Some(result.id)) => {
-                if let Some(Running { job, .. }) = self.finish_running() {
+                if let Some(Running { job, gpu }) = self.finish_running() {
+                    if gpu {
+                        // The GPU answered: whatever faulted before it was passing.
+                        self.gpu_faults = 0;
+                    } else if self.force_cpu && job.spec.use_gpu {
+                        self.cpu_jobs += 1;
+                        self.gpu_spec = Some(Arc::clone(&job.spec));
+                    }
                     if let JobKind::Transcribe { reply, .. } = job.kind {
                         let _ = reply.send(Ok(result));
                     }
@@ -1693,6 +1789,8 @@ impl Actor {
     }
 
     fn begin_drain(&mut self) {
+        // The idle unload or an unload asked for: no return to the GPU outlives it.
+        self.retire_standby();
         let Some(worker) = &self.worker else {
             return;
         };
@@ -1718,6 +1816,9 @@ impl Actor {
             return;
         };
         self.deadline = None;
+        // A return to the GPU waits on the worker it would replace; with that worker gone,
+        // the next one starts from the fault state as it is, and a later CPU job returns.
+        self.retire_standby();
         let code = match loss {
             Loss::Closed => reap(worker.child.as_mut(), EXIT_GRACE).await,
             Loss::Deadline(_) | Loss::Protocol(_) => {
@@ -1745,8 +1846,8 @@ impl Actor {
         let phase = std::mem::replace(&mut self.phase, Phase::Stopped);
         match phase {
             Phase::Draining => {
-                self.force_cpu = false;
-                self.cpu_load_retry = false;
+                // The idle unload, or an unload asked for: a fresh start.
+                self.clear_gpu_fault();
                 for reply in self.unload_waiters.drain(..) {
                     let _ = reply.send(());
                 }
@@ -1768,7 +1869,7 @@ impl Actor {
                 if let Some(Running { mut job, gpu }) = self.running.take() {
                     if gpu && gpu_fault && !job.retried {
                         // DD-7: one retry of the same job, in a fresh worker, on the CPU.
-                        self.force_cpu = true;
+                        self.note_gpu_fault();
                         job.retried = true;
                         self.put_back(job);
                     } else {
@@ -1785,7 +1886,7 @@ impl Actor {
     /// After a GPU load failed: the next load goes to the CPU, once, in a fresh worker.
     /// The worker is already gone; the waiters and the queue are kept.
     fn begin_cpu_load_retry(&mut self) {
-        self.force_cpu = true;
+        self.note_gpu_fault();
         self.cpu_load_retry = true;
         self.phase = Phase::Stopped;
         self.make_progress();
@@ -1796,10 +1897,191 @@ impl Actor {
     fn cpu_load_retry_failed(&mut self) {
         if std::mem::take(&mut self.cpu_load_retry) {
             self.force_cpu = false;
+            self.gpu_faults = self.gpu_faults.saturating_sub(1);
         }
     }
 
+    /// A GPU job or load faulted: the CPU takes over, from its first job again.
+    fn note_gpu_fault(&mut self) {
+        self.force_cpu = true;
+        self.gpu_faults += 1;
+        self.cpu_jobs = 0;
+    }
+
+    /// The idle unload, or an unload asked for: the next load asks for the GPU, with no
+    /// fault remembered.
+    fn clear_gpu_fault(&mut self) {
+        self.force_cpu = false;
+        self.cpu_load_retry = false;
+        self.gpu_faults = 0;
+        self.cpu_jobs = 0;
+        self.gpu_spec = None;
+    }
+
+    /// DD-7 read strictly: after one GPU fault and [`GPU_RETURN_AFTER_CPU_JOBS`] CPU
+    /// transcription, with nothing running, a second worker (the standby) loads the same
+    /// model on the GPU, warm up included, while the CPU worker stays loaded and keeps
+    /// serving. Nothing waits on it: a request that arrives meanwhile is served on the CPU
+    /// at once, and the standby takes over between two jobs once it has loaded
+    /// ([`Actor::take_over_from_the_standby`]). Two models are held while it loads.
+    fn begin_return_to_the_gpu(&mut self) {
+        let due = self.force_cpu
+            && self.gpu_faults == 1
+            && self.cpu_jobs >= GPU_RETURN_AFTER_CPU_JOBS
+            && self.phase == Phase::Ready
+            && self.running.is_none()
+            && self.standby.is_none()
+            && self.unsupported.is_none();
+        if !due {
+            return;
+        }
+        let (Some(gpu_spec), Some(loaded)) = (self.gpu_spec.clone(), self.loaded_spec()) else {
+            return;
+        };
+        if !loaded.same_model(&cpu_twin(&gpu_spec)) {
+            return;
+        }
+        match self.spawn_worker() {
+            Ok(worker) => {
+                self.standby = Some(Standby {
+                    worker,
+                    spec: gpu_spec,
+                    deadline: Some(Instant::now() + self.config.deadlines.hello),
+                });
+            }
+            // A worker that cannot start is no GPU fault, but the return is over: the CPU
+            // worker serves until the idle unload, as after a second fault.
+            Err(_) => self.gpu_faults += 1,
+        }
+    }
+
+    /// What the standby says. Its `hello` gets the GPU `load` (with the warm up, so the
+    /// first Metal decode compiles nothing); its `loaded` gets the installed bias tables,
+    /// and it takes over at once when the CPU worker is between jobs. Anything else that
+    /// ends its load is DD-7's second fault.
+    fn on_standby_event(&mut self, event: WorkerEvent) {
+        let Some(standby) = self.standby.as_mut() else {
+            return;
+        };
+        match event {
+            WorkerEvent::Message(FromWorker::Hello(hello)) if standby.worker.hello.is_none() => {
+                let fits = missing_in(self.platform, &hello).is_empty();
+                standby.worker.hello = Some(hello);
+                let load = fits
+                    .then(|| standby.spec.to_load(self.config.warm_up).ok())
+                    .flatten();
+                let Some(load) = load else {
+                    self.standby_faulted();
+                    return;
+                };
+                standby.worker.send(&ToWorker::Load(load));
+                standby.worker.loading = Some(Arc::clone(&standby.spec));
+                standby.deadline = Some(Instant::now() + self.config.deadlines.load);
+            }
+            WorkerEvent::Message(FromWorker::Loaded(loaded)) => {
+                let Some(spec) = standby.worker.loading.take() else {
+                    return;
+                };
+                standby.worker.loaded = Some((spec, loaded));
+                standby.worker.bias_sent.clear();
+                for table in &self.bias_tables {
+                    standby.worker.give_bias(table, false);
+                }
+                standby.deadline = None;
+                self.move_the_running_transcription_to_the_standby();
+                self.dispatch();
+            }
+            WorkerEvent::Message(FromWorker::Error(e)) if e.id.is_none() => {
+                self.standby_faulted();
+            }
+            WorkerEvent::Message(_) => {}
+            WorkerEvent::Violation(_) | WorkerEvent::Closed => self.standby_faulted(),
+        }
+    }
+
+    /// The standby crashed, missed its `hello` or `load` deadline, or could not load: DD-7's
+    /// second GPU fault. It is killed; the CPU worker, which never stopped serving, stays
+    /// until the idle unload.
+    fn standby_faulted(&mut self) {
+        if let Some(standby) = self.standby.take() {
+            self.gpu_faults += 1;
+            retire(standby.worker, Duration::ZERO);
+        }
+    }
+
+    /// Stops a return to the GPU under way, if one is.
+    fn retire_standby(&mut self) {
+        if let Some(standby) = self.standby.take() {
+            retire(standby.worker, Duration::ZERO);
+        }
+    }
+
+    /// Whether the standby has loaded the GPU twin of the model the CPU worker serves.
+    fn standby_ready_for_the_loaded_model(&self) -> bool {
+        let Some(standby) = self.standby.as_ref() else {
+            return false;
+        };
+        standby.worker.loaded.is_some()
+            && self
+                .loaded_spec()
+                .is_some_and(|loaded| loaded.same_model(&cpu_twin(&standby.spec)))
+    }
+
+    /// The standby has loaded while the CPU worker runs a transcription. The GPU answers
+    /// it sooner than the CPU would finish it (turbo took 8,765 ms for `jfk.wav` on the CPU
+    /// during a return to Metal, and 436 ms on Metal right after [M, M4 Max, 2026-11-07]),
+    /// so the job is taken back from the CPU worker, which is told to cancel it and then
+    /// retired, and goes to the head of its line for the GPU. Only a transcription moves:
+    /// `vad_segments` runs on the CPU detector in either worker and is short.
+    fn move_the_running_transcription_to_the_standby(&mut self) {
+        let transcribing = self.phase == Phase::Busy
+            && self
+                .running
+                .as_ref()
+                .is_some_and(|r| matches!(r.job.kind, JobKind::Transcribe { .. }));
+        if !transcribing || !self.standby_ready_for_the_loaded_model() {
+            return;
+        }
+        if let Some(Running { job, .. }) = self.running.take() {
+            if let Some(worker) = &self.worker {
+                worker.send(&ToWorker::Cancel { id: job.id });
+            }
+            self.put_back(job);
+        }
+        self.deadline = None;
+        self.phase = Phase::Ready;
+    }
+
+    /// Between two jobs, with the standby's GPU model loaded: the standby becomes the
+    /// worker, and the CPU worker is shut down on a task of its own, so nothing waits for
+    /// its exit. When the CPU worker serves another model by then, the standby's is not
+    /// wanted and it goes instead.
+    fn take_over_from_the_standby(&mut self) {
+        if self
+            .standby
+            .as_ref()
+            .is_none_or(|s| s.worker.loaded.is_none())
+        {
+            return;
+        }
+        let wanted = self.standby_ready_for_the_loaded_model();
+        let Some(standby) = self.standby.take() else {
+            return;
+        };
+        if !wanted {
+            retire(standby.worker, Duration::ZERO);
+            return;
+        }
+        if let Some(cpu) = self.worker.replace(standby.worker) {
+            retire(cpu, self.config.deadlines.shutdown_grace);
+        }
+        self.force_cpu = false;
+        self.cpu_load_retry = false;
+        self.idle_since = Instant::now();
+    }
+
     fn become_unsupported(&mut self, missing: Vec<String>) {
+        self.retire_standby();
         self.phase = Phase::Unsupported;
         self.deadline = None;
         self.cpu_load_retry = false;
@@ -1872,11 +2154,15 @@ mod tests {
         crash_on_gpu_load: bool,
         hang_on_gpu_load: bool,
         job_delay: Duration,
+        /// A transcription's time on the CPU, when it differs from `job_delay`.
+        cpu_job_delay: Option<Duration>,
         hang_jobs: bool,
         hang_on_gpu: bool,
         crash_jobs: bool,
         crash_on_gpu: bool,
         crash_on_job: Option<u64>,
+        /// Crashes on these jobs when they run on the GPU, and serves them on the CPU.
+        crash_on_gpu_jobs: Vec<u64>,
         crash_on_vad: bool,
         /// Answers a `transcribe` with a frame head over the 32 MiB cap.
         oversized_frame: bool,
@@ -2087,6 +2373,7 @@ mod tests {
                     if script.crash_jobs
                         || (gpu && script.crash_on_gpu)
                         || script.crash_on_job == Some(t.id)
+                        || (gpu && script.crash_on_gpu_jobs.contains(&t.id))
                     {
                         return Some(134);
                     }
@@ -2108,10 +2395,18 @@ mod tests {
                         segments: Vec::new(),
                         prompt_terms_used: 0,
                         timings: Timings::default(),
+                        language: None,
                     });
                     let hang = script.hang_jobs || (gpu && script.hang_on_gpu);
+                    let timed = match script.cpu_job_delay.filter(|_| !gpu) {
+                        Some(job_delay) => Script {
+                            job_delay,
+                            ..script.clone()
+                        },
+                        None => script.clone(),
+                    };
                     if let Some(code) =
-                        work(&script, hang, &mut rx, &log, &mut stdout, t.id, answer).await
+                        work(&timed, hang, &mut rx, &log, &mut stdout, t.id, answer).await
                     {
                         return code;
                     }
@@ -2250,14 +2545,35 @@ mod tests {
     }
 
     async fn wait_for_state(supervisor: &Supervisor, state: WorkerState) {
+        wait_until(supervisor, |s| s.state == state).await;
+    }
+
+    async fn wait_until(supervisor: &Supervisor, what: impl Fn(&SupervisorStatus) -> bool) {
         let mut status = supervisor.subscribe();
-        tokio::time::timeout(
-            Duration::from_secs(3_600),
-            status.wait_for(|s| s.state == state),
-        )
-        .await
-        .expect("the state arrives")
-        .expect("the supervisor runs");
+        tokio::time::timeout(Duration::from_secs(3_600), status.wait_for(|s| what(s)))
+            .await
+            .expect("the state arrives")
+            .expect("the supervisor runs");
+    }
+
+    /// A loaded, idle worker on `backend`.
+    async fn wait_for_backend(supervisor: &Supervisor, backend: &str) {
+        wait_until(supervisor, |s| {
+            s.state == WorkerState::Ready && !s.busy && s.backend.as_deref() == Some(backend)
+        })
+        .await;
+    }
+
+    /// Waits on the paused clock until the workers have logged `event` `count` times: a
+    /// retired worker reads its `shutdown` on its own task, after the swap is published.
+    async fn wait_for_events(log: &Mutex<Log>, event: &str, count: usize) {
+        for _ in 0..10_000 {
+            if events(log).iter().filter(|e| *e == event).count() >= count {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        panic!("{event} x{count} never came: {:?}", events(log));
     }
 
     #[test]
@@ -2324,7 +2640,11 @@ mod tests {
                 (deadline + 1.0..deadline + 2.0).contains(&took),
                 "{seconds} s: {took}"
             );
-            assert!(supervisor.status().force_cpu);
+            // The retry was the one CPU job: a second worker loads the model on the GPU
+            // beside it, takes over, and only then is the CPU worker shut down.
+            wait_for_backend(&supervisor, "metal").await;
+            assert!(!supervisor.status().force_cpu);
+            wait_for_events(&log, "shutdown", 1).await;
             assert_eq!(
                 events(&log),
                 [
@@ -2332,7 +2652,9 @@ mod tests {
                     "transcribe 1",
                     "killed",
                     "load aa gpu=false",
-                    "transcribe 1"
+                    "transcribe 1",
+                    "load aa gpu=true",
+                    "shutdown"
                 ]
             );
         }
@@ -2415,8 +2737,79 @@ mod tests {
         assert_ne!(supervisor.worker_pid(), first_pid);
     }
 
+    /// DD-7 read strictly (PR-12b): after a GPU fault the CPU serves the one retry, and a
+    /// second worker loads the GPU beside it at once, not at the idle unload 300 s later,
+    /// so a person who dictates every minute is back on Metal for the next dictation. The
+    /// CPU worker is shut down only after the GPU worker has taken over, and the next job
+    /// finds Metal loaded.
     #[tokio::test(start_paused = true)]
-    async fn a_gpu_fault_moves_to_the_cpu_until_the_idle_unload() {
+    async fn after_one_cpu_job_a_gpu_worker_loads_beside_it_and_takes_over() {
+        let (supervisor, log) = start(Script {
+            crash_on_gpu_jobs: vec![1, 3],
+            job_delay: Duration::from_millis(100),
+            ..Script::default()
+        });
+        let first = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the retry answers");
+        assert_eq!(first.text, "job 1 on cpu");
+        let answered = Instant::now();
+        wait_for_backend(&supervisor, "metal").await;
+        assert!(
+            secs(answered) < 1.0,
+            "back on the GPU {} s after the CPU job",
+            secs(answered)
+        );
+        let status = supervisor.status();
+        assert!(!status.force_cpu);
+        assert_eq!(spawns(&log), 3);
+        assert_eq!(status.pid, Some(1002));
+        assert_eq!(
+            loads(&log),
+            ["load aa gpu=true", "load aa gpu=false", "load aa gpu=true"]
+        );
+        wait_for_events(&log, "shutdown", 1).await;
+        let order = events(&log);
+        let gpu_load = order.iter().rposition(|e| e == "load aa gpu=true");
+        let shutdown = order.iter().position(|e| e == "shutdown");
+        assert!(gpu_load < shutdown, "{order:?}");
+        // The next job pays no load: Metal is already loaded, in the same worker.
+        let started = Instant::now();
+        let second = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the GPU answers");
+        assert_eq!(second.text, "job 2 on metal");
+        assert!(secs(started) < 0.2, "{}", secs(started));
+        assert_eq!(spawns(&log), 3);
+        // A GPU that answered clears the fault: a later fault is a first fault again, with
+        // its one CPU job and the return, not the CPU until the idle unload.
+        let third = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the retry answers");
+        assert_eq!(third.text, "job 3 on cpu");
+        wait_for_backend(&supervisor, "metal").await;
+        assert_eq!(spawns(&log), 5);
+        assert_eq!(
+            loads(&log),
+            [
+                "load aa gpu=true",
+                "load aa gpu=false",
+                "load aa gpu=true",
+                "load aa gpu=false",
+                "load aa gpu=true"
+            ]
+        );
+    }
+
+    /// A second GPU fault before the GPU has answered a transcription goes to the CPU at
+    /// once, and the CPU then holds until the idle unload, which clears the fault: the
+    /// next load asks for the GPU again, and a fault there gets its one CPU job and the
+    /// return as the first did.
+    #[tokio::test(start_paused = true)]
+    async fn a_second_gpu_fault_keeps_the_cpu_until_the_idle_unload() {
         let (supervisor, log) = start(Script {
             crash_on_gpu: true,
             job_delay: Duration::from_millis(100),
@@ -2427,38 +2820,213 @@ mod tests {
             .await
             .expect("the retry answers");
         assert_eq!(first.text, "job 1 on cpu");
-        assert_eq!(spawns(&log), 2);
-        assert!(supervisor.status().force_cpu);
-        assert_eq!(supervisor.status().backend.as_deref(), Some("cpu"));
-        // It stays on the CPU, in the same worker.
+        wait_for_backend(&supervisor, "metal").await;
+        assert_eq!(spawns(&log), 3);
+        // Metal faults again: the same job is retried on the CPU at once.
         let second = supervisor
             .transcribe(model("aa", true), 1, audio(2.0), params())
             .await
-            .expect("the CPU answers");
+            .expect("the CPU answers at once");
         assert_eq!(second.text, "job 2 on cpu");
-        assert_eq!(spawns(&log), 2);
+        assert_eq!(spawns(&log), 4);
+        assert!(supervisor.status().force_cpu);
+        // It stays on the CPU, in the same worker, however long it waits short of the
+        // idle unload.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(supervisor.status().backend.as_deref(), Some("cpu"));
+        let third = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the CPU answers");
+        assert_eq!(third.text, "job 3 on cpu");
+        assert_eq!(spawns(&log), 4);
         // The idle unload clears it, and the next load asks for the GPU again.
         tokio::time::sleep(Duration::from_secs(301)).await;
         wait_for_state(&supervisor, WorkerState::Stopped).await;
         assert!(!supervisor.status().force_cpu);
-        let third = supervisor
+        let fourth = supervisor
             .transcribe(model("aa", true), 1, audio(2.0), params())
             .await
             .expect("the retry answers again");
-        assert_eq!(third.text, "job 3 on cpu");
-        let loads: Vec<String> = events(&log)
-            .into_iter()
-            .filter(|e| e.starts_with("load"))
-            .collect();
+        assert_eq!(fourth.text, "job 4 on cpu");
+        wait_for_backend(&supervisor, "metal").await;
         assert_eq!(
-            loads,
+            loads(&log),
             [
                 "load aa gpu=true",
                 "load aa gpu=false",
                 "load aa gpu=true",
-                "load aa gpu=false"
+                "load aa gpu=false",
+                "load aa gpu=true",
+                "load aa gpu=false",
+                "load aa gpu=true"
             ]
         );
+    }
+
+    /// The return to the GPU never delays a dictation (the latency rule): while the second
+    /// worker loads Metal, 2 s here and 3 to 4 s on a cold shader cache, a prepare and a
+    /// transcription are answered by the CPU worker at once, and the GPU takes over after
+    /// them, between two jobs. A swap that shut the CPU worker down first made such a
+    /// request wait for that exit and the whole GPU load.
+    #[tokio::test(start_paused = true)]
+    async fn a_request_during_the_return_to_the_gpu_is_served_on_the_cpu_at_once() {
+        let (supervisor, log) = start(Script {
+            crash_on_gpu_jobs: vec![1],
+            load_delay: Duration::from_secs(2),
+            job_delay: Duration::from_millis(100),
+            ..Script::default()
+        });
+        let first = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the retry answers");
+        assert_eq!(first.text, "job 1 on cpu");
+        // The standby has its `load` and is loading the GPU.
+        wait_for_events(&log, "load aa gpu=true", 2).await;
+        let cpu_pid = supervisor.worker_pid();
+        let started = Instant::now();
+        let loaded = supervisor
+            .prepare(model("aa", true))
+            .await
+            .expect("the CPU worker answers");
+        assert_eq!(loaded.backend, "cpu");
+        let second = supervisor
+            .transcribe(model("aa", true), 2, audio(2.0), params())
+            .await
+            .expect("the CPU worker answers");
+        assert_eq!(second.text, "job 2 on cpu");
+        assert!(secs(started) < 0.2, "waited {} s", secs(started));
+        assert_eq!(supervisor.worker_pid(), cpu_pid);
+        assert!(supervisor.status().force_cpu);
+        // The GPU then takes over, and the next request finds Metal loaded.
+        wait_for_backend(&supervisor, "metal").await;
+        assert_ne!(supervisor.worker_pid(), cpu_pid);
+        let started = Instant::now();
+        let third = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the GPU answers");
+        assert_eq!(third.text, "job 3 on metal");
+        assert!(secs(started) < 0.2, "waited {} s", secs(started));
+        assert_eq!(spawns(&log), 3);
+        wait_for_events(&log, "shutdown", 1).await;
+    }
+
+    /// A transcription the CPU worker is still running when the GPU worker has loaded
+    /// moves to the GPU, which answers it sooner (turbo: 8.8 s on the CPU, 0.44 s on
+    /// Metal, for `jfk.wav`): the CPU worker is told to cancel it and retired, and the job
+    /// is answered once, by Metal.
+    #[tokio::test(start_paused = true)]
+    async fn a_cpu_transcription_running_when_the_gpu_has_loaded_moves_to_it() {
+        let (supervisor, log) = start(Script {
+            crash_on_gpu_jobs: vec![1],
+            load_delay: Duration::from_secs(1),
+            job_delay: Duration::from_millis(100),
+            cpu_job_delay: Some(Duration::from_secs(5)),
+            ..Script::default()
+        });
+        let first = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the retry answers");
+        assert_eq!(first.text, "job 1 on cpu");
+        // Sent as the GPU begins to load: the CPU worker starts it, 5 s of work.
+        let started = Instant::now();
+        let second = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("answered");
+        assert_eq!(second.text, "job 2 on metal");
+        let took = secs(started);
+        assert!((1.0..1.5).contains(&took), "answered after {took} s");
+        assert_eq!(spawns(&log), 3);
+        wait_for_events(&log, "shutdown", 1).await;
+        let order = events(&log);
+        assert_eq!(
+            order.iter().filter(|e| *e == "transcribe 2").count(),
+            2,
+            "{order:?}"
+        );
+        assert!(order.contains(&"cancel 2".to_string()), "{order:?}");
+        assert!(!supervisor.status().force_cpu);
+    }
+
+    /// A standby whose GPU load hangs is DD-7's second fault, and costs no dictation a
+    /// wait: the CPU worker serves throughout, the standby is killed at the load deadline,
+    /// and nothing asks for the GPU again before the idle unload.
+    #[tokio::test(start_paused = true)]
+    async fn a_return_to_the_gpu_that_hangs_never_delays_a_request() {
+        let (supervisor, log) = start(Script {
+            hang_on_gpu_load: true,
+            job_delay: Duration::from_millis(100),
+            ..Script::default()
+        });
+        // The first GPU load hangs to its deadline, and the CPU load serves the job.
+        let first = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the CPU load answers");
+        assert_eq!(first.text, "job 1 on cpu");
+        wait_for_events(&log, "load aa gpu=true", 2).await;
+        let started = Instant::now();
+        let second = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the CPU worker answers");
+        assert_eq!(second.text, "job 2 on cpu");
+        assert!(secs(started) < 0.2, "waited {} s", secs(started));
+        // The standby misses its load deadline and is killed; the CPU worker stays.
+        tokio::time::sleep(Duration::from_secs(181)).await;
+        wait_for_events(&log, "killed", 2).await;
+        let status = supervisor.status();
+        assert_eq!(status.backend.as_deref(), Some("cpu"));
+        assert_eq!(status.pid, Some(1001));
+        assert!(status.force_cpu);
+        let third = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the CPU worker answers");
+        assert_eq!(third.text, "job 3 on cpu");
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(spawns(&log), 3);
+        assert_eq!(
+            loads(&log),
+            ["load aa gpu=true", "load aa gpu=false", "load aa gpu=true"]
+        );
+    }
+
+    /// An unload asked for while the GPU loads beside the CPU is an unload: the standby is
+    /// killed with the CPU worker, nothing takes over, and the next request starts afresh
+    /// on the GPU, the fault forgotten.
+    #[tokio::test(start_paused = true)]
+    async fn an_unload_during_the_return_to_the_gpu_stops_the_standby_too() {
+        let (supervisor, log) = start(Script {
+            crash_on_gpu_jobs: vec![1],
+            load_delay: Duration::from_secs(5),
+            job_delay: Duration::from_millis(100),
+            ..Script::default()
+        });
+        supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("the retry answers");
+        wait_for_events(&log, "load aa gpu=true", 2).await;
+        supervisor.unload().await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let status = supervisor.status();
+        assert_eq!(status.state, WorkerState::Stopped);
+        assert_eq!(status.pid, None);
+        assert!(!status.force_cpu);
+        assert_eq!(spawns(&log), 3);
+        let killed = events(&log).iter().filter(|e| *e == "killed").count();
+        assert_eq!(killed, 1, "{:?}", events(&log));
+        let next = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("a fresh worker answers");
+        assert_eq!(next.text, "job 2 on metal");
+        assert_eq!(spawns(&log), 4);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2869,7 +3437,9 @@ mod tests {
     }
 
     /// The Metal warm up runs inside `load`, so a GPU fault there gets DD-7's one CPU
-    /// retry, which then holds until the idle unload.
+    /// retry. The CPU serves the first job, then a second worker loads the GPU beside it;
+    /// a second crash there is the second fault, and the CPU worker, which never stopped,
+    /// serves until the idle unload.
     #[tokio::test(start_paused = true)]
     async fn a_crash_while_loading_on_the_gpu_loads_once_on_the_cpu() {
         let (supervisor, log) = start(Script {
@@ -2887,14 +3457,34 @@ mod tests {
         assert!(status.force_cpu);
         assert_eq!(status.state, WorkerState::Ready);
         assert_eq!(status.last_error, None);
-        // It stays on the CPU, in the same worker.
+        // The first job is served on the CPU, in the same worker.
         let text = supervisor
             .transcribe(model("aa", true), 1, audio(2.0), params())
             .await
             .expect("a result")
             .text;
         assert_eq!(text, "job 1 on cpu");
-        assert_eq!(spawns(&log), 2);
+        // Then the GPU is loaded beside it, and its load crashes a second time.
+        wait_for_events(&log, "load aa gpu=true", 2).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(spawns(&log), 3);
+        let started = Instant::now();
+        let text = supervisor
+            .transcribe(model("aa", true), 1, audio(2.0), params())
+            .await
+            .expect("a result")
+            .text;
+        assert_eq!(text, "job 2 on cpu");
+        assert!(secs(started) < 0.2, "waited {} s", secs(started));
+        let status = supervisor.status();
+        assert!(status.force_cpu);
+        assert_eq!(status.pid, Some(1001));
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(spawns(&log), 3);
+        assert_eq!(
+            loads(&log),
+            ["load aa gpu=true", "load aa gpu=false", "load aa gpu=true"]
+        );
     }
 
     #[tokio::test(start_paused = true)]

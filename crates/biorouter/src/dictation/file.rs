@@ -86,6 +86,11 @@ pub struct RecordingTranscript {
     /// The detector's speech, overlaps counted once.
     pub speech_ms: u64,
     pub timings: RecordingTimings,
+    /// The language whisper.cpp detected when the request said `auto`: the one detected
+    /// for the most speech, the earliest on a tie. `None` when the language was given, or
+    /// the worker reports none (one built before PR-12b).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 impl RecordingTranscript {
@@ -99,8 +104,27 @@ impl RecordingTranscript {
             audio_ms,
             speech_ms,
             timings,
+            language: None,
         }
     }
+}
+
+/// The language most of the speech was detected in, the earliest on a tie.
+fn main_language(detected: &[(String, u64)]) -> Option<String> {
+    let mut totals: Vec<(&str, u64)> = Vec::new();
+    for (code, speech_ms) in detected {
+        match totals.iter_mut().find(|(seen, _)| *seen == code.as_str()) {
+            Some((_, total)) => *total += speech_ms,
+            None => totals.push((code.as_str(), *speech_ms)),
+        }
+    }
+    let mut best: Option<(&str, u64)> = None;
+    for (code, total) in totals {
+        if best.is_none_or(|(_, most)| total > most) {
+            best = Some((code, total));
+        }
+    }
+    best.map(|(code, _)| code.to_string())
 }
 
 /// Where the detector looks next, and what each window's spans let the decoder start
@@ -327,6 +351,7 @@ async fn run(
     let prompt_sent = !params.prompt_terms.is_empty();
     let mut retried = None;
     let mut pieces: Vec<TimedText> = Vec::new();
+    let mut detected: Vec<(String, u64)> = Vec::new();
     for job in queued {
         let result = job.answer.await.unwrap_or(Err(SupervisorError::Stopped))?;
         count(&mut timings, &result);
@@ -368,6 +393,9 @@ async fn run(
         let Some(result) = kept else {
             continue;
         };
+        if let Some(code) = &result.language {
+            detected.push((code.clone(), job.speech_ms));
+        }
         for piece in result.segments {
             if !text::piece_has_words(&piece.text) {
                 continue;
@@ -396,6 +424,7 @@ async fn run(
         audio_ms,
         speech_ms,
         timings,
+        language: main_language(&detected),
     })
 }
 
@@ -582,6 +611,28 @@ mod tests {
         assert_eq!(sent_prompt(&terms, 9), &terms[..]);
         assert!(sent_prompt(&terms, 0).is_empty());
         assert_eq!(duration_ms(16_001), 1_001);
+    }
+
+    /// `--language auto` reports the language detected for the most speech; the earliest
+    /// one wins a tie, and a worker that reports none leaves it unset.
+    #[test]
+    fn the_language_is_the_one_detected_for_the_most_speech() {
+        let detected = |pairs: &[(&str, u64)]| -> Vec<(String, u64)> {
+            pairs.iter().map(|(c, ms)| (c.to_string(), *ms)).collect()
+        };
+        assert_eq!(main_language(&[]), None);
+        assert_eq!(
+            main_language(&detected(&[("en", 4_000)])).as_deref(),
+            Some("en")
+        );
+        assert_eq!(
+            main_language(&detected(&[("de", 3_000), ("en", 2_000), ("en", 2_000)])).as_deref(),
+            Some("en")
+        );
+        assert_eq!(
+            main_language(&detected(&[("de", 2_000), ("en", 2_000)])).as_deref(),
+            Some("de")
+        );
     }
 
     // ---- The pipeline against an in-memory worker -------------------------------------
@@ -795,6 +846,7 @@ mod tests {
                             encode_ms: 10.0,
                             decode_ms: 5.0,
                         },
+                        language: None,
                     };
                     send(&mut out, &FromWorker::Result(result)).await;
                 }

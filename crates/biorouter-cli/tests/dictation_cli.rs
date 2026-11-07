@@ -27,10 +27,12 @@
 //!   uninstalled model, a language the model cannot take and a managed `enabled: false`
 //!   exit 2 with their sentences.
 //!
-//! Ignored, for the accuracy workflow and by hand: an MP3 encoded by `ffmpeg` decodes to
-//! the expected length and an M4A and an Ogg Vorbis file are refused with the `ffmpeg`
-//! line, and `transcribe` with the real catalog models in
-//! `BIOROUTER_DICTATION_MODELS_DIR` writes the JFK sentence and reports its timings; and
+//! Ignored, for the accuracy workflow and by hand: MP3, M4A, AAC (ADTS), Ogg Vorbis and Ogg
+//! FLAC files encoded by `ffmpeg` decode to the expected length, while Opus, WebM and Apple
+//! Lossless are refused with the `ffmpeg` line (PR-12b, O-39); `transcribe` with the real
+//! catalog models in `BIOROUTER_DICTATION_MODELS_DIR` writes the JFK sentence and reports
+//! its timings, from the WAV and from its M4A, AAC and Ogg Vorbis copies, and turbo told
+//! `--language auto` reports the language it detected; and
 //! (PR-14, DD-77) `transcribe --session <a private chat>` at a pseudo terminal with a
 //! private model configured reaches the private terms, while the same run in an agent's
 //! shell (`BIOROUTER_TERMINAL=1`) is public and writes none of them; and (PR-14b) once its
@@ -872,6 +874,31 @@ fn transcribe_refuses_what_it_cannot_use() {
     );
     assert_json_error(&output, 1, "unsupported_format");
 
+    // M4A is read now (O-39): a damaged one is `unsupported_format` with no kind named, and
+    // a recording named `.m4a` that holds a WAV is read as one, so it reaches the model.
+    let mut cut = vec![0, 0, 0, 32];
+    cut.extend_from_slice(b"ftypM4A ");
+    cut.extend_from_slice(&[0; 52]);
+    let damaged = dir.join("cut.m4a");
+    std::fs::write(&damaged, &cut).unwrap();
+    let output = transcribe(dir, &[damaged.to_str().unwrap()], &[], None);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).starts_with("Biorouter cannot read this recording.")
+            && stderr(&output).contains("ffmpeg -i"),
+        "{}",
+        stderr(&output)
+    );
+    let named = dir.join("memo.m4a");
+    std::fs::write(&named, wav_16k(2_000, true)).unwrap();
+    let output = transcribe(dir, &[named.to_str().unwrap()], &[], None);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(
+        stderr(&output).starts_with("Dictation needs a speech model"),
+        "{}",
+        stderr(&output)
+    );
+
     // A file that is not there.
     let missing = dir.join("missing.wav");
     let output = transcribe(
@@ -882,7 +909,7 @@ fn transcribe_refuses_what_it_cannot_use() {
     );
     assert_json_error(&output, 1, "not_found");
 
-    // Speech to transcribe, but no model on this computer: exit 2 with MSG-NO-MODEL-CLI.
+    // Speech to transcribe, but no model on this computer: exit 2 with MSG-NO-MODEL.
     let tone = dir.join("tone.wav");
     std::fs::write(&tone, wav_16k(2_000, true)).unwrap();
     let output = transcribe(dir, &[tone.to_str().unwrap()], &[], None);
@@ -958,62 +985,130 @@ fn transcribe_follows_the_managed_switch() {
     assert!(stderr(&output).starts_with("Dictation needs a speech model"));
 }
 
-/// MP3 and M4A, which no test process can encode, through `ffmpeg` (the accuracy workflow
-/// installs it). A 44.1 kHz stereo MP3 tone decodes to 16 kHz mono within 1 % of its
-/// length: gapless decoding trims the encoder's delay and padding, which on a 3 s tone
-/// were 1 % of it otherwise [M]. M4A (AAC) and Ogg Vorbis are refused with the `ffmpeg`
-/// line, from a file and from standard input: DD-78's size rule left their decoders out.
+/// `ffmpeg` with the arguments given, quietly; panics when it fails.
+fn ffmpeg(args: &[&std::ffi::OsStr]) {
+    let status = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(args)
+        .status()
+        .expect("ffmpeg runs");
+    assert!(status.success(), "ffmpeg {args:?}");
+}
+
+/// `source` encoded by `ffmpeg` into `dir/name` with `codec` and any extra arguments.
+fn encode(dir: &Path, source: &Path, name: &str, codec: &[&str]) -> PathBuf {
+    let encoded = dir.join(name);
+    let mut args: Vec<&std::ffi::OsStr> = Vec::new();
+    for arg in ["-i".as_ref(), source.as_os_str(), "-c:a".as_ref()] {
+        args.push(arg);
+    }
+    args.extend(codec.iter().map(|a| std::ffi::OsStr::new(*a)));
+    args.push(encoded.as_os_str());
+    ffmpeg(&args);
+    encoded
+}
+
+/// What AAC in ADTS may add to a recording's length, in samples at its own rate: the
+/// encoder's priming (1,024 samples from ffmpeg, 2,112 from Apple's encoder) and the rest
+/// of its last 1,024 sample frame. ADTS says nothing of either, so a `.aac` decodes up to
+/// that much longer [M: +669 samples at 16 kHz, 42 ms, on a 3 s tone from ffmpeg]. An M4A
+/// says both, in its edit list or Apple's `iTunSMPB` tag, and decodes to its length.
+#[cfg(feature = "dictation")]
+const ADTS_EXTRA_SAMPLES: f64 = 2_112.0 + 1_024.0;
+
+/// The compressed kinds `transcribe` reads (DD-78, O-39), each as `ffmpeg` writes it,
+/// with the codec arguments and whether it is ADTS: MP3, AAC in an MP4 file (`.m4a`) and
+/// in ADTS (`.aac`), Ogg Vorbis (ffmpeg's own encoder, which Homebrew's build carries
+/// where libvorbis is missing, and which takes stereo only) and FLAC in Ogg.
+#[cfg(feature = "dictation")]
+const COMPRESSED: [(&str, &[&str], bool); 5] = [
+    ("tone.mp3", &["libmp3lame"], false),
+    ("tone.m4a", &["aac"], false),
+    ("tone.aac", &["aac", "-f", "adts"], true),
+    ("tone.ogg", &["vorbis", "-strict", "-2", "-ac", "2"], false),
+    ("tone.oga", &["flac", "-f", "ogg"], false),
+];
+
+/// MP3, M4A, AAC and Ogg Vorbis, which no test process can encode, through `ffmpeg` (the
+/// accuracy workflow installs it), beside the committed encoder output that the default
+/// tests in `decode.rs` read. A 44.1 kHz stereo tone of 3 s decodes to 16 kHz mono
+/// within 1 % of its length from each, from a file and from standard input: gapless
+/// decoding trims the encoder's delay and padding (MP3's LAME header, Ogg's granule
+/// positions, the M4A's edit list), which on this tone were 1 % of it otherwise [M]; ADTS
+/// keeps its priming ([`ADTS_EXTRA_SAMPLES`]). Opus (in Ogg), WebM and Apple Lossless (in
+/// an M4A) are refused with the `ffmpeg` line, each named.
 #[cfg(feature = "dictation")]
 #[test]
 #[ignore = "needs ffmpeg"]
-fn mp3_decodes_to_the_expected_length_and_m4a_is_refused() {
+fn mp3_m4a_aac_and_ogg_decode_to_the_expected_length() {
     use biorouter_cli::dictation::decode::{decode_path, decode_reader, DecodeError};
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("tone.wav");
-    let status = Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:sample_rate=44100:duration=3",
-            "-ac",
-            "2",
-        ])
-        .arg(&source)
-        .status()
-        .expect("ffmpeg runs");
-    assert!(status.success());
-    let encode = |name: &str, codec: &str| {
-        let encoded = dir.path().join(name);
-        let status = Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-i"])
-            .arg(&source)
-            .args(["-c:a", codec])
-            .arg(&encoded)
-            .status()
-            .expect("ffmpeg runs");
-        assert!(status.success(), "{name}");
-        encoded
-    };
-    let mp3 = decode_path(&encode("tone.mp3", "libmp3lame")).expect("MP3");
+    ffmpeg(&[
+        "-f".as_ref(),
+        "lavfi".as_ref(),
+        "-i".as_ref(),
+        "sine=frequency=440:sample_rate=44100:duration=3".as_ref(),
+        "-ac".as_ref(),
+        "2".as_ref(),
+        source.as_os_str(),
+    ]);
     let expected = 3.0 * 16_000.0;
-    let got = mp3.samples.len() as f64;
-    assert!(
-        (got - expected).abs() <= expected * 0.01,
-        "{got} samples, expected {expected}"
-    );
-    assert_eq!(mp3.channels, 2);
+    for (name, codec, adts) in COMPRESSED {
+        let encoded = encode(dir.path(), &source, name, codec);
+        let started = std::time::Instant::now();
+        let decoded = decode_path(&encoded).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let took = started.elapsed();
+        let got = decoded.samples.len() as f64;
+        let extra = if adts {
+            ADTS_EXTRA_SAMPLES * 16_000.0 / 44_100.0
+        } else {
+            0.0
+        };
+        assert!(
+            got >= expected * 0.99 && got <= expected * 1.01 + extra,
+            "{name}: {got} samples, expected {expected}"
+        );
+        assert_eq!(
+            (decoded.source_rate, decoded.channels),
+            (44_100, 2),
+            "{name}"
+        );
+        let bytes = std::fs::read(&encoded).unwrap();
+        let piped = decode_reader(bytes.as_slice()).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(piped, decoded, "{name} on stdin");
+        println!("{name}: {got} samples, decoded in {took:?}");
+    }
 
-    // FLAC in an Ogg page stands for any Ogg stream: Vorbis needs libvorbis, which
-    // Homebrew's ffmpeg does not carry, and every Ogg stream is refused alike.
+    // Apple's encoder writes ADTS headers that say MPEG-2 (0xFFF9), which symphonia's ADTS
+    // reader does not sync on: the same frames with that bit decode to the same samples.
+    let mpeg4 = std::fs::read(dir.path().join("tone.aac")).unwrap();
+    let mut mpeg2 = mpeg4.clone();
+    let mut at = 0usize;
+    while at + 7 <= mpeg2.len() && mpeg2[at] == 0xFF && mpeg2[at + 1] == 0xF1 {
+        mpeg2[at + 1] = 0xF9;
+        let len = ((usize::from(mpeg2[at + 3]) & 0x03) << 11)
+            | (usize::from(mpeg2[at + 4]) << 3)
+            | (usize::from(mpeg2[at + 5]) >> 5);
+        at += len.max(7);
+    }
+    assert_eq!(at, mpeg2.len(), "every frame was rewritten");
+    let apple = dir.path().join("apple.aac");
+    std::fs::write(&apple, &mpeg2).unwrap();
+    let from_mpeg4 = decode_path(&dir.path().join("tone.aac")).expect("MPEG-4 ADTS");
+    assert_eq!(decode_path(&apple).expect("MPEG-2 ADTS"), from_mpeg4);
+    assert_eq!(
+        decode_reader(mpeg2.as_slice()).expect("MPEG-2 ADTS on stdin"),
+        from_mpeg4
+    );
+
     for (name, codec, kind) in [
-        ("tone.m4a", "aac", "M4A and AAC"),
-        ("tone.ogg", "flac", "Ogg"),
+        ("tone.opus", &["libopus"][..], "Opus"),
+        ("voice.ogg", &["libopus", "-f", "ogg"][..], "Opus"),
+        ("talk.webm", &["libopus"][..], "WebM"),
+        ("lossless.m4a", &["alac"][..], "Apple Lossless"),
     ] {
-        let encoded = encode(name, codec);
+        let encoded = encode(dir.path(), &source, name, codec);
         let refused = DecodeError::UnsupportedFormat {
             kind: Some(kind.into()),
         };
@@ -1452,7 +1547,10 @@ fn transcribe_raises_the_uses_of_the_terms_it_wrote() {
 
 /// `transcribe` with each catalog model found in `BIOROUTER_DICTATION_MODELS_DIR` writes
 /// the JFK sentence and reports its timings (printed for the record). The models are
-/// those `BIOROUTER_DICTATION_ACCURACY_MODELS` names, comma separated, or both.
+/// those `BIOROUTER_DICTATION_ACCURACY_MODELS` names, comma separated, or both. With
+/// `ffmpeg` on the path (the accuracy workflow installs it) the M4A, AAC and Ogg Vorbis
+/// copies of the sample give the same words (O-39); and turbo, told `--language auto`,
+/// reports the language it detected, `en`, rather than `auto`.
 #[test]
 #[ignore = "needs the real speech models"]
 fn transcribe_writes_the_jfk_sentence_with_each_catalog_model() {
@@ -1483,6 +1581,57 @@ fn transcribe_writes_the_jfk_sentence_with_each_catalog_model() {
         assert_eq!(words(text), words(JFK_TEXT), "{model}: {text}");
         assert_eq!(transcript["model"], model);
         assert_eq!(transcript["no_speech"], false);
+        assert_eq!(transcript["language"], "en");
         println!("{model}: {text}\n{model}: {}", transcript["timings"]);
+
+        if model == TURBO {
+            let output = transcribe(
+                root.path(),
+                &[
+                    jfk.to_str().unwrap(),
+                    "--model",
+                    model,
+                    "--language",
+                    "auto",
+                    "--format",
+                    "json",
+                ],
+                &[("BIOROUTER_DICTATION_MODELS_DIR", models.as_str())],
+                None,
+            );
+            assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+            let detected = json(&output);
+            assert_eq!(detected["language"], "en", "{detected}");
+            assert_eq!(words(detected["text"].as_str().unwrap()), words(JFK_TEXT));
+        }
+    }
+
+    if Command::new("ffmpeg").arg("-version").output().is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        for model in selected.iter().map(String::as_str) {
+            for (name, codec) in [
+                ("jfk.m4a", &["aac"][..]),
+                ("jfk.aac", &["aac", "-f", "adts"][..]),
+                ("jfk.ogg", &["vorbis", "-strict", "-2", "-ac", "2"][..]),
+            ] {
+                let copy = encode(dir.path(), &jfk, name, codec);
+                let output = transcribe(
+                    root.path(),
+                    &[copy.to_str().unwrap(), "--model", model, "--format", "json"],
+                    &[("BIOROUTER_DICTATION_MODELS_DIR", models.as_str())],
+                    None,
+                );
+                assert_eq!(
+                    output.status.code(),
+                    Some(0),
+                    "{model} {name}: {}",
+                    stderr(&output)
+                );
+                let transcript = json(&output);
+                let text = transcript["text"].as_str().unwrap();
+                assert_eq!(words(text), words(JFK_TEXT), "{model} {name}: {text}");
+                println!("{model} {name}: {}", transcript["timings"]);
+            }
+        }
     }
 }

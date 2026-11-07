@@ -543,6 +543,12 @@ pub struct TranscribeResult {
     /// How many terms from the tail of `prompt_terms` made the token budget.
     pub prompt_terms_used: u32,
     pub timings: Timings,
+    /// The language whisper.cpp detected (`"de"`), when the request's `language` was
+    /// `auto` and a segment was decoded. Optional and left off the wire when unset, so a
+    /// result from a worker built before it still parses, and one with it parses in an
+    /// older parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -855,11 +861,27 @@ mod tests {
                     encode_ms: 120.0,
                     decode_ms: 140.0,
                 },
+                language: None,
             }),
             json!({"type":"result","id":7,"text":"Hello there.",
                    "segments":[{"t0_ms":0,"t1_ms":4800,"text":"Hello there."}],
                    "prompt_terms_used":0,
                    "timings":{"vad_ms":14.0,"encode_ms":120.0,"decode_ms":140.0}}),
+        );
+        // With `language: auto`, the language whisper.cpp detected.
+        golden(
+            FromWorker::Result(TranscribeResult {
+                id: 9,
+                text: "Guten Morgen.".into(),
+                segments: Vec::new(),
+                prompt_terms_used: 0,
+                timings: Timings::default(),
+                language: Some("de".into()),
+            }),
+            json!({"type":"result","id":9,"text":"Guten Morgen.","segments":[],
+                   "prompt_terms_used":0,
+                   "timings":{"vad_ms":0.0,"encode_ms":0.0,"decode_ms":0.0},
+                   "language":"de"}),
         );
         golden(
             ToWorker::VadSegments(VadSegments {

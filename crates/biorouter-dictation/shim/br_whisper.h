@@ -71,7 +71,9 @@ typedef struct br_timings {
 typedef void (*br_logits_cb)(const int32_t *token_ids, int32_t n_tokens, float *logits,
                              int32_t n_vocab, void *user);
 
-/* What the parameter builder put into whisper_full_params, for the DD-13 tests. */
+/* What the parameter builders put into whisper_full_params and whisper_context_params, for
+   the DD-13 and DD-47 tests: every field the decode builder sets, the prompt as br_full
+   passes it, and the context builder's two switches. */
 typedef struct br_params_view {
     int32_t strategy;
     int32_t best_of;
@@ -86,6 +88,23 @@ typedef struct br_params_view {
     float temperature_inc;
     bool suppress_nst;
     int32_t n_threads;
+    float temperature;
+    float entropy_thold;
+    float logprob_thold;
+    float no_speech_thold;
+    bool translate;
+    bool suppress_blank;
+    bool detect_language;
+    bool token_timestamps;
+    char language[8];          /* p.language, NUL terminated; "" when it is NULL */
+    bool initial_prompt_set;   /* p.initial_prompt is not NULL; never, since PR-14 sends ids */
+    bool carry_initial_prompt;
+    bool prompt_tokens_set;    /* p.prompt_tokens is the prompt the snapshot was given */
+    int32_t prompt_n_tokens;
+    int32_t audio_ctx;
+    int32_t max_tokens;
+    bool flash_attn;           /* whisper_context_params, from br_init's builder */
+    bool use_gpu;
 } br_params_view;
 
 #define BR_OK 0
@@ -117,13 +136,20 @@ int32_t br_full(struct whisper_context *ctx, const br_decode *d, const br_vad *v
                 br_logits_cb cb, void *cb_user,
                 const volatile int32_t *abort_flag, br_timings *out);
 int32_t br_n_segments(struct whisper_context *ctx);
+/* The language the last br_full decoded in, as whisper.cpp's code ("en", "de"): the one it
+   detected when the request said "auto" on a multilingual model, else the request's. Read
+   it only after a br_full that returned BR_OK with at least one segment; "" on failure. */
+const char *br_full_lang(struct whisper_context *ctx);
 const char *br_segment_text(struct whisper_context *ctx, int32_t i);
 void br_segment_span(struct whisper_context *ctx, int32_t i, int64_t *t0_ms, int64_t *t1_ms);
 /* Opens the integrated detector (when v->enabled) and, when encoder is true, runs one
    encoder pass and one decoder step on silence, so the first real request finds Metal's
    pipelines and the compute buffers ready. BR_OK, BR_DETECTOR_FAILED, or whisper's code. */
 int32_t br_warmup(struct whisper_context *ctx, const br_vad *v, int32_t n_threads, bool encoder);
-void br_params_snapshot(const br_decode *d, const br_vad *v, br_params_view *out);
+/* The decode builder's parameters for d and v with the prompt applied as br_full applies it,
+   and the context builder's for use_gpu and flash_attn as br_init passes them. */
+void br_params_snapshot(const br_decode *d, const br_vad *v, const int32_t *prompt, int32_t n_prompt,
+                        bool use_gpu, bool flash_attn, br_params_view *out);
 
 /* the separate detector for vad_segments; always on the CPU. Pass 1 thread: without
    OpenMP, ggml starts and joins a thread pool for every 32 ms chunk of audio, so more

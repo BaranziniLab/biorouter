@@ -514,6 +514,7 @@ impl EngineThread {
                     encode_ms: output.timings.encode_ms,
                     decode_ms: output.timings.decode_ms,
                 },
+                language: output.language,
             }),
             Err(engine::EngineError::Aborted) => error(id, ErrorCode::Cancelled, "cancelled"),
             Err(engine::EngineError::TooLong) => {
@@ -821,16 +822,17 @@ mod tests {
 
     /// PR-12's parameter snapshot (DD-47, DD-48): the frame every file and stream sends,
     /// through the worker's conversion, every field of the engine's `DecodeParams` and
-    /// `VadParams`; and through the shim's one parameter builder, the fields its
-    /// `br_params_view` reads back: the strategy, `best_of`, `no_context`,
+    /// `VadParams`; and through the shim's parameter builders, every field they set, as
+    /// `br_params_view` reads them back (PR-12b): the strategy, `best_of`, `no_context`,
     /// `no_timestamps`, `single_segment`, the four print flags, the detector switch,
-    /// `temperature_inc`, `suppress_nst` and the thread count. The builder's other fields
-    /// (the thresholds, `suppress_blank`, `translate`, the temperature, the language, the
-    /// prompt fields and the context's `flash_attn`) are checked on `DecodeParams` only;
-    /// reading them back too needs `br_params_view` to grow. Greedy with `best_of = 5`,
-    /// timestamps on, `temperature_inc 0.2`, `suppress_nst` off, the detector on with its
-    /// four values, and at most 25 s of audio on the wire and in the engine. The
-    /// supervisor refuses 25.5 s before it queues anything
+    /// `temperature_inc`, `suppress_nst`, the thread count, the temperature, the three
+    /// thresholds, `translate`, `suppress_blank`, the language with detection off, token
+    /// timestamps off, the prompt (token ids in `prompt_tokens`, as `br_full` applies them,
+    /// with `initial_prompt` unset and not carried), `audio_ctx` and `max_tokens`; and the
+    /// context's `flash_attn` and `use_gpu`, from the builder `br_init` uses. Greedy with
+    /// `best_of = 5`, timestamps on, `temperature_inc 0.2`, `suppress_nst` off, the
+    /// detector on with its four values, and at most 25 s of audio on the wire and in the
+    /// engine. The supervisor refuses 25.5 s before it queues anything
     /// (`audio_over_the_caps_is_refused_before_it_is_queued`) and the worker answers a
     /// longer payload `bad_audio` (`a_worker_answers_every_request_in_order`).
     #[test]
@@ -873,8 +875,12 @@ mod tests {
                 samples_overlap_s: 0.1,
             }
         );
+        let prompt = [50_361, 2_201, 13];
+        let view = engine::params_snapshot(&decode, &vad, &prompt, true);
+        // The language is compared as text below; the struct takes the view's own bytes.
+        let language = view.language;
         assert_eq!(
-            engine::params_snapshot(&decode, &vad),
+            view,
             engine::ParamsView {
                 strategy: 0,
                 best_of: 5,
@@ -889,12 +895,53 @@ mod tests {
                 temperature_inc: 0.2,
                 suppress_nst: false,
                 n_threads: 2,
+                temperature: 0.0,
+                entropy_thold: 2.4,
+                logprob_thold: -1.0,
+                no_speech_thold: 0.6,
+                translate: false,
+                suppress_blank: true,
+                detect_language: false,
+                token_timestamps: false,
+                language,
+                initial_prompt_set: false,
+                carry_initial_prompt: false,
+                prompt_tokens_set: true,
+                prompt_n_tokens: 3,
+                audio_ctx: 0,
+                max_tokens: 0,
+                flash_attn: true,
+                use_gpu: true,
             }
         );
-        // A multilingual model is told the configured language, never `auto` unless set.
+        assert_eq!(engine::view_language(&view), "en");
+        // No prompt: no prompt tokens, and still no `initial_prompt`. On the CPU the
+        // context asks for no GPU and keeps flash attention.
+        let bare = engine::params_snapshot(&decode, &vad, &[], false);
+        assert_eq!(
+            (
+                bare.prompt_tokens_set,
+                bare.prompt_n_tokens,
+                bare.initial_prompt_set
+            ),
+            (false, 0, false)
+        );
+        assert_eq!((bare.flash_attn, bare.use_gpu), (true, false));
+        // A multilingual model is told the configured language, never `auto` unless set;
+        // `auto` reaches whisper.cpp as itself, which detects the language per decode.
         let mut german = request.clone();
         german.language = "de".into();
         assert_eq!(decode_params(&german).language, "de");
+        let german_view = engine::params_snapshot(&decode_params(&german), &vad, &[], true);
+        assert_eq!(engine::view_language(&german_view), "de");
+        let mut auto = request.clone();
+        auto.language = "auto".into();
+        let auto_view = engine::params_snapshot(&decode_params(&auto), &vad, &[], true);
+        assert_eq!(engine::view_language(&auto_view), "auto");
+        assert!(
+            !auto_view.detect_language,
+            "`detect_language` would return before decoding"
+        );
         assert_eq!(protocol::MAX_TRANSCRIBE_SAMPLES, 25 * 16_000);
         assert_eq!(
             protocol::MAX_TRANSCRIBE_SAMPLES,

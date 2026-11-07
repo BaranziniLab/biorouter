@@ -8,20 +8,23 @@
 //!
 //! `rust.yml`'s `test` job runs this binary on all three operating systems: ubuntu in the
 //! offline integration step, macOS and the Windows MSVC leg in "cargo test (dictation
-//! worker roles)". A build without an engine (`MSVC_NATIVE = false` in the dictation
-//! crate's `build.rs`, or any `br_no_native` target) answers 2 for the self test, so that
-//! test returns early there.
+//! engine, worker roles and supervisor)". A build without an engine (`MSVC_NATIVE = false`
+//! in the dictation crate's `build.rs`, or any `br_no_native` target) answers 2 for the
+//! self test, so that test returns early there.
 
 // Redirects this binary's Biorouter data/config/state dirs at a throwaway root before
 // `main`, as every test binary here does. The worker reads none of them.
 #[path = "../src/test_sandbox.rs"]
 mod test_sandbox;
 
+#[cfg(feature = "local-dictation")]
 use std::path::PathBuf;
 use std::process::Command;
 
 const MARKER: &str = "__br-dictation-worker";
 
+/// A vendored whisper.cpp test file; only the self test, which needs the engine, reads one.
+#[cfg(feature = "local-dictation")]
 fn fixture(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

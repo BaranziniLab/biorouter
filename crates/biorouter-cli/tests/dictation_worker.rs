@@ -21,7 +21,8 @@
 //!   footprint, and where a streamed dictation was cut), and a cold `transcribe_with`
 //!   against the fixture;
 //! * `a_worker_killed_mid_transcription_real_model` (ignored) kills the worker during a
-//!   real Metal transcription (one retry on the CPU) and a CPU one (`WorkerExited`, then
+//!   real Metal transcription (one retry on the CPU, then Metal loads beside the CPU
+//!   worker, which answers a request sent meanwhile) and a CPU one (`WorkerExited`, then
 //!   a new worker), and `the_idle_unload_follows_config_yaml` (ignored) checks that
 //!   `BIOROUTER_DICTATION_IDLE_UNLOAD_SECS` in `config.yaml` stops the service's worker.
 //!
@@ -49,6 +50,7 @@ use biorouter_dictation::protocol::{
 };
 use biorouter_dictation::supervisor::{
     CommandSpawner, LoadSpec, Supervisor, SupervisorConfig, SupervisorError, TranscribeParams,
+    WorkerState,
 };
 use biorouter_dictation::worker::WORKER_MARKER;
 use biorouter_dictation::ENGINE_COMPILED;
@@ -1310,9 +1312,12 @@ async fn kill_once_busy(supervisor: &Supervisor) -> (u32, Instant) {
 }
 
 /// A worker killed in the middle of a real transcription. During a Metal job DD-7
-/// retries that job once on the CPU in a fresh worker, which serves until the next idle
-/// unload; during a CPU job the job fails with `WorkerExited` and the next request gets a
-/// fresh worker. An unload then clears the move to the CPU.
+/// retries that job once on the CPU in a fresh worker; that was the one CPU job, so a
+/// second worker then loads the model on Metal beside the CPU worker, which answers a
+/// request sent meanwhile, and takes over once loaded (PR-12b). A second kill of a Metal
+/// job is retried on the CPU at once, and the CPU then holds; during a CPU job the job
+/// fails with `WorkerExited` and the next request gets a fresh worker. An unload then
+/// clears the move to the CPU.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs real speech models; set BIOROUTER_DICTATION_BENCH_DIR"]
 async fn a_worker_killed_mid_transcription_real_model() {
@@ -1355,12 +1360,81 @@ async fn a_worker_killed_mid_transcription_real_model() {
         let result = answer.await.expect("answered");
         let retried = result.expect("the Metal job is retried once on the CPU");
         assert!(retried.text.contains("country"), "{}", retried.text);
+        assert_ne!(supervisor.worker_pid(), Some(killed));
+        println!(
+            "killed a Metal job: retried on the CPU in a new worker, answered {:.1} ms after the kill",
+            ms(at)
+        );
+        // That was the one CPU retry: a second worker loads the model on Metal beside the
+        // CPU worker. A request sent meanwhile is never held for the swap: the CPU worker
+        // starts it, and once Metal has loaded it moves there.
+        let back_on_metal = || async {
+            let mut status = supervisor.subscribe();
+            tokio::time::timeout(
+                Duration::from_secs(120),
+                status.wait_for(|s| {
+                    s.state == WorkerState::Ready
+                        && s.backend.as_deref() == Some("metal")
+                        && !s.force_cpu
+                }),
+            )
+            .await
+            .expect("back on Metal")
+            .expect("the supervisor runs");
+        };
+        let answered = Instant::now();
+        let cpu_pid = supervisor.worker_pid();
+        let (_, during) = request();
+        let served = during
+            .await
+            .expect("answered")
+            .expect("a request sent during the swap is answered");
+        assert!(served.text.contains("country"), "{}", served.text);
+        let during_ms = ms(answered);
+        back_on_metal().await;
+        assert_ne!(supervisor.worker_pid(), cpu_pid);
+        println!(
+            "a request sent as the return to Metal began was answered {during_ms:.1} ms later; Metal had taken over {:.1} ms after the CPU retry answered",
+            ms(answered)
+        );
+        let at = Instant::now();
+        let on_metal = request().1.await.expect("answered").expect("Metal answers");
+        assert!(on_metal.text.contains("country"), "{}", on_metal.text);
+        println!("the next request on Metal: {:.1} ms", ms(at));
+        // Metal answered, so the next kill is a first fault again: one CPU retry, then
+        // Metal loads beside it and takes over, with nothing sent meanwhile.
+        let (_, answer) = request();
+        let (_, at) = kill_once_busy(&supervisor).await;
+        let retried = answer
+            .await
+            .expect("answered")
+            .expect("a first fault again is retried on the CPU");
+        assert!(retried.text.contains("country"), "{}", retried.text);
+        println!(
+            "killed Metal after it had answered: retried on the CPU {:.1} ms after the kill",
+            ms(at)
+        );
+        let answered = Instant::now();
+        back_on_metal().await;
+        println!(
+            "with nothing sent, Metal took over {:.1} ms after the CPU retry answered",
+            ms(answered)
+        );
+        // A second Metal fault before Metal has answered is retried on the CPU at once, and
+        // the CPU then holds.
+        let (_, answer) = request();
+        let (_, at) = kill_once_busy(&supervisor).await;
+        let again = answer
+            .await
+            .expect("answered")
+            .expect("the second Metal job is retried on the CPU too");
+        assert!(again.text.contains("country"), "{}", again.text);
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let status = supervisor.status();
         assert!(status.force_cpu, "{status:?}");
         assert_eq!(status.backend.as_deref(), Some("cpu"));
-        assert_ne!(status.pid, Some(killed));
         println!(
-            "killed a Metal job: retried on the CPU in a new worker, answered {:.1} ms after the kill",
+            "killed Metal again: retried on the CPU, answered {:.1} ms after the kill, and the CPU holds",
             ms(at)
         );
     }
