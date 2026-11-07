@@ -359,14 +359,21 @@ pub async fn run_turn(
     let outcome = Arc::new(AtomicU8::new(TURN_OUTCOME_NONE));
     let stop_record = turn_guard.stop_record();
     let frame_log = turn_guard.stream();
-    let turn = run_turn_body(
-        state,
-        request,
-        turn_id,
-        cancel_token,
-        Arc::clone(&outcome),
-        (stop_record, frame_log),
-    );
+    // Built off this frame and boxed ([`biorouter::agents::boxed_off_frame`]):
+    // `run_turn`'s future, and every frame that moves it (`carry`, `scope`,
+    // the task-local wrapper, `supervise_turn`), then holds a box rather than
+    // the whole turn, and they all sit under the reply loop's frame.
+    let outcome_for_body = Arc::clone(&outcome);
+    let turn = biorouter::agents::boxed_off_frame(move || {
+        run_turn_body(
+            state,
+            request,
+            turn_id,
+            cancel_token,
+            outcome_for_body,
+            (stop_record, frame_log),
+        )
+    });
     supervise_turn(session_id, turn_guard, outcome, turn).await;
 }
 
@@ -880,13 +887,15 @@ async fn run_turn_body(
         mut all_messages,
         user_message,
         turn_message_start,
-    }) = prepare_turn(
-        &state,
-        &session_id,
-        user_message,
-        extras.reasoning_effort,
-        extras.conversation_so_far,
-    )
+    }) = biorouter::agents::boxed_off_frame(|| {
+        prepare_turn(
+            &state,
+            &session_id,
+            user_message,
+            extras.reasoning_effort,
+            extras.conversation_so_far,
+        )
+    })
     .await
     else {
         record_setup_failure(
@@ -926,15 +935,17 @@ async fn run_turn_body(
     };
 
     let mut stopped_rows = Vec::new();
-    let terminal_error = drive_turn_with_continuations(
-        &session_id,
-        stream,
-        &agent,
-        &session_config,
-        &cancel_token,
-        &mut all_messages,
-        &mut stopped_rows,
-    )
+    let terminal_error = biorouter::agents::boxed_off_frame(|| {
+        drive_turn_with_continuations(
+            &session_id,
+            stream,
+            &agent,
+            &session_config,
+            &cancel_token,
+            &mut all_messages,
+            &mut stopped_rows,
+        )
+    })
     .await;
     agent.mark_loop_idle();
     // Before `finish_turn`, and so before the guard retires: a cancel waiting on
@@ -1118,19 +1129,30 @@ async fn open_reply_stream<'a>(
     turn_messages: (&Conversation, usize),
     outcome: &AtomicU8,
 ) -> Option<futures::stream::BoxStream<'a, anyhow::Result<AgentEvent>>> {
-    match agent
-        .reply(
+    // Each future is built off this frame ([`biorouter::agents::boxed_off_frame`]),
+    // which is live under the whole reply prologue.
+    let reply = biorouter::agents::boxed_off_frame(|| {
+        agent.reply(
             user_message,
             session_config.clone(),
             Some(cancel_token.clone()),
         )
-        .await
-    {
+    });
+    match reply.await {
         Ok(stream) => Some(stream),
         Err(e) => {
-            abandon_prepared_turn(session_id, agent).await;
-            report_reply_start_failure(state, session_id, &e, cancel_token, turn_messages, outcome)
-                .await;
+            biorouter::agents::boxed_off_frame(|| abandon_prepared_turn(session_id, agent)).await;
+            biorouter::agents::boxed_off_frame(|| {
+                report_reply_start_failure(
+                    state,
+                    session_id,
+                    &e,
+                    cancel_token,
+                    turn_messages,
+                    outcome,
+                )
+            })
+            .await;
             None
         }
     }
@@ -1160,7 +1182,10 @@ async fn record_child_turn_end(
         ChildTurnDecisions {
             monitor_stop: agent.take_monitor_stop(session_id),
             earlier_turns,
-            stop_cause: note_child_turn_stop_cause(state, session_id, cancelled).await,
+            stop_cause: biorouter::agents::boxed_off_frame(|| {
+                note_child_turn_stop_cause(state, session_id, cancelled)
+            })
+            .await,
         },
     );
 }
@@ -1211,7 +1236,10 @@ async fn record_setup_failure(
     outcome: &AtomicU8,
 ) {
     let cancelled = cancel_token.is_cancelled();
-    let stop_cause = note_child_turn_stop_cause(state, session_id, cancelled).await;
+    let stop_cause = biorouter::agents::boxed_off_frame(|| {
+        note_child_turn_stop_cause(state, session_id, cancelled)
+    })
+    .await;
     record_child_turn_outcome_with(
         session_id,
         true,
@@ -1855,7 +1883,7 @@ mod tests {
             .find("let Some(stream) = open_reply_stream(\n")
             .expect("run_turn_body no longer opens the reply stream");
         assert!(
-            src.contains("    match agent\n        .reply(\n"),
+            src.contains("        agent.reply(\n            user_message,\n"),
             "open_reply_stream no longer calls reply"
         );
         assert!(
@@ -2528,6 +2556,61 @@ mod tests {
         })
         .await
         .expect("turn lock released");
+    }
+
+    /// The turn runner's futures hold their children boxed
+    /// ([`biorouter::agents::boxed_off_frame`]), so the frames that move them
+    /// stay small. `tokio::spawn` takes `carry(run_turn(..))`, and at
+    /// `opt-level = 0` every frame between a worker and the reply loop
+    /// (`carry`, `scope`, the task-local wrapper, `run_turn`, `supervise_turn`,
+    /// `run_turn_body`, `open_reply_stream`) is several copies of the future it
+    /// moves. With the turn's children inline those futures were 22-151 KiB
+    /// and the frames added about 0.8 MiB under the reply loop: a turn needed
+    /// 1.9 MiB of a 2 MiB worker stack on main, and overflowed it in CI once
+    /// the reply loop grew (debug, measured 2026-11-07). A size, not a stack
+    /// limit, so it reads the same on every platform: each future here is
+    /// 1-4 KiB boxed, and an inline child puts back 20 KiB or more.
+    #[tokio::test]
+    async fn the_turn_runner_holds_its_children_boxed() {
+        const BOUND: usize = 8 * 1024;
+        let state = crate::state::AppState::new().await.unwrap();
+        let (_workdir, sid) = session(&state, "turn-future-sizes").await;
+        let agent = state.get_agent(sid.clone()).await.unwrap();
+        let session_config = biorouter::agents::SessionConfig {
+            id: sid.clone(),
+            schedule_id: None,
+            max_turns: None,
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+
+        let reply = agent.reply(Message::user().with_text("x"), session_config, None);
+        let reply_size = std::mem::size_of_val(&reply);
+        drop(reply);
+        let cancel = CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&sid, cancel.clone(), None)
+            .unwrap();
+        let turn = run_turn(
+            state.clone(),
+            TurnRequest::new(sid.clone(), Message::user().with_text("x")),
+            guard,
+            cancel,
+        );
+        let turn_size = std::mem::size_of_val(&turn);
+        let spawned_size = std::mem::size_of_val(&biorouter::native_client::carry(turn));
+
+        assert!(
+            reply_size <= BOUND,
+            "Agent::reply's future is {reply_size} bytes: build the prologue off its frame"
+        );
+        assert!(
+            turn_size <= BOUND && spawned_size <= BOUND,
+            "run_turn's future is {turn_size} bytes and the spawned one {spawned_size}: \
+             an await in run_turn / run_turn_body is inline again"
+        );
     }
 
     #[tokio::test]

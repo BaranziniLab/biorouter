@@ -2184,6 +2184,31 @@ struct ToolBatchMaps {
     request_to_tool_name: HashMap<String, String>,
 }
 
+/// Build the future `make` returns in this function's own frame, and hand it
+/// back boxed. Write `boxed_off_frame(|| self.helper(..)).await`, never
+/// `Box::pin(self.helper(..)).await`, wherever the caller's frame is on the
+/// stack for a whole turn: `reply_internal`'s generator, and the turn runner
+/// around it (`biorouter-server`'s `run_turn_body`).
+///
+/// For stack, like [`ToolBatchMaps`]. At `opt-level = 0` the future
+/// `self.helper(..)` is built in the CALLER's frame before `Box::pin` moves it
+/// to the heap, so each such call site adds the helper's whole future to a
+/// frame that stays live under everything the turn does, even though only a
+/// 16-byte box is ever awaited there. A closure moves that construction here,
+/// into a frame that is gone before the future is first polled. Measured
+/// (debug, aarch64 macOS, 2026-11-07): nine decision-monitor and supervision
+/// awaits written with a bare `Box::pin` grew the reply loop's `poll` frame
+/// from 629 KiB to 695 KiB, and a daemon turn that needed 1.9 MiB of worker
+/// stack then overflowed a 2 MiB worker in CI. Written this way, with the
+/// turn runner's awaits as well, the frame is 601 KiB and the turn needs
+/// about 1 MiB.
+pub fn boxed_off_frame<'a, T, Fut>(make: impl FnOnce() -> Fut) -> futures::future::BoxFuture<'a, T>
+where
+    Fut: std::future::Future<Output = T> + Send + 'a,
+{
+    Box::pin(make())
+}
+
 /// Build the per-batch tool lookup tables and the response slots they index.
 ///
 /// Split out of the `reply_internal` generator to keep its `poll` frame small —
@@ -10366,9 +10391,12 @@ impl Agent {
                 &session_config.id,
             )
         });
-        let mut replies = self
-            .reply_with_computer_use_scope(user_message, session_config, cancel_token)
-            .await?;
+        // Built off this frame ([`boxed_off_frame`]): the reply prologue's
+        // future is most of this one's, and a turn runner holds this one.
+        let mut replies = boxed_off_frame(|| {
+            self.reply_with_computer_use_scope(user_message, session_config, cancel_token)
+        })
+        .await?;
         Ok(Box::pin(async_stream::try_stream! {
             let _task = task;
             let _decision_turn = decision_turn;
@@ -12535,7 +12563,7 @@ impl Agent {
         // latches stored with the chat). Every evaluation point below reads
         // them again first, so a change made while the turn runs applies at
         // its next point.
-        Box::pin(self.refresh_decision_monitors(&session_config.id)).await;
+        boxed_off_frame(|| self.refresh_decision_monitors(&session_config.id)).await;
 
         // Freshness basis for this turn's overflow-recovery compactions.
         //
@@ -12746,7 +12774,7 @@ impl Agent {
                     );
                     // The turn ends here, before its `turn_end` point: its
                     // monitors there are named, not silently skipped.
-                    for event in Box::pin(self.forced_exit_monitor_notices(
+                    for event in boxed_off_frame(|| self.forced_exit_monitor_notices(
                         &session_config.id,
                         WrapUp::ActionLimit,
                     ))
@@ -12781,7 +12809,7 @@ impl Agent {
                             )
                         )
                     );
-                    for event in Box::pin(self.forced_exit_monitor_notices(
+                    for event in boxed_off_frame(|| self.forced_exit_monitor_notices(
                         &session_config.id,
                         WrapUp::ToolCallLimit,
                     ))
@@ -12824,7 +12852,7 @@ impl Agent {
                     yield AgentEvent::Message(
                         assistant_text(crate::agents::stall::stopped_message(&reason))
                     );
-                    for event in Box::pin(self.forced_exit_monitor_notices(
+                    for event in boxed_off_frame(|| self.forced_exit_monitor_notices(
                         &session_config.id,
                         WrapUp::Stall,
                     ))
@@ -12859,7 +12887,7 @@ impl Agent {
                     yield AgentEvent::Message(
                         assistant_text(crate::agents::budget::stopped_message(&snapshot))
                     );
-                    for event in Box::pin(self.forced_exit_monitor_notices(
+                    for event in boxed_off_frame(|| self.forced_exit_monitor_notices(
                         &session_config.id,
                         WrapUp::Budget,
                     ))
@@ -12880,7 +12908,7 @@ impl Agent {
                 // adoption and D14's store-before-remove live on
                 // `consume_soft_interrupts_at_boundary`. Boxed so its future is not
                 // laid out inside this generator's frame.
-                for m in Box::pin(self.consume_soft_interrupts_at_boundary(&session_config.id)).await? {
+                for m in boxed_off_frame(|| self.consume_soft_interrupts_at_boundary(&session_config.id)).await? {
                     if signed_replay_context.take().is_some() {
                         conversation =
                             crate::conversation::without_bedrock_reasoning(&conversation);
@@ -13312,7 +13340,7 @@ impl Agent {
                             continue;
                         }
                         ProviderWake::AckReady(seq, acknowledgement) => {
-                            match Box::pin(self.land_live_ack(seq, acknowledgement, &session_config.id)).await? {
+                            match boxed_off_frame(|| self.land_live_ack(seq, acknowledgement, &session_config.id)).await? {
                                 LiveAckLanding::Delivered(message) => {
                                     if signed_replay_context.take().is_some() {
                                         conversation = crate::conversation::without_bedrock_reasoning(
@@ -14381,7 +14409,7 @@ impl Agent {
                 // the queue for the next boundary, as ordinary user messages.
                 for (seq, acknowledgement) in self.take_ready_live_acks() {
                     if let LiveAckLanding::Delivered(message) =
-                        Box::pin(self.land_live_ack(seq, acknowledgement, &session_config.id)).await?
+                        boxed_off_frame(|| self.land_live_ack(seq, acknowledgement, &session_config.id)).await?
                     {
                         conversation.push(message.clone());
                         yield AgentEvent::Message(message);
@@ -14697,13 +14725,13 @@ impl Agent {
                 // something reopens it; the helper adds a structured final
                 // output about to end it.
                 if !is_token_cancelled(&cancel_token)
-                    && Box::pin(self.monitor_point_due(
+                    && boxed_off_frame(|| self.monitor_point_due(
                         &session_config.id,
                         crate::decision::settings::MonitorTiming::PostIteration,
                     ))
                     .await
                 {
-                    let verdict = Box::pin(self.run_monitor_point(
+                    let verdict = boxed_off_frame(|| self.run_monitor_point(
                         &session_config.id,
                         crate::decision::settings::MonitorTiming::PostIteration,
                         &conversation,
@@ -14845,13 +14873,13 @@ impl Agent {
                     // done gate is skipped), but the point still says which
                     // monitors it did not check.
                     if !is_token_cancelled(&cancel_token)
-                        && Box::pin(self.monitor_point_due(
+                        && boxed_off_frame(|| self.monitor_point_due(
                             &session_config.id,
                             crate::decision::settings::MonitorTiming::TurnEnd,
                         ))
                         .await
                     {
-                        let verdict = Box::pin(self.run_monitor_point(
+                        let verdict = boxed_off_frame(|| self.run_monitor_point(
                             &session_config.id,
                             crate::decision::settings::MonitorTiming::TurnEnd,
                             &conversation,
@@ -15021,7 +15049,7 @@ impl Agent {
             // per call. The check is synchronous; a turn that asked nothing
             // writes nothing.
             if self.decision_turn_had_activity(&session_config.id) {
-                if let Some(marker) = Box::pin(self.decision_turn_marker(&session_config.id)).await {
+                if let Some(marker) = boxed_off_frame(|| self.decision_turn_marker(&session_config.id)).await {
                     yield AgentEvent::Message(marker);
                 }
             }
@@ -15039,7 +15067,7 @@ impl Agent {
                 // `Complete` and `UserSteered` both end the wait, and so does
                 // the bound a monitor's stop set on it, once its notice is out.
                 loop {
-                    match Box::pin(self.next_supervision_step(
+                    match boxed_off_frame(|| self.next_supervision_step(
                         &session_config.id,
                         cancel_token.clone(),
                         self.turn_exit_is_resumable(),
@@ -15061,7 +15089,7 @@ impl Agent {
             // into the durable transcript, marked unanswered (D4), and emitted to
             // observers. Anything arriving after the close is refused.
             self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::Settling);
-            for message in Box::pin(self.settle_or_hold_for_continuation(
+            for message in boxed_off_frame(|| self.settle_or_hold_for_continuation(
                 &this_turn,
                 &session_config.id,
                 is_token_cancelled(&cancel_token),
