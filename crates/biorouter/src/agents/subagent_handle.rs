@@ -992,7 +992,11 @@ pub fn stop_delegated_children_except(
     )
 }
 
-fn stop_children_with(
+/// [`stop_delegated_children`] and [`stop_delegated_children_except`] with the
+/// daemon's services passed in rather than read from the installed ones: for a
+/// caller that holds its own, such as a test of the daemon's turn runner.
+/// `None` stops only what the handles reach in process.
+pub fn stop_children_with(
     parent_session_id: &str,
     except_child_session_id: Option<&str>,
     cause: &ChildStopCause,
@@ -1077,6 +1081,29 @@ pub fn stop_child_turn(
         },
         None => ChildTurnStop::NoDaemon,
     }
+}
+
+/// Why the chat that started `child_session_id` stopped the later turn it is
+/// running, when it did: a turn the daemon runs after the delegated run
+/// finished (the person typed into the subagent's tab, or the chat that
+/// started it sent it a prompt).
+///
+/// [`stop_delegated_children`] records the cause on the handle and cancels
+/// such a turn through the daemon, which leaves the handle's own token alone,
+/// so the delegated run's completion never reads it. The daemon's turn runner
+/// asks here when a cancelled turn ends, to say why in the turn's result and in
+/// the subagent's own chat. A handle whose delegated run is still in flight
+/// answers nothing: that run's completion reads the cause itself, and two
+/// readers would store the notice twice. A cause recorded for earlier work is
+/// gone by now, because the turn's start cleared it ([`begin_child_turn`],
+/// [`admit_child_turn`]).
+pub fn child_turn_stop_cause(child_session_id: &str) -> Option<ChildStopCause> {
+    HANDLES
+        .lock()
+        .expect("subagent handle registry poisoned")
+        .iter()
+        .filter(|handle| handle.child_session_id == child_session_id && !handle.is_running())
+        .find_map(|handle| handle.stop_cause())
 }
 
 pub fn record_child_turn_terminal(child_session_id: &str, result: SubagentResult) {
@@ -2919,6 +2946,43 @@ mod tests {
 
         assert!(stopped.is_empty(), "{stopped:?}");
         assert_eq!(later.stop_cause(), None);
+    }
+
+    /// Item B, a later turn: the daemon's turn runner reads why the chat that
+    /// started the subagent stopped the turn, which the cascade stopped through
+    /// the daemon and so never tripped the handle's own token. A delegated run
+    /// still in flight answers nothing, because its own completion says why,
+    /// and the next turn starts with no reason.
+    #[test]
+    fn a_later_turn_stopped_with_its_parent_reads_why() {
+        let parent = "p06-later-reads-parent";
+        let running = child_of(parent, "p06-later-reads-running", "running");
+        let later = child_of(parent, "p06-later-reads-later", "continued");
+        begin_child_turn(&later.child_session_id);
+        later.complete(done("delegated run"));
+        assert!(admit_child_turn(&later.child_session_id));
+        let daemon = FakeDaemon::with_active(&["p06-later-reads-later"]);
+        let cause = monitor_cause("budget");
+
+        let stopped = stop_children_with(parent, None, &cause, Some(&daemon));
+
+        assert_eq!(stopped.len(), 2, "{stopped:?}");
+        assert!(
+            !later.is_cancelled(),
+            "the later turn stops through the daemon"
+        );
+        assert_eq!(child_turn_stop_cause("p06-later-reads-later"), Some(cause));
+        assert_eq!(
+            running.stop_cause(),
+            Some(monitor_cause("budget")),
+            "the delegated run's completion reads it"
+        );
+        assert_eq!(child_turn_stop_cause("p06-later-reads-running"), None);
+        assert_eq!(child_turn_stop_cause("p06-later-reads-nobody"), None);
+
+        begin_child_turn(&later.child_session_id);
+        assert_eq!(child_turn_stop_cause("p06-later-reads-later"), None);
+        running.complete(done("cleanup"));
     }
 
     /// The per-child step `workspace_close` takes: a delegated run through its

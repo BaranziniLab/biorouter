@@ -82,6 +82,7 @@ import {
   parseDecisionRecord,
   parseDecisionSettings,
   parsePhaseGateSnapshot,
+  phaseGateState,
   parseQuestion,
   parseSessionDecisionSummary,
   questionToWire,
@@ -91,6 +92,7 @@ import {
   thresholdOnOption,
   thresholdSummary,
   type DecisionSettings,
+  type PhaseGateState,
 } from './sessionDecisions';
 
 const RS = (...parts: string[]) =>
@@ -858,6 +860,75 @@ describe('the summary rows: one per source, never one per call', () => {
     const rows = decisionSourceRows(summary, enabled);
     expect(rows.find((row) => row.key === 'monitor:form')!.state).toBe('fired');
     expect(rows.find((row) => row.key === 'monitor:idle')!.state).toBe('error');
+  });
+
+  it('names a gate row as the phase chip names it: the person first, then a phase that waits', () => {
+    // Three calls, all failed: what the gate itself last said.
+    const summary = parseSessionDecisionSummary({
+      total: 3,
+      aggregates: [
+        {
+          origin: 'gate',
+          originId: 'verify',
+          label: 'Check',
+          count: 3,
+          passed: 0,
+          failed: 3,
+          errors: 0,
+          lastAt: '2026-11-04T11:05:00Z',
+          lastAnswer: 'no',
+          lastPassProbability: 0.62,
+        },
+      ],
+      recentTurns: [],
+    })!;
+    const gateRow = (wire: Record<string, unknown>) => {
+      const gate = parsePhaseGateSnapshot({
+        threshold: 0.8,
+        attempts: 3,
+        maxAttempts: 3,
+        lastPassed: false,
+        lastMinP: 0.62,
+        blocked: false,
+        ...wire,
+      })!;
+      const rows = decisionSourceRows(summary, null, {
+        gates: [{ phaseId: 'verify', title: 'Check the numbers', gate }],
+      });
+      return { row: rows.find((entry) => entry.key === 'gate:verify')!, gate };
+    };
+    const cases: [Record<string, unknown>, PhaseGateState][] = [
+      // The person passed or skipped a gate that had failed.
+      [{ personDecision: 'pass' }, 'passed'],
+      [{ personDecision: 'skip' }, 'skipped'],
+      // The agent marked the phase blocked; the gate itself is not.
+      [{ needsPerson: true }, 'blocked'],
+      [{ blocked: true, needsPerson: true }, 'blocked'],
+      [{ lastPassed: true, lastMinP: 0.91 }, 'passed'],
+      [{}, 'failed'],
+    ];
+    for (const [wire, state] of cases) {
+      const { row, gate } = gateRow(wire);
+      expect(row.state, JSON.stringify(wire)).toBe(state);
+      expect(row.state, JSON.stringify(wire)).toBe(phaseGateState(gate));
+    }
+    // The row's words still say what the gate itself last decided.
+    expect(gateRow({ personDecision: 'pass' }).row.gateVerdict).toBe('failed');
+    expect(gateRow({ needsPerson: true }).row.gateVerdict).toBe('failed');
+    expect(gateRow({ blocked: true, needsPerson: true }).row.gateVerdict).toBe('blocked');
+    // A gate that has decided nothing yet says what its calls say.
+    expect(phaseGateState(gateRow({ lastPassed: null, lastMinP: null }).gate)).toBe('pending');
+    expect(gateRow({ lastPassed: null, lastMinP: null }).row.state).toBe('failed');
+    // Rows that are not gates carry no verdict of a gate.
+    const tool = decisionSourceRows(
+      parseSessionDecisionSummary({
+        total: 1,
+        aggregates: [{ origin: 'tool', count: 1, passed: 1, failed: 0, errors: 0 }],
+        recentTurns: [],
+      }),
+      null
+    );
+    expect(tool[0].gateVerdict).toBeNull();
   });
 });
 

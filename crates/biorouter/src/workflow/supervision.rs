@@ -374,7 +374,10 @@ fn template_in(text: &str) -> Option<String> {
 /// The top-level keys a person reaching for these blocks is likely to write,
 /// and where each belongs. `Workflow` keeps unknown keys out of its strict
 /// parse (an existing file may carry extra keys), so without this a
-/// `monitors:` at the top would be dropped without a word.
+/// `monitors:` at the top would be dropped without a word. Two readers ask
+/// this table: [`refuse_misplaced_keys`] on a file's parsed value, and
+/// `Workflow`'s own `Deserialize` (through [`refuse_misplaced_key`]) at every
+/// other door, such as an HTTP body or a deeplink.
 const MISPLACED_KEYS: &[(&str, &str)] = &[
     ("monitors", "monitors go under `decision_settings.monitors`"),
     ("monitor", "monitors go under `decision_settings.monitors`"),
@@ -410,6 +413,19 @@ pub fn refuse_misplaced_keys(value: &serde_yaml::Value) -> Result<(), String> {
     match MISPLACED_KEYS
         .iter()
         .find(|(key, _)| map.contains_key(*key))
+    {
+        Some((key, _)) => refuse_misplaced_key(key),
+        None => Ok(()),
+    }
+}
+
+/// Refuse one top-level key if it belongs inside `decision_settings` or
+/// `orchestration_plan`, with the same sentence [`refuse_misplaced_keys`]
+/// gives.
+pub(crate) fn refuse_misplaced_key(key: &str) -> Result<(), String> {
+    match MISPLACED_KEYS
+        .iter()
+        .find(|(misplaced, _)| *misplaced == key)
     {
         Some((key, place)) => Err(format!(
             "`{key}` is not a top-level workflow field: {place}."

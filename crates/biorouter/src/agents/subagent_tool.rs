@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::agents::subagent_handle::{self, BackgroundSubagent};
-use crate::agents::subagent_handler::run_complete_subagent_task;
+use crate::agents::subagent_handler::{run_complete_subagent_task_outcome, SubagentRunOutcome};
 use crate::agents::subagent_result::SubagentResult;
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::tool_execution::ToolCallResult;
@@ -1871,18 +1871,25 @@ fn monitor_owner_words(monitor: &MonitorCriterion, parent_session_id: &str) -> S
 /// ([`subagent_handle::stop_delegated_children`] records the cause before it
 /// trips the token).
 ///
-/// Only a run whose token was cancelled is touched, and only when a cause was
+/// Only a run that was cancelled is touched, and only when a cause was
 /// recorded: a `workspace_close` or a Stop in the child's own tab records
 /// none, and those results already say they were cancelled. The notice is
 /// user-only, so a later turn in the child does not read it as context, and it
 /// is published only once it is stored.
+///
+/// `run_was_cancelled` is the run's own verdict ([`SubagentRunOutcome`]), not
+/// the token read now. The handle reads as running until its result is
+/// published, so a stop that lands after the run finished on its own still
+/// records its cause and trips the token, and the token alone would make a
+/// completed result say it was stopped.
 async fn note_child_stop_cause(
     session_manager: &crate::session::SessionManager,
     handle: &BackgroundSubagent,
+    run_was_cancelled: bool,
     result: &mut SubagentResult,
 ) {
     let child_session_id = handle.child_session_id.as_str();
-    if !handle.is_cancelled() {
+    if !run_was_cancelled || !handle.is_cancelled() {
         return;
     }
     let Some(cause) = handle.stop_cause() else {
@@ -2151,7 +2158,7 @@ async fn run_blocking_child(
     // run, or a failure — all as structured content — so this always returns a
     // CallToolResult (with `is_error` set) rather than a bare tool error.
     let child_session_id = session.id.clone();
-    let result = run_complete_subagent_task(
+    let result = run_complete_subagent_task_outcome(
         config,
         workflow,
         task_config,
@@ -2159,7 +2166,8 @@ async fn run_blocking_child(
         session.id,
         cancellation_token,
     )
-    .await;
+    .await
+    .result;
     record_child_outcome(&session_manager, &child_session_id, &result).await;
 
     let mut call_result = result.into_call_tool_result();
@@ -2568,14 +2576,15 @@ async fn spawn_background_subagent(
                 Ok(permit) => permit,
                 Err(e) => {
                     let mut result = SubagentResult::from_error(e.message.to_string());
-                    if cancel.is_cancelled() {
+                    let cancelled = cancel.is_cancelled();
+                    if cancelled {
                         result.mark_cancelled();
                     }
-                    return result;
+                    return SubagentRunOutcome { result, cancelled };
                 }
             };
 
-            run_complete_subagent_task(
+            run_complete_subagent_task_outcome(
                 config,
                 workflow,
                 task_config,
@@ -2587,9 +2596,15 @@ async fn spawn_background_subagent(
         })
         .catch_unwind()
         .await;
-        let mut result = match outcome {
-            Ok(result) => result,
-            Err(_) => SubagentResult::from_error("the background subagent task panicked"),
+        // `run_was_cancelled` is settled here, with the result: a stop that
+        // trips the token from now until the result is published finds a run
+        // that already ended on its own, and must not be read as its reason.
+        let (mut result, run_was_cancelled) = match outcome {
+            Ok(SubagentRunOutcome { result, cancelled }) => (result, cancelled),
+            Err(_) => (
+                SubagentResult::from_error("the background subagent task panicked"),
+                false,
+            ),
         };
         let pending_inputs = completion_handle.finish_initial_run_and_take_pending();
         if !pending_inputs.is_empty() {
@@ -2612,7 +2627,13 @@ async fn spawn_background_subagent(
         // Why the chat that started it stopped it, when it did: before the
         // outcome is written, so the record, the handle and the child's own
         // chat all say the same thing.
-        note_child_stop_cause(&completion_session_manager, &completion_handle, &mut result).await;
+        note_child_stop_cause(
+            &completion_session_manager,
+            &completion_handle,
+            run_was_cancelled,
+            &mut result,
+        )
+        .await;
         // The durable outcome is written BEFORE the handle publishes, so anyone
         // woken by the completion (a `workspace_watch`, a panel poll) and then
         // reading the child's row finds the record already there. Every exit
@@ -9033,6 +9054,223 @@ decision_settings:
         assert_eq!(published.id, notice.id);
 
         drop(held);
+        wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
+    }
+
+    /// The two ends of [`HoldRunEndServices`]'s hold: told which session's run
+    /// has ended, and waiting to be let go.
+    struct RunEndHold {
+        ended: std::sync::Mutex<std::sync::mpsc::Sender<String>>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    /// The turn lease a child's run holds is dropped as the run returns: after
+    /// the run has decided its outcome and before the detached completion
+    /// publishes it. Holding that drop holds the child exactly there.
+    struct HeldLease {
+        hold: std::sync::Arc<RunEndHold>,
+        session_id: String,
+    }
+
+    impl crate::workspace_services::WorkspaceTurnLease for HeldLease {
+        fn turn_id(&self) -> &str {
+            "turn-held-at-run-end"
+        }
+    }
+
+    impl Drop for HeldLease {
+        fn drop(&mut self) {
+            let _ = self
+                .hold
+                .ended
+                .lock()
+                .unwrap()
+                .send(std::mem::take(&mut self.session_id));
+            // Bounded, so a test that fails before letting go cannot wedge a
+            // runtime worker for the rest of the suite.
+            let _ = self
+                .hold
+                .release
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(20));
+        }
+    }
+
+    /// A daemon with nothing running and no window, whose first turn lease
+    /// holds that run at its end (see [`HeldLease`]). Later leases hold
+    /// nothing.
+    struct HoldRunEndServices {
+        hold: std::sync::Arc<RunEndHold>,
+        claimed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::workspace_services::WorkspaceServices for HoldRunEndServices {
+        fn gui_attached(&self) -> bool {
+            false
+        }
+        fn layout_snapshot(&self) -> Option<Value> {
+            None
+        }
+        fn is_turn_active(&self, _session_id: &str) -> bool {
+            false
+        }
+        fn cancel_turn(&self, _session_id: &str) -> Option<String> {
+            None
+        }
+        fn begin_turn(
+            &self,
+            session_id: &str,
+            _cancel: CancellationToken,
+        ) -> Result<Box<dyn crate::workspace_services::WorkspaceTurnLease>, String> {
+            if self.claimed.swap(true, Ordering::SeqCst) {
+                return Ok(Box::new(crate::workspace_services::NullLease));
+            }
+            Ok(Box::new(HeldLease {
+                hold: self.hold.clone(),
+                session_id: session_id.to_string(),
+            }))
+        }
+        async fn stop_agent(&self, session_id: &str) -> Result<(), String> {
+            crate::workspace_services::WorkspaceServices::stop_agent(
+                &crate::workspace_services::NullServices,
+                session_id,
+            )
+            .await
+        }
+        async fn start_detached_turn(
+            &self,
+            session_id: &str,
+            message: crate::conversation::message::Message,
+        ) -> Result<String, String> {
+            crate::workspace_services::WorkspaceServices::start_detached_turn(
+                &crate::workspace_services::NullServices,
+                session_id,
+                message,
+            )
+            .await
+        }
+        async fn start_session(
+            &self,
+            _working_dir: PathBuf,
+            _extensions: Option<Vec<String>>,
+            _knowledge_bases: Vec<String>,
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<String, String> {
+            Err("a subagent's run starts no other chat".into())
+        }
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<crate::workspace_services::KbSelectionView, String> {
+            Ok(Default::default())
+        }
+        fn knowledge_selection(
+            &self,
+            _session_id: &str,
+        ) -> crate::workspace_services::KbSelectionView {
+            Default::default()
+        }
+        async fn gui_command(&self, _frame: Value, _wait_result: bool) -> Result<Value, String> {
+            Err("no GUI attached".into())
+        }
+    }
+
+    /// A child whose run finished on its own keeps its own result when the
+    /// chat that started it is stopped before that result is published.
+    ///
+    /// The handle reads as running until the result is published, so the stop
+    /// still records its cause and trips the token in that gap. The run had
+    /// already decided its outcome (completed, not cancelled), so neither its
+    /// result nor its chat may say it was stopped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn a_child_that_finished_before_the_stop_keeps_its_own_result() {
+        use crate::agents::subagent_handle::ChildStopCause;
+        use crate::agents::subagent_result::SubagentStatus;
+
+        let _services = ClearServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let hold = std::sync::Arc::new(RunEndHold {
+            ended: std::sync::Mutex::new(ended_tx),
+            release: std::sync::Mutex::new(release_rx),
+        });
+        crate::workspace_services::set_for_tests(Some(std::sync::Arc::new(HoldRunEndServices {
+            hold,
+            claimed: std::sync::atomic::AtomicBool::new(false),
+        })));
+        let fx = spawn_fixture(SessionClassification::Public).await;
+        let started = fx
+            .spawn(
+                json!({ "instructions": "Fix the tab handling in lexer.rs.", "visible": false }),
+                HashMap::new(),
+            )
+            .await
+            .expect("the spawn starts");
+        let child = child_of(&started);
+        let handle = fx.handle(&child);
+
+        let ended = tokio::task::spawn_blocking(move || {
+            ended_rx.recv_timeout(std::time::Duration::from_secs(20))
+        })
+        .await
+        .unwrap()
+        .expect("the child's run ends on its own");
+        assert_eq!(ended, child, "the held run is the child's");
+        assert!(handle.is_running(), "its result is not published yet");
+
+        subagent_handle::stop_delegated_children(&fx.parent, ChildStopCause::ParentStopped);
+        assert!(
+            handle.is_cancelled() && handle.stop_cause() == Some(ChildStopCause::ParentStopped),
+            "the stop reached the unpublished run, so this test covers the gap"
+        );
+        release_tx.send(()).unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            handle.wait_until_complete(),
+        )
+        .await
+        .expect("the child's result is published");
+        let sentence = "Stopped because the person stopped the chat that started this subagent.";
+        assert_eq!(
+            result.status,
+            SubagentStatus::Completed,
+            "{}",
+            result.summary
+        );
+        assert!(!result.summary.contains(sentence), "{}", result.summary);
+        assert!(
+            result
+                .summary
+                .contains("Fixed the tab handling in lexer.rs."),
+            "{}",
+            result.summary
+        );
+
+        let conversation = fx
+            .sm
+            .get_session(&child, true)
+            .await
+            .unwrap()
+            .conversation
+            .expect("the child's chat");
+        assert!(
+            !conversation.messages().iter().any(|message| {
+                message.content.iter().any(|content| {
+                    content
+                        .as_system_notification()
+                        .is_some_and(|n| n.msg == sentence)
+                })
+            }),
+            "no stop notice is stored in the child's chat"
+        );
+
         wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
     }
 

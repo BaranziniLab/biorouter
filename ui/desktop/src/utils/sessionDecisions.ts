@@ -374,6 +374,25 @@ export interface PhaseGateSnapshot {
   holds: string[];
 }
 
+/** A phase gate's state, as every surface that draws one names it. */
+export type PhaseGateState = 'blocked' | 'passed' | 'failed' | 'pending' | 'skipped';
+
+/**
+ * The ONE rule for a gate's state: the phase row's chip and the Decisions
+ * section's gate row both read it, so the two never name one gate differently.
+ * The person's pass or skip is the gate's state from then on, standing or not;
+ * then a phase that waits for the person (out of attempts, or marked blocked)
+ * reads as blocked; then the gate's own last verdict.
+ */
+export function phaseGateState(gate: PhaseGateSnapshot): PhaseGateState {
+  if (gate.personDecision === 'pass') return 'passed';
+  if (gate.personDecision === 'skip') return 'skipped';
+  if (gate.blocked || gate.needsPerson) return 'blocked';
+  if (gate.lastPassed === true) return 'passed';
+  if (gate.lastPassed === false) return 'failed';
+  return 'pending';
+}
+
 /** Where an install stands (`DecisionInstallState` in `routes/decisions.rs`). */
 export const DECISION_INSTALL_STATES = ['downloading', 'verifying', 'installed', 'failed'] as const;
 export type DecisionInstallState = (typeof DECISION_INSTALL_STATES)[number];
@@ -1360,7 +1379,8 @@ export type DecisionSourceState =
   | 'done'
   | 'passed'
   | 'failed'
-  | 'blocked';
+  | 'blocked'
+  | 'skipped';
 
 export interface DecisionSourceRow {
   /** `monitor:<id>`, `tool`, `gate:<phase id>`, `chat`, `adhoc`. */
@@ -1377,6 +1397,13 @@ export interface DecisionSourceRow {
   lastAnswer: string | null;
   lastPassProbability: number | null;
   state: DecisionSourceState;
+  /**
+   * A gate row's state from the gate's own evaluations alone, before the
+   * person's pass or skip and a phase that waits for them: what the row's words
+   * (`0.62 < 0.80 · attempt 3 of 3`) say after the person's. `null` on any other
+   * row.
+   */
+  gateVerdict: DecisionSourceState | null;
   /** A monitor's or gate's threshold, for the bar's marker. */
   threshold: number | null;
   /** A gate's attempt line: `attempt 2 of 3`. */
@@ -1451,6 +1478,7 @@ export function decisionSourceRows(
         lastAnswer: null,
         lastPassProbability: null,
         state: 'done',
+        gateVerdict: null,
         threshold: null,
         attempts: null,
         rank: SOURCE_ORDER.indexOf(origin) * 100_000 + within,
@@ -1505,12 +1533,19 @@ export function decisionSourceRows(
         row.attempts = { attempts: gate.attempts, maxAttempts: gate.maxAttempts };
         if (row.lastPassProbability === null) row.lastPassProbability = gate.lastMinP;
       }
-      if (gate?.blocked) row.state = 'blocked';
-      else if (gate?.lastPassed === true) row.state = 'passed';
-      else if (gate?.lastPassed === false) row.state = 'failed';
-      else if (lastFailed) row.state = 'error';
-      else if (row.count === 0) row.state = 'pending';
-      else row.state = row.failed > 0 ? 'failed' : 'passed';
+      let verdict: DecisionSourceState;
+      if (gate?.blocked) verdict = 'blocked';
+      else if (gate?.lastPassed === true) verdict = 'passed';
+      else if (gate?.lastPassed === false) verdict = 'failed';
+      else if (lastFailed) verdict = 'error';
+      else if (row.count === 0) verdict = 'pending';
+      else verdict = row.failed > 0 ? 'failed' : 'passed';
+      row.gateVerdict = verdict;
+      // The state is the chip's (`phaseGateState`): a person's pass or skip, and
+      // a phase that waits for them, come before the gate's own verdict. Only a
+      // gate that has decided nothing yet falls back to what its calls say.
+      const shared = gate ? phaseGateState(gate) : 'pending';
+      row.state = shared === 'pending' ? verdict : shared;
     } else {
       row.state = lastFailed ? 'error' : 'done';
     }

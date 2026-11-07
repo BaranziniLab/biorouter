@@ -1134,9 +1134,16 @@ impl DecisionService {
                      clear BIOROUTER_DECISION_PROVIDER.",
                     other.model_ref().label()
                 ),
-                None => format!(
-                    "{reason} No decision model on this computer is installed. {INSTALL_ADVICE}"
-                ),
+                // A local server that is not answering lists none of the
+                // models installed there, so "none is installed" would be
+                // untrue: its hint is said instead, as `no_model_error` does.
+                None => match self.source.unavailable_hint().await {
+                    Some(hint) => format!("{reason} {hint}"),
+                    None => format!(
+                        "{reason} No decision model on this computer is installed. \
+                         {INSTALL_ADVICE}"
+                    ),
+                },
             };
             if let Some(unloadable) = unloadable {
                 text = format!("{text} {unloadable}");
@@ -5324,6 +5331,57 @@ mod tests {
         );
         assert_eq!(svc.model_entry_for(Some(&chat), None).await, None);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+        crate::crew::remove_test_scope(&manager, &id).await;
+    }
+
+    /// With Ollama stopped, a model already pulled there is not listed, so a
+    /// Crew chat that sees only hosted models is told Ollama is not answering
+    /// and to start it, never that no model is installed or to install one.
+    #[tokio::test]
+    async fn a_crew_chat_with_ollama_stopped_is_told_to_start_it_not_to_install() {
+        const HINT: &str = "Ollama is not answering at http://127.0.0.1:11434/, so no local \
+                            decision model could be listed. Start Ollama, then try again.";
+        struct OllamaDown(Source);
+        #[async_trait]
+        impl DecisionModelSource for OllamaDown {
+            async fn list(&self) -> Vec<DecisionModelEntry> {
+                self.0.list().await
+            }
+            async fn open(
+                &self,
+                wanted: &DecisionModelRef,
+            ) -> DecisionResult<Arc<dyn DecisionModel>> {
+                self.0.open(wanted).await
+            }
+            async fn unavailable_hint(&self) -> Option<String> {
+                Some(HINT.into())
+            }
+        }
+        let id = crew_session_id();
+        let manager = crate::crew::install_test_scope(&id, None).await;
+        crate::crew::stand_test_scope(&manager, &id).await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let source = OllamaDown(Source {
+            entries: vec![baseten()],
+            calls: calls.clone(),
+            delay: Duration::ZERO,
+        });
+        let svc = DecisionService::new(Arc::new(source))
+            .with_use_gate(Arc::new(CrewUseGate))
+            .with_default_model(None);
+        let chat = public_chat(&id);
+        let err = svc
+            .decide(Some(&chat), None, &request("x", None))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            DecisionError::Refused(format!("{CREW_SCOPED_REFUSAL} {HINT}"))
+        );
+        let text = err.to_string();
+        assert!(!text.contains("is installed"), "{text}");
+        assert!(!text.contains(INSTALL_ADVICE), "{text}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing reached Baseten");
         crate::crew::remove_test_scope(&manager, &id).await;
     }
 

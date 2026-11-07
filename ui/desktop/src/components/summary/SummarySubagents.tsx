@@ -68,7 +68,12 @@ import {
   type SubagentRow,
   type SubagentRunStatus,
 } from '../../utils/sessionSubagents';
-import { formatProbability, type PhaseGateSnapshot } from '../../utils/sessionDecisions';
+import {
+  formatProbability,
+  phaseGateState,
+  type PhaseGateSnapshot,
+  type PhaseGateState,
+} from '../../utils/sessionDecisions';
 import { summaryCopy } from './copy';
 import './summaryAgents.css';
 import './summaryDecisions.css';
@@ -692,19 +697,7 @@ export function gateChipText(
   return gateCopy.pending(t);
 }
 
-function gateState(
-  gate: PhaseGateSnapshot
-): 'blocked' | 'passed' | 'failed' | 'pending' | 'skipped' {
-  // The person's pass or skip is the gate's state from then on, standing or not.
-  if (gate.personDecision === 'pass') return 'passed';
-  if (gate.personDecision === 'skip') return 'skipped';
-  if (gate.blocked || gate.needsPerson) return 'blocked';
-  if (gate.lastPassed === true) return 'passed';
-  if (gate.lastPassed === false) return 'failed';
-  return 'pending';
-}
-
-const GATE_ICONS: Record<ReturnType<typeof gateState>, Glyph> = {
+const GATE_ICONS: Record<PhaseGateState, Glyph> = {
   pending: CircleIcon,
   passed: Check,
   failed: X,
@@ -721,7 +714,8 @@ const GATE_ICONS: Record<ReturnType<typeof gateState>, Glyph> = {
 function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowControls }) {
   const gate = phase.gate;
   if (!gate) return null;
-  const state = gateState(gate);
+  // The Decisions section's gate row reads the same rule.
+  const state = phaseGateState(gate);
   const Icon = GATE_ICONS[state];
   const text = gateChipText(gate, phase);
   const content = (

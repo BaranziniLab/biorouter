@@ -472,6 +472,19 @@ async fn load_granted_extensions(
     loaded
 }
 
+/// How a subagent run ended: its result, and whether its cancellation token had
+/// tripped when the run settled that result, which is exactly when the result
+/// was marked cancelled ([`SubagentResult::mark_cancelled`]).
+///
+/// Read from the run, never from the token afterwards. A stop can trip the
+/// token after the run has finished on its own but before its result is
+/// published (the handle reads as running until then), and that result must
+/// not then say the run was stopped.
+pub(crate) struct SubagentRunOutcome {
+    pub(crate) result: SubagentResult,
+    pub(crate) cancelled: bool,
+}
+
 /// Standalone function to run a complete subagent task, returning a structured
 /// result envelope. A run that fails, or one that ends on a tool call without a
 /// final text message, still yields a meaningful `SubagentResult` (BR-40) —
@@ -484,6 +497,29 @@ pub async fn run_complete_subagent_task(
     session_id: String,
     cancellation_token: Option<CancellationToken>,
 ) -> SubagentResult {
+    run_complete_subagent_task_outcome(
+        config,
+        workflow,
+        task_config,
+        return_last_only,
+        session_id,
+        cancellation_token,
+    )
+    .await
+    .result
+}
+
+/// [`run_complete_subagent_task`], also saying whether the run was cancelled
+/// ([`SubagentRunOutcome`]). The spawn paths call this one directly, so the
+/// child's run is polled no deeper on the parent's stack than before.
+pub(crate) async fn run_complete_subagent_task_outcome(
+    config: AgentConfig,
+    workflow: Workflow,
+    task_config: TaskConfig,
+    return_last_only: bool,
+    session_id: String,
+    cancellation_token: Option<CancellationToken>,
+) -> SubagentRunOutcome {
     let session_manager = config.session_manager.clone();
 
     // BR-71 reconciliation #2 — one token per run, addressable from everywhere:
@@ -504,9 +540,12 @@ pub async fn run_complete_subagent_task(
             Some(services) => match services.begin_turn(&session_id, run_token.clone()) {
                 Ok(lease) => Some(lease),
                 Err(conflict) => {
-                    return SubagentResult::from_error(format!(
-                        "subagent session is unexpectedly busy: {conflict}"
-                    ));
+                    return SubagentRunOutcome {
+                        result: SubagentResult::from_error(format!(
+                            "subagent session is unexpectedly busy: {conflict}"
+                        )),
+                        cancelled: false,
+                    };
                 }
             },
             None => None,
@@ -560,7 +599,8 @@ pub async fn run_complete_subagent_task(
         Ok(v) => v,
         Err(e) => {
             let mut result = SubagentResult::from_error(format!("Failed to execute task: {e}"));
-            if run_token.is_cancelled() {
+            let cancelled = run_token.is_cancelled();
+            if cancelled {
                 result.mark_cancelled();
             }
             result.human_intervened = session_manager
@@ -571,7 +611,7 @@ pub async fn run_complete_subagent_task(
                 .as_ref()
                 .is_some_and(super::subagent_result::conversation_has_user_direct);
             result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
-            return result;
+            return SubagentRunOutcome { result, cancelled };
         }
     };
 
@@ -587,7 +627,8 @@ pub async fn run_complete_subagent_task(
         Some((code, message)) => SubagentResult::from_aborted_turn(&transcript, &code, message),
         None => SubagentResult::from_conversation(&transcript, final_output, return_last_only),
     };
-    if run_token.is_cancelled() {
+    let cancelled = run_token.is_cancelled();
+    if cancelled {
         result.mark_cancelled();
     }
     // Item A: a monitor on the child that stopped its run reads as that stop,
@@ -602,7 +643,7 @@ pub async fn run_complete_subagent_task(
     );
     result.human_intervened = super::subagent_result::conversation_has_user_direct(&messages);
     result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
-    result
+    SubagentRunOutcome { result, cancelled }
 }
 
 /// A short, human-readable label for the active-work view: the subagent's task

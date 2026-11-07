@@ -239,6 +239,10 @@ describe('a gate row and the person', () => {
     const row = () => screen.getByTestId('decision-source-gate:verify');
     expect(row()).toHaveTextContent('passed by you · 0.62 < 0.80 · attempt 3 of 3');
     expect(row().getAttribute('aria-label')).toMatch(/, passed by you · 0\.62 < 0\.80/);
+    // The person's pass is the row's state, by shape and in its first word, as
+    // on the phase chip; the gate's own verdict stays in the words after it.
+    expect(row()).toHaveAttribute('data-state', 'passed');
+    expect(row().getAttribute('aria-label')).toMatch(/^Passed, Check the numbers, /);
     const redraw = (gates: ReturnType<typeof personGate>[]) =>
       rerender(
         <SummaryDecisions
@@ -253,13 +257,117 @@ describe('a gate row and the person', () => {
         />
       );
     redraw([personGate('skip', 'skipped')]);
-    expect(row()).toHaveTextContent('skipped by you');
+    expect(row()).toHaveTextContent('skipped by you · 0.62 < 0.80 · attempt 3 of 3');
+    expect(row()).toHaveAttribute('data-state', 'skipped');
+    expect(row().getAttribute('aria-label')).toMatch(/^Skipped, Check the numbers, /);
     // Recorded while the phase's subagents still work: it stands.
     redraw([personGate('pass', 'in_progress')]);
     expect(row()).toHaveTextContent('your pass stands');
+    expect(row()).toHaveAttribute('data-state', 'passed');
     redraw([personGate(null, 'in_progress')]);
     expect(row()).not.toHaveTextContent(/by you|stands/);
     expect(row()).toHaveTextContent('0.62 < 0.80 · attempt 3 of 3');
+    expect(row()).toHaveAttribute('data-state', 'failed');
+  });
+
+  it('says a phase that waits for the person is blocked, as its chip does', () => {
+    // The agent marked the phase blocked: the gate itself is not, and has an attempt left.
+    draw({
+      gates: [
+        {
+          phaseId: 'verify',
+          title: 'Check the numbers',
+          status: 'blocked',
+          gate: parsePhaseGateSnapshot({
+            threshold: 0.8,
+            attempts: 2,
+            maxAttempts: 3,
+            lastPassed: false,
+            lastMinP: 0.62,
+            blocked: false,
+            needsPerson: true,
+          })!,
+        },
+      ],
+    });
+    const row = screen.getByTestId('decision-source-gate:verify');
+    expect(row).toHaveAttribute('data-state', 'blocked');
+    expect(row).toHaveTextContent('needs you · 0.62 < 0.80 · attempt 2 of 3');
+    expect(row.getAttribute('aria-label')).toMatch(/^Blocked, Check the numbers, /);
+  });
+});
+
+describe('a gate’s row and its phase chip', () => {
+  const gateWire = {
+    threshold: 0.8,
+    questionCount: 1,
+    attempts: 3,
+    maxAttempts: 3,
+    lastPassed: false,
+    lastMinP: 0.62,
+    blocked: false,
+  };
+
+  it('name one gate by the same state, whatever the person did', () => {
+    const cases: Record<string, unknown>[] = [
+      {},
+      { personDecision: 'pass' },
+      { personDecision: 'skip' },
+      { needsPerson: true },
+      { blocked: true, needsPerson: true },
+      { lastPassed: true, lastMinP: 0.91 },
+    ];
+    for (const overrides of cases) {
+      const data = parseSessionSubagents(
+        wireSubagents([wireRow({ sessionId: 'c1', phaseId: 'verify' })], {
+          title: 'Plan',
+          goal: null,
+          revision: 1,
+          phases: [
+            wirePhase({
+              id: 'verify',
+              title: 'Check the numbers',
+              kind: 'verification',
+              status: 'in_progress',
+              agentIds: ['c1'],
+              gate: { ...gateWire, ...overrides },
+            }),
+          ],
+        })
+      )!;
+      // As BaseChat hands the plan's gates to the Decisions section.
+      const gates = data.plan!.phases.flatMap((phase) =>
+        phase.gate
+          ? [{ phaseId: phase.id, title: phase.title, gate: phase.gate, status: phase.status }]
+          : []
+      );
+      const { unmount } = render(
+        <>
+          <SummarySubagents
+            data={data}
+            loading={false}
+            error={false}
+            refresh={() => {}}
+            onOpen={() => {}}
+            onOpenGate={() => {}}
+          />
+          <SummaryDecisions
+            sessionId="s1"
+            data={{ summary: heavySummary(), settings: settings([monitor()]) }}
+            loading={false}
+            error={false}
+            refresh={() => {}}
+            onOpenHistory={() => {}}
+            onOpenMonitors={() => {}}
+            gates={gates}
+          />
+        </>
+      );
+      const chip = screen.getByTestId('phase-gate-verify').getAttribute('data-state');
+      const row = screen.getByTestId('decision-source-gate:verify').getAttribute('data-state');
+      expect(row, JSON.stringify(overrides)).toBe(chip);
+      unmount();
+    }
   });
 });
 

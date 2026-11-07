@@ -17,6 +17,7 @@ use utoipa::ToSchema;
 
 pub mod build_workflow;
 pub mod local_workflows;
+mod misplaced_keys;
 pub mod privacy;
 pub mod read_workflow_file_content;
 pub mod runtime;
@@ -34,7 +35,16 @@ fn default_version() -> String {
     "1.0.0".to_string()
 }
 
+// ⚠ `Serialize` and `Deserialize` are derived as inherent functions
+// (`remote = "Self"`) and the trait impls below wrap them, so every door that
+// deserializes a `Workflow` (an HTTP body, a deeplink, a tool's YAML or JSON,
+// a file) refuses a misplaced top-level key such as `monitors:` instead of
+// dropping it (the `misplaced_keys` module says how). The inherent
+// `Workflow::deserialize` skips that refusal, so nothing but the trait impl
+// calls it. A plain comment, not a doc comment: `ToSchema` would publish a doc
+// comment as the schema's description.
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+#[serde(remote = "Self")]
 pub struct Workflow {
     // Required fields
     #[serde(default = "default_version")]
@@ -108,6 +118,23 @@ pub struct Workflow {
     /// workflow parameters.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub orchestration_plan: Option<WorkflowPlan>,
+}
+
+impl Serialize for Workflow {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // The derived (inherent) serializer: nothing to refuse on the way out.
+        Workflow::serialize(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Workflow {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The derived (inherent) parse, reading through a deserializer that
+        // refuses a top-level key belonging inside `decision_settings` or
+        // `orchestration_plan`. Without it, `{"title": .., "monitors": [..]}`
+        // would parse with the monitors dropped and start unsupervised.
+        Workflow::deserialize(misplaced_keys::RefuseMisplacedKeys(deserializer))
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
@@ -519,6 +546,9 @@ impl Workflow {
                 // refusing it, so the keys that belong inside
                 // `decision_settings` or `orchestration_plan` are refused here,
                 // where they would otherwise be dropped without a word.
+                // `Workflow`'s `Deserialize` refuses them too, at every door;
+                // asking first on the value keeps a file's refusal the plain
+                // sentence, without serde's line and column.
                 if let Some(nested_workflow) = yaml_value.get("workflow") {
                     supervision::refuse_misplaced_keys(nested_workflow)
                         .map_err(anyhow::Error::msg)?;
@@ -1058,6 +1088,172 @@ isGlobal: true"#;
         } else {
             panic!("Expected Stdio extension");
         }
+    }
+
+    /// The monitor a person meant to declare, written one level too high.
+    fn misplaced_monitors_body() -> serde_json::Value {
+        serde_json::json!({
+            "title": "Count",
+            "description": "Count to thirty",
+            "prompt": "Echo the numbers 1 to 30.",
+            "monitors": [{
+                "id": "reached-ten",
+                "name": "Reached ten",
+                "question": {
+                    "instructions": "Has the agent already echoed 10?",
+                    "kind": {"binary": {}}
+                },
+                "threshold": 0.7,
+                "action": "stop"
+            }]
+        })
+    }
+
+    const MISPLACED_MONITORS: &str = "`monitors` is not a top-level workflow field: \
+                                      monitors go under `decision_settings.monitors`.";
+
+    /// `from_content` is one door of several. A workflow also arrives as a JSON
+    /// body (`/agent/start`'s `workflow`, `/workflows/save`, `/workflows/to-yaml`),
+    /// in a deeplink, and as the YAML or JSON a model hands the workflow and
+    /// schedule tools, and each of those deserializes `Workflow` directly. At
+    /// every one a misplaced `monitors`, `phases` or `gates` is refused with
+    /// its place, rather than dropped so the workflow starts unsupervised.
+    #[test]
+    fn misplaced_top_level_keys_are_refused_at_every_door_not_only_files() {
+        // A JSON body read as a workflow on its own.
+        let error = serde_json::from_value::<Workflow>(misplaced_monitors_body())
+            .expect_err("a top-level `monitors` must not be dropped from a JSON workflow")
+            .to_string();
+        assert!(error.starts_with(MISPLACED_MONITORS), "{error}");
+
+        // A JSON body carrying the workflow as a field, as `/agent/start` does.
+        #[derive(Debug, Deserialize)]
+        struct StartRequest {
+            #[serde(default)]
+            #[allow(dead_code)]
+            workflow: Option<Workflow>,
+        }
+        let request = serde_json::json!({ "workflow": misplaced_monitors_body() }).to_string();
+        let error = serde_json::from_str::<StartRequest>(&request)
+            .expect_err("a top-level `monitors` must not be dropped from a request's workflow")
+            .to_string();
+        assert!(error.starts_with(MISPLACED_MONITORS), "{error}");
+
+        // Every misplaced name, in JSON text.
+        for (key, place) in [
+            ("monitor", "`decision_settings.monitors`"),
+            ("gates", "`gate` in one of `orchestration_plan.phases`"),
+            ("phases", "`orchestration_plan.phases`"),
+            ("decisions", "`decision_settings`"),
+            ("decisionSettings", "`decision_settings`"),
+            ("orchestration", "`orchestration_plan`"),
+            ("orchestrationPlan", "`orchestration_plan`"),
+        ] {
+            let text =
+                format!(r#"{{"title": "t", "description": "d", "prompt": "p", "{key}": null}}"#);
+            let error = serde_json::from_str::<Workflow>(&text)
+                .expect_err(key)
+                .to_string();
+            assert!(
+                error.starts_with(&format!("`{key}` is not a top-level workflow field: "))
+                    && error.contains(place),
+                "{key}: {error}"
+            );
+        }
+
+        // YAML text read with serde_yaml directly, as the workflow tool's
+        // `workflow` string and the schedule tool's file are.
+        let error = serde_yaml::from_str::<Workflow>(
+            "title: t\ndescription: d\nprompt: p\nphases:\n  - {id: count, title: Count}\n",
+        )
+        .expect_err("a top-level `phases` must not be dropped from YAML text")
+        .to_string();
+        assert!(
+            error.starts_with(
+                "`phases` is not a top-level workflow field: phases go under \
+                 `orchestration_plan.phases`."
+            ),
+            "{error}"
+        );
+
+        // A deeplink, which says why rather than "failed to decode".
+        use base64::Engine as _;
+        let mut gated = misplaced_monitors_body();
+        let gated_map = gated.as_object_mut().unwrap();
+        gated_map.remove("monitors");
+        gated_map.insert(
+            "gates".to_string(),
+            serde_json::json!({"check": {"questions": {"all": "Done?"}}}),
+        );
+        let link = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_string(&gated).unwrap());
+        match crate::workflow_deeplink::decode(&link) {
+            Err(crate::workflow_deeplink::DecodeError::Unreadable(why)) => assert!(
+                why.starts_with(
+                    "`gates` is not a top-level workflow field: a gate goes on its phase"
+                ),
+                "{why}"
+            ),
+            Err(other) => panic!("refused without saying why: {other}"),
+            Ok(workflow) => panic!(
+                "a deeplink's top-level `gates` was dropped: {:?}",
+                workflow.orchestration_plan
+            ),
+        }
+    }
+
+    /// The refusal looks only at top-level key names. Everything else reads as
+    /// the derived parse read it: an unknown key is still ignored (an existing
+    /// file may carry extra keys), a key named `monitors` or `phases` below the
+    /// top level is not refused, the block in its right place parses in both
+    /// YAML forms, serde_yaml still reads a plain scalar as a string, its
+    /// errors keep their line, and a workflow round-trips through JSON.
+    #[test]
+    fn the_door_check_reads_everything_else_as_the_derived_parse_did() {
+        let mut body = misplaced_monitors_body();
+        let monitors = body.as_object_mut().unwrap().remove("monitors").unwrap();
+        body["decision_settings"] = serde_json::json!({ "monitors": monitors });
+        body["x_extra"] = serde_json::json!({ "monitors": [], "phases": [] });
+        body["parameters"] = serde_json::json!([{
+            "key": "phases",
+            "input_type": "string",
+            "requirement": "optional",
+            "description": "a parameter may be named anything",
+            "default": "3"
+        }]);
+        let workflow: Workflow = serde_json::from_value(body).unwrap();
+        let declared = workflow.decision_settings.as_ref().expect("monitors kept");
+        assert_eq!(declared.monitors.len(), 1);
+        assert_eq!(declared.monitors[0].name, "Reached ten");
+
+        let again: Workflow =
+            serde_json::from_value(serde_json::to_value(&workflow).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&again).unwrap(),
+            serde_json::to_value(&workflow).unwrap()
+        );
+
+        let yaml = "title: 2024\ndescription: d\nprompt: p\ndecision_settings:\n  monitors:\n    \
+                    - id: reached-ten\n      name: Reached ten\n      question:\n        \
+                    instructions: Has the agent already echoed 10?\n        kind: !binary {}\n      \
+                    threshold: 0.7\n      action: stop\n";
+        let from_yaml: Workflow = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(from_yaml.title, "2024");
+        assert_eq!(
+            from_yaml
+                .decision_settings
+                .as_ref()
+                .map(|d| d.monitors.len()),
+            Some(1)
+        );
+
+        let error = serde_yaml::from_str::<Workflow>("title: t\ndescription: [d]\nprompt: p\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("description") && error.contains("line 2"),
+            "{error}"
+        );
     }
 }
 

@@ -18,6 +18,7 @@ import {
   monitorSlug,
   monitorSummary,
   newMonitor,
+  rearmForThreshold,
   thresholdStepsFor,
   validateMonitor,
 } from './MonitorsDialog';
@@ -968,6 +969,91 @@ describe('which side fires, low thresholds, and a failing check', () => {
     fireEvent.click(screen.getByTestId('monitor-done'));
     fireEvent.click(screen.getByTestId('monitors-save'));
     expect((await savedMonitors())[0]).toMatchObject({ name: 'Consent form', rearmBelow: 0.7 });
+  });
+
+  // The daemon refuses a re-arm level past the threshold (`settings.rs`'s
+  // `validate`), and the dialog has no field for the level, so a threshold moved
+  // past one used to make a Save the dialog could not fix.
+  it('holds a kept re-arm level at a threshold moved below it, and gives it back', async () => {
+    const latched: DecisionSettings = {
+      ...STORED,
+      monitors: [{ ...STORED.monitors[0], threshold: 0.8, rearmBelow: 0.6 }],
+    };
+    mocks.settings.mockResolvedValue({ data: latched, missing: false });
+    await drawReady({ settings: latched });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Form reached' }));
+    const press = (key: string, times: number) => {
+      for (let i = 0; i < times; i += 1) fireEvent.keyDown(thresholdThumb(), { key });
+    };
+    // 0.80 to 0.60: the level is not passed yet.
+    press('ArrowLeft', 4);
+    expect(screen.getByTestId('monitor-stops-once')).toHaveTextContent(
+      'Stops once, then stays quiet until P falls below 0.60'
+    );
+    // On to 0.40, past it: the level stays at the threshold.
+    press('ArrowLeft', 4);
+    expect(thresholdThumb()).toHaveAttribute('aria-valuetext', '0.40');
+    expect(screen.getByTestId('monitor-stops-once')).toHaveTextContent(
+      'Stops once, then stays quiet until P falls below 0.40'
+    );
+    // Back to 0.80: the level the monitor opened with comes back.
+    press('ArrowRight', 8);
+    expect(screen.getByTestId('monitor-stops-once')).toHaveTextContent(
+      'Stops once, then stays quiet until P falls below 0.60'
+    );
+    press('ArrowLeft', 8);
+    fireEvent.click(screen.getByTestId('monitor-done'));
+    fireEvent.click(screen.getByTestId('monitors-save'));
+    const saved = (await savedMonitors())[0];
+    expect(saved).toMatchObject({ threshold: 0.4, rearmBelow: 0.4, action: 'stop' });
+    // What the daemon checks: a level no higher than the threshold.
+    expect(saved.rearmBelow!).toBeLessThanOrEqual(saved.threshold);
+  });
+
+  it('holds a below monitor’s re-arm level at a threshold moved above it', async () => {
+    const fromCli = parseDecisionSettings({
+      defaultModel: null,
+      monitors: [
+        {
+          id: 'banana',
+          name: 'Banana',
+          question: { instructions: 'Has the assistant written banana?', kind: { binary: {} } },
+          threshold: 0.3,
+          direction: 'below',
+          rearmAbove: 0.5,
+          action: 'stop',
+        },
+      ],
+    })!;
+    mocks.settings.mockResolvedValue({ data: fromCli, missing: false });
+    await drawReady({ settings: fromCli });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Banana' }));
+    for (let i = 0; i < 8; i += 1) fireEvent.keyDown(thresholdThumb(), { key: 'ArrowRight' });
+    expect(thresholdThumb()).toHaveAttribute('aria-valuetext', '0.70');
+    expect(screen.getByTestId('monitor-stops-once')).toHaveTextContent(
+      'Stops once, then stays quiet until P rises to 0.70'
+    );
+    fireEvent.click(screen.getByTestId('monitor-done'));
+    fireEvent.click(screen.getByTestId('monitors-save'));
+    const saved = (await savedMonitors())[0];
+    expect(saved).toMatchObject({ direction: 'below', threshold: 0.7, rearmAbove: 0.7 });
+    // What the daemon checks: a level no lower than the threshold.
+    expect(saved.rearmAbove!).toBeGreaterThanOrEqual(saved.threshold);
+  });
+
+  it('gives a threshold move no level when the monitor has none, or the direction switch cleared it', () => {
+    const opened: MonitorCriterion = { ...newMonitor(), threshold: 0.8, rearmBelow: 0.6 };
+    expect(rearmForThreshold({ ...newMonitor(), threshold: 0.8 }, 0.4, null)).toEqual({
+      rearmBelow: null,
+      rearmAbove: null,
+    });
+    // Switched to below and back: the opened level does not come back with a drag.
+    expect(rearmForThreshold({ ...opened, rearmBelow: null }, 0.4, opened)).toEqual({
+      rearmBelow: null,
+      rearmAbove: null,
+    });
+    // A level the threshold does not pass is left where it is.
+    expect(rearmForThreshold(opened, 0.9, opened)).toEqual({ rearmBelow: 0.6, rearmAbove: null });
   });
 
   it('a below monitor read from the daemon is saved back as below', async () => {

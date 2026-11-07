@@ -166,6 +166,7 @@ export const summaryCopy = {
       passed: 'Passed',
       failed: 'Failed',
       blocked: 'Blocked',
+      skipped: 'Skipped',
     },
     gate: {
       passed: (p: string, t: string) => `Gate ${p} ≥ ${t} passed`,

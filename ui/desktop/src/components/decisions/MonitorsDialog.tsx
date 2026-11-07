@@ -106,7 +106,10 @@ export const MONITORS_COPY = {
     MonitorAction,
     string
   >,
-  /** A stop monitor with a re-arm level (set over HTTP or the CLI; this dialog keeps it). */
+  /**
+   * A stop monitor with a re-arm level (set over HTTP or the CLI). This dialog
+   * keeps it, held at the threshold while the threshold is past it.
+   */
   stopsOnce: (p: string) => `Stops once, then stays quiet until P falls below ${p}`,
   stopsOnceBelow: (p: string) => `Stops once, then stays quiet until P rises to ${p}`,
   onError: 'If a check fails',
@@ -171,6 +174,43 @@ export function thresholdStepsFor(p: number): { value: string; label: string }[]
 /** The stop whose value is `p` exactly, among `steps` (which hold it: `thresholdStepsFor`). */
 function stepValueFor(p: number, steps: readonly { value: string }[]): string {
   return steps.find((step) => Number(step.value) === p)?.value ?? steps[0].value;
+}
+
+/**
+ * The re-arm levels a monitor keeps when its threshold moves to `threshold`.
+ *
+ * The daemon refuses a level on the far side of the threshold (`settings.rs`'s
+ * `validate`): a monitor that fires at or above re-arms below a level no higher
+ * than its threshold, and one that fires below re-arms at a level no lower than
+ * it. This dialog has no field for the level, so a threshold moved past a kept
+ * level would make a Save the dialog could not fix. The level is held at the
+ * threshold instead, so a stop monitor still stops once and then waits for P to
+ * cross back over the threshold.
+ *
+ * It is held from the level the monitor had when the edit began (`opened`), so a
+ * drag past it and back gives it back. A monitor with no level gets none, and
+ * neither does one whose level the direction switch cleared.
+ */
+export function rearmForThreshold(
+  draft: MonitorCriterion,
+  threshold: number,
+  opened: MonitorCriterion | null
+): Pick<MonitorCriterion, 'rearmBelow' | 'rearmAbove'> {
+  const below = draft.direction === 'below';
+  const kept = below ? draft.rearmAbove : draft.rearmBelow;
+  if (typeof kept !== 'number') {
+    return { rearmBelow: draft.rearmBelow, rearmAbove: draft.rearmAbove };
+  }
+  const openedLevel =
+    opened && (opened.direction === 'below') === below
+      ? below
+        ? opened.rearmAbove
+        : opened.rearmBelow
+      : null;
+  const level = typeof openedLevel === 'number' ? openedLevel : kept;
+  return below
+    ? { rearmBelow: draft.rearmBelow, rearmAbove: Math.max(level, threshold) }
+    : { rearmBelow: Math.min(level, threshold), rearmAbove: draft.rearmAbove };
 }
 
 /** `Form reached` -> `form-reached`, unique among `taken`. */
@@ -371,7 +411,7 @@ function MonitorEditor({
   readOnly,
   nothingUsable,
   isSubagentChat,
-  openedThreshold,
+  opened,
 }: {
   draft: MonitorCriterion;
   onChange: (next: MonitorCriterion) => void;
@@ -389,17 +429,19 @@ function MonitorEditor({
   /** A subagent's chat, whose monitors cannot be set to watch subagents of its own. */
   isSubagentChat: boolean;
   /**
-   * The threshold the monitor had when this edit began (`null` for a new one). The
-   * slider's stops are built from it, not from the draft: a stored 0.33 keeps its
-   * stop for the whole edit, so a drag off it neither shrinks the scale under the
-   * pointer nor loses 0.33 as a value to come back to.
+   * The monitor as it was when this edit began (`null` for a new one). The
+   * slider's stops are built from its threshold, not from the draft's: a stored
+   * 0.33 keeps its stop for the whole edit, so a drag off it neither shrinks the
+   * scale under the pointer nor loses 0.33 as a value to come back to. Its re-arm
+   * level is the one a threshold drag holds back and gives back
+   * (`rearmForThreshold`), for the same reason.
    */
-  openedThreshold: number | null;
+  opened: MonitorCriterion | null;
 }) {
   const base = useId();
   const kind = draft.question.kind;
   const below = draft.direction === 'below';
-  const thresholdSteps = thresholdStepsFor(openedThreshold ?? draft.threshold);
+  const thresholdSteps = thresholdStepsFor(opened?.threshold ?? draft.threshold);
   const options: ModelOption[] = [
     // No row stands for the chat's decision model, so the chat-wide reason is its own.
     { value: '', label: copy.chatDefault, model: null, reason: chatRefusal },
@@ -753,7 +795,12 @@ function MonitorEditor({
             disabled={readOnly}
             data-testid="monitor-threshold"
             className="min-w-0 flex-1"
-            onValueChange={(value) => onChange({ ...draft, threshold: Number(value) })}
+            // A kept re-arm level moves with a threshold that passes it, or the
+            // daemon would refuse the Save and nothing here could change the level.
+            onValueChange={(value) => {
+              const threshold = Number(value);
+              onChange({ ...draft, threshold, ...rearmForThreshold(draft, threshold, opened) });
+            }}
           />
           <span className="br-monitors__threshold-value" aria-hidden="true">
             {formatProbability(draft.threshold)}
@@ -1221,9 +1268,7 @@ export function MonitorsDialog({
               readOnly={readOnly}
               nothingUsable={nothingUsable}
               isSubagentChat={isSubagentChat}
-              openedThreshold={
-                editing.index === null ? null : (monitors[editing.index]?.threshold ?? null)
-              }
+              opened={editing.index === null ? null : (monitors[editing.index] ?? null)}
               onChange={(draft) => setEditing({ ...editing, draft })}
             />
             <div className="br-monitors__actions">

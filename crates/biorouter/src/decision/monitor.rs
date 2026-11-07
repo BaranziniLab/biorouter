@@ -115,10 +115,16 @@ impl MonitorCriterion {
 
     /// Whether a fired, latched monitor re-arms at P: below `rearmBelow` (or
     /// below its threshold, when none is set), or, for a `below` monitor, at
-    /// or above `rearmAbove` (or its threshold).
+    /// or above `rearmAbove` (or its threshold). Both directions compare
+    /// under the tolerance [`Self::fires_at`] uses, so with the re-arm level
+    /// at the threshold re-arming is exactly not firing: a P a hair under the
+    /// threshold that fires does not also re-arm, or a latched monitor would
+    /// fire again at every check while its answer held.
     pub fn rearms_at(&self, p: f64) -> bool {
         match self.direction {
-            MonitorDirection::AtOrAbove => p < self.rearm_below.unwrap_or(self.threshold),
+            MonitorDirection::AtOrAbove => {
+                p + THRESHOLD_EPSILON < self.rearm_below.unwrap_or(self.threshold)
+            }
             MonitorDirection::Below => {
                 p + THRESHOLD_EPSILON >= self.rearm_above.unwrap_or(self.threshold)
             }
@@ -4705,6 +4711,73 @@ mod tests {
         assert_eq!(state.observe(&c, p(0.6), false), Step::Quiet);
         assert!(!state.latched, "at its re-arm level: re-armed");
         assert_eq!(state.observe(&c, p(0.1), false), fired(0.1));
+    }
+
+    /// With its re-arm level at the threshold (set or left unset), a monitor
+    /// re-arms exactly where it does not fire, under the same tolerance, in
+    /// both directions. A P a hair under the threshold (a normalised 0.8
+    /// that comes out as 0.7999999999999999) fires and latches once, and
+    /// the next check at that P stays quiet instead of re-arming and firing
+    /// again.
+    #[test]
+    fn rearm_is_the_exact_complement_of_fire_at_the_threshold() {
+        let t = 0.8;
+        let hair = t - 1e-12;
+        let mut notify = criterion(t);
+        notify.action = MonitorAction::Notify;
+        let mut stop = criterion(t);
+        stop.rearm_below = Some(t);
+        let mut below = criterion(t);
+        below.direction = MonitorDirection::Below;
+        below.action = MonitorAction::Notify;
+        let mut below_stop = below.clone();
+        below_stop.action = MonitorAction::Stop;
+        below_stop.rearm_above = Some(t);
+        for c in [&notify, &stop, &below, &below_stop] {
+            assert!(c.latches());
+            for p in [
+                t - 0.01,
+                t - 1e-9,
+                t - 2e-9,
+                t - 1e-10,
+                hair,
+                t,
+                t + 1e-12,
+                t + 0.01,
+            ] {
+                assert_eq!(
+                    c.rearms_at(p),
+                    !c.fires_at(p),
+                    "{:?} {:?} p {p}",
+                    c.direction,
+                    c.action
+                );
+            }
+        }
+
+        for c in [&notify, &stop] {
+            assert!(c.fires_at(hair));
+            let mut state = CriterionState::default();
+            assert_eq!(
+                state.observe(c, p(hair), false),
+                Step::Fired {
+                    action: c.action,
+                    p: hair
+                }
+            );
+            assert!(state.latched);
+            for _ in 0..3 {
+                assert_eq!(
+                    state.observe(c, p(hair), false),
+                    Step::Quiet,
+                    "{:?}: the same answer fires once",
+                    c.action
+                );
+                assert!(state.latched);
+            }
+            assert_eq!(state.observe(c, p(0.7), false), Step::Quiet);
+            assert!(!state.latched, "clearly under the threshold: re-armed");
+        }
     }
 
     /// The engine's rule and the decision's `passed` for the question the

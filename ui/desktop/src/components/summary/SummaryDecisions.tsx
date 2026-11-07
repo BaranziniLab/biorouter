@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowRight,
   Check,
   CircleIcon,
   Eye,
@@ -26,12 +27,14 @@ import './summaryDecisions.css';
 
 const copy = summaryCopy.decisions;
 
-/** What a gate row says about the person's own pass or skip. */
+/** What a gate row says about the person's own pass or skip, or a phase that waits for them. */
 export const GATE_PERSON_COPY = {
   passedByYou: 'passed by you',
   skippedByYou: 'skipped by you',
   passStands: 'your pass stands',
   skipStands: 'your skip stands',
+  /** The open phase waits for the person, as the chip's `Gate blocked: needs you`. */
+  needsYou: 'needs you',
 };
 
 /**
@@ -43,10 +46,13 @@ export interface SummaryGateSource extends DecisionGateSource {
   status?: PhaseStatus;
 }
 
-/** `passed by you`, `your skip stands`, or `null` when the person decided nothing. */
+/**
+ * `passed by you`, `your skip stands`, `needs you` (a phase that waits for the
+ * person), or `null` when the person decided nothing and nothing waits for them.
+ */
 export function gatePersonWords(source: SummaryGateSource | undefined): string | null {
   const decision = source?.gate.personDecision ?? null;
-  if (!decision) return null;
+  if (!decision) return source?.gate.needsPerson ? GATE_PERSON_COPY.needsYou : null;
   // Without the phase's status the decision's effect is not known; it reads as made.
   const closed = !source?.status || source.status === 'completed' || source.status === 'skipped';
   if (decision === 'pass')
@@ -59,8 +65,9 @@ type Glyph = EntityIcon;
 /**
  * A source's state, told apart by SHAPE (never by colour alone): an eye that
  * watches, a raised flag once it fired, a struck eye when off, a warning for an
- * error; a gate's check, cross or alert; the decision mark for calls that just
- * decided. Keyed by state, so a new one fails the build here.
+ * error; a gate's check, cross or alert, and the arrow of a gate the person
+ * skipped (the phase row's chip draws the same shapes); the decision mark for
+ * calls that just decided. Keyed by state, so a new one fails the build here.
  */
 export const DECISION_STATE_ICONS: Record<DecisionSourceState, Glyph> = {
   pending: CircleIcon,
@@ -72,6 +79,7 @@ export const DECISION_STATE_ICONS: Record<DecisionSourceState, Glyph> = {
   passed: Check,
   failed: X,
   blocked: AlertCircle,
+  skipped: ArrowRight,
 };
 
 export interface SummaryDecisionsData {
@@ -99,7 +107,8 @@ export interface SummaryDecisionsData {
 
 /**
  * The second line of a row: what it last said, and how sure. A gate the person
- * passed or skipped says so first, then what the gate itself last said.
+ * passed or skipped, or one whose phase waits for them, says so first, then what
+ * the gate itself last said.
  */
 function rowMeta(row: DecisionSourceRow, gates: readonly SummaryGateSource[] = []): string {
   if (row.origin === 'gate') {
@@ -111,20 +120,25 @@ function rowMeta(row: DecisionSourceRow, gates: readonly SummaryGateSource[] = [
   return sourceMeta(row);
 }
 
-/** A gate row's own words (`0.62 < 0.80 · attempt 2 of 3`), or `null` to say what any row says. */
+/**
+ * A gate row's own words (`0.62 < 0.80 · attempt 2 of 3`), or `null` to say what
+ * any row says. They follow the gate's own verdict, not the row's state: a gate
+ * the person passed after it failed still says it failed, after `passed by you`.
+ */
 function gateVerdict(row: DecisionSourceRow): string | null {
   if (row.attempts) {
     const t = row.threshold !== null ? formatProbability(row.threshold) : null;
     const p = row.lastPassProbability !== null ? formatProbability(row.lastPassProbability) : null;
-    if (row.state === 'blocked') {
+    const verdict = row.gateVerdict ?? row.state;
+    if (verdict === 'blocked') {
       // A gate that ran out of attempts has used them all; one blocked by
       // evaluation errors in a row has not, since an error uses no attempt.
       return row.attempts.attempts >= row.attempts.maxAttempts
         ? copy.gateBlocked(row.attempts.maxAttempts)
         : copy.gateBlockedUnevaluated;
     }
-    if (row.state === 'passed' && p && t) return `${p} ≥ ${t}`;
-    if (row.state === 'failed' && p && t) {
+    if (verdict === 'passed' && p && t) return `${p} ≥ ${t}`;
+    if (verdict === 'failed' && p && t) {
       return `${p} < ${t} · ${copy.gateAttempt(Math.max(1, row.attempts.attempts), row.attempts.maxAttempts)}`;
     }
   }

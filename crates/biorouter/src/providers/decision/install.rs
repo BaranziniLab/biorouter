@@ -907,6 +907,19 @@ mod tests {
 
     const TEV1: &str = "tev1:0.8b";
 
+    /// The idle bound the two stall tests give a pull.
+    const STALL_BOUND: Duration = Duration::from_millis(200);
+
+    /// How long a stall test may take before it fails. The clock also runs
+    /// while the client is built and the timer is scheduled, which a loaded
+    /// test run stretches (2.35 s was measured against a 200 ms bound), so
+    /// this sits far above the bound and far below [`SILENT_SERVER_ANSWERS`].
+    const STALL_STOPS_WITHIN: Duration = Duration::from_secs(10);
+
+    /// When the silent server finally answers: long after
+    /// [`STALL_STOPS_WITHIN`], so a pull that waited for it cannot pass.
+    const SILENT_SERVER_ANSWERS: Duration = Duration::from_secs(60);
+
     fn ndjson(lines: &[Value]) -> String {
         lines
             .iter()
@@ -1153,18 +1166,21 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/pull"))
-            .respond_with(streamed(&two_layer_pull()).set_delay(Duration::from_secs(3)))
+            .respond_with(streamed(&two_layer_pull()).set_delay(SILENT_SERVER_ANSWERS))
             .mount(&server)
             .await;
         let started = Instant::now();
-        let error = pull_with_idle(&base(&server), TEV1, Duration::from_millis(200), |_| {})
+        let error = pull_with_idle(&base(&server), TEV1, STALL_BOUND, |_| {})
             .await
             .unwrap_err();
         assert!(
-            started.elapsed() < Duration::from_millis(1500),
+            started.elapsed() < STALL_STOPS_WITHIN,
             "stopped at the bound, not when the server spoke: {:?}",
             started.elapsed()
         );
+        // The words say which bound fired: the client's own stall bound reads
+        // as "could not ask the Ollama", and a server that answered would get
+        // as far as `/api/show`, which this one does not serve.
         assert_eq!(
             error.to_string(),
             "Ollama sent nothing for 200 ms while downloading `tev1:0.8b`, so the download was \
@@ -1180,16 +1196,15 @@ mod tests {
             futures::stream::iter([Ok::<_, StreamBreak>(first)]).chain(futures::stream::pending());
         let started = Instant::now();
         let mut seen = 0;
-        let error = follow_pull(
-            TEV1,
-            Box::pin(chunks),
-            Duration::from_millis(200),
-            &mut |_| seen += 1,
-        )
-        .await
-        .unwrap_err();
+        let error = follow_pull(TEV1, Box::pin(chunks), STALL_BOUND, &mut |_| seen += 1)
+            .await
+            .unwrap_err();
         assert_eq!(seen, 3, "what arrived was reported");
-        assert!(started.elapsed() < Duration::from_millis(1500));
+        assert!(
+            started.elapsed() < STALL_STOPS_WITHIN,
+            "{:?}",
+            started.elapsed()
+        );
         assert!(
             error
                 .to_string()

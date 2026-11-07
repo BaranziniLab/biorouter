@@ -882,11 +882,13 @@ async fn run_turn_body(
     .await
     else {
         record_setup_failure(
+            &state,
             &session_id,
             &cancel_token,
             &setup_failure_messages,
             &outcome,
-        );
+        )
+        .await;
         return;
     };
 
@@ -914,8 +916,15 @@ async fn run_turn_body(
             // A steer accepted during the prologue is stored, marked unanswered,
             // before the failure is reported.
             abandon_prepared_turn(&session_id, &agent).await;
-            let turn_messages = (&all_messages, turn_message_start);
-            report_reply_start_failure(&session_id, &e, &cancel_token, turn_messages, &outcome);
+            report_reply_start_failure(
+                &state,
+                &session_id,
+                &e,
+                &cancel_token,
+                (&all_messages, turn_message_start),
+                &outcome,
+            )
+            .await;
             return;
         }
     };
@@ -941,16 +950,18 @@ async fn run_turn_body(
     // the way the delegated run does. The registry keeps the turn's first stop
     // after the stream ends; taken once, here. For a chat that is no one's
     // subagent nothing reads it, and `record_child_turn_terminal` matches no
-    // handle.
+    // handle. Item B the same way: why the chat that started it stopped it.
+    let cancelled = cancel_token.is_cancelled();
     record_child_turn_outcome_with(
         &session_id,
         terminal_error,
-        cancel_token.is_cancelled(),
+        cancelled,
         (&all_messages, turn_message_start),
         &outcome,
         ChildTurnDecisions {
             monitor_stop: agent.take_monitor_stop(&session_id),
             earlier_turns: earlier_decision_turns,
+            stop_cause: note_child_turn_stop_cause(&state, &session_id, cancelled).await,
         },
     );
 
@@ -1102,16 +1113,21 @@ impl Drop for TurnPin {
 }
 
 /// The reply stream never opened: publish the turn's one terminal and record the
-/// child outcome, exactly as the inline arm in [`run_turn_body`] used to. Split
-/// out only to keep that function under clippy's line budget.
-fn report_reply_start_failure(
+/// child outcome, exactly as the inline arm in [`run_turn_body`] used to, with
+/// why the chat that started a subagent stopped it ([`note_child_turn_stop_cause`]).
+/// Split out only to keep that function under clippy's line budget.
+async fn report_reply_start_failure(
+    state: &AppState,
     session_id: &str,
     error: &anyhow::Error,
     cancel_token: &CancellationToken,
-    (all_messages, turn_message_start): (&Conversation, usize),
+    turn_messages: (&Conversation, usize),
     outcome: &AtomicU8,
 ) {
     tracing::error!("turn: failed to start reply stream: {error:?}");
+    // Before the terminal, so the child's chat says why the turn stopped first.
+    let cancelled = cancel_token.is_cancelled();
+    let stop_cause = note_child_turn_stop_cause(state, session_id, cancelled).await;
     publish_turn_error(
         session_id,
         error.to_string(),
@@ -1120,32 +1136,90 @@ fn report_reply_start_failure(
         false,
         None,
     );
-    record_child_turn_outcome(
+    record_child_turn_outcome_with(
         session_id,
         true,
-        cancel_token.is_cancelled(),
-        all_messages,
-        turn_message_start,
+        cancelled,
+        turn_messages,
         outcome,
+        ChildTurnDecisions {
+            stop_cause,
+            ..ChildTurnDecisions::default()
+        },
     );
 }
 
-fn record_setup_failure(
+/// [`prepare_turn`] failed, and has already published the turn's terminal.
+async fn record_setup_failure(
+    state: &AppState,
     session_id: &str,
     cancel_token: &CancellationToken,
     setup_messages: &Conversation,
     outcome: &AtomicU8,
 ) {
-    record_child_turn_outcome(
+    let cancelled = cancel_token.is_cancelled();
+    let stop_cause = note_child_turn_stop_cause(state, session_id, cancelled).await;
+    record_child_turn_outcome_with(
         session_id,
         true,
-        cancel_token.is_cancelled(),
-        setup_messages,
-        0,
+        cancelled,
+        (setup_messages, 0),
         outcome,
+        ChildTurnDecisions {
+            stop_cause,
+            ..ChildTurnDecisions::default()
+        },
     );
 }
 
+/// Item B, for a later turn of a subagent (one the daemon runs after its
+/// delegated run finished): when the chat that started the subagent stopped
+/// this turn ([`biorouter::agents::subagent_handle::stop_delegated_children`]),
+/// store why in the subagent's own chat and hand the reason back for the
+/// turn's result.
+///
+/// The stop records its reason on the subagent's handle and cancels the turn
+/// through the daemon, which leaves the handle's token alone, so the delegated
+/// run's completion, the only other reader, never sees it. `cancelled` is the
+/// turn's one sample of its token, the same one its result is classified
+/// with: a turn that was not cancelled was not stopped. The notice is
+/// user-only, as the delegated run's is, so a later turn does not read it as
+/// context, and it is published only once it is stored. A failure to store it
+/// is logged; the result still says why.
+async fn note_child_turn_stop_cause(
+    state: &AppState,
+    session_id: &str,
+    cancelled: bool,
+) -> Option<biorouter::agents::subagent_handle::ChildStopCause> {
+    if !cancelled {
+        return None;
+    }
+    let cause = biorouter::agents::subagent_handle::child_turn_stop_cause(session_id)?;
+    let mut notice = Message::assistant()
+        .with_system_notification(
+            biorouter::conversation::message::SystemNotificationType::InlineMessage,
+            cause.sentence(),
+        )
+        .user_only();
+    match state
+        .session_manager()
+        .add_message_adopting_uid(session_id, &mut notice)
+        .await
+    {
+        Ok(()) => session_events::publish(
+            session_id,
+            SessionBusEvent::Agent(AgentEvent::Message(notice)),
+        ),
+        Err(e) => tracing::warn!(
+            session_id,
+            error = %e,
+            "could not store why a stopped subagent turn was stopped; its result still says so"
+        ),
+    }
+    Some(cause)
+}
+
+#[cfg(test)]
 fn record_child_turn_outcome(
     session_id: &str,
     terminal_error: bool,
@@ -1166,11 +1240,14 @@ fn record_child_turn_outcome(
 
 /// What the turn's decision models did, for a subagent's result: a monitor's
 /// stop of the turn ([`biorouter::agents::Agent::take_monitor_stop`]) and the
-/// decision markers that were already in the chat before the turn began.
+/// decision markers that were already in the chat before the turn began. And
+/// why the chat that started the subagent stopped the turn, when it did
+/// ([`note_child_turn_stop_cause`]).
 #[derive(Default)]
 struct ChildTurnDecisions {
     monitor_stop: Option<biorouter::decision::settings::MonitorStopReport>,
     earlier_turns: std::collections::HashSet<String>,
+    stop_cause: Option<biorouter::agents::subagent_handle::ChildStopCause>,
 }
 
 fn record_child_turn_outcome_with(
@@ -1214,6 +1291,11 @@ fn record_child_turn_outcome_with(
             &decisions.earlier_turns,
         ),
     );
+    // Last, as the delegated run's completion does: the chat that started the
+    // subagent stopping it is the summary's first line.
+    if let Some(cause) = decisions.stop_cause.as_ref().filter(|_| cancelled) {
+        child_result.note_stop_cause(cause);
+    }
     child_result.human_intervened =
         biorouter::agents::subagent_result::conversation_has_user_direct(&turn_messages);
     biorouter::agents::subagent_handle::record_child_turn_terminal(session_id, child_result);
@@ -2648,6 +2730,221 @@ mod tests {
                 .is_some_and(|call| call.iter().any(|text| text.contains("use the 2024 cohort"))),
             "the first model call must carry the prologue steer: {seen:?}"
         );
+    }
+
+    /// Item B, a later turn: `child` is a subagent of `parent` whose delegated
+    /// run finished, and it takes a turn the daemon runs (the person typed into
+    /// its tab). The turn is held in its prologue, on the session's extensions,
+    /// while `parent` is stopped. Returns the stopped turn's result once it is
+    /// recorded, and every bus event of the turn up to its terminal.
+    async fn stop_a_later_subagent_turn_with_its_parent(
+        state: &Arc<crate::state::AppState>,
+        child: &str,
+        parent: &str,
+        cause: &biorouter::agents::subagent_handle::ChildStopCause,
+    ) -> (biorouter::agents::SubagentResult, Vec<SessionBusEvent>) {
+        use biorouter::agents::subagent_handle::{self as handles, BackgroundSubagent};
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+        let handle =
+            BackgroundSubagent::register(parent, child, "delegated work", CancellationToken::new());
+        handles::begin_child_turn(child);
+        handle.complete(biorouter::agents::SubagentResult::from_error(
+            "delegated run",
+        ));
+        let agent = state.get_agent(child.to_string()).await.unwrap();
+        let (release, loaded) = tokio::sync::oneshot::channel::<()>();
+        state
+            .set_extension_loading_task(
+                child.to_string(),
+                tokio::spawn(async move {
+                    let _ = loaded.await;
+                    Vec::new()
+                }),
+            )
+            .await;
+        let mut rx = session_events::subscribe(child);
+
+        start_turn(
+            state.clone(),
+            TurnRequest::new(child.to_string(), Message::user().with_text("carry on")),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(BOUND, async {
+            while agent.loop_phase_snapshot().0
+                != biorouter::agents::loop_phase::LoopPhase::Prologue
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the turn reaches its prologue");
+        let stopped_generation = handle.child_turn_generation();
+
+        // The parent's Stop, through this daemon's own turn registry.
+        let services = crate::workspace::services::ServerWorkspaceServices::new(state.clone());
+        let stopped = handles::stop_children_with(parent, None, cause, Some(&services));
+        assert_eq!(
+            stopped
+                .iter()
+                .map(|s| s.child_session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![child],
+            "the parent's stop must stop the later turn"
+        );
+        assert!(
+            !handle.is_cancelled(),
+            "a later turn stops through the daemon, not the handle's token"
+        );
+        release.send(()).unwrap();
+
+        let events = events_until_terminal(&mut rx, BOUND).await;
+        let result = tokio::time::timeout(BOUND, async {
+            loop {
+                match handle.terminal_generation() {
+                    Some(terminal) if terminal.generation == stopped_generation => {
+                        break terminal.result
+                    }
+                    _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .expect("the stopped turn must record its result");
+        (result, events)
+    }
+
+    /// The rows of `session_id` that are the inline notice `text`.
+    async fn stored_notices(
+        state: &Arc<crate::state::AppState>,
+        session_id: &str,
+        text: &str,
+    ) -> Vec<Message> {
+        state
+            .session_manager()
+            .get_session(session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap_or_default()
+            .messages()
+            .iter()
+            .filter(|message| stop_notice_text(message) == Some(text))
+            .cloned()
+            .collect()
+    }
+
+    /// Item B: a subagent stopped with the chat that started it records why,
+    /// in a later turn as in its delegated run. The cause was recorded on the
+    /// handle and read only by the delegated run's completion, so a later turn
+    /// stopped by the parent's Stop ended "cancelled" with nothing saying who
+    /// stopped it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_later_subagent_turn_stopped_with_its_parent_says_why() {
+        use biorouter::agents::subagent_handle::ChildStopCause;
+        use biorouter::agents::subagent_result::SubagentStatus;
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let child = state
+            .session_manager()
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "item b later turn stopped with its parent".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = state.get_agent(child.id.clone()).await.unwrap();
+        agent
+            .update_provider(Arc::new(RecordingProvider::default()), &child.id)
+            .await
+            .unwrap();
+        let cause = ChildStopCause::ParentMonitor {
+            monitor: "budget".into(),
+        };
+        let sentence = cause.sentence();
+
+        let (result, events) = stop_a_later_subagent_turn_with_its_parent(
+            &state,
+            &child.id,
+            "item-b-later-turn-parent",
+            &cause,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "cancelled"
+            ),
+            "the fixture must end through the reply stream, cancelled: {events:#?}"
+        );
+        assert_eq!(result.status, SubagentStatus::Incomplete, "{result:?}");
+        assert!(
+            result.summary.starts_with(&sentence),
+            "the result must open with why: {result:?}"
+        );
+        let notices = stored_notices(&state, &child.id, &sentence).await;
+        assert_eq!(notices.len(), 1, "one notice in the child's chat");
+        assert!(!notices[0].is_agent_visible(), "the notice is user-only");
+        let notice_at = events.iter().position(|event| {
+            matches!(event, SessionBusEvent::Agent(AgentEvent::Message(m))
+                if stop_notice_text(m) == Some(sentence.as_str()))
+        });
+        assert!(
+            notice_at.is_some_and(|at| at + 1 < events.len()),
+            "the notice is published before the turn's terminal: {events:#?}"
+        );
+    }
+
+    /// The same when the stopped turn fails in its setup, after the stop: here
+    /// a subagent row with no delegated runtime profile, which is refused once
+    /// the extensions settle.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_later_subagent_turn_stopped_in_its_setup_says_why() {
+        use biorouter::agents::subagent_handle::ChildStopCause;
+        use biorouter::agents::subagent_result::SubagentStatus;
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let child = state
+            .session_manager()
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "item b later turn stopped in setup".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let cause = ChildStopCause::ParentStopped;
+        let sentence = cause.sentence();
+
+        let (result, events) = stop_a_later_subagent_turn_with_its_parent(
+            &state,
+            &child.id,
+            "item-b-setup-stop-parent",
+            &cause,
+        )
+        .await;
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, SessionBusEvent::TurnError { .. })),
+            "the fixture must fail in setup: {events:#?}"
+        );
+        assert_eq!(result.status, SubagentStatus::Incomplete, "{result:?}");
+        assert!(
+            result.summary.starts_with(&sentence),
+            "the result must open with why: {result:?}"
+        );
+        let notices = stored_notices(&state, &child.id, &sentence).await;
+        assert_eq!(notices.len(), 1, "one notice in the child's chat");
+        assert!(!notices[0].is_agent_visible(), "the notice is user-only");
     }
 
     /// The text of a row that is only an inline system notice.
