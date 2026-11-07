@@ -16,7 +16,7 @@
  * `bias_scope: "private"` means private entries were eligible for that
  * recording, not that a private term is in the text, and the messages say so.
  */
-import { useSyncExternalStore } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
 const flagged = new Set<string>();
 const listeners = new Set<() => void>();
@@ -47,9 +47,10 @@ export function subscribePrivateDraft(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-/** Whether `key`'s draft is flagged, for a component. */
+/** Whether `key`'s draft is flagged, for a component; the same reader serves a server render. */
 export function usePrivateDraft(key: string | undefined | null): boolean {
-  return useSyncExternalStore(subscribePrivateDraft, () => isPrivateDraft(key));
+  const read = useCallback(() => isPrivateDraft(key), [key]);
+  return useSyncExternalStore(subscribePrivateDraft, read, read);
 }
 
 /**

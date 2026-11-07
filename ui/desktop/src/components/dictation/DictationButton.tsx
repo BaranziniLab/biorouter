@@ -96,8 +96,9 @@ export function dictationPhaseFor(
   return activity === 'error' ? 'error' : 'idle';
 }
 
+/** The session's snapshot; it is a cached object, so it also serves a server render. */
 function useSnapshot(): DictationSnapshot {
-  return useSyncExternalStore(subscribeDictation, getDictationSnapshot);
+  return useSyncExternalStore(subscribeDictation, getDictationSnapshot, getDictationSnapshot);
 }
 
 const reducedMotion = (): boolean => {

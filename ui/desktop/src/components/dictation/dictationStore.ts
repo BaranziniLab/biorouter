@@ -69,9 +69,19 @@ export function subscribeDictationStatus(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+/**
+ * A server render (`renderToString`, which the geometry tests use) never reads the daemon, so
+ * it sees the store as it starts: unloaded, which the microphone draws as `idle`.
+ */
+const getServerDictationStatusSnapshot = (): DictationStatusSnapshot => INITIAL;
+
 /** The snapshot, for a React component. */
 export function useDictationStatus(): DictationStatusSnapshot {
-  return useSyncExternalStore(subscribeDictationStatus, getDictationStatusSnapshot);
+  return useSyncExternalStore(
+    subscribeDictationStatus,
+    getDictationStatusSnapshot,
+    getServerDictationStatusSnapshot
+  );
 }
 
 const installRunning = (status: DictationStatus | null): boolean =>

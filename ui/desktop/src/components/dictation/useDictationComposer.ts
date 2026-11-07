@@ -123,14 +123,17 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
 
   // Reduced to the gate, so the stop (recording to transcribing) renders nothing here unless
   // the placeholder must change: the stop's `finish` is already on the wire by then, and the
-  // microphone draws Transcribing on its own.
-  const gate = useSyncExternalStore(subscribeDictation, (): DictationGate => {
+  // microphone draws Transcribing on its own. The same reader is the server snapshot: a
+  // transcript rendered with `renderToString` (the geometry tests) has a message editor in it,
+  // and React's server renderer refuses a store with none.
+  const readGate = useCallback((): DictationGate => {
     const activity = dictationActivityFor(key);
     if (!holding(activity)) return 'free';
     return activity === 'recording' && latest.current.isEmpty?.() === true
       ? 'listening'
       : 'holding';
-  });
+  }, [key]);
+  const gate = useSyncExternalStore(subscribeDictation, readGate, readGate);
 
   useEffect(() => {
     if (!available) return;

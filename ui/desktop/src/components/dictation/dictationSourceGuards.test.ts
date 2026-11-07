@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { PCM_CAPTURE_PROCESSOR } from './capture';
 
@@ -69,6 +70,25 @@ describe('the AudioWorklet stays a real file', () => {
     expect(read(join(here, 'pcmCapture.worklet.js'))).toContain(
       `registerProcessor('${PCM_CAPTURE_PROCESSOR}'`
     );
+  });
+
+  it('does nothing when it runs outside a worklet, as esbuild bundles it', () => {
+    // esbuild drops the `?url` query and bundles the file as code, so a browser test's bundle
+    // that reaches a microphone (the transcript tests, through the message editor) runs it in
+    // the page, where there is no AudioWorkletProcessor to extend.
+    const source = read(join(here, 'pcmCapture.worklet.js'));
+    expect(() => runInNewContext(source, {})).not.toThrow();
+
+    class AudioWorkletProcessor {
+      port = { onmessage: null, postMessage() {} };
+    }
+    const registered: Array<[string, unknown]> = [];
+    runInNewContext(source, {
+      AudioWorkletProcessor,
+      registerProcessor: (name: string, processor: unknown) => registered.push([name, processor]),
+    });
+    expect(registered.map(([name]) => name)).toEqual([PCM_CAPTURE_PROCESSOR]);
+    expect(Object.getPrototypeOf(registered[0][1])).toBe(AudioWorkletProcessor);
   });
 
   it('is refused inlining by the renderer’s Vite config as well', () => {

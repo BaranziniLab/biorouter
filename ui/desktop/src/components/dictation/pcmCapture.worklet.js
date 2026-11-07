@@ -12,45 +12,51 @@
 // much audio recorded before the stop is still queued behind a busy main
 // thread. The page assembles the 100 ms chunks itself. A `flush` still gets one
 // `final` message, after every chunk, so the page knows this processor ended.
-class BiorouterPcmCapture extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.live = false;
-    this.done = false;
-    this.port.onmessage = (event) => {
-      if (event.data && event.data.type === 'flush' && !this.done) {
-        this.done = true;
-        const empty = new Int16Array(0);
-        this.port.postMessage({ type: 'chunk', pcm: empty.buffer, final: true }, [empty.buffer]);
+//
+// It does its work only in an AudioWorkletGlobalScope. esbuild drops the
+// `?url` query and bundles this file as code, which the browser tests' bundles
+// then run in the page, where there is no AudioWorkletProcessor to extend.
+if (typeof AudioWorkletProcessor === 'function') {
+  class BiorouterPcmCapture extends AudioWorkletProcessor {
+    constructor() {
+      super();
+      this.live = false;
+      this.done = false;
+      this.port.onmessage = (event) => {
+        if (event.data && event.data.type === 'flush' && !this.done) {
+          this.done = true;
+          const empty = new Int16Array(0);
+          this.port.postMessage({ type: 'chunk', pcm: empty.buffer, final: true }, [empty.buffer]);
+        }
+      };
+    }
+
+    process(inputs) {
+      if (this.done) return false;
+      const input = inputs[0];
+      if (!input || input.length === 0) return true;
+      if (!this.live) {
+        this.live = true;
+        this.port.postMessage({ type: 'live', frame: currentFrame });
       }
-    };
+      const channels = input.length;
+      const frames = input[0].length;
+      const pcm = new Int16Array(frames);
+      for (let i = 0; i < frames; i++) {
+        let s = 0;
+        for (let c = 0; c < channels; c++) s += input[c][i];
+        s /= channels;
+        // The resampler overshoots peaks by up to about 5 %, hence the clamp.
+        if (s > 1) s = 1;
+        else if (s < -1) s = -1;
+        pcm[i] = Math.round(s * 32767);
+      }
+      this.port.postMessage({ type: 'chunk', pcm: pcm.buffer, frame: currentFrame, final: false }, [
+        pcm.buffer,
+      ]);
+      return true;
+    }
   }
 
-  process(inputs) {
-    if (this.done) return false;
-    const input = inputs[0];
-    if (!input || input.length === 0) return true;
-    if (!this.live) {
-      this.live = true;
-      this.port.postMessage({ type: 'live', frame: currentFrame });
-    }
-    const channels = input.length;
-    const frames = input[0].length;
-    const pcm = new Int16Array(frames);
-    for (let i = 0; i < frames; i++) {
-      let s = 0;
-      for (let c = 0; c < channels; c++) s += input[c][i];
-      s /= channels;
-      // The resampler overshoots peaks by up to about 5 %, hence the clamp.
-      if (s > 1) s = 1;
-      else if (s < -1) s = -1;
-      pcm[i] = Math.round(s * 32767);
-    }
-    this.port.postMessage({ type: 'chunk', pcm: pcm.buffer, frame: currentFrame, final: false }, [
-      pcm.buffer,
-    ]);
-    return true;
-  }
+  registerProcessor('biorouter-pcm-capture', BiorouterPcmCapture);
 }
-
-registerProcessor('biorouter-pcm-capture', BiorouterPcmCapture);
