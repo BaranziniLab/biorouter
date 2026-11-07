@@ -853,10 +853,10 @@ jobs:
             echo "biorouterd __br-dictation-worker capture exited $code, expected 2"
             exit 1
           fi
-          tree=$(cargo tree --locked -p biorouter-server -e normal,build --prefix none)
-          printf '%s\n' "$tree" | grep -q '^biorouter-dictation ' \
+          tree=$(cargo tree --locked -p biorouter-server --features local-dictation -e normal,build --prefix none --color never)
+          grep -q '^biorouter-dictation ' <<< "$tree" \
             || { echo "cargo tree listed no biorouter-dictation, so the check read nothing"; exit 1; }
-          if printf '%s\n' "$tree" | grep -q '^biorouter-dictation-capture '; then
+          if grep -q '^biorouter-dictation-capture ' <<< "$tree"; then
             echo "biorouter-server depends on biorouter-dictation-capture"
             exit 1
           fi

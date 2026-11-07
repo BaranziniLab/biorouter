@@ -911,13 +911,13 @@ sys.exit(0 if entitlements.get("com.apple.security.device.audio-input") is True 
 # capture role refused with exit 2, and no capture crate in its dependency tree.
 check_capture_not_in_daemon() {
   local bad=0 checked=0 daemon count code tree
-  if ! tree="$(cd "$ROOT" && cargo tree --locked -p biorouter-server -e normal,build --prefix none 2>/dev/null)"; then
+  if ! tree="$(cd "$ROOT" && cargo tree --locked -p biorouter-server --features local-dictation -e normal,build --prefix none --color never 2>/dev/null)"; then
     printf 'cargo tree -p biorouter-server failed, so its dependency tree was not checked for capture\n'
     bad=1
-  elif ! printf '%s\n' "$tree" | grep -q '^biorouter-dictation '; then
+  elif ! grep -q '^biorouter-dictation ' <<< "$tree"; then
     printf 'cargo tree -p biorouter-server listed no biorouter-dictation, so the capture check read nothing\n'
     bad=1
-  elif printf '%s\n' "$tree" | grep -q '^biorouter-dictation-capture '; then
+  elif grep -q '^biorouter-dictation-capture ' <<< "$tree"; then
     printf 'biorouter-server depends on biorouter-dictation-capture: capture code would reach biorouterd\n'
     bad=1
   fi
