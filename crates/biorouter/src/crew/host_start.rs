@@ -182,6 +182,68 @@ pub fn host_start_command(slug: &str, bootstrap_key: &str) -> Result<String> {
     .join("\n"))
 }
 
+/// The commands a setup job's host start runs (AO-9): [`host_start_command`], with `--create`
+/// on the start line, so a broker that knows the flag creates the workspace only on purpose. A
+/// broker that predates it ignores the flag and creates the workspace from the hosting key, as
+/// it always did.
+pub fn setup_start_command(slug: &str, bootstrap_key: &str) -> Result<String> {
+    let command = host_start_command(slug, bootstrap_key)?;
+    let start = format!("--bootstrap-key {bootstrap_key}\n");
+    ensure!(
+        command.matches(&start).count() == 1,
+        "The start command is not in the expected form."
+    );
+    Ok(command.replacen(
+        &start,
+        &format!("--bootstrap-key {bootstrap_key} --create\n"),
+        1,
+    ))
+}
+
+/// What a setup job's host start answered, read strictly ([`read_setup_start`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetupStart {
+    /// `Found` only from `start`'s own answer: a line with the PID it started and the
+    /// invitation it printed. Every other answer is the problem the output shows.
+    pub result: StartOutput,
+    /// `start`'s `created`: `Some(true)` when it wrote a new journal, `Some(false)` when the
+    /// workspace was already there, `None` from a broker that does not say.
+    pub created: Option<bool>,
+}
+
+/// Read what a setup job's host start printed (AO-9). `Found` comes only from `start`'s own
+/// answer with a PID and an invitation, never from the status line after it, which describes
+/// whatever workspace runs in that folder, a workspace this job did not start included.
+pub fn read_setup_start(output: &str, exit_code: Option<i32>) -> SetupStart {
+    for line in output.lines() {
+        let Ok(Value::Object(object)) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        if !object.get("started_pid").is_some_and(Value::is_u64) {
+            continue;
+        }
+        let invitation = object
+            .get("invitation")
+            .and_then(Value::as_str)
+            .map(|text| {
+                text.chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect::<String>()
+            })
+            .filter(|token| token.starts_with("brcrew1:"));
+        if let Some(token) = invitation {
+            return SetupStart {
+                result: StartOutput::Found { text: token },
+                created: object.get("created").and_then(Value::as_bool),
+            };
+        }
+    }
+    SetupStart {
+        result: problem_in(output, exit_code),
+        created: None,
+    }
+}
+
 /// The value inside `"invitation": "…"` when it is a `brcrew1:` line.
 fn quoted_invitation(output: &str) -> Option<String> {
     let mut rest = output;
@@ -216,8 +278,6 @@ pub fn read_start_output(output: &str, exit_code: Option<i32>) -> StartOutput {
             text: line.trim().to_owned(),
         };
     }
-    let mut starting = false;
-    let mut invitation_error = None;
     for line in output.lines() {
         let Ok(Value::Object(object)) = serde_json::from_str::<Value>(line.trim()) else {
             continue;
@@ -229,6 +289,19 @@ pub fn read_start_output(output: &str, exit_code: Option<i32>) -> StartOutput {
                 text: line.trim().to_owned(),
             };
         }
+    }
+    problem_in(output, exit_code)
+}
+
+/// The problem output shows that pins no workspace: Crew is not installed, still starting, or
+/// printed an error; else unreadable.
+fn problem_in(output: &str, exit_code: Option<i32>) -> StartOutput {
+    let mut starting = false;
+    let mut invitation_error = None;
+    for line in output.lines() {
+        let Ok(Value::Object(object)) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
         if object.get("state").and_then(Value::as_str) == Some("starting")
             && object.contains_key("started_pid")
         {

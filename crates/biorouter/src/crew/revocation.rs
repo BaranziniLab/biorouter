@@ -193,6 +193,109 @@ impl CrewManager {
         recorded?
     }
 
+    /// AO-11: forget what removed connections left behind, failing closed. A grant of a
+    /// removed connection goes, with its `run:{session}` credential, only when all of these
+    /// hold:
+    ///
+    /// - its connection is gone;
+    /// - it is recorded in this process's own session store ([`super::GrantStore::Here`]) and
+    ///   bound to the chat it was made to (its incarnation is recorded);
+    /// - that store answers that the chat does not exist (not an error, not a busy store);
+    /// - it has settled ([`super::gone_grant_settled`]): a week past its run's end, which
+    ///   removal put within the hour.
+    ///
+    /// A grant whose chat still exists is kept: it is that chat's privacy restriction, which
+    /// lasts for good. The `completed_preparations` entries, seen devices, staged rekeys and
+    /// read consents of gone connections are forgotten in the same update. Runs at daemon
+    /// start, after a removal and after deleted chats are retired; never on a read, and never
+    /// while the saved registry cannot be read, so nothing is pruned from a copy that may not
+    /// be the file's. A save that fails prunes nothing here either.
+    ///
+    /// ⚠ **Grant and revocation state; needs human review.**
+    pub async fn sweep_removed_connections(&self) {
+        if self.is_unreadable() {
+            return;
+        }
+        self.refresh_registry().await;
+        if self.is_unreadable() {
+            return;
+        }
+        let now = unix_now();
+        let candidates: Vec<(String, Scope)> = {
+            let registry = self.registry.lock().await;
+            registry
+                .scopes
+                .iter()
+                .filter(|(_, scope)| {
+                    !registry
+                        .connections
+                        .iter()
+                        .any(|connection| connection.id == scope.connection_id)
+                        && scope.session_incarnation.is_some()
+                        && super::gone_grant_settled(scope, now)
+                })
+                .map(|(session, scope)| (session.clone(), scope.clone()))
+                .collect()
+        };
+        let mut gone = Vec::new();
+        for (session, scope) in candidates {
+            if self.grant_store(&scope) != super::GrantStore::Here {
+                continue;
+            }
+            match self.chat_incarnation(&session).await {
+                Ok(None) => gone.push((session, scope)),
+                // The chat still exists: its grant is its privacy restriction.
+                Ok(Some(_)) => {}
+                Err(error) => {
+                    tracing::debug!(session, %error, "Couldn't confirm a removed Crew connection's chat is gone; keeping its grant");
+                }
+            }
+        }
+        let mut swept = Vec::new();
+        let saved = self
+            .update_registry(|r| {
+                let connections: HashSet<String> =
+                    r.connections.iter().map(|c| c.id.clone()).collect();
+                for (session, scope) in &gone {
+                    let still = r.scopes.get(session).is_some_and(|saved| {
+                        saved.run_id == scope.run_id
+                            && saved.session_incarnation == scope.session_incarnation
+                            && saved.session_store == scope.session_store
+                            && !connections.contains(&saved.connection_id)
+                    });
+                    if still {
+                        r.scopes.remove(session);
+                        swept.push(session.clone());
+                    }
+                }
+                r.completed_preparations
+                    .retain(|preparation, _| connections.contains(preparation));
+                r.seen_devices.retain(|id, _| connections.contains(id));
+                r.pending_rekeys.retain(|id, _| connections.contains(id));
+                for consents in r.person_reads.values_mut() {
+                    consents.retain(|consent| connections.contains(&consent.connection_id));
+                }
+                r.person_reads.retain(|_, consents| !consents.is_empty());
+                Ok(())
+            })
+            .await;
+        if let Err(error) = saved {
+            tracing::debug!(%error, "Couldn't sweep what removed Crew connections left; nothing was pruned");
+            return;
+        }
+        for session in swept {
+            self.forget_run_reads(&session);
+            self.forget_live_admission(&session);
+            if let Err(error) = self.delete_credential(&format!("run:{session}")) {
+                tracing::warn!(session, %error, "couldn't delete a swept Crew grant's run credential");
+            }
+            tracing::info!(
+                session,
+                "forgot the settled Crew grant of a removed connection's deleted chat"
+            );
+        }
+    }
+
     fn revocation_retry_armed(&self, id: &str, token: u64) -> bool {
         self.revocation_retries
             .lock()

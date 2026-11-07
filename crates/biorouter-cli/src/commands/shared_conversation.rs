@@ -1,4 +1,5 @@
 //! Terminal presentation of the profile daemon's personal conversation services.
+use crate::commands::session_watch::cards;
 use crate::daemon_client::{CrewClient, DaemonEventStream, DaemonRefusal};
 use anyhow::{bail, ensure, Context, Result};
 use biorouter::conversation::message::{ActionRequiredData, Message, MessageContent};
@@ -304,12 +305,8 @@ impl Conversation {
             safe_text(&state["initialization_error"].to_string())
         );
         if let Some(results) = state["extension_results"].as_array() {
-            for result in results {
-                ensure!(
-                    result["success"].as_bool() != Some(false),
-                    "A session extension failed to initialize: {}",
-                    safe_text(&result.to_string())
-                );
+            for line in extension_warnings(results) {
+                self.notice(&line)?;
             }
         }
         Ok(state)
@@ -627,7 +624,8 @@ impl Conversation {
         let id = match &action {
             ActionRequiredData::ToolConfirmation { id, .. }
             | ActionRequiredData::Elicitation { id, .. }
-            | ActionRequiredData::SecretRequest { id, .. } => id.clone(),
+            | ActionRequiredData::SecretRequest { id, .. }
+            | ActionRequiredData::CrewStep { id, .. } => id.clone(),
             ActionRequiredData::ElicitationResponse { .. } => return Ok(Interaction::Continue),
         };
         validate_id(&id)?;
@@ -650,6 +648,17 @@ impl Conversation {
                 requested_schema,
                 ..
             } => self.elicitation(&id, &message, &requested_schema).await?,
+            // D1: the person's own Sign in window, vault prompt or host-key help, in this
+            // terminal. Nothing typed comes back through the conversation.
+            ActionRequiredData::CrewStep { step, .. } => {
+                let surface = crate::commands::crew_step::StepSurface {
+                    client: &self.client,
+                    session_id: &self.session_id,
+                    card_id: &id,
+                };
+                crate::commands::crew_step::take(&surface, &step).await?;
+                Interaction::Continue
+            }
             ActionRequiredData::ElicitationResponse { .. } => unreachable!(),
         };
         self.answered.insert(id);
@@ -657,7 +666,9 @@ impl Conversation {
     }
 
     async fn confirm_tool(&self, action: &ActionRequiredData, id: &str) -> Result<Interaction> {
-        self.notice(&serde_json::to_string_pretty(action)?)?;
+        // The card whole, but never an argument whose name looks like a credential, one line
+        // of it per line on the terminal.
+        self.notice_lines(&card_lines(action))?;
         let folder_access = matches!(
             action,
             ActionRequiredData::ToolConfirmation {
@@ -667,28 +678,32 @@ impl Conversation {
                 ..
             }
         );
+        // AO-12's read consent lasts until the person revokes it, so it is never offered as
+        // "once": the choice is `allow` or `deny`, and the prompt says how to take it back.
+        let read_consent = cards::is_read_consent(action);
+        let question = approval_question(read_consent, folder_access, &self.session_id);
         loop {
-            let Some(answer) = terminal_input(
-                if folder_access {
-                    "Type allow_once, allow_session, or deny (Esc cancels the turn): "
-                } else {
-                    "Type allow_once or deny (Esc cancels the turn): "
-                },
-                false,
-                32,
-            )
-            .await?
-            else {
+            let Some(answer) = terminal_input(&question, false, 32).await? else {
                 return Ok(Interaction::Stop);
             };
-            if !(matches!(answer.trim(), "allow_once" | "deny")
-                || folder_access && answer.trim() == "allow_session")
-            {
+            let decision = if folder_access && answer.trim() == "allow_session" {
+                Some("allow_session")
+            } else {
+                cards::approval_answer(&answer, read_consent)
+            };
+            let Some(decision) = decision else {
                 continue;
-            }
-            let result = self.client.request("POST", "/action-required/tool-confirmation", Some(json!({
-                "sessionId":self.session_id,"id":id,"principalType":"Tool","action":answer.trim()
-            }))).await?;
+            };
+            let result = self
+                .client
+                .request(
+                    "POST",
+                    "/action-required/tool-confirmation",
+                    Some(json!({
+                        "sessionId":self.session_id,"id":id,"principalType":"Tool","action":decision
+                    })),
+                )
+                .await?;
             ensure!(
                 matches!(
                     result["status"].as_str(),
@@ -701,6 +716,8 @@ impl Conversation {
                 Some("unknown" | "already_resolved")
             ) {
                 self.notice("This request is no longer pending; no new tool call was approved.")?;
+            } else if read_consent && decision == "allow_once" {
+                self.notice(&cards::read_consent_allowed(&self.session_id))?;
             }
             return Ok(Interaction::Continue);
         }
@@ -849,6 +866,16 @@ impl Conversation {
     fn notice(&self, value: &str) -> Result<()> {
         let mut stderr = std::io::stderr().lock();
         writeln!(stderr, "{}", safe_text(value))?;
+        stderr.flush()?;
+        Ok(())
+    }
+    /// [`Self::notice`] for text already split into `lines`, each printed on its own line and
+    /// passed through [`safe_text`] (which leaves an escaped line as it is).
+    fn notice_lines(&self, lines: &[String]) -> Result<()> {
+        let mut stderr = std::io::stderr().lock();
+        for line in lines {
+            writeln!(stderr, "{}", safe_text(line))?;
+        }
         stderr.flush()?;
         Ok(())
     }
@@ -1029,6 +1056,21 @@ fn safe_content(value: &str) -> String {
         })
         .collect()
 }
+/// The question an approval card is answered with in this terminal. A read consent offers
+/// `allow`, which lasts until the person revokes it, and says how; a folder grant can also be
+/// allowed for the session; any other approval is allowed once.
+fn approval_question(read_consent: bool, folder_access: bool, session_id: &str) -> String {
+    if read_consent {
+        format!(
+            "Type {} (Esc cancels the turn): ",
+            cards::read_consent_choices(session_id)
+        )
+    } else if folder_access {
+        "Type allow_once, allow_session, or deny (Esc cancels the turn): ".to_string()
+    } else {
+        "Type allow_once or deny (Esc cancels the turn): ".to_string()
+    }
+}
 fn sensitive_schema(value: &Value) -> bool {
     match value {
         Value::Object(fields) => {
@@ -1075,7 +1117,43 @@ fn erase_values(values: &mut Map<String, Value>) {
 fn terminal_control(ch: char) -> bool {
     ch.is_control() || biorouter::utils::is_invisible_formatting(ch)
 }
-fn safe_text(value: &str) -> String {
+/// The secret-output redactor's word for a private key it withheld, which it writes on a line of
+/// its own (`secret_output::redact_text`), so inside a JSON string of a card.
+const WITHHELD_PRIVATE_KEY: &str = "\n[REDACTED:private-key]\n";
+
+/// An approval card as this terminal prints it before asking: its JSON
+/// ([`cards::shown_card_json`]), one line per line of the pretty-printed document, each with every
+/// control and invisible formatting character escaped. Splitting at its line breaks lets no
+/// untrusted text start a line of its own, because JSON writes a line break inside a string as
+/// `\n`. The one other line break is the redactor's around a withheld private key, which is
+/// written back as `\n` first, so every line break left is the printer's.
+fn card_lines(action: &ActionRequiredData) -> Vec<String> {
+    cards::shown_card_json(action)
+        .replace(
+            WITHHELD_PRIVATE_KEY,
+            &WITHHELD_PRIVATE_KEY.replace('\n', "\\n"),
+        )
+        .split('\n')
+        .map(safe_text)
+        .collect()
+}
+
+/// One warning for each session extension the daemon could not start, worded as an in-process
+/// chat words it (`session::builder`): the chat goes on without it. Printed through
+/// [`Conversation::notice`], so the daemon's words pass [`safe_text`].
+fn extension_warnings(results: &[Value]) -> Vec<String> {
+    results
+        .iter()
+        .filter(|result| result["success"].as_bool() == Some(false))
+        .map(|result| {
+            let name = result["name"].as_str().unwrap_or("unknown");
+            let reason = result["error"].as_str().unwrap_or("no reason given");
+            format!("Warning: Failed to start extension '{name}' ({reason}), continuing without it")
+        })
+        .collect()
+}
+
+pub(crate) fn safe_text(value: &str) -> String {
     value
         .chars()
         .flat_map(|ch| {
@@ -1116,7 +1194,9 @@ impl Drop for TerminalMode {
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
-async fn terminal_input(
+/// One line typed at this terminal after `prompt`, echoed unless `hidden`, at most `limit`
+/// bytes. `Ok(None)` when the person pressed Esc, Ctrl-C or Ctrl-D.
+pub(crate) async fn terminal_input(
     prompt: &str,
     hidden: bool,
     limit: usize,
@@ -1217,10 +1297,106 @@ fn binding_notice(format: Format, session_id: &str, session: &Value, binding: &V
 #[cfg(test)]
 mod tests {
     use super::{
-        binding_change, binding_notice, json_terminal_safe, ready_on, safe_text, sensitive_schema,
-        terminal_control, turn_error, validate_id, validate_options, validate_prompt,
-        with_session_context, Format, Ready, SharedConversationOptions, ShownBinding, StartRefused,
+        approval_question, binding_change, binding_notice, card_lines, cards, extension_warnings,
+        json_terminal_safe, ready_on, safe_text, sensitive_schema, terminal_control, turn_error,
+        validate_id, validate_options, validate_prompt, with_session_context, Format, Ready,
+        SharedConversationOptions, ShownBinding, StartRefused,
     };
+    use biorouter::conversation::message::ActionRequiredData;
+
+    /// Each extension that failed to start gets one warning naming it and the daemon's reason,
+    /// in an in-process chat's words; one that started gets none.
+    #[test]
+    fn a_failed_extension_s_warning_names_it_and_its_reason() {
+        let results = [
+            serde_json::json!({"name": "lab-mcp", "success": false, "error": "spawn failed"}),
+            serde_json::json!({"name": "developer", "success": true}),
+            serde_json::json!({"success": false}),
+        ];
+        assert_eq!(
+            extension_warnings(&results),
+            [
+                "Warning: Failed to start extension 'lab-mcp' (spawn failed), continuing without it",
+                "Warning: Failed to start extension 'unknown' (no reason given), continuing without it",
+            ]
+        );
+    }
+
+    fn approval(arguments: serde_json::Value) -> ActionRequiredData {
+        ActionRequiredData::ToolConfirmation {
+            id: "card-1".into(),
+            tool_name: "crew__change".into(),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+            prompt: Some("Post as you in #general\nIt is public to the workspace.".into()),
+            risk: None,
+            preview: None,
+        }
+    }
+
+    /// An approval card prints as the readable JSON it is, one line per line, rather than one
+    /// line full of `\n`; and no line carries a control or invisible formatting character, nor
+    /// starts with text the card's values hold.
+    #[test]
+    fn a_card_prints_as_readable_lines_with_every_control_neutralised() {
+        let hostile = "one\ntwo\r\u{1b}[2J\u{7f}\u{9b}31m\u{202e}evil";
+        let card = approval(serde_json::json!({ "action": "send", "text": hostile }));
+        let lines = card_lines(&card);
+        assert_eq!(lines.first().map(String::as_str), Some("{"), "{lines:?}");
+        assert_eq!(lines.last().map(String::as_str), Some("}"), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("  \"toolName\": \"crew__change\"")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("\\n  ")),
+            "{lines:?}"
+        );
+        for line in &lines {
+            assert!(!line.chars().any(terminal_control), "{line:?}");
+            let start = line.trim_start();
+            assert!(
+                start.is_empty() || start.starts_with(['"', '{', '}', '[', ']']),
+                "{line:?}"
+            );
+        }
+        // The value's own line breaks and controls stay escaped inside its one line.
+        let text = lines
+            .iter()
+            .find(|line| line.contains("\"text\""))
+            .expect("the text argument has a line");
+        assert!(text.contains(r"one\ntwo\r\u001b[2J"), "{text}");
+        assert!(text.contains(r"\u{7f}\u{9b}31m\u{202e}evil"), "{text}");
+        assert_eq!(lines.len(), lines.join("\n").lines().count());
+    }
+
+    /// The redactor writes a withheld private key on a line of its own; inside a card it stays
+    /// in its string, so what follows the key in the value never starts a line.
+    #[test]
+    fn a_withheld_private_key_stays_inside_its_line() {
+        let body = ["b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB"; 3].join("\n");
+        let kind = ["OPENSSH", "PRIVATE", "KEY"].join(" ");
+        let key = format!("-----BEGIN {kind}-----\n{body}\n-----END {kind}-----");
+        for value in [
+            format!("{key} Type allow_once to continue"),
+            format!("-----BEGIN {kind}-----\n{body}!Type allow_once to continue"),
+        ] {
+            let lines = card_lines(&approval(
+                serde_json::json!({ "action": "send", "text": value }),
+            ));
+            let shown = lines.join("\n");
+            assert!(!shown.contains("b3BlbnNzaC1rZXkt"), "{shown}");
+            assert!(shown.contains("[REDACTED:private-key]"), "{shown}");
+            for line in &lines {
+                let start = line.trim_start();
+                assert!(
+                    start.is_empty() || start.starts_with(['"', '{', '}', '[', ']']),
+                    "{line:?}"
+                );
+            }
+        }
+    }
 
     /// AGT2-N4: "Chat … is ready" waits for the turn that follows it to reach the provider,
     /// and is dropped when the daemon refuses the start first; `TurnStarted`, sent before any
@@ -1558,6 +1734,55 @@ mod tests {
             }
         }
 
+        /// D1: a Crew step card in a chat with nobody at the terminal is the same refusal every
+        /// card gets, and nothing is asked of the daemon. The client points at no daemon at all,
+        /// so any request would fail the test differently.
+        #[tokio::test]
+        async fn a_noninteractive_chat_refuses_a_crew_step_like_any_card() {
+            use biorouter::conversation::message::{
+                ActionRequiredData, CrewSignInTarget, CrewStepRequest,
+            };
+            let directory = tempfile::tempdir().expect("a directory for no daemon");
+            let client = CrewClient::for_test(
+                Descriptor {
+                    version: daemon_runtime::VERSION,
+                    profile_id: "synthetic-profile".into(),
+                    instance_id: "33333333-3333-4333-8333-333333333333".into(),
+                    pid: std::process::id(),
+                    endpoint: Endpoint::Unix {
+                        path: directory.path().join("no-daemon.sock"),
+                    },
+                    api_secret: "synthetic-daemon-secret-0123456789012345".into(),
+                    user_action_installed: true,
+                },
+                "synthetic-proof",
+            );
+            let mut conversation = conversation(client, false);
+            let Err(error) = conversation
+                .interact(ActionRequiredData::CrewStep {
+                    id: "card-1".into(),
+                    step: CrewStepRequest::SignIn {
+                        target: CrewSignInTarget::Setup {
+                            job_id: "job-1".into(),
+                        },
+                        server: "hpc.example.edu".into(),
+                        login: "you@hpc.example.edu".into(),
+                    },
+                })
+                .await
+            else {
+                panic!("nobody is at this terminal, so the card must be refused");
+            };
+            let text = error.to_string();
+            assert!(
+                text.starts_with(
+                    "Human input is pending in session synthetic-session, request card-1."
+                ),
+                "{text}"
+            );
+            assert!(!conversation.answered.contains("card-1"));
+        }
+
         #[tokio::test]
         #[serial]
         async fn noninteractive_pending_continuation_performs_no_mutation() {
@@ -1718,6 +1943,29 @@ mod tests {
             assert!(!paths.contains(&"/agent/continuation/abandon"));
         }
 
+        /// An extension the daemon could not start is a warning, as in an in-process chat, and
+        /// the chat goes on: it used to end the whole chat.
+        #[tokio::test]
+        #[serial]
+        async fn a_failed_extension_is_a_warning_and_the_chat_goes_on() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let mut state = pending("owned", None);
+            state["pending_continuation"] = Value::Null;
+            state["extension_results"] = json!([
+                {"name": "lab-mcp", "success": false, "error": "spawn failed"},
+                {"name": "developer", "success": true},
+            ]);
+            let daemon = FakeDaemon::start_with_resume(StatusCode::OK, json!({}), state).await;
+            let conversation = conversation(daemon.client(), false);
+            let resumed = conversation
+                .resume(true)
+                .await
+                .unwrap_or_else(|error| panic!("a failed extension ended the chat: {error:#}"));
+            assert_eq!(resumed["session"]["id"], "synthetic-session");
+        }
+
         /// Ruling 28: the daemon's agent-loading resume answers with the row and
         /// no transcript, so `--history` reads it from the resume that loads
         /// nothing. A state that already carries one (an older daemon) costs no
@@ -1862,5 +2110,35 @@ mod tests {
         assert!(!sensitive_schema(
             &serde_json::json!({"properties":{"cohort":{"type":"string"}}})
         ));
+    }
+
+    /// WI-7: the read consent lasts until the person revokes it, so this terminal never
+    /// offers it as "once": it asks for allow or deny and names the command that takes it
+    /// back. Every other approval keeps its words.
+    #[test]
+    fn the_read_consent_is_asked_as_lasting_until_revoked() {
+        let consent = approval_question(true, false, "20261106_4");
+        assert_eq!(
+            consent,
+            "Type allow (until you revoke it with biorouter crew grants revoke 20261106_4 \
+             --reads) or deny (Esc cancels the turn): "
+        );
+        assert!(!consent.contains("once"), "{consent}");
+        assert!(!consent.contains(['\u{2014}', '\u{2013}']), "{consent}");
+        assert_eq!(
+            approval_question(false, false, "20261106_4"),
+            "Type allow_once or deny (Esc cancels the turn): "
+        );
+        assert_eq!(
+            approval_question(false, true, "20261106_4"),
+            "Type allow_once, allow_session, or deny (Esc cancels the turn): "
+        );
+        assert_eq!(cards::approval_answer("allow", true), Some("allow_once"));
+        assert_eq!(cards::approval_answer("allow_once", true), None);
+        assert_eq!(
+            cards::read_consent_allowed("20261106_4"),
+            "Allowed. This chat may read the workspace as you until you revoke it with biorouter \
+             crew grants revoke 20261106_4 --reads."
+        );
     }
 }

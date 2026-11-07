@@ -20,6 +20,7 @@ import {
   type KnownInstitution,
   type PeopleDirectory,
 } from '../identity';
+import { FULL_ACCESS_IS_YOU, fullAccessHost } from '../onboarding/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 import { agentCopy } from './copy';
@@ -714,6 +715,22 @@ export function remoteAccessText(connection: CrewConnection | null | undefined):
       root
     );
   return connection.remote_execution ? agentCopy.folderExec(root) : agentCopy.folderRead(root);
+}
+
+/**
+ * What a task with full server access also means, said under its access line wherever a task is
+ * started (Ask my agent, the composer's consent line), as the chat's task card and `biorouter crew
+ * tasks start` say it: Crew treats anything running as the account as the person
+ * (`FULL_ACCESS_IS_YOU`), and, when the person's own view names them the host of `workspace`, the
+ * workspace's own files are reachable too (`fullAccessHost`). `null` for any other access.
+ */
+export function fullAccessWarning(
+  connection: CrewConnection | null | undefined,
+  workspace: string,
+  hosts: boolean
+): string | null {
+  if (!connection?.remote_root || connectionRemoteAccess(connection) !== 'full') return null;
+  return hosts ? `${FULL_ACCESS_IS_YOU} ${fullAccessHost(workspace)}` : FULL_ACCESS_IS_YOU;
 }
 
 /**

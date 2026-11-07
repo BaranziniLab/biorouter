@@ -526,6 +526,16 @@ describe('ConnectionSettingsDialog', () => {
       expect(warning).toHaveTextContent(connectionSettingsCopy.fullWarning('@alice', SERVER));
       // The person hosts this workspace (the fixture's Alice): its files are in this account.
       expect(warning).toHaveTextContent(connectionSettingsCopy.fullWarningHost('lab'));
+      // Under account ownership the agent is the person in Crew too, and on the host's account the
+      // host (finding 16).
+      expect(warning).toHaveTextContent(
+        /add a computer to your account and post in Crew as you, with no agent mark/
+      );
+      expect(warning).toHaveTextContent(/act as the host of lab\./);
+      // The host's sentence in the words the Join and Host dialogs and the command line use.
+      expect(warning).toHaveTextContent(
+        'You host lab from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of lab.'
+      );
       // One warning, no typing: Save is the consent.
       expect(screen.queryByRole('alertdialog')).toBeNull();
       save();
@@ -649,7 +659,7 @@ describe('ConnectionSettingsDialog', () => {
       'Copy workspace ID',
       'Copy fingerprint',
       'Copy socket path',
-      'Copy device ID',
+      'Copy computer ID',
       'Copy cluster ID',
     ])
       expect(screen.getByRole('button', { name })).toBeInTheDocument();

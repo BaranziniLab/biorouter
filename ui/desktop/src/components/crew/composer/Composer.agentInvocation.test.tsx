@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError, type CrewMessage, type Snapshot } from '../crewApi';
 import {
+  bob,
   channelReady,
   connection,
   currentCrew,
@@ -14,6 +15,7 @@ import {
   richSnapshot,
   type ScriptedDaemon,
 } from '../integration/harness';
+import { FULL_ACCESS_IS_YOU, fullAccessHost } from '../onboarding/copy';
 import { agentCopy, unknownOutcomeCopy } from '../pane/copy';
 import { crewActionCopy } from '../state/copy';
 import { installResizeObserverStub } from '../test/crewTestUtils';
@@ -192,6 +194,34 @@ describe('@agent in the composer (OW-10)', () => {
         'Can run commands as you on leo, starting in ~/crew-work/lab'
       )
     );
+    // What running as the account means, and, since Alice hosts lab, what it adds (W1, W2): the
+    // words every full-access surface says, in the line Start is described by.
+    const warning = consent()?.querySelector('[data-crew-full-access]');
+    expect(warning?.textContent).toBe(`${FULL_ACCESS_IS_YOU} ${fullAccessHost('lab')}`);
+    expect(warning?.closest('[role="status"]')?.id).toBe(
+      startButton().getAttribute('aria-describedby')
+    );
+  });
+
+  it('says only what running as the account means to a member who does not host it', async () => {
+    daemon.state.connections = [
+      {
+        ...connection,
+        remote_root: '~/crew-work/lab',
+        remote_execution: true,
+        remote_access: 'full',
+        server_label: 'leo',
+      },
+    ];
+    daemon.state.snapshot = richSnapshot({ pending_joins: [], actor: bob });
+    renderCrew();
+    const composer = await channelReady();
+    await typeTask(composer, '@agent rerun the alignment');
+    await waitFor(() =>
+      expect(consent()?.querySelector('[data-crew-full-access]')?.textContent).toBe(
+        FULL_ACCESS_IS_YOU
+      )
+    );
   });
 
   it('says the confined folder of a connection that has one', async () => {
@@ -204,6 +234,7 @@ describe('@agent in the composer (OW-10)', () => {
     await waitFor(() =>
       expect(consent()).toHaveTextContent('Can run commands in /home/alice/crew-work')
     );
+    expect(consent()?.querySelector('[data-crew-full-access]')).toBeNull();
   });
 
   it('posts a mention in a sentence as a message', async () => {

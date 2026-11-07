@@ -562,6 +562,9 @@ fn a_person_sees_their_own_devices_and_nobody_elses() {
         .join(" ");
     assert_eq!(fingerprint, expected);
     assert_eq!(devices[0]["added_via"], "bootstrap");
+    // Amended for account ownership (AO-5): each entry also says whether it is the key that
+    // signed this snapshot request.
+    assert_eq!(devices[0]["this_device"], true);
 
     // A second device for bob, by the legacy add-device path.
     let second = key(31);
@@ -582,7 +585,33 @@ fn a_person_sees_their_own_devices_and_nobody_elses() {
         assert_eq!(device["added_via"], "token");
         assert!(device["added_at"].as_u64().unwrap() >= started);
         assert!(!contains_machine_id(&device.to_string()));
+        let mut fields: Vec<&str> = device
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort();
+        assert_eq!(
+            fields,
+            ["added_at", "added_via", "fingerprint", "this_device"]
+        );
     }
+    let signing: Vec<&Value> = devices
+        .iter()
+        .filter(|device| device["this_device"] == true)
+        .collect();
+    assert_eq!(signing.len(), 1, "exactly the key that signed");
+    let bob_fingerprint: String = device_id(&bob.key)
+        .to_uppercase()
+        .chars()
+        .take(16)
+        .collect::<Vec<_>>()
+        .chunks(4)
+        .map(|group| group.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(signing[0]["fingerprint"], json!(bob_fingerprint));
     assert!(
         ws.host_snapshot()["principals"]
             .as_array()

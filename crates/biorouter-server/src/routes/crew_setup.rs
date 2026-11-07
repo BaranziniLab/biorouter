@@ -2,7 +2,10 @@
 //!
 //! - `GET /crew/setup/artifact`: the Crew server program this daemon would install.
 //! - `POST /crew/setup`: start a setup job (check, install, host or member) for a saved
-//!   connection or this computer's pending host setup.
+//!   connection, this computer's pending host setup, or a server named by its SSH login
+//!   (account ownership AO-8).
+//! - `GET /crew/setup`: this computer's jobs, the newest first, so the Crew view can show one a
+//!   chat started.
 //! - `GET` and `DELETE /crew/setup/{job_id}`: where a job stands, and stopping it.
 //! - `POST /crew/setup/{job_id}/authentication`: the sign-in a job waits for, whose terminal is
 //!   the ordinary `GET /crew/authentication/{id}/terminal`.
@@ -21,14 +24,14 @@ use axum::{
 };
 use biorouter::crew::authentication::AuthenticationSession;
 use biorouter::crew::{
-    cancel_setup, manager, prepare_setup_sign_in, setup_artifact, setup_status, ContextDraft,
-    CrewRefusal, SetupArtifact, SetupRefused, SetupRequest, SetupStatus,
+    cancel_setup, manager, prepare_setup_sign_in, setup_artifact, setup_jobs, setup_status,
+    ContextDraft, CrewRefusal, SetupArtifact, SetupRefused, SetupRequest, SetupStatus,
 };
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::crew::wire::{CrewCancelled, CrewJson};
+use super::crew::wire::{CrewCancelled, CrewJson, CrewSetupJobs};
 use super::crew_authentication::{
     no_human_authority, HUMAN_AUTHORITY_UNAVAILABLE_CODE, REQUEST_INVALID_CODE,
     REQUEST_REFUSED_CODE, USER_ACTION_REQUIRED_CODE,
@@ -145,22 +148,23 @@ pub async fn artifact(headers: HeaderMap) -> SetupResult<SetupArtifact> {
     Ok(Json(setup_artifact()?))
 }
 
-/// Set Crew up on a server (OW-9).
+/// Set Crew up on a server (OW-9, account ownership AO-8).
 ///
 /// Check the server, sign in when it asks for a password or a code, install this app's Crew
-/// program in the account, then start the workspace (`host`) or connect (`member`). The body
-/// names no command: every step is a fixed script.
+/// program in the account, list the workspaces there and update the ones the account hosts,
+/// then start the workspace (`host`) or connect (`member`). The body names no command: every
+/// step is a fixed script.
 #[utoipa::path(
     post,
     operation_id = "crew_setup_start",
     path = "/crew/setup",
     request_body = SetupRequest,
     responses(
-        (status = 200, description = "The job, started (or the one already under way for the same server and intent): poll `GET /crew/setup/{job_id}`", body = SetupStatus),
-        (status = 400, description = "`crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, or a `member` job without a saved connection; `crew_request_refused` for an SSH configuration the preflight refuses", body = CrewError),
+        (status = 200, description = "The job, started, or the one already under way for this server when its intent, SSH route and every choice match this request's (any other request for the server is `crew_setup_busy`): poll `GET /crew/setup/{job_id}`. A `check` job runs check, sign-in, `workspaces`, done; an `install` job adds install and `restart`; a `host` job adds the start and, with `finish`, `save`, `join` and `configure`. An installed Crew older than this app's is replaced unless `keep_older`; `replace_existing` only covers one that does not run or name its version, and a newer one is never replaced. `restart_workspaces` (`true`: restart every outdated hosted workspace even with others connected; `false`: only report them in `outcome.outdated`), `restart_workspace_ids` (hosted workspaces, by ID, the person agreed to restart even with others connected, whatever `restart_workspaces` says) and `start_workspaces` (stopped hosted workspaces, by ID) choose what the `restart` stage does. A `host` job whose account already hosts a workspace of that name on the server fails with `crew_host_name_in_use` before anything is started or restarted", body = SetupStatus),
+        (status = 400, description = "`crew_request_invalid`: a body that is not JSON, a field the route does not take, a workspace name, login or route outside what a connection allows, a `host` job without a pending host setup and a name, a `member` job without a saved connection, a `host` or `member` job on a `server` target, `start_workspaces` or `restart_workspace_ids` on a `check` job, or an ID in either that is not a workspace ID, or `finish` without `mode`, on a job that does not host, or for a Private workspace without `institution_id`; `crew_request_refused` for an SSH configuration the preflight refuses", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
-        (status = 409, description = "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: another kind of job is under way for this server, or too many jobs at once", body = CrewError),
+        (status = 409, description = "`crew_host_setup_unknown`: no pending host setup (or, for a `server` target, prepared device) with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_setup_busy`: a job is under way for this server whose intent, SSH route or any choice differs from this request's, or too many jobs are under way at once", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError)
     ),
@@ -178,6 +182,23 @@ pub async fn start(
     Ok(Json(manager()?.start_setup(request).await?))
 }
 
+/// This computer's setup jobs (account ownership AO-8), so the Crew view can show one a chat or
+/// another window started.
+#[utoipa::path(
+    get,
+    operation_id = "crew_setup_jobs",
+    path = "/crew/setup",
+    responses(
+        (status = 200, description = "Every job under way on this computer and every one that finished in the last 15 minutes, the newest first, each as `GET /crew/setup/{job_id}` answers it. A bare array, empty when there is none", body = CrewSetupJobs),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn jobs(headers: HeaderMap) -> SetupResult<CrewSetupJobs> {
+    person(&headers)?;
+    Ok(Json(CrewSetupJobs(setup_jobs())))
+}
+
 /// Where a setup job stands.
 #[utoipa::path(
     get,
@@ -185,7 +206,7 @@ pub async fn start(
     path = "/crew/setup/{job_id}",
     params(("job_id" = String, Path, description = "The job `POST /crew/setup` answered")),
     responses(
-        (status = 200, description = "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code)", body = SetupStatus),
+        (status = 200, description = "`state` is `running`, `needs_sign_in` (open `POST /crew/setup/{job_id}/authentication`), `finished` (`outcome`), `failed` or `cancelled` (`error`: a typed code and a sentence, such as `crew_setup_cancelled`, `crew_setup_timed_out`, `crew_setup_sign_in_expired`, `crew_setup_start_failed` (`detail` is what Crew printed), `crew_host_storage_unsafe` (other accounts can write to a folder above where the workspace is kept; `detail` lists them, and starting again with `fix_storage_permissions` fixes the account's own), `crew_host_name_in_use` (the account already hosts a workspace of that name on the server: \"You already host {name} on {server}. Open it on this computer instead.\" when it runs, and \"You already host {name} on {server}. It is stopped: start it with biorouter crew setup --server {login} --start {name}, then open it.\" when it is stopped), `crew_setup_changed`, `crew_install_checksum_mismatch` or an SSH code; after a `finish` saved the connection, a join refusal such as `crew_join_removed`, or `crew_account_unsupported`, with `outcome.connection_id` and `outcome.steps_left` saying what is left). `workspaces` lists the workspaces on the server for this account, each with its `role`, `state`, host and `this_computer` (`connected`, `saved` or `not_saved`), with `workspaces_scan` counting what the listing skipped and `workspaces_note` saying why there is no listing (an older Crew, a failure or a timeout, which never stops the job), and `workspaces_unlisted` saying it as a code: `not_installed`, `too_old` (an `install` job replaces the Crew in the account and lists them), `failed` or `timed_out`. `outcome.restarted`, `outcome.outdated` (with `reason` `others_connected`, `running_newer`, `not_running_installed` or `custom_state_dir`) and `outcome.restart_failed` say what the `restart` stage did; a failed restart fails only that stage. Each `restart_failed` entry has a `code` and a sentence. A refusal made before anything was stopped (such as `program_missing`, `busy`, `identity_conflict`, `identity_mismatch`, `workspace_deleted` or `unsupported`) says the workspace was not restarted and still runs the older Crew, and has no `command`; `identity_conflict` shows Crew's own sentence naming the folders that keep the workspace. Only Crew's `start_failed` says the workspace stopped and did not start again; where the workspace may be stopped, `command` starts it by hand", body = SetupStatus),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_setup_not_found`: no such job on this computer", body = CrewError)
     ),
@@ -286,7 +307,7 @@ pub async fn context_draft(
 
 pub fn routes() -> Router {
     Router::new()
-        .route("/crew/setup", post(start))
+        .route("/crew/setup", get(jobs).post(start))
         .route("/crew/setup/artifact", get(artifact))
         .route("/crew/setup/{job_id}", get(status).delete(cancel))
         .route("/crew/setup/{job_id}/authentication", post(authentication))
@@ -350,6 +371,82 @@ mod tests {
         match context_draft(none(), Path("c".to_owned())).await {
             Err(refusal) => proofless(refusal).await,
             Ok(_) => panic!("reached a server without proof of a person"),
+        }
+    }
+
+    /// `GET /crew/setup` (AO-8) lists this computer's jobs to a person only, as a bare array:
+    /// a job a chat started shows a person's sign-in prompt, so it is not for an agent.
+    #[tokio::test]
+    async fn the_job_list_is_a_persons_and_a_bare_array() {
+        match jobs(HeaderMap::new()).await {
+            Err(refusal) => proofless(refusal).await,
+            Ok(_) => panic!("listed setup jobs without proof of a person"),
+        }
+        let listed = serde_json::to_value(CrewSetupJobs(setup_jobs())).unwrap();
+        assert!(listed.is_array(), "{listed}");
+        let (_, schema) = <CrewSetupJobs as utoipa::ToSchema>::schema();
+        let schema = serde_json::to_value(schema).unwrap();
+        assert_eq!(schema["type"], "array", "{schema}");
+        assert_eq!(
+            schema["items"]["$ref"], "#/components/schemas/SetupStatus",
+            "{schema}"
+        );
+    }
+
+    /// What the OpenAPI text says a route answers with `status`.
+    fn described<P: utoipa::Path>(method: &str, status: &str) -> String {
+        let item = serde_json::to_value(P::path_item(None)).unwrap();
+        item[method]["responses"][status]["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no {status} for {method}: {item}"))
+            .to_owned()
+    }
+
+    /// AO-8: a request shares a running job only when it asks for exactly the same (intent,
+    /// SSH route and every choice), else `crew_setup_busy`; and a restart refused before
+    /// anything was stopped is described as leaving the workspace on the older Crew.
+    #[test]
+    fn the_setup_routes_say_when_a_job_is_shared_and_what_a_failed_restart_left() {
+        let started = described::<__path_start>("post", "200");
+        assert!(
+            started.contains("when its intent, SSH route and every choice match")
+                && started.contains("is `crew_setup_busy`"),
+            "{started}"
+        );
+        assert!(!started.contains("same server and intent"), "{started}");
+        let busy = described::<__path_start>("post", "409");
+        assert!(
+            busy.contains("`crew_setup_busy`: a job is under way for this server whose intent, SSH route or any choice differs"),
+            "{busy}"
+        );
+        assert!(!busy.contains("another kind of job"), "{busy}");
+        let status = described::<__path_status>("get", "200");
+        assert!(
+            status
+                .contains("was not restarted and still runs the older Crew, and has no `command`")
+                && status.contains("Only Crew's `start_failed` says the workspace stopped"),
+            "{status}"
+        );
+        // A listing a too old Crew could not give says so as a code a surface acts on.
+        assert!(
+            status.contains("`workspaces_unlisted` saying it as a code")
+                && status.contains(
+                    "`too_old` (an `install` job replaces the Crew in the account and lists them)"
+                ),
+            "{status}"
+        );
+    }
+
+    /// AO-8: the job's status carries why the workspaces were not listed as a code, beside its
+    /// sentence, in the schema the desktop reads.
+    #[test]
+    fn the_setup_status_names_why_nothing_was_listed() {
+        let (_, schema) = <SetupStatus as utoipa::ToSchema>::schema();
+        let schema = serde_json::to_value(schema).unwrap();
+        let unlisted = &schema["properties"]["workspaces_unlisted"];
+        let text = unlisted.to_string();
+        for code in ["not_installed", "too_old", "failed", "timed_out"] {
+            assert!(text.contains(&format!("\"{code}\"")), "{code}: {unlisted}");
         }
     }
 

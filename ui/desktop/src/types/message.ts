@@ -152,6 +152,21 @@ export function getSecretRequestContent(
   );
 }
 
+/**
+ * A Crew step card (the owner's D1 ruling on AO-12): a step only the person can
+ * take, opened by a chat. Like a credential card it has no response message
+ * type: the step happens in the person's own window, and the card can only be
+ * dismissed (`POST /action-required/crew-step`).
+ */
+export function getCrewStepContent(
+  message: Message
+): (ActionRequired & { type: 'actionRequired' }) | undefined {
+  return message.content.find(
+    (content): content is ActionRequired & { type: 'actionRequired' } =>
+      content.type === 'actionRequired' && content.data.actionType === 'crewStep'
+  );
+}
+
 export function hasCompletedToolCalls(message: Message): boolean {
   const toolRequests = getToolRequests(message);
   return toolRequests.length > 0;

@@ -453,6 +453,42 @@ export const EXPLORED_COPY = {
       .join(', '),
 } as const;
 
+/**
+ * Crew's person tools (account ownership AO-12). Every `crew__change` action, and the first read of
+ * a workspace's content, parks one proof-backed card that the daemon asks again for each action:
+ * no standing permission ever applies to them. So the per-tool permission choices leave them out,
+ * and their answered rows offer no Change.
+ */
+export const CREW_PERSON_TOOLS: readonly string[] = ['crew__read', 'crew__change'];
+
+export function isCrewPersonTool(toolName: string): boolean {
+  return CREW_PERSON_TOOLS.includes(toolName);
+}
+
+/**
+ * AO-12's read consent: the one `crew__read` card, parked with `action: "read as you"`. Unlike a
+ * change it lasts, per chat and workspace, until the person takes it back, so it is never "once".
+ * Other `crew__read` cards (a check of a server no saved connection names) are one-time approvals.
+ */
+export function isCrewReadConsent(
+  toolName: string,
+  args: Record<string, unknown> | null | undefined,
+  prompt?: string | null
+): boolean {
+  if (toolName !== 'crew__read') return false;
+  return (
+    args?.action === 'read as you' ||
+    (typeof prompt === 'string' && prompt.startsWith('Let this chat read '))
+  );
+}
+
+/**
+ * Sent on `window` when the person allows a chat's read consent on its card, with the chat's ID as
+ * `detail.sessionId`: that chat's Crew bar reads its access again and shows the consent with Revoke
+ * (`useChatCrewAccess`).
+ */
+export const CREW_READ_CONSENT_EVENT = 'biorouter:crew-read-consent';
+
 export const APPROVAL_COPY = {
   question: 'Run',
   allowOnce: 'Allow once',
@@ -470,6 +506,14 @@ export const APPROVAL_COPY = {
     unknown: 'no longer available',
   },
   confirmFailed: 'Could not confirm your decision. Try again.',
+  /** AO-12's read consent (`isCrewReadConsent`): it lasts until taken back, so never "once". */
+  readConsent: {
+    allow: 'Allow',
+    allowed: (workspace: string | null) =>
+      workspace
+        ? `This chat may read ${workspace} as you until you take it back`
+        : 'This chat may read this workspace as you until you take it back',
+  },
   // A refusal, so it stays visible (principle 2).
   browserCannotApprove:
     'This page is served to a browser, which has no way to prove a decision came from you ' +

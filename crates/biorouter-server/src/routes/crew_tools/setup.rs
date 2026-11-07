@@ -1,0 +1,1971 @@
+//! The person tools' setup and connection actions (AO-12): `describe`, `status`, the saved
+//! connections, setting Crew up on a server, hosting, opening and joining a workspace, adding
+//! this computer again, connecting, and the model Crew tasks start on.
+//!
+//! Each calls what the matching route or `biorouter crew` command calls: [`CrewManager`]'s
+//! methods, the setup service (`start_setup`, `setup_status`, `cancel_setup`) and the saved
+//! configuration. A flow the CLI takes in several steps (`host`, `open`, `join`) takes the same
+//! steps here, after one card that names everything it will do.
+
+use anyhow::Result;
+use biorouter::config::Config;
+use biorouter::crew::authentication::{
+    InvitationAdvanced, InvitationOutcome, InvitationOverrides, InvitationPreview, JoinState,
+};
+use biorouter::crew::{
+    ClusterMode, Connection, CrewManager, SaveConnection, SetupArtifact, SetupInstalled,
+    SetupRequest, SetupState, SetupStatus, SetupWorkspace, SetupWorkspaceRole, SetupWorkspaceState,
+};
+use futures::future::BoxFuture;
+use serde_json::{json, Value};
+use std::future::Future;
+use std::time::Duration;
+
+use super::places::local_path;
+use super::signin::{self, connect_or_sign_in, SignIn, SignInGate};
+use super::{catalog, job_answer, job_target, remember_job_target, said, Card, Ctx, Progress};
+use crate::routes::crew::connection_view;
+use crate::routes::crew_authentication::InvitationSummary;
+
+/// The configuration key holding the model Crew tasks start on, as `biorouter crew defaults`
+/// and Settings write it.
+pub(crate) const CREW_TASK_MODEL: &str = "CREW_TASK_MODEL";
+/// Said for a setup job this computer no longer has.
+pub(super) const NO_JOB: &str = "That setup job is not on this computer any more. Check the server again with crew__read action setup_check.";
+
+// ------------------------------------------------------------------------------------- reads
+
+pub(super) fn describe(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let name = ctx.required("action")?;
+        let action = catalog::find_any(&name).ok_or_else(|| {
+            said(
+                None,
+                format!(
+                    "There is no action {name}. crew__read: {}. crew__change: {}.",
+                    biorouter::crew::tool_host::READ_ACTIONS.join(", "),
+                    biorouter::crew::tool_host::CHANGE_ACTIONS.join(", ")
+                ),
+            )
+        })?;
+        Ok(catalog::describe(action))
+    })
+}
+
+/// `biorouter crew status`: every saved connection as `GET /crew/connections` lists it. A
+/// connection list carries no workspace content, so any chat gets it.
+pub(super) fn status(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let connections = ctx.crew()?.list().await;
+        let mut views = Vec::with_capacity(connections.len());
+        for connection in &connections {
+            views.push(connection_view(connection).await?);
+        }
+        Ok(json!({ "connections": views }))
+    })
+}
+
+pub(super) fn connections_show(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let connection = ctx.connection().await?;
+        Ok(serde_json::to_value(connection_view(&connection).await?)?)
+    })
+}
+
+/// The choices a join from an invitation takes beyond the invitation's own route (the Join
+/// screen's Advanced settings). A join from a saved connection takes none of them.
+const JOIN_ROUTE: [&str; 6] = [
+    "ssh_target",
+    "port",
+    "identity_file",
+    "proxy_jump",
+    "folder",
+    "agent_access",
+];
+
+/// The SSH port the call names: 1 to 65535.
+fn typed_port(ctx: &Ctx) -> Result<Option<u16>> {
+    ctx.number("port")
+        .map(|port| {
+            u16::try_from(port)
+                .ok()
+                .filter(|port| *port > 0)
+                .ok_or_else(|| said(None, "Choose a port between 1 and 65535."))
+        })
+        .transpose()
+}
+
+/// The Join screen's Advanced route for a join from an invitation, as the call names it: another
+/// SSH login, port, key file or jump host (empty, or `none`, for no jump host even where the
+/// invitation suggests one), this computer's name for the connection, and the agents' work
+/// folder on the server. What can be checked before the invitation is read is checked here; the
+/// daemon checks the rest as it plans the save, and `ssh_policy` checks every hop on connect.
+fn join_advanced(ctx: &Ctx) -> Result<InvitationAdvanced> {
+    let ssh_target = ctx.text("ssh_target");
+    if ssh_target
+        .as_deref()
+        .is_some_and(|login| login.contains(char::is_whitespace))
+    {
+        return Err(said(
+            None,
+            "Name the SSH login as one word, like hpc or bob@hpc.example.edu.",
+        ));
+    }
+    let identity_file = ctx
+        .text("identity_file")
+        .map(|file| {
+            local_path(&file)
+                .map(|path| path.display().to_string())
+                .map_err(|_| said(None, "Give the SSH key file's full path on this computer."))
+        })
+        .transpose()?;
+    let proxy_jump = ctx.param_given("proxy_jump").then(|| {
+        let jump = ctx.raw_text("proxy_jump").unwrap_or_default();
+        let jump = jump.trim();
+        if jump.eq_ignore_ascii_case("none") {
+            String::new()
+        } else {
+            jump.to_owned()
+        }
+    });
+    let remote_root = ctx
+        .text("folder")
+        .map(|folder| server_folder(folder, "the server"))
+        .transpose()?;
+    Ok(InvitationAdvanced {
+        ssh_target,
+        port: typed_port(ctx)?,
+        identity_file,
+        proxy_jump,
+        name: ctx.text("local_name"),
+        remote_root,
+        ..InvitationAdvanced::default()
+    })
+}
+
+fn overrides(ctx: &Ctx) -> Result<InvitationOverrides> {
+    let mode = ctx
+        .text("mode")
+        .map(|mode| serde_json::from_value::<ClusterMode>(json!(mode)))
+        .transpose()?;
+    Ok(InvitationOverrides {
+        username: ctx
+            .text("username")
+            .map(|name| name.trim_start_matches('@').to_owned()),
+        mode,
+        institution_id: ctx.text("institution_id"),
+        advanced: join_advanced(ctx)?,
+        replace: None,
+    })
+}
+
+/// `POST /crew/connections/from-invitation` with `preview: true`: what saving the invitation
+/// would do, with nothing saved.
+pub(super) fn connections_preview(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let text = ctx.required("invitation")?;
+        match ctx
+            .crew()?
+            .connection_from_invitation(&text, true, overrides(ctx)?)
+            .await?
+        {
+            InvitationOutcome::Preview(preview) => Ok(serde_json::to_value(
+                InvitationSummary::new(*preview, &text),
+            )?),
+            InvitationOutcome::Saved(_) => Err(said(None, super::FAILED)),
+        }
+    })
+}
+
+/// Which server a setup job is for, from `server` (a login nothing is saved for) or a saved
+/// `connection`, and whether a saved connection names it.
+struct SetupTarget {
+    target: Value,
+    login: String,
+    saved: Option<Connection>,
+}
+
+async fn setup_target(ctx: &Ctx) -> Result<SetupTarget> {
+    let Some(server) = ctx.text("server") else {
+        let connection = ctx.connection().await?;
+        return Ok(SetupTarget {
+            target: json!({"kind": "connection", "connection_id": connection.id}),
+            login: connection.ssh_target.clone(),
+            saved: Some(connection),
+        });
+    };
+    if ctx.text("connection").is_some() {
+        return Err(said(
+            None,
+            "Name the server or a saved connection, not both.",
+        ));
+    }
+    if server.contains(char::is_whitespace) {
+        return Err(said(
+            None,
+            "Name the server's SSH login, like you@hpc.example.edu.",
+        ));
+    }
+    let mut target = json!({"kind": "server", "ssh_target": server});
+    if let Some(port) = ctx.number("port") {
+        target["port"] = json!(port);
+    }
+    if let Some(file) = ctx.text("identity_file") {
+        if !file.starts_with('/') {
+            return Err(said(
+                None,
+                "Give the SSH key file's full path on this computer.",
+            ));
+        }
+        target["identity_file"] = json!(file);
+    }
+    if let Some(jump) = ctx.text("proxy_jump") {
+        target["proxy_jump"] = json!(jump);
+    }
+    // A saved connection names this server only when the job takes its whole route: the same
+    // login, port, key file and jump host. Any other route signs in somewhere the person never
+    // saved, so it asks first (AO-12).
+    let saved = ctx.crew()?.list().await.into_iter().find(|connection| {
+        connection.ssh_target == server
+            && connection.port.map(u64::from) == ctx.number("port")
+            && connection.identity_file.as_deref() == target["identity_file"].as_str()
+            && connection.proxy_jump.as_deref() == target["proxy_jump"].as_str()
+    });
+    Ok(SetupTarget {
+        target,
+        login: server,
+        saved,
+    })
+}
+
+/// Start the setup job `request` describes, remember its target for `open`, and wait for it
+/// ([`Ctx::wait_for_job`]).
+async fn start_job(ctx: &Ctx, request: Value) -> Result<Value> {
+    let request: SetupRequest = serde_json::from_value(request).map_err(|_| {
+        said(
+            Some("crew_request_invalid"),
+            "Those setup choices don't fit together. Get them with crew__read action describe.",
+        )
+    })?;
+    let target = serde_json::to_value(&request.target)?;
+    let started = ctx.crew()?.start_setup(request).await?;
+    remember_job_target(&started.job_id, target.clone());
+    let mut answer = ctx.wait_for_job(&started.job_id).await;
+    name_the_connection(&mut answer, &target);
+    Ok(answer)
+}
+
+/// The saved connection a setup job is for, or the one it saved, at the top of its answer, so a
+/// chat row can name it: the job's outcome's, else the job's target's. Nothing when it has none.
+fn name_the_connection(answer: &mut Value, target: &Value) {
+    let id = answer["outcome"]["connection_id"]
+        .as_str()
+        .or_else(|| target["connection_id"].as_str())
+        .map(str::to_owned);
+    if let (Some(id), Some(answer)) = (id, answer.as_object_mut()) {
+        answer.entry("connection_id").or_insert(json!(id));
+    }
+}
+
+/// `answer` with `id`, the saved connection it is about, at its top.
+fn with_connection_id(mut answer: Value, id: &str) -> Value {
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("connection_id".into(), json!(id));
+    }
+    answer
+}
+
+/// `biorouter crew doctor`: check a server and the Crew program in the account there, and
+/// list its workspaces. A check changes nothing on the server, but it signs in there as the
+/// person, so a server no saved connection names needs their approval first (AO-12). A server
+/// login is checked with this computer's prepared device, as `biorouter crew open` checks it,
+/// so opening a workspace it finds needs no second sign-in.
+pub(super) fn setup_check(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let SetupTarget {
+            mut target,
+            login,
+            saved,
+        } = setup_target(ctx).await?;
+        if saved.is_none() {
+            ctx.approve(
+                Card::new(format!(
+                    "Check {login} as you: sign in, look at the Crew program in your account and list the workspaces there"
+                ))
+                .line("It changes nothing on the server.")
+                .show("server", login.clone()),
+            )
+            .await?;
+        }
+        if target["kind"] == "server" {
+            let prepared = ctx.crew()?.prepare_device().await?;
+            target["preparation_id"] = json!(prepared.preparation_id);
+        }
+        start_job(ctx, json!({"target": target, "intent": "check"})).await
+    })
+}
+
+pub(super) fn setup_status(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let job = ctx.required("job_id")?;
+        let status = biorouter::crew::setup_status(&job).ok_or_else(|| said(None, NO_JOB))?;
+        Ok(job_answer(&status, false))
+    })
+}
+
+/// `biorouter crew defaults show`: the model for Crew tasks and the default for new chats, as
+/// stored.
+pub(super) fn defaults_show(_ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let config = Config::global();
+        let crew_tasks = config
+            .get_param::<Value>(CREW_TASK_MODEL)
+            .ok()
+            .filter(|value| value["provider"].is_string() && value["model"].is_string());
+        let provider = config.get_param::<String>("BIOROUTER_PROVIDER").ok();
+        let model = config.get_param::<String>("BIOROUTER_MODEL").ok();
+        let new_chats = match (provider, model) {
+            (Some(provider), Some(model)) => json!({"provider": provider, "model": model}),
+            _ => Value::Null,
+        };
+        let source = if crew_tasks.is_some() {
+            "crew_tasks"
+        } else {
+            "new_chats"
+        };
+        Ok(json!({
+            "crew_tasks": crew_tasks,
+            "new_chats": new_chats,
+            "source": source,
+        }))
+    })
+}
+
+// ----------------------------------------------------------------------------------- changes
+
+/// The most recent listing of `login`'s workspaces this computer has, from any setup job.
+fn last_listing(login: &str) -> Option<SetupStatus> {
+    biorouter::crew::setup_jobs()
+        .into_iter()
+        .find(|job| job.server.login == login && job.workspaces_scan.is_some())
+}
+
+fn workspace_name(workspace: &SetupWorkspace) -> String {
+    workspace
+        .name
+        .clone()
+        .unwrap_or_else(|| workspace.workspace_id.clone())
+}
+
+/// What a setup will restart and start, from the last listing of the server (AO-12: "for
+/// setup the workspaces it will restart and who is connected"). That listing is usually a
+/// check's, taken with the program installed then, before this setup puts this app's in place;
+/// so when the setup will install, every workspace the account hosts and runs is counted as
+/// one it may restart, unless it runs a newer Crew than this app's.
+fn restart_lines(login: &str, keep_older: bool, asked: &RestartsAsked<'_>) -> Vec<String> {
+    let listing = last_listing(login);
+    let ours = biorouter::crew::setup_artifact()
+        .ok()
+        .or_else(|| listing.as_ref().and_then(|job| job.artifact.clone()));
+    let installs = listing
+        .as_ref()
+        .is_some_and(|job| installs_ours(job.installed.as_ref(), ours.as_ref(), keep_older));
+    planned_restarts(
+        listing.as_ref().map(|job| job.workspaces.as_slice()),
+        installs
+            .then(|| ours.map(|ours| ours.version))
+            .flatten()
+            .as_deref(),
+        asked,
+    )
+}
+
+/// What a setup was asked to restart and start, as the request carries it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct RestartsAsked<'a> {
+    /// `restart_workspaces`: every hosted workspace on an older Crew even with others connected
+    /// (`true`), none of them (`false`), or only those nobody else is connected to (absent).
+    pub(super) all: Option<bool>,
+    /// `restart_workspace_ids`: these hosted workspaces even with others connected, whatever
+    /// `all` says.
+    pub(super) named: &'a [String],
+    /// `start_workspaces`: stopped hosted workspaces to start.
+    pub(super) start: &'a [String],
+}
+
+/// `X.Y.Z`, numbers only, as setup compares versions.
+fn version_numbers(text: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = text.split('.').map(|part| part.parse::<u64>().ok());
+    let version = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(version)
+}
+
+/// Whether a setup puts this app's program (`ours`) in place of `installed`, as setup decides:
+/// not when it is the same program or a newer one, nor an older one the person keeps; yes when
+/// what is installed can't be told.
+fn installs_ours(
+    installed: Option<&SetupInstalled>,
+    ours: Option<&SetupArtifact>,
+    keep_older: bool,
+) -> bool {
+    let Some(ours) = ours else {
+        return false;
+    };
+    let Some(installed) = installed else {
+        return true;
+    };
+    if installed.sha256.as_deref() == Some(ours.sha256.as_str()) {
+        return false;
+    }
+    let theirs = installed.version.as_deref().and_then(version_numbers);
+    match (theirs, version_numbers(&ours.version)) {
+        (Some(theirs), Some(ours)) if theirs > ours => false,
+        (Some(theirs), Some(ours)) if theirs < ours => !keep_older,
+        _ => true,
+    }
+}
+
+/// The card's lines for what a setup restarts and starts, from a listing's `workspaces`
+/// (`None`: the server was never listed here). `installing` is this app's version when the
+/// setup installs it, which makes every hosted running workspace on an older Crew, or one that
+/// names none, one it restarts; otherwise only those the listing found on an older program.
+/// One kept outside `~/.local/share/biorouter-crew` is never restarted, as setup never restarts
+/// it. Who is connected decides each line, as it decides the restart, unless the person named
+/// the workspace in `restart_workspace_ids` or asked for every one; a count the server could not
+/// give is said, never read as nobody.
+pub(super) fn planned_restarts(
+    workspaces: Option<&[SetupWorkspace]>,
+    installing: Option<&str>,
+    asked: &RestartsAsked<'_>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let newer = |version: Option<&str>| match (
+        version.and_then(version_numbers),
+        installing.and_then(version_numbers),
+    ) {
+        (Some(running), Some(ours)) => running > ours,
+        _ => false,
+    };
+    let outdated = |workspace: &&SetupWorkspace| {
+        workspace.role == SetupWorkspaceRole::Host
+            && workspace.state == SetupWorkspaceState::Running
+            && workspace.state_dir.is_some()
+            && (workspace.binary_current == Some(false)
+                || (installing.is_some() && !newer(workspace.version.as_deref())))
+    };
+    let named = |workspace: &SetupWorkspace| {
+        asked
+            .named
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(&workspace.workspace_id))
+    };
+    match workspaces {
+        None if asked.all == Some(false) && asked.named.is_empty() => {
+            lines.push(
+                "It restarts no workspace; any running an older Crew are only reported.".into(),
+            );
+        }
+        None => {
+            lines.push(
+                "It restarts the workspaces you host there that run an older Crew and that nobody else is connected to. Check the server first to see which.".into(),
+            );
+            if !asked.named.is_empty() {
+                lines.push("It also restarts the workspaces you named by ID that run an older Crew, even with others connected.".into());
+            }
+        }
+        Some(workspaces) => {
+            let mut restarted_named = false;
+            for workspace in workspaces.iter().filter(outdated) {
+                let consented = named(workspace);
+                if asked.all == Some(false) && !consented {
+                    continue;
+                }
+                restarted_named |= consented;
+                lines.push(restart_line(
+                    workspace,
+                    asked.all == Some(true) || consented,
+                ));
+            }
+            if asked.all == Some(false) {
+                lines.push(if restarted_named {
+                    "It restarts no other workspace; any other running an older Crew is only reported.".into()
+                } else {
+                    "It restarts no workspace; any running an older Crew are only reported.".into()
+                });
+            }
+        }
+    }
+    for id in asked.start {
+        lines.push(format!("It starts {}.", started_name(workspaces, id)));
+    }
+    lines
+}
+
+/// The name of the workspace a setup starts for the ID `id`, as the setup picks it: one the
+/// account hosts (`role` host) with that ID. Two listed entries are one workspace only when
+/// they agree on the ID, the host's UID and the workspace key's fingerprint, so when the
+/// account's own entries for that ID are more than one workspace, or another account's copy is
+/// all there is, no listed name is trusted and the ID is said instead.
+fn started_name(workspaces: Option<&[SetupWorkspace]>, id: &str) -> String {
+    let mut identities: Vec<(String, Option<u32>, Option<String>, String)> = workspaces
+        .into_iter()
+        .flatten()
+        .filter(|workspace| {
+            workspace.role == SetupWorkspaceRole::Host
+                && workspace.workspace_id.eq_ignore_ascii_case(id)
+        })
+        .map(|workspace| {
+            (
+                workspace.workspace_id.to_ascii_lowercase(),
+                workspace.host_uid,
+                workspace.workspace_key_fingerprint.clone(),
+                workspace_name(workspace),
+            )
+        })
+        .collect();
+    identities.sort();
+    identities.dedup_by(|a, b| (&a.0, a.1, &a.2) == (&b.0, b.1, &b.2));
+    match identities.as_slice() {
+        [(.., name)] => name.clone(),
+        _ => format!("the workspace {id}"),
+    }
+}
+
+/// What a setup does to one hosted workspace it finds on an older Crew: restarts it when nobody
+/// else is connected, or when `restart` says to anyway; otherwise leaves it running.
+fn restart_line(workspace: &SetupWorkspace, restart: bool) -> String {
+    let name = workspace_name(workspace);
+    match (workspace.others_connected, restart) {
+        (Some(0), _) => format!("It restarts {name}, which nobody else is connected to."),
+        (Some(1), true) => format!(
+            "It restarts {name}: 1 other person is connected, and their running agent commands will stop."
+        ),
+        (Some(others), true) => format!(
+            "It restarts {name}: {others} other people are connected, and their running agent commands will stop."
+        ),
+        (Some(1), false) => {
+            format!("It leaves {name} running the older Crew: 1 other person is connected.")
+        }
+        (Some(others), false) => {
+            format!("It leaves {name} running the older Crew: {others} other people are connected.")
+        }
+        // A Crew from before account ownership gives no count: said as the CLI and the desktop
+        // say it, never read as nobody.
+        (None, true) => format!(
+            "It restarts {name}: other people may be connected, and their running agent commands will stop."
+        ),
+        (None, false) => {
+            format!("It leaves {name} running the older Crew: other people may be connected.")
+        }
+    }
+}
+
+/// What every full-access card says (OW-6, AO-1), wherever full access is given or offered: to
+/// Crew, anything running as the account is the person. The CLI's `FULL_ACCESS_IS_YOU` and the
+/// desktop's full-access warning say it in these words.
+pub(super) const FULL_ACCESS_IS_YOU: &str = "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.";
+
+/// How long a card waits for the person's own snapshot to say whether the account hosts the
+/// workspace, as the CLI's listing waits (`LISTING_WAIT`), so a workspace that doesn't answer
+/// cannot hold the card back.
+pub(super) const HOST_LOOKUP_WAIT: Duration = Duration::from_secs(10);
+
+fn access_line(access: Option<&str>, server: &str) -> Option<String> {
+    match access? {
+        "full" => Some(format!(
+            "Agents get full access: they can run any command as you on {server}, read and change any file your account can, and use the network. {FULL_ACCESS_IS_YOU}"
+        )),
+        "folder" => Some(format!(
+            "Agents get a work folder on {server}, confined to that folder."
+        )),
+        _ => Some(format!("Agents can't work on {server}.")),
+    }
+}
+
+/// What full access means when the account hosts `workspace`, said right after
+/// [`FULL_ACCESS_IS_YOU`] in the words the CLI and the desktop's full-access warning use for a
+/// host (`fullWarningHost`): Crew treats anything running as the account as the account, and
+/// the account is the host, so the person's agent can act as the host too. `None` for any
+/// other access.
+pub(super) fn hosting_line(access: Option<&str>, workspace: &str) -> Option<String> {
+    (access == Some("full")).then(|| {
+        format!(
+            "You host {workspace} from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of {workspace}."
+        )
+    })
+}
+
+/// [`hosting_line`] for `workspace` when `snapshot`, the person's own, names them its host
+/// within `wait`. A snapshot that fails, can't say, or doesn't come in time adds nothing: the
+/// card then says what full access is without claiming the account hosts the workspace or
+/// not, as the CLI says it when it cannot tell.
+pub(super) async fn hosting_within(
+    wait: Duration,
+    snapshot: impl Future<Output = Result<Value>>,
+    access: Option<&str>,
+    workspace: &str,
+) -> Option<String> {
+    let snapshot = tokio::time::timeout(wait, snapshot).await.ok()?.ok()?;
+    if hosts(&snapshot) != Some(true) {
+        return None;
+    }
+    hosting_line(access, workspace)
+}
+
+/// [`hosting_line`] for full access through the saved connection `saved`: said when the
+/// person's own snapshot of its workspace names them its host within [`HOST_LOOKUP_WAIT`].
+/// Only a connected connection is asked, before the card is parked, and only that answer
+/// reaches the card, which names the workspace by the connection's name as its heading does.
+async fn saved_hosting_line(
+    ctx: &Ctx,
+    saved: Option<&Connection>,
+    access: Option<&str>,
+) -> Option<String> {
+    let connection = saved?;
+    if access != Some("full") || connection.status != "connected" {
+        return None;
+    }
+    hosting_within(
+        HOST_LOOKUP_WAIT,
+        ctx.snapshot(connection),
+        access,
+        &connection.name,
+    )
+    .await
+}
+
+/// `biorouter crew setup`: install or update Crew in the person's account on a server, and
+/// for a saved connection, connect it (AO-8).
+pub(super) fn setup(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let SetupTarget {
+            target,
+            login,
+            saved,
+        } = setup_target(ctx).await?;
+        let member = target["kind"] == "connection";
+        let access = ctx.text("agent_access");
+        if access.is_some() && !member {
+            return Err(said(
+                None,
+                "agent_access is set for a saved connection: name it with connection.",
+            ));
+        }
+        let start = ctx.texts("start_workspaces");
+        let named = ctx.texts("restart_workspace_ids");
+        if let Some(bad) = start
+            .iter()
+            .chain(&named)
+            .find(|id| uuid::Uuid::parse_str(id).is_err())
+        {
+            return Err(said(
+                None,
+                format!("{bad} isn't a workspace ID. Use the IDs setup_check lists."),
+            ));
+        }
+        let restart = ctx.flag("restart_workspaces");
+        let mut request =
+            json!({"target": target, "intent": if member {"member"} else {"install"}});
+        for key in ["keep_older", "replace_existing"] {
+            if ctx.flag(key) == Some(true) {
+                request[key] = json!(true);
+            }
+        }
+        if let Some(restart) = restart {
+            request["restart_workspaces"] = json!(restart);
+        }
+        if !named.is_empty() {
+            request["restart_workspace_ids"] = json!(named);
+        }
+        if !start.is_empty() {
+            request["start_workspaces"] = json!(start);
+        }
+        if let Some(access) = &access {
+            request["agent_access"] = json!(access);
+        }
+        let mut card = match &saved {
+            Some(connection) if member => Card::at(&connection.name, &login, |here| {
+                format!(
+                    "Set up Crew for {here}: install or update it in your account there, then connect"
+                )
+            }),
+            _ => Card::new(format!("Install or update Crew in your account on {login}"))
+                .show("server", login.clone()),
+        };
+        let keep_older = ctx.flag("keep_older") == Some(true);
+        let asked = RestartsAsked {
+            all: restart,
+            named: &named,
+            start: &start,
+        };
+        for line in restart_lines(&login, keep_older, &asked) {
+            card = card.line(line);
+        }
+        if let Some(line) = access_line(access.as_deref(), &login) {
+            card = card.line(line);
+        }
+        if member {
+            if let Some(line) = saved_hosting_line(ctx, saved.as_ref(), access.as_deref()).await {
+                card = card.line(line);
+            }
+        }
+        for key in [
+            "keep_older",
+            "replace_existing",
+            "restart_workspaces",
+            "restart_workspace_ids",
+            "start_workspaces",
+            "agent_access",
+        ] {
+            if !request[key].is_null() {
+                card = card.show(key, request[key].clone());
+            }
+        }
+        ctx.approve(card).await?;
+        start_job(ctx, request).await
+    })
+}
+
+pub(super) fn setup_cancel(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let job = ctx.required("job_id")?;
+        let status = biorouter::crew::setup_status(&job).ok_or_else(|| said(None, NO_JOB))?;
+        ctx.approve(
+            Card::new(format!("Stop setting up {}", status.server.login))
+                .line("Whatever the job already changed on the server stays changed.")
+                .show("job_id", job.clone()),
+        )
+        .await?;
+        if biorouter::crew::cancel_setup(&job) {
+            let target = job_target(&job).unwrap_or_default();
+            let connection = status
+                .outcome
+                .and_then(|outcome| outcome.connection_id)
+                .or_else(|| target["connection_id"].as_str().map(str::to_owned));
+            let answer = json!({"cancelled": true, "job_id": job});
+            Ok(match connection {
+                Some(id) => with_connection_id(answer, &id),
+                None => answer,
+            })
+        } else {
+            Err(said(None, NO_JOB))
+        }
+    })
+}
+
+/// `biorouter crew host`: host a new workspace on a server as the person, in one setup job that
+/// starts it, saves its connection here, joins it and sets its privacy (AO-9, "Hosting in one
+/// job").
+pub(super) fn host(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let server = ctx.required("server")?;
+        let name = ctx.required("name")?;
+        if !biorouter_crew::workspace_name_valid(&name) {
+            return Err(said(
+                None,
+                "A workspace name is 1 to 64 lowercase letters, digits and hyphens, like lab or chen-lab.",
+            ));
+        }
+        let mode = ctx.required("mode")?;
+        let institution = ctx.text("institution_id");
+        if mode == "private" && institution.is_none() {
+            return Err(said(
+                None,
+                "A Private workspace needs an institution, like ucsf.",
+            ));
+        }
+        let access = ctx.text("agent_access").unwrap_or_else(|| "full".into());
+        let mut card = Card::at(&name, &server, |here| {
+            format!("Host a new workspace {here} as you, and save and join it on this computer")
+        })
+        .line(match &institution {
+            Some(institution) => format!("Privacy: {mode}, institution {institution}."),
+            None => format!("Privacy: {mode}."),
+        })
+        .line(format!(
+            "Your account on {server} becomes its host. Anyone who signs in as that account can act as its host."
+        ))
+        .show("server", server.clone())
+        .show("name", name.clone())
+        .show("mode", mode.clone())
+        .show("agent_access", access.clone());
+        if let Some(line) = access_line(Some(&access), &server) {
+            card = card.line(line);
+        }
+        if let Some(line) = hosting_line(Some(&access), &name) {
+            card = card.line(line);
+        }
+        if let Some(institution) = &institution {
+            card = card.show("institution_id", institution.clone());
+        }
+        if ctx.flag("fix_storage_permissions") == Some(true) {
+            card = card
+                .line("It takes other accounts' write access off your folders above where the workspace is kept.")
+                .show("fix_storage_permissions", true);
+        }
+        ctx.approve(card).await?;
+        let prepared = ctx.crew()?.prepare_device().await?;
+        let mut target = json!({
+            "kind": "pending",
+            "preparation_id": prepared.preparation_id,
+            "ssh_target": server,
+        });
+        if let Some(port) = ctx.number("port") {
+            target["port"] = json!(port);
+        }
+        if let Some(file) = ctx.text("identity_file") {
+            target["identity_file"] = json!(file);
+        }
+        if let Some(jump) = ctx.text("proxy_jump") {
+            target["proxy_jump"] = json!(jump);
+        }
+        let mut request = json!({
+            "target": target,
+            "intent": "host",
+            "workspace_name": name,
+            "finish": true,
+            "mode": mode,
+            "agent_access": access,
+        });
+        if let Some(institution) = institution {
+            request["institution_id"] = json!(institution);
+        }
+        if ctx.flag("fix_storage_permissions") == Some(true) {
+            request["fix_storage_permissions"] = json!(true);
+        }
+        start_job(ctx, request).await
+    })
+}
+
+/// The workspace `typed` names in a check job's listing, as `biorouter crew open` picks it:
+/// by name (letter case aside) or ID, and by host when two hosts share the name. One that is
+/// removed, deleted, stopped or unlisted is refused with what to do instead.
+fn workspace_to_open(
+    status: &SetupStatus,
+    typed: &str,
+    host: Option<&str>,
+) -> Result<SetupWorkspace> {
+    let server = status.server.login.as_str();
+    let host = host
+        .map(|host| host.trim().trim_start_matches('@'))
+        .filter(|host| !host.is_empty());
+    let found: Vec<&SetupWorkspace> = status
+        .workspaces
+        .iter()
+        .filter(|workspace| {
+            workspace.workspace_id.eq_ignore_ascii_case(typed)
+                || workspace
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(typed))
+        })
+        .filter(|workspace| {
+            host.is_none_or(|host| workspace.host_username.as_deref() == Some(host))
+        })
+        .collect();
+    let openable: Vec<&SetupWorkspace> = found
+        .iter()
+        .copied()
+        .filter(|workspace| {
+            workspace.state != SetupWorkspaceState::Deleted
+                && workspace.role != SetupWorkspaceRole::Removed
+        })
+        .collect();
+    let one = match openable.as_slice() {
+        [one] => *one,
+        [] => {
+            return Err(said(
+                None,
+                match found.first() {
+                    Some(workspace) if workspace.role == SetupWorkspaceRole::Removed => {
+                        format!("You were removed from {typed}. Ask a member to invite you again.")
+                    }
+                    Some(_) => format!("{typed} on {server} was deleted by its host."),
+                    None => {
+                        format!("No workspace named {typed} on {server} is yours or invites you.")
+                    }
+                },
+            ))
+        }
+        many => {
+            let mut hosts: Vec<String> = many
+                .iter()
+                .filter_map(|workspace| workspace.host_username.clone())
+                .collect();
+            hosts.sort();
+            hosts.dedup();
+            return Err(said(
+                None,
+                if hosts.len() > 1 {
+                    format!(
+                        "More than one host on {server} has a workspace named {typed}: {}. Name the host with host.",
+                        hosts
+                            .iter()
+                            .map(|host| format!("@{host}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                } else {
+                    format!("There is more than one workspace named {typed} on {server}, so Biorouter can't tell which one to open. Use its ID.")
+                },
+            ));
+        }
+    };
+    if one.state == SetupWorkspaceState::Stopped {
+        return Err(said(
+            None,
+            if one.role == SetupWorkspaceRole::Host {
+                format!("{typed} is stopped. Start it with crew__change action setup, start_workspaces [\"{}\"], then open it.", one.workspace_id)
+            } else {
+                let host = one
+                    .host_username
+                    .as_deref()
+                    .map_or_else(|| "its host".to_owned(), |host| format!("@{host}"));
+                format!("{typed} isn't running on {server}. Ask {host} to start it.")
+            },
+        ));
+    }
+    if one.invitation.is_none() {
+        return Err(said(
+            None,
+            format!("The server didn't say how to open {typed}."),
+        ));
+    }
+    Ok(one.clone())
+}
+
+fn mode_word(mode: Option<ClusterMode>) -> &'static str {
+    match mode {
+        Some(ClusterMode::Public) => "Public",
+        _ => "Private",
+    }
+}
+
+/// Save `invitation` with `overrides`, answering the saved connection's ID.
+async fn save_invitation(
+    crew: &CrewManager,
+    invitation: &str,
+    overrides: InvitationOverrides,
+) -> Result<String> {
+    match crew
+        .connection_from_invitation(invitation, false, overrides)
+        .await?
+    {
+        InvitationOutcome::Saved(connection) => Ok(connection.id),
+        InvitationOutcome::Preview(_) => Err(said(None, super::FAILED)),
+    }
+}
+
+/// Connect `id` when it is not connected, then join its workspace, as `biorouter crew join`
+/// does. A server that asks for a sign-in gets the person's Sign in card ([`connect_or_sign_in`]).
+/// Answers the join and the connection.
+async fn connect_and_join(crew: &CrewManager, id: &str, gate: &SignInGate) -> Result<Value> {
+    let progress = gate.progress();
+    if crew.connection(id).await?.status != "connected" {
+        progress.set("stage", "connect");
+        connect_or_sign_in(gate, crew, id).await?;
+    }
+    progress.set("stage", "join");
+    let joined = crew.join(id).await?;
+    let connection = crew.connection(id).await?;
+    Ok(json!({
+        "joined": true,
+        "connection_id": id,
+        "connection": connection_view(&connection).await?,
+        "status": joined,
+    }))
+}
+
+/// Run a member's setup of `id` with `access`, and wait for it to settle. A sign-in it waits
+/// for gets the person's Sign in card ([`SignInGate::setup_job`]). Answers the job's ID.
+async fn member_setup(
+    crew: &CrewManager,
+    id: &str,
+    access: &str,
+    gate: &SignInGate,
+) -> Result<String> {
+    let request: SetupRequest = serde_json::from_value(json!({
+        "target": {"kind": "connection", "connection_id": id},
+        "intent": "member",
+        "agent_access": access,
+    }))?;
+    let started = crew.start_setup(request).await?;
+    let progress = gate.progress();
+    progress.set("stage", "setup");
+    progress.set("job_id", started.job_id.clone());
+    loop {
+        let Some(status) = biorouter::crew::setup_status(&started.job_id) else {
+            return Err(said(None, NO_JOB));
+        };
+        match status.state {
+            SetupState::Finished => return Ok(started.job_id),
+            SetupState::Failed | SetupState::Cancelled => {
+                let (code, message) = status
+                    .error
+                    .map(|error| (error.code, error.message))
+                    .unwrap_or_else(|| {
+                        ("crew_setup_failed".into(), "Setting up Crew failed.".into())
+                    });
+                return Err(said(
+                    None,
+                    format!("{message} (code: {code}) The connection is saved; join it with crew__change action join once that is fixed."),
+                ));
+            }
+            SetupState::NeedsSignIn => match gate.setup_job(&status).await {
+                SignIn::Done => {}
+                SignIn::NoCard => tokio::time::sleep(Duration::from_millis(500)).await,
+                SignIn::Ended(how) => {
+                    return Err(said(
+                        None,
+                        format!(
+                            "{} Setting up agent access still waits for it. {} The connection is saved; join it with crew__change action join once that setup finishes.",
+                            signin::ended(how),
+                            signin::job_step(&started.job_id)
+                        ),
+                    ));
+                }
+            },
+            SetupState::Running => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    }
+}
+
+/// The card for opening `entry` (AO-12: "for join and open the server, host and workspace-key
+/// fingerprint and the privacy chosen"). `reused` is the connection this computer already
+/// saved for the workspace, which the open joins through instead of saving one: when it signs
+/// in as another login than the one checked, the card says so, names it, and says nothing of
+/// the role the checked login has, since the join and any agent access are that connection's.
+pub(super) fn open_card(
+    entry: &SetupWorkspace,
+    login: &str,
+    access: Option<&str>,
+    reused: Option<&Connection>,
+) -> Card {
+    let host = entry
+        .host_username
+        .as_deref()
+        .map_or_else(|| "its host".to_owned(), |host| format!("@{host}"));
+    let shown = workspace_name(entry);
+    let mut card = Card::at(&shown, login, |here| {
+        format!("Open {here}, hosted by {host}, and join it as you")
+    })
+    .line(format!(
+        "Workspace key fingerprint: {}.",
+        entry
+            .workspace_key_fingerprint
+            .as_deref()
+            .unwrap_or("not given")
+    ))
+    .line(privacy_line(
+        entry.mode.unwrap_or(ClusterMode::Private),
+        entry.institution_id.as_deref(),
+    ));
+    card = match reused {
+        Some(saved) if saved.ssh_target != login => card
+            .line(format!(
+                "It uses the connection already saved on this computer as {}, which signs in as {}, not {login}.",
+                saved.name, saved.ssh_target
+            ))
+            .show("connection", saved.name.clone()),
+        Some(_) => card
+            .line("It uses the connection already saved for it on this computer.")
+            .line(format!("You join it as its {}.", role_of(entry))),
+        None => card.line(format!("You join it as its {}.", role_of(entry))),
+    };
+    card = card.show("workspace_id", entry.workspace_id.clone());
+    // Agent access is set on the connection the open joins through, as its login.
+    let access_login = reused.map_or(login, |saved| saved.ssh_target.as_str());
+    if let Some(line) = access_line(access, access_login) {
+        card = card.line(line).show("agent_access", access);
+    }
+    if opener_hosts(entry, login, reused) {
+        if let Some(line) = hosting_line(access, &shown) {
+            card = card.line(line);
+        }
+    }
+    card
+}
+
+/// Whether the account an open joins through hosts `entry`: the checked login's role, or, when
+/// the open reuses a connection that signs in as another login, whether that login's user is
+/// the host the listing names. For the card's words only.
+fn opener_hosts(entry: &SetupWorkspace, login: &str, reused: Option<&Connection>) -> bool {
+    match reused {
+        Some(saved) if saved.ssh_target != login => {
+            let user = saved.ssh_target.rsplit_once('@').map(|(user, _)| user);
+            user.is_some() && user == entry.host_username.as_deref()
+        }
+        _ => entry.role == SetupWorkspaceRole::Host,
+    }
+}
+
+fn role_of(entry: &SetupWorkspace) -> &'static str {
+    if entry.role == SetupWorkspaceRole::Host {
+        "host"
+    } else {
+        "member"
+    }
+}
+
+/// Save `entry` from its invitation line with the check's login, route and this computer's
+/// prepared device, as `biorouter crew open` saves it. Answers the saved connection's ID.
+async fn save_opened(
+    crew: &CrewManager,
+    entry: &SetupWorkspace,
+    target: &Value,
+    local_name: Option<String>,
+) -> Result<String> {
+    let prepared = crew.prepare_device().await?;
+    let advanced = InvitationAdvanced {
+        ssh_target: target["ssh_target"].as_str().map(str::to_owned),
+        port: target["port"]
+            .as_u64()
+            .and_then(|port| u16::try_from(port).ok()),
+        identity_file: target["identity_file"].as_str().map(str::to_owned),
+        proxy_jump: target["proxy_jump"].as_str().map(str::to_owned),
+        name: local_name,
+        preparation_id: Some(prepared.preparation_id),
+        ..InvitationAdvanced::default()
+    };
+    let invitation = entry.invitation.clone().unwrap_or_default();
+    let overrides = InvitationOverrides {
+        advanced,
+        ..InvitationOverrides::default()
+    };
+    save_invitation(crew, &invitation, overrides).await
+}
+
+/// `biorouter crew open NAME --server LOGIN`: open a workspace a check job found (AO-9,
+/// "Open"). The card names the server, the host, the workspace key's fingerprint and the
+/// privacy the connection is saved with; then the workspace is saved from its invitation line
+/// with the check's login, route and prepared device, set up when agent access was asked for,
+/// and joined.
+pub(super) fn open(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let job = ctx.required("job_id")?;
+        let typed = ctx.required("workspace")?;
+        let status = biorouter::crew::setup_status(&job).ok_or_else(|| said(None, NO_JOB))?;
+        if status.state != SetupState::Finished {
+            return Err(said(
+                None,
+                "That check hasn't finished. Follow it with crew__read action setup_status, then open.",
+            ));
+        }
+        let target = job_target(&job)
+            .filter(|target| target["kind"] == "server")
+            .ok_or_else(|| {
+                said(
+                    None,
+                    "Open a workspace from a server checked in this chat: run crew__read action setup_check with the server first.",
+                )
+            })?;
+        let entry = workspace_to_open(&status, &typed, ctx.text("host").as_deref())?;
+        let access = ctx.text("agent_access");
+        let crew = ctx.crew()?;
+        // The connection the open joins through, as the card names it: one this computer saved
+        // for the workspace may sign in as another login than the one checked.
+        let reused = match &entry.saved_connection_id {
+            Some(id) => crew.connection(id).await.ok(),
+            None => None,
+        };
+        let login = target["ssh_target"]
+            .as_str()
+            .unwrap_or(&status.server.login)
+            .to_owned();
+        ctx.approve(open_card(
+            &entry,
+            &login,
+            access.as_deref(),
+            reused.as_ref(),
+        ))
+        .await?;
+        let local_name = ctx.text("local_name");
+        let role = role_of(&entry);
+        let progress = Progress::default();
+        progress.set("stage", "save");
+        let gate = SignInGate::of(ctx, &progress);
+        ctx.follow(progress, async move {
+            let id = match reused {
+                Some(saved) => saved.id,
+                None => save_opened(&crew, &entry, &target, local_name).await?,
+            };
+            gate.progress().set("connection_id", id.clone());
+            let job = match access.filter(|access| access != "off") {
+                Some(access) => Some(member_setup(&crew, &id, &access, &gate).await?),
+                None => None,
+            };
+            let mut answer = connect_and_join(&crew, &id, &gate).await?;
+            answer["role"] = json!(role);
+            if let Some(job) = job {
+                answer["job_id"] = json!(job);
+            }
+            Ok(answer)
+        })
+        .await
+    })
+}
+
+fn fingerprint_of(connection: &Connection) -> String {
+    biorouter_crew::invitation::workspace_key_fingerprint(&connection.workspace_public_key)
+        .map_or_else(
+            || "not readable".to_owned(),
+            |fingerprint| biorouter_crew::invitation::grouped_fingerprint(&fingerprint),
+        )
+}
+
+fn privacy_line(mode: ClusterMode, institution: Option<&str>) -> String {
+    match institution {
+        Some(institution) => format!(
+            "Privacy: {}, institution {institution}.",
+            mode_word(Some(mode))
+        ),
+        None => format!("Privacy: {}.", mode_word(Some(mode))),
+    }
+}
+
+/// What saving `preview` still needs, as the words the preview uses for them.
+fn missing_words(preview: &biorouter::crew::authentication::InvitationPreview) -> Vec<String> {
+    preview
+        .missing
+        .iter()
+        .map(|missing| {
+            serde_json::to_value(missing)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// What agents may do on the server through a connection joined from an invitation
+/// (`agent_access`), refusing a work folder named for no level that uses one.
+fn join_access(ctx: &Ctx) -> Result<Option<String>> {
+    let access = ctx.text("agent_access");
+    if ctx.text("folder").is_some() && !matches!(access.as_deref(), Some("folder" | "full")) {
+        return Err(said(
+            None,
+            "folder is for agent_access folder or full; add agent_access with it.",
+        ));
+    }
+    Ok(access)
+}
+
+/// What a join from an invitation signs in by, when the call chose any of it: the login, port
+/// and jump host as the daemon planned them from the invitation and the choices, and the key
+/// file. `None` when the invitation's own route is taken as it is.
+fn route_line(preview: &InvitationPreview, advanced: &InvitationAdvanced) -> Option<String> {
+    let chosen = advanced.ssh_target.is_some()
+        || advanced.port.is_some()
+        || advanced.identity_file.is_some()
+        || advanced.proxy_jump.is_some();
+    if !chosen {
+        return None;
+    }
+    let mut line = format!(
+        "It signs in as {}",
+        preview
+            .ssh_target
+            .as_deref()
+            .unwrap_or("the invited account")
+    );
+    if let Some(port) = preview.port {
+        line.push_str(&format!(" on port {port}"));
+    }
+    match preview.proxy_jump.as_deref() {
+        Some(jump) if !jump.is_empty() => line.push_str(&format!(" through {jump}")),
+        _ if advanced.proxy_jump.is_some() => line.push_str(" with no jump host"),
+        _ => {}
+    }
+    if let Some(file) = &advanced.identity_file {
+        line.push_str(&format!(", with the key file {file}"));
+    }
+    line.push('.');
+    Some(line)
+}
+
+/// Whether the account a join from an invitation signs in as is the workspace's host: the
+/// planned login's user ([`login_user`]) is the host the invitation names. A login whose user
+/// can't be read is not taken as the host's, so the card never claims the person hosts a
+/// workspace they may not, as every surface leaves the sentence out when it can't tell.
+async fn joiner_hosts(preview: &InvitationPreview) -> bool {
+    let (Some(login), Some(host)) = (
+        preview.ssh_target.as_deref(),
+        preview.host_username.as_deref(),
+    ) else {
+        return false;
+    };
+    login_user(login).await.as_deref() == Some(host)
+}
+
+/// The account `login` signs in as: the part before `@`, or for a login with none (an alias
+/// from the person's SSH settings, such as `lab`), the user `ssh -G` resolves it to, as Crew's
+/// ssh would sign in. `None` when that can't be read.
+async fn login_user(login: &str) -> Option<String> {
+    match login.rsplit_once('@') {
+        Some((user, _)) => Some(user.to_owned()),
+        None => biorouter::crew::host_keys::resolve(login, None).await?.user,
+    }
+}
+
+/// The card for joining from an invitation (AO-12: "for join and open the server, host and
+/// workspace-key fingerprint and the privacy chosen"), and every Advanced choice the call made:
+/// the route it signs in by, what agents may do there with full access said in OW-6's words, and
+/// each choice whole in the payload.
+fn join_card(
+    preview: &InvitationPreview,
+    invitation: &str,
+    advanced: &InvitationAdvanced,
+    access: Option<&str>,
+    joiner_hosts: bool,
+) -> Card {
+    let host = preview
+        .host_username
+        .as_deref()
+        .map_or_else(|| "its host".to_owned(), |host| format!("@{host}"));
+    let server = preview
+        .server_label
+        .clone()
+        .or_else(|| preview.server.clone())
+        .unwrap_or_else(|| "its server".to_owned());
+    let mut card = Card::at(&preview.workspace_label, &server, |here| {
+        format!("Join {here}, hosted by {host}, as you")
+    })
+    .line(format!(
+        "Workspace key fingerprint: {}.",
+        preview.fingerprint
+    ))
+    .line(privacy_line(
+        preview.mode,
+        preview.institution_id.as_deref(),
+    ))
+    .line(match &preview.existing_connection_id {
+        Some(_) => "It uses the connection already saved for it on this computer.".to_owned(),
+        None => format!("It saves it on this computer as {}.", preview.name),
+    });
+    if let Some(line) = route_line(preview, advanced) {
+        card = card.line(line);
+    }
+    if let Some(line) = access_line(access, &server) {
+        card = card.line(line);
+    }
+    if joiner_hosts {
+        if let Some(line) = hosting_line(access, &preview.workspace_label) {
+            card = card.line(line);
+        }
+    }
+    if matches!(access, Some("folder" | "full")) {
+        card = card.line(match &advanced.remote_root {
+            Some(folder) => format!("Their work folder is {folder}. To set this up, it installs or updates Crew in your account there first."),
+            None => "To set this up, it installs or updates Crew in your account there first, and makes their work folder.".to_owned(),
+        });
+    }
+    card = card.show("invitation", invitation.to_owned());
+    let jump = advanced
+        .proxy_jump
+        .as_deref()
+        .map(|jump| if jump.is_empty() { "none" } else { jump });
+    for (key, value) in [
+        ("ssh_target", json!(advanced.ssh_target)),
+        ("port", json!(advanced.port)),
+        ("identity_file", json!(advanced.identity_file)),
+        ("proxy_jump", json!(jump)),
+        ("folder", json!(advanced.remote_root)),
+        ("agent_access", json!(access)),
+    ] {
+        if !value.is_null() {
+            card = card.show(key, value);
+        }
+    }
+    card
+}
+
+/// `join` from an invitation the person pasted: previewed with the call's choices, so the card
+/// can name the server, the host, the fingerprint, the privacy and the route; then saved with
+/// them (unless this computer already has it), set up for agent access when asked, connected
+/// and joined. A saved connection keeps its own route and access, so choices for one are
+/// refused rather than dropped.
+async fn join_invitation(ctx: &Ctx, invitation: String) -> Result<Value> {
+    let crew = ctx.crew()?;
+    let access = join_access(ctx)?;
+    let overrides = overrides(ctx)?;
+    let InvitationOutcome::Preview(preview) = crew
+        .connection_from_invitation(&invitation, true, overrides.clone())
+        .await?
+    else {
+        return Err(said(None, super::FAILED));
+    };
+    if !preview.missing.is_empty() {
+        return Err(said(
+            Some("crew_invitation_invalid"),
+            format!(
+                "Saving this invitation still needs: {}. Ask the person, then join again with them.",
+                missing_words(&preview).join(", ")
+            ),
+        ));
+    }
+    if preview.existing_connection_id.is_some() && JOIN_ROUTE.iter().any(|key| ctx.param_given(key))
+    {
+        return Err(said(
+            None,
+            format!(
+                "This computer already has a connection to {}, and joining uses it as it is. Change its login or route with crew__change action connections_update and its agent access with connections_set_access, then join it with connection.",
+                preview.workspace_label
+            ),
+        ));
+    }
+    // Only full access says whether the joiner hosts, so only then is the login read.
+    let hosts = access.as_deref() == Some("full") && joiner_hosts(&preview).await;
+    ctx.approve(join_card(
+        &preview,
+        &invitation,
+        &overrides.advanced,
+        access.as_deref(),
+        hosts,
+    ))
+    .await?;
+    let existing = preview.existing_connection_id.clone();
+    let progress = Progress::default();
+    progress.set("stage", "save");
+    let gate = SignInGate::of(ctx, &progress);
+    ctx.follow(progress, async move {
+        let id = match existing {
+            Some(id) => id,
+            None => save_invitation(&crew, &invitation, overrides).await?,
+        };
+        gate.progress().set("connection_id", id.clone());
+        let job = match access.filter(|access| access != "off") {
+            Some(access) => Some(member_setup(&crew, &id, &access, &gate).await?),
+            None => None,
+        };
+        let mut answer = connect_and_join(&crew, &id, &gate).await?;
+        if let Some(job) = job {
+            answer["job_id"] = json!(job);
+        }
+        Ok(answer)
+    })
+    .await
+}
+
+/// What a connected saved connection in join state `state` answers before any card: `None`
+/// when it is `ready` (or `approved`, an older joiner's) and can be joined, an answer when it
+/// already is, and a refusal saying why otherwise.
+fn join_state_answer(state: JoinState, connection: &Connection) -> Option<Result<Value>> {
+    let name = &connection.name;
+    Some(match state {
+        JoinState::Ready | JoinState::Approved => return None,
+        JoinState::Joined => Ok(json!({
+            "joined": true,
+            "already": true,
+            "connection_id": connection.id,
+        })),
+        JoinState::Removed => Err(said(
+            Some("crew_join_removed"),
+            format!("You were removed from {name}. Ask a member to invite you again."),
+        )),
+        JoinState::NotInvited => Err(said(
+            None,
+            format!("This account is not a member of {name}. Ask a member to invite it."),
+        )),
+        JoinState::Expired => Err(said(
+            None,
+            format!("The invitation to {name} expired. Ask a member to invite you again."),
+        )),
+        other => {
+            let state = serde_json::to_value(other).unwrap_or_default();
+            Err(said(
+                None,
+                format!(
+                    "{name} isn't ready to join yet (its join status is {}). Check again later, or finish it in Crew.",
+                    state.as_str().unwrap_or("unknown")
+                ),
+            ))
+        }
+    })
+}
+
+/// `biorouter crew join`: join a workspace, from an invitation the person pasted (saved first)
+/// or a saved connection that is ready to join (AO-9, "Join states").
+pub(super) fn join(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        if let Some(invitation) = ctx.text("invitation") {
+            if ctx.text("connection").is_some() {
+                return Err(said(
+                    None,
+                    "Join from an invitation or a saved connection, not both.",
+                ));
+            }
+            return join_invitation(ctx, invitation).await;
+        }
+        if JOIN_ROUTE.iter().any(|key| ctx.param_given(key)) {
+            return Err(said(
+                None,
+                "Those settings are for joining from an invitation. A saved connection keeps its own: change its login or route with crew__change action connections_update and its agent access with connections_set_access, then join it.",
+            ));
+        }
+        let crew = ctx.crew()?;
+        let connection = ctx.connection().await?;
+        let server = Ctx::server_label(&connection).await;
+        let connected = connection.status == "connected";
+        let mut host = None;
+        if connected {
+            let status = crew.join_status(&connection.id).await?;
+            if let Some(answer) = join_state_answer(status.status, &connection) {
+                return answer;
+            }
+            // The workspace says who hosts it to an account it knows; an older one can't.
+            host = crew
+                .account_status(&connection.id)
+                .await
+                .ok()
+                .and_then(|status| status.host_username);
+        }
+        // Named as the other two join cards name a host, with the account the invitation
+        // pinned when its username is not known yet.
+        let host = host.map_or_else(
+            || format!("its host (UID {})", connection.owner_uid),
+            |host| format!("@{host}"),
+        );
+        ctx.approve(
+            Card::at(&connection.name, &server, |here| {
+                if connected {
+                    format!("Join {here}, hosted by {host}, as you")
+                } else {
+                    format!("Connect to {here} and join it, hosted by {host}, as you")
+                }
+            })
+            .line(format!(
+                "Workspace key fingerprint: {}.",
+                fingerprint_of(&connection)
+            ))
+            .line(privacy_line(
+                connection.mode,
+                connection.institution_id.as_deref(),
+            ))
+            .show("connection", connection.name.clone()),
+        )
+        .await?;
+        let id = connection.id.clone();
+        let progress = Progress::default();
+        progress.set("connection_id", id.clone());
+        let gate = SignInGate::of(ctx, &progress);
+        ctx.follow(progress, async move {
+            connect_and_join(&crew, &id, &gate).await
+        })
+        .await
+    })
+}
+
+/// `biorouter crew rejoin`: give the saved connection a new device key in place, as the account
+/// on the server (AO-9, "Adding this computer again").
+pub(super) fn rejoin(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let crew = ctx.crew()?;
+        let connection = ctx.connection().await?;
+        let server = Ctx::server_label(&connection).await;
+        ctx.approve(
+            Card::at(&connection.name, &server, |here| {
+                format!(
+                    "Add this computer to {here} again, with a new key, as your account there"
+                )
+            })
+            .line("Its old key on this computer stops working.")
+            .line("Chats with Crew access through this connection keep the connection, but each needs access granted again.")
+            .show("connection", connection.name.clone()),
+        )
+        .await?;
+        let id = connection.id.clone();
+        let progress = Progress::default();
+        progress.set("connection_id", id.clone());
+        let gate = SignInGate::of(ctx, &progress);
+        ctx.follow(progress, async move {
+            if crew.connection(&id).await?.status != "connected" {
+                gate.progress().set("stage", "connect");
+                connect_or_sign_in(&gate, &crew, &id).await?;
+            }
+            gate.progress().set("stage", "rejoin");
+            let rejoined = serde_json::to_value(crew.rejoin(&id).await?)?;
+            Ok(with_connection_id(rejoined, &id))
+        })
+        .await
+    })
+}
+
+pub(super) fn connect(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let crew = ctx.crew()?;
+        let connection = ctx.connection().await?;
+        let server = Ctx::server_label(&connection).await;
+        ctx.approve(
+            Card::at(&connection.name, &server, |here| {
+                format!("Connect to {here} as you")
+            })
+            .show("connection", connection.name.clone()),
+        )
+        .await?;
+        let id = connection.id.clone();
+        let progress = Progress::default();
+        progress.set("connection_id", id.clone());
+        progress.set("stage", "connect");
+        let gate = SignInGate::of(ctx, &progress);
+        ctx.follow(progress, async move {
+            let connected = connect_or_sign_in(&gate, &crew, &id).await?;
+            let view = serde_json::to_value(connection_view(&connected).await?)?;
+            Ok(with_connection_id(view, &id))
+        })
+        .await
+    })
+}
+
+pub(super) fn disconnect(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let crew = ctx.crew()?;
+        let connection = ctx.connection().await?;
+        let server = Ctx::server_label(&connection).await;
+        ctx.approve(
+            Card::at(&connection.name, &server, |here| {
+                format!("Disconnect from {here}")
+            })
+            .line("Chats and tasks working through it lose it until it connects again.")
+            .show("connection", connection.name.clone()),
+        )
+        .await?;
+        crew.disconnect(&connection.id).await?;
+        Ok(json!({"disconnected": true, "connection_id": connection.id}))
+    })
+}
+
+/// Whether `snapshot`'s caller hosts the workspace: `None` when it cannot tell.
+pub(crate) fn hosts(snapshot: &Value) -> Option<bool> {
+    let actor = &snapshot["actor"];
+    let actor_id = actor["id"].as_str()?;
+    let workspace = &snapshot["workspace"];
+    match workspace["host_principal_id"].as_str() {
+        Some(host) => Some(host == actor_id),
+        None => Some(workspace["host_uid"].as_u64()? == actor["uid"].as_u64()?),
+    }
+}
+
+/// `biorouter crew connections remove`. On a server whose Crew knows the account, the account
+/// keeps the workspace and its host controls (AO-9, "The removal guard"); on an older one,
+/// removing the host's only computer would end them, so the chat refuses and says how to update
+/// Crew first.
+pub(super) fn connections_remove(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let crew = ctx.crew()?;
+        let connection = ctx.connection().await?;
+        let deleted = crew.workspace_deleted(&connection.id);
+        let server = Ctx::server_label(&connection).await;
+        let mut card = Card::at(&connection.name, &server, |here| {
+            format!("Remove {here} from this computer")
+        })
+        .show("connection", connection.name.clone());
+        if deleted {
+            card = card.line("Its host deleted it on the server, so this removes what is left of it here, including this computer's key for it.");
+        } else {
+            card = card
+                .line("It disconnects, ends every chat's access through it and deletes this computer's key for the workspace. Messages stay on the server.")
+                .line("Chats given Crew access through it can't get it through a new connection. If this computer only lost its key, use rejoin instead: it keeps the connection.");
+            if crew.account_identity(&connection.id) == Some(true) {
+                card = card.line("The workspace can be opened again from any computer that signs in to the server as your account.");
+            } else {
+                let only_host_computer = match ctx.snapshot(&connection).await {
+                    Ok(snapshot) => {
+                        hosts(&snapshot) == Some(true)
+                            && snapshot["actor"]["devices"]
+                                .as_array()
+                                .is_none_or(|devices| devices.len() <= 1)
+                    }
+                    Err(_) => false,
+                };
+                if only_host_computer {
+                    return Err(said(
+                        Some("crew_host_controls_would_end"),
+                        format!(
+                            "This is the only computer that can act as host of {}, and its server runs an older Crew, so removing it would end the host controls for good. Update Crew on the server first with crew__change action setup, or remove it in the Crew view.",
+                            connection.name
+                        ),
+                    ));
+                }
+                card = card.line("If you host this workspace and this is your only computer enrolled as host, its host controls end.");
+            }
+        }
+        ctx.approve(card).await?;
+        crew.remove(&connection.id).await?;
+        Ok(json!({"removed": true, "connection_id": connection.id}))
+    })
+}
+
+/// The saved connection's own fields, as `PATCH /crew/connections/{id}` takes them back, so an
+/// edit changes only what it means to (the CLI's `saved_fields`).
+pub(crate) fn saved_fields(connection: &Connection) -> Result<serde_json::Map<String, Value>> {
+    let whole = serde_json::to_value(connection)?;
+    let mut input = serde_json::Map::new();
+    for key in [
+        "name",
+        "ssh_target",
+        "port",
+        "identity_file",
+        "proxy_jump",
+        "socket_path",
+        "owner_uid",
+        "workspace_id",
+        "workspace_public_key",
+        "remote_root",
+        "remote_execution",
+        "remote_access",
+        "cluster_connection_id",
+        "mode",
+        "institution_id",
+    ] {
+        if let Some(value) = whole.get(key) {
+            input.insert(key.into(), value.clone());
+        }
+    }
+    Ok(input)
+}
+
+/// Save `input` over `connection`, as `PATCH /crew/connections/{id}` does, and answer the saved
+/// connection as the routes show it, with whether the save ended the chats' access through it.
+///
+/// `connection` is the one read before the card, and `input` is built from it: a card waits up
+/// to ten minutes, and saving its fields over a connection changed meanwhile (agent access
+/// turned off, made Private) would silently put back what the card never showed. So the
+/// connection is read again, and when its saved fields or its policy epoch differ, nothing is
+/// saved and the refusal says why.
+pub(crate) async fn save_over(
+    connection: &Connection,
+    input: serde_json::Map<String, Value>,
+) -> Result<Value> {
+    let crew = biorouter::crew::manager()?;
+    let now = super::saved_connection(&crew, &connection.id).await?;
+    if now.policy_epoch != connection.policy_epoch
+        || saved_fields(&now)? != saved_fields(connection)?
+    {
+        return Err(said(
+            None,
+            format!(
+                "{} changed while this waited for your approval, so nothing was changed. Look at it again with crew__read action connections_show, then ask again.",
+                connection.name
+            ),
+        ));
+    }
+    let request: SaveConnection = serde_json::from_value(Value::Object(input))?;
+    let saved = crew.update(&connection.id, request).await?;
+    let ended = saved.policy_epoch != connection.policy_epoch;
+    let mut answer = json!({
+        "connection_id": saved.id,
+        "connection": connection_view(&saved).await?,
+    });
+    if ended {
+        answer["access_ended"] = json!(true);
+    }
+    Ok(answer)
+}
+
+pub(super) fn connections_update(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let connection = ctx.connection().await?;
+        let mut input = saved_fields(&connection)?;
+        let server = Ctx::server_label(&connection).await;
+        let mut card = Card::at(&connection.name, &server, |here| {
+            format!("Change the saved connection to {here}")
+        });
+        let mut changed = false;
+        for key in ["name", "ssh_target", "identity_file", "proxy_jump"] {
+            if let Some(value) = ctx.text(key) {
+                card = card.show(key, value.clone());
+                input.insert(key.into(), json!(value));
+                changed = true;
+            }
+        }
+        if let Some(port) = ctx.number("port") {
+            card = card.show("port", port);
+            input.insert("port".into(), json!(port));
+            changed = true;
+        }
+        if !changed {
+            return Err(said(
+                None,
+                "Say what to change: name, ssh_target, port, identity_file or proxy_jump.",
+            ));
+        }
+        if ["ssh_target", "port", "identity_file", "proxy_jump"]
+            .iter()
+            .any(|key| ctx.param_given(key))
+        {
+            card = card.line("A new login or route reconnects it, and ends every chat's and task's access through it.");
+        }
+        ctx.approve(card).await?;
+        save_over(&connection, input).await
+    })
+}
+
+/// A work folder on `server` as a connection saves it: a full path, not `/`, on one line. The
+/// bridge checks the folder itself; this only refuses what cannot be one.
+fn server_folder(folder: String, server: &str) -> Result<String> {
+    if !folder.starts_with('/') || folder == "/" || folder.contains(['\n', '\r', '\0']) {
+        return Err(said(
+            Some("crew_folder_required"),
+            format!("Give the work folder's full path on {server}, like /home/you/crew-work/lab."),
+        ));
+    }
+    Ok(folder)
+}
+
+/// A work folder on the server as a connection saves it, as `biorouter crew connections
+/// set-access` reads it: a full path, or `~/…` once the account's home there is known.
+fn work_folder(
+    typed: Option<String>,
+    view: &crate::routes::crew::wire::CrewConnectionView,
+) -> Result<Option<String>> {
+    let Some(text) = typed else {
+        return Ok(None);
+    };
+    let home = view
+        .server_access
+        .as_ref()
+        .and_then(|access| access.home.clone())
+        .filter(|home| home.starts_with('/'));
+    let folder = match (text.strip_prefix("~/"), &home) {
+        (Some(rest), Some(home)) => format!("{}/{rest}", home.trim_end_matches('/')),
+        _ => text,
+    };
+    server_folder(folder, &view.server_label).map(Some)
+}
+
+/// `biorouter crew connections set-access off|folder|full` (OW-6).
+pub(super) fn connections_set_access(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let connection = ctx.connection().await?;
+        let access = ctx.required("access")?;
+        let view = connection_view(&connection).await?;
+        let server = view.server_label.clone();
+        let folder = work_folder(ctx.text("folder"), &view)?;
+        let existing = connection
+            .remote_root
+            .clone()
+            .filter(|root| !root.is_empty());
+        let folder_or_existing = || {
+            folder.clone().or_else(|| existing.clone()).ok_or_else(|| {
+                said(
+                    Some("crew_folder_required"),
+                    format!("Choose the folder agents work in on {server}: add folder with its full path."),
+                )
+            })
+        };
+        let mut input = saved_fields(&connection)?;
+        let here = super::on_server(&connection.name, &server);
+        let full = !matches!(access.as_str(), "off" | "folder");
+        let summary = match access.as_str() {
+            "off" => {
+                if folder.is_some() {
+                    return Err(said(
+                        None,
+                        "folder is for folder or full access; off uses no folder.",
+                    ));
+                }
+                input.insert("remote_root".into(), Value::Null);
+                input.insert("remote_execution".into(), json!(false));
+                input.insert("remote_access".into(), json!("folder"));
+                format!("Stop agents working on the server through {here}")
+            }
+            "folder" => {
+                let root = folder_or_existing()?;
+                let confined = view
+                    .server_access
+                    .as_ref()
+                    .and_then(|access| access.confined_execution_available)
+                    != Some(false);
+                input.insert("remote_root".into(), json!(root));
+                input.insert("remote_execution".into(), json!(confined));
+                input.insert("remote_access".into(), json!("folder"));
+                if confined {
+                    format!("Let agents work in {root} through {here}, confined to that folder")
+                } else {
+                    format!("Let agents read and write files in {root} through {here}; the server's kernel can't confine commands, so they can't run any there")
+                }
+            }
+            _ => {
+                if view
+                    .server_access
+                    .as_ref()
+                    .is_some_and(|access| !access.full_access_available)
+                {
+                    return Err(said(
+                        None,
+                        format!("The Crew in your account on {server} can't give full access yet. Update it with crew__change action setup, then try again."),
+                    ));
+                }
+                let root = folder_or_existing()?;
+                input.insert("remote_root".into(), json!(root));
+                input.insert("remote_execution".into(), json!(true));
+                input.insert("remote_access".into(), json!("full"));
+                format!(
+                    "Let agents work as you through {here}, starting in {root}: an agent can run any command your account can, read and change any file it can reach, use the network, and start jobs that keep running after its task ends. Public models never get this access"
+                )
+            }
+        };
+        let mut card = Card::at(&connection.name, &server, |_| summary);
+        // Full access is said as every full-access card says it, with the host's sentence when
+        // the person's own snapshot names them the host (AO-1, OW-6).
+        if full {
+            card = card.line(FULL_ACCESS_IS_YOU);
+            if let Some(line) = saved_hosting_line(ctx, Some(&connection), Some("full")).await {
+                card = card.line(line);
+            }
+        }
+        ctx.approve(
+            card.line(format!(
+                "This ends every chat's and task's access through {}; grant it again where you need it.",
+                connection.name
+            ))
+            .show("connection", connection.name.clone())
+            .show("access", access.clone())
+            .show("folder", input.get("remote_root").cloned().unwrap_or(Value::Null)),
+        )
+        .await?;
+        save_over(&connection, input).await
+    })
+}
+
+pub(super) fn defaults_set(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let provider = ctx.required("provider")?;
+        let model = ctx.required("model")?;
+        if [&provider, &model]
+            .iter()
+            .any(|word| word.contains(char::is_whitespace))
+        {
+            return Err(said(
+                None,
+                "Name the provider and the model as single words, like versa_azure and gpt-5.5.",
+            ));
+        }
+        ctx.approve(
+            Card::new(format!(
+                "Start Crew tasks on {model} ({provider}) from now on, unless a task names another model"
+            ))
+            .show("provider", provider.clone())
+            .show("model", model.clone()),
+        )
+        .await?;
+        let value = json!({"provider": provider, "model": model});
+        Config::global().set(CREW_TASK_MODEL, &value, false)?;
+        Ok(json!({"crew_tasks": value}))
+    })
+}
+
+pub(super) fn defaults_clear(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let config = Config::global();
+        let stored = config.get_param::<Value>(CREW_TASK_MODEL).ok();
+        ctx.approve(Card::new(
+            "Start Crew tasks on your default model for new chats from now on",
+        ))
+        .await?;
+        if stored.is_some() {
+            config.delete(CREW_TASK_MODEL)?;
+        }
+        Ok(json!({"cleared": stored.is_some()}))
+    })
+}

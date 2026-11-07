@@ -56,6 +56,39 @@
 //!      would get Auto mode switched off, which is a worse outcome than the
 //!      hole.
 //!
+//! …and one that is about trust rather than files (numbered 7, as the owner's
+//! D6 ruling names it):
+//!   7. an agent shell that makes ssh **trust a server's host key** nobody
+//!      checked: `ssh`, `scp`, `sftp` (and `autossh`, `slogin`, `ssh-copy-id`) with
+//!      `StrictHostKeyChecking` set to `accept-new`, `no`, `off` or `false` in any
+//!      spelling OpenSSH reads (`-o Key=value`, `-oKey=value`, `-o 'Key value'`,
+//!      a flag cluster such as `-vo`, any letter case, a `ProxyCommand` that runs
+//!      such an ssh, a `-F` configuration file that sets it); `KnownHostsCommand`
+//!      set to any command but `none` (`ssh-keyscan %H` hands ssh the server's own
+//!      key), and `UserKnownHostsFile` or `GlobalKnownHostsFile` set to anything
+//!      but the default (`ssh-keyscan host > /tmp/kh` then
+//!      `-o UserKnownHostsFile=/tmp/kh` trusts the scan), read in all the same
+//!      places; the same options given to `sshfs` (`-o` options, comma-separated
+//!      as FUSE reads them, and `-F`), and the ssh command line it runs with
+//!      `-o ssh_command=CMD`; the same ssh command line handed over by
+//!      `rsync -e`/`--rsh`, `mosh --ssh`, `GIT_SSH_COMMAND`, `RSYNC_RSH` or git's
+//!      `core.sshCommand`,
+//!      with the variable set in any shell's spelling (POSIX `NAME=value`,
+//!      PowerShell `$env:NAME = value`, cmd `set NAME=value`, `setx`); a wrapper
+//!      program run in ssh's place (`GIT_SSH`, `scp -S`, `sftp -S`, a remote
+//!      shell named by path), read as a `-F` file is; `ANSIBLE_HOST_KEY_CHECKING`
+//!      off; and `ssh-keygen -R`, which drops
+//!      the key this computer trusts so the next connection takes whatever it is
+//!      offered. A write INTO `known_hosts` (`ssh-keyscan … >> ~/.ssh/known_hosts`,
+//!      `tee -a`) is already criterion 4, since `.ssh` is a credential path.
+//!      Reading a key (`ssh-keygen -F`, `ssh-keyscan` with no redirect, `cat`)
+//!      and plain `ssh` are never graded. Why: Crew forces
+//!      `StrictHostKeyChecking yes` on every hop, so the only thing standing
+//!      between an unverified server and a connection as the person is the
+//!      known-hosts file, and the person (not the agent) adds to it after
+//!      checking the fingerprint ("user warns, agent never"). A person's own
+//!      terminal is untouched: this gate grades agent tool calls only.
+//!
 //! ## Provenance is corroborated, never taken on the model's word
 //!
 //! The "this session created it" exemption is the one input an *attacker in the
@@ -451,8 +484,9 @@ fn command_writes_sensitively(command: &str, env: &EnvFacts, found: &mut Finding
 }
 
 /// The finding phrase for criteria 1-4, which all describe a write to a
-/// sensitive *location*. Criterion 6 writes its own (it has to name what would
-/// be destroyed, not which rule matched).
+/// sensitive *location*. Criterion 5 writes its own (it has to name what would
+/// be destroyed, not which rule matched), and so does criterion 7
+/// ([`host_key_finding`], which names the key that would be trusted).
 fn write_finding(path: &str, reason: &str) -> String {
     format!("writes to {path} ({reason})")
 }
@@ -1285,9 +1319,658 @@ fn command_deletes_established_directory(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Criterion 7 — an agent shell that trusts a server's host key
+// ---------------------------------------------------------------------------
+
+/// The SSH clients whose `-o` and `-F` options decide whether a host key is checked.
+const SSH_CLIENTS: &[&str] = &["ssh", "scp", "sftp", "slogin", "autossh", "ssh-copy-id"];
+
+/// `StrictHostKeyChecking` values that let ssh go on with a key nobody checked. OpenSSH reads
+/// `no`, `off` and `false` as off, and `accept-new` writes an unknown key into known_hosts.
+const TRUSTING_VALUES: &[&str] = &["accept-new", "no", "off", "false"];
+
+/// Environment variables whose value is a whole ssh command line.
+const SSH_COMMAND_VARIABLES: &[&str] = &["GIT_SSH_COMMAND", "RSYNC_RSH"];
+
+/// Environment variables whose value names a program git runs in ssh's place, with the
+/// arguments ssh would get.
+const SSH_PROGRAM_VARIABLES: &[&str] = &["GIT_SSH"];
+
+/// Ansible's switch for host key checking.
+const ANSIBLE_HOST_KEY_CHECKING: &str = "ANSIBLE_HOST_KEY_CHECKING";
+
+/// The values Ansible's boolean reading takes as off, lower case.
+const ANSIBLE_FALSE_VALUES: &[&str] = &["false", "no", "off", "0", "n", "f"];
+
+/// The ssh options that decide whether an unchecked host key is trusted, lower case.
+/// `StrictHostKeyChecking` off takes any key; `KnownHostsCommand` takes whatever keys a command
+/// prints (`ssh-keyscan %H` prints the server's own); a known-hosts file other than the default
+/// holds whatever was put there, such as a scan of the server.
+const HOST_KEY_OPTIONS: &[&str] = &[
+    "stricthostkeychecking",
+    "knownhostscommand",
+    "userknownhostsfile",
+    "globalknownhostsfile",
+];
+
+/// The programs criterion 7 reads the arguments of.
+const HOST_KEY_PROGRAMS: &[&str] = &[
+    "ssh",
+    "scp",
+    "sftp",
+    "slogin",
+    "autossh",
+    "ssh-copy-id",
+    "ssh-keygen",
+    "rsync",
+    "git",
+    "mosh",
+    "sshfs",
+    "mount.sshfs",
+    "mount.fuse.sshfs",
+];
+
+/// sshfs, which mounts a server's files over ssh, under every name its packages install it.
+const SSHFS_PROGRAMS: &[&str] = &["sshfs", "mount.sshfs", "mount.fuse.sshfs"];
+
+/// sshfs's short options that take a value: `-o` options, `-F` an ssh configuration file and
+/// `-p` a port.
+const SSHFS_VALUE_FLAGS: &str = "oFp";
+
+/// How deep an ssh command line handed over inside another (`rsync -e`, a `ProxyCommand`) is
+/// followed.
+const MAX_TRUST_DEPTH: u8 = 4;
+
+/// How much of a `-F` configuration file or a wrapper program is read.
+const MAX_SSH_CONFIG_BYTES: u64 = 64 * 1024;
+
+/// How many files (a `-F` configuration, a wrapper program) grading one command line may
+/// open, so files that name each other cannot keep the inspection reading. A file past the
+/// budget is judged as one that cannot be read.
+const MAX_TRUST_FILES: u8 = 8;
+
+/// The short options of `client` that take a value, as its getopt string declares them, so a
+/// cluster such as `-vo Key=value` or `-p22` is read the way the client reads it.
+fn ssh_value_flags(client: &str) -> &'static str {
+    match client {
+        "scp" => "cDFiJloPSX",
+        "sftp" => "BbcDFiJloPRSsX",
+        // autossh takes ssh's options plus its own `-M port`.
+        "autossh" => "BbcDEeFIiJLlMmOoPpQRSWw",
+        // ssh-copy-id hands its `-o` and `-F` to the ssh it runs.
+        "ssh-copy-id" => "FJopt",
+        _ => "BbcDEeFIiJLlmOoPpQRSWw",
+    }
+}
+
+/// A program's name as a command line spells it: the basename, lower case, without `.exe`.
+fn program_name(token: &str) -> String {
+    let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    let lower = base.to_ascii_lowercase();
+    match lower.strip_suffix(".exe") {
+        Some(stem) => stem.to_owned(),
+        None => lower,
+    }
+}
+
+/// `NAME=value` with a shell variable name, as `(NAME, value)`.
+fn shell_assignment(token: &str) -> Option<(&str, &str)> {
+    let (name, value) = token.split_once('=')?;
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    ((first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    .then_some((name, value))
+}
+
+/// The tokens of a command line as a POSIX shell splits them, or by whitespace when the quoting
+/// does not balance (so an unbalanced line still has its words graded).
+fn shell_words(command: &str) -> Vec<String> {
+    shlex::split(command).unwrap_or_else(|| command.split_whitespace().map(String::from).collect())
+}
+
+/// Strip one pair of matching quotes.
+fn unquote(text: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = text
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    text
+}
+
+/// An ssh option as `-o` or a configuration line writes it (`Key=value`, `Key value`,
+/// `Key = value`), as its lower-case key and its value.
+fn ssh_setting(option: &str) -> Option<(String, &str)> {
+    let option = unquote(option.trim()).trim();
+    let at = option.find(|c: char| c == '=' || c.is_whitespace())?;
+    let (key, rest) = option.split_at(at);
+    let value = rest.trim_start_matches(|c: char| c == '=' || c.is_whitespace());
+    Some((key.to_ascii_lowercase(), unquote(value.trim()).trim()))
+}
+
+/// The setting `option` makes when it trusts an unchecked key, named as OpenSSH spells it:
+/// `StrictHostKeyChecking` off, `KnownHostsCommand` set to a command, or a known-hosts file
+/// other than the default. Punctuation a script leaves after a value (`no;`, `no)`) is not part
+/// of the value.
+fn trusting_setting(option: &str, env: &EnvFacts) -> Option<String> {
+    let (key, value) = ssh_setting(option)?;
+    let value = value.trim_end_matches([';', ')', ',']).trim();
+    let lower = value.to_ascii_lowercase();
+    match key.as_str() {
+        "stricthostkeychecking" => TRUSTING_VALUES
+            .contains(&lower.as_str())
+            .then(|| format!("StrictHostKeyChecking={lower}")),
+        // `none` is OpenSSH's own word for no command.
+        "knownhostscommand" => {
+            (!lower.is_empty() && lower != "none").then(|| "KnownHostsCommand".to_owned())
+        }
+        "userknownhostsfile" => (!default_known_hosts(value, USER_KNOWN_HOSTS, env))
+            .then(|| "UserKnownHostsFile set to another file".to_owned()),
+        "globalknownhostsfile" => (!default_known_hosts(value, GLOBAL_KNOWN_HOSTS, env))
+            .then(|| "GlobalKnownHostsFile set to another file".to_owned()),
+        _ => None,
+    }
+}
+
+/// OpenSSH's default user known-hosts files.
+const USER_KNOWN_HOSTS: &[&str] = &["~/.ssh/known_hosts", "~/.ssh/known_hosts2"];
+
+/// OpenSSH's default global known-hosts files, on Unix and in Windows OpenSSH.
+const GLOBAL_KNOWN_HOSTS: &[&str] = &[
+    "/etc/ssh/ssh_known_hosts",
+    "/etc/ssh/ssh_known_hosts2",
+    r"C:\ProgramData\ssh\ssh_known_hosts",
+    r"C:\ProgramData\ssh\ssh_known_hosts2",
+];
+
+/// Whether every file `value` names (a whitespace-separated list, as OpenSSH reads it) is one
+/// of `defaults`, each compared as this computer resolves the path. An empty value leaves the
+/// default in place. `none` and any other file are not the default.
+fn default_known_hosts(value: &str, defaults: &[&str], env: &EnvFacts) -> bool {
+    let resolve = |path: &str| {
+        // `%d` is ssh's own token for the home directory, and Windows OpenSSH spells its data
+        // directory `__PROGRAMDATA__`.
+        let spelled = path.replace("%d", "~");
+        let lower = spelled.to_ascii_lowercase();
+        let spelled = ["__programdata__", "%programdata%"]
+            .iter()
+            .find_map(|token| {
+                lower.starts_with(token).then(|| {
+                    let rest = spelled.get(token.len()..).unwrap_or_default();
+                    format!(r"C:\ProgramData{rest}")
+                })
+            })
+            .unwrap_or(spelled);
+        normalize_for(env.platform, &spelled, env).norm
+    };
+    let defaults: Vec<String> = defaults.iter().map(|path| resolve(path)).collect();
+    value
+        .split_whitespace()
+        .all(|file| defaults.contains(&resolve(unquote(file))))
+}
+
+/// The value written after an option's name in free text, as far as a shell or `printf` would
+/// end it: the first word, never past a quote, a backslash escape or a separator.
+fn value_after(text: &str) -> &str {
+    text.trim_start_matches(|c: char| c == '=' || c == '"' || c == '\'' || c.is_whitespace())
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '\\' | ';' | ')' | ','))
+        .next()
+        .unwrap_or_default()
+}
+
+/// The trusting setting `text` writes anywhere, in any spelling: the fallback for a `-F` file
+/// or a wrapper program this inspection cannot read, which the same line may be writing.
+fn mentions_trusting_setting(text: &str, env: &EnvFacts) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    HOST_KEY_OPTIONS.iter().find_map(|key| {
+        lower.match_indices(key).find_map(|(at, _)| {
+            // ASCII lower-casing keeps every byte where it was, so the original spelling of
+            // the value (a path keeps its case) sits at the same offset.
+            let value = value_after(text.get(at + key.len()..).unwrap_or_default());
+            let value = if *key == "stricthostkeychecking" {
+                value
+                    .split(|c: char| !(c.is_ascii_alphabetic() || c == '-'))
+                    .next()
+                    .unwrap_or_default()
+            } else {
+                value
+            };
+            trusting_setting(&format!("{key}={value}"), env)
+        })
+    })
+}
+
+/// The text of `file`, read only when it is a regular file and only its first
+/// [`MAX_SSH_CONFIG_BYTES`]: a FIFO, a terminal or `/dev/stdin` would block the inspection until
+/// something wrote to it.
+fn read_small_file(file: &str) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::metadata(file)
+        .and_then(|found| {
+            if found.is_file() {
+                std::fs::File::open(file)
+            } else {
+                Err(std::io::Error::other("not a regular file"))
+            }
+        })
+        .and_then(|opened| opened.take(MAX_SSH_CONFIG_BYTES).read_to_string(&mut text))
+        .ok()
+        .map(|_| text)
+}
+
+/// One grading of a command line for criterion 7: the facts its paths resolve against, the
+/// whole line (judged instead of a file it names that cannot be read, since the line may be
+/// writing that file), and how many more files the grading may open.
+struct TrustScan<'a> {
+    env: &'a EnvFacts,
+    raw: &'a str,
+    files_left: std::cell::Cell<u8>,
+}
+
+impl<'a> TrustScan<'a> {
+    fn new(env: &'a EnvFacts, raw: &'a str) -> Self {
+        Self {
+            env,
+            raw,
+            files_left: std::cell::Cell::new(MAX_TRUST_FILES),
+        }
+    }
+
+    /// The setting by which the file `path` names trusts an unchecked key, with `line_trusts`
+    /// grading each line that is not a comment. A file that cannot be read, or one past the
+    /// budget, is judged by the whole command line instead.
+    fn file_trusts(
+        &self,
+        path: &str,
+        line_trusts: impl Fn(&str) -> Option<String>,
+    ) -> Option<String> {
+        let file = normalize_for(self.env.platform, path, self.env).norm;
+        let left = self.files_left.get();
+        let text = (left > 0)
+            .then(|| {
+                self.files_left.set(left - 1);
+                read_small_file(&file)
+            })
+            .flatten();
+        let setting = match text {
+            Some(text) => text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.starts_with('#'))
+                .find_map(line_trusts),
+            None => mentions_trusting_setting(self.raw, self.env),
+        };
+        setting.map(|setting| format!("{setting} in {file}"))
+    }
+}
+
+/// The setting by which one ssh option (an `-o` value or a configuration line) trusts an
+/// unchecked key, directly or through a `ProxyCommand` that runs such an ssh.
+fn option_trusts(option: &str, scan: &TrustScan<'_>, depth: u8) -> Option<String> {
+    trusting_setting(option, scan.env).or_else(|| match ssh_setting(option) {
+        Some((key, command)) if key == "proxycommand" => {
+            ssh_command_trusts(command, scan, depth + 1)
+        }
+        _ => None,
+    })
+}
+
+/// Every short option in `args` that takes a value, with its value, read as getopt reads a
+/// client's arguments: clusters, a value attached (`-p22`) or in the next word, `--` ending
+/// the options. `value_flags` is the client's options that take a value.
+fn short_option_values(args: &[String], value_flags: &str) -> Vec<(char, String)> {
+    let mut values = Vec::new();
+    let mut at = 0;
+    while at < args.len() {
+        let token = &args[at];
+        at += 1;
+        if token == "--" {
+            break;
+        }
+        let Some(cluster) = token.strip_prefix('-') else {
+            continue;
+        };
+        if cluster.starts_with('-') {
+            continue;
+        }
+        for (index, flag) in cluster.char_indices() {
+            if !value_flags.contains(flag) {
+                continue;
+            }
+            let attached = cluster.get(index + flag.len_utf8()..).unwrap_or_default();
+            if !attached.is_empty() {
+                values.push((flag, attached.to_owned()));
+            } else if let Some(next) = args.get(at) {
+                values.push((flag, next.clone()));
+                at += 1;
+            }
+            break;
+        }
+    }
+    values
+}
+
+/// Whether the ssh configuration file `path` (a `-F` argument) sets an option that trusts an
+/// unchecked key, directly or through a `ProxyCommand`.
+fn config_file_trusts(path: &str, scan: &TrustScan<'_>, depth: u8) -> Option<String> {
+    scan.file_trusts(path, |line| option_trusts(line, scan, depth))
+}
+
+/// Whether the program `path`, run in ssh's place (a `GIT_SSH` value, `scp -S`, a remote shell
+/// or `ProxyCommand` named by path), runs an ssh that trusts an unchecked key. An ssh client
+/// adds nothing of its own. A wrapper script is read line by line, as a `-F` file is. A bare
+/// name is a program found on the PATH, which this inspection does not open.
+fn program_trusts(path: &str, scan: &TrustScan<'_>, depth: u8) -> Option<String> {
+    let path = unquote(path.trim());
+    if depth > MAX_TRUST_DEPTH
+        || !path.contains(['/', '\\'])
+        || SSH_CLIENTS.contains(&program_name(path).as_str())
+    {
+        return None;
+    }
+    scan.file_trusts(path, |line| ssh_command_trusts(line, scan, depth + 1))
+}
+
+/// The setting by which the ssh client `client`, run with `args`, would trust an unchecked
+/// host key: a `-o` option, a `ProxyCommand` that runs such an ssh, a `-F` file, or the
+/// program `scp -S` and `sftp -S` run in ssh's place.
+fn ssh_args_trust(
+    client: &str,
+    args: &[String],
+    scan: &TrustScan<'_>,
+    depth: u8,
+) -> Option<String> {
+    for (flag, value) in short_option_values(args, ssh_value_flags(client)) {
+        let found = match flag {
+            'o' => option_trusts(&value, scan, depth),
+            'F' => config_file_trusts(&value, scan, depth),
+            // ssh's own `-S` is a control socket, not a program.
+            'S' if matches!(client, "scp" | "sftp") => program_trusts(&value, scan, depth + 1),
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// The setting by which `command`, a command line handed to another program (`rsync -e`,
+/// `GIT_SSH_COMMAND`, a `ProxyCommand`), runs an ssh client that trusts an unchecked key. A
+/// command line that names no ssh client runs its first word, which is read as a wrapper.
+fn ssh_command_trusts(command: &str, scan: &TrustScan<'_>, depth: u8) -> Option<String> {
+    if depth > MAX_TRUST_DEPTH {
+        return None;
+    }
+    let words = shell_words(command);
+    match words
+        .iter()
+        .position(|word| SSH_CLIENTS.contains(&program_name(word).as_str()))
+    {
+        Some(at) => ssh_args_trust(&program_name(&words[at]), &words[at + 1..], scan, depth),
+        None => first_value_word(words.iter().map(String::as_str))
+            .and_then(|program| program_trusts(&program, scan, depth + 1)),
+    }
+}
+
+/// What follows each mention of the environment variable `name` in `words`, in any shell's
+/// spelling of setting it: POSIX `NAME=value` (also after `export` or `env`), PowerShell's
+/// `$env:NAME = value` and `${env:NAME}`, `Set-Item env:NAME value`, cmd's `set NAME=value`
+/// (whose value runs to the end of the line, unquoted) and `setx NAME value`. Each is the rest
+/// of the mentioning word after the name, then every later word, so the value is in it however
+/// the shell split it. `name` matches as a whole identifier in any letter case, so `GIT_SSH` is
+/// never found inside `GIT_SSH_COMMAND`.
+fn variable_values(words: &[String], name: &str) -> Vec<String> {
+    let needle = name.to_ascii_lowercase();
+    let outside = |c: Option<char>| c.is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+    let mut values = Vec::new();
+    for (at, word) in words.iter().enumerate() {
+        let lower = word.to_ascii_lowercase();
+        for (start, _) in lower.match_indices(&needle) {
+            let end = start + needle.len();
+            let before = lower.get(..start).and_then(|text| text.chars().next_back());
+            let after = lower.get(end..).and_then(|text| text.chars().next());
+            if !outside(before) || !outside(after) {
+                continue;
+            }
+            // ASCII lower-casing keeps every byte where it was.
+            let mut value = word
+                .get(end..)
+                .unwrap_or_default()
+                .trim_start_matches(|c: char| {
+                    matches!(c, '}' | '=' | ':' | ',' | '"' | '\'') || c.is_whitespace()
+                })
+                .to_owned();
+            for rest in &words[at + 1..] {
+                value.push(' ');
+                value.push_str(rest);
+            }
+            values.push(value);
+        }
+    }
+    values
+}
+
+/// The first of `words` that is a value: past the `=` and `-Value` a PowerShell assignment
+/// puts first, and without the punctuation a script leaves around it.
+fn first_value_word<'w>(words: impl IntoIterator<Item = &'w str>) -> Option<String> {
+    words
+        .into_iter()
+        .map(|word| word.trim_matches(|c: char| matches!(c, '=' | ',' | ';' | ')' | '"' | '\'')))
+        .find(|word| !word.is_empty() && !word.eq_ignore_ascii_case("-value"))
+        .map(str::to_owned)
+}
+
+/// The finding for an environment variable `words` sets that makes ssh trust an unchecked key:
+/// a whole ssh command line (`GIT_SSH_COMMAND`, `RSYNC_RSH`), a wrapper program run in ssh's
+/// place (`GIT_SSH`), or Ansible's host key checking turned off.
+fn variables_trust_host_key(words: &[String], scan: &TrustScan<'_>) -> Option<String> {
+    for name in SSH_COMMAND_VARIABLES {
+        for value in variable_values(words, name) {
+            if let Some(setting) = ssh_command_trusts(&value, scan, 1) {
+                return Some(host_key_finding(&setting, name));
+            }
+        }
+    }
+    for name in SSH_PROGRAM_VARIABLES {
+        for value in variable_values(words, name) {
+            // A program path, not a shell command line: split as written, so a Windows path
+            // keeps its backslashes.
+            let program = first_value_word(value.split_whitespace());
+            if let Some(setting) = program.and_then(|path| program_trusts(&path, scan, 1)) {
+                return Some(host_key_finding(&setting, name));
+            }
+        }
+    }
+    variable_values(words, ANSIBLE_HOST_KEY_CHECKING)
+        .iter()
+        .find_map(|value| {
+            let word = first_value_word(value.split_whitespace())?.to_ascii_lowercase();
+            ANSIBLE_FALSE_VALUES.contains(&word.as_str()).then(|| {
+                host_key_finding(&format!("{ANSIBLE_HOST_KEY_CHECKING}={word}"), "Ansible")
+            })
+        })
+}
+
+/// The command `mosh` runs to reach the server: `--ssh=CMD` or `--ssh CMD`.
+fn mosh_ssh_command(args: &[String]) -> Option<String> {
+    args.iter().enumerate().find_map(|(at, token)| {
+        if let Some(command) = token.strip_prefix("--ssh=") {
+            return Some(command.to_owned());
+        }
+        (token == "--ssh")
+            .then(|| args.get(at + 1).cloned())
+            .flatten()
+    })
+}
+
+/// The options one sshfs `-o` value holds, as FUSE reads it: split at each comma, a backslash
+/// keeping the character after it (`\,` is a comma inside an option).
+fn fuse_options(value: &str) -> Vec<String> {
+    let mut options = vec![String::new()];
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        let kept = match c {
+            ',' => {
+                options.push(String::new());
+                continue;
+            }
+            '\\' => chars.next().unwrap_or('\\'),
+            c => c,
+        };
+        if let Some(option) = options.last_mut() {
+            option.push(kept);
+        }
+    }
+    options.retain(|option| !option.trim().is_empty());
+    options
+}
+
+/// The finding for sshfs run with `args`: an ssh option among its `-o` options (sshfs hands
+/// every one it does not know to the ssh it runs, a `ProxyCommand` included), the command
+/// `-o ssh_command=CMD` runs in ssh's place, or a `-F` configuration file.
+fn sshfs_trusts(args: &[String], scan: &TrustScan<'_>) -> Option<String> {
+    for (flag, value) in short_option_values(args, SSHFS_VALUE_FLAGS) {
+        let found = match flag {
+            'o' => fuse_options(&value)
+                .iter()
+                .find_map(|option| match option.split_once('=') {
+                    Some((key, command)) if key.trim().eq_ignore_ascii_case("ssh_command") => {
+                        ssh_command_trusts(command, scan, 1)
+                            .map(|setting| host_key_finding(&setting, "sshfs -o ssh_command"))
+                    }
+                    _ => option_trusts(option, scan, 0)
+                        .map(|setting| host_key_finding(&setting, "sshfs")),
+                }),
+            'F' => config_file_trusts(&value, scan, 0)
+                .map(|setting| host_key_finding(&setting, "sshfs")),
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// The command `rsync` would run as its remote shell: `-e CMD`, `-eCMD` (also inside a cluster
+/// such as `-avze`), `--rsh=CMD` or `--rsh CMD`.
+fn rsync_remote_shell(args: &[String]) -> Option<String> {
+    for (at, token) in args.iter().enumerate() {
+        if let Some(command) = token.strip_prefix("--rsh=") {
+            return Some(command.to_owned());
+        }
+        if token == "--rsh" {
+            return args.get(at + 1).cloned();
+        }
+    }
+    // rsync's short options that take a value, so `-B1024e` is not read as `-e`.
+    short_option_values(args, "BeMfT")
+        .into_iter()
+        .find_map(|(flag, value)| (flag == 'e').then_some(value))
+}
+
+/// The ssh command line git is told to use: `-c core.sshCommand=CMD`, or
+/// `git config [scope] core.sshCommand CMD`, which keeps it.
+fn git_ssh_command(args: &[String]) -> Option<String> {
+    const KEY: &str = "core.sshcommand";
+    for (at, token) in args.iter().enumerate() {
+        let lower = token.to_ascii_lowercase();
+        if let Some(command) = lower
+            .strip_prefix("-c")
+            .unwrap_or(lower.as_str())
+            .strip_prefix(KEY)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            // The original spelling: only the key was lower-cased to match, and ASCII
+            // lower-casing keeps every byte where it was.
+            let start = token.len() - command.len();
+            return token.get(start..).map(str::to_owned);
+        }
+        if lower == KEY {
+            return args.get(at + 1).cloned();
+        }
+    }
+    None
+}
+
+/// Whether `ssh-keygen` run with `args` removes a host's key from a known-hosts file (`-R`),
+/// read as its getopt reads clusters and values.
+fn removes_known_host(args: &[String]) -> bool {
+    // ssh-keygen's options that take a value; `R` is among them and is the one asked about.
+    const VALUE_FLAGS: &str = "abCDEFfGIJjKMmNnOPRrstVwYZz";
+    short_option_values(args, VALUE_FLAGS)
+        .iter()
+        .any(|(flag, _)| *flag == 'R')
+}
+
+/// The finding for an ssh client, or a program that hands one a command line, run as `words`
+/// in one command: what it would trust and how.
+fn words_trust_host_key(words: &[String], scan: &TrustScan<'_>) -> Option<String> {
+    if let Some(found) = variables_trust_host_key(words, scan) {
+        return Some(found);
+    }
+    let at = words.iter().position(|word| {
+        shell_assignment(word).is_none() && HOST_KEY_PROGRAMS.contains(&program_name(word).as_str())
+    })?;
+    let program = program_name(&words[at]);
+    let args = &words[at + 1..];
+    match program.as_str() {
+        "ssh-keygen" => removes_known_host(args).then(|| {
+            "removes a server's trusted host key (ssh-keygen -R), so the next connection would take whatever key it is offered".to_owned()
+        }),
+        "rsync" => rsync_remote_shell(args)
+            .and_then(|shell| ssh_command_trusts(&shell, scan, 1))
+            .map(|setting| host_key_finding(&setting, "rsync -e")),
+        "git" => git_ssh_command(args)
+            .and_then(|command| ssh_command_trusts(&command, scan, 1))
+            .map(|setting| host_key_finding(&setting, "core.sshCommand")),
+        "mosh" => mosh_ssh_command(args)
+            .and_then(|command| ssh_command_trusts(&command, scan, 1))
+            .map(|setting| host_key_finding(&setting, "mosh --ssh")),
+        sshfs if SSHFS_PROGRAMS.contains(&sshfs) => sshfs_trusts(args, scan),
+        client => {
+            ssh_args_trust(client, args, scan, 0).map(|setting| host_key_finding(&setting, client))
+        }
+    }
+}
+
+/// The finding phrase for criterion 7: what would be trusted, and by which setting.
+fn host_key_finding(setting: &str, through: &str) -> String {
+    format!("lets ssh trust a server's host key nobody checked ({setting}, through {through})")
+}
+
+/// Criterion 7: every way `command` makes ssh trust a server's host key nobody checked. Each
+/// command of the line is graded as the parser splits it (pipes, `&&`, `sh -c` scripts), and
+/// the line's own words once more, because a wrapper (`env NAME=… git …`) hands an
+/// assignment over before the parser keeps the command's words.
+fn command_trusts_host_key(command: &str, env: &EnvFacts, found: &mut Findings) {
+    let parsed = ParsedCommand::parse_for(command, env.platform, env);
+    let whole = shell_words(command);
+    let graded = parsed
+        .segments
+        .iter()
+        .map(|segment| segment.argv.as_slice())
+        .chain(std::iter::once(whole.as_slice()));
+    let scan = TrustScan::new(env, command);
+    for words in graded {
+        if let Some(reason) = words_trust_host_key(words, &scan) {
+            if found.push(reason) {
+                return;
+            }
+        }
+    }
+}
+
 /// Every criterion a shell command line can trip: the four path-classification
-/// ones (via [`command_writes_sensitively`]) and criterion 5 — and every hit of
-/// each, not the first.
+/// ones (via [`command_writes_sensitively`]), criterion 7 (a host key trusted
+/// unchecked) and criterion 5 — and every hit of each, not the first.
 fn command_findings(
     command: &str,
     env: &EnvFacts,
@@ -1295,6 +1978,10 @@ fn command_findings(
     found: &mut Findings,
 ) {
     command_writes_sensitively(command, env, found);
+    if found.is_full() {
+        return;
+    }
+    command_trusts_host_key(command, env, found);
     if found.is_full() {
         return;
     }
@@ -3894,5 +4581,530 @@ record_result("ok");"#;
             results.is_empty(),
             "reading a directory must never escalate, got {results:?}"
         );
+    }
+
+    // --- criterion 7: a host key an agent's shell would trust unchecked ----
+
+    fn trust_findings(command: &str, env: &EnvFacts) -> Findings {
+        let mut found = Findings::default();
+        command_trusts_host_key(command, env, &mut found);
+        found
+    }
+
+    /// Every spelling the owner's D6 ruling names asks first: the three trusting values and
+    /// `false`, `-oKey=value`, `-o 'Key value'`, a flag cluster, any letter case, the same
+    /// ssh handed over by git, rsync or a `ProxyCommand`, and `ssh-keygen -R`. A fixture
+    /// that matched nothing would make the inertness tests below meaningless, so each one is
+    /// asserted here to be found.
+    #[test]
+    fn criterion_seven_grades_every_spelling_that_trusts_an_unchecked_host_key() {
+        let env = nix_env();
+        for command in [
+            "ssh -o StrictHostKeyChecking=accept-new you@hpc.example.edu true",
+            "ssh -o StrictHostKeyChecking=no hpc.example.edu",
+            "ssh -o StrictHostKeyChecking=off hpc.example.edu",
+            "ssh -o StrictHostKeyChecking=false hpc.example.edu",
+            "ssh -oStrictHostKeyChecking=no hpc.example.edu",
+            "ssh -o 'StrictHostKeyChecking no' hpc.example.edu",
+            "ssh -o \"StrictHostKeyChecking = accept-new\" hpc.example.edu",
+            "ssh -o stricthostkeychecking=No hpc.example.edu",
+            "ssh -vo StrictHostKeyChecking=accept-new hpc.example.edu",
+            "ssh -p 2222 -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no hpc.example.edu",
+            "ssh hpc.example.edu -o StrictHostKeyChecking=no uptime",
+            "/usr/bin/ssh -o StrictHostKeyChecking=no hpc.example.edu",
+            "scp -o StrictHostKeyChecking=no results.csv hpc.example.edu:",
+            "sftp -oStrictHostKeyChecking=accept-new hpc.example.edu",
+            "ssh-copy-id -i ~/.ssh/id_ed25519.pub -o StrictHostKeyChecking=no hpc.example.edu",
+            "sshpass -e ssh -o StrictHostKeyChecking=no hpc.example.edu",
+            "ssh -o 'ProxyCommand ssh -o StrictHostKeyChecking=no -W %h:%p gate' hpc.example.edu",
+            "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no' git clone git@hpc.example.edu:lab.git",
+            "env GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new' git pull",
+            "export GIT_SSH_COMMAND=\"ssh -oStrictHostKeyChecking=no\"",
+            "git -c core.sshCommand='ssh -o StrictHostKeyChecking=no' fetch",
+            "git config --global core.sshCommand 'ssh -o StrictHostKeyChecking=accept-new'",
+            "rsync -e 'ssh -o StrictHostKeyChecking=no' -a src/ hpc.example.edu:dst/",
+            "rsync -avze 'ssh -o StrictHostKeyChecking=no' src/ hpc.example.edu:dst/",
+            "rsync -a --rsh='ssh -oStrictHostKeyChecking=no' src/ hpc.example.edu:dst/",
+            "RSYNC_RSH='ssh -o StrictHostKeyChecking=no' rsync -a src/ hpc.example.edu:dst/",
+            "ssh-keygen -R hpc.example.edu",
+            "ssh-keygen -f ~/.ssh/known_hosts -R '[hpc.example.edu]:2222'",
+            "cd /tmp && ssh -o StrictHostKeyChecking=no hpc.example.edu",
+            "bash -c \"ssh -o StrictHostKeyChecking=no hpc.example.edu\"",
+            "true | ssh -o StrictHostKeyChecking=accept-new hpc.example.edu 'cat > x'",
+        ] {
+            let found = trust_findings(command, &env);
+            assert!(!found.is_empty(), "{command} must ask first");
+            let described = found.describe();
+            assert!(
+                described.contains("host key"),
+                "{command}: the card must say it is about a host key, got {described}"
+            );
+        }
+    }
+
+    /// Reads of a key, a connection that checks the key, and everything else stay
+    /// promptless: the gate is about trusting a key, not about using ssh.
+    #[test]
+    fn criterion_seven_leaves_reads_and_checked_connections_alone() {
+        let env = nix_env();
+        for command in [
+            "ssh hpc.example.edu",
+            "ssh -o StrictHostKeyChecking=yes hpc.example.edu",
+            "ssh -o StrictHostKeyChecking=ask hpc.example.edu",
+            "ssh -p 2222 -o ConnectTimeout=5 hpc.example.edu uptime",
+            "ssh-copy-id -i ~/.ssh/id_ed25519.pub hpc.example.edu",
+            "ssh-keygen -F hpc.example.edu",
+            "ssh-keygen -lf ~/.ssh/known_hosts",
+            "ssh-keygen -t ed25519 -f ./key -N ''",
+            "ssh-keyscan hpc.example.edu",
+            "ssh-keyscan -t ed25519 hpc.example.edu | ssh-keygen -lf -",
+            "cat ~/.ssh/known_hosts",
+            "grep -i stricthostkeychecking ~/.ssh/config",
+            "git clone git@hpc.example.edu:lab.git",
+            "git -c core.sshCommand='ssh -i ~/.ssh/lab' fetch",
+            "rsync -a src/ hpc.example.edu:dst/",
+            "rsync -e ssh -a src/ hpc.example.edu:dst/",
+            "echo StrictHostKeyChecking",
+        ] {
+            let found = trust_findings(command, &env);
+            assert!(found.is_empty(), "{command} must not ask, got {found:?}");
+        }
+    }
+
+    /// A `-F` file is read: one that trusts unchecked keys asks, one that checks them does
+    /// not, and one this inspection cannot read is judged by the line that may be writing it.
+    #[cfg(unix)]
+    #[test]
+    fn criterion_seven_reads_the_config_file_ssh_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let trusting = dir.path().join("trusting");
+        let checking = dir.path().join("checking");
+        std::fs::write(
+            &trusting,
+            "# lab\nHost *\n    StrictHostKeyChecking=accept-new\n",
+        )
+        .unwrap();
+        std::fs::write(&checking, "Host *\n    StrictHostKeyChecking yes\n").unwrap();
+        let env =
+            EnvFacts::for_platform(Platform::host(), &dir.path().to_string_lossy(), "/home/me");
+        let asks = trust_findings(&format!("ssh -F {} hpc", trusting.display()), &env);
+        assert!(!asks.is_empty(), "a trusting -F file must ask");
+        assert!(
+            !trust_findings("scp -F trusting a hpc:", &env).is_empty(),
+            "a relative -F file is read from the working directory"
+        );
+        assert!(trust_findings(&format!("ssh -F {} hpc", checking.display()), &env).is_empty());
+        let written = trust_findings(
+            "printf 'StrictHostKeyChecking no\\n' > /tmp/never-there && ssh -F /tmp/never-there/cfg hpc",
+            &env,
+        );
+        assert!(
+            !written.is_empty(),
+            "a -F file the same line writes must ask"
+        );
+        assert!(trust_findings("ssh -F /nonexistent/cfg hpc", &env).is_empty());
+    }
+
+    /// A `-F` argument that is not a regular file (a FIFO here) is never opened, so the
+    /// inspection cannot block on it; the line is judged by its own words instead.
+    #[cfg(unix)]
+    #[test]
+    fn criterion_seven_never_blocks_on_a_config_that_is_not_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("cfg");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success(), "mkfifo made the fixture");
+        let env = nix_env();
+        let plain = format!("ssh -F {} hpc", fifo.display());
+        let trusting = format!(
+            "printf 'StrictHostKeyChecking no\\n' > {0} & ssh -F {0} hpc",
+            fifo.display()
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let found = (
+                trust_findings(&plain, &env).is_empty(),
+                trust_findings(&trusting, &env).is_empty(),
+            );
+            let _ = sender.send(found);
+        });
+        let (plain_empty, trusting_empty) = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the inspection must not block on a FIFO");
+        assert!(plain_empty, "a FIFO nobody writes trusts nothing");
+        assert!(
+            !trusting_empty,
+            "a FIFO the same line fills is judged by the line"
+        );
+    }
+
+    /// The other OpenSSH options that trust a key nobody checked, in every place an option is
+    /// read: `KnownHostsCommand` (any command but `none`), and a user or global known-hosts
+    /// file other than the default, which holds whatever was put there, such as a scan.
+    #[test]
+    fn criterion_seven_grades_the_known_hosts_options() {
+        let env = nix_env();
+        for command in [
+            "ssh -o KnownHostsCommand='ssh-keyscan %H' hpc.example.edu",
+            "ssh -o 'KnownHostsCommand /usr/bin/ssh-keyscan -t ed25519 %H' hpc.example.edu",
+            "scp -oknownhostscommand=/tmp/scan results.csv hpc.example.edu:",
+            "ssh-keyscan hpc.example.edu > /tmp/kh; ssh -o UserKnownHostsFile=/tmp/kh hpc.example.edu",
+            "ssh -o UserKnownHostsFile=/dev/null hpc.example.edu",
+            "ssh -o UserKnownHostsFile=none hpc.example.edu",
+            "ssh -o 'UserKnownHostsFile ~/.ssh/known_hosts /tmp/kh' hpc.example.edu",
+            "sftp -o GlobalKnownHostsFile=/tmp/kh hpc.example.edu",
+            "ssh -o 'ProxyCommand ssh -o UserKnownHostsFile=/tmp/kh -W %h:%p gate' hpc",
+            "GIT_SSH_COMMAND='ssh -o KnownHostsCommand=\"ssh-keyscan %H\"' git pull",
+            "rsync -e 'ssh -o UserKnownHostsFile=/tmp/kh' -a src/ hpc.example.edu:dst/",
+        ] {
+            let found = trust_findings(command, &env);
+            assert!(!found.is_empty(), "{command} must ask first");
+            assert!(found.describe().contains("host key"), "{command}");
+        }
+        for command in [
+            "ssh -o KnownHostsCommand=none hpc.example.edu",
+            "ssh -o UserKnownHostsFile=~/.ssh/known_hosts hpc.example.edu",
+            "ssh -o 'UserKnownHostsFile ~/.ssh/known_hosts ~/.ssh/known_hosts2' hpc.example.edu",
+            "ssh -o UserKnownHostsFile=/home/me/.ssh/known_hosts hpc.example.edu",
+            "ssh -o UserKnownHostsFile=%d/.ssh/known_hosts hpc.example.edu",
+            "ssh -o GlobalKnownHostsFile=/etc/ssh/ssh_known_hosts hpc.example.edu",
+            "grep -i KnownHostsCommand ~/.ssh/config",
+        ] {
+            let found = trust_findings(command, &env);
+            assert!(found.is_empty(), "{command} must not ask, got {found:?}");
+        }
+    }
+
+    /// A `-F` file is read for the same options, and for a `ProxyCommand` that runs a trusting
+    /// ssh, which the file reading used to skip.
+    #[cfg(unix)]
+    #[test]
+    fn criterion_seven_reads_the_known_hosts_options_in_a_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let env =
+            EnvFacts::for_platform(Platform::host(), &dir.path().to_string_lossy(), "/home/me");
+        for (name, body, asks) in [
+            (
+                "command",
+                "Host *\n    KnownHostsCommand ssh-keyscan %H\n",
+                true,
+            ),
+            ("file", "Host *\n    UserKnownHostsFile /tmp/kh\n", true),
+            ("global", "Host *\n    GlobalKnownHostsFile=/tmp/kh\n", true),
+            (
+                "proxy",
+                "Host hpc\n    ProxyCommand ssh -o StrictHostKeyChecking=no -W %h:%p gate\n",
+                true,
+            ),
+            (
+                "default",
+                "Host *\n    UserKnownHostsFile ~/.ssh/known_hosts\n",
+                false,
+            ),
+            ("none", "Host *\n    KnownHostsCommand none\n", false),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            let found = trust_findings(&format!("ssh -F {} hpc", path.display()), &env);
+            assert_eq!(!found.is_empty(), asks, "{name}: {found:?}");
+        }
+        let written = trust_findings(
+            "printf 'KnownHostsCommand ssh-keyscan %H\\n' > /tmp/never-there/cfg && ssh -F /tmp/never-there/cfg hpc",
+            &env,
+        );
+        assert!(
+            !written.is_empty(),
+            "a -F file the same line writes must ask"
+        );
+    }
+
+    /// PowerShell and cmd set the variable that carries an ssh command line too, and neither
+    /// spelling is a POSIX `NAME=value` word. Graded on both a Unix host (a `pwsh -c` line is
+    /// split the POSIX way first) and a Windows one, where PowerShell is the default shell.
+    #[test]
+    fn criterion_seven_reads_every_shells_spelling_of_the_ssh_variables() {
+        let windows =
+            EnvFacts::for_platform(Platform::Windows, r"C:\Users\me\proj", r"C:\Users\me");
+        for env in [nix_env(), windows] {
+            for command in [
+                "$env:GIT_SSH_COMMAND = 'ssh -o StrictHostKeyChecking=no'",
+                "$env:GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no'; git pull",
+                "$Env:git_ssh_command = \"ssh -o StrictHostKeyChecking=accept-new\"",
+                "${env:GIT_SSH_COMMAND} = 'ssh -o StrictHostKeyChecking=no'",
+                "Set-Item env:GIT_SSH_COMMAND -Value 'ssh -o StrictHostKeyChecking=no'",
+                "[Environment]::SetEnvironmentVariable('GIT_SSH_COMMAND', 'ssh -o StrictHostKeyChecking=no', 'User')",
+                "set GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=no",
+                "set \"GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=no\"",
+                "setx GIT_SSH_COMMAND \"ssh -o StrictHostKeyChecking=no\"",
+                "cmd /c \"set RSYNC_RSH=ssh -o StrictHostKeyChecking=no && rsync -a src hpc:dst\"",
+                "$env:ANSIBLE_HOST_KEY_CHECKING = 'False'",
+                "set ANSIBLE_HOST_KEY_CHECKING=0",
+            ] {
+                let found = trust_findings(command, &env);
+                assert!(
+                    !found.is_empty(),
+                    "{command} must ask first on {:?}",
+                    env.platform
+                );
+                assert!(found.describe().contains("host key"), "{command}");
+            }
+            for command in [
+                "$env:GIT_SSH_COMMAND = 'ssh -i lab'",
+                "echo $env:GIT_SSH_COMMAND",
+                "set GIT_SSH_COMMAND=ssh -i lab",
+                "$env:MY_GIT_SSH_COMMAND_NOTE = 'ssh -o StrictHostKeyChecking=no'",
+                "$env:ANSIBLE_HOST_KEY_CHECKING = 'True'",
+            ] {
+                let found = trust_findings(command, &env);
+                assert!(
+                    found.is_empty(),
+                    "{command} must not ask on {:?}, got {found:?}",
+                    env.platform
+                );
+            }
+        }
+    }
+
+    /// The indirections: a wrapper program run in ssh's place (`GIT_SSH`, `scp -S`,
+    /// `sftp -S`, a remote shell or `ProxyCommand` named by path) is read as a `-F` file is,
+    /// `mosh --ssh` hands over a command line, and Ansible's switch turns the check off.
+    #[cfg(unix)]
+    #[test]
+    fn criterion_seven_follows_wrappers_mosh_and_ansible() {
+        let dir = tempfile::tempdir().unwrap();
+        let trusting = dir.path().join("trusting-ssh");
+        let checking = dir.path().join("checking-ssh");
+        std::fs::write(
+            &trusting,
+            "#!/bin/sh\n# lab wrapper\nexec ssh -o StrictHostKeyChecking=no \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::write(&checking, "#!/bin/sh\nexec ssh -i ~/.ssh/lab \"$@\"\n").unwrap();
+        let env = nix_env();
+        let wrapped = |template: &str, wrapper: &Path| {
+            trust_findings(&template.replace("{w}", &wrapper.to_string_lossy()), &env)
+        };
+        for template in [
+            "GIT_SSH={w} git pull",
+            "export GIT_SSH={w}",
+            "$env:GIT_SSH = '{w}'",
+            "scp -S {w} results.csv hpc.example.edu:",
+            "sftp -S{w} hpc.example.edu",
+            "rsync -e {w} -a src/ hpc.example.edu:dst/",
+            "GIT_SSH_COMMAND={w} git pull",
+            "ssh -o 'ProxyCommand {w} -W %h:%p gate' hpc.example.edu",
+        ] {
+            assert!(
+                !wrapped(template, &trusting).is_empty(),
+                "{template} must ask"
+            );
+            assert!(
+                wrapped(template, &checking).is_empty(),
+                "{template} with a wrapper that checks keys must not ask"
+            );
+        }
+        for command in [
+            "printf 'exec ssh -o StrictHostKeyChecking=no \"$@\"' > /tmp/never-there/w && GIT_SSH=/tmp/never-there/w git pull",
+            "mosh --ssh=\"ssh -o StrictHostKeyChecking=no\" hpc.example.edu",
+            "mosh --ssh 'ssh -o StrictHostKeyChecking=accept-new' hpc.example.edu",
+            "ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook site.yml",
+            "export ANSIBLE_HOST_KEY_CHECKING=0",
+            "env ANSIBLE_HOST_KEY_CHECKING=no ansible all -m ping",
+        ] {
+            assert!(!trust_findings(command, &env).is_empty(), "{command} must ask");
+        }
+        for command in [
+            "GIT_SSH=/usr/bin/ssh git pull",
+            "GIT_SSH=plink git pull",
+            "GIT_SSH=/nonexistent/wrapper git pull",
+            "scp -S /usr/bin/ssh results.csv hpc.example.edu:",
+            "ssh -S /tmp/control hpc.example.edu",
+            "mosh --ssh=\"ssh -p 2222\" hpc.example.edu",
+            "ANSIBLE_HOST_KEY_CHECKING=True ansible-playbook site.yml",
+            "echo $ANSIBLE_HOST_KEY_CHECKING",
+            "GIT_SSH_VARIANT=ssh git pull",
+        ] {
+            let found = trust_findings(command, &env);
+            assert!(found.is_empty(), "{command} must not ask, got {found:?}");
+        }
+    }
+
+    /// sshfs hands its `-o` options to the ssh it runs, so every spelling ssh's own `-o` is read
+    /// in asks here too: comma-separated among FUSE options, attached, any letter case, the
+    /// known-hosts options, a `ProxyCommand`, an `-o ssh_command` that runs a trusting ssh, a
+    /// `-F` file, the mount helpers' names and a shell wrapping it. A mount that checks keys
+    /// does not.
+    #[test]
+    fn criterion_seven_grades_sshfs_options_in_every_spelling() {
+        let env = nix_env();
+        for command in [
+            "sshfs -o StrictHostKeyChecking=no hpc.example.edu:/data /mnt/data",
+            "sshfs hpc.example.edu:/data /mnt/data -o StrictHostKeyChecking=accept-new",
+            "sshfs -oStrictHostKeyChecking=off hpc.example.edu: /mnt/data",
+            "sshfs -o stricthostkeychecking=False hpc.example.edu: /mnt/data",
+            "sshfs -o 'StrictHostKeyChecking no' hpc.example.edu: /mnt/data",
+            "sshfs -o allow_other,reconnect,StrictHostKeyChecking=no hpc.example.edu: /mnt/data",
+            "sshfs -o reconnect -o ServerAliveInterval=15,StrictHostKeyChecking=accept-new hpc: /mnt",
+            "sshfs -o UserKnownHostsFile=/dev/null hpc.example.edu: /mnt/data",
+            "sshfs -o GlobalKnownHostsFile=/tmp/kh hpc.example.edu: /mnt/data",
+            "sshfs -o 'KnownHostsCommand=ssh-keyscan %H' hpc.example.edu: /mnt/data",
+            "sshfs -o 'ProxyCommand=ssh -o StrictHostKeyChecking=no -W %h:%p gate' hpc: /mnt",
+            "sshfs -o ssh_command='ssh -o StrictHostKeyChecking=no' hpc.example.edu: /mnt/data",
+            "sshfs -o 'reconnect,ssh_command=sshpass -e ssh -oStrictHostKeyChecking=accept-new' hpc: /mnt",
+            "sshfs -o 'SSH_COMMAND=ssh -o UserKnownHostsFile=/tmp/kh' hpc: /mnt",
+            r"sshfs -o 'ssh_command=ssh\ -o\ StrictHostKeyChecking=no' hpc: /mnt",
+            "printf 'StrictHostKeyChecking no\\n' > /tmp/never-there/cfg && sshfs -F /tmp/never-there/cfg hpc: /mnt",
+            "/usr/bin/sshfs -o StrictHostKeyChecking=no hpc.example.edu: /mnt/data",
+            "sudo sshfs -o allow_other,StrictHostKeyChecking=no hpc: /mnt",
+            "mount.fuse.sshfs hpc.example.edu:/data /mnt/data -o StrictHostKeyChecking=no",
+            "mount.sshfs hpc.example.edu:/data /mnt/data -o UserKnownHostsFile=/dev/null",
+            "bash -c \"sshfs -o StrictHostKeyChecking=no hpc: /mnt\"",
+        ] {
+            let found = trust_findings(command, &env);
+            assert!(!found.is_empty(), "{command} must ask first");
+            let described = found.describe();
+            assert!(described.contains("host key"), "{command}: {described}");
+            assert!(described.contains("sshfs"), "{command}: {described}");
+        }
+        for command in [
+            "sshfs hpc.example.edu:/data /mnt/data",
+            "sshfs -o StrictHostKeyChecking=yes hpc.example.edu: /mnt/data",
+            "sshfs -o reconnect,ServerAliveInterval=15,allow_other hpc: /mnt",
+            "sshfs -p 2222 -o IdentityFile=~/.ssh/lab hpc: /mnt",
+            "sshfs -o ssh_command='ssh -i ~/.ssh/lab' hpc: /mnt",
+            "sshfs -o UserKnownHostsFile=~/.ssh/known_hosts hpc: /mnt",
+            "sshfs -o KnownHostsCommand=none hpc: /mnt",
+            "sshfs -F /nonexistent/cfg hpc: /mnt",
+            "fusermount -u /mnt/data",
+            "umount /mnt/data",
+        ] {
+            let found = trust_findings(command, &env);
+            assert!(found.is_empty(), "{command} must not ask, got {found:?}");
+        }
+    }
+
+    /// sshfs reads a `-F` file and runs an `-o ssh_command` wrapper the way ssh and git do:
+    /// the file is read, a trusting one asks and a checking one does not.
+    #[cfg(unix)]
+    #[test]
+    fn criterion_seven_reads_the_files_sshfs_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let trusting = dir.path().join("trusting");
+        let checking = dir.path().join("checking");
+        std::fs::write(&trusting, "Host *\n    StrictHostKeyChecking accept-new\n").unwrap();
+        std::fs::write(&checking, "Host *\n    StrictHostKeyChecking yes\n").unwrap();
+        let wrapper = dir.path().join("trusting-ssh");
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\nexec ssh -o StrictHostKeyChecking=no \"$@\"\n",
+        )
+        .unwrap();
+        let env =
+            EnvFacts::for_platform(Platform::host(), &dir.path().to_string_lossy(), "/home/me");
+        for (command, asks) in [
+            (format!("sshfs -F {} hpc: /mnt", trusting.display()), true),
+            (format!("sshfs hpc: /mnt -F{}", trusting.display()), true),
+            ("sshfs -F trusting hpc: /mnt".to_owned(), true),
+            (format!("sshfs -F {} hpc: /mnt", checking.display()), false),
+            (
+                format!("sshfs -o ssh_command={} hpc: /mnt", wrapper.display()),
+                true,
+            ),
+            (
+                format!("sshfs -o ssh_command={} hpc: /mnt", checking.display()),
+                false,
+            ),
+        ] {
+            let found = trust_findings(&command, &env);
+            assert_eq!(!found.is_empty(), asks, "{command}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn fuse_options_split_at_commas_and_keep_an_escaped_one() {
+        assert_eq!(
+            fuse_options(r"allow_other,ssh_command=ssh\ -o\ A=b\,c,,reconnect"),
+            ["allow_other", "ssh_command=ssh -o A=b,c", "reconnect"]
+        );
+        assert!(fuse_options("").is_empty());
+    }
+
+    /// Files that name each other cannot keep the inspection reading: grading one line opens
+    /// at most `MAX_TRUST_FILES` files, and a wrapper that names itself on every line spends
+    /// exactly that budget and no more.
+    #[cfg(unix)]
+    #[test]
+    fn criterion_seven_opens_a_bounded_number_of_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let wrapper = dir.path().join("loop");
+        let line = format!("{} -W %h:%p\n", wrapper.display());
+        std::fs::write(&wrapper, line.repeat(500)).unwrap();
+        let env = nix_env();
+        let command = format!("GIT_SSH={} git pull", wrapper.display());
+        let scan = TrustScan::new(&env, &command);
+        let words = shell_words(&command);
+        assert_eq!(words_trust_host_key(&words, &scan), None);
+        assert_eq!(scan.files_left.get(), 0, "the whole budget was the bound");
+    }
+
+    /// What criterion 7 leaves to criterion 4: a write into known_hosts already asks, because
+    /// `.ssh` is a credential path.
+    #[test]
+    fn a_key_appended_to_known_hosts_stays_a_credential_write() {
+        let env = nix_env();
+        for command in [
+            "ssh-keyscan hpc.example.edu >> ~/.ssh/known_hosts",
+            "ssh-keyscan hpc.example.edu | tee -a ~/.ssh/known_hosts",
+        ] {
+            assert!(
+                command_writes_sensitively(command, &env).is_some(),
+                "{command} must still ask"
+            );
+        }
+    }
+
+    /// Gate (c) for criterion 7, at the inspector: Fully Automatic asks with a card that names
+    /// the host key, and every other mode stays inert, as for every other criterion.
+    #[tokio::test]
+    async fn criterion_seven_asks_in_auto_mode_and_nowhere_else() {
+        let requests: Vec<ToolRequest> = [
+            "ssh -o StrictHostKeyChecking=accept-new you@hpc.example.edu true",
+            "ssh-keygen -R hpc.example.edu",
+            "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no' git pull",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, command)| shell_request(&format!("req_{i}"), command))
+        .collect();
+        let session = session_at(Path::new("/home/me/proj"), chrono::Utc::now());
+        let auto = SensitiveOpsInspector::unbound()
+            .inspect(&requests, &[], BioRouterMode::Auto, &session)
+            .await
+            .unwrap();
+        assert_eq!(auto.len(), requests.len(), "{auto:?}");
+        for result in &auto {
+            let InspectionAction::RequireApproval(Some(prompt)) = &result.action else {
+                panic!("expected an approval prompt, got {:?}", result.action);
+            };
+            assert!(prompt.contains("host key"), "{prompt}");
+            assert_eq!(result.inspector_name, SENSITIVE_OPS_INSPECTOR_NAME);
+        }
+        for mode in [
+            BioRouterMode::Approve,
+            BioRouterMode::SmartApprove,
+            BioRouterMode::Chat,
+        ] {
+            let results = SensitiveOpsInspector::unbound()
+                .inspect(&requests, &[], mode, &session)
+                .await
+                .unwrap();
+            assert!(
+                results.is_empty(),
+                "{mode:?} must be inert for criterion 7, got {results:?}"
+            );
+        }
     }
 }

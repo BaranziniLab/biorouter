@@ -1,10 +1,16 @@
 //! Saved native SSH connections and owner-scoped Crew capabilities.
 pub mod authentication;
+pub mod changes;
+mod consent;
 mod credentials;
+mod devices;
 mod freshness;
+pub use consent::{PersonRead, PersonReadRow};
+pub use devices::{added_via_words, NewDevice};
 #[cfg(test)]
 #[path = "freshness_tests.rs"]
 mod freshness_tests;
+pub mod host_keys;
 mod host_start;
 #[cfg(test)]
 #[path = "host_start_tests.rs"]
@@ -21,9 +27,12 @@ mod context;
 mod setup;
 pub use context::render_workspace_context;
 pub use setup::{
-    cancel_setup, prepare_setup_sign_in, setup_artifact, setup_status, ContextDraft, SetupArtifact,
-    SetupError, SetupInstalled, SetupIntent, SetupOutcome, SetupRefused, SetupRequest, SetupServer,
-    SetupStage, SetupStageName, SetupStageState, SetupState, SetupStatus, SetupTarget,
+    cancel_setup, prepare_setup_sign_in, setup_artifact, setup_jobs, setup_status, ContextDraft,
+    SetupArtifact, SetupError, SetupGovernance, SetupInstalled, SetupIntent, SetupOutcome,
+    SetupOutdated, SetupOutdatedReason, SetupRefused, SetupRequest, SetupRestartFailed,
+    SetupRestarted, SetupServer, SetupStage, SetupStageName, SetupStageState, SetupState,
+    SetupStatus, SetupStep, SetupTarget, SetupThisComputer, SetupWorkspace, SetupWorkspaceRole,
+    SetupWorkspaceScan, SetupWorkspaceState, SetupWorkspacesUnlisted,
 };
 mod keepalive;
 mod local_host;
@@ -46,12 +55,14 @@ mod scope_binding_tests;
 #[cfg(test)]
 #[path = "server_access_tests.rs"]
 mod server_access_tests;
-pub use credentials::CredentialStatus;
+pub use credentials::{CredentialStatus, VaultState};
 pub mod refusal;
 pub mod source_line;
+pub mod tool_host;
 pub use institution::{refusal_details as institution_refusal_details, AFFILIATION_REFUSAL};
 pub use refusal::CrewRefusal;
 mod ssh_policy;
+pub use ssh_policy::SshPolicyRefused;
 mod transport;
 use crate::{
     privacy::{CallCapability, ProviderTier},
@@ -361,6 +372,29 @@ pub struct BrokerHello {
     /// server is saving, or is an older one that does not say.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage: Option<ServerStorage>,
+    /// The broker's package version, as this `hello` said (AO-4). Unsigned under either
+    /// signature, like `storage`, so it is shown and compared with this build's broker for the
+    /// version notice, and never relied on. `None` for an older broker that does not say, and
+    /// for anything that does not read as a version ([`broker_version_from_hello`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// The longest broker version [`broker_version_from_hello`] keeps.
+const MAX_BROKER_VERSION_LEN: usize = 64;
+
+/// `hello`'s unsigned `version` (AO-4), kept only when it reads as a package version: it starts
+/// with a digit, is at most [`MAX_BROKER_VERSION_LEN`] bytes, and holds only ASCII letters,
+/// digits, `.`, `-` and `+`. Anything else, a missing field included, is `None`, as from a
+/// broker that predates the field. Never part of a signature check.
+fn broker_version_from_hello(hello: &Value) -> Option<String> {
+    let version = hello.get("version")?.as_str()?;
+    let readable = version.len() <= MAX_BROKER_VERSION_LEN
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'));
+    readable.then(|| version.to_owned())
 }
 
 /// A workspace server that has stopped saving changes (its disk or quota is full, or it could
@@ -638,14 +672,25 @@ pub(crate) const NO_GRANT: &str =
     "This chat isn't connected to a Crew channel. To connect it, type /crew in this chat.";
 /// A task whose grant was replaced by a newer one.
 const REPLACED_RUN: &str = "This task was replaced by a newer explicitly granted run; cancel it from its current conversation";
+/// The tools a chat that holds a Crew grant may call (AO-12, gate B-1): the grant's two worker
+/// tools and the checklist. Exact names, never the `crew__` prefix, which the person tools
+/// share.
+pub const SCOPED_CREW_TOOLS: [&str; 2] = ["crew__connections", "crew__request"];
+/// Whether a Crew-scoped chat may call the tool `name` ([`SCOPED_CREW_TOOLS`] or `todo__*`).
+fn scoped_tool_allowed(name: &str) -> bool {
+    SCOPED_CREW_TOOLS.contains(&name) || name.starts_with("todo__")
+}
+/// The longest a run of a removed connection can still be honored (AO-11): every run is made
+/// with `expires_in` of an hour, and removal revokes what it can reach first.
+const REMOVED_RUN_ENDS_WITHIN: u64 = 60 * 60;
 /// A grant whose chat is no longer on this device: it keeps restricting, never acts.
 const GRANT_GONE: &str =
     "This chat's Crew access is no longer available. Start a new chat, or grant access again from Crew.";
 /// The chat's identity could not be read, so its grant can be neither trusted nor dropped.
 const GRANT_UNCONFIRMED: &str =
-    "Couldn't confirm this chat's Crew access on this device. Try again in a moment.";
+    "Couldn't confirm this chat's Crew access on this computer. Try again in a moment.";
 /// A grant asked for a chat that is not saved on this device (`--no-session`, or gone).
-const UNSAVED_CHAT: &str = "Crew can only grant access to a chat saved on this device. Start a saved chat, then grant it access from Crew.";
+const UNSAVED_CHAT: &str = "Crew can only grant access to a chat saved on this computer. Start a saved chat, then grant it access from Crew.";
 /// A grant asked for a chat whose id a chat saved in another Biorouter data folder on this
 /// computer also has, and that chat holds Crew access (CROSSCUT-8). One grant is kept per id,
 /// so granting this chat would take that chat's grant away.
@@ -757,6 +802,7 @@ fn is_read_only(method: &str) -> bool {
         "hello"
             | "auth.challenge"
             | "enrollment.pending"
+            | "account.status"
             | "workspace.snapshot"
             | "messages.history"
             | "messages.search"
@@ -887,7 +933,9 @@ enum GrantStore {
 
 /// Which door a signed request came through. Only the daemon's own join sends `auth.join`,
 /// so no route, tool or pass-through can; only [`CrewManager::delete_workspace`] sends
-/// `workspace.delete`, because it removes the connection from this computer afterwards.
+/// `workspace.delete`, because it removes the connection from this computer afterwards; and
+/// only the daemon's own account join, open, rejoin and host code sends `auth.account`
+/// (account ownership AO-9), because that request adds a device to the person's account.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SignedDoor {
     /// `human_request` and the daemon's own grant path.
@@ -896,6 +944,37 @@ enum SignedDoor {
     Join,
     /// [`CrewManager::delete_workspace`], which sends `workspace.delete` and nothing else.
     WorkspaceDelete,
+    /// [`CrewManager::account_join`] (and the join, open and host paths that call it), which
+    /// sends `auth.account` and nothing else.
+    Account,
+}
+/// Refuses `method` when it may not leave through `door`: the methods only the daemon's own
+/// code sends, and the ones it never signs.
+fn check_door(door: SignedDoor, method: &str) -> Result<()> {
+    // Joining is the daemon's own act, with the key it saved for this connection; the
+    // join status is read unsigned before authentication, as `hello` is. Neither may be
+    // sent on a caller's say-so, and the join door sends nothing else.
+    ensure!(
+        method != "enrollment.pending" && method != "account.status",
+        "Biorouter checks join status itself; it is never sent as a signed request"
+    );
+    ensure!(
+        (method == "auth.join") == (door == SignedDoor::Join),
+        "Only Biorouter's own join sends auth.join; it can't be sent as a Crew request"
+    );
+    // A computer adds itself to the person's account only through the daemon's own join,
+    // open, rejoin and host code (AO-9), never on a caller's say-so.
+    ensure!(
+        (method == "auth.account") == (door == SignedDoor::Account),
+        "Only Biorouter's own join sends auth.account; it can't be sent as a Crew request"
+    );
+    // Deleting the workspace also removes its connection from this computer, which a
+    // request sent any other way would leave behind.
+    ensure!(
+        (method == "workspace.delete") == (door == SignedDoor::WorkspaceDelete),
+        "Delete a workspace with Delete workspace in its settings, or biorouter crew workspace delete; it can't be sent as a Crew request"
+    );
+    Ok(())
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
 struct Registry {
@@ -909,18 +988,39 @@ struct Registry {
     pending_device: Option<PreparedDevice>,
     #[serde(default)]
     completed_preparations: HashMap<String, String>,
+    /// A rejoin's staged device key, by connection ID, from when it is written until the
+    /// workspace accepts or refuses it (AO-9, [`CrewManager::rejoin`]).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pending_rekeys: HashMap<String, PendingRekey>,
+    /// What this computer last saw of the account's devices, by connection ID (AO-10).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    seen_devices: HashMap<String, devices::DeviceWatch>,
+    /// The chats a person let read a connection's workspace as them, by session ID (AO-12).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    person_reads: HashMap<String, Vec<PersonRead>>,
 }
 impl Registry {
     /// Whether this profile holds no Crew identity at all: no connection, grant, stopped grant,
-    /// prepared device or finished preparation. Only such a profile may have an encrypted vault
-    /// set up, since keys already in the keyring are never silently replaced.
+    /// prepared device, finished preparation or staged rekey. Only such a profile may have an
+    /// encrypted vault set up, since keys already in the keyring are never silently replaced.
     fn holds_no_identity(&self) -> bool {
         self.connections.is_empty()
             && self.scopes.is_empty()
             && self.replaced.is_empty()
             && self.pending_device.is_none()
             && self.completed_preparations.is_empty()
+            && self.pending_rekeys.is_empty()
     }
+}
+/// A rejoin's staged device key (AO-9): written as the credential `device-next:{id}` and
+/// recorded here before `auth.account` is sent, so a rejoin whose answer was lost sends the
+/// same key again, which the workspace answers as a retry.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct PendingRekey {
+    public_key: String,
+    device_id: String,
+    /// The saved device the staged key replaces at the workspace (`replaces_device_id`).
+    replaces_device_id: String,
 }
 /// How long a registry update waits for another Biorouter process to finish its own.
 const REGISTRY_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -1068,7 +1168,7 @@ pub struct GrantRow {
     pub source_channels: Vec<String>,
     /// The connection's policy epoch when the grant was made.
     pub policy_epoch: u64,
-    /// Stopped on this device: revoked, ended, or its connection was removed.
+    /// Stopped on this computer: revoked, ended, or its connection was removed.
     pub expired: bool,
     /// When the workspace ends the grant on its own, in Unix seconds; `null` for a grant
     /// recorded before that was kept.
@@ -1223,6 +1323,11 @@ pub struct CrewManager {
     /// Runs whose `run.revoke` is on its way to the workspace now, so the retry pass never
     /// sends a second one beside it (W2-DMN-13). Memory only.
     revoking: StdMutex<HashSet<String>>,
+    /// The UID of the server account each connection's bridge signs in as, as the workspace
+    /// server's last `auth.challenge` answer named it, by connection ID. Memory only, unsigned,
+    /// and never used to authorize anything: it tells the host apart for words, on a server
+    /// too old to say who the account is (AO-9), without asking the server once more.
+    account_uids: StdMutex<HashMap<String, u64>>,
 }
 /// How long one live admission of a chat's grant by the workspace stands for the provider
 /// uses that are not the reply loop's own model requests ([`CrewManager::check_provider_use`]).
@@ -1539,6 +1644,7 @@ impl HelloV2Fields {
             institution_id: self.institution_id,
             policy_epoch: Some(self.policy_epoch),
             storage: None,
+            version: None,
         })
     }
 }
@@ -1563,6 +1669,7 @@ impl BrokerHello {
             institution_id: None,
             policy_epoch: None,
             storage: None,
+            version: None,
         }
     }
 }
@@ -2025,13 +2132,26 @@ impl CrewManager {
             self.read_legacy_credential(id).map(zeroize::Zeroizing::new)
         })
     }
+    /// A credential from the OS keyring or a development key file. One the store does not hold
+    /// is a [`credentials::CredentialAbsent`] in the store's own words, so a lost device key can
+    /// be told from a store that failed (AO-9).
     fn read_legacy_credential(&self, id: &str) -> Result<String> {
         if file_credentials_enabled() {
-            Ok(std::fs::read_to_string(self.credential_path(id))?)
+            match std::fs::read_to_string(self.credential_path(id)) {
+                Ok(value) => Ok(value),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(
+                    anyhow::Error::new(credentials::CredentialAbsent::new(error.to_string())),
+                ),
+                Err(error) => Err(error.into()),
+            }
         } else {
-            self.credential_entry(id)?
-                .get_password()
-                .map_err(keyring_failure)
+            match self.credential_entry(id)?.get_password() {
+                Ok(value) => Ok(value),
+                Err(error @ keyring::Error::NoEntry) => Err(anyhow::Error::new(
+                    credentials::CredentialAbsent::new(error.to_string()),
+                )),
+                Err(error) => Err(keyring_failure(error)),
+            }
         }
     }
     /// Load the registry under `root`. One that cannot be read no longer fails the manager,
@@ -2075,6 +2195,7 @@ impl CrewManager {
             unreadable: StdMutex::new(unreadable),
             ended_runs: StdMutex::new(HashSet::new()),
             revoking: StdMutex::new(HashSet::new()),
+            account_uids: StdMutex::new(HashMap::new()),
         })
     }
     /// [`CrewManager::new`], shared, and able to keep its connections' bridges alive.
@@ -2195,6 +2316,14 @@ impl CrewManager {
         }
         self.broker_hello(&connection.id)?.storage
     }
+    /// The workspace broker's package version, as its last verified `hello` said (AO-4):
+    /// served as a saved connection's `server_version`, which the desktop compares with the
+    /// broker this build carries for its version notice. `None` while this process holds no
+    /// verified `hello` for the connection (it is not connected), and for an older broker that
+    /// does not say. Unsigned and display only: the workspace decides every request.
+    pub fn server_version(&self, id: &str) -> Option<String> {
+        self.broker_hello(id)?.version
+    }
     /// A request the workspace refused because its server could not save it (`storage_full`,
     /// `storage_failed`): ask `hello` again, in the background, so the connection says whether
     /// the server has stopped saving (T3-BE-13). The broker also refuses one attachment with
@@ -2245,6 +2374,13 @@ impl CrewManager {
         let vault = self.credential_vault.clone();
         let probe = self.credential_entry(KEYRING_PROBE);
         tokio::task::spawn_blocking(move || vault.status(|| keyring_answers(probe))).await?
+    }
+    /// [`Self::credential_status`]'s `initialized` and `locked`, without its keyring probe
+    /// (on Linux a Secret Service call): what a vault card reads while it waits for the person
+    /// to unlock or set up the vault.
+    pub async fn vault_state(&self) -> Result<VaultState> {
+        let vault = self.credential_vault.clone();
+        tokio::task::spawn_blocking(move || vault.vault_state()).await?
     }
     pub async fn init_vault(&self, passphrase: zeroize::Zeroizing<String>) -> Result<()> {
         // A registry that cannot be read is not an empty one: the identities it names may hold
@@ -3078,13 +3214,13 @@ impl CrewManager {
         let prepared = if let Some(preparation_id) = &input.preparation_id {
             ensure!(
                 id.is_none(),
-                "Prepared device identities are used only when saving a new connection"
+                "A prepared device key is used only when saving a new connection."
             );
             uuid::Uuid::parse_str(preparation_id)?;
             if let Some(expected) = r.completed_preparations.get(preparation_id) {
                 ensure!(
                     expected == &preparation_hash,
-                    "Prepared identity was already saved with different connection settings"
+                    "This prepared device key was already saved with different connection settings."
                 );
                 let connection = r
                     .connections
@@ -3093,7 +3229,7 @@ impl CrewManager {
                     .cloned()
                     .ok_or_else(|| {
                         anyhow::anyhow!(
-                            "Prepared connection was removed; prepare a new device identity"
+                            "The connection this device key was prepared for was removed. Prepare a new device key."
                         )
                     })?;
                 return Ok(connection);
@@ -3104,7 +3240,7 @@ impl CrewManager {
                     .filter(|prepared| &prepared.preparation_id == preparation_id)
                     .cloned()
                     .ok_or_else(|| {
-                        anyhow::anyhow!("Prepared identity is unavailable in this profile")
+                        anyhow::anyhow!("This prepared device key isn't available in this profile.")
                     })?,
             )
         } else {
@@ -3137,8 +3273,11 @@ impl CrewManager {
         // Before the lifecycle guard: a request whose bridge dropped dials again under that
         // guard, and this one would then wait on itself.
         self.revoke_before_removal(id).await;
-        let _lifecycle = self.connection_guard(id).await?;
+        let lifecycle = self.connection_guard(id).await?;
         self.disconnect_locked(id).await?;
+        // AO-11: the removal revoked each run, or the run lapses within the hour it may still
+        // have; either way its grant counts as ended by then, so it can settle and be swept.
+        let ended_by = revocation::unix_now().saturating_add(REMOVED_RUN_ENDS_WITHIN);
         let (pending_preparation, sessions) = self
             .update_registry_keeping(|r| {
                 r.connections.retain(|c| c.id != id);
@@ -3146,10 +3285,20 @@ impl CrewManager {
                 for (session, scope) in r.scopes.iter_mut().filter(|(_, s)| s.connection_id == id) {
                     // One granted after the revocations above is stopped here all the same.
                     scope.expired = true;
+                    scope.expires_at =
+                        Some(scope.expires_at.map_or(ended_by, |end| end.min(ended_by)));
                     sessions.push(session.clone());
                 }
                 // Nothing can ask the workspace about them any more: the device key goes next.
                 r.replaced.retain(|kept| kept.scope.connection_id != id);
+                // What this computer kept about the connection's account goes with it: the
+                // devices it saw, a staged rekey, and every chat's consent to read through it.
+                r.seen_devices.remove(id);
+                r.pending_rekeys.remove(id);
+                for consents in r.person_reads.values_mut() {
+                    consents.retain(|consent| consent.connection_id != id);
+                }
+                r.person_reads.retain(|_, consents| !consents.is_empty());
                 // A prepared device not yet saved keeps its key under the same kind of ID; that
                 // one belongs to the next save, not to this removal.
                 Ok((
@@ -3170,6 +3319,8 @@ impl CrewManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
         if pending_preparation {
+            drop(lifecycle);
+            self.sweep_removed_connections().await;
             return Ok(());
         }
         // No grant here names these credentials' runs any more.
@@ -3185,12 +3336,20 @@ impl CrewManager {
                 );
             }
         }
-        self.delete_credential(&format!("device:{id}"))
+        // A rejoin's staged key, if one was left, signs nothing any more.
+        if let Err(error) = self.delete_credential(&format!("device-next:{id}")) {
+            tracing::warn!(connection = id, %error, "couldn't delete a removed Crew connection's staged device key");
+        }
+        let deleted = self
+            .delete_credential(&format!("device:{id}"))
             .map_err(|error| {
                 error.context(
                     "The connection was removed, but its device key couldn't be deleted from this computer",
                 )
-            })
+            });
+        drop(lifecycle);
+        self.sweep_removed_connections().await;
+        deleted
     }
     /// Delete the workspace `id` connects to, as its host (design OW-5), then remove the
     /// connection from this computer exactly as [`Self::remove`] does. The workspace decides:
@@ -3392,8 +3551,11 @@ impl CrewManager {
             }
             None => BrokerHello::unsigned(hello),
         };
+        // The unsigned display fields are read only after every signature verified, and from
+        // fields neither signature covers, so they can never change what verified.
         let broker = BrokerHello {
             storage: ServerStorage::from_hello(hello),
+            version: broker_version_from_hello(hello),
             ..broker
         };
         Ok(VerifiedHello {
@@ -3421,14 +3583,22 @@ impl CrewManager {
     /// A person's Connect. One that fails for a network reason keeps being tried by the daemon
     /// on the keepalive's schedule, so a network that comes back reconnects without a second
     /// click (Q4-01, [`Self::connect_failed`]); any other failure is final and left showing.
+    ///
+    /// Once connected, and with the lifecycle guard let go (a request whose bridge breaks takes
+    /// it), the account's devices are read once (AO-10), so a computer that was offline when
+    /// a device was added reports it as soon as it connects.
     pub async fn connect(&self, id: &str) -> Result<Connection> {
-        let _lifecycle = self.connection_guard(id).await?;
-        authentication::ensure_connect_available(id)?;
-        let connected = self.connect_locked(id).await;
-        if let Err(error) = &connected {
-            self.connect_failed(id, error).await;
-        }
-        connected
+        let connected = {
+            let _lifecycle = self.connection_guard(id).await?;
+            authentication::ensure_connect_available(id)?;
+            let connected = self.connect_locked(id).await;
+            if let Err(error) = &connected {
+                self.connect_failed(id, error).await;
+            }
+            connected?
+        };
+        self.observe_devices_at_connect(id).await;
+        Ok(connected)
     }
     pub(super) async fn connect_locked(&self, id: &str) -> Result<Connection> {
         // Its host deleted the workspace, whose server has stopped for good: a dial, a person's
@@ -3947,10 +4117,6 @@ impl CrewManager {
     /// `authentication.rs`, signed with the connection's saved device key. Everything else,
     /// every route and tool included, reaches the broker through [`Self::human_request`],
     /// which refuses it.
-    #[allow(
-        dead_code,
-        reason = "the S3a join in authentication.rs is its caller; until then it keeps the guard's second arm reachable"
-    )]
     async fn signed_join_request(
         &self,
         id: &str,
@@ -3958,6 +4124,13 @@ impl CrewManager {
         request_id: Option<String>,
     ) -> Result<Value> {
         self.signed_request_via(SignedDoor::Join, id, "auth.join", params, request_id)
+            .await
+    }
+    /// The one way `auth.account` leaves this daemon with the connection's saved key: the
+    /// account join in `authentication.rs` ([`Self::account_join`]). Every other caller reaches
+    /// the broker through [`Self::human_request`], which refuses it (AO-9).
+    async fn signed_account_request(&self, id: &str, params: Value) -> Result<Value> {
+        self.signed_request_via(SignedDoor::Account, id, "auth.account", params, None)
             .await
     }
     async fn signed_request_via(
@@ -3968,23 +4141,7 @@ impl CrewManager {
         mut params: Value,
         request_id: Option<String>,
     ) -> Result<Value> {
-        // Joining is the daemon's own act, with the key it saved for this connection; the
-        // join status is read unsigned before authentication, as `hello` is. Neither may be
-        // sent on a caller's say-so, and the join door sends nothing else.
-        ensure!(
-            method != "enrollment.pending",
-            "Biorouter checks join status itself; it is never sent as a signed request"
-        );
-        ensure!(
-            (method == "auth.join") == (door == SignedDoor::Join),
-            "Only Biorouter's own join sends auth.join; it can't be sent as a Crew request"
-        );
-        // Deleting the workspace also removes its connection from this computer, which a
-        // request sent any other way would leave behind.
-        ensure!(
-            (method == "workspace.delete") == (door == SignedDoor::WorkspaceDelete),
-            "Delete a workspace with Delete workspace in its settings, or biorouter crew workspace delete; it can't be sent as a Crew request"
-        );
+        check_door(door, method)?;
         ensure!(params.is_object(), "Crew params must be an object");
         let c = self.connection(id).await?;
         if method == "run.create" {
@@ -4035,16 +4192,11 @@ impl CrewManager {
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()));
         }
-        let key: [u8; 32] = unhex(&self.read_credential(&format!("device:{id}"))?)?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Invalid device key"))?;
-        let signer = SigningKey::from_bytes(&key);
-        let public = signer.verifying_key().to_bytes();
-        ensure!(
-            hex(&public) == c.public_key && hex(&Sha256::digest(public)) == c.device_id,
-            "Saved Crew device identity does not match its signing credential; reconnect using a verified device identity"
-        );
-        if matches!(method, "auth.bootstrap" | "auth.enroll" | "auth.join") {
+        let signer = self.device_signer(&c).await?;
+        if matches!(
+            method,
+            "auth.bootstrap" | "auth.enroll" | "auth.join" | "auth.account"
+        ) {
             ensure!(
                 params["public_key"].as_str() == Some(c.public_key.as_str()),
                 "Enrollment identity changed; refresh the saved connection before joining"
@@ -4075,11 +4227,83 @@ impl CrewManager {
             self.retire_broken_bridge(id, &transport, method, &result)
                 .await?;
         }
+        // AO-9: a device the workspace no longer knows, on a server that can say whether the
+        // account is still a member, is told apart from a membership that ended.
+        let (result, may_end) = self.recognize_device(door, id, method, result).await;
         // Q3-12: whether the workspace still knows this device (see `keepalive.rs`).
-        self.heed_membership(door == SignedDoor::Join, id, method, &result, &transport)
-            .await;
+        self.heed_membership(
+            matches!(door, SignedDoor::Join | SignedDoor::Account),
+            id,
+            method,
+            &result,
+            may_end,
+            &transport,
+        )
+        .await;
         self.heed_storage_refusal(id, &result);
+        // AO-10: every snapshot this computer reads tells it about the account's devices.
+        if method == "workspace.snapshot" {
+            if let Ok(snapshot) = &result {
+                self.observe_devices(id, snapshot).await;
+            }
+        }
         self.heed_workspace_deleted(id, result).await
+    }
+    /// The device key saved for `c`, checked against the identity `c` records. A key the
+    /// credential store no longer holds is `crew_device_key_missing` (AO-9), which Add this
+    /// computer again repairs; a locked vault or a refused keyring keeps its own refusal; a key
+    /// that is not the one `c` records is [`DEVICE_KEY_MISMATCH`].
+    async fn device_signer(&self, c: &Connection) -> Result<SigningKey> {
+        let secret = match self.read_credential(&format!("device:{}", c.id)) {
+            Ok(secret) => secret,
+            Err(error) if credentials::is_absent(&error) => {
+                let workspace = self.workspace_label(&c.id).await;
+                return Err(error.context(CrewRefusal::device_key_missing(&workspace)));
+            }
+            Err(error) => return Err(error),
+        };
+        let key: [u8; 32] = unhex(&secret)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid device key"))?;
+        let signer = SigningKey::from_bytes(&key);
+        let public = signer.verifying_key().to_bytes();
+        let matches = hex(&public) == c.public_key && hex(&Sha256::digest(public)) == c.device_id;
+        // A rejoin's staged key is written as the device key only after the workspace took it,
+        // and the saved identity follows in a second write. When that write failed, or the
+        // process ended between the two, the key is one the workspace knows and the connection
+        // still names the old device. Adding this computer again finishes it: the workspace
+        // answers the same staged key as a retry (AO-9).
+        if !matches
+            && self
+                .registry
+                .lock()
+                .await
+                .pending_rekeys
+                .get(&c.id)
+                .is_some_and(|pending| pending.public_key == hex(&public))
+        {
+            let workspace = self.workspace_label(&c.id).await;
+            return Err(CrewRefusal::device_not_recognized(&workspace).into());
+        }
+        ensure!(matches, DEVICE_KEY_MISMATCH);
+        Ok(signer)
+    }
+    /// Note that the workspace server named `uid` as the account `id`'s bridge signs in as.
+    fn note_account_uid(&self, id: &str, uid: u64) {
+        self.account_uids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_owned(), uid);
+    }
+    /// The UID the workspace server last named for the account `id`'s bridge signs in as, in
+    /// an `auth.challenge` answer this process read ([`Self::note_account_uid`]). Unsigned:
+    /// for words only, never to decide what the person may do.
+    pub(super) fn answered_account_uid(&self, id: &str) -> Option<u64> {
+        self.account_uids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .copied()
     }
     async fn signed_exchange(
         &self,
@@ -4127,6 +4351,9 @@ impl CrewManager {
             challenge["workspace_id"].as_str() == Some(&c.workspace_id),
             "Challenge workspace mismatch"
         );
+        if let Some(uid) = challenge["uid"].as_u64() {
+            self.note_account_uid(id, uid);
+        }
         let nonce = challenge["nonce"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing authentication challenge"))?;
@@ -4229,9 +4456,17 @@ impl CrewManager {
             MOIM_FOLDER_SCOPE
         }
     }
+    /// Whether a chat may call the tool `name`. A chat a Crew grant restricts (even an expired
+    /// or unconfirmed one) may call exactly its two worker tools, `crew__connections` and
+    /// `crew__request`, and the checklist (`todo__*`): never a person tool such as
+    /// `crew__read` or `crew__change`, so a scoped chat can never act as the person (account
+    /// ownership AO-12, gate B-1). Any other chat may call anything here.
     pub async fn authorize_session_tool(&self, session: &str, name: &str) -> Result<()> {
         if self.is_scoped(session).await {
-            ensure!(name.starts_with("crew__") || name.starts_with("todo__"), "Crew-scoped conversations permit only Crew and checklist tools until worker isolation is verified");
+            ensure!(
+                scoped_tool_allowed(name),
+                "Crew-scoped conversations permit only Crew and checklist tools until worker isolation is verified"
+            );
         }
         Ok(())
     }
@@ -5343,7 +5578,7 @@ impl CrewManager {
             })
             .await
             .map_err(|error| {
-                error.context("Couldn't save the revocation on this device; retry to finish it")
+                error.context("Couldn't save the revocation on this computer; retry to finish it")
             })??;
         self.forget_run_reads(session);
         self.forget_live_admission(session);
@@ -7123,6 +7358,10 @@ pub(crate) fn agent_error_text(error: &anyhow::Error) -> String {
     }
 }
 
+/// A saved device key that is not the key its connection records: said in the words every
+/// surface uses for it, a device key, never an "identity".
+const DEVICE_KEY_MISMATCH: &str = "The device key saved for this connection doesn't match the device it records. Reconnect with a verified device key.";
+
 /// The broker's technical texts that name something a person can act on, said as sentences
 /// (Q2-76), matched on the text after its code, in lowercase, without a closing full stop. The
 /// CLI keeps the same table for the refusals it reads over HTTP (`commands/crew/output.rs`).
@@ -7151,6 +7390,11 @@ const REFUSAL_SENTENCES: &[(&str, &str)] = &[
         "attachment unavailable",
         "That file isn't available to you. It may have been removed, or you may not be in its channel.",
     ),
+    // `manager()`'s check: the host's account, not one of its devices, as the CLI says it.
+    (
+        "workspace host device required",
+        "Only the workspace host can do this.",
+    ),
 ];
 
 /// The code of a refusal the workspace answered, found anywhere in `error`'s chain
@@ -7164,11 +7408,10 @@ pub fn workspace_refusal_code(error: &anyhow::Error) -> Option<String> {
     })
 }
 
-/// A refusal the workspace answered, found anywhere in `error`'s chain, as a sentence for a
-/// person (F-1): a known technical text in words, else the broker's own message without its
-/// code, with a capital and a full stop. `None` when the workspace did not answer with a
-/// refusal (the connection or the transport failed, or this device refused first).
-pub fn refusal_sentence(error: &anyhow::Error) -> Option<String> {
+/// A refusal the workspace answered, found anywhere in `error`'s chain: its code, and its
+/// message without that code, as [`plain_label`] leaves it. `None` when the workspace did not
+/// answer with a refusal.
+fn answered_refusal(error: &anyhow::Error) -> Option<(String, String)> {
     let (code, message) = error.chain().find_map(|link| {
         let text = link.to_string();
         let envelope: Value =
@@ -7186,13 +7429,41 @@ pub fn refusal_sentence(error: &anyhow::Error) -> Option<String> {
         .strip_prefix(code.as_str())
         .and_then(|rest| rest.strip_prefix(':'))
         .unwrap_or(message);
-    let reason = plain_label(reason);
+    Some((code, plain_label(reason)))
+}
+
+/// [`REFUSAL_SENTENCES`]' sentence for `reason`, a refusal's text after its code, matched in
+/// lowercase without a closing full stop.
+fn known_sentence(reason: &str) -> Option<&'static str> {
     let key = reason
         .trim_end_matches(['.', '!', '?'])
         .to_ascii_lowercase();
-    if let Some((_, sentence)) = REFUSAL_SENTENCES.iter().find(|(text, _)| *text == key) {
-        return Some((*sentence).to_owned());
+    REFUSAL_SENTENCES
+        .iter()
+        .find(|(text, _)| *text == key)
+        .map(|(_, sentence)| *sentence)
+}
+
+/// The sentence for a refusal the workspace answered with a technical text this daemon words
+/// ([`REFUSAL_SENTENCES`]), such as "Only the workspace host can do this." for
+/// `forbidden: workspace host device required`. `None` for any other refusal, and when the
+/// workspace did not answer one. Fixed text only: nothing the workspace wrote is passed on.
+pub fn known_refusal_sentence(error: &anyhow::Error) -> Option<&'static str> {
+    known_sentence(&answered_refusal(error)?.1)
+}
+
+/// A refusal the workspace answered, found anywhere in `error`'s chain, as a sentence for a
+/// person (F-1): a known technical text in words, else the broker's own message without its
+/// code, with a capital and a full stop. `None` when the workspace did not answer with a
+/// refusal (the connection or the transport failed, or this device refused first).
+pub fn refusal_sentence(error: &anyhow::Error) -> Option<String> {
+    let (code, reason) = answered_refusal(error)?;
+    if let Some(sentence) = known_sentence(&reason) {
+        return Some(sentence.to_owned());
     }
+    let key = reason
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase();
     if reason.is_empty() || key == code {
         return Some("The workspace refused this request.".to_owned());
     }
@@ -8042,9 +8313,26 @@ impl CrewManager {
                     }
                 }
             }
+            // A deleted chat's consent to read as the person (AO-12) authorizes nothing: it
+            // goes, matched by the chat it was given in, so another chat under the id keeps
+            // its own.
+            if from_own_store {
+                for (session, consents) in registry.person_reads.iter_mut() {
+                    if let Some(incarnation) = deleted.get(session.as_str()) {
+                        consents.retain(|consent| consent.session_incarnation != *incarnation);
+                    }
+                }
+                registry
+                    .person_reads
+                    .retain(|_, consents| !consents.is_empty());
+            }
             Ok(())
         })
-        .await?
+        .await??;
+        // AO-11: a deleted chat may have been the last thing keeping a removed connection's
+        // grant.
+        self.sweep_removed_connections().await;
+        Ok(())
     }
 }
 
@@ -8477,6 +8765,18 @@ mod tests {
                 completed_preparations: HashMap::from([("done".to_owned(), "saved".to_owned())]),
                 ..Default::default()
             },
+            // A rejoin's staged key is an identity too (AO-9).
+            Registry {
+                pending_rekeys: HashMap::from([(
+                    "rejoining".to_owned(),
+                    PendingRekey {
+                        public_key: "33".repeat(32),
+                        device_id: "44".repeat(32),
+                        replaces_device_id: "55".repeat(32),
+                    },
+                )]),
+                ..Default::default()
+            },
         ];
         for registry in &held {
             assert!(!registry.holds_no_identity());
@@ -8814,6 +9114,7 @@ mod tests {
                     institution_id: None,
                     policy_epoch: Some(1),
                     storage: None,
+                    version: None,
                 },
             );
         };
@@ -9494,6 +9795,7 @@ done
             replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
+            ..Default::default()
         };
         fs::write(
             root.join("connections.json"),
@@ -9734,6 +10036,7 @@ done
             replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
+            ..Default::default()
         };
         fs::write(
             root.join("connections.json"),
@@ -9834,6 +10137,7 @@ done
             replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
+            ..Default::default()
         };
         fs::write(
             root.join("connections.json"),
@@ -10030,6 +10334,7 @@ done
             replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
+            ..Default::default()
         };
         fs::write(
             root.join("connections.json"),
@@ -10219,6 +10524,7 @@ done
             replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
+            ..Default::default()
         };
         fs::write(
             manager_root.join("connections.json"),
@@ -10446,6 +10752,7 @@ done
             replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
+            ..Default::default()
         };
         fs::write(
             root.join("connections.json"),
@@ -10618,6 +10925,7 @@ done
             replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
+            ..Default::default()
         };
         fs::write(
             root.join("connections.json"),
@@ -10658,6 +10966,7 @@ done
             replaced: Vec::new(),
             pending_device: None,
             completed_preparations: HashMap::new(),
+            ..Default::default()
         };
         fs::write(
             root.join("connections.json"),
@@ -10674,7 +10983,7 @@ done
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "Couldn't save the revocation on this device; retry to finish it"
+            "Couldn't save the revocation on this computer; retry to finish it"
         );
         assert!(manager.registry.lock().await.scopes["worker-race-session"].expired);
         assert_eq!(
@@ -10735,6 +11044,11 @@ done
                     .context("Couldn't start the transfer"),
                 "You're not in that channel.",
             ),
+            // `manager()`'s check, in the words the CLI uses.
+            (
+                refused("forbidden", "forbidden: workspace host device required"),
+                "Only the workspace host can do this.",
+            ),
         ] {
             assert_eq!(
                 refusal_sentence(&error).as_deref(),
@@ -10742,6 +11056,23 @@ done
                 "{error:#}"
             );
         }
+        // Only a text the table words is a known sentence: the rest are the broker's own words,
+        // which a caller that passes on fixed text alone must not take.
+        assert_eq!(
+            known_refusal_sentence(&refused(
+                "forbidden",
+                "forbidden: workspace host device required."
+            )),
+            Some("Only the workspace host can do this.")
+        );
+        assert_eq!(
+            known_refusal_sentence(&refused("request_denied", "Message too long.")),
+            None
+        );
+        assert_eq!(
+            known_refusal_sentence(&anyhow::anyhow!("Crew connection is disconnected")),
+            None
+        );
         assert_eq!(
             refusal_sentence(&anyhow::anyhow!(
                 "Crew connection is disconnected; authenticate and connect in Crew"
@@ -11111,6 +11442,7 @@ done
                 institution_id: None,
                 policy_epoch: (version == 2).then_some(1),
                 storage: None,
+                version: None,
             },
         };
         assert_eq!(manager.capabilities(connection_id), None);
@@ -11161,6 +11493,39 @@ done
 
         manager.disconnect(connection_id).await.unwrap();
         assert_eq!(manager.capabilities(connection_id), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// What the routes serve as `server_version` (AO-4): the version the last verified `hello`
+    /// said, `None` from a broker that says none, and `None` once this process holds no
+    /// verified `hello` for the connection.
+    #[test]
+    fn server_version_is_the_last_verified_hellos() {
+        let root = fixture_root("server-version");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let id = "7c7c7c7c-7c7c-47c7-87c7-7c7c7c7c7c7c";
+        assert_eq!(manager.server_version(id), None);
+        let hello = |version: Option<&str>| BrokerHello {
+            signature_version: 2,
+            capabilities: vec![],
+            workspace_name: None,
+            mode: None,
+            institution_id: None,
+            policy_epoch: None,
+            storage: None,
+            version: version.map(str::to_owned),
+        };
+        manager.remember_broker(id, hello(Some("1.94.2")));
+        assert_eq!(manager.server_version(id).as_deref(), Some("1.94.2"));
+        manager.remember_broker(id, hello(None));
+        assert_eq!(
+            manager.server_version(id),
+            None,
+            "an older broker says none"
+        );
+        manager.remember_broker(id, hello(Some("1.94.2")));
+        manager.forget_broker(id);
+        assert_eq!(manager.server_version(id), None, "not connected");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -11241,6 +11606,7 @@ done
                 institution_id: Some("ucsf".into()),
                 policy_epoch: Some(4),
                 storage: None,
+                version: None,
             }
         );
         assert_eq!(
@@ -11263,7 +11629,50 @@ done
                 institution_id: None,
                 policy_epoch: None,
                 storage: None,
+                version: None,
             }
+        );
+
+        // `version` (AO-4) sits outside both signed payloads: kept as the broker said it, under
+        // either signature, and never a reason to fail. A broker that predates it sends none,
+        // which reads as `None`, and so does anything that does not read as a version.
+        assert_eq!(both.broker.version, None, "an older broker says no version");
+        for (signed, label) in [
+            (hello.clone(), "both"),
+            (without("signature_v2"), "v1 only"),
+        ] {
+            let mut versioned = signed.clone();
+            versioned["version"] = json!("1.94.2");
+            let kept = verify(&versioned).unwrap().broker;
+            assert_eq!(kept.version.as_deref(), Some("1.94.2"), "{label}");
+            assert_eq!(
+                BrokerHello {
+                    version: None,
+                    ..kept
+                },
+                verify(&signed).unwrap().broker,
+                "{label}: the version changes nothing else"
+            );
+        }
+        for unreadable in [
+            json!(null),
+            json!(194),
+            json!(["1.94.2"]),
+            json!(""),
+            json!("latest"),
+            json!("1.94.2 (beta)"),
+            json!("1.94.2\n"),
+            json!("1".repeat(MAX_BROKER_VERSION_LEN + 1)),
+        ] {
+            let mut odd = hello.clone();
+            odd["version"] = unreadable.clone();
+            assert_eq!(verify(&odd).unwrap().broker.version, None, "{unreadable}");
+        }
+        let mut prerelease = hello.clone();
+        prerelease["version"] = json!("1.95.0-dev+abc");
+        assert_eq!(
+            verify(&prerelease).unwrap().broker.version.as_deref(),
+            Some("1.95.0-dev+abc")
         );
 
         // Any field v2 signs, altered, removed, reordered or added to, fails verification.
@@ -11402,6 +11811,128 @@ done
 
         manager.disconnect(connection_id).await.unwrap();
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// Account ownership AO-9: `auth.account` adds a device to the person's account, so it
+    /// leaves this daemon only through the account door, which the daemon's own join, open,
+    /// rejoin and host code call; the generic door refuses it, and `account.status` is never
+    /// signed, before anything is written. Mirrors `auth_join_is_refused_through_human_request`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn auth_account_is_refused_through_human_request() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("auth-account-guard");
+        let connection_id = "19191919-1919-4919-8919-191919191919";
+        let (connection, scope, device_key) = signed_fixture_connection(connection_id);
+        let log = write_answering_ssh(
+            &root,
+            &connection.workspace_id,
+            &[(
+                "auth.account",
+                json!({"device_id": connection.device_id, "role": "member", "admitted": "device"}),
+            )],
+        );
+        let _env = isolated_crew_env(&root);
+        let manager = signed_fixture_manager(&root, &connection, &scope, &device_key, true).await;
+        let params = json!({"public_key": connection.public_key});
+
+        let refused = manager
+            .human_request(connection_id, "auth.account", params.clone(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "Only Biorouter's own join sends auth.account; it can't be sent as a Crew request"
+        );
+        let status = manager
+            .human_request(connection_id, "account.status", json!({}), None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            status.to_string(),
+            "Biorouter checks join status itself; it is never sent as a signed request"
+        );
+        // Nor through the join's door, which sends `auth.join` and nothing else.
+        assert!(manager
+            .signed_request_via(
+                SignedDoor::Join,
+                connection_id,
+                "auth.account",
+                params.clone(),
+                None
+            )
+            .await
+            .is_err());
+        // The account door sends nothing else either.
+        let other = manager
+            .signed_request_via(
+                SignedDoor::Account,
+                connection_id,
+                "profile.suggest",
+                json!({}),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            other.to_string(),
+            "Only Biorouter's own join sends auth.account; it can't be sent as a Crew request"
+        );
+        assert_eq!(
+            fs::read_to_string(&log).unwrap_or_default(),
+            "",
+            "a refused account join must not reach the transport"
+        );
+
+        // The account door keeps the enrollment identity guard...
+        let mismatch = manager
+            .signed_account_request(connection_id, json!({"public_key": "44".repeat(32)}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            mismatch.to_string(),
+            "Enrollment identity changed; refresh the saved connection before joining"
+        );
+        assert_eq!(fs::read_to_string(&log).unwrap_or_default(), "");
+
+        // ...and is the one way auth.account reaches the workspace.
+        assert_eq!(
+            manager
+                .signed_account_request(connection_id, params)
+                .await
+                .unwrap()["device_id"],
+            json!(connection.device_id)
+        );
+        assert_eq!(logged_methods(&log, "auth.account"), 1);
+
+        manager.disconnect(connection_id).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// AO-12, gate B-1: a chat a Crew grant restricts may call exactly the grant's two worker
+    /// tools and the checklist, never a person tool that shares the `crew__` prefix.
+    #[test]
+    fn a_scoped_chat_admits_exactly_the_worker_tools_and_the_checklist() {
+        for allowed in [
+            "crew__connections",
+            "crew__request",
+            "todo__write",
+            "todo__read",
+        ] {
+            assert!(scoped_tool_allowed(allowed), "{allowed}");
+        }
+        for refused in [
+            "crew__read",
+            "crew__change",
+            "crew__",
+            "crew__request_more",
+            "developer__shell",
+            "todo",
+        ] {
+            assert!(!scoped_tool_allowed(refused), "{refused}");
+        }
     }
 
     /// Design OW-5: `workspace.delete` leaves this daemon only through Delete workspace, which
@@ -12131,6 +12662,19 @@ done
         Ok(())
     }
 
+    /// C1: a person's machine is "this computer" in every sentence a grant refusal says.
+    #[test]
+    fn grant_refusals_call_the_persons_machine_this_computer() {
+        assert_eq!(
+            GRANT_UNCONFIRMED,
+            "Couldn't confirm this chat's Crew access on this computer. Try again in a moment."
+        );
+        assert_eq!(
+            UNSAVED_CHAT,
+            "Crew can only grant access to a chat saved on this computer. Start a saved chat, then grant it access from Crew."
+        );
+    }
+
     /// A workspace, a connection to it and a manager with a live transport, for driving a grant
     /// through `begin_run` against a fake broker that answers `run.create` with `run_create`
     /// and refuses each method of `refusals`. Returns the manager, the request log and the
@@ -12514,6 +13058,70 @@ done
         let _ = fs::remove_dir_all(root);
     }
 
+    /// A refusal about this computer's key says "device key", the words every surface uses
+    /// for it, never "identity": a prepared key offered to a saved connection, the same
+    /// prepared key saved again with other settings, and a saved key that is not the one its
+    /// connection records.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refusal_about_a_device_key_says_device_key() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("device-key-words");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let input = |preparation_id: Option<&str>, name: &str| SaveConnection {
+            preparation_id: preparation_id.map(str::to_owned),
+            name: name.into(),
+            ssh_target: "bob@words.example.org".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/tmp/crew-device-key-words.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "55555555-5555-4555-8555-555555555555".into(),
+            workspace_public_key: "55".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            remote_access: Default::default(),
+            cluster_connection_id: None,
+            mode: ClusterMode::Public,
+            institution_id: None,
+        };
+        let prepared = manager.prepare_device().await.unwrap();
+        let id = prepared.preparation_id.as_str();
+        let saved = manager.save(input(Some(id), "words")).await.unwrap();
+        let refusals = [
+            manager
+                .update(&saved.id, input(Some(id), "words again"))
+                .await
+                .unwrap_err(),
+            manager
+                .save(input(Some(id), "other words"))
+                .await
+                .unwrap_err(),
+        ];
+        assert_eq!(
+            refusals.map(|error| error.to_string()),
+            [
+                "A prepared device key is used only when saving a new connection.",
+                "This prepared device key was already saved with different connection settings.",
+            ]
+        );
+
+        let other = SigningKey::from_bytes(&[7; 32]);
+        manager
+            .write_credential(&format!("device:{}", saved.id), &hex(&other.to_bytes()))
+            .unwrap();
+        let connection = manager.connection(&saved.id).await.unwrap();
+        let mismatch = manager.device_signer(&connection).await.unwrap_err();
+        assert_eq!(mismatch.to_string(), DEVICE_KEY_MISMATCH);
+        assert!(DEVICE_KEY_MISMATCH.contains("device key"));
+        assert!(!DEVICE_KEY_MISMATCH.to_lowercase().contains("identity"));
+        let _ = fs::remove_dir_all(root);
+    }
+
     /// DAEMON-3: a saved connection's institution can be changed in Connection settings or
     /// with `privacy set-personal`, as the manual says. The save used to count the connection's
     /// own saved institution against the new one, so every change was refused as "Crew aliases
@@ -12667,6 +13275,7 @@ done
             institution_id: institution.map(str::to_owned),
             policy_epoch: (version >= 2).then_some(1),
             storage: None,
+            version: None,
         };
         // Only a v2 signature covers the institution; a v1 `hello` says nothing about it.
         manager
@@ -12804,6 +13413,45 @@ done
             !locked.to_string().contains("keyring was reached"),
             "{locked}"
         );
+    }
+
+    /// What a vault card polls: the vault's own state, with no keyring probe (a Secret Service
+    /// call on Linux, every 500 ms for as long as the card is up). It says what the probing
+    /// status says about the vault before it is set up, open, locked and unlocked again.
+    #[test]
+    #[serial_test::serial(crew_credentials)]
+    fn the_vault_state_says_what_the_status_says_without_asking_the_keyring() {
+        let root = tempfile::tempdir().unwrap();
+        let vault = credentials::CredentialVault::new(root.path().to_path_buf());
+        let agrees = |vault: &credentials::CredentialVault, probe: fn() -> bool| {
+            let state = vault.vault_state().unwrap();
+            let status = vault.status(probe).unwrap();
+            assert_eq!(
+                (state.initialized, state.locked),
+                (status.initialized, status.locked)
+            );
+            state
+        };
+        let fresh = agrees(&vault, || true);
+        assert_eq!(
+            fresh,
+            VaultState {
+                initialized: false,
+                locked: false
+            }
+        );
+        assert!(!fresh.open());
+
+        let passphrase = || zeroize::Zeroizing::new("correct horse battery staple".to_owned());
+        vault.init(passphrase()).unwrap();
+        // A vault never asks the keyring, so a probe here would be a regression.
+        let never: fn() -> bool = || panic!("the keyring was asked about a vault");
+        assert!(agrees(&vault, never).open());
+        vault.lock().unwrap();
+        let locked = agrees(&vault, never);
+        assert!(locked.initialized && locked.locked && !locked.open());
+        vault.unlock(passphrase()).unwrap();
+        assert!(agrees(&vault, never).open());
     }
 
     #[test]

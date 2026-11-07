@@ -148,6 +148,66 @@ fn the_output_is_read_as_a_paste_is() {
     assert_eq!(problem("", Some(0)).0, "unreadable");
 }
 
+/// AO-9: a setup job's start creates the workspace on purpose, and takes `Found` only from the
+/// start's own answer, never from the status line after it.
+#[test]
+fn a_setup_start_creates_on_purpose_and_is_read_only_from_its_own_answer() {
+    let command = super::host_start::setup_start_command("chen-lab", KEY).unwrap();
+    assert_eq!(
+        command,
+        host_start_command("chen-lab", KEY).unwrap().replace(
+            &format!("--bootstrap-key {KEY}\n"),
+            &format!("--bootstrap-key {KEY} --create\n")
+        )
+    );
+    assert_eq!(command.matches("--create").count(), 1);
+    assert!(super::host_start::setup_start_command("lab; id", KEY).is_err());
+
+    let read = super::host_start::read_setup_start;
+    let started = "{\"started_pid\":42,\"state\":\"running\",\"workspace_id\":\"w\",\"invitation\":\"brcrew1:AbC\",\"created\":true}\n{\"workspace_id\":\"w\",\"socket\":\"/tmp/s\"}\n";
+    assert_eq!(
+        read(started, Some(0)),
+        super::host_start::SetupStart {
+            result: StartOutput::Found {
+                text: "brcrew1:AbC".into()
+            },
+            created: Some(true),
+        }
+    );
+    // An older broker says nothing of creating.
+    let older = "{\"started_pid\":42,\"invitation\":\"brcrew1:AbC\"}\n";
+    assert_eq!(read(older, Some(0)).created, None);
+    // The status line describes whatever runs in that folder: never a start's answer.
+    for output in [
+        "Error: writer_active: another broker holds this state directory\n{\"workspace_id\":\"w\",\"socket\":\"/tmp/s\",\"invitation\":\"brcrew1:Other\"}\n",
+        "{\"workspace_id\":\"w\",\"socket\":\"/tmp/s\"}\n",
+        "{\"invitation\":\"brcrew1:AbC\"}\n",
+    ] {
+        let read = read(output, Some(0));
+        assert!(
+            matches!(read.result, StartOutput::Problem { .. }),
+            "{output}: {read:?}"
+        );
+        assert_eq!(read.created, None);
+    }
+    let starting = "{\"started_pid\":42,\"state\":\"starting\",\"status_command\":\"status\"}\n{\"workspace_id\":\"w\",\"socket\":\"/tmp/s\"}\n";
+    assert_eq!(
+        read(starting, Some(0)).result,
+        StartOutput::Problem {
+            problem: "starting".into(),
+            detail: None
+        }
+    );
+    let refused = "{\"started_pid\":42,\"state\":\"running\",\"invitation\":null,\"invitation_error\":\"no name\"}\n";
+    assert_eq!(
+        read(refused, Some(0)).result,
+        StartOutput::Problem {
+            problem: "server_error".into(),
+            detail: Some("no name".into())
+        }
+    );
+}
+
 fn request(preparation_id: &str) -> HostStartRequest {
     HostStartRequest {
         preparation_id: preparation_id.into(),

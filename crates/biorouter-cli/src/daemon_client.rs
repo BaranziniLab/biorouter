@@ -50,6 +50,9 @@ pub struct DaemonRefusal {
 /// in neither list, so a field the daemon adds is never silently dropped from JSON output.
 pub const REFUSAL_FIELDS: &[&str] = &[
     "host",
+    "is_host",
+    "server_login",
+    "host_username",
     "connection_id",
     "reason",
     "missing",
@@ -730,8 +733,10 @@ impl CrewClient {
 
     /// The sign-in terminal the daemon prepares at `prepare_path`: a saved connection's
     /// `…/authentication`, or a setup job's `/crew/setup/{job}/authentication` (OW-9), whose
-    /// sign-in setup then rides. The server's own prompts (host key, password, verification
-    /// code) are shown here in raw mode and answered from this keyboard; the terminal itself is
+    /// sign-in setup then rides. The server's own prompts (a password, a key's passphrase, a
+    /// verification code) are shown here in raw mode and answered from this keyboard. A host
+    /// key is never asked here: every Crew ssh runs with `StrictHostKeyChecking yes`, so an
+    /// unknown or changed key is refused before any prompt. The terminal itself is
     /// `GET /crew/authentication/{id}/terminal` either way. `no_terminal` is the usage refusal
     /// said when there is no terminal to sign in at.
     ///
@@ -856,8 +861,9 @@ fn bridge_missing_frame(frame: &Value) -> Option<DaemonRefusal> {
 }
 
 /// What `crew auth` says with no terminal to show the server's prompts in (SF2-N6). A server that
-/// takes this computer's SSH key alone needs no prompt, so `connect` is named for it.
-pub const AUTH_NEEDS_A_TERMINAL: &str = "Signing in needs a terminal, to show the server's host-key and verification-code prompts. Run biorouter crew auth in a terminal. If the server takes this computer's SSH key alone, biorouter crew connect signs in without one.";
+/// takes this computer's SSH key alone needs no prompt, so `connect` is named for it. It names
+/// no host-key prompt: Crew's ssh never shows one (`StrictHostKeyChecking yes`).
+pub const AUTH_NEEDS_A_TERMINAL: &str = "Signing in needs a terminal, to show the server's password and verification-code prompts. Run biorouter crew auth in a terminal. If the server takes this computer's SSH key alone, biorouter crew connect signs in without one.";
 
 /// `Ok` when `crew auth` has a terminal to sign in at, else the usage refusal (exit 2).
 #[cfg(unix)]
@@ -1295,7 +1301,7 @@ async fn discard_legacy_approval_line(approval_key_stdin: bool) -> Result<()> {
 /// A new vault passphrase, chosen now: read once, and on a terminal read again and compared,
 /// because a hidden typo would become a passphrase nobody knows. From stdin the script supplies
 /// one line and owns its correctness, as it does for every other line it sends.
-async fn new_secret<R, F>(
+pub(crate) async fn new_secret<R, F>(
     prompts: [&'static str; 3],
     from_stdin: bool,
     mut read: R,
@@ -1345,7 +1351,10 @@ fn secret_prompt_possible(terminal: bool) -> Result<(), needs_terminal::NeedsTer
     needs_terminal::require(terminal, SECRET_NEEDS_A_TERMINAL)
 }
 
-async fn read_secret(prompt: &'static str, from_stdin: bool) -> Result<Zeroizing<String>> {
+pub(crate) async fn read_secret(
+    prompt: &'static str,
+    from_stdin: bool,
+) -> Result<Zeroizing<String>> {
     tokio::task::spawn_blocking(move || {
         let secret = if from_stdin {
             let mut bytes = Zeroizing::new(Vec::new());
@@ -3006,6 +3015,8 @@ mod tests {
         assert_eq!(text, AUTH_NEEDS_A_TERMINAL);
         assert!(text.contains("biorouter crew connect"), "{text}");
         assert!(!text.contains("MFA"), "{text}");
+        // Crew's ssh never shows a host-key prompt (`StrictHostKeyChecking yes`).
+        assert!(!text.contains("host-key"), "{text}");
         // It survives the `?` into an anyhow error, which is what `main` downcasts.
         let error: anyhow::Error = sign_in_possible(false).unwrap_err().into();
         assert!(error.chain().any(|cause| cause.is::<NeedsTerminal>()));

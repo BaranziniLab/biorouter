@@ -22,6 +22,7 @@ import {
   personLayout,
   type CrewPerson,
 } from '../identity';
+import { currentMembers } from '../channel/MemberStack';
 import type { Channel } from '../crewApi';
 import { managesChannel } from '../dialogs/governance';
 import type { CrewController } from '../state/types';
@@ -327,7 +328,11 @@ export function MembersTab({ className }: MembersTabProps) {
         </p>
       ) : null}
 
-      <p className="text-caps text-text-muted tabular-nums">{membersCopy.count(members.length)}</p>
+      {/* The people in the channel now, as the header's stack and `biorouter crew` count them: a
+          former member keeps a row here, marked so, but is not counted. */}
+      <p className="text-caps text-text-muted tabular-nums">
+        {membersCopy.count(currentMembers(channel.members, dir, channel.owner_id).length)}
+      </p>
 
       <ul role="list" aria-label={membersCopy.listLabel(name)} className="flex flex-col">
         {members.map(({ id, person, isOwner: rowIsOwner }) => {

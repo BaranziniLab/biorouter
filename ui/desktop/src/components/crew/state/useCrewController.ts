@@ -36,7 +36,11 @@ import {
   arrivalConnectIntent,
   connectionVerifiedThisSession,
   consumeArrivalConnect,
+  consumeCrewSelect,
   createConnectionLifecycle,
+  crewSelectConsumed,
+  crewSelectIntent,
+  noteCrewSelectMoved,
   forgetDisconnectedHere,
   OFFLINE_FOLLOW_INTERVAL_MS,
   OFFLINE_FOLLOW_WINDOW_MS,
@@ -45,6 +49,7 @@ import {
   useCrewConnectFailures,
   useCrewConnections,
   wasDisconnectedHere,
+  type CrewSelectIntent,
 } from './useCrewConnections';
 import {
   CHANNEL_LOST_ERROR_CODE,
@@ -102,6 +107,79 @@ function isNotJoined(status: CrewJoinStatus | null): boolean {
   return status !== null && status !== 'joined' && status !== 'unsupported';
 }
 
+interface CrewSelectArrival {
+  request: CrewSelectIntent | null;
+  connectionsState: 'loading' | 'loaded' | 'failed';
+  connections: readonly CrewConnection[];
+  connectionId: string;
+  channelId: string;
+  /** The selected connection's verified view, or `null` while there is none. */
+  snapshot: Snapshot | null;
+  selectConnection(id: string): void;
+  selectChannel(id: string): void;
+}
+
+/**
+ * SECURITY-SENSITIVE (human review). Show what a chat's "Open in Crew", or a clicked Crew
+ * notification, points at (WI-16): select its connection, then, once that connection's view is
+ * verified, its channel. It selects and does nothing else. It never connects: a connection the
+ * daemon calls disconnected opens on its offline screen and waits there for the person's own
+ * Connect, after which the channel is selected. The channel is also remembered as the
+ * connection's last one, so its first verified view opens there.
+ *
+ * Once per intent id. The move to the connection is asked once, so a person who chooses another
+ * connection meanwhile keeps it, and a connection or channel Crew does not list ends the request.
+ * The message or task highlight is the timeline's (`Timeline.tsx`).
+ */
+function useCrewSelectArrival(arrival: CrewSelectArrival): void {
+  const { request, connectionsState, connections, connectionId, channelId, snapshot } = arrival;
+  // Read through a ref: both are new functions every render.
+  const actions = useRef(arrival);
+  actions.current = arrival;
+  // The request is read again from route state every render: its fields, not the object, say
+  // whether it changed.
+  const intentId = request?.intentId ?? null;
+  const wanted = request?.connectionId ?? null;
+  const wantedChannel = request?.channelId ?? null;
+  useEffect(() => {
+    if (!intentId || !wanted || connectionsState !== 'loaded') return;
+    if (crewSelectConsumed(intentId)) return;
+    if (!connections.some((item) => item.id === wanted)) {
+      consumeCrewSelect(intentId);
+      return;
+    }
+    if (connectionId !== wanted) {
+      if (noteCrewSelectMoved(intentId)) {
+        consumeCrewSelect(intentId);
+        return;
+      }
+      if (wantedChannel) rememberLastChannel(wanted, wantedChannel);
+      actions.current.selectConnection(wanted);
+      return;
+    }
+    if (!wantedChannel) {
+      consumeCrewSelect(intentId);
+      return;
+    }
+    if (!snapshot) {
+      rememberLastChannel(wanted, wantedChannel);
+      return;
+    }
+    consumeCrewSelect(intentId);
+    if (!snapshot.channels.some((item) => item.id === wantedChannel)) return;
+    if (channelId !== wantedChannel) actions.current.selectChannel(wantedChannel);
+  }, [
+    intentId,
+    wanted,
+    wantedChannel,
+    connectionsState,
+    connections,
+    connectionId,
+    channelId,
+    snapshot,
+  ]);
+}
+
 /**
  * Crew's state and actions, shared by every Crew area through `CrewControllerContext`.
  *
@@ -119,6 +197,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   // A chat's "Connect in Crew" (Q3-08): the connection it asks to connect, and its intent id.
   const location = useLocation();
   const arrival = arrivalConnectIntent(location.state);
+  // A chat's "Open in Crew", or a clicked notification (WI-16): where to look. Selects only.
+  const selectRequest = crewSelectIntent(location.state);
 
   const actions = useCrewActions();
   const {
@@ -1022,6 +1102,16 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     connectingNow,
     signInPending,
   ]);
+  useCrewSelectArrival({
+    request: selectRequest,
+    connectionsState,
+    connections,
+    connectionId,
+    channelId,
+    snapshot: verified ? snapshot : null,
+    selectConnection,
+    selectChannel,
+  });
   const view = shownVerified
     ? snapshot
     : lastVerified?.connectionId === connectionId

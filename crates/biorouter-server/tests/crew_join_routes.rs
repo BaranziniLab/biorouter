@@ -1388,3 +1388,604 @@ async fn the_admission_routes_are_registered_and_the_generic_request_route_canno
         assert_eq!(answer["code"], "crew_request_refused", "{method}: {answer}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Account ownership (AO-3, AO-9, AO-10): joining by account, adding this computer again, the
+// account's standing, and new devices
+// ---------------------------------------------------------------------------------------------
+
+/// The capabilities of a broker that takes joining by account, in `hello`'s order.
+const ACCOUNT_CAPABILITIES: [&str; 4] = [
+    "human_names_v1",
+    "unique_names_v1",
+    "join_by_name_v1",
+    "account_identity_v1",
+];
+
+/// The daemon as `routes::configure` composes it, so a route that is not merged fails.
+async fn daemon() -> Router {
+    let state = biorouter_server::state::AppState::new()
+        .await
+        .expect("app state");
+    biorouter_server::routes::configure(state, "crew-join-routes-secret".into())
+}
+
+/// `account.status`'s answer for an account the workspace invited.
+fn invited_status() -> Value {
+    json!({"result": {
+        "role": "invited",
+        "workspace_name": "lab",
+        "username": "bob",
+        "host_username": "alice",
+        "invited_by": {"username": "alice", "display_name": "Alice Chen"},
+        "expires_at": 4_000_000_000u64,
+        "expired": false,
+    }})
+}
+
+/// The three account routes refuse a caller who cannot prove a person asked, before they look
+/// up the connection or ask the workspace, and answer an unknown connection with its own code.
+/// Two of them need a live connection; acknowledging devices asks the workspace nothing, so it
+/// works while the connection is down.
+#[tokio::test]
+#[serial]
+async fn the_account_routes_need_a_person_and_a_saved_connection() {
+    const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000000b1";
+    const HOST: &str = "account-offline.example.test";
+    let created = Mutex::new(Vec::new());
+    with_cleanup(&created, async {
+        let unknown = "00000000-0000-4000-8000-000000000000";
+        let routes = |id: &str| {
+            [
+                ("POST", format!("/crew/connections/{id}/rejoin"), None),
+                ("GET", format!("/crew/connections/{id}/account"), None),
+                (
+                    "POST",
+                    format!("/crew/connections/{id}/devices/acknowledge"),
+                    Some(json!({"fingerprints": []})),
+                ),
+            ]
+        };
+        for (method, uri, sent) in routes(unknown) {
+            for proof in [Proof::Absent, Proof::Wrong] {
+                let (status, body) = call(method, &uri, sent.clone(), proof).await;
+                assert_refused(
+                    status,
+                    &body,
+                    StatusCode::FORBIDDEN,
+                    "crew_user_action_required",
+                );
+                assert_eq!(body.as_object().unwrap().len(), 2, "{method} {uri}: {body}");
+            }
+            let (status, body) = call(method, &uri, sent, Proof::Person).await;
+            assert_refused(
+                status,
+                &body,
+                StatusCode::NOT_FOUND,
+                "crew_connection_not_found",
+            );
+        }
+
+        stage(HOST, &Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES));
+        let connection = save_joiner(&created, WORKSPACE, HOST).await;
+        let id = connection["id"].as_str().unwrap().to_owned();
+        let [rejoin, account, acknowledge] = routes(&id);
+        for (method, uri, sent) in [rejoin, account] {
+            let (status, body) = call(method, &uri, sent, Proof::Person).await;
+            assert_refused(status, &body, StatusCode::CONFLICT, "crew_not_connected");
+        }
+        let (status, body) =
+            call(acknowledge.0, &acknowledge.1, acknowledge.2, Proof::Person).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        assert!(
+            !log_path(&fixture_root(), HOST).exists(),
+            "an offline connection's workspace was asked something"
+        );
+        let saved = crew().connection(&id).await.unwrap();
+        assert_eq!(saved.public_key, connection["public_key"].as_str().unwrap());
+    })
+    .await;
+}
+
+/// On a server that takes joining by account, an invited account joins with no code: the join
+/// status reads `account.status` instead of `enrollment.pending` and says `ready` without a
+/// code, and the join sends `auth.account` signed by the saved key. A removed account reads
+/// `removed`, and joining it is refused with the contract's sentence, nothing sent.
+#[tokio::test]
+#[serial]
+async fn an_invited_account_joins_with_no_code_and_a_removed_one_is_told() {
+    const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000000b2";
+    const HOST: &str = "account-join.example.test";
+    let created = Mutex::new(Vec::new());
+    with_cleanup(&created, async {
+        let scenario = Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES)
+            .answer("account.status", invited_status())
+            // What a hostile bridge adds: a join status with its own code. Never asked.
+            .answer(
+                "enrollment.pending",
+                json!({"result": {"invited": true, "approved": true, "code": HOSTILE_CODE}}),
+            );
+        stage(HOST, &scenario);
+        let connection = save_joiner(&created, WORKSPACE, HOST).await;
+        let id = connection["id"].as_str().unwrap().to_owned();
+        crew()
+            .connect(&id)
+            .await
+            .expect("the fake workspace verifies");
+
+        let (status, body) = call(
+            "GET",
+            &format!("/crew/connections/{id}/account"),
+            None,
+            Proof::Person,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["role"], "invited", "{body}");
+        assert_eq!(body["workspace_name"], "lab", "{body}");
+        assert_eq!(body["username"], "bob", "{body}");
+        assert_eq!(body["host_username"], "alice", "{body}");
+        assert_eq!(
+            body["invited_by"],
+            json!({"username": "alice", "display_name": "Alice Chen"})
+        );
+        assert_eq!(body["expires_at"], 4_000_000_000u64, "{body}");
+        assert_eq!(body["expired"], false, "{body}");
+        let asked = received(HOST, "account.status");
+        assert_eq!(asked.len(), 1);
+        assert!(asked[0].get("auth").is_none(), "unsigned: {}", asked[0]);
+
+        let join = format!("/crew/connections/{id}/join");
+        let (status, body) = call("GET", &join, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "ready", "{body}");
+        assert!(body.get("code").is_none(), "no code by account: {body}");
+        assert!(!body.to_string().contains(HOSTILE_CODE), "{body}");
+        assert_eq!(body["inviter"]["username"], "alice", "{body}");
+        assert!(received(HOST, "enrollment.pending").is_empty());
+        assert!(
+            received(HOST, "auth.account").is_empty(),
+            "ready never joins by itself"
+        );
+
+        stage(
+            HOST,
+            &scenario.clone().answer(
+                "auth.account",
+                json!({"result": {
+                    "principal": {"id": "p-bob", "username": "bob", "display_name": "Bob Lee"},
+                    "device_id": connection["device_id"],
+                    "workspace": {"id": WORKSPACE},
+                    "role": "member",
+                    "admitted": "invitation",
+                }}),
+            ),
+        );
+        let (status, body) = call("POST", &join, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["joined"], true, "{body}");
+        assert_eq!(body["status"], "joined", "{body}");
+        let claims = received(HOST, "auth.account");
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0]["params"]["public_key"], connection["public_key"]);
+        assert_eq!(
+            claims[0]["auth"]["device_id"], connection["device_id"],
+            "signed with the saved device key: {}",
+            claims[0]
+        );
+        assert!(received(HOST, "auth.join").is_empty());
+
+        // Removed: told so, by name, and nothing is claimed.
+        stage(
+            HOST,
+            &scenario.clone().answer(
+                "account.status",
+                json!({"result": {"role": "removed", "workspace_name": "lab", "username": "bob"}}),
+            ),
+        );
+        let (status, body) = call("GET", &join, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "removed", "{body}");
+        let (status, body) = call("POST", &join, None, Proof::Person).await;
+        assert_refused(status, &body, StatusCode::CONFLICT, "crew_join_removed");
+        assert_eq!(
+            body["error"],
+            "You were removed from lab. Ask a member to invite you again."
+        );
+        assert_eq!(received(HOST, "auth.account").len(), 1);
+    })
+    .await;
+}
+
+/// Adding this computer again gives the saved connection a new device key in place, signed by
+/// the new key and naming the old device to replace, and keeps the connection's ID. A refusal
+/// keeps the old key and answers the workspace's code, never its words.
+#[tokio::test]
+#[serial]
+async fn adding_this_computer_again_replaces_its_key_in_place() {
+    const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000000b3";
+    const HOST: &str = "account-rejoin.example.test";
+    let created = Mutex::new(Vec::new());
+    with_cleanup(&created, async {
+        let scenario = Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES).answer(
+            "auth.account",
+            json!({"error": {
+                "code": "removed",
+                "message": format!("removed: {HOSTILE_WORDS}"),
+            }}),
+        );
+        stage(HOST, &scenario);
+        let connection = save_joiner(&created, WORKSPACE, HOST).await;
+        let id = connection["id"].as_str().unwrap().to_owned();
+        let old_key = connection["public_key"].as_str().unwrap().to_owned();
+        let old_device = connection["device_id"].as_str().unwrap().to_owned();
+        crew()
+            .connect(&id)
+            .await
+            .expect("the fake workspace verifies");
+        let rejoin = format!("/crew/connections/{id}/rejoin");
+
+        let (status, body) = call("POST", &rejoin, None, Proof::Absent).await;
+        assert_refused(
+            status,
+            &body,
+            StatusCode::FORBIDDEN,
+            "crew_user_action_required",
+        );
+        assert!(received(HOST, "auth.account").is_empty());
+
+        let (status, body) = call("POST", &rejoin, None, Proof::Person).await;
+        assert_refused(status, &body, StatusCode::CONFLICT, "crew_join_removed");
+        assert!(!body.to_string().contains(HOSTILE_WORDS), "{body}");
+        let refused = received(HOST, "auth.account");
+        assert_eq!(refused.len(), 1);
+        assert_eq!(
+            refused[0]["params"]["replaces_device_id"],
+            old_device.as_str()
+        );
+        assert_ne!(refused[0]["params"]["public_key"], old_key.as_str());
+        let kept = crew().connection(&id).await.unwrap();
+        assert_eq!(kept.public_key, old_key, "a refusal keeps the old key");
+        assert_eq!(kept.device_id, old_device);
+
+        stage(
+            HOST,
+            &scenario.clone().answer(
+                "auth.account",
+                json!({"result": {
+                    "principal": {"id": "p-bob", "username": "bob", "display_name": "Bob Lee"},
+                    "workspace": {"id": WORKSPACE},
+                    "role": "member",
+                    "admitted": "device",
+                }}),
+            ),
+        );
+        let (status, body) = call("POST", &rejoin, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"]["status"], "joined", "{body}");
+        assert_eq!(body["role"], "member", "{body}");
+        assert_eq!(body["admitted"], "device", "{body}");
+        assert_eq!(
+            body["principal"],
+            json!({"username": "bob", "display_name": "Bob Lee"})
+        );
+        let claims = received(HOST, "auth.account");
+        assert_eq!(claims.len(), 2);
+        let claim = &claims[1];
+        assert_eq!(claim["params"]["replaces_device_id"], old_device.as_str());
+        let rekeyed = crew().connection(&id).await.unwrap();
+        assert_eq!(rekeyed.id, id, "the connection keeps its ID");
+        assert_ne!(rekeyed.public_key, old_key);
+        assert_ne!(rekeyed.device_id, old_device);
+        assert_eq!(claim["params"]["public_key"], rekeyed.public_key.as_str());
+        assert_eq!(
+            claim["auth"]["device_id"],
+            rekeyed.device_id.as_str(),
+            "signed by the new key: {claim}"
+        );
+    })
+    .await;
+}
+
+/// A server whose Crew is older answers every account route `crew_account_unsupported`, worded
+/// for someone who is not its host, and is sent nothing account based. Its connection view says
+/// `account_identity: false`.
+#[tokio::test]
+#[serial]
+async fn an_older_server_answers_account_unsupported() {
+    const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000000b4";
+    const HOST: &str = "account-old.example.test";
+    let created = Mutex::new(Vec::new());
+    with_cleanup(&created, async {
+        stage(
+            HOST,
+            &Scenario::new(
+                WORKSPACE,
+                &["human_names_v1", "unique_names_v1", "join_by_name_v1"],
+            ),
+        );
+        let connection = save_joiner(&created, WORKSPACE, HOST).await;
+        let id = connection["id"].as_str().unwrap().to_owned();
+        crew()
+            .connect(&id)
+            .await
+            .expect("the fake workspace verifies");
+        for (method, uri) in [
+            ("POST", format!("/crew/connections/{id}/rejoin")),
+            ("GET", format!("/crew/connections/{id}/account")),
+        ] {
+            let (status, body) = call(method, &uri, None, Proof::Person).await;
+            assert_refused(
+                status,
+                &body,
+                StatusCode::CONFLICT,
+                "crew_account_unsupported",
+            );
+            assert_eq!(body["workspace"], "lab", "{body}");
+            assert_eq!(
+                body["is_host"], false,
+                "a member is told who to ask: {body}"
+            );
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("lab's server runs an older Crew.")),
+                "{body}"
+            );
+        }
+        assert!(received(HOST, "auth.account").is_empty());
+        assert!(received(HOST, "account.status").is_empty());
+        let saved = crew().connection(&id).await.unwrap();
+        assert_eq!(saved.public_key, connection["public_key"].as_str().unwrap());
+
+        let (status, body) = call_app(
+            daemon().await,
+            "GET",
+            &format!("/crew/connections/{id}"),
+            None,
+            Proof::Person,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["account_identity"], false, "{body}");
+    })
+    .await;
+}
+
+/// AO-10: the connection view reports a device of the account that a signed snapshot lists and
+/// this computer had not seen, with how and when it was added, until the person acknowledges
+/// it. The first snapshot is the baseline and this computer's own device is never reported. A
+/// connected connection to a server that takes joining by account says `account_identity:
+/// true`; a disconnected one says `null`. An acknowledgement names the devices the person was
+/// shown, and only those leave the report: a device a snapshot listed after the notice was
+/// shown is still reported, so nothing is cleared that no computer ever showed.
+#[tokio::test]
+#[serial]
+async fn the_connection_view_reports_new_devices_until_acknowledged() {
+    const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000000b5";
+    const HOST: &str = "account-devices.example.test";
+    const OWN: &str = "AAAA AAAA AAAA AAAA";
+    const LAPTOP: &str = "ABCD ABCD ABCD ABCD";
+    const DESKTOP: &str = "1234 5678 9ABC DEF0";
+    const TABLET: &str = "5555 6666 7777 8888";
+    let created = Mutex::new(Vec::new());
+    with_cleanup(&created, async {
+        let snapshot = |devices: Value| {
+            json!({"result": {"actor": {"id": "p-bob", "username": "bob", "devices": devices}}})
+        };
+        let own = json!({"fingerprint": OWN, "added_via": "invitation", "added_at": 1, "this_device": true});
+        let laptop = json!({"fingerprint": LAPTOP, "added_via": "invitation", "added_at": 2});
+        let desktop = json!({"fingerprint": DESKTOP, "added_via": "account", "added_at": 3});
+        let tablet = json!({"fingerprint": TABLET, "added_via": "account", "added_at": 4});
+        let (own_again, laptop_again) = (own.clone(), laptop.clone());
+        let scenario = Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES);
+        stage(
+            HOST,
+            &scenario.clone().answer(
+                "workspace.snapshot",
+                snapshot(json!([own.clone(), laptop.clone()])),
+            ),
+        );
+        let connection = save_joiner(&created, WORKSPACE, HOST).await;
+        let id = connection["id"].as_str().unwrap().to_owned();
+        let daemon = daemon().await;
+        let view = format!("/crew/connections/{id}");
+
+        let (status, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["id"], id.as_str(), "{body}");
+        assert_eq!(body["account_identity"], Value::Null, "not connected: {body}");
+        assert_eq!(body["new_devices"], json!([]), "{body}");
+
+        crew().connect(&id).await.expect("the fake workspace verifies");
+        crew()
+            .human_request(&id, "workspace.snapshot", json!({}), None)
+            .await
+            .expect("the baseline snapshot");
+        let (status, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["account_identity"], true, "{body}");
+        assert_eq!(
+            body["new_devices"],
+            json!([]),
+            "the first snapshot is the baseline"
+        );
+
+        stage(
+            HOST,
+            &scenario.clone().answer(
+                "workspace.snapshot",
+                snapshot(json!([own, laptop, desktop.clone()])),
+            ),
+        );
+        crew()
+            .human_request(&id, "workspace.snapshot", json!({}), None)
+            .await
+            .expect("a later snapshot");
+        let new = json!([desktop]);
+        let (status, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["new_devices"], new, "{body}");
+        let (status, body) =
+            call_app(daemon.clone(), "GET", "/crew/connections", None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let listed = body["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|listed| listed["id"] == id.as_str())
+            .cloned()
+            .unwrap_or_else(|| panic!("not listed: {body}"));
+        assert_eq!(listed["new_devices"], new, "{listed}");
+        assert_eq!(listed["account_identity"], true, "{listed}");
+
+        // The person is shown the desktop. Before they acknowledge it, a snapshot that any
+        // surface reads lists a tablet nobody has been shown yet.
+        let shown = json!({"fingerprints": [DESKTOP]});
+        stage(
+            HOST,
+            &scenario.clone().answer(
+                "workspace.snapshot",
+                snapshot(json!([own_again, laptop_again, desktop.clone(), tablet.clone()])),
+            ),
+        );
+        crew()
+            .human_request(&id, "workspace.snapshot", json!({}), None)
+            .await
+            .expect("a snapshot after the notice was shown");
+        let both = json!([desktop, tablet.clone()]);
+        let (_, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(body["new_devices"], both, "{body}");
+
+        let acknowledge = format!("/crew/connections/{id}/devices/acknowledge");
+        let (status, body) = call_app(
+            daemon.clone(),
+            "POST",
+            &acknowledge,
+            Some(shown.clone()),
+            Proof::Absent,
+        )
+        .await;
+        assert_refused(
+            status,
+            &body,
+            StatusCode::FORBIDDEN,
+            "crew_user_action_required",
+        );
+        // An acknowledgement that does not say which devices the person saw acknowledges none.
+        for (sent, expected) in [
+            (None, StatusCode::UNSUPPORTED_MEDIA_TYPE),
+            (Some(json!({})), StatusCode::UNPROCESSABLE_ENTITY),
+            (
+                Some(json!({"fingerprints": [DESKTOP], "all": true})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ] {
+            let (status, body) =
+                call_app(daemon.clone(), "POST", &acknowledge, sent, Proof::Person).await;
+            assert_refused(status, &body, expected, "crew_request_invalid");
+        }
+        let (_, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(
+            body["new_devices"], both,
+            "a refused acknowledgement changes nothing"
+        );
+
+        let (status, body) = call_app(
+            daemon.clone(),
+            "POST",
+            &acknowledge,
+            Some(shown.clone()),
+            Proof::Person,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let (status, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["new_devices"],
+            json!([tablet]),
+            "only the device the person was shown is acknowledged: {body}"
+        );
+        // Acknowledging the same device again changes nothing; the tablet goes once it is named.
+        let (status, _) =
+            call_app(daemon.clone(), "POST", &acknowledge, Some(shown), Proof::Person).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(body["new_devices"], json!([tablet]), "{body}");
+        let (status, _) = call_app(
+            daemon.clone(),
+            "POST",
+            &acknowledge,
+            Some(json!({"fingerprints": [TABLET]})),
+            Proof::Person,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, body) = call_app(daemon.clone(), "GET", &view, None, Proof::Person).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["new_devices"], json!([]), "{body}");
+    })
+    .await;
+}
+
+/// The new routes are registered on the daemon the way `routes::configure` composes it, each
+/// behind the person gate, and each answers a person with its own code or body.
+#[tokio::test]
+#[serial]
+async fn the_account_ownership_routes_are_registered() {
+    let daemon = daemon().await;
+    let unknown = "00000000-0000-4000-8000-000000000000";
+    for (method, uri, answered) in [
+        (
+            "GET",
+            format!("/crew/connections/{unknown}"),
+            "crew_connection_not_found",
+        ),
+        (
+            "POST",
+            format!("/crew/connections/{unknown}/rejoin"),
+            "crew_connection_not_found",
+        ),
+        (
+            "GET",
+            format!("/crew/connections/{unknown}/account"),
+            "crew_connection_not_found",
+        ),
+        (
+            "POST",
+            format!("/crew/connections/{unknown}/devices/acknowledge"),
+            "crew_connection_not_found",
+        ),
+        (
+            "DELETE",
+            format!("/crew/sessions/no-such-chat/reads/{unknown}"),
+            "crew_not_found",
+        ),
+    ] {
+        // The acknowledgement names the devices the person was shown.
+        let sent = uri
+            .ends_with("/devices/acknowledge")
+            .then(|| json!({"fingerprints": []}));
+        let (status, body) =
+            call_app(daemon.clone(), method, &uri, sent.clone(), Proof::Absent).await;
+        assert_refused(
+            status,
+            &body,
+            StatusCode::FORBIDDEN,
+            "crew_user_action_required",
+        );
+        let (status, body) = call_app(daemon.clone(), method, &uri, sent, Proof::Person).await;
+        assert_refused(status, &body, StatusCode::NOT_FOUND, answered);
+    }
+    let (status, body) = call_app(daemon.clone(), "GET", "/crew/setup", None, Proof::Absent).await;
+    assert_refused(
+        status,
+        &body,
+        StatusCode::FORBIDDEN,
+        "crew_user_action_required",
+    );
+    let (status, body) = call_app(daemon, "GET", "/crew/setup", None, Proof::Person).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.is_array(), "a bare array of jobs: {body}");
+}

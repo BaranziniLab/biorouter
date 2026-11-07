@@ -16,8 +16,13 @@ import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
-import { previewInvitation, type CrewInvitationPreview } from '../api/join';
-import { CREW_INVITATION_INVALID, crewErrorCode, isStaleDaemon } from '../api/errors';
+import { claimJoin, previewInvitation, type CrewInvitationPreview } from '../api/join';
+import {
+  CREW_HOST_NAME_IN_USE,
+  CREW_INVITATION_INVALID,
+  crewErrorCode,
+  isStaleDaemon,
+} from '../api/errors';
 import {
   connectionServer,
   institutionLabel,
@@ -29,7 +34,7 @@ import { serverLabel } from '../sidebar/sidebarView';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import { focusIsLost } from '../state/focusReturn';
 import type { ErrorSource, PreparedDevice } from '../state/types';
-import { hostCopy, joinCopy } from './copy';
+import { hostCopy, joinCopy, setupCopy } from './copy';
 import {
   AgentAccessFields,
   agentAccessSettings,
@@ -274,7 +279,11 @@ export interface HostDialogProps {
  *   carries.
  * - **Create**: the confirmation "Initialize as workspace host" never had (L3). It saves the
  *   connection with the prepared identity, connects (Sign in opens by itself if the server asks),
- *   and asks the workspace to make this computer its first admin device (`auth.bootstrap`).
+ *   and asks the workspace to take this computer as its host's first device (`auth.bootstrap`).
+ *   On a workspace that belongs to accounts, a bootstrap answered "already enrolled" joins by
+ *   account instead (AO-9): the server account is the host, whichever computer it signs in from.
+ *   A setup refused with `crew_host_name_in_use` offers Open, which looks the workspace up on the
+ *   same login (Open a workspace on a server).
  *
  * A Private workspace with the institution chosen on Name is marked with it as Create finishes,
  * as `biorouter crew host` does (G4): the label can't be undone, so Create says so before the
@@ -504,7 +513,19 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     const connectionId = crew.connectionId;
     void crew
       .act('dialog:host', 'auth.bootstrap', async () => {
-        await crew.request('auth.bootstrap', { public_key: publicKey }, { mutation: true });
+        try {
+          await crew.request('auth.bootstrap', { public_key: publicKey }, { mutation: true });
+        } catch (failure) {
+          // The account already has the host's first device: on a workspace that belongs to
+          // accounts this computer joins as the host by signing in (AO-9).
+          const words = failure instanceof Error ? failure.message : '';
+          if (
+            !/already enrolled/i.test(words) ||
+            latest.current.connection?.account_identity !== true
+          )
+            throw failure;
+          await claimJoin(connectionId);
+        }
         return true;
       })
       .then(async (ok) => {
@@ -1435,6 +1456,30 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                         intent="host"
                         server={foundServer}
                         testId="crew-host-setup"
+                        // The account already hosts a workspace of that name there (AO-9): open
+                        // it on this computer instead, from the same login.
+                        problemAction={
+                          job.problem?.code === CREW_HOST_NAME_IN_USE ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() =>
+                                crew.openDialog({
+                                  kind: 'open-workspace',
+                                  route: {
+                                    ssh_target: serverLogin.trim(),
+                                    port: portValue ?? null,
+                                    identity_file: identityFile.trim() || null,
+                                    proxy_jump: proxyJump.trim() || null,
+                                  },
+                                  check: true,
+                                })
+                              }
+                            >
+                              {setupCopy.openExisting}
+                            </Button>
+                          ) : undefined
+                        }
                       />
                     ) : null}
                     <p className="crew-onboard-row text-supporting text-text-muted" role="status">

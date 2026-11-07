@@ -57,6 +57,19 @@ fn broker_code(error: &anyhow::Error) -> Option<String> {
         .map(str::to_owned)
 }
 fn observation_error_code(error: &anyhow::Error) -> String {
+    // AO-9: a lost device key and a device the workspace no longer recognizes are typed as a
+    // context on top of the underlying error, so the outermost message is the refusal's
+    // sentence, never a broker envelope. The frame carries the refusal's own code, which every
+    // client answers with Add this computer again rather than as a dropped connection.
+    if let Some(refusal) = biorouter::crew::CrewRefusal::find(error).filter(|refusal| {
+        matches!(
+            refusal.code(),
+            biorouter::crew::refusal::DEVICE_KEY_MISSING
+                | biorouter::crew::refusal::DEVICE_NOT_RECOGNIZED
+        )
+    }) {
+        return refusal.code().into();
+    }
     if let Some(code) = broker_code(error) {
         return code;
     }
@@ -103,6 +116,11 @@ fn observation_error_text(code: &str) -> &'static str {
         "principal_revoked" => "You're no longer a member of this workspace",
         "privacy_denied" => "The workspace's privacy rules don't allow this view",
         "workspace_deleted" => "The host deleted this workspace",
+        // AO-9: the daemon's own sentences for the same refusals, without the workspace's name,
+        // which the terminal already says. Each client offers its own way to add the computer
+        // again.
+        "crew_device_key_missing" => "This computer no longer has its key for this workspace",
+        "crew_device_not_recognized" => "This workspace no longer recognizes this computer",
         _ => "Live updates stopped",
     }
 }
@@ -656,7 +674,7 @@ fn observe_refusal(status: StatusCode, code: &str, error: &str) -> (StatusCode, 
     params(("id" = String, Path, description = "The saved connection")),
     request_body = ObserveRequest,
     responses(
-        (status = 200, description = "Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, and `clear` asks the client to drop what the observation showed", body = ObserveEvent, content_type = "application/x-ndjson"),
+        (status = 200, description = "Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, or `crew_device_key_missing` (this computer no longer holds its key) or `crew_device_not_recognized` (the workspace no longer recognizes this computer while it still lists the account), which adding this computer again with `POST /crew/connections/{id}/rejoin` repairs. `clear` asks the client to drop what the observation showed", body = ObserveEvent, content_type = "application/x-ndjson"),
         (status = 400, description = "`crew_request_invalid`: a body that is not JSON, or a channel or cursor that is empty, longer than 128 bytes, or a cursor without its channel", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
@@ -1678,6 +1696,122 @@ mod tests {
             observation_error_text("workspace_deleted"),
             "The host deleted this workspace"
         );
+    }
+
+    /// A broker that refuses every read with the error `refusal` builds, as the core's signed
+    /// path answers once it has typed the refusal (`device_signer`, `recognize_device`).
+    struct RefusingSource {
+        refusal: fn() -> anyhow::Error,
+    }
+
+    #[async_trait::async_trait]
+    impl ObservationSource for RefusingSource {
+        async fn binding(&self, _connection: &str) -> Result<Value> {
+            Ok(json!({}))
+        }
+        async fn read(&self, _connection: &str, _method: &str, _params: Value) -> Result<Value> {
+            Err((self.refusal)())
+        }
+        async fn runs(&self, _connection: &str) -> Result<Vec<super::super::crew::RunView>> {
+            Ok(Vec::new())
+        }
+        fn capabilities(&self, _connection: &str) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The frame a person's observation of `channel` ends with when every read is refused with
+    /// `refusal`.
+    async fn ending_frame(refusal: fn() -> anyhow::Error) -> Value {
+        use futures::StreamExt;
+        crate::routes::session::diverge_tests::install_test_user_action_key();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-User-Action",
+            crate::routes::session::diverge_tests::TEST_USER_ACTION_KEY
+                .parse()
+                .unwrap(),
+        );
+        let observer = Observer::new(
+            headers,
+            "connection".into(),
+            ObserveRequest {
+                channel_id: Some("c-general".into()),
+                after: None,
+                initial: Initial::Latest,
+            },
+            json!({}),
+            Arc::new(RefusingSource { refusal }),
+            None,
+        );
+        let mut stream = Box::pin(observation_stream(observer));
+        let frame = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("a frame")
+            .expect("the stream ended without a frame")
+            .unwrap();
+        serde_json::from_slice(&frame).unwrap()
+    }
+
+    /// AO-9: a lost device key and a device the workspace no longer recognizes end the live view
+    /// with their own codes, which the clients answer with Add this computer again. The core
+    /// types both as a context over the underlying error, so the outermost message is the
+    /// refusal's sentence and not a broker envelope; they used to leave as
+    /// `observation_refused`, which reads as a dropped connection.
+    #[tokio::test]
+    async fn a_lost_or_unrecognized_device_ends_the_view_with_its_own_code() {
+        fn key_missing() -> anyhow::Error {
+            anyhow::anyhow!("No Crew credential is saved for device:connection").context(
+                biorouter::crew::CrewRefusal::new(
+                    biorouter::crew::refusal::DEVICE_KEY_MISSING,
+                    "This computer no longer has its key for lab. Choose Add this computer again to make a new one.",
+                )
+                .status(409),
+            )
+        }
+        fn not_recognized() -> anyhow::Error {
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "unauthorized", "message": "unauthorized: unknown device"})
+            )
+            .context(
+                biorouter::crew::CrewRefusal::new(
+                    biorouter::crew::refusal::DEVICE_NOT_RECOGNIZED,
+                    "lab no longer recognizes this computer. Choose Add this computer again while you are still a member.",
+                )
+                .status(409),
+            )
+        }
+        for (refusal, code, sentence) in [
+            (
+                key_missing as fn() -> anyhow::Error,
+                "crew_device_key_missing",
+                "This computer no longer has its key for this workspace",
+            ),
+            (
+                not_recognized,
+                "crew_device_not_recognized",
+                "This workspace no longer recognizes this computer",
+            ),
+        ] {
+            let frame = ending_frame(refusal).await;
+            assert_eq!(frame["type"], "error", "{frame}");
+            assert_eq!(frame["code"], code, "{frame}");
+            assert_eq!(frame["error"], sentence, "{frame}");
+            assert_eq!(frame["clear"], true, "{frame}");
+            assert_eq!(observation_error_code(&refusal()), code);
+        }
+        // The broker's own code for an unknown device the core did not type stays as it was.
+        let untyped = anyhow::anyhow!(
+            "Crew broker refused request: {}",
+            json!({"code": "unauthorized", "message": "unauthorized: unknown device"})
+        );
+        assert_eq!(observation_error_code(&untyped), "unauthorized");
+        // Any other typed refusal keeps the codes the frame always carried.
+        let other = anyhow::anyhow!("observer_capacity_reached").context(
+            biorouter::crew::CrewRefusal::new(biorouter::crew::refusal::NOT_CONNECTED, "down"),
+        );
+        assert_eq!(observation_error_code(&other), "observation_refused");
     }
 
     #[test]

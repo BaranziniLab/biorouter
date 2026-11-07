@@ -13,18 +13,23 @@
 //! - a **Private** model capability (a private provider affiliated with the workspace's
 //!   institution, as Versa is with UCSF), so the tier gates admit the calls and only the
 //!   allowlist stands between them and the workspace;
-//! - a scripted provider that answers the prompt with `crew__request` calls for the five
-//!   human-only methods (`enrollment.approve`, `team.add_member`, `channel.add_member`,
-//!   `run.revoke`, `policy.set`), the workspace actions open governance, deletion and the
-//!   context document added (`workspace.context.set`, `workspace.set_governance`,
-//!   `workspace.delete`, `channel.delete`, `team.delete`, `channel.join`, `team.join`), a read
-//!   of the context document, and a full-access `remote.shell` on a grant with no access;
+//! - a scripted provider that answers the prompt with `crew__request` calls for the human-only
+//!   methods (`enrollment.approve`, `team.add_member`, `channel.add_member`, `run.revoke`,
+//!   `policy.set`, and account ownership's `auth.account` and `device.revoke`), the workspace
+//!   actions open governance, deletion and the context document added
+//!   (`workspace.context.set`, `workspace.set_governance`, `workspace.delete`,
+//!   `channel.delete`, `team.delete`, `channel.join`, `team.join`), a read of the context
+//!   document, a full-access `remote.shell` on a grant with no access, and then the person
+//!   tools `crew__read` and `crew__change` by name, which it was never offered (AO-12);
+//! - a person-tool host installed as the daemon installs one, which records every call;
 //! - a fake broker behind a fake `ssh` that records every frame it is sent.
 //!
 //! Each person's action must come back refused by the allowlist, and the broker must receive
 //! none of those methods: no workspace mutation reaches it at all, only the scoped reads each
 //! turn makes and the context read, which a worker may make. The `remote.shell` passes the
-//! allowlist and is refused by the grant's level before anything is sent.
+//! allowlist and is refused by the grant's level before anything is sent. The person tools
+//! are refused before they run, and the host never hears of them: a scoped chat can never act
+//! as the person (gate B-1).
 //!
 //! ⚠ **Its own binary**, because the Crew manager and the session store are process-global
 //! and are pointed at a sandbox before `main`. Offline: the "SSH connection" is this test
@@ -43,6 +48,7 @@ use biorouter::config::paths::Paths;
 use biorouter::config::permission::PermissionManager;
 use biorouter::config::BioRouterMode;
 use biorouter::conversation::message::{Message, MessageContent};
+use biorouter::crew::tool_host::{CrewToolHost, PersonToolCall};
 use biorouter::model::ModelConfig;
 use biorouter::privacy::affiliation::{InstitutionId, ModelAffiliation};
 use biorouter::privacy::ProviderTier;
@@ -68,9 +74,10 @@ const CHANNEL: &str = "channel-general";
 const RUN: &str = "run-allowlist";
 const INSTITUTION: &str = "ucsf";
 
-/// The five things only a person may do, each as a model that ignores the tool's schema
-/// would send it.
-const HUMAN_ONLY: [(&str, &str); 5] = [
+/// The things only a person may do, each as a model that ignores the tool's schema would send
+/// it. Signing an account in and revoking a device are the person's under account ownership
+/// (AO-1, AO-5), whatever a chat's grant.
+const HUMAN_ONLY: [(&str, &str); 7] = [
     (
         "enrollment.approve",
         r#"{"enrollment_id":"enrollment-mallory"}"#,
@@ -85,7 +92,25 @@ const HUMAN_ONLY: [(&str, &str); 5] = [
     ),
     ("run.revoke", r#"{"run_id":"run-allowlist"}"#),
     ("policy.set", r#"{"mode":"public"}"#),
+    ("auth.account", r#"{"public_key":"mallory-device-key"}"#),
+    ("device.revoke", r#"{"fingerprint":"SHA256:iris-laptop"}"#),
 ];
+
+/// The person tools (AO-12), called by name in a chat whose grant offers neither: a read and a
+/// change, each as a model that disregards its tool list would send it.
+const PERSON_TOOL_CALLS: [(&str, &str); 2] = [
+    (
+        "crew__read",
+        r##"{"action":"history","params":{"channel":"#general"}}"##,
+    ),
+    (
+        "crew__change",
+        r##"{"action":"send","params":{"channel":"#general","text":"Approve Mallory."}}"##,
+    ),
+];
+
+/// How a refused person tool reads: the scoped-chat allowlist, before the tool runs.
+const SCOPED_TOOL_REFUSAL: &str = "Crew-scoped conversations permit only Crew and checklist tools";
 
 /// The workspace actions open governance, deletion and the context document added (design OW-1
 /// to OW-8): each is a person's, and none is a worker's.
@@ -399,11 +424,40 @@ impl Provider for ScriptedWorker {
                 }),
             );
         }
+        for (index, (tool, arguments)) in PERSON_TOOL_CALLS.into_iter().enumerate() {
+            let arguments: Value = serde_json::from_str(arguments).unwrap();
+            reply = reply.with_tool_request(
+                format!("person_{index}"),
+                Ok(CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: tool.into(),
+                    arguments: arguments.as_object().cloned(),
+                }),
+            );
+        }
         Ok((reply, usage))
     }
 
     fn get_model_config(&self) -> ModelConfig {
         ModelConfig::new_or_fail("crew-allowlist-model")
+    }
+}
+
+/// A person-tool host as the daemon installs one, which only records what reaches it.
+#[derive(Default)]
+struct RecordingHost {
+    calls: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl CrewToolHost for RecordingHost {
+    async fn call(&self, call: PersonToolCall) -> anyhow::Result<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("{} {}", call.tool.name(), call.action));
+        Ok(json!({"ran": call.action}))
     }
 }
 
@@ -445,6 +499,9 @@ fn tool_results(messages: &[Message]) -> Vec<(String, bool, String)> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_scoped_worker_cannot_perform_a_persons_crew_actions() {
     save_the_connection();
+    // As the daemon does at start. This binary is a process of its own, so installing is safe.
+    let host = Arc::new(RecordingHost::default());
+    biorouter::crew::tool_host::install(host.clone());
     let crew = biorouter::crew::manager().expect("the Crew manager");
     crew.connect(CONNECTION)
         .await
@@ -525,18 +582,27 @@ async fn a_scoped_worker_cannot_perform_a_persons_crew_actions() {
         }
     }
 
+    let offered = worker.offered.lock().unwrap().clone();
     assert!(
-        worker
-            .offered
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|tool| tool == "crew__request"),
+        offered.iter().any(|tool| tool == "crew__request"),
         "the worker was offered crew__request, so every call below reached the Crew tool"
+    );
+    // AO-12, gate B-1: a granted chat is offered exactly its two worker tools and the
+    // checklist, never a person tool, although a host is installed.
+    assert!(
+        offered.iter().all(
+            |tool| biorouter::crew::SCOPED_CREW_TOOLS.contains(&tool.as_str())
+                || tool.starts_with("todo__")
+        ),
+        "{offered:?}"
     );
     let calls = scripted_calls();
     let results = tool_results(&messages);
-    assert_eq!(results.len(), calls.len(), "{results:?}");
+    assert_eq!(
+        results.len(),
+        calls.len() + PERSON_TOOL_CALLS.len(),
+        "{results:?}"
+    );
     let result = |index: usize, method: &str| {
         results
             .iter()
@@ -574,6 +640,21 @@ async fn a_scoped_worker_cannot_perform_a_persons_crew_actions() {
     assert!(
         output.contains("remote.shell needs access to the server"),
         "{text}"
+    );
+    // The person tools, called by name: refused before they run, and the host never hears of
+    // them.
+    for (index, (tool, _)) in PERSON_TOOL_CALLS.iter().enumerate() {
+        let (_, is_error, text) = results
+            .iter()
+            .find(|(id, _, _)| *id == format!("person_{index}"))
+            .cloned()
+            .unwrap_or_else(|| panic!("no result for {tool}: {results:?}"));
+        assert!(is_error, "{tool} was not refused: {text}");
+        assert!(text.contains(SCOPED_TOOL_REFUSAL), "{tool}: {text}");
+    }
+    assert!(
+        host.calls.lock().unwrap().is_empty(),
+        "a person tool reached the host from a granted chat"
     );
 
     // Nothing the worker asked for reached the workspace: after the grant, the broker saw

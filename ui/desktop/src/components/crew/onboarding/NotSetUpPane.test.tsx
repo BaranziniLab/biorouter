@@ -310,6 +310,33 @@ describe('NotSetUpPane', () => {
     expect(mocks.startSetup).toHaveBeenCalledOnce();
   });
 
+  it('adds the host’s sentence when Join found this account hosts the workspace (W2)', async () => {
+    mocks.startSetup.mockResolvedValue(job());
+    mocks.readSetup.mockReturnValue(new Promise(() => {}));
+    requestMemberSetup('conn-1', { agentAccess: 'full', hostWorkspace: 'lab' });
+    const view = renderPane();
+    const warning = await screen.findByTestId('crew-onboard-full-warning');
+    expect(warning).toHaveTextContent(
+      `${joinCopy.fullWarning('bob', 'hpc.ucsf.edu')} ${joinCopy.fullWarningHost('lab')}`
+    );
+    // Words only: the job is asked for exactly what Join chose, and nothing more.
+    expect(mocks.startSetup).toHaveBeenCalledWith({
+      target: { kind: 'connection', connection_id: 'conn-1' },
+      intent: 'member',
+      workspace_name: 'lab',
+      agent_access: 'full',
+    });
+    view.unmount();
+
+    // A member's Join, which named no workspace it hosts: the warning has no host sentence.
+    requestMemberSetup('conn-1', { agentAccess: 'full' });
+    renderPane();
+    await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledTimes(2));
+    expect(await screen.findByTestId('crew-onboard-full-warning')).not.toHaveTextContent(
+      /act as the host/
+    );
+  });
+
   it('keeps Off off: a Join that chose Off asks for no access, and shows no warning (C18)', async () => {
     mocks.startSetup.mockResolvedValue(job());
     mocks.readSetup.mockReturnValue(new Promise(() => {}));

@@ -15,7 +15,15 @@
 //! choice, for the same reason, at `MessageContent::is_pin_eligible`
 //! (`conversation/message.rs`). If a future variant genuinely has no wire form,
 //! give it a named arm returning `None` with the reason written next to it.
+//!
+//! **Cards (WI-17).** A decision prompt is never stored, so the join snapshot cannot carry
+//! one. Right after it the observer is handed the chat's parked cards
+//! (`PendingUserActions::pending_cards_for_session`, the live registry, so never one already
+//! answered) and the live copy of each is not sent again; a client that asks with
+//! `CARD_ENDINGS_HEADER` is also told when each card ends, and a card that ended before the
+//! chat's loop drew it is never sent.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +32,10 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use biorouter::agents::AgentEvent;
+use biorouter::conversation::message::{Message, TokenState};
+use biorouter::pending_user_action::{
+    ephemeral_card_id, is_ephemeral_card, CardEnded, PendingUserActions,
+};
 use biorouter::session_events::{self, SessionBusEvent};
 use tokio::sync::mpsc;
 
@@ -254,6 +266,9 @@ pub async fn observe_session_events(
 
     // Subscribe BEFORE the snapshot so no event falls in the gap between them.
     let rx = session_events::subscribe(&session_id);
+    // WI-17: and to the card endings before the parked cards are read, so a card that ends
+    // between the two is still heard ending.
+    let cards = ObservedCards::new(crate::routes::reply::wants_card_endings(&headers));
     // Read immediately after subscribing, before the first await. If the same
     // turn is still active at the later snapshot, terminals already queued on
     // this receiver can be attributed to it. If the identities differ, a turn
@@ -307,6 +322,14 @@ pub async fn observe_session_events(
         {
             return;
         }
+        // WI-17: the cards still waiting in this chat. None is ever stored, so without this a
+        // window or a terminal that opened the chat after a card was raised saw a turn that was
+        // running and apparently stuck. Before the budget check, like the snapshot: where this
+        // chat stands includes what it waits on.
+        let mut cards = cards;
+        if !cards.send_parked(&sender, &token_state).await {
+            return;
+        }
 
         // Over budget: answer with the snapshot and END, instead of parking a
         // connection the client cannot spare (see `MAX_LIVE_OBSERVER_STREAMS`).
@@ -331,7 +354,7 @@ pub async fn observe_session_events(
         // up mid-`send` and the bus closing underneath it.
         let _slot = slot;
 
-        follow_session_events(&sender, rx, token_state, initial_event_turn_id).await;
+        follow_session_events(&sender, rx, cards, token_state, initial_event_turn_id).await;
     });
 
     SseResponse::from_rx(rx_out).into_response()
@@ -364,9 +387,120 @@ impl ObserverSender {
     }
 }
 
+/// WI-17: what one observer knows about its chat's cards, so it hands its client exactly the
+/// cards still waiting, each once, and tells it (when asked) when one ends.
+struct ObservedCards {
+    endings: tokio::sync::broadcast::Receiver<CardEnded>,
+    endings_open: bool,
+    /// The client asked to be told when a card ends (`CARD_ENDINGS_HEADER`).
+    wanted: bool,
+    /// The cards handed over at join, whose live copy is not sent again.
+    parked: HashSet<String>,
+    /// The cards this observer heard end, whose copy the chat's loop may still draw.
+    ended: HashSet<String>,
+}
+
+impl ObservedCards {
+    fn new(wanted: bool) -> Self {
+        Self {
+            endings: PendingUserActions::global().subscribe_card_endings(),
+            endings_open: true,
+            wanted,
+            parked: HashSet::new(),
+            ended: HashSet::new(),
+        }
+    }
+
+    /// Send the chat's parked cards, as the messages they were published as, and remember
+    /// them. Read from the live registry, so a card already answered is not among them, and
+    /// only the cards this chat may answer (its own, and the ones escalated into it). Each
+    /// passes the sender's reach check like every other frame. `false` once the client left.
+    async fn send_parked(&mut self, sender: &ObserverSender, token_state: &TokenState) -> bool {
+        for message in PendingUserActions::global().pending_cards_for_session(&sender.session_id) {
+            if let Some(id) = ephemeral_card_id(&message) {
+                self.parked.insert(id.to_owned());
+            }
+            let frame = MessageEvent::Message {
+                message,
+                token_state: token_state.clone(),
+            };
+            if !sender.send(&frame).await {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Note `ended`, when it is this chat's, and answer the frame to send for it.
+    fn hear(&mut self, ended: CardEnded, session_id: &str) -> Option<MessageEvent> {
+        if ended.session_id != session_id {
+            return None;
+        }
+        self.ended.insert(ended.id.clone());
+        self.wanted
+            .then(|| crate::routes::reply::card_ended_frame(ended))
+    }
+
+    /// Every end announced so far, as the frames to send.
+    fn hear_all(&mut self, session_id: &str) -> Vec<MessageEvent> {
+        use tokio::sync::broadcast::error::TryRecvError;
+        let mut frames = Vec::new();
+        loop {
+            match self.endings.try_recv() {
+                Ok(ended) => frames.extend(self.hear(ended, session_id)),
+                Err(TryRecvError::Lagged(skipped)) => {
+                    crate::routes::reply::warn_card_endings_lagged(skipped);
+                }
+                Err(TryRecvError::Empty | TryRecvError::Closed) => return frames,
+            }
+        }
+    }
+
+    /// Whether `message` is a card this observer must not send: one it already handed over at
+    /// join, or one that has already ended (the chat's loop drew it after it ended, perhaps
+    /// before this observer joined).
+    fn withholds(&self, message: &Message) -> bool {
+        ephemeral_card_id(message).is_some_and(|id| {
+            self.parked.contains(id)
+                || self.ended.contains(id)
+                || PendingUserActions::global().has_ended(id)
+        })
+    }
+}
+
+/// Send `frames` in order. `false` once the client left.
+async fn send_all(sender: &ObserverSender, frames: Vec<MessageEvent>) -> bool {
+    for frame in frames {
+        if !sender.send(&frame).await {
+            return false;
+        }
+    }
+    true
+}
+
+/// What to send for one bus event (WI-17's part of it): the card ends announced before a card
+/// or a terminal, then the event, unless it draws a card this observer must not send.
+fn frames_for_bus_event(
+    cards: &mut ObservedCards,
+    session_id: &str,
+    event: &SessionBusEvent,
+) -> (Vec<MessageEvent>, bool) {
+    let card = match event {
+        SessionBusEvent::Agent(AgentEvent::Message(message)) => Some(message),
+        _ => None,
+    };
+    if card.is_some_and(is_ephemeral_card) || is_terminal_bus_event(event) {
+        let ends = cards.hear_all(session_id);
+        let withheld = card.is_some_and(|message| cards.withholds(message));
+        return (ends, withheld);
+    }
+    (Vec::new(), false)
+}
+
 async fn follow_session_events(
     sender: &ObserverSender,
     mut rx: biorouter::session_events::Subscription,
+    mut cards: ObservedCards,
     mut token_state: biorouter::conversation::message::TokenState,
     mut event_turn_id: Option<String>,
 ) {
@@ -376,8 +510,29 @@ async fn follow_session_events(
             _ = heartbeat.tick() => {
                 if !sender.send(&MessageEvent::Ping).await { return; }
             }
+            ended = cards.endings.recv(), if cards.endings_open => match ended {
+                Ok(ended) => {
+                    if let Some(frame) = cards.hear(ended, &sender.session_id) {
+                        if !sender.send(&frame).await { return; }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    crate::routes::reply::warn_card_endings_lagged(skipped);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    cards.endings_open = false;
+                }
+            },
             received = rx.recv() => match received {
                 Ok(event) => {
+                    let (ends, withheld) =
+                        frames_for_bus_event(&mut cards, &sender.session_id, &event);
+                    if !send_all(sender, ends).await { return; }
+                    if withheld {
+                        // A card already handed over at join, or one that ended before the
+                        // chat's loop drew it. Nothing else about the event needs sending.
+                        continue;
+                    }
                     if let SessionBusEvent::TurnStarted { turn_id } = &event {
                         event_turn_id = Some(turn_id.clone());
                     }
@@ -407,6 +562,9 @@ async fn follow_session_events(
                         if !sender.send(&resync).await { return; }
                         if !sender.send(&lifecycle).await { return; }
                         event_turn_id = next_event_turn_id;
+                        // WI-17: the resync replaced the client's view with the stored rows,
+                        // which hold no card that waits, so the parked ones follow it again.
+                        if !cards.send_parked(sender, &token_state).await { return; }
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
@@ -1130,5 +1288,199 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    // ------------------------------------------------------------------ WI-17: cards
+
+    fn approval() -> biorouter::pending_user_action::UserActionRequest {
+        use biorouter::pending_user_action::{ToolApprovalRequest, UserActionRequest};
+        UserActionRequest::ToolApproval(ToolApprovalRequest {
+            tool_name: "crew__change".into(),
+            arguments: serde_json::Map::new(),
+            prompt: Some("Post as you in #general".into()),
+            risk: None,
+            preview: None,
+            requires_user_proof: true,
+        })
+    }
+
+    fn sign_in() -> biorouter::pending_user_action::UserActionRequest {
+        use biorouter::conversation::message::{CrewSignInTarget, CrewStepRequest};
+        biorouter::pending_user_action::UserActionRequest::CrewStep(CrewStepRequest::SignIn {
+            target: CrewSignInTarget::Setup {
+                job_id: "job-1".into(),
+            },
+            server: "hpc.example.edu".into(),
+            login: "you@hpc.example.edu".into(),
+        })
+    }
+
+    async fn open_observer_asking_for_endings(
+        app: &axum::Router,
+        session_id: &str,
+        endings: bool,
+    ) -> axum::body::Body {
+        use tower::ServiceExt;
+        let mut request = axum::http::Request::get(format!("/sessions/{session_id}/events"));
+        if endings {
+            request = request.header(crate::routes::reply::CARD_ENDINGS_HEADER, "1");
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        response.into_body()
+    }
+
+    /// Read `body` until `marker` has arrived, keeping the stream so reading can go on.
+    async fn read_until(
+        stream: &mut (impl futures::Stream<Item = Result<axum::body::Bytes, axum::Error>> + Unpin),
+        collected: &mut Vec<u8>,
+        marker: &str,
+    ) {
+        use futures::StreamExt;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !String::from_utf8_lossy(collected).contains(marker) {
+                match stream.next().await {
+                    Some(Ok(chunk)) => collected.extend_from_slice(&chunk),
+                    _ => return,
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("never saw {marker}: {}", String::from_utf8_lossy(collected)));
+    }
+
+    /// WI-17 (b) and (c): a window or a terminal that opens a chat after its cards were raised.
+    /// The join snapshot is the stored conversation, and no card that waits is ever stored, so
+    /// before WI-17 such an observer saw a turn that was running and apparently stuck: neither
+    /// the parked Crew step nor the parked approval reached it. Now both follow the snapshot,
+    /// read from the live registry: never a card already answered, never another chat's card,
+    /// and a live copy of one it was handed is not sent again. (d): asked with the header, it
+    /// is told when each one ends; a card that ended before the chat's loop drew it is never
+    /// sent.
+    #[tokio::test]
+    async fn a_late_observer_is_handed_the_parked_cards_and_told_when_each_ends() {
+        use biorouter::action_required_manager::ActionRequiredManager;
+        use biorouter::pending_user_action::{DecisionAuthority, UserActionOutcome};
+        let state = crate::state::AppState::new().await.unwrap();
+        let session_id = observer_session(&state).await;
+        let other = observer_session(&state).await;
+        let app = routes(state.clone());
+        let registry = PendingUserActions::global();
+
+        let step = registry.park(Some(&session_id), None, sign_in());
+        let parked = registry.park(Some(&session_id), None, approval());
+        let answered = registry.park(Some(&session_id), None, approval());
+        let foreign = registry.park(Some(&other), None, approval());
+        let (step_id, parked_id, answered_id, foreign_id) = (
+            step.id().to_string(),
+            parked.id().to_string(),
+            answered.id().to_string(),
+            foreign.id().to_string(),
+        );
+        let denied = UserActionOutcome::Denied {
+            permission: biorouter::permission::Permission::DenyOnce,
+        };
+        registry.resolve_in_session(
+            &session_id,
+            &answered_id,
+            denied,
+            DecisionAuthority::unproven(),
+        );
+        answered.wait(Duration::from_secs(5), None).await;
+
+        let mut body = open_observer_asking_for_endings(&app, &session_id, true)
+            .await
+            .into_data_stream();
+        let mut seen = Vec::new();
+        read_until(&mut body, &mut seen, &step_id).await;
+        read_until(&mut body, &mut seen, &parked_id).await;
+
+        // The chat's loop draws its cards now: the live copies of the two handed over, and a
+        // card that already ended.
+        let early = registry.park(Some(&session_id), None, sign_in());
+        let early_id = early.id().to_string();
+        drop(early);
+        for message in ActionRequiredManager::global().drain_requests(&session_id) {
+            session_events::publish(
+                &session_id,
+                SessionBusEvent::Agent(AgentEvent::Message(message)),
+            );
+        }
+        assert_eq!(
+            registry.dismiss_crew_step(&session_id, &step_id),
+            biorouter::pending_user_action::ResolveOutcome::Delivered
+        );
+        step.wait(Duration::from_secs(5), None).await;
+        let step_end = format!(
+            "\"type\":\"ActionRequiredEnded\",\"id\":\"{step_id}\",\"ending\":\"dismissed\""
+        );
+        read_until(&mut body, &mut seen, &step_end).await;
+        session_events::publish(
+            &session_id,
+            SessionBusEvent::TurnFinished {
+                reason: "stop".into(),
+                token_state: None,
+            },
+        );
+        read_until(&mut body, &mut seen, "\"type\":\"Finish\"").await;
+        let text = String::from_utf8_lossy(&seen).into_owned();
+
+        let drawn = |id: &str| {
+            text.matches(&format!("\"actionType\":\"crewStep\",\"id\":\"{id}\""))
+                .count()
+        };
+        // Handed over once at join; its live copy is not sent again.
+        assert_eq!(
+            text.matches(&format!("\"id\":\"{parked_id}\"")).count(),
+            1,
+            "{text}"
+        );
+        assert_eq!(drawn(&step_id), 1, "{text}");
+        assert!(
+            !text.contains(&answered_id),
+            "an answered card came back: {text}"
+        );
+        assert!(!text.contains(&foreign_id), "another chat's card: {text}");
+        // A card that ended before the loop drew it is never drawn; its end may be said.
+        assert_eq!(drawn(&early_id), 0, "{text}");
+        drop(parked);
+        drop(foreign);
+        ActionRequiredManager::global().drain_requests(&other);
+    }
+
+    /// Without the header, an observer is handed the parked cards all the same but never sent
+    /// an end frame, so a client that predates it never meets a frame type it refuses.
+    #[tokio::test]
+    async fn an_observer_that_did_not_ask_is_never_sent_an_end() {
+        use biorouter::action_required_manager::ActionRequiredManager;
+        let state = crate::state::AppState::new().await.unwrap();
+        let session_id = observer_session(&state).await;
+        let app = routes(state.clone());
+        let registry = PendingUserActions::global();
+        let step = registry.park(Some(&session_id), None, sign_in());
+        let step_id = step.id().to_string();
+        ActionRequiredManager::global().drain_requests(&session_id);
+
+        let mut body = open_observer_asking_for_endings(&app, &session_id, false)
+            .await
+            .into_data_stream();
+        let mut seen = Vec::new();
+        read_until(&mut body, &mut seen, &step_id).await;
+        registry.dismiss_crew_step(&session_id, &step_id);
+        step.wait(Duration::from_secs(5), None).await;
+        session_events::publish(
+            &session_id,
+            SessionBusEvent::TurnFinished {
+                reason: "stop".into(),
+                token_state: None,
+            },
+        );
+        read_until(&mut body, &mut seen, "\"type\":\"Finish\"").await;
+        let text = String::from_utf8_lossy(&seen);
+        assert!(!text.contains("ActionRequiredEnded"), "{text}");
     }
 }

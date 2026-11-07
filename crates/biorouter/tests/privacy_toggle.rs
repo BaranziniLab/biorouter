@@ -504,6 +504,10 @@ fn builtin_extension(name: &str) -> biorouter::agents::ExtensionConfig {
 }
 
 /// One row of the spawn matrix, through the real resolver.
+///
+/// Boxed inside: the resolver's future is about 29 KiB in a debug build, and the master
+/// toggle test awaits this six times, so inline it put some 340 KiB of copies into that
+/// test's frame, under every `Agent::reply` the test then runs.
 async fn resolve_child(
     parent: Arc<dyn Provider>,
     named_provider: bool,
@@ -517,10 +521,10 @@ async fn resolve_child(
         extensions,
     );
     let params = spawn_params(named_provider);
-    biorouter::config::with_config_overrides(
+    Box::pin(biorouter::config::with_config_overrides(
         ollama_host(child_is_private),
         biorouter::agents::subagent_tool::apply_settings_overrides(task_config, &params),
-    )
+    ))
     .await
 }
 

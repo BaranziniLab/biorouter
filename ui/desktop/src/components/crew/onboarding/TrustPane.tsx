@@ -3,9 +3,12 @@ import { AlertTriangle, Fingerprint as FingerprintIcon } from '../../icons/app-i
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { parseHostKeyLookup } from '../hostKeys/hostKeyLookup';
+import { TrustHostKey, useHostKeyFingerprint, type HostKeyTarget } from '../hostKeys/TrustHostKey';
+import { trustHostKeyCopy } from '../hostKeys/trustHostKey.copy';
 import { connectionServer, personFromProjection, personLabel } from '../identity';
 import { serverLabel } from '../sidebar/sidebarView';
-import { connectFailureHost } from '../state/connectFailure';
+import { connectFailureHost, type ClassifiedConnectFailure } from '../state/connectFailure';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import { trustCopy } from './copy';
 import { useJoinContext } from './joinContext';
@@ -16,9 +19,12 @@ import { EmbeddedTerminal, CopyTextButton, SetupCard, SetupScreen, TerminalToggl
  * The tier-3 trust panes: the server or the workspace could not be verified, so Crew will not
  * connect. They are chosen only from the daemon's typed codes, never from words in an error.
  *
- * - **A new host key** shows the fingerprint the server offered and how to verify it out of band.
- *   Crew never accepts a key: there is no accept control anywhere, and "Open a terminal here" is
- *   only the person's own shell for comparing and adding the key they verified.
+ * - **A new host key** shows the fingerprint this computer read from the server (the one the
+ *   refusal printed, else one the daemon reads straight from here) and how to verify it out of
+ *   band, then Trust this key (the owner's D2 ruling): the person's own act, with their proof,
+ *   and the daemon writes the key only when no key is known for the server and the key it reads
+ *   again has the fingerprint shown. Then it connects again. "Open a terminal here" is the
+ *   person's own shell for comparing and adding the key by hand instead.
  * - **A changed host key** offers exactly one thing, the details for IT. No accept, no removal
  *   command: softening out-of-band trust at the moment it matters most is what this refuses.
  * - **A different workspace key** than the one pinned: copy the details, or open the settings.
@@ -68,11 +74,29 @@ function useAddressForDetails(host: string): string | null {
   return address && host === serverLabel(connection) && host !== address ? address : null;
 }
 
+/**
+ * The key a new host key's pane may read and trust: the name OpenSSH looked it up by (the
+ * failure's own `host`, read raw here because the lookup needs the destination too, which
+ * {@link connectFailureHost} sets aside for display), and the saved login, whose SSH settings the
+ * daemon checks. `null` behind a saved jump host, where a key read from this computer could be
+ * another machine's, and for a failure that named no host.
+ */
+function useTrustTarget(): HostKeyTarget | null {
+  const { connection, lastConnectFailure } = useCrew();
+  const lookup = parseHostKeyLookup(
+    (lastConnectFailure as ClassifiedConnectFailure | null | undefined)?.host
+  );
+  if (!lookup || connection?.proxy_jump) return null;
+  return { ...lookup, login: connection?.ssh_target ?? null };
+}
+
 function UnknownHostKey() {
   const { lastConnectFailure, connect, isPending } = useCrew();
   const host = useHost();
   const [terminal, setTerminal] = useState(false);
-  const { offered } = hostKeyFingerprints(lastConnectFailure?.detail);
+  const target = useTrustTarget();
+  const { offered: printed } = hostKeyFingerprints(lastConnectFailure?.detail);
+  const { fingerprint: offered, reading, message } = useHostKeyFingerprint(target, printed);
   return (
     <SetupScreen>
       <SetupCard
@@ -86,6 +110,19 @@ function UnknownHostKey() {
             <span className="text-supporting text-text-muted">{trustCopy.offered}</span>
             <CopyField value={offered} label={trustCopy.offeredLabel} truncate="middle" />
           </div>
+        ) : reading ? (
+          <p className="text-supporting text-text-muted" role="status">
+            {trustHostKeyCopy.reading}
+          </p>
+        ) : message ? (
+          <p className="text-supporting text-text-muted">{message}</p>
+        ) : null}
+        {offered && target ? (
+          <TrustHostKey
+            target={target}
+            fingerprint={offered}
+            onTrusted={() => void connect({ userInitiated: true })}
+          />
         ) : null}
         <Disclosure label={trustCopy.howToVerify}>
           <div className="crew-onboard-stack">

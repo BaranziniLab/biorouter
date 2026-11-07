@@ -15,6 +15,16 @@ export interface CrewInvitationAdvanced {
   proxy_jump?: string;
   remote_root?: string;
   remote_execution?: boolean;
+  /**
+   * The SSH login to save, when it is not `{username}@{server}` (Open a workspace on a server: the
+   * login the person typed to look for workspaces, account ownership AO-9).
+   */
+  ssh_target?: string;
+  /**
+   * The device this computer prepared for the check that found the workspace: the saved connection
+   * reuses its key and its sign-in (AO-8).
+   */
+  preparation_id?: string;
 }
 
 export interface CrewInvitationOverrides {
@@ -143,6 +153,9 @@ const JOIN_STATES: readonly string[] = [
   'expired',
   'joined',
   'unsupported',
+  // Account ownership (AO-9): this account may join with no code, or was removed.
+  'ready',
+  'removed',
 ] satisfies CrewJoinState[];
 
 export interface CrewJoinStatus {

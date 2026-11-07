@@ -184,7 +184,9 @@ impl CrewManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = unreadable;
     }
 
-    fn is_unreadable(&self) -> bool {
+    /// Whether the saved registry could not be read at this process's last look. Nothing that
+    /// prunes may run then (AO-11): what this process holds may not be what the file says.
+    pub(super) fn is_unreadable(&self) -> bool {
         self.unreadable
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

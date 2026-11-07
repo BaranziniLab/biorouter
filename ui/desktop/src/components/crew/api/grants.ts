@@ -1,6 +1,7 @@
 import type * as Api from '../../../api/types.gen';
 import { CrewHttpError, crewHttp } from '../crewApi';
 import { observeListedRevocations } from '../access/pastAccess';
+import { personReadsFrom, type CrewPersonRead } from '../account/api';
 import { CREW_REVOCATION_UNCONFIRMED, unexpectedCrewResponse } from './errors';
 import {
   isRecord,
@@ -206,6 +207,17 @@ export async function listSessionGrants(
   connectionId: string,
   signal?: AbortSignal
 ): Promise<CrewSessionGrant[]> {
+  return (await listConnectionAccess(connectionId, signal)).grants;
+}
+
+/**
+ * One saved connection's `GET …/grants` answer, read whole: its grants (as `listSessionGrants`
+ * reads them) and the chats that may read its workspace as the person (`person_reads`, AO-12).
+ */
+async function listConnectionAccess(
+  connectionId: string,
+  signal?: AbortSignal
+): Promise<{ grants: CrewSessionGrant[]; reads: CrewPersonRead[] }> {
   const result = await crewHttp<unknown>(
     `/connections/${encodeURIComponent(connectionId)}/grants`,
     'GET',
@@ -216,7 +228,7 @@ export async function listSessionGrants(
   const grants = rowsOf(listed, 'grants', connectionId);
   if (!signal?.aborted)
     observeListedRevocations(connectionId, grants, rowsOf(listed, 'replaced_grants', connectionId));
-  return grants;
+  return { grants, reads: personReadsFrom(result, connectionId) };
 }
 
 /**
@@ -229,18 +241,45 @@ export async function findSessionGrant(
   sessionId: string,
   signal?: AbortSignal
 ): Promise<CrewSessionGrant | null> {
+  return (await findSessionAccess(connectionIds, sessionId, signal)).grant;
+}
+
+/** A chat's Crew access across the saved connections: its grant, and what it may read as you. */
+export interface CrewSessionAccess {
+  grant: CrewSessionGrant | null;
+  /**
+   * The workspaces the chat may read as the person without a grant (AO-12's read consent), from
+   * the lists that answered. A list that failed leaves its connection's out.
+   */
+  reads: CrewPersonRead[];
+}
+
+/**
+ * `findSessionGrant` and the chat's read consents, from the same lists: each saved connection's
+ * grants are read once. Failures are tolerated as `findSessionGrant` tolerates them.
+ */
+export async function findSessionAccess(
+  connectionIds: string[],
+  sessionId: string,
+  signal?: AbortSignal
+): Promise<CrewSessionAccess> {
   const ids = [...new Set(connectionIds)];
-  const listed = await Promise.allSettled(ids.map((id) => listSessionGrants(id, signal)));
+  const listed = await Promise.allSettled(ids.map((id) => listConnectionAccess(id, signal)));
+  const reads = listed.flatMap((outcome) =>
+    outcome.status === 'fulfilled'
+      ? outcome.value.reads.filter((read) => read.sessionId === sessionId)
+      : []
+  );
   for (const outcome of listed) {
     if (outcome.status !== 'fulfilled') continue;
-    const grant = outcome.value.find((candidate) => candidate.session_id === sessionId);
-    if (grant) return grant;
+    const grant = outcome.value.grants.find((candidate) => candidate.session_id === sessionId);
+    if (grant) return { grant, reads };
   }
   const failure = listed.find(
     (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected'
   );
   if (failure) throw failure.reason;
-  return null;
+  return { grant: null, reads };
 }
 
 /**
@@ -268,7 +307,7 @@ export async function revokeSessionGrant(
   if (answer.remote_revocation_confirmed === false)
     throw new CrewHttpError(
       (isRecord(result) ? optionalText(result.error) : undefined) ??
-        'Stopped on this device. The workspace has not confirmed yet; reconnect and retry.',
+        'Stopped on this computer. The workspace has not confirmed yet; reconnect and retry.',
       200,
       CREW_REVOCATION_UNCONFIRMED
     );

@@ -3,7 +3,7 @@ import { Button } from '../../ui/button';
 import { SettingRow } from '../../ui/setting-row';
 import { ModalShell } from '../../ModalShell';
 import { getTools, PermissionLevel, ToolInfo, upsertPermissions } from '../../../api';
-import { toolDisplayName } from '../../toolCallCopy';
+import { isCrewPersonTool, toolDisplayName } from '../../toolCallCopy';
 import { SettingSelect } from '../SettingSelect';
 import { permissionDialogCopy } from '../chat/copy';
 
@@ -71,7 +71,9 @@ export default function PermissionModal({
         return;
       }
 
-      setTools(response.data || []);
+      // Crew's person tools ask on every action whatever is chosen here (AO-12), so they are not
+      // offered a choice that would never be honored.
+      setTools((response.data || []).filter((tool) => !isCrewPersonTool(tool.name)));
       setLoadStatus('ready');
     } catch (error) {
       console.error('Error fetching extension tools:', error);

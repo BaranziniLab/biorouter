@@ -20,6 +20,7 @@ import {
 const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
   previewInvitation: vi.fn(),
+  claimJoin: vi.fn(),
   dockProps: [] as Record<string, unknown>[],
   startHostRun: vi.fn(),
   readHostRun: vi.fn(),
@@ -76,7 +77,7 @@ vi.mock('../../ConfigContext', () => ({
 }));
 vi.mock('../api/join', async () => {
   const actual = await vi.importActual<typeof import('../api/join')>('../api/join');
-  return { ...actual, previewInvitation: mocks.previewInvitation };
+  return { ...actual, previewInvitation: mocks.previewInvitation, claimJoin: mocks.claimJoin };
 });
 vi.mock('../../InAppTerminalDock', () => ({
   default: (props: Record<string, unknown>) => {
@@ -1642,5 +1643,78 @@ describe('HostDialog', () => {
       fireEvent.click(start);
       expect(mocks.startHostRun).toHaveBeenCalledOnce();
     });
+  });
+});
+
+describe('HostDialog and account ownership (AO-9)', () => {
+  const hostJob = (overrides: Partial<SetupRun> = {}): SetupRun => ({
+    jobId: 'setup-1',
+    intent: 'host',
+    state: 'running',
+    stage: 'check',
+    stages: [],
+    server: null,
+    artifact: ARTIFACT,
+    outcome: null,
+    error: null,
+    output: '',
+    ...overrides,
+  });
+
+  it('answers a name already in use with Open, which looks it up on the same login', async () => {
+    mocks.startSetup.mockResolvedValue(
+      hostJob({
+        state: 'failed',
+        error: {
+          code: 'crew_host_name_in_use',
+          message: 'You already host lab-data on hpc.ucsf.edu. Open it on this computer instead.',
+          detail: null,
+        },
+      })
+    );
+    const view = renderHost();
+    await toStart();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
+    const problem = await screen.findByTestId('crew-setup-problem');
+    expect(problem).toHaveTextContent(
+      'You already host lab-data on hpc.ucsf.edu. Open it on this computer instead.'
+    );
+    fireEvent.click(within(problem).getByRole('button', { name: setupCopy.openExisting }));
+    expect(view.crew().openDialog).toHaveBeenCalledWith({
+      kind: 'open-workspace',
+      route: {
+        ssh_target: 'alice@hpc.ucsf.edu',
+        port: null,
+        identity_file: null,
+        proxy_jump: null,
+      },
+      check: true,
+    });
+  });
+
+  it('says the server account becomes the host, not this computer', async () => {
+    renderHost();
+    await throughStart();
+    expect(screen.getByText(hostCopy.createBody('lab-data'))).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/first admin device/);
+  });
+
+  it('joins by account when the bootstrap says the host already has a device', async () => {
+    mocks.claimJoin.mockReset().mockResolvedValue({ joined: true });
+    const saved = fakeConnection({ id: 'prep-1', status: 'connected', account_identity: true });
+    const request = vi.fn(async (method: string) => {
+      if (method === 'auth.bootstrap') throw new Error('already enrolled');
+      return {};
+    });
+    const view = renderHost({
+      saveConnection: vi.fn().mockResolvedValue(saved),
+      request: request as unknown as CrewController['request'],
+    });
+    await throughStart();
+    fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
+    await waitFor(() => expect(view.crew().saveConnection).toHaveBeenCalled());
+    view.update({ connectionId: 'prep-1', connections: [saved], connection: saved });
+    await waitFor(() => expect(mocks.claimJoin).toHaveBeenCalledWith('prep-1'));
+    await waitFor(() => expect(view.crew().setJoinStatus).toHaveBeenCalledWith('joined'));
   });
 });

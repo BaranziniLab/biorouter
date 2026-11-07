@@ -863,13 +863,13 @@ describe('the new-device notice', () => {
     await act(async () => {
       await currentCrew().refresh();
     });
-    const notice = await screen.findByText(/A new device was added to your account on/);
+    const notice = await screen.findByText(/New computer on your account, added/);
     expect(notice).toHaveTextContent(/November 1[45], 2023\.$/);
     expect(notice.closest('[role="status"]')).not.toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: connectionBarCopy.reviewName }));
     expect(currentCrew().ui.dialog).toEqual({ kind: 'keys' });
-    expect(screen.queryByText(/A new device was added/)).toBeNull();
+    expect(screen.queryByText(/New computer on your account/)).toBeNull();
     expect(
       JSON.parse(window.localStorage.getItem(seenDevicesKey('conn-1', alice.id)) ?? '[]')
     ).toEqual(['AAAA', 'BBBB']);
