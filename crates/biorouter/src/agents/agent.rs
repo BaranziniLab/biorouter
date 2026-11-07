@@ -983,6 +983,15 @@ struct CodingAgentBridgePolicy {
 // capability than `workspace_send_prompt` and `workspace_close` beside it, which
 // already reach into other conversations. Without it a Claude Code or Codex
 // parent could spawn into phases but never declare, start or complete one.
+//
+// `workspace_monitor` is a WRITE into ANOTHER conversation (a subagent's
+// decision-model monitors), and it passed that scrutiny because of where it
+// can reach: only a direct child of the caller (its handler refuses any other
+// chat, and the bridge's child-scope preflight demands a direct child before
+// it dispatches), only monitors the caller's own agent set (never the
+// person's), and only stop or steer, which narrow what the child does. It is a
+// smaller capability than `workspace_close` beside it, which stops that child
+// outright.
 const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__subagent",
     "workspace__workspace_list",
@@ -991,6 +1000,7 @@ const CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS: &[&str] = &[
     "workspace__workspace_close",
     "workspace__workspace_watch",
     "workspace__workspace_orchestrate",
+    "workspace__workspace_monitor",
 ];
 
 // The FULL Developer roster, deliberately — a coding-agent child gets the same
@@ -1435,12 +1445,19 @@ enum NativeSupervisionWake {
     Cancelled,
     /// A steer the person typed is queued on `steer_wake`'s agent.
     UserSteered,
+    /// The bound on the wait passed with these children (their titles)
+    /// still to finish.
+    DeadlinePassed(Vec<String>),
 }
 
+/// The next child result to collect, or why the wait ends. `deadline`
+/// bounds the wait (a monitor's stop sets one for the subagents it stopped);
+/// `None` waits for as long as the children take.
 async fn next_native_supervision_claim(
     parent_session_id: &str,
     cancel_token: &Option<CancellationToken>,
     steer_wake: Option<&Agent>,
+    deadline: Option<tokio::time::Instant>,
 ) -> NativeSupervisionWake {
     loop {
         let mut observed = Vec::new();
@@ -1467,6 +1484,13 @@ async fn next_native_supervision_claim(
         if observed.is_empty() {
             return NativeSupervisionWake::Complete;
         }
+        let outstanding: Vec<String> = match deadline {
+            Some(_) => observed
+                .iter()
+                .map(|(handle, _)| handle.title.clone())
+                .collect(),
+            None => Vec::new(),
+        };
 
         let changes = FuturesUnordered::new();
         for (handle, version) in observed {
@@ -1490,6 +1514,14 @@ async fn next_native_supervision_claim(
                 }
             } => return NativeSupervisionWake::UserSteered,
             _ = changes.next() => {}
+            // Last: a result that is ready, or a change that may make one,
+            // is collected before the bound gives up on the rest.
+            _ = async {
+                match deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => return NativeSupervisionWake::DeadlinePassed(outstanding),
         }
     }
 }
@@ -1885,7 +1917,11 @@ impl ChatBridgeDispatch {
                 self.refuse_unless_direct_subagent_child(parent_session_id, child)
                     .await
             }
-            "workspace__workspace_read_conversation" | "workspace__workspace_close" => {
+            // `workspace_monitor` writes another chat's monitors, so the bridge
+            // demands a direct child here as well as in its handler.
+            "workspace__workspace_read_conversation"
+            | "workspace__workspace_close"
+            | "workspace__workspace_monitor" => {
                 let child = arguments
                     .get("session_id")
                     .and_then(Value::as_str)
@@ -3901,6 +3937,10 @@ pub(super) enum SupervisionStep {
     Complete,
     /// The person typed a steer; the exit is a resumable one.
     UserSteered,
+    /// The bound on the wait a monitor's stop set for the subagents it
+    /// stopped passed: this stored notice names the ones still stopping, and
+    /// the wait ends (their results are collected when the chat carries on).
+    SettleTimedOut(Message),
 }
 
 /// What one decision-model monitor point asks the reply loop to do. Small on
@@ -3913,6 +3953,147 @@ struct MonitorVerdict {
     steer: Option<Box<Message>>,
     /// End the turn through the commit point.
     stop: bool,
+}
+
+/// Why a turn is being wound down when it reaches a `turn_end` monitor
+/// point: what the point says in place of checking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WrapUp {
+    /// The reply's budget is spent (BR-35).
+    Budget,
+    /// The stall check found the agent was not making progress.
+    Stall,
+}
+
+/// How long one monitor point's waits (the model listing, the decision
+/// calls) may run on once a message the person typed is waiting. Built once
+/// per point: the deadline is set when the steer is first seen, to then plus
+/// the agent's grace, and every wait of the point shares it.
+struct SteerGrace {
+    grace: std::time::Duration,
+    deadline: std::sync::OnceLock<tokio::time::Instant>,
+}
+
+impl SteerGrace {
+    fn new(grace: std::time::Duration) -> Self {
+        Self {
+            grace,
+            deadline: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Resolves once a steer the person typed has waited past the grace.
+    async fn overdue(&self, agent: &Agent) {
+        agent.user_steer_waiting().await;
+        let deadline = *self
+            .deadline
+            .get_or_init(|| tokio::time::Instant::now() + self.grace);
+        tokio::time::sleep_until(deadline).await;
+    }
+}
+
+/// What a subagent's result names as the monitor that stopped the chat that
+/// started it, when the stop came from monitors that could not be read (no
+/// one monitor was read, so none can be named).
+const UNREADABLE_MONITORS_NAME: &str = "this chat's monitors, which could not be read";
+
+/// The default bound, in seconds, on the wait for the subagents a monitor's
+/// stop stopped ([`monitor_stop_settle`]).
+const DEFAULT_MONITOR_STOP_SETTLE_SECS: u64 = 30;
+
+/// How long a turn a monitor stopped waits for the subagents it stopped to
+/// finish stopping before it ends without them:
+/// `BIOROUTER_MONITOR_STOP_SETTLE_SECS`, 30 seconds by default.
+fn monitor_stop_settle() -> std::time::Duration {
+    std::time::Duration::from_secs(
+        Config::global()
+            .get_param::<u64>("BIOROUTER_MONITOR_STOP_SETTLE_SECS")
+            .unwrap_or(DEFAULT_MONITOR_STOP_SETTLE_SECS),
+    )
+}
+
+/// `text` on one line, cut at 80 characters, for a name inside a notice.
+fn one_line_name(text: &str) -> String {
+    let line = text
+        .split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if line.chars().count() <= 80 {
+        return line;
+    }
+    let cut: String = line.chars().take(79).collect();
+    format!("{}\u{2026}", cut.trim_end())
+}
+
+/// Up to three quoted items, then how many more: "'a', 'b', 'c', and 2
+/// more".
+fn first_three_and_more(items: &[String]) -> String {
+    let shown: Vec<String> = items
+        .iter()
+        .take(3)
+        .map(|item| format!("'{}'", one_line_name(item)))
+        .collect();
+    let more = items.len().saturating_sub(shown.len());
+    if more == 0 {
+        shown.join(", ")
+    } else {
+        format!("{}, and {more} more", shown.join(", "))
+    }
+}
+
+/// "1 subagent" / "3 subagents".
+fn subagent_count(n: usize) -> String {
+    if n == 1 {
+        "1 subagent".to_string()
+    } else {
+        format!("{n} subagents")
+    }
+}
+
+/// The notice a monitor's stop adds when it also stopped the subagents this
+/// chat started (`titles`, oldest first).
+fn children_stopped_notice(titles: &[String]) -> String {
+    format!(
+        "It also stopped {} this chat started ({}). What each had done is collected below.",
+        subagent_count(titles.len()),
+        first_three_and_more(titles)
+    )
+}
+
+/// The notice a `turn_end` point reached while the turn is wound down
+/// gives, naming the monitors it did not check (already quoted). `None` when
+/// there are none.
+fn wound_down_notice(names: &[String], why: WrapUp) -> Option<String> {
+    let (first, rest) = names.split_first()?;
+    let because = match why {
+        WrapUp::Budget => "it reached its budget",
+        WrapUp::Stall => "the agent stopped making progress",
+    };
+    let subject = if rest.is_empty() {
+        format!("Monitor {first} was")
+    } else {
+        format!("Monitors {} were", names.join(", "))
+    };
+    Some(format!(
+        "{subject} not checked at the end of this turn: the turn was being wound down because \
+         {because}."
+    ))
+}
+
+/// The notice the wait for the subagents a monitor's stop stopped gives when
+/// its bound passes with some still stopping (`titles`).
+fn settle_timed_out_notice(titles: &[String], settle: std::time::Duration) -> String {
+    let seconds = match settle.as_secs() {
+        1 => "1 second".to_string(),
+        n => format!("{n} seconds"),
+    };
+    format!(
+        "{} had not stopped {seconds} after the monitor stopped this chat: {}. They are still \
+         being stopped; their results are collected when this chat carries on.",
+        subagent_count(titles.len()),
+        first_three_and_more(titles)
+    )
 }
 
 /// How the reply loop ended, as far as a steer is concerned.
@@ -5861,11 +6042,15 @@ impl Agent {
         session_id: &str,
         cancel_token: Option<CancellationToken>,
     ) -> Result<Option<Message>> {
+        // Unbounded: the runner collects what the reply stream it dropped
+        // left behind, whatever stopped it.
         match self
-            .next_supervision_step(session_id, cancel_token, false)
+            .next_supervision_step_until(session_id, cancel_token, false, None)
             .await?
         {
-            SupervisionStep::Collected(message) => Ok(Some(message)),
+            SupervisionStep::Collected(message) | SupervisionStep::SettleTimedOut(message) => {
+                Ok(Some(message))
+            }
             SupervisionStep::Complete | SupervisionStep::UserSteered => Ok(None),
         }
     }
@@ -5879,11 +6064,31 @@ impl Agent {
     /// does the person's message change what the turn should do next; after a
     /// budget stop or an abort the children are still collected and the steer is
     /// stored as unanswered.
+    ///
+    /// After a monitor's stop stopped this chat's subagents, the wait is
+    /// bounded ([`crate::decision::monitor::MonitorRegistry::settle_deadline`]):
+    /// past it the step gives [`SupervisionStep::SettleTimedOut`], whose stored
+    /// notice names the subagents still stopping, and the wait ends. Every
+    /// other forced exit sets no bound and waits for as long as they take.
     pub(super) async fn next_supervision_step(
         &self,
         session_id: &str,
         cancel_token: Option<CancellationToken>,
         wake_for_user_steer: bool,
+    ) -> Result<SupervisionStep> {
+        let deadline = self.decisions.monitors.settle_deadline(session_id);
+        self.next_supervision_step_until(session_id, cancel_token, wake_for_user_steer, deadline)
+            .await
+    }
+
+    /// [`Self::next_supervision_step`] with its bound given: `None` waits for
+    /// as long as the children take.
+    async fn next_supervision_step_until(
+        &self,
+        session_id: &str,
+        cancel_token: Option<CancellationToken>,
+        wake_for_user_steer: bool,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<SupervisionStep> {
         loop {
             let steer_wake = wake_for_user_steer.then_some(self);
@@ -5891,6 +6096,7 @@ impl Agent {
                 session_id,
                 &cancel_token,
                 steer_wake,
+                deadline,
             ))
             .await
             {
@@ -5924,6 +6130,21 @@ impl Agent {
                     return Ok(SupervisionStep::Complete)
                 }
                 NativeSupervisionWake::UserSteered => return Ok(SupervisionStep::UserSteered),
+                NativeSupervisionWake::DeadlinePassed(outstanding) => {
+                    self.decisions.monitors.mark_settle_spent(session_id);
+                    info!(
+                        session_id,
+                        children = outstanding.len(),
+                        "the wait for the subagents a monitor's stop stopped passed its bound"
+                    );
+                    let notice = self
+                        .durable_notice(
+                            session_id,
+                            settle_timed_out_notice(&outstanding, monitor_stop_settle()),
+                        )
+                        .await;
+                    return Ok(SupervisionStep::SettleTimedOut(notice));
+                }
             }
         }
     }
@@ -8504,12 +8725,15 @@ impl Agent {
         );
         BridgedSubagentContext {
             agent_config: self.config.clone(),
+            // The child asks the decision models this agent asks (its
+            // monitors, its `decide` calls).
             task_config: TaskConfig::new(
                 Arc::clone(iteration_provider),
                 &session.id,
                 &session.working_dir,
                 extensions,
-            ),
+            )
+            .with_decision_service(self.decisions.service.custom()),
             sub_workflows: self.sub_workflows.lock().await.clone(),
             working_dir: session.working_dir.clone(),
         }
@@ -9026,8 +9250,10 @@ impl Agent {
             };
 
             let extensions = self.get_extension_configs().await;
+            // The child asks the decision models this agent asks.
             let task_config =
-                TaskConfig::new(provider, &session.id, &session.working_dir, extensions);
+                TaskConfig::new(provider, &session.id, &session.working_dir, extensions)
+                    .with_decision_service(self.decisions.service.custom());
             let sub_workflows = self.sub_workflows.lock().await.clone();
 
             let arguments = tool_call
@@ -9612,6 +9838,14 @@ impl Agent {
                 // does not already grant; it is here, and nowhere else by
                 // default, so it exists exactly when delegation does.
                 "workspace_orchestrate".to_string(),
+                // Decision-model monitors on the subagents this chat spawned.
+                // Its handler reaches only a direct child and only monitors
+                // this chat's agent set, so it widens nothing past the close
+                // tool beside it. Unlike the spawn tool and
+                // `workspace_orchestrate`, it is NOT stripped when the
+                // delegation gate closes: it reaches only children that
+                // already exist.
+                "workspace_monitor".to_string(),
             ],
         };
         // Never fatal: a session that cannot load the extension simply has no
@@ -11094,30 +11328,157 @@ impl Agent {
         notice
     }
 
-    /// Cache the chat's decision settings (its monitors) for this turn. A read
-    /// that fails caches nothing: monitors are skipped for the turn, never
-    /// guessed, and their latches are kept for the next turn that reads them.
-    async fn load_decision_monitors(&self, session_id: &str) {
-        match crate::decision::settings::load(&self.config.session_manager, session_id).await {
-            Ok(settings) => self.decisions.monitors.cache_settings(session_id, settings),
+    /// Read the chat's decision settings (its monitors) into the registry: at
+    /// the turn's start and at every monitor point, so a monitor added,
+    /// changed or removed while the turn runs applies at its next point. One
+    /// indexed read of one key of the chat's row, parsed only when its text
+    /// changed, and no decision call: a chat with no monitors pays that read
+    /// and nothing else.
+    ///
+    /// The first read for a chat in this registry (after a restart, or when
+    /// the agent was rebuilt) also takes in the latches and consecutive runs
+    /// stored with the chat (`decision_monitor_state.v1`). A store that cannot
+    /// be read leaves that for the next point, and nothing is written over the
+    /// stored record meanwhile ([`Self::persist_monitor_state`]). A settings
+    /// read that fails keeps the settings read last, and the registry says so
+    /// at the next point ([`crate::decision::monitor::MonitorRegistry::take_read_failure`]).
+    async fn refresh_decision_monitors(&self, session_id: &str) {
+        use crate::decision::settings;
+        let registry = &self.decisions.monitors;
+        let session_manager = &self.config.session_manager;
+        if registry.needs_persisted_state(session_id) {
+            match session_manager
+                .get_extension_state_json(
+                    session_id,
+                    settings::DECISION_MONITOR_STATE,
+                    settings::DECISION_MONITOR_STATE_VERSION,
+                )
+                .await
+            {
+                Ok(record) => registry.seed_persisted(session_id, record.as_deref()),
+                Err(e) => warn!(
+                    session_id,
+                    "could not read the chat's monitor state; its latches are read again at the \
+                     next check: {e:#}"
+                ),
+            }
+        }
+        let last_text = registry.last_settings_text(session_id);
+        let read =
+            settings::read_for_monitoring(session_manager, session_id, last_text.as_deref()).await;
+        registry.refresh(session_id, read);
+    }
+
+    /// Whether a monitor point at `timing` has anything to do, with the
+    /// chat's settings read anew first ([`Self::refresh_decision_monitors`]).
+    /// The loop boxes it, so nothing of it joins `reply_internal`'s frame.
+    async fn monitor_point_due(
+        &self,
+        session_id: &str,
+        timing: crate::decision::settings::MonitorTiming,
+    ) -> bool {
+        self.refresh_decision_monitors(session_id).await;
+        self.decisions.monitors.any_due(session_id, timing)
+    }
+
+    /// Write the monitors' latches and consecutive runs to the chat when a
+    /// point changed them (`decision_monitor_state.v1`, one key in its own
+    /// transaction, so it never clobbers a to-do list, a goal or a plan).
+    /// Called only from a monitor point, so only inside a turn (R-30: the
+    /// write stamps the chat's activity, which a turn may). Never written
+    /// over a stored record this registry has not read yet. A failed write
+    /// warns, and the next point writes again.
+    async fn persist_monitor_state(&self, session_id: &str) {
+        use crate::decision::settings;
+        let registry = &self.decisions.monitors;
+        if registry.needs_persisted_state(session_id) {
+            return;
+        }
+        let Some(value) = registry.state_to_persist(session_id) else {
+            return;
+        };
+        if let Err(e) = self
+            .config
+            .session_manager
+            .update_extension_state(
+                session_id,
+                settings::DECISION_MONITOR_STATE,
+                settings::DECISION_MONITOR_STATE_VERSION,
+                move |_| Ok(value),
+            )
+            .await
+        {
+            warn!(
+                session_id,
+                "could not store the chat's monitor state; it is written again at the next \
+                 check: {e:#}"
+            );
+            registry.persist_failed(session_id);
+        }
+    }
+
+    /// Store the model-only note that tells the next turn's model why this one
+    /// stopped, as the steer notes are stored (a model-only row, named for the
+    /// client by a frame in `verdict.events`). It is not pushed into the
+    /// running conversation: the loop breaks, and the next turn (or a
+    /// continuation steer) reads it from the store. A failed write warns and
+    /// never fails the point: the stop stands, and the person's notice says
+    /// why.
+    async fn store_stop_note(&self, session_id: &str, text: String, verdict: &mut MonitorVerdict) {
+        match persist_steering_message(&self.config.session_manager, session_id, text).await {
+            Ok((_, published)) => verdict.events.extend(published),
             Err(e) => warn!(
                 session_id,
-                "could not read the chat's decision monitors; none run this turn: {e:#}"
+                "could not store the note telling the agent why its turn stopped: {e:#}"
             ),
         }
+    }
+
+    /// The monitor's stop of this chat's turn, as the chat that started it
+    /// (when it is a subagent) reads it: the turn's first stop, taken once.
+    /// Kept after the reply stream ends, forgotten when the next turn begins.
+    pub fn take_monitor_stop(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::decision::settings::MonitorStopReport> {
+        self.decisions.monitors.take_turn_stop(session_id)
+    }
+
+    /// How long a monitor point's decision calls may run on once a message
+    /// the person typed is waiting ([`crate::decision::monitor::MONITOR_STEER_GRACE`]
+    /// unless set). For tests and embedders.
+    pub fn set_monitor_steer_grace(&self, grace: std::time::Duration) {
+        self.decisions.set_steer_grace(grace);
+    }
+
+    /// The decision service installed with [`Self::set_decision_service`],
+    /// or `None` when this agent asks the process's. Handed to the subagents
+    /// it starts, so they ask the same models.
+    pub fn custom_decision_service(&self) -> Option<Arc<crate::decision::DecisionService>> {
+        self.decisions.service.custom()
     }
 
     /// One monitor evaluation point, as the reply loop needs it: the notices
     /// to show (already stored), whether to stop, and a model-only note to
     /// push (already stored) when a `steer` monitor fired.
     ///
-    /// The decision calls are raced against a cancel and a steer the person
-    /// typed: either one wins, and the evaluation is dropped with nothing
-    /// observed (the window is asked again at the next point). A plain `async
-    /// fn` the loop boxes, so none of this joins `reply_internal`'s frame.
+    /// The decision calls are raced against a cancel, and against a steer the
+    /// person typed once it has waited past the monitors' grace
+    /// ([`SteerGrace`]): a check that answers within the grace is folded in,
+    /// with a stop held back for the person's message, and a slower one gives
+    /// way to the message and is made at the next point. A plain `async fn`
+    /// the loop boxes, so none of this joins `reply_internal`'s frame.
     /// `turn_ending`: the turn is about to end at this point (see
-    /// [`crate::decision::monitor::MonitorRegistry::apply`]); a structured
-    /// final output waiting to be emitted counts as well, read here.
+    /// [`crate::decision::monitor::MonitorRegistry::apply_point`]); a
+    /// structured final output waiting to be emitted counts as well, read
+    /// here. `wound_down`: the turn is being wound down (its budget is spent,
+    /// or the agent stopped making progress), so nothing is asked, and the
+    /// point says which monitors it did not check.
+    ///
+    /// After the point, on every exit, the latches it changed are written to
+    /// the chat ([`Self::persist_monitor_state`]); a stop also stops the
+    /// subagents this chat started ([`Self::stop_children_after_monitor_stop`]).
+    #[allow(clippy::too_many_arguments)]
     async fn run_monitor_point(
         &self,
         session_id: &str,
@@ -11126,7 +11487,11 @@ impl Agent {
         iteration: u32,
         turn_ending: bool,
         cancel_token: Option<&CancellationToken>,
+        wound_down: Option<WrapUp>,
     ) -> Result<MonitorVerdict> {
+        if let Some(why) = wound_down {
+            return Ok(self.wound_down_monitor_point(session_id, timing, why).await);
+        }
         // A workflow with a response schema ends its turn by calling the
         // final-output tool, so the reply never sets `exit_chat`; the loop
         // top then emits the output and ends the turn with no further point
@@ -11143,7 +11508,7 @@ impl Agent {
         let (previous_phase, _) = self.loop_phase.snapshot();
         self.loop_phase
             .enter(crate::agents::loop_phase::LoopPhase::Monitoring);
-        let verdict = self
+        let evaluated = self
             .evaluate_monitor_point(
                 session_id,
                 timing,
@@ -11153,17 +11518,106 @@ impl Agent {
                 cancel_token,
             )
             .await;
+        self.persist_monitor_state(session_id).await;
+        let verdict = match evaluated {
+            Ok((mut verdict, stopped_by)) => {
+                if verdict.stop {
+                    self.stop_children_after_monitor_stop(session_id, stopped_by, &mut verdict)
+                        .await;
+                }
+                Ok(verdict)
+            }
+            Err(e) => Err(e),
+        };
         self.loop_phase.enter(previous_phase);
         verdict
     }
 
-    /// `work`, unless a cancel or a steer the person typed comes first, in
-    /// which case `None` and the monitor point is dropped with nothing
-    /// observed (its windows are asked again at the next point).
-    async fn unless_cancelled_or_steered<T>(
+    /// A `turn_end` point reached while the turn is being wound down: nothing
+    /// is asked (a billed check after the budget is spent would spend past
+    /// it, and a stop is moot as the turn ends), and the monitors it would
+    /// have checked are named, so none is skipped in silence. It never stops
+    /// and never steers.
+    async fn wound_down_monitor_point(
+        &self,
+        session_id: &str,
+        timing: crate::decision::settings::MonitorTiming,
+        why: WrapUp,
+    ) -> MonitorVerdict {
+        let registry = &self.decisions.monitors;
+        let mut verdict = MonitorVerdict::default();
+        let Some(settings) = registry.settings(session_id) else {
+            return verdict;
+        };
+        let names: Vec<String> = settings
+            .monitors
+            .iter()
+            .filter(|criterion| {
+                criterion.enabled
+                    && criterion.timing == timing
+                    && !registry.is_off_this_turn(session_id, &criterion.id)
+            })
+            .map(|criterion| format!("'{}'", one_line_name(&criterion.name)))
+            .collect();
+        let Some(text) = wound_down_notice(&names, why) else {
+            return verdict;
+        };
+        info!(
+            session_id,
+            monitors = names.len(),
+            "monitors not checked: the turn is being wound down"
+        );
+        let notice = self.durable_notice(session_id, text).await;
+        verdict.events.push(AgentEvent::Message(notice));
+        verdict
+    }
+
+    /// A monitor stopped this chat's turn: stop every subagent it started
+    /// that still has work in flight (they run on their own cancellation
+    /// tokens, so they would go on spending against a stop the person set),
+    /// bound the wait for them ([`Self::next_supervision_step`]), and say so
+    /// after the stop's notice. `stopped_by`: the name of the monitor that
+    /// stopped the turn, which each stopped subagent's result names.
+    async fn stop_children_after_monitor_stop(
+        &self,
+        session_id: &str,
+        stopped_by: Option<String>,
+        verdict: &mut MonitorVerdict,
+    ) {
+        let monitor = stopped_by.unwrap_or_else(|| UNREADABLE_MONITORS_NAME.to_string());
+        let stopped = crate::agents::subagent_handle::stop_delegated_children(
+            session_id,
+            crate::agents::subagent_handle::ChildStopCause::ParentMonitor { monitor },
+        );
+        if stopped.is_empty() {
+            return;
+        }
+        let settle = monitor_stop_settle();
+        self.decisions
+            .monitors
+            .set_settle_deadline(session_id, tokio::time::Instant::now() + settle);
+        info!(
+            session_id,
+            children = stopped.len(),
+            settle_secs = settle.as_secs(),
+            "a monitor's stop stopped the subagents this chat started"
+        );
+        let titles: Vec<String> = stopped.iter().map(|child| child.title.clone()).collect();
+        let notice = self
+            .durable_notice(session_id, children_stopped_notice(&titles))
+            .await;
+        verdict.events.push(AgentEvent::Message(notice));
+    }
+
+    /// `work`, unless a cancel comes first, or a steer the person typed has
+    /// waited longer than the point's grace: then `None`, and the work is
+    /// dropped with nothing observed (its windows are asked again at the next
+    /// point). Biased: a cancel wins, then the work, then the overdue steer.
+    async fn unless_cancelled_or_steer_overdue<T>(
         &self,
         session_id: &str,
         cancel_token: Option<&CancellationToken>,
+        grace: &SteerGrace,
         work: impl std::future::Future<Output = T>,
     ) -> Option<T> {
         tokio::select! {
@@ -11174,18 +11628,21 @@ impl Agent {
                     None => std::future::pending::<()>().await,
                 }
             } => None,
-            _ = self.user_steer_waiting() => {
-                info!(session_id, "a steer is waiting; monitors wait for the next point");
+            done = work => Some(done),
+            _ = grace.overdue(self) => {
+                info!(
+                    session_id,
+                    "a steer has waited past the monitors' grace; they are checked at the next point"
+                );
                 None
             }
-            done = work => Some(done),
         }
     }
 
     /// The window, in tokens, of each model the criteria due at `timing` ask,
     /// so each window is fitted to its model before it is built (none when the
     /// chat could not be read). The lookup reads the model listing, which can
-    /// wait on a slow Ollama, so it races a cancel and a steer like the
+    /// wait on a slow Ollama, so it races a cancel and an overdue steer as the
     /// decision calls do: `None` when one of them came first.
     async fn monitor_windows(
         &self,
@@ -11194,16 +11651,28 @@ impl Agent {
         session_id: &str,
         timing: crate::decision::settings::MonitorTiming,
         cancel_token: Option<&CancellationToken>,
+        grace: &SteerGrace,
     ) -> Option<HashMap<Option<crate::decision::DecisionModelRef>, usize>> {
         let Ok(base) = base else {
             return Some(HashMap::new());
         };
         let due = self.decisions.monitors.due_models(session_id, timing);
         let looked_up = crate::decision::monitor::context_windows(service, base, due);
-        self.unless_cancelled_or_steered(session_id, cancel_token, looked_up)
+        self.unless_cancelled_or_steer_overdue(session_id, cancel_token, grace, looked_up)
             .await
     }
 
+    /// One point's checks, in order: a failure to read the chat's settings
+    /// (once a turn; one that names a monitor set to pause stops the turn),
+    /// the stops escalated from this chat's subagents, the limits and held
+    /// stops the point would have checked but for a criterion's per-turn
+    /// limit, then the checks themselves. Each step that stops the turn ends
+    /// the point there, with the model-only note that tells the next turn's
+    /// model why ([`Self::store_stop_note`]): stored after the person's
+    /// notice, before the turn's decision marker.
+    ///
+    /// Returns the verdict and, when it stops, the name of the monitor that
+    /// stopped it (`None` when the settings could not be read).
     async fn evaluate_monitor_point(
         &self,
         session_id: &str,
@@ -11212,11 +11681,27 @@ impl Agent {
         iteration: u32,
         turn_ending: bool,
         cancel_token: Option<&CancellationToken>,
-    ) -> Result<MonitorVerdict> {
+    ) -> Result<(MonitorVerdict, Option<String>)> {
         use crate::decision::monitor;
         let registry = &self.decisions.monitors;
         let mut verdict = MonitorVerdict::default();
         let mut notes: Vec<String> = Vec::new();
+        let mut stops: Vec<monitor::MonitorEvent> = Vec::new();
+        self.report_unreadable_monitors(session_id, &mut verdict)
+            .await;
+        if verdict.stop {
+            return Ok((verdict, None));
+        }
+        // A copy of one of this chat's monitors stopped a subagent it started:
+        // this chat stops too, before anything is read or sent. Held while a
+        // message the person typed waits.
+        let escalated =
+            registry.take_escalation_events(session_id, self.has_pending_user_direct_steer());
+        self.fold_monitor_events(session_id, &escalated, &mut verdict, &mut notes, &mut stops)
+            .await;
+        if verdict.stop {
+            return Ok(self.stopped_point(session_id, verdict, &stops).await);
+        }
         // A criterion this point would have checked but for its per-turn
         // limit says so first, or makes the stop its last check held back;
         // one that stops the turn ends the point here, before anything is
@@ -11224,10 +11709,10 @@ impl Agent {
         // note, and no note of this point is asked for once one stops it.
         let limits =
             registry.take_pending_limits(session_id, timing, self.has_pending_user_direct_steer());
-        self.fold_monitor_events(session_id, &limits, &mut verdict, &mut notes)
+        self.fold_monitor_events(session_id, &limits, &mut verdict, &mut notes, &mut stops)
             .await;
         if verdict.stop {
-            return Ok(verdict);
+            return Ok(self.stopped_point(session_id, verdict, &stops).await);
         }
         let custom = self.decisions.service.custom();
         let service: &crate::decision::DecisionService = match custom.as_deref() {
@@ -11243,61 +11728,53 @@ impl Agent {
         )
         .await
         .map(|base| base.with_turn(registry.turn_id(session_id)));
+        // One grace for the whole point: it starts when a typed steer is
+        // first seen, by the lookup or by the checks.
+        let grace = SteerGrace::new(registry.steer_grace());
         let Some(windows) = self
-            .monitor_windows(service, &base, session_id, timing, cancel_token)
+            .monitor_windows(service, &base, session_id, timing, cancel_token, &grace)
             .await
         else {
-            return Ok(verdict);
+            return Ok((verdict, None));
         };
-        let planned = registry.plan_fitted(session_id, timing, conversation, iteration, |model| {
+        let planned = registry.plan_point(session_id, timing, conversation, iteration, |model| {
             windows.get(&model.cloned()).copied()
         });
-        for (name, why) in registry.take_invalid(session_id) {
-            let notice = self
-                .durable_notice(
-                    session_id,
-                    format!("Monitor '{name}' is off for this turn: {why}"),
-                )
-                .await;
-            verdict.events.push(AgentEvent::Message(notice));
-        }
         if planned.is_empty() {
-            return Ok(verdict);
+            return Ok((verdict, None));
         }
-        let outcomes = match base {
-            Ok(base) => {
-                let asked = monitor::ask_planned(service, &base, &planned);
-                match self
-                    .unless_cancelled_or_steered(session_id, cancel_token, asked)
-                    .await
-                {
-                    Some(outcomes) => outcomes,
-                    None => return Ok(verdict),
-                }
-            }
-            // The chat's classification cannot be read, so nothing is sent:
-            // every criterion of this point sees a refusal.
-            Err(e) => planned
-                .iter()
-                .map(|_| {
-                    Err(crate::decision::DecisionError::Refused(format!(
-                        "this chat's privacy tier could not be read ({e})"
-                    )))
-                })
-                .collect(),
+        let Some(outcomes) = self
+            .ask_monitor_point(
+                service,
+                base,
+                &planned.requests,
+                session_id,
+                cancel_token,
+                &grace,
+            )
+            .await
+        else {
+            return Ok((verdict, None));
         };
-        let events = registry.apply(
+        // Sampled again: a message the person typed while the checks ran
+        // holds back any stop they make, and the stop is made at a later
+        // point once the message is answered.
+        let events = registry.apply_point(
             session_id,
-            &planned,
+            &planned.requests,
             outcomes,
+            planned.unchecked,
             self.has_pending_user_direct_steer(),
             turn_ending,
         );
-        self.fold_monitor_events(session_id, &events, &mut verdict, &mut notes)
+        self.fold_monitor_events(session_id, &events, &mut verdict, &mut notes, &mut stops)
             .await;
-        // `apply` holds back a steer that fires beside a stop, so a point
-        // that stops brings no note; the guard keeps it that way.
-        if !verdict.stop && !notes.is_empty() {
+        if verdict.stop {
+            // `apply_point` holds back a steer that fires beside a stop, so a
+            // point that stops brings no steer note.
+            return Ok(self.stopped_point(session_id, verdict, &stops).await);
+        }
+        if !notes.is_empty() {
             // #59 / #66 SHAPE 2: model-only, named for the client, like the
             // done gate's feedback.
             let (note, published) = persist_steering_message(
@@ -11309,17 +11786,106 @@ impl Agent {
             verdict.events.extend(published);
             verdict.steer = Some(Box::new(note));
         }
-        Ok(verdict)
+        Ok((verdict, None))
+    }
+
+    /// The chat's settings could not be read: said once a turn. One that
+    /// names a monitor set to pause, with nothing read earlier to fall back
+    /// on, stops the turn (`verdict.stop`, with the model-only note saying
+    /// why), unless a message the person typed waits: then the next point
+    /// makes the stop.
+    async fn report_unreadable_monitors(&self, session_id: &str, verdict: &mut MonitorVerdict) {
+        let Some(failure) = self
+            .decisions
+            .monitors
+            .take_read_failure(session_id, self.has_pending_user_direct_steer())
+        else {
+            return;
+        };
+        let notice = self.durable_notice(session_id, failure.text).await;
+        verdict.events.push(AgentEvent::Message(notice));
+        if !failure.stops {
+            return;
+        }
+        info!(
+            session_id,
+            "the chat's monitors could not be read, and one is set to pause; the turn stops"
+        );
+        verdict.stop = true;
+        self.store_stop_note(
+            session_id,
+            crate::decision::monitor::unreadable_stop_note(&failure.error),
+            verdict,
+        )
+        .await;
+    }
+
+    /// The answers to one point's `requests`, in order (none to ask, none
+    /// back), or `None` when a cancel or an overdue steer came first. When
+    /// the chat's classification cannot be read nothing is sent, and every
+    /// criterion of the point sees a refusal.
+    async fn ask_monitor_point(
+        &self,
+        service: &crate::decision::DecisionService,
+        base: anyhow::Result<crate::decision::DecisionSession>,
+        requests: &[crate::decision::monitor::PlannedRequest],
+        session_id: &str,
+        cancel_token: Option<&CancellationToken>,
+        grace: &SteerGrace,
+    ) -> Option<Vec<crate::decision::monitor::AskOutcome>> {
+        if requests.is_empty() {
+            return Some(Vec::new());
+        }
+        match base {
+            Ok(base) => {
+                let asked = crate::decision::monitor::ask_planned(service, &base, requests);
+                self.unless_cancelled_or_steer_overdue(session_id, cancel_token, grace, asked)
+                    .await
+            }
+            Err(e) => Some(
+                requests
+                    .iter()
+                    .map(|_| {
+                        Err(crate::decision::DecisionError::Refused(format!(
+                            "this chat's privacy tier could not be read ({e})"
+                        )))
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// A point that stops the turn: the model-only note naming the monitors
+    /// that stopped it, stored after their notices, and the name of the first.
+    async fn stopped_point(
+        &self,
+        session_id: &str,
+        mut verdict: MonitorVerdict,
+        stops: &[crate::decision::monitor::MonitorEvent],
+    ) -> (MonitorVerdict, Option<String>) {
+        if let Some(note) = crate::decision::monitor::stop_note(stops) {
+            self.store_stop_note(session_id, note, &mut verdict).await;
+        }
+        let stopped_by = stops.first().map(|event| event.name.clone());
+        (verdict, stopped_by)
     }
 
     /// Store and queue each event's notice, mark the verdict to stop when an
-    /// event ends the turn, and collect a `steer` monitor's note in `notes`.
+    /// event ends the turn (collecting it in `stops`), and collect a `steer`
+    /// monitor's note in `notes`.
+    ///
+    /// A stop made by a copy of a person's monitor that also watches the
+    /// subagents of the chat that started this one (`inheritedFrom`) stops
+    /// that whole run: this subagent's running siblings are stopped now, and
+    /// the stop is carried to that chat, whose next point stops it too
+    /// ([`Self::escalate_inherited_stop`]).
     async fn fold_monitor_events(
         &self,
         session_id: &str,
         events: &[crate::decision::monitor::MonitorEvent],
         verdict: &mut MonitorVerdict,
         notes: &mut Vec<String>,
+        stops: &mut Vec<crate::decision::monitor::MonitorEvent>,
     ) {
         use crate::decision::monitor;
         for event in events {
@@ -11333,10 +11899,82 @@ impl Agent {
                     monitor = %event.criterion_id,
                     "a decision-model monitor ended the turn"
                 );
+                // The registry records each point's first stop itself; this
+                // keeps the turn's first one whichever way it was reached.
+                if stops.is_empty() {
+                    if let Some(report) = monitor::stop_report(session_id, event) {
+                        self.decisions.monitors.record_stop(session_id, report);
+                    }
+                }
+                if event.inherited_from.is_some() {
+                    self.escalate_inherited_stop(session_id, event).await;
+                }
                 verdict.stop = true;
+                stops.push(event.clone());
             }
             notes.extend(monitor::steer_note(event));
         }
+    }
+
+    /// `event` stopped this chat's turn and came from a copy of a person's
+    /// monitor set on the chat that started this subagent to also watch its
+    /// subagents. Only in a subagent's chat: stop its siblings now, from this
+    /// side (a parent waiting in `workspace_watch` for all of them would
+    /// otherwise leave them running), and carry the stop to that chat.
+    async fn escalate_inherited_stop(
+        &self,
+        session_id: &str,
+        event: &crate::decision::monitor::MonitorEvent,
+    ) {
+        use crate::agents::subagent_handle;
+        let Some(parent) = event.inherited_from.as_deref() else {
+            return;
+        };
+        let session = match self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+        {
+            Ok(session) => session,
+            Err(e) => {
+                warn!(
+                    session_id,
+                    "could not read this chat to carry a monitor's stop to the chat that \
+                     started it: {e:#}"
+                );
+                return;
+            }
+        };
+        if session.session_type != SessionType::SubAgent {
+            return;
+        }
+        let title = subagent_handle::list_for_session(parent)
+            .into_iter()
+            .find(|handle| handle.child_session_id == session_id)
+            .map(|handle| handle.title.clone())
+            .unwrap_or_else(|| session.name.clone());
+        let Some((parent, stop)) =
+            crate::decision::monitor::EscalatedStop::from_event(event, session_id, &title)
+        else {
+            return;
+        };
+        let siblings = subagent_handle::stop_delegated_children_except(
+            &parent,
+            session_id,
+            subagent_handle::ChildStopCause::SiblingMonitor {
+                monitor: event.name.clone(),
+                sibling: title,
+            },
+        );
+        info!(
+            session_id,
+            parent = %parent,
+            monitor = %event.criterion_id,
+            siblings = siblings.len(),
+            "a monitor set to watch every subagent stopped this one; its run stops"
+        );
+        crate::decision::monitor::escalate(&parent, stop);
     }
 
     /// Whether this turn has anything for the decision marker. Synchronous.
@@ -11779,9 +12417,11 @@ impl Agent {
             &toolshim_tools,
             reply_provider.uses_tool_bridge_for_tool_surface(),
         );
-        // The chat's monitors, read once for the turn: every evaluation point
-        // below asks the cached copy synchronously first.
-        Box::pin(self.load_decision_monitors(&session_config.id)).await;
+        // The chat's monitors, as the turn starts (and, after a restart, the
+        // latches stored with the chat). Every evaluation point below reads
+        // them again first, so a change made while the turn runs applies at
+        // its next point.
+        Box::pin(self.refresh_decision_monitors(&session_config.id)).await;
 
         // Freshness basis for this turn's overflow-recovery compactions.
         //
@@ -13900,15 +14540,20 @@ impl Agent {
 
                 // Decision-model monitors timed `post_iteration`: this
                 // iteration's results are folded in, the exit gates are next.
-                // The check is synchronous, so a chat with no monitor due pays
-                // nothing; the evaluation and its state live in the boxed
-                // helper and on the Agent, never in this frame. `exit_chat`
-                // tells it the turn ends here unless something reopens it;
-                // the helper adds a structured final output about to end it.
-                if self.decisions.monitors.any_due(
-                    &session_config.id,
-                    crate::decision::settings::MonitorTiming::PostIteration,
-                ) && !is_token_cancelled(&cancel_token)
+                // The chat's settings are read again first (one point read of
+                // one key, no decision call), so a monitor added or changed
+                // while the turn runs applies here; a chat with no monitor due
+                // pays that read and nothing else. The evaluation and its
+                // state live in the boxed helpers and on the Agent, never in
+                // this frame. `exit_chat` tells it the turn ends here unless
+                // something reopens it; the helper adds a structured final
+                // output about to end it.
+                if !is_token_cancelled(&cancel_token)
+                    && Box::pin(self.monitor_point_due(
+                        &session_config.id,
+                        crate::decision::settings::MonitorTiming::PostIteration,
+                    ))
+                    .await
                 {
                     let verdict = Box::pin(self.run_monitor_point(
                         &session_config.id,
@@ -13917,6 +14562,7 @@ impl Agent {
                         turns_taken,
                         exit_chat,
                         cancel_token.as_ref(),
+                        None,
                     ))
                     .await?;
                     for event in verdict.events {
@@ -13964,34 +14610,6 @@ impl Agent {
                 // bare 409 from a turn that was visibly alive.
                 if exit_chat {
                     self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::ExitGates);
-                    if session.session_type == SessionType::SubAgent {
-                        if self.commit_turn_exit_or_continue() {
-                            tokio::task::yield_now().await;
-                            continue;
-                        }
-                        // Subagents get an observe-only SubagentStop instead of a
-                        // blockable Stop (avoids nested runaway loops).
-                        let mut payload = crate::hooks::HookPayload::new(
-                            crate::hooks::HookEvent::SubagentStop,
-                            &session_config.id,
-                            session.working_dir.to_string_lossy(),
-                        );
-                        payload.subagent_id = Some(session_config.id.clone());
-                        self.hooks_manager.fire(
-                            crate::hooks::HookEvent::SubagentStop,
-                            None,
-                            payload,
-                            session.working_dir.clone(),
-                        );
-                        // BR-28: this break is the subagent's last boundary, so settle
-                        // the SubagentStop hook here — nothing downstream would ever
-                        // join it, and its aggregate would be lost with the task.
-                        for msg in self.settle_fired_hooks(&session_config.id).await {
-                            yield AgentEvent::Message(msg);
-                        }
-                        break;
-                    }
-                    let active_goal = self.active_goal(&session_config.id).await;
 
                     // BR-48: deterministic done-ness gate. When enabled, re-run
                     // the configured `SuccessCheck`s before the turn is allowed to
@@ -14002,8 +14620,10 @@ impl Agent {
                     // those wrap-ups must be allowed to end. Default OFF, so this
                     // is inert unless a user opted in. Runs before the (optional,
                     // LLM) self-critique so a broken build is caught deterministically
-                    // and cheaply, without spending a judge call.
+                    // and cheaply, without spending a judge call. A subagent has
+                    // none: its exit comes after the `turn_end` monitors below.
                     if done_gate_config.is_active()
+                        && session.session_type != SessionType::SubAgent
                         && stall_deadline.is_none()
                         && budget_deadline.is_none()
                         && !is_token_cancelled(&cancel_token)
@@ -14071,15 +14691,17 @@ impl Agent {
                     }
 
                     // Decision-model monitors timed `turn_end`, beside the done
-                    // gate. Skipped while a stall or budget wrap-up is ending the
-                    // turn, as the done gate is.
-                    if stall_deadline.is_none()
-                        && budget_deadline.is_none()
-                        && !is_token_cancelled(&cancel_token)
-                        && self.decisions.monitors.any_due(
+                    // gate, in a subagent's chat too. The settings are read again
+                    // first, as at the post-iteration point. While a stall or
+                    // budget wrap-up is ending the turn nothing is asked (as the
+                    // done gate is skipped), but the point still says which
+                    // monitors it did not check.
+                    if !is_token_cancelled(&cancel_token)
+                        && Box::pin(self.monitor_point_due(
                             &session_config.id,
                             crate::decision::settings::MonitorTiming::TurnEnd,
-                        )
+                        ))
+                        .await
                     {
                         let verdict = Box::pin(self.run_monitor_point(
                             &session_config.id,
@@ -14088,6 +14710,13 @@ impl Agent {
                             turns_taken,
                             true,
                             cancel_token.as_ref(),
+                            if budget_deadline.is_some() {
+                                Some(WrapUp::Budget)
+                            } else if stall_deadline.is_some() {
+                                Some(WrapUp::Stall)
+                            } else {
+                                None
+                            },
                         ))
                         .await?;
                         for event in verdict.events {
@@ -14111,6 +14740,37 @@ impl Agent {
                             continue;
                         }
                     }
+
+                    // A subagent's turn ends here, after its `turn_end` monitors:
+                    // it has no done gate, self-critique or blockable Stop.
+                    if session.session_type == SessionType::SubAgent {
+                        if self.commit_turn_exit_or_continue() {
+                            tokio::task::yield_now().await;
+                            continue;
+                        }
+                        // Subagents get an observe-only SubagentStop instead of a
+                        // blockable Stop (avoids nested runaway loops).
+                        let mut payload = crate::hooks::HookPayload::new(
+                            crate::hooks::HookEvent::SubagentStop,
+                            &session_config.id,
+                            session.working_dir.to_string_lossy(),
+                        );
+                        payload.subagent_id = Some(session_config.id.clone());
+                        self.hooks_manager.fire(
+                            crate::hooks::HookEvent::SubagentStop,
+                            None,
+                            payload,
+                            session.working_dir.clone(),
+                        );
+                        // BR-28: this break is the subagent's last boundary, so settle
+                        // the SubagentStop hook here — nothing downstream would ever
+                        // join it, and its aggregate would be lost with the task.
+                        for msg in self.settle_fired_hooks(&session_config.id).await {
+                            yield AgentEvent::Message(msg);
+                        }
+                        break;
+                    }
+                    let active_goal = self.active_goal(&session_config.id).await;
 
                     // BR-50: optional self-critique pass on an *ordinary* answer.
                     // Skipped when a /goal is active (its Stop-hook judge already
@@ -14228,15 +14888,23 @@ impl Agent {
             // the children are supervised by the continued loop.
             if native_supervision_required {
                 self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::SupervisionWait);
-                // `Complete` and `UserSteered` both end the wait.
-                while let SupervisionStep::Collected(message) = Box::pin(self.next_supervision_step(
-                    &session_config.id,
-                    cancel_token.clone(),
-                    self.turn_exit_is_resumable(),
-                ))
-                .await?
-                {
-                    yield AgentEvent::Message(message);
+                // `Complete` and `UserSteered` both end the wait, and so does
+                // the bound a monitor's stop set on it, once its notice is out.
+                loop {
+                    match Box::pin(self.next_supervision_step(
+                        &session_config.id,
+                        cancel_token.clone(),
+                        self.turn_exit_is_resumable(),
+                    ))
+                    .await?
+                    {
+                        SupervisionStep::Collected(message) => yield AgentEvent::Message(message),
+                        SupervisionStep::SettleTimedOut(message) => {
+                            yield AgentEvent::Message(message);
+                            break;
+                        }
+                        SupervisionStep::Complete | SupervisionStep::UserSteered => break,
+                    }
                 }
             }
 
@@ -18120,6 +18788,7 @@ mod tests {
             "workspace__workspace_watch",
             "workspace__workspace_send_prompt",
             "workspace__workspace_orchestrate",
+            "workspace__workspace_monitor",
             "knowledge__kb_search",
             PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
             PLATFORM_INGEST_SOURCE_TOOL_NAME,
@@ -19372,6 +20041,26 @@ mod tests {
             reach_error.contains(&crate::privacy::refusal::workspace_out_of_reach()),
             "{reach_error}"
         );
+        // `workspace_monitor` writes another chat's monitors: the bridge holds
+        // it to a direct child before it dispatches, as its handler does.
+        let monitor_call = |session: &str| CallToolRequestParams {
+            name: "workspace__workspace_monitor".into(),
+            arguments: Some(object!({ "action": "list", "session_id": session })),
+            meta: None,
+            task: None,
+        };
+        dispatch
+            .enforce_child_supervision_scope(&parent_id, &monitor_call(&child.id))
+            .await
+            .expect("workspace_monitor reaches a direct child over the bridge");
+        let monitor_reach = dispatch
+            .enforce_child_supervision_scope(&parent_id, &monitor_call(&sibling.id))
+            .await
+            .expect_err("a bridge must not reach an unrelated conversation's monitors");
+        assert!(
+            monitor_reach.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "{monitor_reach}"
+        );
 
         let target_agent = Arc::new(Agent::with_config(AgentConfig::new(
             Arc::clone(&agent.config.session_manager),
@@ -20251,7 +20940,7 @@ mod tests {
 
         let wake = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            next_native_supervision_claim(&parent, &None, None),
+            next_native_supervision_claim(&parent, &None, None, None),
         )
         .await
         .expect("test safety deadline");
@@ -20262,7 +20951,7 @@ mod tests {
         assert!(claim.result.summary.contains("event-driven terminal"));
         assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
         assert!(matches!(
-            next_native_supervision_claim(&parent, &None, None).await,
+            next_native_supervision_claim(&parent, &None, None, None).await,
             NativeSupervisionWake::Complete
         ));
         crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
@@ -20301,7 +20990,7 @@ mod tests {
 
         let wake = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            next_native_supervision_claim(&parent, &None, None),
+            next_native_supervision_claim(&parent, &None, None, None),
         )
         .await
         .expect("test safety deadline");
@@ -20313,7 +21002,7 @@ mod tests {
         assert!(!claim.result.summary.contains("superseded result"));
         assert!(handle.mark_terminal_generation_collected_if_generation(claim.generation));
         assert!(matches!(
-            next_native_supervision_claim(&parent, &None, None).await,
+            next_native_supervision_claim(&parent, &None, None, None).await,
             NativeSupervisionWake::Complete
         ));
         crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
@@ -20347,7 +21036,7 @@ mod tests {
 
         crate::agents::subagent_handle::begin_parent_closing(&parent);
         let NativeSupervisionWake::Ready(claim) =
-            next_native_supervision_claim(&parent, &None, None).await
+            next_native_supervision_claim(&parent, &None, None, None).await
         else {
             panic!("the direct follow-up terminal must reopen supervision once")
         };
@@ -20357,7 +21046,7 @@ mod tests {
 
         assert!(delegated_work_supervision_prompt(&parent).is_none());
         assert!(matches!(
-            next_native_supervision_claim(&parent, &None, None).await,
+            next_native_supervision_claim(&parent, &None, None, None).await,
             NativeSupervisionWake::Complete
         ));
         crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
@@ -20383,10 +21072,118 @@ mod tests {
         });
 
         assert!(matches!(
-            next_native_supervision_claim(&parent, &Some(cancel), None).await,
+            next_native_supervision_claim(&parent, &Some(cancel), None, None).await,
             NativeSupervisionWake::Cancelled
         ));
         crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
+    /// The bound a monitor's stop puts on the wait for the subagents it
+    /// stopped: a result already in is collected first, even past the bound,
+    /// and then the wait ends, naming the ones still stopping. Without a
+    /// bound the same wait goes on.
+    #[tokio::test]
+    async fn a_settle_deadline_ends_the_wait_naming_the_children_still_stopping() {
+        let parent = format!("native-settle-parent-{}", uuid::Uuid::new_v4());
+        let finished = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            format!("native-settle-done-{}", uuid::Uuid::new_v4()),
+            "finished child",
+            CancellationToken::new(),
+        );
+        finished.complete(crate::agents::subagent_result::SubagentResult::from_error(
+            "stopped with its work so far",
+        ));
+        let _stuck = crate::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            format!("native-settle-stuck-{}", uuid::Uuid::new_v4()),
+            "stuck child",
+            CancellationToken::new(),
+        );
+        crate::agents::subagent_handle::begin_parent_closing(&parent);
+
+        let passed = Some(tokio::time::Instant::now());
+        let NativeSupervisionWake::Ready(claim) =
+            next_native_supervision_claim(&parent, &None, None, passed).await
+        else {
+            panic!("a result already in is collected before the bound gives up")
+        };
+        assert!(claim
+            .result
+            .summary
+            .contains("stopped with its work so far"));
+        assert!(finished.mark_terminal_generation_collected_if_generation(claim.generation));
+
+        let wake = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_native_supervision_claim(
+                &parent,
+                &None,
+                None,
+                Some(tokio::time::Instant::now() + std::time::Duration::from_millis(50)),
+            ),
+        )
+        .await
+        .expect("the bound ends the wait");
+        let NativeSupervisionWake::DeadlinePassed(outstanding) = wake else {
+            panic!("the bound passed with a child still stopping")
+        };
+        assert_eq!(outstanding, vec!["stuck child".to_string()]);
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                next_native_supervision_claim(&parent, &None, None, None),
+            )
+            .await
+            .is_err(),
+            "with no bound the wait goes on for as long as the child takes"
+        );
+        crate::agents::subagent_handle::open_parent_continuation_admission(&parent);
+    }
+
+    /// What a monitor point says when it stops subagents, when the wait for
+    /// them passes its bound, and when a wound-down turn leaves monitors
+    /// unchecked: counted, named (three at most), one line each.
+    #[test]
+    fn monitor_point_notices_count_and_name_what_they_cover() {
+        assert_eq!(
+            children_stopped_notice(&["Plot the data".to_string()]),
+            "It also stopped 1 subagent this chat started ('Plot the data'). What each had \
+             done is collected below."
+        );
+        let five: Vec<String> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        assert_eq!(
+            children_stopped_notice(&five),
+            "It also stopped 5 subagents this chat started ('a', 'b', 'c', and 2 more). What \
+             each had done is collected below."
+        );
+        assert_eq!(
+            settle_timed_out_notice(&five[..2], std::time::Duration::from_secs(30)),
+            "2 subagents had not stopped 30 seconds after the monitor stopped this chat: 'a', \
+             'b'. They are still being stopped; their results are collected when this chat \
+             carries on."
+        );
+        assert_eq!(wound_down_notice(&[], WrapUp::Budget), None);
+        assert_eq!(
+            wound_down_notice(&["'Task done'".to_string()], WrapUp::Budget).as_deref(),
+            Some(
+                "Monitor 'Task done' was not checked at the end of this turn: the turn was being \
+                 wound down because it reached its budget."
+            )
+        );
+        assert_eq!(
+            wound_down_notice(&["'A'".to_string(), "'B'".to_string()], WrapUp::Stall).as_deref(),
+            Some(
+                "Monitors 'A', 'B' were not checked at the end of this turn: the turn was being \
+                 wound down because the agent stopped making progress."
+            )
+        );
+        assert_eq!(one_line_name("Plot\nthe\tdata"), "Plot the data");
+        assert_eq!(one_line_name(&"x".repeat(90)).chars().count(), 80);
     }
 
     #[test]
@@ -20761,6 +21558,13 @@ mod tests {
                 .iter()
                 .any(|name| name == "workspace__workspace_orchestrate"),
             "auto-injection must grant the phase plan tool: {names:?}"
+        );
+        // …and so do the monitors an agent sets on the subagents it spawned.
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "workspace__workspace_monitor"),
+            "auto-injection must grant the subagent monitor tool: {names:?}"
         );
         // …and the entry it rides decides the per-turn context: the plan
         // summary belongs to `workspace_orchestrate`, the preview panel to
@@ -21871,6 +22675,10 @@ mod tests {
                 .iter()
                 .any(|n| n == "workspace__workspace_orchestrate"),
             "…nor a phase plan for spawns it cannot make: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "workspace__workspace_monitor"),
+            "…while the monitors on subagents that already exist stay: {names:?}"
         );
     }
 

@@ -10,11 +10,19 @@
 //! messages, fewer characters, no tool traffic) so it fits a small decision
 //! model's context. It is built from stored messages, which have already
 //! passed the secret-output guard.
+//!
+//! A window's message count is a count of messages that show something in
+//! it. The conversation is read newest first, a message's tool traffic is
+//! left out first when the window has no tool traffic, and a message left
+//! with nothing to show (a run of tool steps, for a text-only window, or a
+//! notification) takes no place. So a text-only window of two messages holds
+//! the two newest messages with text, however many tool steps came after
+//! them.
 
 use sha2::{Digest, Sha256};
 
 use super::types::{ContextMessage, DecisionContext};
-use crate::agents::stall::progress_tail;
+use crate::agents::stall::{progress_tail, renders_in_tail};
 use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::Conversation;
 
@@ -26,7 +34,9 @@ pub const MAX_WINDOW_CHARS: usize = 6_000;
 /// How much of the conversation a monitor sees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowSpec {
-    /// The most recent messages considered, at most [`MAX_WINDOW_MESSAGES`].
+    /// The most recent messages that show something in the window (text,
+    /// or tool traffic when `tool_calls` is on), at most
+    /// [`MAX_WINDOW_MESSAGES`].
     pub messages: usize,
     /// Characters of rendered tail kept, at most [`MAX_WINDOW_CHARS`]. The
     /// newest lines are kept.
@@ -58,47 +68,61 @@ impl WindowSpec {
     }
 }
 
-/// A built window: the state to send, plus what the decision log and the
-/// unchanged-window skip need.
+/// A built window: the state to send, plus what the decision log needs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowState {
     pub context: DecisionContext,
-    /// Hex SHA-256 of the rendered tail. Unchanged since the last evaluation
-    /// means the evaluation can be skipped.
+    /// Hex SHA-256 of the rendered tail (the opening line, which names the
+    /// loop iteration, is not part of it). Logged with the request; every
+    /// due monitor is asked at every point, whether or not it changed.
     pub sha256: String,
     /// Characters of rendered tail.
     pub chars: usize,
-    /// Messages of the conversation the tail was drawn from.
+    /// Messages of the conversation the tail was drawn from: those that show
+    /// something in it.
     pub messages_considered: usize,
 }
 
 /// Build the window over `conversation` at loop `iteration`, or `None` when
 /// there is nothing to judge.
+///
+/// The messages are chosen before they are counted: newest first, each with
+/// its tool traffic left out when `spec.tool_calls` is off, and only those
+/// that still show something ([`renders_in_tail`]) take one of the
+/// `spec.messages` places.
 pub fn build_window(
     conversation: &Conversation,
     spec: WindowSpec,
     iteration: u32,
 ) -> Option<WindowState> {
     let take = spec.messages.clamp(1, MAX_WINDOW_MESSAGES);
-    let all = conversation.messages();
-    let recent = &all[all.len().saturating_sub(take)..];
-    let selected: Vec<Message> = if spec.tool_calls {
-        recent.to_vec()
-    } else {
-        recent
-            .iter()
-            .filter_map(|message| {
-                let mut message = message.clone();
-                message.content.retain(|content| {
-                    !matches!(
-                        content,
-                        MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
-                    )
-                });
-                (!message.content.is_empty()).then_some(message)
-            })
-            .collect()
-    };
+    let mut selected: Vec<Message> = Vec::with_capacity(take);
+    for message in conversation.messages().iter().rev() {
+        if selected.len() >= take {
+            break;
+        }
+        let is_tool_traffic = |content: &MessageContent| {
+            matches!(
+                content,
+                MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
+            )
+        };
+        let message = if spec.tool_calls {
+            message.clone()
+        } else if message.content.iter().all(is_tool_traffic) {
+            // A tool step shows nothing in a text-only window; not cloned.
+            continue;
+        } else {
+            let mut message = message.clone();
+            message.content.retain(|content| !is_tool_traffic(content));
+            message
+        };
+        if !message.content.is_empty() && renders_in_tail(&message) {
+            selected.push(message);
+        }
+    }
+    selected.reverse();
+    let messages_considered = selected.len();
     let tail = progress_tail(&Conversation::new_unvalidated(selected))?;
     let tail = keep_newest(&tail, spec.max_chars.min(MAX_WINDOW_CHARS));
     if tail.trim().is_empty() {
@@ -116,7 +140,7 @@ pub fn build_window(
         }]),
         sha256,
         chars,
-        messages_considered: recent.len(),
+        messages_considered,
     })
 }
 
@@ -200,6 +224,68 @@ mod tests {
         assert!(!text.contains("tool call: "));
         assert!(!text.contains("tool result ["));
         assert!(text.contains("assistant: Opening it."));
+    }
+
+    /// A text-only window counts messages with text: a run of tool steps
+    /// after the newest text takes none of its places, so the window still
+    /// holds that text instead of coming out empty.
+    #[test]
+    fn a_text_only_window_keeps_the_newest_text_past_a_run_of_tool_steps() {
+        let mut messages = vec![
+            Message::user().with_text("Open the consent form."),
+            Message::assistant().with_text("Opening it now."),
+        ];
+        for i in 0..5 {
+            let call = CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: "browser__click".into(),
+                arguments: Some(rmcp::object!({"step": i})),
+            };
+            let id = format!("t{i}");
+            messages.push(Message::assistant().with_tool_request(&id, Ok(call)));
+            messages.push(Message::user().with_tool_response(
+                &id,
+                Ok(CallToolResult::success(vec![Content::text("clicked")])),
+            ));
+        }
+        messages.push(Message::assistant().with_system_notification(
+            crate::conversation::message::SystemNotificationType::InlineMessage,
+            "Monitor 'x' fired.",
+        ));
+        assert_eq!(
+            messages.len(),
+            13,
+            "two texts, ten tool-only messages, a notice"
+        );
+        let spec = WindowSpec {
+            messages: 2,
+            max_chars: MAX_WINDOW_CHARS,
+            tool_calls: false,
+        };
+        let state = build_window(&conversation(messages.clone()), spec, 4)
+            .expect("the two texts make a window");
+        let text = text_of(&state);
+        assert!(text.contains("user: Open the consent form."), "{text}");
+        assert!(text.contains("assistant: Opening it now."), "{text}");
+        assert!(!text.contains("tool call:"), "{text}");
+        assert!(!text.contains("tool result ["), "{text}");
+        assert!(!text.contains("fired"), "{text}");
+        assert_eq!(state.messages_considered, 2);
+
+        // With tool traffic, the newest two messages that show something are
+        // the last tool step: the notification takes no place.
+        let with_tools = WindowSpec {
+            tool_calls: true,
+            ..spec
+        };
+        let text = text_of(&build_window(&conversation(messages), with_tools, 4).unwrap());
+        assert!(
+            text.contains("tool call: browser__click({\"step\":4})"),
+            "{text}"
+        );
+        assert!(text.contains("tool result [ok]: clicked"), "{text}");
+        assert!(!text.contains("Opening it now."), "{text}");
     }
 
     #[test]
