@@ -18,6 +18,10 @@ use crate::agents::subagent_result::SubagentResult;
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::tool_execution::ToolCallResult;
 use crate::agents::AgentConfig;
+use crate::decision::settings::{
+    DecisionSettings, MonitorAction, MonitorCriterion, MonitorOwner, MonitorSpec,
+    MAX_AGENT_MONITORS,
+};
 use crate::providers;
 use crate::workflow::build_workflow::build_workflow_from_template;
 use crate::workflow::local_workflows::load_local_workflow_file;
@@ -895,6 +899,13 @@ pub struct SubagentParams {
     /// shown beside it on every surface. Normalised by [`normalize_role`].
     #[serde(default)]
     pub role: Option<String>,
+    /// Decision-model monitors the child starts with, at most
+    /// [`MAX_AGENT_MONITORS`], set by the spawning chat's agent. Resolved with
+    /// the inherited, sub-workflow and phase monitors by
+    /// [`resolve_child_monitors`] before any child session exists, and stored
+    /// on the child before it runs.
+    #[serde(default)]
+    pub monitors: Option<Vec<MonitorSpec>>,
 }
 
 /// The longest `role` label kept, in characters.
@@ -1002,7 +1013,8 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
                 "type": "string",
                 "maxLength": MAX_ROLE_CHARS,
                 "description": "A short label for what this subagent does, shown beside it in the side panel (for example \"reviewer\" or \"data loader\"). At most 40 characters; a longer label is cut."
-            }
+            },
+            "monitors": monitors_schema()
         }
     });
 
@@ -1011,6 +1023,37 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
         description,
         schema.as_object().unwrap().clone(),
     )
+}
+
+/// The `monitors` property: an array of [`MonitorSpec`], whose schema is
+/// generated from the type (so the two cannot disagree) with every subschema
+/// inlined, because this tool's schema is hand-written and has no `$defs` for
+/// a reference to resolve against.
+fn monitors_schema() -> Value {
+    let spec = schemars::generate::SchemaSettings::draft2020_12()
+        .with(|settings| settings.inline_subschemas = true)
+        .into_generator()
+        .into_root_schema_for::<MonitorSpec>();
+    let mut items = serde_json::to_value(spec).unwrap_or_else(|_| json!({ "type": "object" }));
+    if let Some(items) = items.as_object_mut() {
+        items.remove("$schema");
+        items.remove("title");
+    }
+    json!({
+        "type": "array",
+        "maxItems": MAX_AGENT_MONITORS,
+        "items": items,
+        "description": format!(
+            "Optional, at most {MAX_AGENT_MONITORS}: decision-model monitors this subagent \
+             starts with. Each is a yes/no question a decision model answers from the \
+             subagent's newest messages; when P(the watched answer) reaches the threshold it \
+             stops the subagent or steers it. They are checked against this chat's privacy \
+             before anything starts: a monitor on a decision model this chat may not use \
+             refuses the spawn. The person's monitors that watch this chat's subagents, the \
+             phase's monitors and a sub-workflow's monitors are added on their own. Change \
+             yours later with workspace_monitor."
+        )
+    })
 }
 
 /// `pub(crate)` so `Agent::list_tools` can restore the sub-workflow-enriched
@@ -1098,6 +1141,12 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          Give each subagent a short `role` label; the side panel shows it. When this \
          chat has an orchestration plan (declared with workspace_orchestrate), also \
          pass the `phase` each subagent works in.\n\n\
+         To have a decision model watch a subagent, pass `monitors` (at most 4): each \
+         is a yes/no question, a threshold, and whether to stop or steer the subagent \
+         when the answer reaches it. They are on the subagent before it starts, beside \
+         the monitors the person set to watch this chat's subagents, the phase's \
+         monitors and a sub-workflow's monitors, which you cannot remove. A monitor on a \
+         decision model this chat may not use refuses the spawn, and nothing starts.\n\n\
          A subagent starts with NO view of this conversation, so spell the task out: \
          name the actual files, paths and values rather than \"it\" or \"the other one\". \
          Resolving a referent costs you one step and costs the subagent a round trip \
@@ -1495,6 +1544,375 @@ async fn record_phase_spawn(
     })
 }
 
+/// The decision settings a new subagent starts with, built and checked before
+/// anything exists, or `None` when there is nothing to write (no default
+/// decision model and no monitor: what every spawn wrote before monitors
+/// could reach a subagent).
+///
+/// The monitors are, in [`crate::decision::settings::child_settings`]'s
+/// order: copies of the parent's monitors set to also watch its subagents
+/// (the person's), the sub-workflow's `decision_settings` monitors (the
+/// person's), the phase's monitors and the spawn's own (the agent's, stamped
+/// with the parent's id). Each is then checked ([`check_child_monitors`]).
+///
+/// Fail closed: parent settings this build cannot read refuse the spawn, so a
+/// subagent never runs without monitors it was meant to have. A sub-workflow
+/// that declares an `orchestration_plan` is refused too, because a subagent
+/// cannot run phases (every workspace tool is refused to it).
+async fn resolve_child_monitors(
+    config: &AgentConfig,
+    task_config: &TaskConfig,
+    params: &SubagentParams,
+    workflow: &Workflow,
+) -> Result<Option<DecisionSettings>, ErrorData> {
+    use crate::decision::settings as decision_settings;
+
+    let parent_id = task_config.parent_session_id.as_str();
+    let session_manager = &config.session_manager;
+    let spawn_specs = params.monitors.as_deref().unwrap_or_default();
+    if spawn_specs.len() > MAX_AGENT_MONITORS {
+        return Err(spawn_refusal(format!(
+            "`monitors` takes at most {MAX_AGENT_MONITORS} monitors, not {}. Nothing was \
+             started.",
+            spawn_specs.len()
+        )));
+    }
+
+    let parent = decision_settings::load(session_manager, parent_id)
+        .await
+        .map_err(|e| {
+            spawn_refusal(format!(
+                "Could not read this chat's monitors, so this subagent could not be given the \
+                 ones set to watch subagents ({e}). Nothing was started."
+            ))
+        })?;
+
+    if workflow.orchestration_plan.is_some() {
+        let name = params
+            .subworkflow
+            .as_deref()
+            .unwrap_or(workflow.title.as_str())
+            .trim();
+        return Err(spawn_refusal(format!(
+            "Could not spawn subworkflow \"{name}\": {} Nothing was started.",
+            crate::workflow::supervision::subworkflow_plan_refusal(name)
+        )));
+    }
+
+    let declared = workflow.decision_settings.as_ref();
+    let put_on = |why: String| {
+        spawn_refusal(format!(
+            "Could not put monitors on the subagent: {} Nothing was started.",
+            as_sentence(&why)
+        ))
+    };
+    // What the child holds before the phase's and the spawn's monitors: the
+    // ids an unnamed agent monitor's slug must not take.
+    let base = decision_settings::child_settings(Some(&parent), parent_id, declared, &[], &[])
+        .map_err(put_on)?;
+    let base_ids: std::collections::BTreeSet<String> = base
+        .iter()
+        .flat_map(|settings| settings.monitors.iter().map(|m| m.id.clone()))
+        .collect();
+    let phase_specs = match params.phase.as_deref() {
+        Some(phase_id) => {
+            let unreadable = |e: anyhow::Error| {
+                spawn_refusal(format!(
+                    "Could not read the monitors of phase \"{phase_id}\" ({e}). Nothing was \
+                     started."
+                ))
+            };
+            crate::agents::orchestration_plan::phase_monitors(session_manager, parent_id, phase_id)
+                .await
+                .map_err(unreadable)?
+        }
+        None => Vec::new(),
+    };
+    // Each list takes slugs apart from the base and from itself only, so a
+    // spawn monitor named like a phase monitor gets the phase monitor's id and
+    // replaces it on this child, as `child_settings` lets it.
+    let as_criteria = |specs: &[MonitorSpec]| -> Result<Vec<MonitorCriterion>, ErrorData> {
+        let mut taken = base_ids.clone();
+        let mut criteria = Vec::with_capacity(specs.len());
+        for spec in specs {
+            let criterion = spec.to_criterion(parent_id, &taken).map_err(|why| {
+                spawn_refusal(format!("{} Nothing was started.", as_sentence(&why)))
+            })?;
+            taken.insert(criterion.id.clone());
+            criteria.push(criterion);
+        }
+        Ok(criteria)
+    };
+    let phase = as_criteria(&phase_specs)?;
+    let spawn = as_criteria(spawn_specs)?;
+    let Some(child) =
+        decision_settings::child_settings(Some(&parent), parent_id, declared, &phase, &spawn)
+            .map_err(put_on)?
+    else {
+        return Ok(None);
+    };
+    check_child_monitors(config, task_config, &parent, &child).await?;
+    Ok(Some(child))
+}
+
+/// Ask whether every monitor of the new subagent's settings `child` that is
+/// not a copy could run, the way a decision asks before it sends and with
+/// nothing of the chat sent, against the PARENT chat: a spawn never changes
+/// the tier, so the child is born at the parent's classification and
+/// affiliations. Also asked: the sub-workflow's default decision model when
+/// it becomes the child's (the parent has none of its own).
+///
+/// The copies of the parent's monitors are not asked: they are the person's,
+/// checked when the person saved them, and a copy whose model went away is
+/// the person's to fix, not a reason to refuse every spawn. The agent's
+/// monitors are asked as named by the caller, the sub-workflow's as a
+/// setting. The service is the parent's own when it has one
+/// ([`TaskConfig::decision_service`]), else the process's.
+async fn check_child_monitors(
+    config: &AgentConfig,
+    task_config: &TaskConfig,
+    parent: &DecisionSettings,
+    child: &DecisionSettings,
+) -> Result<(), ErrorData> {
+    use crate::decision::ModelSource;
+
+    let workflow_default = parent
+        .default_model
+        .is_none()
+        .then(|| child.default_model.clone())
+        .flatten();
+    let to_check: Vec<&MonitorCriterion> = child
+        .monitors
+        .iter()
+        .filter(|m| m.enabled && m.inherited_from.is_none())
+        .collect();
+    if to_check.is_empty() && workflow_default.is_none() {
+        return Ok(());
+    }
+
+    let enforced = crate::privacy::privacy_tiers_enabled();
+    let custom = task_config.decision_service.clone();
+    let service: &crate::decision::DecisionService = custom
+        .as_deref()
+        .unwrap_or_else(|| crate::decision::global());
+    let parent_id = task_config.parent_session_id.as_str();
+    let unreadable = |e: anyhow::Error| {
+        spawn_refusal(format!(
+            "Could not read this chat, so the subagent's monitors could not be checked ({e}). \
+             Nothing was started."
+        ))
+    };
+    let session =
+        crate::decision::DecisionSession::load(config.session_manager.clone(), parent_id, enforced)
+            .await
+            .map_err(unreadable)?
+            // The default the child's monitors run on: the parent's, else the
+            // sub-workflow's.
+            .with_chat_default_model(Ok(child.default_model.clone()));
+    if let Some(default) = &workflow_default {
+        let no_questions = indexmap::IndexMap::new();
+        service
+            .check_model_use(&session, Some(default), &no_questions, ModelSource::Setting)
+            .await
+            .map_err(|error| {
+                spawn_refusal(format!(
+                    "The sub-workflow's default decision model {} could not be put on the \
+                     subagent: {} Nothing was started.",
+                    default.label(),
+                    as_sentence(&ask_for_install(&error))
+                ))
+            })?;
+    }
+    for monitor in to_check {
+        let cannot = |cause: String| {
+            spawn_refusal(format!(
+                "Monitor '{}' could not be put on the subagent: {} Nothing was started.",
+                monitor.name,
+                as_sentence(&cause)
+            ))
+        };
+        let source = match monitor.set_by {
+            MonitorOwner::Agent => ModelSource::Named,
+            MonitorOwner::Person => ModelSource::Setting,
+        };
+        let question = monitor.question_with_threshold().map_err(cannot)?;
+        let questions = indexmap::IndexMap::from([(monitor.id.clone(), question)]);
+        service
+            .check_model_use(&session, monitor.model.as_ref(), &questions, source)
+            .await
+            .map_err(|error| cannot(ask_for_install(&error)))?;
+    }
+    Ok(())
+}
+
+/// A spawn refused before anything exists, with the sentence the agent reads.
+fn spawn_refusal(message: String) -> ErrorData {
+    ErrorData {
+        code: ErrorCode::INVALID_PARAMS,
+        message: Cow::from(message),
+        data: None,
+    }
+}
+
+/// A decision error as the agent reads it: the install advice becomes "Ask
+/// the user to install one", because installing a model is the person's
+/// call, not a shell command for the agent to run. The same wording
+/// `workspace_monitor` gives.
+fn ask_for_install(error: &crate::decision::DecisionError) -> String {
+    let advice = crate::decision::INSTALL_ADVICE;
+    let ask = format!("Ask the user to install one: {advice}");
+    let text = error.to_string();
+    if text.contains(advice) {
+        text.replacen(advice, &ask, 1)
+    } else if matches!(error, crate::decision::DecisionError::NoModel(_)) {
+        format!("{} {ask}", text.trim_end())
+    } else {
+        text
+    }
+}
+
+/// `text` ending in a full stop.
+fn as_sentence(text: &str) -> String {
+    let text = text.trim_end();
+    if text.ends_with(['.', '!', '?']) {
+        text.to_string()
+    } else {
+        format!("{text}.")
+    }
+}
+
+/// Store the settings [`resolve_child_monitors`] built on the child's fresh
+/// row, before the child is recorded in its phase and before it runs, so its
+/// first read of its monitors already holds them. `None` writes nothing.
+///
+/// A failed write is fatal to the spawn, as [`record_phase_spawn`]'s refusal
+/// is: the child's row is deleted, because a child running without the
+/// monitors it was meant to have is the outcome the read-before-spawn exists
+/// to rule out.
+async fn write_child_monitors(
+    session_manager: &crate::session::SessionManager,
+    child_session_id: &str,
+    settings: Option<&DecisionSettings>,
+) -> Result<(), ErrorData> {
+    let Some(settings) = settings else {
+        return Ok(());
+    };
+    let settings = settings.clone();
+    let Err(e) =
+        crate::decision::settings::update(session_manager, child_session_id, move |_| Ok(settings))
+            .await
+    else {
+        return Ok(());
+    };
+    if let Err(delete_error) = session_manager.delete_session(child_session_id).await {
+        tracing::warn!(
+            child_session_id = %child_session_id,
+            error = %delete_error,
+            "could not delete a subagent whose monitors could not be stored"
+        );
+    }
+    Err(ErrorData {
+        code: ErrorCode::INTERNAL_ERROR,
+        message: Cow::from(format!(
+            "Could not give the subagent its monitors ({e}). Nothing was started."
+        )),
+        data: None,
+    })
+}
+
+/// The spawn reply's line naming the child's monitors and whose each is, or
+/// `None` when it has none. For example: "Monitors on it: 'Off task' (yours,
+/// stops at 0.80); 'Deletes files' (the person's, from this chat)."
+fn monitors_note(settings: Option<&DecisionSettings>, parent_session_id: &str) -> Option<String> {
+    let each: Vec<String> = settings?
+        .monitors
+        .iter()
+        .map(|monitor| {
+            format!(
+                "'{}' ({})",
+                monitor.name.trim(),
+                monitor_owner_words(monitor, parent_session_id)
+            )
+        })
+        .collect();
+    (!each.is_empty()).then(|| format!("Monitors on it: {}.", each.join("; ")))
+}
+
+/// Whose a child's monitor is, as the spawning agent reads it, and for its
+/// own monitors what one does.
+fn monitor_owner_words(monitor: &MonitorCriterion, parent_session_id: &str) -> String {
+    let words = match (monitor.set_by, monitor.inherited_from.as_deref()) {
+        (MonitorOwner::Agent, _) => {
+            let verb = match monitor.action {
+                MonitorAction::Stop => "stops",
+                MonitorAction::Steer => "steers",
+                MonitorAction::Notify => "notifies",
+            };
+            match monitor.option.as_deref() {
+                Some(option) => format!("yours, {verb} at P({option}) {:.2}", monitor.threshold),
+                None => format!("yours, {verb} at {:.2}", monitor.threshold),
+            }
+        }
+        (MonitorOwner::Person, Some(from)) if from == parent_session_id => {
+            "the person's, from this chat".to_string()
+        }
+        (MonitorOwner::Person, _) => "the person's, from the sub-workflow".to_string(),
+    };
+    if monitor.enabled {
+        words
+    } else {
+        format!("{words}, off")
+    }
+}
+
+/// Say in a cancelled subagent's result, and in its own chat, why the chat
+/// that started it stopped it: the person stopped that chat, one of its
+/// monitors did, or the person's monitor on a sibling stopped the whole run
+/// ([`subagent_handle::stop_delegated_children`] records the cause before it
+/// trips the token).
+///
+/// Only a run whose token was cancelled is touched, and only when a cause was
+/// recorded: a `workspace_close` or a Stop in the child's own tab records
+/// none, and those results already say they were cancelled. The notice is
+/// user-only, so a later turn in the child does not read it as context, and it
+/// is published only once it is stored.
+async fn note_child_stop_cause(
+    session_manager: &crate::session::SessionManager,
+    handle: &BackgroundSubagent,
+    result: &mut SubagentResult,
+) {
+    let child_session_id = handle.child_session_id.as_str();
+    if !handle.is_cancelled() {
+        return;
+    }
+    let Some(cause) = handle.stop_cause() else {
+        return;
+    };
+    let sentence = result.note_stop_cause(&cause);
+    let mut notice = crate::conversation::message::Message::assistant()
+        .with_system_notification(
+            crate::conversation::message::SystemNotificationType::InlineMessage,
+            sentence,
+        )
+        .user_only();
+    match session_manager
+        .add_message_adopting_uid(child_session_id, &mut notice)
+        .await
+    {
+        Ok(()) => crate::session_events::publish(
+            child_session_id,
+            crate::session_events::SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+                notice,
+            )),
+        ),
+        Err(e) => tracing::warn!(
+            child_session_id = %child_session_id,
+            error = %e,
+            "could not store why a stopped subagent was stopped; its result still says so"
+        ),
+    }
+}
+
 /// Write the child's outcome record. Logged, never fatal: the parent already
 /// has (or is about to get) the result through its handle or tool result.
 async fn record_child_outcome(
@@ -1517,11 +1935,13 @@ async fn record_child_outcome(
 /// The detached half of [`execute_subagent`]: create the child's row, record
 /// it in its orchestration phase, start its run on a detached task, and return
 /// the handle to the parent at once.
+#[allow(clippy::too_many_arguments)]
 async fn start_background_child(
     config: AgentConfig,
     workflow: Workflow,
     task_config: TaskConfig,
     params: &SubagentParams,
+    monitors: Option<DecisionSettings>,
     working_dir: PathBuf,
     inflight: InflightGuard,
     max_pending: usize,
@@ -1539,6 +1959,9 @@ async fn start_background_child(
         task_config.provider.as_ref(),
     )
     .await?;
+    // Stored before anything can run it: the handle registered below makes
+    // the child visible, and its first read of its monitors finds them.
+    write_child_monitors(&config.session_manager, &session.id, monitors.as_ref()).await?;
     // Recorded before the run starts, so a closed phase refuses the spawn
     // before anything runs (see `record_phase_spawn`).
     record_phase_spawn(
@@ -1548,7 +1971,8 @@ async fn start_background_child(
         &session.id,
     )
     .await?;
-    Ok(spawn_background_subagent(
+    let monitors_line = monitors_note(monitors.as_ref(), &task_config.parent_session_id);
+    let mut started = spawn_background_subagent(
         config,
         workflow,
         task_config,
@@ -1557,7 +1981,11 @@ async fn start_background_child(
         inflight,
         max_pending,
     )
-    .await)
+    .await;
+    if let Some(note) = monitors_line {
+        started.content.push(Content::text(note));
+    }
+    Ok(started)
 }
 
 async fn execute_subagent(
@@ -1588,6 +2016,10 @@ async fn execute_subagent(
         &mut workflow,
     )
     .await?;
+    // Here for the same reason: a monitor the child cannot have refuses the
+    // spawn before any row exists, and the settings are written on the row as
+    // soon as it does (`write_child_monitors`).
+    let monitors = resolve_child_monitors(&config, &task_config, &params, &workflow).await?;
 
     // Fork-bomb guard: count this spawn, refuse if too many are already in
     // flight, then throttle concurrency — and, if every concurrency slot is
@@ -1622,6 +2054,7 @@ async fn execute_subagent(
             workflow,
             task_config,
             &params,
+            monitors,
             working_dir,
             inflight,
             max_pending,
@@ -1634,6 +2067,7 @@ async fn execute_subagent(
         workflow,
         task_config,
         params,
+        monitors,
         working_dir,
         cancellation_token,
         inflight,
@@ -1652,6 +2086,7 @@ async fn run_blocking_child(
     workflow: Workflow,
     task_config: TaskConfig,
     params: SubagentParams,
+    monitors: Option<DecisionSettings>,
     working_dir: PathBuf,
     cancellation_token: Option<CancellationToken>,
     inflight: InflightGuard,
@@ -1684,10 +2119,15 @@ async fn run_blocking_child(
     )
     .await?;
 
+    // Its monitors first, as on the background path, so its first read of
+    // them finds them.
+    let session_manager = config.session_manager.clone();
+    write_child_monitors(&session_manager, &session.id, monitors.as_ref()).await?;
+    let monitors_line = monitors_note(monitors.as_ref(), &task_config.parent_session_id);
+
     // The child exists: record it in its phase now, so the plan counts it
     // while it runs rather than only once it has finished, and a phase that
     // closed since the check refuses it before it runs.
-    let session_manager = config.session_manager.clone();
     record_phase_spawn(
         &session_manager,
         &task_config.parent_session_id,
@@ -1723,6 +2163,9 @@ async fn run_blocking_child(
     record_child_outcome(&session_manager, &child_session_id, &result).await;
 
     let mut call_result = result.into_call_tool_result();
+    if let Some(note) = monitors_line {
+        call_result.content.push(Content::text(note));
+    }
     if !visibility_note.is_empty() {
         call_result.content.push(Content::text(visibility_note));
     }
@@ -2166,6 +2609,10 @@ async fn spawn_background_subagent(
                 result.human_intervened = true;
             }
         }
+        // Why the chat that started it stopped it, when it did: before the
+        // outcome is written, so the record, the handle and the child's own
+        // chat all say the same thing.
+        note_child_stop_cause(&completion_session_manager, &completion_handle, &mut result).await;
         // The durable outcome is written BEFORE the handle publishes, so anyone
         // woken by the completion (a `workspace_watch`, a panel poll) and then
         // reading the child's row finds the record already there. Every exit
@@ -4925,6 +5372,7 @@ mod tests {
             placement: None,
             phase: None,
             role: None,
+            monitors: None,
         };
         let workflow = build_workflow(&params, &HashMap::new()).expect("ad-hoc workflow");
         let instructions = workflow.instructions.expect("instructions");
@@ -7880,5 +8328,732 @@ mod tests {
         .await
         .expect("an ordinary chat provider still resolves");
         assert_eq!(child.provider.get_name(), "ollama");
+    }
+
+    // --- monitors a spawn puts on its subagent, and why a stop stopped it ---
+
+    /// No workspace in these tests fences the chat.
+    struct AllowEveryChat;
+
+    #[async_trait::async_trait]
+    impl crate::decision::DecisionUseGate for AllowEveryChat {
+        async fn check(
+            &self,
+            _: &crate::decision::DecisionSession,
+            _: &dyn crate::decision::DecisionModel,
+        ) -> crate::decision::DecisionResult<()> {
+            Ok(())
+        }
+    }
+
+    /// A decision service over two fakes, never reading config or Crew:
+    /// `test_decision/tev1` runs on this computer (private), and
+    /// `test_decision/joey` is hosted elsewhere (public).
+    fn spawn_decision_service() -> std::sync::Arc<crate::decision::DecisionService> {
+        use crate::agents::decisions_extension::test_support::{entry, model, FakeSource};
+        use crate::decision::DecisionAdapter;
+        std::sync::Arc::new(
+            crate::decision::DecisionService::new(std::sync::Arc::new(FakeSource {
+                models: vec![
+                    model(
+                        entry(
+                            "tev1",
+                            ProviderTier::Private,
+                            true,
+                            DecisionAdapter::SystemOne,
+                        ),
+                        0.1,
+                    ),
+                    model(
+                        entry(
+                            "joey",
+                            ProviderTier::Public,
+                            false,
+                            DecisionAdapter::SystemOne,
+                        ),
+                        0.1,
+                    ),
+                ],
+            }))
+            .with_use_gate(std::sync::Arc::new(AllowEveryChat))
+            .with_default_model(None),
+        )
+    }
+
+    /// Clears the workspace-services override a test installed.
+    struct ClearServices;
+    impl Drop for ClearServices {
+        fn drop(&mut self) {
+            crate::workspace_services::clear_test_override();
+        }
+    }
+
+    /// A store, a config and a parent chat for a spawn test.
+    struct SpawnFixture {
+        _temp: tempfile::TempDir,
+        root: std::path::PathBuf,
+        sm: std::sync::Arc<crate::session::SessionManager>,
+        config: AgentConfig,
+        parent: String,
+    }
+
+    async fn spawn_fixture(parent_tier: SessionClassification) -> SpawnFixture {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(root.clone()));
+        let parent = persisted_parent(&sm, &root, parent_tier).await;
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        SpawnFixture {
+            _temp: temp,
+            root,
+            sm,
+            config,
+            parent,
+        }
+    }
+
+    impl SpawnFixture {
+        /// The parent's spawn config, asking the fake decision service.
+        fn task_config(&self) -> TaskConfig {
+            let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+                std::sync::Arc::new(RecordingChildProvider::default());
+            TaskConfig::new(provider, &self.parent, &self.root, vec![])
+                .with_decision_service(Some(spawn_decision_service()))
+        }
+
+        /// One spawn through the tool's own entry point.
+        async fn spawn(
+            &self,
+            args: Value,
+            sub_workflows: HashMap<String, SubWorkflow>,
+        ) -> Result<CallToolResult, ErrorData> {
+            handle_subagent_tool(
+                &self.config,
+                args,
+                self.task_config(),
+                sub_workflows,
+                self.root.clone(),
+                None,
+            )
+            .result
+            .await
+        }
+
+        /// The handle of the background child `child`.
+        fn handle(&self, child: &str) -> std::sync::Arc<BackgroundSubagent> {
+            subagent_handle::list_for_session(&self.parent)
+                .into_iter()
+                .find(|handle| handle.child_session_id == child)
+                .expect("the parent holds the child's handle")
+        }
+
+        async fn subagent_rows(&self) -> usize {
+            self.sm
+                .list_subagent_children(&self.parent)
+                .await
+                .unwrap()
+                .len()
+        }
+    }
+
+    fn child_of(started: &CallToolResult) -> String {
+        started
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("child_session_id"))
+            .and_then(Value::as_str)
+            .expect("the handle names the child")
+            .to_string()
+    }
+
+    fn text_of(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Cancel a queued child and wait for its run to end, so nothing it does
+    /// outlives the test's store.
+    async fn cancel_and_wait(handle: &BackgroundSubagent) -> SubagentResult {
+        handle.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            handle.wait_until_complete(),
+        )
+        .await
+        .expect("a cancelled queued child completes")
+    }
+
+    fn off_task_monitor(model: &str) -> Value {
+        json!({
+            "name": "Off task",
+            "question": "Is the agent working on something other than the lexer?",
+            "threshold": 0.8,
+            "action": "stop",
+            "model": model,
+        })
+    }
+
+    /// The monitors are on the child's row while its handle is still queued
+    /// for a concurrency slot: before its first turn, so its first read of
+    /// them finds them. They are the agent's, stamped with the parent's id,
+    /// and the spawn's reply names them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn spawn_with_monitors_writes_them_before_the_child_runs() {
+        crate::workspace_services::set_for_tests(None);
+        let _services = ClearServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let held = hold_every_subagent_permit().await;
+        let fx = spawn_fixture(SessionClassification::Public).await;
+
+        let started = fx
+            .spawn(
+                json!({
+                    "instructions": "Repair the tab handling in the lexer.",
+                    "visible": false,
+                    "monitors": [off_task_monitor("test_decision/tev1")],
+                }),
+                HashMap::new(),
+            )
+            .await
+            .expect("a spawn with a usable monitor starts");
+        let child = child_of(&started);
+        let handle = fx.handle(&child);
+        assert!(
+            handle.is_initializing(),
+            "the child must still be queued for this to prove anything"
+        );
+
+        let stored = crate::decision::settings::load(&fx.sm, &child)
+            .await
+            .unwrap();
+        assert_eq!(stored.monitors.len(), 1, "{stored:?}");
+        let monitor = &stored.monitors[0];
+        assert_eq!(monitor.id, "off-task");
+        assert_eq!(monitor.set_by, MonitorOwner::Agent);
+        assert_eq!(monitor.set_by_session.as_deref(), Some(fx.parent.as_str()));
+        assert_eq!(monitor.action, MonitorAction::Stop);
+        assert_eq!(
+            monitor.model.as_ref().map(|m| m.label()).as_deref(),
+            Some("test_decision/tev1")
+        );
+        let text = text_of(&started);
+        assert!(
+            text.contains("Monitors on it: 'Off task' (yours, stops at 0.80)."),
+            "{text}"
+        );
+
+        cancel_and_wait(&handle).await;
+        drop(held);
+        wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
+    }
+
+    /// A monitor on a decision model the chat may not use (a hosted model, for
+    /// a private chat) refuses the spawn before any row exists, with the
+    /// monitor named and the reason given.
+    #[tokio::test]
+    async fn a_spawn_with_an_unusable_monitor_model_creates_nothing() {
+        let fx = spawn_fixture(SessionClassification::Private).await;
+
+        let refused = fx
+            .spawn(
+                json!({
+                    "instructions": "Repair the tab handling in the lexer.",
+                    "visible": false,
+                    "monitors": [off_task_monitor("test_decision/joey")],
+                }),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("a monitor this chat may not use refuses the spawn");
+        assert_eq!(refused.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            refused
+                .message
+                .starts_with("Monitor 'Off task' could not be put on the subagent: "),
+            "{}",
+            refused.message
+        );
+        assert!(
+            refused.message.ends_with("Nothing was started."),
+            "{}",
+            refused.message
+        );
+        assert_eq!(fx.subagent_rows().await, 0, "no SubAgent row");
+        assert_eq!(
+            fx.sm.count_all_sessions().await.unwrap(),
+            1,
+            "only the parent exists"
+        );
+
+        // More than an agent may set is refused the same way.
+        let five: Vec<Value> = (0..5)
+            .map(|i| {
+                json!({ "name": format!("Watch {i}"), "question": "Is it off task?",
+                        "threshold": 0.8, "action": "steer" })
+            })
+            .collect();
+        let refused = fx
+            .spawn(
+                json!({ "instructions": "x", "visible": false, "monitors": five }),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("five monitors are refused");
+        assert!(refused.message.contains("at most 4"), "{}", refused.message);
+        assert_eq!(fx.subagent_rows().await, 0);
+    }
+
+    /// The person's monitor set to also watch subagents is copied onto the
+    /// child as the person's, marked as copied from the parent; a monitor that
+    /// is not set to, or is off, stays on the parent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn spawn_copies_the_parents_subagent_monitors_as_person_monitors() {
+        use crate::decision::settings::{self, DecisionSettings};
+
+        crate::workspace_services::set_for_tests(None);
+        let _services = ClearServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let held = hold_every_subagent_permit().await;
+        let fx = spawn_fixture(SessionClassification::Public).await;
+        let person = |id: &str, also_subagents: bool, enabled: bool| -> MonitorCriterion {
+            serde_json::from_value(json!({
+                "id": id,
+                "name": id,
+                "question": {
+                    "instructions": "Has the agent deleted a file?",
+                    "kind": { "binary": {} }
+                },
+                "model": { "provider": "test_decision", "model": "tev1" },
+                "threshold": 0.6,
+                "action": "stop",
+                "onError": "pause",
+                "enabled": enabled,
+                "applyToSubagents": also_subagents,
+            }))
+            .unwrap()
+        };
+        settings::save(
+            &fx.sm,
+            &fx.parent,
+            DecisionSettings {
+                default_model: None,
+                monitors: vec![
+                    person("rm", true, true),
+                    person("own", false, true),
+                    person("off", true, false),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+        let started = fx
+            .spawn(
+                json!({ "instructions": "Tidy the build folder.", "visible": false }),
+                HashMap::new(),
+            )
+            .await
+            .expect("the spawn starts");
+        let child = child_of(&started);
+        let stored = settings::load(&fx.sm, &child).await.unwrap();
+        let ids: Vec<&str> = stored.monitors.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["rm"], "{stored:?}");
+        let copy = &stored.monitors[0];
+        assert_eq!(copy.set_by, MonitorOwner::Person);
+        assert_eq!(copy.inherited_from.as_deref(), Some(fx.parent.as_str()));
+        assert!(!copy.apply_to_subagents, "a copy does not spread further");
+        assert!(copy.set_by_session.is_none());
+        let text = text_of(&started);
+        assert!(
+            text.contains("Monitors on it: 'rm' (the person's, from this chat)."),
+            "{text}"
+        );
+
+        cancel_and_wait(&fx.handle(&child)).await;
+        drop(held);
+        wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
+    }
+
+    /// Parent settings this build cannot read refuse the spawn (fail closed),
+    /// so a subagent never runs without the monitors meant to watch it.
+    #[tokio::test]
+    async fn a_spawn_is_refused_when_the_parents_monitors_cannot_be_read() {
+        use crate::decision::settings::{DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION};
+
+        let fx = spawn_fixture(SessionClassification::Public).await;
+        fx.sm
+            .update_extension_state(
+                &fx.parent,
+                DECISION_SETTINGS_STATE,
+                DECISION_SETTINGS_VERSION,
+                |_| Ok(json!({ "monitors": "not a list", "someNewerKey": true })),
+            )
+            .await
+            .unwrap();
+
+        let refused = fx
+            .spawn(
+                json!({ "instructions": "Tidy the build folder.", "visible": false }),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("unreadable parent monitors refuse the spawn");
+        assert_eq!(refused.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            refused.message.starts_with(
+                "Could not read this chat's monitors, so this subagent could not be given the \
+                 ones set to watch subagents ("
+            ),
+            "{}",
+            refused.message
+        );
+        assert!(refused.message.ends_with("Nothing was started."));
+        assert_eq!(fx.subagent_rows().await, 0);
+        assert_eq!(fx.sm.count_all_sessions().await.unwrap(), 1);
+    }
+
+    /// A phase's monitors reach every child spawned into it, each as the
+    /// agent's, stamped with the parent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn phase_monitors_reach_every_child_spawned_into_the_phase() {
+        use crate::agents::orchestration_plan as plan;
+
+        crate::workspace_services::set_for_tests(None);
+        let _services = ClearServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let held = hold_every_subagent_permit().await;
+        let fx = spawn_fixture(SessionClassification::Public).await;
+        let phases: Vec<plan::OrchestratePhaseInput> = serde_json::from_value(json!([
+            { "id": "work", "title": "Do the work", "kind": "implementation",
+              "monitors": [ {
+                  "name": "Edits tests",
+                  "question": "Has the agent edited a test file?",
+                  "threshold": 0.7,
+                  "action": "steer",
+                  "model": "test_decision/tev1"
+              } ] }
+        ]))
+        .unwrap();
+        plan::mutate_plan(&fx.sm, &fx.parent, |current| {
+            plan::apply_gated_plan_as(
+                plan::PlanAuthor::Agent,
+                current,
+                Some("Ship the lexer"),
+                None,
+                &phases,
+            )
+            .map(|p| (p, ()))
+        })
+        .await
+        .unwrap();
+
+        let mut children = Vec::new();
+        for role in ["one", "two"] {
+            let started = fx
+                .spawn(
+                    json!({ "instructions": format!("Part {role} of the work."),
+                            "phase": "work", "role": role, "visible": false }),
+                    HashMap::new(),
+                )
+                .await
+                .expect("a spawn into the phase starts");
+            children.push(child_of(&started));
+        }
+        for child in &children {
+            let stored = crate::decision::settings::load(&fx.sm, child)
+                .await
+                .unwrap();
+            assert_eq!(stored.monitors.len(), 1, "{child}: {stored:?}");
+            let monitor = &stored.monitors[0];
+            assert_eq!(monitor.id, "edits-tests");
+            assert_eq!(monitor.set_by, MonitorOwner::Agent);
+            assert_eq!(monitor.set_by_session.as_deref(), Some(fx.parent.as_str()));
+            assert_eq!(monitor.action, MonitorAction::Steer);
+        }
+
+        for child in &children {
+            cancel_and_wait(&fx.handle(child)).await;
+        }
+        drop(held);
+        wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
+    }
+
+    /// A sub-workflow's `decision_settings` supervise the child spawned from
+    /// it: its monitors are the person's (the file's author set them), its
+    /// default decision model becomes the child's when the parent has none,
+    /// and both are checked against the parent before anything exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn a_subworkflow_declaring_monitors_seeds_its_child() {
+        crate::workspace_services::set_for_tests(None);
+        let _services = ClearServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let held = hold_every_subagent_permit().await;
+        let fx = spawn_fixture(SessionClassification::Private).await;
+        let path = fx.root.join("checker.yaml");
+        std::fs::write(
+            &path,
+            r#"version: "1.0.0"
+title: "Checker"
+description: "Checks the work"
+instructions: "Check the work in this folder."
+decision_settings:
+  defaultModel: {provider: test_decision, model: tev1}
+  monitors:
+    - id: checker-guard
+      name: Checker guard
+      question: {instructions: Has the agent edited a file?, kind: {binary: {}}}
+      threshold: 0.8
+      action: stop
+      onError: pause
+"#,
+        )
+        .unwrap();
+        let sub_workflows = HashMap::from([(
+            "checker".to_string(),
+            SubWorkflow {
+                name: "checker".to_string(),
+                path: path.to_string_lossy().to_string(),
+                values: None,
+                sequential_when_repeated: false,
+                description: Some("checks".to_string()),
+            },
+        )]);
+
+        let started = fx
+            .spawn(
+                json!({ "subworkflow": "checker", "visible": false }),
+                sub_workflows.clone(),
+            )
+            .await
+            .expect("a private chat may give its child a local monitor");
+        let child = child_of(&started);
+        let stored = crate::decision::settings::load(&fx.sm, &child)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.default_model.as_ref().map(|m| m.label()).as_deref(),
+            Some("test_decision/tev1")
+        );
+        assert_eq!(stored.monitors.len(), 1, "{stored:?}");
+        assert_eq!(stored.monitors[0].id, "checker-guard");
+        assert_eq!(stored.monitors[0].set_by, MonitorOwner::Person);
+        assert!(stored.monitors[0].inherited_from.is_none());
+        let text = text_of(&started);
+        assert!(
+            text.contains("'Checker guard' (the person's, from the sub-workflow)"),
+            "{text}"
+        );
+        cancel_and_wait(&fx.handle(&child)).await;
+
+        // The same file naming a hosted default model is refused for this
+        // private chat, before any row exists: its monitor would run on it.
+        std::fs::write(
+            &path,
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("model: tev1}", "model: joey}"),
+        )
+        .unwrap();
+        let rows = fx.subagent_rows().await;
+        let refused = fx
+            .spawn(
+                json!({ "subworkflow": "checker", "visible": false }),
+                sub_workflows,
+            )
+            .await
+            .expect_err("a hosted default model is refused for a private chat");
+        assert!(
+            refused.message.starts_with(
+                "The sub-workflow's default decision model test_decision/joey could not be put \
+                 on the subagent: "
+            ),
+            "{}",
+            refused.message
+        );
+        assert_eq!(fx.subagent_rows().await, rows, "no new SubAgent row");
+
+        drop(held);
+        wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
+    }
+
+    /// The blocking door writes the child's decision settings too. The
+    /// sub-workflow here declares only a default decision model, so the child
+    /// runs to the end with nothing for a decision model to check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn a_blocking_spawn_writes_the_childs_decision_settings() {
+        crate::workspace_services::set_for_tests(None);
+        let _services = ClearServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let fx = spawn_fixture(SessionClassification::Public).await;
+        let path = fx.root.join("reader.yaml");
+        std::fs::write(
+            &path,
+            "version: \"1.0.0\"\ntitle: \"Reader\"\ndescription: \"Reads\"\n\
+             instructions: \"Read the lexer.\"\n\
+             decision_settings:\n  defaultModel: {provider: test_decision, model: tev1}\n",
+        )
+        .unwrap();
+        let sub_workflows = HashMap::from([(
+            "reader".to_string(),
+            SubWorkflow {
+                name: "reader".to_string(),
+                path: path.to_string_lossy().to_string(),
+                values: None,
+                sequential_when_repeated: false,
+                description: None,
+            },
+        )]);
+
+        let finished = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            handle_subagent_tool_inner(
+                &fx.config,
+                json!({ "subworkflow": "reader", "background": false, "visible": false }),
+                fx.task_config(),
+                sub_workflows,
+                fx.root.clone(),
+                None,
+                None,
+            )
+            .result,
+        )
+        .await
+        .expect("the blocking child finishes")
+        .expect("the spawn runs");
+        assert_ne!(finished.is_error, Some(true), "{:?}", finished.content);
+
+        let children = fx.sm.list_subagent_children(&fx.parent).await.unwrap();
+        assert_eq!(children.len(), 1);
+        let stored = crate::decision::settings::load(&fx.sm, &children[0].session.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.default_model.as_ref().map(|m| m.label()).as_deref(),
+            Some("test_decision/tev1")
+        );
+        assert!(stored.monitors.is_empty());
+    }
+
+    /// The person's Stop on the chat that started a subagent (or one of its
+    /// monitors) cancels the child, and the child's result and its own chat
+    /// both say why.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[serial_test::serial(workspace_services)]
+    async fn a_cancelled_child_carries_its_stop_cause() {
+        use crate::agents::subagent_handle::ChildStopCause;
+        use crate::conversation::message::SystemNotificationType;
+
+        crate::workspace_services::set_for_tests(None);
+        let _services = ClearServices;
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let held = hold_every_subagent_permit().await;
+        let fx = spawn_fixture(SessionClassification::Public).await;
+        let started = fx
+            .spawn(
+                json!({ "instructions": "Count slowly to sixty.", "visible": false }),
+                HashMap::new(),
+            )
+            .await
+            .expect("the spawn starts");
+        let child = child_of(&started);
+        let handle = fx.handle(&child);
+        let mut events = crate::session_events::subscribe(&child);
+
+        let stopped =
+            subagent_handle::stop_delegated_children(&fx.parent, ChildStopCause::ParentStopped);
+        assert_eq!(stopped.len(), 1, "{stopped:?}");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            handle.wait_until_complete(),
+        )
+        .await
+        .expect("the stopped child completes");
+
+        let sentence = "Stopped because the person stopped the chat that started this subagent.";
+        assert_eq!(
+            result.status,
+            crate::agents::subagent_result::SubagentStatus::Incomplete
+        );
+        assert!(result.summary.starts_with(sentence), "{}", result.summary);
+
+        let conversation = fx
+            .sm
+            .get_session(&child, true)
+            .await
+            .unwrap()
+            .conversation
+            .expect("the child's chat holds the notice");
+        let is_the_notice = |message: &crate::conversation::message::Message| {
+            message.content.iter().any(|content| {
+                content.as_system_notification().is_some_and(|n| {
+                    n.notification_type == SystemNotificationType::InlineMessage
+                        && n.msg == sentence
+                })
+            })
+        };
+        let notice = conversation
+            .messages()
+            .iter()
+            .find(|message| is_the_notice(message))
+            .expect("the stop cause is stored in the child's chat")
+            .clone();
+        assert!(notice.metadata.user_visible);
+        assert!(
+            !notice.metadata.agent_visible,
+            "a later turn in the child does not read it as context"
+        );
+
+        let published = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match events.recv().await {
+                    Ok(crate::session_events::SessionBusEvent::Agent(
+                        crate::agents::AgentEvent::Message(message),
+                    )) if is_the_notice(&message) => return message,
+                    Ok(_) => continue,
+                    Err(e) => panic!("the child's bus closed: {e:?}"),
+                }
+            }
+        })
+        .await
+        .expect("an observer of the child sees the notice");
+        assert_eq!(published.id, notice.id);
+
+        drop(held);
+        wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
+    }
+
+    /// The spawn schema offers `monitors`, at most four, each a
+    /// [`MonitorSpec`] inlined (the tool's schema has nowhere for a reference
+    /// to point).
+    #[test]
+    fn the_schema_offers_monitors_as_inlined_monitor_specs() {
+        let tool = create_subagent_tool(&[]);
+        let monitors = &tool.input_schema["properties"]["monitors"];
+        assert_eq!(monitors["type"], "array");
+        assert_eq!(monitors["maxItems"], MAX_AGENT_MONITORS);
+        let items = &monitors["items"];
+        for field in ["name", "question", "threshold", "action", "watch", "model"] {
+            assert!(items["properties"].get(field).is_some(), "{field}: {items}");
+        }
+        assert_eq!(items["additionalProperties"], false, "{items}");
+        let rendered = monitors.to_string();
+        assert!(!rendered.contains("$ref"), "{rendered}");
+        assert!(!rendered.contains("$schema"), "{rendered}");
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(description.contains("`monitors`"), "{description}");
     }
 }

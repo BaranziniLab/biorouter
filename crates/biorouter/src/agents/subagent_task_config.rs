@@ -1,4 +1,5 @@
 use crate::agents::ExtensionConfig;
+use crate::decision::DecisionService;
 use crate::privacy::SessionClassification;
 use crate::providers::base::Provider;
 use std::env;
@@ -68,6 +69,12 @@ pub struct TaskConfig {
     /// crossed is institutional. DR-26 requires a statement specific enough to
     /// act on, so the warning is carried rather than recomposed from the name.
     pub dropped_cross_affiliation_extensions: Vec<(String, String)>,
+    /// The decision service the parent's agent asks, when a test or an
+    /// embedder installed one of its own (`Agent::set_decision_service`). The
+    /// child's agent is given the same one, so its monitors and its `decide`
+    /// calls go where the parent's go. `None` means the process's service,
+    /// which is what a child asks without being told.
+    pub decision_service: Option<Arc<DecisionService>>,
 }
 
 impl fmt::Debug for TaskConfig {
@@ -86,6 +93,13 @@ impl fmt::Debug for TaskConfig {
             .field(
                 "dropped_cross_affiliation_extensions",
                 &self.dropped_cross_affiliation_extensions,
+            )
+            .field(
+                "decision_service",
+                &self
+                    .decision_service
+                    .as_ref()
+                    .map(|_| "<custom DecisionService>"),
             )
             .finish()
     }
@@ -118,6 +132,78 @@ impl TaskConfig {
             privacy_tier: SessionClassification::Public,
             dropped_private_extensions: Vec::new(),
             dropped_cross_affiliation_extensions: Vec::new(),
+            decision_service: None,
         }
+    }
+
+    /// The same config, with the child asking `service` for decisions (its
+    /// monitors and its `decide` calls). `None` keeps the process's service.
+    pub fn with_decision_service(mut self, service: Option<Arc<DecisionService>>) -> Self {
+        self.decision_service = service;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source with no models: the service is only carried here, never asked.
+    struct NoModels;
+
+    #[async_trait::async_trait]
+    impl crate::decision::DecisionModelSource for NoModels {
+        async fn list(&self) -> Vec<crate::decision::DecisionModelEntry> {
+            Vec::new()
+        }
+        async fn open(
+            &self,
+            wanted: &crate::decision::DecisionModelRef,
+        ) -> crate::decision::DecisionResult<Arc<dyn crate::decision::DecisionModel>> {
+            Err(crate::decision::DecisionError::NoModel(format!(
+                "{}/{} is not installed",
+                wanted.provider, wanted.model
+            )))
+        }
+    }
+
+    fn config() -> TaskConfig {
+        // A replaying provider with no cassette: never called here.
+        let cassette = std::env::temp_dir().join("biorouter-task-config-test-no-cassette.json");
+        let provider: Arc<dyn Provider> = Arc::new(
+            crate::providers::testprovider::TestProvider::new_replaying(
+                cassette.to_string_lossy().to_string(),
+            )
+            .expect("an empty replaying test provider"),
+        );
+        TaskConfig::new(provider, "parent-1", Path::new("."), Vec::new())
+    }
+
+    /// A child asks the parent's custom decision service, not the process's,
+    /// only when it is handed one; `new` leaves it to the process.
+    #[test]
+    fn the_decision_service_is_carried_only_when_given() {
+        let plain = config();
+        assert!(plain.decision_service.is_none());
+        assert!(format!("{plain:?}").contains("decision_service: None"));
+
+        let service = Arc::new(DecisionService::new(Arc::new(NoModels)));
+        let carried = config().with_decision_service(Some(Arc::clone(&service)));
+        let got = carried
+            .decision_service
+            .as_ref()
+            .expect("the service rides on the config");
+        assert!(Arc::ptr_eq(got, &service));
+        assert!(format!("{carried:?}").contains("<custom DecisionService>"));
+        // A clone (the background path clones before it moves) keeps it.
+        assert!(Arc::ptr_eq(
+            carried.clone().decision_service.as_ref().unwrap(),
+            &service
+        ));
+
+        assert!(carried
+            .with_decision_service(None)
+            .decision_service
+            .is_none());
     }
 }

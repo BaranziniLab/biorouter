@@ -619,6 +619,8 @@ mod tests {
             artifacts: Vec::new(),
             tokens: None,
             human_intervened: false,
+            stopped_by_monitor: None,
+            decisions: None,
         }
     }
 
@@ -1102,5 +1104,87 @@ mod tests {
         assert!(roster.subagents[0].ended_at.is_some());
         assert_eq!(roster.subagents[1].status, SubagentRunStatus::Interrupted);
         crate::workspace_services::clear_test_override();
+    }
+
+    /// A subagent stopped by a monitor, or stopped because its parent was,
+    /// shows why on its row: the side panel, `biorouter session subagents` and
+    /// the terminal UI all draw `result_line`, live and after a restart.
+    #[test]
+    fn a_stopped_subagents_row_says_why() {
+        use crate::agents::subagent_handle::ChildStopCause;
+        use crate::decision::settings::{MonitorOwner, MonitorStopReason, MonitorStopReport};
+
+        let mut stopped = completed("Adults usually take 200 to 400 mg.");
+        stopped.apply_monitor_stop(&MonitorStopReport {
+            session_id: "child".into(),
+            monitor_id: "gives-a-dose".into(),
+            name: "gives a dose".into(),
+            set_by: MonitorOwner::Agent,
+            set_by_session: Some("parent".into()),
+            inherited_from: None,
+            question: "Has the assistant stated a specific numeric drug dose?".into(),
+            threshold: 0.6,
+            below: false,
+            p: Some(0.93),
+            reason: MonitorStopReason::Fired,
+        });
+        assert_eq!(outcome_status(&stopped), SubagentRunStatus::Incomplete);
+        let line = result_line(&stopped).unwrap();
+        assert!(
+            line.starts_with(
+                "Stopped by monitor 'gives a dose' (set by this chat's agent): P 0.93 reached \
+                 its threshold 0.60."
+            ),
+            "{line}"
+        );
+        assert!(line.chars().count() <= MAX_RESULT_LINE_CHARS);
+
+        // Live: a finished handle's result.
+        let row = derive_row(
+            child_row(ExtensionData::new()),
+            Some(&LiveState {
+                result: Some(stopped.clone()),
+                ..live(false)
+            }),
+            false,
+            at(100),
+        );
+        assert_eq!(row.status, SubagentRunStatus::Incomplete);
+        assert_eq!(row.result_line.as_deref(), Some(line.as_str()));
+
+        // The parent was stopped, so the child was.
+        let mut cancelled = completed("counted to 12");
+        cancelled.mark_cancelled();
+        cancelled.note_stop_cause(&ChildStopCause::ParentStopped);
+        assert_eq!(outcome_status(&cancelled), SubagentRunStatus::Incomplete);
+        assert_eq!(
+            result_line(&cancelled).as_deref(),
+            Some("Stopped because the person stopped the chat that started this subagent.")
+        );
+    }
+
+    /// After a restart the durable outcome record carries the same line.
+    #[tokio::test]
+    async fn a_stopped_subagents_reason_survives_in_its_outcome_record() {
+        use crate::agents::subagent_handle::ChildStopCause;
+
+        let (_temp, sm) = store().await;
+        let child = spawn_child(&sm, "parent-stopped-record", "stopped").await;
+        let mut cancelled = completed("partial");
+        cancelled.mark_cancelled();
+        cancelled.note_stop_cause(&ChildStopCause::ParentMonitor {
+            monitor: "fanout".into(),
+        });
+        record_outcome_at(&sm, &child, &cancelled, at(5))
+            .await
+            .unwrap();
+
+        let session = sm.get_session(&child, false).await.unwrap();
+        let record = read_outcome_record(&session.extension_data).unwrap();
+        assert_eq!(record.status, SubagentRunStatus::Incomplete);
+        assert_eq!(
+            record.result_line.as_deref(),
+            Some("Stopped because monitor 'fanout' stopped the chat that started this subagent.")
+        );
     }
 }

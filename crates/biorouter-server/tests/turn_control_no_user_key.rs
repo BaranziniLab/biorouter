@@ -575,6 +575,66 @@ async fn a_subagents_turn_is_still_refused_and_the_refusal_says_why() {
     discard(&state, &id).await;
 }
 
+/// Item B on this daemon: the browser's plain Stop on a chat stops the
+/// subagents that chat started, as it does on the desktop's. SD-11's admission
+/// argument covers it — whoever may stop this chat's turn here may already ask
+/// it, through `/reply`, to `workspace_close` its children — while a subagent's
+/// own chat is still refused, by the subagent rule, before anything is stopped.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_keyless_plain_stop_stops_the_parents_subagents() {
+    assert_the_daemon_is_keyless();
+    let state = AppState::new().await.unwrap();
+    let parent = seed(&state, Chat::Public).await;
+    let child = seed(&state, Chat::Subagent).await;
+    let (parent_guard, parent_token) = begin_turn(&state, &parent);
+    let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+        &parent,
+        &child,
+        "delegated work",
+        CancellationToken::new(),
+    );
+    assert!(handle.is_running());
+
+    // The subagent's own tab: still refused on this daemon, in the daemon's
+    // words (`SUBAGENT_CONTROL_NO_KEY`), and nothing is stopped.
+    let (status, body) = send(reply_routes(&state), stop_request(&child, None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body.contains("stopping or steering a subagent from its tab requires that proof"),
+        "refused, but not with SUBAGENT_CONTROL_NO_KEY: {body}"
+    );
+    assert!(
+        !handle.is_cancelled(),
+        "a refused Stop reached the subagent"
+    );
+
+    // The parent's Stop: admitted, and it takes the subagent with it.
+    let (status, body) = send(reply_routes(&state), stop_request(&parent, None)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the browser's Stop was refused: {body}"
+    );
+    let body = json_of(&body);
+    assert_eq!(body["cancelled"], json!(true), "{body}");
+    assert!(parent_token.is_cancelled());
+    assert_eq!(body["stopped_subagents"], json!([child]), "{body}");
+    assert!(
+        handle.is_cancelled(),
+        "the parent stopped, and its subagent ran on"
+    );
+    assert_eq!(
+        handle.stop_cause(),
+        Some(biorouter::agents::subagent_handle::ChildStopCause::ParentStopped)
+    );
+
+    handle.complete(biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"));
+    drop(parent_guard);
+    discard(&state, &child).await;
+    discard(&state, &parent).await;
+}
+
 /// The empty steer exactly as `biorouter session` sends it to ask whether it may
 /// steer (`steer_gate_question` in `commands/session_watch.rs`): no
 /// `X-User-Action` header at all — the browser's shim sends an empty one — and

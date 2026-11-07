@@ -10,8 +10,12 @@
 use rmcp::model::{CallToolResult, Content, Role};
 use serde::Serialize;
 
+use crate::agents::subagent_handle::ChildStopCause;
 use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::Conversation;
+use crate::decision::settings::{
+    clipped_question, MonitorOwner, MonitorStopReason, MonitorStopReport,
+};
 
 /// How a subagent run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -125,6 +129,151 @@ yourself to find out which one was meant. The subagent stopped for a reason you 
 available to either of you says which one is right. Guessing here overwrites work that was not \
 yours, and no summary afterwards would show that a guess happened.";
 
+/// Opens the tool result when a decision-model monitor on the subagent stopped
+/// its run. Above the child's own report for the same reason as
+/// [`BLOCKED_HEADER`]: what follows reads as finished work otherwise.
+const MONITOR_STOP_HEADER: &str =
+    "The subagent was STOPPED by a decision-model monitor and did not finish.";
+
+/// Closes it when the parent's own agent set the monitor (`setBy: agent`): the
+/// parent may continue the child, and may change its own monitor.
+const AGENT_MONITOR_DIRECTIVE: &str = "Read it with workspace_read_conversation if you need \
+its work. To continue it, send it a turn with workspace_send_prompt (its monitors still apply), \
+or change the monitor with workspace_monitor.";
+
+/// Closes it when the person set the monitor, on the subagent or on this chat
+/// for every subagent it starts. The parent must not route around a rule the
+/// person set.
+const PERSON_MONITOR_DIRECTIVE: &str = "The person set this monitor. Do not start another \
+subagent or do the work yourself to get around it. Tell the person what happened and wait for \
+their decision.";
+
+/// Characters of an error message a stop sentence quotes.
+const STOP_ERROR_CHARS: usize = 200;
+
+/// A decision-model monitor's stop of the subagent's run, as the chat that
+/// started it reads it. Built from the monitor engine's
+/// [`MonitorStopReport`] by [`SubagentResult::apply_monitor_stop`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MonitorStopSummary {
+    pub monitor_id: String,
+    pub name: String,
+    /// `person` or `agent` (the agent of the chat that started the subagent).
+    pub set_by: MonitorOwner,
+    /// A copy of a person's monitor on the chat that started the subagent,
+    /// set to also watch the subagents it starts.
+    pub inherited: bool,
+    /// The monitor's question, at most 300 characters.
+    pub question: String,
+    pub threshold: f64,
+    /// It fires below its threshold rather than at or above it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub below: bool,
+    /// The probability that decided, when a check answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p: Option<f64>,
+    pub reason: MonitorStopReason,
+}
+
+impl MonitorStopSummary {
+    pub fn from_report(report: &MonitorStopReport) -> Self {
+        Self {
+            monitor_id: report.monitor_id.clone(),
+            name: report.name.clone(),
+            set_by: report.set_by,
+            inherited: report.inherited_from.is_some(),
+            question: clipped_question(&report.question),
+            threshold: report.threshold,
+            below: report.below,
+            p: report.p,
+            reason: report.reason.clone(),
+        }
+    }
+
+    /// Who set the monitor, in words both readers of the summary share: the
+    /// parent's model (its tool result) and the person (the subagent's row in
+    /// the chat that started it). Both read it from that chat, so "this chat"
+    /// is the parent for each.
+    fn owner_phrase(&self) -> &'static str {
+        match (self.set_by, self.inherited) {
+            (MonitorOwner::Agent, _) => "set by this chat's agent",
+            (MonitorOwner::Person, true) => "the person's, from this chat",
+            (MonitorOwner::Person, false) => "set by the person",
+        }
+    }
+
+    /// The sentence that opens the subagent's summary: which monitor stopped
+    /// the run, whose it is, why, and that the run did not finish.
+    pub fn sentence(&self) -> String {
+        let name = one_line(&self.name, usize::MAX);
+        let owner = self.owner_phrase();
+        let threshold = format_p(self.threshold);
+        let question = one_line(&self.question, usize::MAX);
+        let because = match &self.reason {
+            MonitorStopReason::Fired => match (self.p, self.below) {
+                (Some(p), false) => {
+                    format!("P {} reached its threshold {threshold}", format_p(p))
+                }
+                (Some(p), true) => {
+                    format!("P {} fell below its threshold {threshold}", format_p(p))
+                }
+                (None, _) => format!("its answer crossed its threshold {threshold}"),
+            },
+            MonitorStopReason::CouldNotCheck { error } => format!(
+                "it could not be checked ({}), and it is set to pause when that happens",
+                one_line(error, STOP_ERROR_CHARS)
+            ),
+            MonitorStopReason::CheckLimit { limit } => format!(
+                "it reached its limit of {limit} checks in one turn, and it is set to pause \
+                 when it cannot check"
+            ),
+            MonitorStopReason::ChildStopped { child_title, .. } => format!(
+                "its copy on subagent '{}' stopped that subagent",
+                one_line(child_title, usize::MAX)
+            ),
+            MonitorStopReason::Unreadable { error } => format!(
+                "the subagent's monitors could not be read ({}), and it is set to pause when \
+                 that happens",
+                one_line(error, STOP_ERROR_CHARS)
+            ),
+        };
+        format!(
+            "Stopped by monitor '{name}' ({owner}): {because}. Its question: \"{question}\". \
+             The run did not finish."
+        )
+    }
+
+    fn directive(&self) -> &'static str {
+        match self.set_by {
+            MonitorOwner::Agent => AGENT_MONITOR_DIRECTIVE,
+            MonitorOwner::Person => PERSON_MONITOR_DIRECTIVE,
+        }
+    }
+}
+
+/// How a probability reads in a stop sentence: two decimals, as every monitor
+/// notice writes it.
+fn format_p(p: f64) -> String {
+    format!("{p:.2}")
+}
+
+/// `text` on one line: control characters (a newline, a tab) become spaces,
+/// runs of whitespace one space, and past `max` characters it is cut with an
+/// ellipsis. A stop sentence is the first line of the summary the subagent
+/// panel shows, so nothing in it may break that line.
+fn one_line(text: &str, max: usize) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let line = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= max {
+        return line;
+    }
+    let cut: String = line.chars().take(max.saturating_sub(1)).collect();
+    format!("{}\u{2026}", cut.trim_end())
+}
+
 /// Token usage for the subagent's own session (lifetime totals across its turns).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SubagentTokens {
@@ -160,6 +309,17 @@ pub struct SubagentResult {
     /// the parent's tool result so it can weigh the summary.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub human_intervened: bool,
+    /// Present only when a decision-model monitor on the subagent stopped its
+    /// run ([`Self::apply_monitor_stop`]). The status is then `incomplete`.
+    /// Boxed because it is rare and this envelope rides by value in several
+    /// enums, which an inline summary would make lopsided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped_by_monitor: Option<Box<MonitorStopSummary>>,
+    /// The text of the subagent's last decision marker (`Decision models: …`):
+    /// what its monitors and decision calls did in its last turn, so steers
+    /// and failed checks reach the parent too, not only stops.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decisions: Option<String>,
 }
 
 impl SubagentResult {
@@ -174,6 +334,8 @@ impl SubagentResult {
             artifacts: Vec::new(),
             tokens: None,
             human_intervened: false,
+            stopped_by_monitor: None,
+            decisions: None,
         }
     }
 
@@ -192,6 +354,52 @@ impl SubagentResult {
                 "Subagent was cancelled before completion. Best-effort recap from its work:\n\n{recap}"
             )
         };
+    }
+
+    /// Say why a cancelled run was stopped from outside it: the chat that
+    /// started it was stopped, by the person or by one of its monitors, or a
+    /// monitor on a sibling stopped the whole run.
+    ///
+    /// Prefixes the summary with the cause's sentence and returns it, so the
+    /// caller can also store it as a notice in the subagent's own chat. Call it
+    /// on a run whose token was cancelled, after [`Self::mark_cancelled`]: the
+    /// status stays what that made it (`incomplete`). Calling it again with the
+    /// same cause changes nothing.
+    pub fn note_stop_cause(&mut self, cause: &ChildStopCause) -> String {
+        let sentence = cause.sentence();
+        if !self.summary.starts_with(&sentence) {
+            self.summary = if self.summary.trim().is_empty() {
+                sentence.clone()
+            } else {
+                format!("{sentence}\n\n{}", self.summary)
+            };
+        }
+        sentence
+    }
+
+    /// A decision-model monitor on the subagent stopped its run.
+    ///
+    /// The status becomes `incomplete` whatever the transcript looks like: the
+    /// run may end on ordinary text, but a stop is never `completed`. The
+    /// summary opens with which monitor stopped it, whose it is and why, so
+    /// every surface that shows the summary's first line (the subagent panel,
+    /// `biorouter session subagents`, the terminal UI) shows the reason. The
+    /// first stop wins; a second call changes nothing.
+    pub fn apply_monitor_stop(&mut self, report: &MonitorStopReport) {
+        if self.stopped_by_monitor.is_some() {
+            return;
+        }
+        let stop = MonitorStopSummary::from_report(report);
+        let sentence = stop.sentence();
+        self.status = SubagentStatus::Incomplete;
+        self.error = None;
+        self.question = None;
+        self.summary = if self.summary.trim().is_empty() {
+            sentence
+        } else {
+            format!("{sentence}\n\n{}", self.summary)
+        };
+        self.stopped_by_monitor = Some(Box::new(stop));
     }
 
     /// The child's turn was **aborted** — a provider failure, a tool loop, a
@@ -230,6 +438,8 @@ impl SubagentResult {
             artifacts,
             tokens: None,
             human_intervened: false,
+            stopped_by_monitor: None,
+            decisions: None,
         }
     }
 
@@ -313,6 +523,8 @@ impl SubagentResult {
             artifacts,
             tokens: None,
             human_intervened: false,
+            stopped_by_monitor: None,
+            decisions: None,
         }
     }
 
@@ -325,9 +537,16 @@ impl SubagentResult {
         // whether it needs framing instead of falling silently into the plain
         // path, which is how `Blocked` came to be indistinguishable from
         // `Completed` in the first place.
-        let framing = match self.status {
-            SubagentStatus::Blocked => Some((BLOCKED_HEADER, BLOCKED_DIRECTIVE)),
-            SubagentStatus::Completed | SubagentStatus::Incomplete | SubagentStatus::Error => None,
+        //
+        // A monitor's stop outranks the status: the run is `incomplete`, and
+        // what the parent may do next depends on who set the monitor.
+        let framing = match (&self.stopped_by_monitor, self.status) {
+            (Some(stop), _) => Some((MONITOR_STOP_HEADER, stop.directive())),
+            (None, SubagentStatus::Blocked) => Some((BLOCKED_HEADER, BLOCKED_DIRECTIVE)),
+            (
+                None,
+                SubagentStatus::Completed | SubagentStatus::Incomplete | SubagentStatus::Error,
+            ) => None,
         };
 
         let mut out = String::new();
@@ -348,6 +567,12 @@ impl SubagentResult {
                 "Note: the user intervened directly in this subagent's tab during the run.",
             );
         }
+        if let Some(decisions) = self.decisions_line() {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(&decisions);
+        }
         let footer = self.footer_line();
         if !footer.is_empty() {
             if !out.is_empty() {
@@ -362,6 +587,18 @@ impl SubagentResult {
             out.push_str(directive);
         }
         out
+    }
+
+    /// The subagent's last decision marker, said as belonging to it. `None`
+    /// when it has none, or only whitespace.
+    fn decisions_line(&self) -> Option<String> {
+        let text = one_line(self.decisions.as_deref()?, usize::MAX);
+        let clauses = text
+            .strip_prefix("Decision models:")
+            .map(str::trim)
+            .unwrap_or(text.as_str());
+        (!clauses.is_empty())
+            .then(|| format!("Decision models in the subagent's last turn: {clauses}"))
     }
 
     fn footer_line(&self) -> String {
@@ -1066,5 +1303,365 @@ mod tests {
             !clean_text.to_lowercase().contains("intervened"),
             "{clean_text}"
         );
+    }
+
+    // --- A run stopped from outside, or by its own monitor ---------------------
+
+    fn agent_text(result: &SubagentResult) -> String {
+        flatten_prose(&result.to_agent_text())
+    }
+
+    /// The parent was stopped, so the run was cancelled: the result opens with
+    /// why, keeps the work it did, and stays `incomplete`.
+    #[test]
+    fn a_cancelled_child_says_why_it_stopped() {
+        let cases = [
+            (
+                ChildStopCause::ParentMonitor {
+                    monitor: "fanout".into(),
+                },
+                "Stopped because monitor 'fanout' stopped the chat that started this subagent.",
+            ),
+            (
+                ChildStopCause::ParentStopped,
+                "Stopped because the person stopped the chat that started this subagent.",
+            ),
+            (
+                ChildStopCause::SiblingMonitor {
+                    monitor: "rm".into(),
+                    sibling: "deletes a file".into(),
+                },
+                "Stopped because monitor 'rm', set by the person to watch every subagent of \
+                 that chat, stopped subagent 'deletes a file'.",
+            ),
+        ];
+        for (cause, expected) in cases {
+            let mut result = SubagentResult::from_conversation(
+                &conv(vec![Message::assistant().with_text("counted to 12")]),
+                None,
+                true,
+            );
+            result.mark_cancelled();
+
+            let sentence = result.note_stop_cause(&cause);
+
+            assert_eq!(sentence, expected);
+            assert_eq!(result.status, SubagentStatus::Incomplete);
+            assert!(
+                result.summary.starts_with(&format!("{expected}\n\n")),
+                "the reason leads: {}",
+                result.summary
+            );
+            assert!(result.summary.contains("counted to 12"), "the work is kept");
+            assert_eq!(
+                result.summary.lines().next(),
+                Some(expected),
+                "the first line is what the subagent panel shows"
+            );
+
+            // Saying it twice says it once.
+            let before = result.summary.clone();
+            assert_eq!(result.note_stop_cause(&cause), expected);
+            assert_eq!(result.summary, before);
+
+            let text = result.to_agent_text();
+            assert!(text.starts_with(expected), "{text}");
+            assert!(text.contains("[subagent incomplete]"), "{text}");
+        }
+
+        // A run that produced nothing still reads as the reason alone.
+        let mut empty = SubagentResult::from_conversation(&conv(vec![]), None, true);
+        empty.summary = String::new();
+        let sentence = empty.note_stop_cause(&ChildStopCause::ParentStopped);
+        assert_eq!(empty.summary, sentence);
+    }
+
+    fn report(
+        set_by: MonitorOwner,
+        inherited: bool,
+        reason: MonitorStopReason,
+    ) -> MonitorStopReport {
+        MonitorStopReport {
+            session_id: "child-1".into(),
+            monitor_id: "gives-a-dose".into(),
+            name: "gives a dose".into(),
+            set_by,
+            set_by_session: (set_by == MonitorOwner::Agent).then(|| "parent-1".into()),
+            inherited_from: inherited.then(|| "parent-1".into()),
+            question: "Has the assistant stated a specific numeric drug dose?".into(),
+            threshold: 0.6,
+            below: false,
+            p: Some(0.93),
+            reason,
+        }
+    }
+
+    /// A monitor stopped the child's run. The run may well end on ordinary
+    /// text, which would read as `completed`; the envelope must say
+    /// `incomplete`, lead with the monitor, its owner and why, and tell the
+    /// parent what it may do next, which depends on who set the monitor.
+    #[test]
+    fn a_monitor_stop_reads_incomplete_with_the_reason_first() {
+        let finished_text = conv(vec![
+            Message::user().with_text("explain ibuprofen dosing"),
+            Message::assistant().with_text("Adults usually take 200 to 400 mg."),
+        ]);
+
+        // The parent's own agent set it.
+        let mut result = SubagentResult::from_conversation(&finished_text, None, true);
+        assert_eq!(result.status, SubagentStatus::Completed);
+        result.apply_monitor_stop(&report(
+            MonitorOwner::Agent,
+            false,
+            MonitorStopReason::Fired,
+        ));
+
+        assert_eq!(result.status, SubagentStatus::Incomplete);
+        let expected = "Stopped by monitor 'gives a dose' (set by this chat's agent): P 0.93 \
+                        reached its threshold 0.60. Its question: \"Has the assistant stated a \
+                        specific numeric drug dose?\". The run did not finish.";
+        assert_eq!(result.summary.lines().next(), Some(expected));
+        assert!(
+            result
+                .summary
+                .ends_with("Adults usually take 200 to 400 mg."),
+            "the child's own words are kept below the reason: {}",
+            result.summary
+        );
+        let stop = result
+            .stopped_by_monitor
+            .clone()
+            .expect("the stop is recorded");
+        assert_eq!(stop.monitor_id, "gives-a-dose");
+        assert_eq!(stop.set_by, MonitorOwner::Agent);
+        assert!(!stop.inherited);
+        assert_eq!(stop.p, Some(0.93));
+
+        let text = agent_text(&result);
+        assert!(
+            text.starts_with(
+                "the subagent was stopped by a decision-model monitor and did not finish. \
+                 stopped by monitor 'gives a dose'"
+            ),
+            "the outcome leads: {text}"
+        );
+        assert!(text.contains("[subagent incomplete]"), "{text}");
+        assert!(
+            text.ends_with(
+                "read it with workspace_read_conversation if you need its work. to continue it, \
+                 send it a turn with workspace_send_prompt (its monitors still apply), or change \
+                 the monitor with workspace_monitor."
+            ),
+            "an agent's monitor: the agent may continue the child or change its monitor: {text}"
+        );
+        assert!(!text.contains("the person set this monitor"), "{text}");
+
+        let call = result.clone().into_call_tool_result();
+        assert_eq!(
+            call.is_error,
+            Some(false),
+            "a stop is not a failure to retry"
+        );
+        let structured = call.structured_content.expect("structured envelope");
+        assert_eq!(structured["status"], "incomplete");
+        assert_eq!(structured["stopped_by_monitor"]["set_by"], "agent");
+        assert_eq!(structured["stopped_by_monitor"]["inherited"], false);
+        assert_eq!(structured["stopped_by_monitor"]["reason"]["kind"], "fired");
+        assert_eq!(structured["stopped_by_monitor"]["threshold"], 0.6);
+        assert!(structured["stopped_by_monitor"].get("below").is_none());
+
+        // A second stop changes nothing: the first one is the one that ended it.
+        let before = result.summary.clone();
+        result.apply_monitor_stop(&report(
+            MonitorOwner::Person,
+            false,
+            MonitorStopReason::CheckLimit { limit: 50 },
+        ));
+        assert_eq!(result.summary, before);
+        assert_eq!(
+            result.stopped_by_monitor.as_ref().unwrap().set_by,
+            MonitorOwner::Agent
+        );
+
+        // The person set it, on the child or on this chat for every subagent.
+        for (inherited, owner) in [
+            (false, "set by the person"),
+            (true, "the person's, from this chat"),
+        ] {
+            let mut result = SubagentResult::from_conversation(&finished_text, None, true);
+            result.apply_monitor_stop(&report(
+                MonitorOwner::Person,
+                inherited,
+                MonitorStopReason::Fired,
+            ));
+            assert!(
+                result
+                    .summary
+                    .starts_with(&format!("Stopped by monitor 'gives a dose' ({owner}): ")),
+                "{}",
+                result.summary
+            );
+            assert_eq!(
+                result.stopped_by_monitor.as_ref().unwrap().inherited,
+                inherited
+            );
+            let text = agent_text(&result);
+            assert!(
+                text.starts_with("the subagent was stopped by a decision-model monitor"),
+                "{text}"
+            );
+            assert!(
+                text.ends_with(
+                    "the person set this monitor. do not start another subagent or do the work \
+                     yourself to get around it. tell the person what happened and wait for \
+                     their decision."
+                ),
+                "a person's monitor: the parent must not route around it: {text}"
+            );
+            assert!(!text.contains("workspace_send_prompt"), "{text}");
+        }
+    }
+
+    /// A child that stopped to ask and was then stopped by a monitor reads as
+    /// stopped, not as a question: its question is not the reason it ended.
+    #[test]
+    fn a_monitor_stop_outranks_a_returned_question() {
+        let mut result = SubagentResult::from_conversation(
+            &conv(vec![Message::assistant().with_text("BLOCKED: which file?")]),
+            None,
+            true,
+        );
+        assert_eq!(result.status, SubagentStatus::Blocked);
+        result.apply_monitor_stop(&report(
+            MonitorOwner::Person,
+            false,
+            MonitorStopReason::Fired,
+        ));
+        assert_eq!(result.status, SubagentStatus::Incomplete);
+        assert_eq!(result.question, None);
+        let text = agent_text(&result);
+        assert!(!text.contains("changed nothing"), "{text}");
+        assert!(
+            text.contains("blocked: which file?"),
+            "the child's words are kept"
+        );
+    }
+
+    /// Each way a monitor stops a run says so in place of a probability.
+    #[test]
+    fn every_stop_reason_has_its_own_sentence() {
+        let sentence = |reason: MonitorStopReason, below: bool, p: Option<f64>| {
+            let mut report = report(MonitorOwner::Person, false, reason);
+            report.below = below;
+            report.p = p;
+            MonitorStopSummary::from_report(&report).sentence()
+        };
+        assert!(sentence(MonitorStopReason::Fired, true, Some(0.12))
+            .contains(": P 0.12 fell below its threshold 0.60."));
+        assert!(sentence(MonitorStopReason::Fired, false, None)
+            .contains(": its answer crossed its threshold 0.60."));
+        assert!(sentence(
+            MonitorStopReason::CouldNotCheck {
+                error: "tev1:0.8b did not\nanswer".into()
+            },
+            false,
+            None
+        )
+        .contains(
+            ": it could not be checked (tev1:0.8b did not answer), and it is set to pause \
+             when that happens."
+        ));
+        assert!(
+            sentence(MonitorStopReason::CheckLimit { limit: 50 }, false, None).contains(
+                ": it reached its limit of 50 checks in one turn, and it is set to pause when it \
+                 cannot check."
+            )
+        );
+        assert!(sentence(
+            MonitorStopReason::ChildStopped {
+                child_session_id: "c-2".into(),
+                child_title: "deletes a file".into(),
+            },
+            false,
+            Some(0.9)
+        )
+        .contains(": its copy on subagent 'deletes a file' stopped that subagent."));
+        assert!(sentence(
+            MonitorStopReason::Unreadable {
+                error: "bad record".into()
+            },
+            false,
+            None
+        )
+        .contains(
+            ": the subagent's monitors could not be read (bad record), and it is set to pause \
+             when that happens."
+        ));
+        // Every one ends the same way, and on one line.
+        for reason in [
+            MonitorStopReason::Fired,
+            MonitorStopReason::CheckLimit { limit: 3 },
+        ] {
+            let text = sentence(reason, false, Some(0.7));
+            assert!(text.ends_with("The run did not finish."), "{text}");
+            assert_eq!(text.lines().count(), 1, "{text}");
+        }
+
+        // A long question is cut at 300 characters, and a long error at 200.
+        let mut long = report(
+            MonitorOwner::Person,
+            false,
+            MonitorStopReason::CouldNotCheck {
+                error: "e".repeat(500),
+            },
+        );
+        long.question = "q".repeat(500);
+        let stop = MonitorStopSummary::from_report(&long);
+        assert_eq!(stop.question.chars().count(), 300);
+        let text = stop.sentence();
+        assert!(
+            text.contains(&format!("({}\u{2026})", "e".repeat(199))),
+            "{text}"
+        );
+    }
+
+    /// The child's last decision marker reaches the parent's model, which
+    /// reads text and never the structured envelope.
+    #[test]
+    fn the_subagents_decision_marker_reaches_the_parent() {
+        let mut result = SubagentResult::from_conversation(
+            &conv(vec![Message::assistant().with_text("done")]),
+            None,
+            true,
+        );
+        assert!(!result.to_agent_text().contains("Decision models"));
+        let structured = result
+            .clone()
+            .into_call_tool_result()
+            .structured_content
+            .unwrap();
+        assert!(structured.get("decisions").is_none());
+        assert!(structured.get("stopped_by_monitor").is_none());
+
+        result.decisions =
+            Some("Decision models: monitor 'tone' checked 3 times (last P 0.41), fired".into());
+        let text = result.to_agent_text();
+        assert!(
+            text.contains(
+                "Decision models in the subagent's last turn: monitor 'tone' checked 3 times \
+                 (last P 0.41), fired"
+            ),
+            "{text}"
+        );
+        assert!(text.starts_with("done"), "{text}");
+        let structured = result.into_call_tool_result().structured_content.unwrap();
+        assert_eq!(
+            structured["decisions"],
+            "Decision models: monitor 'tone' checked 3 times (last P 0.41), fired"
+        );
+
+        let mut blank = SubagentResult::from_error("x");
+        blank.decisions = Some("  ".into());
+        assert!(!blank.to_agent_text().contains("Decision models"));
     }
 }
