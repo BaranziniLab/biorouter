@@ -146,6 +146,11 @@ const EXEMPT: &[(&str, &str)] = &[
          open no window of their own. Only the GUI daemon flashes.",
     ),
     (
+        "crates/biorouter-dictation-capture/src/lib.rs",
+        "its only process spawn runs /bin/sh inside `#[cfg(unix)] impl Backend for CommandRecorder`; \
+         that implementation cannot compile on Windows",
+    ),
+    (
         "crates/biorouter-bench/",
         "benchmark harness, not shipped in the desktop app",
     ),
