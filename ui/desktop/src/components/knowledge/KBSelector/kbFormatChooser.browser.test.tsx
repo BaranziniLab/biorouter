@@ -33,6 +33,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const STYLES = resolve(here, '../../../styles');
 const requireFromDesktop = createRequire(resolve(here, '../../../../package.json'));
 const SHOTS = process.env.KB_CHOOSER_SHOTS;
+/** How long a colour change or the open motion may take to land on a loaded CI runner. */
+const SETTLE_MS = 2_000;
 
 /** The chooser as the manager mounts it, with a `create` the test decides the answer of. */
 const CHOOSER_ENTRY = `
@@ -173,6 +175,34 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
     await browser?.close();
   }, 120_000);
 
+  /**
+   * Waits until nothing on the page is animating. Reduced motion shortens every transition and
+   * animation to 0.01ms, but each still finishes only on a rendered frame, and under CI load the
+   * next frame can come later than any fixed sleep: until it does, `getComputedStyle` reports the
+   * colour an element is leaving (the field line's muted ink, the accent Save had), and a box
+   * still mid-press. On a timeout the message lists what was still running.
+   */
+  async function settled(page: Page, what: string) {
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() =>
+            document
+              .getAnimations()
+              .filter((a) => a.playState === 'running' || a.pending)
+              .map((a) =>
+                'transitionProperty' in a
+                  ? String(a.transitionProperty)
+                  : 'animationName' in a
+                    ? String(a.animationName)
+                    : 'an animation'
+              )
+          ),
+        { timeout: SETTLE_MS, message: `${what}: nothing on the page is still animating` }
+      )
+      .toEqual([]);
+  }
+
   async function open(
     result: 'resolve' | 'reject' = 'resolve',
     { script, css } = chooser,
@@ -201,8 +231,10 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
     }, result);
     await page.addScriptTag({ content: script });
     await page.waitForSelector(ready);
-    // Let the dialog's open motion settle, so the first reading is the resting one.
+    // Let the dialog's open motion settle, so the first reading is the resting one: a short wait
+    // for what the first frames start (the field's autofocus edge), then until none of it runs.
     await page.waitForTimeout(150);
+    await settled(page, 'the dialog has opened');
     expect(errors, 'page errors').toEqual([]);
     return page;
   }
@@ -254,6 +286,24 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
       await page.mouse.click(pointer.x, pointer.y);
       await page.waitForSelector('[role="alert"]');
       await page.waitForTimeout(150);
+      // The line and the input change colour by transition (the helper's line turns into the
+      // error's), which can outlast that wait under load: wait for the danger ink and the danger
+      // edge, then for nothing to be moving, and only then measure.
+      const probe = await look(page, '#probe-ink');
+      const edge = await look(page, '#probe-edge');
+      await expect
+        .poll(async () => (await look(page, '[data-slot="field-error"]')).color, {
+          timeout: SETTLE_MS,
+          message: 'the field line turns to the danger ink',
+        })
+        .toBe(probe.color);
+      await expect
+        .poll(async () => (await look(page, NAME)).edge, {
+          timeout: SETTLE_MS,
+          message: 'the input turns to the danger edge',
+        })
+        .toBe(edge.edge);
+      await settled(page, 'the message has landed');
 
       // Nothing under the pointer moved: the dialog is the same box and so are the footer buttons.
       const dialogAfter = await look(page, DIALOG);
@@ -278,7 +328,6 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
       ).toBe('Create knowledge base');
 
       // The message is the field's own line: 12px, the danger ink, below the input.
-      const probe = await look(page, '#probe-ink');
       const message = await look(page, '[data-slot="field-error"]');
       const input = await look(page, NAME);
       expect(message.fontSize).toBe('12px');
@@ -287,7 +336,6 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
       expect(message.top - (input.top + input.height), 'a 6px gap under the field').toBeLessThan(8);
 
       // The input draws the danger edge at the same 1px, and holds the caret.
-      const edge = await look(page, '#probe-edge');
       expect(input.edgeWidth).toBe('1px');
       expect(input.edge).toBe(edge.edge);
       expect(input.edge).not.toBe(nameBefore.edge);
@@ -308,8 +356,13 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
       await page.keyboard.type('Cohort notes');
       await page.waitForTimeout(100);
       expect(await page.locator('[role="alert"]').count()).toBe(0);
-      const typed = await look(page, NAME);
-      expect(typed.edge).not.toBe(edge.edge);
+      await expect
+        .poll(async () => (await look(page, NAME)).edge, {
+          timeout: SETTLE_MS,
+          message: 'typing quiets the danger edge',
+        })
+        .not.toBe(edge.edge);
+      await settled(page, 'the typed name has landed');
       expect(Math.abs((await look(page, CREATE)).top - createBefore.top)).toBeLessThan(0.6);
     } finally {
       await page.close();
@@ -340,16 +393,20 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
         await page.screenshot({ path: join(SHOTS, `format-chooser-create-neutral-${mode}.png`) });
       }
 
-      // A name that cannot make a folder is still "not yet".
+      // A name that cannot make a folder is still "not yet". The ground must NOT move, so this
+      // waits a while for a change that should not come, then for any that did to finish.
       await page.keyboard.type('!!!');
       await page.waitForTimeout(200);
+      await settled(page, 'the typed name has landed');
       expect(await ground(CREATE), 'no letters: still the control ground').toBe(cancel);
 
-      // A usable name: the accent, and Cancel stays where it was.
+      // A usable name: the accent (the ground eases there, so wait for it), and Cancel stays
+      // where it was.
       await page.fill(NAME, '');
       await page.keyboard.type('Cohort notes');
-      await page.waitForTimeout(200);
-      expect(await ground(CREATE), 'a usable Name: the accent').toBe(accent);
+      await expect
+        .poll(() => ground(CREATE), { timeout: SETTLE_MS, message: 'a usable Name: the accent' })
+        .toBe(accent);
       expect(await ground(CANCEL)).toBe(cancel);
       expect(await page.isEnabled(CREATE)).toBe(true);
       if (SHOTS) {
@@ -358,8 +415,12 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
 
       // Emptied again, it steps back, and a click still says what is missing.
       await page.fill(NAME, '');
-      await page.waitForTimeout(200);
-      expect(await ground(CREATE)).toBe(cancel);
+      await expect
+        .poll(() => ground(CREATE), {
+          timeout: SETTLE_MS,
+          message: 'emptied again: the control ground',
+        })
+        .toBe(cancel);
       await page.click(CREATE);
       await page.waitForSelector('[role="alert"]');
       expect(await page.locator('[role="alert"]').innerText()).toBe('Enter a name.');
@@ -413,11 +474,14 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
       const accent = await ground('#probe-accent');
       expect(await ground(SAVE), 'a name to save: the accent').toBe(accent);
       await page.fill(INPUT, '');
-      await page.waitForTimeout(200);
-      expect(await ground(SAVE), 'emptied: not the accent').not.toBe(accent);
-      expect(await ground(SAVE), 'emptied: the control ground').toBe(
-        await ground('button:has-text("Cancel")')
-      );
+      // The ground eases from the accent, so both readings wait for it to land.
+      await expect
+        .poll(() => ground(SAVE), { timeout: SETTLE_MS, message: 'emptied: not the accent' })
+        .not.toBe(accent);
+      const cancelGround = await ground('button:has-text("Cancel")');
+      await expect
+        .poll(() => ground(SAVE), { timeout: SETTLE_MS, message: 'emptied: the control ground' })
+        .toBe(cancelGround);
       const restEdge = (await look(page, INPUT)).edge;
       await page.click('[data-testid="knowledge-kb-submit"]');
       await page.waitForSelector('[role="alert"]');
