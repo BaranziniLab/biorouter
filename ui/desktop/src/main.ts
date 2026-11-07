@@ -101,6 +101,13 @@ import {
 import { CopilotPermissionSettings } from './utils/copilotPermissionSettings';
 import { setDictationBusy } from './utils/dictationBusy';
 import { ROSETTA_BEFORE_MACOS15_KEY, rosettaBeforeMacOS15 } from './components/dictation/rosetta';
+import {
+  DICTIONARY_ADD_TERM_CHANNEL,
+  DICTIONARY_OFFERED_CHANNEL,
+  isDictionaryOffered,
+  setDictionaryOffered,
+  spellingMenuEntries,
+} from './components/dictionary/contextMenu';
 import { showDictationModelsFolder } from './utils/dictationModelsFolder';
 import {
   FAKE_MIC_WAV_ENV,
@@ -2031,30 +2038,49 @@ const createChat = async (
   mainWindow.webContents.session.setSpellCheckerLanguages(['en-US', 'en-GB']);
   mainWindow.webContents.on('context-menu', (_event, params) => {
     const menu = new Menu();
-    const hasSpellingSuggestions = params.dictionarySuggestions.length > 0 || params.misspelledWord;
 
-    if (hasSpellingSuggestions) {
-      for (const suggestion of params.dictionarySuggestions) {
-        menu.append(
-          new MenuItem({
-            label: suggestion,
-            click: () => mainWindow.webContents.replaceMisspelling(suggestion),
-          })
-        );
-      }
-
-      if (params.misspelledWord) {
-        menu.append(
-          new MenuItem({
-            label: 'Add to dictionary',
-            click: () =>
-              mainWindow.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord),
-          })
-        );
-      }
-
-      if (params.selectionText) {
-        menu.append(new MenuItem({ type: 'separator' }));
+    // The spelling part (DD-68, `components/dictionary/contextMenu.ts`): the
+    // suggestions, Electron's own **Add to spelling dictionary**, and **Add to
+    // Biorouter dictionary…**, which sends `{text, x, y}` to this window so the
+    // renderer can tell which pane the word was in and open the term dialog.
+    // Nothing here writes to the Biorouter dictionary, and no term is copied
+    // into the operating system's spellchecker. A window whose status store read
+    // managed `dictionary: false` is not offered the Biorouter item.
+    const offerBiorouter = isDictionaryOffered(mainWindow.webContents.id);
+    for (const entry of spellingMenuEntries(params, offerBiorouter)) {
+      switch (entry.kind) {
+        case 'replace':
+          menu.append(
+            new MenuItem({
+              label: entry.label,
+              click: () => mainWindow.webContents.replaceMisspelling(entry.label),
+            })
+          );
+          break;
+        case 'spelling':
+          menu.append(
+            new MenuItem({
+              label: entry.label,
+              click: () =>
+                mainWindow.webContents.session.addWordToSpellCheckerDictionary(entry.word),
+            })
+          );
+          break;
+        case 'biorouter':
+          menu.append(
+            new MenuItem({
+              label: entry.label,
+              click: () => {
+                if (!mainWindow.isDestroyed()) {
+                  mainWindow.webContents.send(DICTIONARY_ADD_TERM_CHANNEL, entry.payload);
+                }
+              },
+            })
+          );
+          break;
+        case 'separator':
+          menu.append(new MenuItem({ type: 'separator' }));
+          break;
       }
     }
     if (params.selectionText) {
@@ -3588,6 +3614,14 @@ ipcMain.handle('dictation:show-models-folder', async (event, folder: unknown) =>
 ipcMain.on('dictation:busy', (event, busy: unknown) => {
   if (!isDictationSender(event)) return;
   setDictationBusy(event.sender, busy === true);
+});
+
+// Whether this window's context menu offers **Add to Biorouter dictionary…**:
+// a window says `false` once its dictation status store reads managed
+// `dictionary: false` (`components/dictionary/contextMenu.ts`).
+ipcMain.on(DICTIONARY_OFFERED_CHANNEL, (event, offered: unknown) => {
+  if (!isDictationSender(event)) return;
+  setDictionaryOffered(event.sender, offered === true);
 });
 
 // Handle opening system notifications preferences

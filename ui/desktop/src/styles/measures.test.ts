@@ -105,6 +105,8 @@ const CHAT_MEASURE_VIEWS = [
   'extensions/ExtensionsView.tsx',
   'skills/SkillsView.tsx',
   'applications/ApplicationsView.tsx',
+  // The Dictionary page (DD-67, PR-20), built on the Skills page's template.
+  'dictionary/DictionaryView.tsx',
   // The catch-all's page. It is a route view like the rest and shares the
   // hairline with whatever the user came from, so it takes the same column.
   'NotFoundView.tsx',
@@ -138,6 +140,7 @@ const PAGE_HEADER_VIEWS = [
   'extensions/ExtensionsView.tsx',
   'skills/SkillsView.tsx',
   'applications/ApplicationsView.tsx',
+  'dictionary/DictionaryView.tsx',
   'NotFoundView.tsx',
 ].map((rel) => ({
   rel,

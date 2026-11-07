@@ -1,0 +1,45 @@
+/*
+ * The Dictionary page's load bearing rules ("Page layout" in
+ * docs/dictation/dictionary.md). Authored and unlayered, as the other areas'
+ * sheets are, because a newly written Tailwind class can fail to generate under
+ * BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry"). Everything else is the
+ * shared list row, the fill rule and the page band.
+ */
+
+/* The lock badged glyph after a private term: private is a shape, not a tint, so it
+   takes the row's muted ink and the badge its own accent (`.br-icon-lock-badge`). */
+.br-dictionary-private-glyph {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* A row the person acted on while the pointer held the list: it stays where it was
+   and says what happened, until the pointer leaves and the list catches up. */
+.br-dictionary-row[data-settled] > :first-child {
+  opacity: 0.55;
+}
+
+.br-dictionary-row[data-settled] {
+  cursor: default;
+}
+
+/* Rows held but not drawn (`rowWindow.ts`): one box exactly their height, so the scroll
+   height and every drawn row's place are what the real rows would give. It never shrinks
+   in the list's flex column. */
+.br-dictionary-gap {
+  flex: none;
+}
+
+/* The paste field is also the drop zone. A field has no resting border (R-27); while
+   a file is dragged over it the field draws the focus edge, as a focused field does. */
+.br-dictionary-drop[data-dragging='true'] {
+  border-color: var(--border-focus);
+}
+
+@media (forced-colors: active) {
+  .br-dictionary-drop[data-dragging='true'] {
+    border-color: Highlight;
+  }
+}

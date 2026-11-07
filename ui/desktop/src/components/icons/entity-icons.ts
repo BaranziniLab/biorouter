@@ -5,6 +5,7 @@ import {
   Brain,
   ChatBubble,
   Clock,
+  Dictionary,
   Folder,
   KnowledgeGraph,
   Pipeline,
@@ -34,7 +35,8 @@ export type EntityKind =
   | 'agent'
   | 'chat'
   | 'model'
-  | 'folder';
+  | 'folder'
+  | 'dictionary';
 
 export type EntityIcon = React.ComponentType<{
   className?: string;
@@ -55,4 +57,6 @@ export const ENTITY_ICONS: Record<EntityKind, EntityIcon> = {
   model: Brain,
   // A working folder. "Open in Finder" is `FolderOpen`, an action, not this.
   folder: Folder,
+  // The dictation dictionary (DD-67). Its own glyph: memory and knowledge keep theirs.
+  dictionary: Dictionary,
 };

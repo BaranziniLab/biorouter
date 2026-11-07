@@ -8,9 +8,10 @@
  * is transcribed as visible text (never an InfoTip, and never "this computer"
  * when the daemon is elsewhere), and offers **Install**, **Not now** and
  * **More in Settings**. While the model installs it shows the progress the
- * microphone's ring shows; completion shows no toast. The **Edit your
- * dictionary** link arrives with the Dictionary page (PR-20), and the
- * **Suggest dictionary words from my chats** box with PR-23.
+ * microphone's ring shows; completion shows no toast. Once a model is ready,
+ * **Edit your dictionary** takes the person to the Dictionary page (PR-20),
+ * except under managed `dictionary: false`; the **Suggest dictionary words from
+ * my chats** box arrives with PR-23.
  */
 import { speechModelsCopy } from '../settings/models/copy';
 import {
@@ -19,6 +20,8 @@ import {
   useSpeechModels,
 } from '../settings/models/speechModelStore';
 import { Button } from '../ui/button';
+import { DICTIONARY_LABELS } from '../dictionary/copy';
+import { openDictionaryPage } from '../dictionary/navigation';
 import { Progress } from '../ui/progress';
 import {
   DICTATION_ACTIONS,
@@ -30,7 +33,7 @@ import {
   type DictationMessageId,
 } from './copy';
 import type { DictationStatus } from './dictationApi';
-import { dictationDaemonPlace, type DictationDaemonPlace } from './dictationStore';
+import { dictationDaemonPlace, hasUsableModel, type DictationDaemonPlace } from './dictationStore';
 
 type SpeechModel = DictationStatus['models'][number];
 
@@ -72,6 +75,10 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
   const where =
     place.kind === 'this-computer' ? SETUP_WHERE_THIS_COMPUTER : setupWhereOnServer(place.host);
   const installing = progress !== null;
+  // After an install the popover can still be open; the next thing to do is the dictionary,
+  // unless managed policy turns it off, where the sidebar row and Settings' link are hidden too.
+  const ready =
+    !installing && !!status && hasUsableModel(status) && status.policy.dictionary.allowed !== false;
   const pending = model ? !!models.pending[model.id] : false;
   const refusal = model ? models.errors[model.id] : undefined;
   const caution = model && !installing ? installQuestion(model) : null;
@@ -121,6 +128,21 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
         >
           {DICTATION_ACTIONS.moreInSettings}
         </Button>
+        {ready ? (
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className="h-auto px-0 text-supporting"
+            data-testid="dictation-setup-edit-dictionary"
+            onClick={() => {
+              onNotNow();
+              openDictionaryPage();
+            }}
+          >
+            {DICTIONARY_LABELS.editYourDictionary}
+          </Button>
+        ) : null}
         <Button type="button" variant="secondary" size="sm" onClick={onNotNow}>
           {DICTATION_ACTIONS.notNow}
         </Button>

@@ -80,6 +80,8 @@ const ROOTS: { dir: string; outOfScope: string[] }[] = [
   { dir: join(SETTINGS_DIR, '../applications'), outOfScope: [] },
   // Knowledge, 2026-10-10 (spec wave 2), once its owner's sweep had cleared the rules' offenders.
   { dir: join(SETTINGS_DIR, '../knowledge'), outOfScope: [] },
+  // The Dictionary page and its dialogs (DD-67, PR-20), swept from the day they landed.
+  { dir: join(SETTINGS_DIR, '../dictionary'), outOfScope: [] },
 ];
 
 function sourceFiles(): { path: string; rel: string; text: string }[] {
@@ -238,6 +240,8 @@ describe('the settings vocabulary', () => {
       'settings/permission/PermissionModal.tsx',
       'baam/MarketplaceDialog.tsx',
       'knowledge/KnowledgeView.tsx',
+      'dictionary/DictionaryView.tsx',
+      'dictionary/TermDialog.tsx',
     ]) {
       expect(covered).toContain(file);
     }

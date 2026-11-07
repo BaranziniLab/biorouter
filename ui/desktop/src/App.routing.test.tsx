@@ -32,6 +32,7 @@ import { MemoryRouter, Outlet } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppInner } from './App';
 import { echoPath } from './components/NotFoundView';
+import { BROWSER_SURFACE_MARKER } from './utils/surface';
 
 Object.defineProperty(window, 'history', {
   value: { replaceState: vi.fn(), state: null },
@@ -165,6 +166,7 @@ vi.mock('./components/workflows/WorkflowsView', () => routeStub('workflows'));
 vi.mock('./components/skills/SkillsView', () => routeStub('skills'));
 vi.mock('./components/applications/ApplicationsView', () => routeStub('applications'));
 vi.mock('./components/knowledge/KnowledgeView', () => routeStub('knowledge'));
+vi.mock('./components/dictionary/DictionaryView', () => routeStub('dictionary'));
 vi.mock('./components/extensions/ExtensionsView', () => routeStub('extensions'));
 
 const mockElectron = {
@@ -269,15 +271,21 @@ describe('an address with no route', () => {
    * nothing, but a catch-all placed at the wrong nesting level would shadow the
    * shell's own children, and every one of them would fail the same way.
    */
-  it.each(['/', '/settings', '/sessions', '/schedules', '/workflows', '/skills', '/applications'])(
-    'leaves the real route %s alone',
-    async (path) => {
-      renderAt(path);
+  it.each([
+    '/',
+    '/settings',
+    '/sessions',
+    '/schedules',
+    '/workflows',
+    '/skills',
+    '/applications',
+    '/dictionary',
+  ])('leaves the real route %s alone', async (path) => {
+    renderAt(path);
 
-      await waitFor(() => expect(screen.getByTestId('app-shell')).toBeInTheDocument());
-      expect(screen.queryByText('There is nothing at this address')).not.toBeInTheDocument();
-    }
-  );
+    await waitFor(() => expect(screen.getByTestId('app-shell')).toBeInTheDocument());
+    expect(screen.queryByText('There is nothing at this address')).not.toBeInTheDocument();
+  });
 });
 
 describe('the routes PR #184 retired', () => {
@@ -318,5 +326,27 @@ describe('the address the not-found page echoes', () => {
     const echoed = echoPath(`/${'a'.repeat(500)}`);
     expect(echoed.length).toBeLessThanOrEqual(72);
     expect(echoed.endsWith('…')).toBe(true);
+  });
+});
+
+/**
+ * DD-67: the Dictionary page lives at `/dictionary` inside the shell. Until PR-21 lands the
+ * `serve` gates a browser that follows a link there goes Home, as its sidebar shows no row.
+ */
+describe('the Dictionary route', () => {
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  it('renders the page in the desktop app', async () => {
+    renderAt('/dictionary');
+    expect(await screen.findByTestId('route-dictionary')).toBeInTheDocument();
+  });
+
+  it('sends a serve browser Home until PR-21', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    renderAt('/dictionary');
+    expect(await screen.findByTestId('home-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('route-dictionary')).toBeNull();
   });
 });

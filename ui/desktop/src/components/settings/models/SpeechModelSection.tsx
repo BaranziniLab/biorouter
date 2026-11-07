@@ -26,6 +26,8 @@ import {
   writeDictationViewer,
 } from '../../dictation/dictationStore';
 import { micErrorNotice, type MicErrorNotice } from '../../dictation/micErrors';
+import { DICTIONARY_LABELS, dictionaryMessage } from '../../dictionary/copy';
+import { openDictionaryPage } from '../../dictionary/navigation';
 import { SettingSelect } from '../SettingSelect';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
@@ -203,6 +205,7 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
       <LanguageRow status={status} enabled={enabled} />
       <MicrophoneRow status={status} />
       <SpeedRow status={status} />
+      <EditDictionaryRow status={status} />
 
       {/* Not `destructive`: a slow model is a choice, not a deletion. */}
       <ConfirmationModal
@@ -868,6 +871,32 @@ function SpeedRow({ status }: { status: DictationStatus }) {
       >
         {bench.running ? <Spinner /> : null}
         {bench.running ? copy.testing : copy.testSpeed}
+      </Button>
+    </SettingRow>
+  );
+}
+
+/**
+ * **Edit your dictionary** (DD-67, PR-20): the link to the Dictionary page, which then opens the
+ * sidebar's Components group by the current route rule. Absent where managed policy turns the
+ * dictionary off, as the sidebar's row is.
+ */
+function EditDictionaryRow({ status }: { status: DictationStatus }) {
+  if (!status.policy.dictionary.allowed) return null;
+  return (
+    <SettingRow
+      label={DICTIONARY_LABELS.title}
+      help={dictionaryMessage('MSG-DICTIONARY-HELP')}
+      data-testid="speech-dictionary"
+    >
+      <Button
+        type="button"
+        size="sm"
+        variant="secondary"
+        onClick={openDictionaryPage}
+        data-testid="speech-edit-dictionary"
+      >
+        {DICTIONARY_LABELS.editYourDictionary}
       </Button>
     </SettingRow>
   );

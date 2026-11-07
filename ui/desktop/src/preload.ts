@@ -2,6 +2,12 @@ import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { Workflow } from './workflow';
 import { createCrewShareDroppedFile } from './utils/crewSharePathBridge';
 import type { AppExportRequest, AppExportResult } from './utils/appExportRequest';
+import {
+  DICTIONARY_ADD_TERM_CHANNEL,
+  DICTIONARY_OFFERED_CHANNEL,
+  readDictionaryAddTermPayload,
+  type DictionaryAddTermPayload,
+} from './components/dictionary/contextMenu';
 
 // One-time warning for callers still using the legacy `off()` API. Each
 // channel only warns once to avoid log spam under React StrictMode.
@@ -342,6 +348,19 @@ type ElectronAPI = {
   dictationShowModelsFolder?: (folder: string) => Promise<boolean>;
   setDictationBusy?: (busy: boolean) => void;
   onDictationLockScreen?: (callback: () => void) => () => void;
+  /**
+   * The context menu's **Add to Biorouter dictionary…** (DD-68): the word or
+   * selection and where the menu opened, `{text, x, y}`, so the renderer can
+   * resolve the pane under that point and open the term dialog prefilled. A
+   * payload that is not that shape is dropped here. Answers the disposer.
+   */
+  onDictionaryAddTerm?: (callback: (payload: DictionaryAddTermPayload) => void) => () => void;
+  /**
+   * Whether this window's context menu offers **Add to Biorouter dictionary…**:
+   * `false` once its dictation status store reads managed `dictionary: false`,
+   * as the sidebar hides its row.
+   */
+  setDictionaryOffered?: (offered: boolean) => void;
   onMouseBackButtonClicked: (callback: () => void) => () => void;
   offMouseBackButtonClicked: (callback: () => void) => void;
   /** Subscribe to a main-process IPC event. Returns a disposer; call it to
@@ -819,6 +838,16 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on('dictation:lock-screen', listener);
     return () => ipcRenderer.removeListener('dictation:lock-screen', listener);
   },
+  onDictionaryAddTerm: (callback: (payload: DictionaryAddTermPayload) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      const checked = readDictionaryAddTermPayload(payload);
+      if (checked) callback(checked);
+    };
+    ipcRenderer.on(DICTIONARY_ADD_TERM_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(DICTIONARY_ADD_TERM_CHANNEL, listener);
+  },
+  setDictionaryOffered: (offered: boolean) =>
+    ipcRenderer.send(DICTIONARY_OFFERED_CHANNEL, offered === true),
   onMouseBackButtonClicked: (callback: () => void) => {
     const wrapper = (_event: Electron.IpcRendererEvent) => callback();
     ipcRenderer.on('mouse-back-button-clicked', wrapper);

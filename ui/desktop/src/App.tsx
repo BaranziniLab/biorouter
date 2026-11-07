@@ -32,6 +32,7 @@ import { useNewChatTabRequests } from './components/chatGroups/useNewChatTabRequ
 import { useSavedTabTitleSync } from './components/chatGroups/useSavedTabTitleSync';
 import { runCloseActiveTabCommand } from './utils/closeActiveTabCommand';
 import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
+import { isBrowserSurface } from './utils/surface';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
 import ChatGroupsShell from './components/chatGroups/ChatGroupsShell';
 import SettingsView, { SettingsViewOptions } from './components/settings/SettingsView';
@@ -55,6 +56,8 @@ import ExtensionsView, { ExtensionsViewOptions } from './components/extensions/E
 import WorkflowsView from './components/workflows/WorkflowsView';
 import SkillsView from './components/skills/SkillsView';
 import KnowledgeView from './components/knowledge/KnowledgeView';
+import DictionaryView from './components/dictionary/DictionaryView';
+import DictionaryTermDoor from './components/dictionary/DictionaryTermDoor';
 import { KnowledgeProvider } from './components/knowledge/KnowledgeContext';
 import ApplicationsView from './components/applications/ApplicationsView';
 import NotFoundView from './components/NotFoundView';
@@ -231,6 +234,12 @@ const WorkflowsRoute = () => {
 
 const SkillsRoute = () => <SkillsView />;
 const KnowledgeRoute = () => <KnowledgeView />;
+/**
+ * The Dictionary page (DD-67). Desktop only until PR-21 lands the `serve` gates (DD-94): a
+ * browser that follows a link here goes Home, as the sidebar there shows no row for it.
+ */
+const DictionaryRoute = () =>
+  isBrowserSurface() ? <Navigate to="/" replace /> : <DictionaryView />;
 
 const PermissionRoute = () => {
   const location = useLocation();
@@ -718,6 +727,9 @@ export function AppInner() {
         pauseOnHover
       />
       <ExtensionInstallModal addExtension={addExtension} setView={setView} />
+      {/* The context menu's **Add to Biorouter dictionary…** (DD-68): renders nothing until
+          the menu sends a word, and nothing on a browser, which has no Electron menu. */}
+      <DictionaryTermDoor />
       <div className="relative w-screen h-screen overflow-hidden bg-background-canvas flex flex-col">
         <div className="titlebar-drag-region" />
         <ChatStreamProvider>
@@ -773,6 +785,7 @@ export function AppInner() {
                 <Route path="workflows" element={<WorkflowsRoute />} />
                 <Route path="skills" element={<SkillsRoute />} />
                 <Route path="knowledge" element={<KnowledgeRoute />} />
+                <Route path="dictionary" element={<DictionaryRoute />} />
                 <Route path="crew" element={<CrewApp />} />
                 <Route
                   path="shared-session"
