@@ -145,13 +145,19 @@ biorouter doctor --fix uv
 biorouter doctor --format json --no-update
 ```
 
-### dictation status [options]
+### dictation
 
-Show whether this computer can dictate with Biorouter's local engine, and why: whether this build carries the engine, whether the processor can run it (with the sentence that says what it lacks), the backend and thread count, the worker's state and memory, the speech models (none until the model commands arrive), the model folder and account, and what your organization's managed policy allows. Reading the status never starts a dictation worker. It always exits 0.
+Local dictation: the speech engine built into `biorouter` and `biorouterd`, and the speech models it runs. No model comes with an install or an update; you install one with `dictation install`, from the Baranzini Lab's releases on GitHub, into your own data folder (`~/.local/share/biorouter/dictation/models/` on macOS and Linux, `%LOCALAPPDATA%\UCSF\biorouter\data\dictation\models\` on Windows, `<root>/data/dictation/models/` under `BIOROUTER_PATH_ROOT`). Every file is checked against a SHA-256 pin compiled into Biorouter. The commands work offline on the files they find, need no running app or daemon, and print every sentence from the message catalog in [dictation surfaces](../dictation/surfaces.md#message-catalog). Design: [engine and models](../dictation/engine-and-models.md).
+
+A refusal that means nothing was attempted exits `2` with its sentence alone: an agent's shell (`BIOROUTER_TERMINAL` set), no terminal without `--yes`, `--system` without root or Administrator, your organization's managed policy, an unknown model id, a build with no engine, or a processor that cannot run it. A failed download, hash or verification exits `1`.
+
+#### dictation status [options]
+
+Show whether this computer can dictate with Biorouter's local engine, and why: whether this build carries the engine, whether the processor can run it (with the sentence that says what it lacks), the backend and thread count, the worker's state and memory, the installed speech models and where they are, the model folder and account, and what your organization's managed policy allows. Reading the status never starts a dictation worker. It always exits 0. `biorouter doctor` prints the same lines in its **Dictation** section.
 
 **Options:**
 
-- **`--format <FORMAT>`**: `text` (default) or `json`, a versioned object (`"schema": 1`) for scripts
+- **`--format <FORMAT>`**: `text` (default) or `json`, a versioned object (`"schema": 1`) for scripts; later versions only add keys
 - **`-v, --verbose`**: Also start a worker only to read its first message (its protocol, engine build and CPU features) and stop it again, or show why it could not start, with the last lines it wrote to stderr. Under a managed policy that turns dictation off, nothing is started and the policy's sentence is shown instead
 
 **Usage:**
@@ -159,6 +165,199 @@ Show whether this computer can dictate with Biorouter's local engine, and why: w
 ```bash
 biorouter dictation status
 biorouter dictation status --format json --verbose
+```
+
+#### dictation list [options]
+
+List every speech model in the catalog with its size, languages and how well it suits this computer, whether it is installed and in which folder, which one is in use, and any retired or unrecognized file found in a model folder. Alias: `ls`.
+
+**Options:**
+
+- **`--format <FORMAT>`**: `text` (default) or `json`
+
+#### dictation install [options] [MODEL]
+
+Download a speech model and the voice detector it needs, check each file against its pin, and place them in your data folder. With no `MODEL` it installs the one recommended for this computer: `whisper-large-v3-turbo-q5_0` (574 MB) on Apple Silicon, `whisper-small.en-q8_0` (264 MB) elsewhere, each with `silero-vad-v6.2.0` (885 KB). It shows each file's size and SHA-256, the source and the target folder with its account, then asks once at a terminal. A download that stops (Ctrl-C, a lost connection, a killed process) keeps its partial file, and the next `install` resumes from it. On Apple Silicon it then prepares the model in the background (one load and a short decode, so the first dictation does not wait for Metal's shaders to compile) and returns without waiting. Alias: `pull`.
+
+**Options:**
+
+- **`--from <FILE|DIR>`**: Install files you already downloaded, for example on a computer with no network. Each file is identified by its SHA-256, whatever its name; `biorouter dictation urls` lists what to download
+- **`--system`**: Install into the computer's shared folder, which every account reads (`/var/lib/biorouter/dictation/models` on Linux, `/Library/Application Support/Biorouter/dictation/models` on macOS, `%ProgramData%\Biorouter\dictation\models` on Windows). Needs root or Administrator, and refuses a path whose folders other accounts could change or that passes through a link. Nothing is prepared in the background, because each account's Metal cache is its own
+- **`-y, --yes`**: Install without asking. Needed without a terminal
+
+It is always refused in an agent's shell: a person installs speech models, from their own terminal. On Linux, when a `biorouterd` on this computer runs as another account (the packaged `biorouter` service user), `install` and `status` say that models you install are not visible to it and print the `sudo -u <service user> -H biorouter dictation install` line to run instead.
+
+**Usage:**
+
+```bash
+biorouter dictation install
+biorouter dictation install --yes whisper-small.en-q8_0
+biorouter dictation install --from ~/Downloads/
+sudo biorouter dictation install --system
+```
+
+#### dictation remove [options] `<MODEL>`
+
+Remove an installed speech model from your folder (or the shared one with `--system`). Removing the last speech model there removes the voice detector too; the detector stays while another speech model in that folder needs it or is being installed. It refuses while another Biorouter process installs the same model, asks at a terminal, and is never refused by managed policy. Alias: `rm`.
+
+**Options:**
+
+- **`--system`**: Remove the copy in the computer's shared folder (needs root or Administrator)
+- **`-y, --yes`**: Remove without asking. Needed without a terminal
+
+#### dictation use `<MODEL>`
+
+Choose the speech model dictation uses; it is saved as `BIOROUTER_DICTATION_MODEL` in your configuration. It refuses a model that is not installed, one your organization's policy leaves out, and an English only model while the dictation language is not English. Refused in an agent's shell.
+
+#### dictation urls [MODEL]
+
+Print the download address, size and SHA-256 of a model's files and of the voice detector it needs (with no `MODEL`, the one recommended for this computer), for a computer that cannot reach GitHub: download them elsewhere, copy them over, then run `biorouter dictation install --from <file|dir>`.
+
+**Usage:**
+
+```bash
+biorouter dictation urls whisper-small.en-q8_0
+```
+
+#### dictation verify
+
+Hash every installed model file in every folder again and compare it with its pin. A file in your own folder that does not match is deleted; one in another folder is reported. Exits 1 when any file failed.
+
+#### dictation bench [options]
+
+Measure how fast this computer transcribes 5.5 s of the bundled sample with the model in use, and record the real time factor, which decides whether a slow model is offered as suitable here.
+
+**Options:**
+
+- **`--format <FORMAT>`**: `text` (default) or `json`
+
+### transcribe [options] `<FILE|->`
+
+Transcribe a recording on this computer with the local engine and your personal dictionary, and print the text. Nothing leaves the computer. It reads WAV (any rate, depth and channel count), AIFF, FLAC and MP3, or `-` for standard input; M4A, AAC, Ogg, Opus and WebM are refused with an `ffmpeg` line that converts the file to WAV first (M4A, AAC and Ogg Vorbis are planned). A recording may be up to 2 hours long, and standard input up to 200 MB. The command runs in cron, scripts, Docker and an agent's shell alike; in an agent's shell it uses only your public dictionary terms and records no use of them.
+
+**Options:**
+
+- **`--format <FORMAT>`**: `text` (default), `json` (a versioned object, `"schema": 1`: the text as corrected and as decoded, each correction in `changes`, the timed `segments`, the model, the language, `audio_s`, `bias_scope` and the timings; on a failure `error_code` and `message`), `srt` or `vtt`
+- **`-o, --output <FILE>`**: Write the transcript to `FILE` instead of standard output
+- **`--language <LANGUAGE>`**: The language spoken, a two letter code such as `en`, or `auto` to let the model decide. Default: the dictation language, `en` unless changed. `--format json` reports `auto` as given, not the language the model found
+- **`--model <MODEL>`**: A speech model id from `biorouter dictation list`. Default: the model in use
+- **`--session <SESSION_ID>`**: The chat the transcript is for. Its private dictionary terms are used only when the chat is private, you run this at your own terminal, and a private model is configured; otherwise only public terms are used, with no sign of the difference
+- **`--context-file <FILE>`**: Text the recording is about (at most 4 KB is read). It ranks the dictionary terms that steer the transcript and is never sent anywhere
+- **`--no-dictionary`**: Transcribe without the personal dictionary
+
+**Exit codes:** `0` the text was written; `1` the input could not be read or decoded, the output could not be written, or the engine failed; `2` refused before anything was attempted (no engine, the processor, policy, no model, an unknown or uninstalled model, a language the model cannot take); `3` no speech was heard, or the recording was under half a second; `4` stopped with Ctrl-C.
+
+Each `transcribe` loads its own copy of the model, so running many at once is slower than running them one after another: eight at once took 16 s in all, about 2 s each, while the same eight run one after another take about 2.6 s (0.33 s each).
+
+**Usage:**
+
+```bash
+biorouter transcribe memo.mp3
+biorouter transcribe interview.wav --format srt -o interview.srt
+ffmpeg -i memo.m4a -ar 16000 -ac 1 -f wav - | biorouter transcribe -
+biorouter transcribe notes.flac --context-file abstract.txt --format json
+```
+
+### dictionary
+
+Manage your personal dictionary: the words dictation should spell your way, such as UCSF or EPAS1. Dictation steers recognition toward these terms and corrects close misses to them. There is one dictionary per account, in `<config>/dictionary/`; the commands work on it directly under its lock, with no daemon, and a term one terminal adds is listed by another at once. Each command prints the folder and account it acts on to stderr, so standard output stays clean for `list` and `export`.
+
+A term is public, used for dictation into any chat, or private (`--private`), used only for dictation into chats on private models. A term may hold up to 64 characters and six words, and cannot be a web or email address, a file path, digits alone or something that looks like a key.
+
+Every change except `import` needs you at an interactive terminal (exit `2` otherwise), and every change, `import` included, is refused in an agent's shell. Without a terminal, `list` and `export` show public terms only, and give no count of the rest. A question answered with Escape or a blank changes nothing and exits 0. Design: [dictionary](../dictation/dictionary.md).
+
+#### dictionary list [options]
+
+List the terms: written form, status, tier, source, uses and id. Alias: `ls`.
+
+**Options:**
+
+- **`--format <FORMAT>`**: `text` (default), `json` or `csv`
+- **`--status <STATUS>`**: `active`, `suggested` or `all` (default)
+
+#### dictionary add [options] `<TERM>...`
+
+Add one or more terms. A term already there is reported, not added twice, and a term with the same letters as one you have (`Epas1` beside `EPAS1`) is added with a note.
+
+**Options:**
+
+- **`--spoken <FORMS>`**: How you say the term, comma separated; may repeat. With one term at a time
+- **`--private`**: Use the terms only when dictating into chats on private models
+
+#### dictionary edit [options] [TERM]
+
+Change a term's spelling or its spoken forms. A term that is both public and private is named by `--id`.
+
+**Options:**
+
+- **`--id <ID>`**: The entry's id
+- **`--term <NEW>`**: The new spelling
+- **`--spoken <FORMS>`**: How you say the term, comma separated; replaces the spoken forms
+
+#### dictionary remove `<TERM|--id <ID>>`
+
+Remove terms; `--id` may repeat. A removed term stays out of automatic suggestions until you add it again. Alias: `rm`.
+
+#### dictionary review
+
+Review the terms the agent or Biorouter suggested, and the agent's terms you have not reviewed: choose the ones to keep, then whether to dismiss the rest.
+
+#### dictionary accept `<ID>...` and dictionary dismiss `<ID>...`
+
+Accept or dismiss suggestions by id, as `list --status suggested` shows them. `dismiss` deletes the row an id names with its tombstone, so a dismissed term is not suggested again. Known difference, to be narrowed: today `dismiss` does this for any row you can list, a term you added included, while the Dictionary page dismisses suggestions only; a later release makes `dismiss` act on suggestions only and answer any other id as not found.
+
+#### dictionary import [options] `<FILE|->`
+
+Merge terms from a file, or from standard input with `-`; an import never deletes. It reads one term per line (`EPAS1 = epas one, e pass one` adds spoken forms, and `#` after a space or at the start of a line begins a comment), CSV or TSV with a `written,spoken_forms,note` header, or a Biorouter export. It is the one change that works without a terminal, so the sync below can pipe into it, and it prints `Imported: <n> new, <n> merged, <n> duplicate, <n> invalid.` with a line for each refused row.
+
+**Options:**
+
+- **`--format <FORMAT>`**: `txt`, `csv`, `tsv` or `json`. Default: from the file's extension; standard input needs it unless it is an export
+- **`--dry-run`**: Print what would change, and change nothing
+
+#### dictionary export [options] [FILE|-]
+
+Write your active terms as JSON, to standard output by default. The file carries no ids, chat ids or usage.
+
+**Options:**
+
+- **`--include-private`**: Include private terms, after a warning that the file leaves Biorouter. Needs your own terminal and a private model configured on this computer; on macOS and Linux a file that holds private terms is made readable by you alone
+
+To use one computer's terms on another, for example a server you reach over SSH:
+
+```bash
+biorouter dictionary export - | ssh <host> biorouter dictionary import -
+```
+
+#### dictionary publicize [TERM] and dictionary privatize [TERM]
+
+Make a private term public, or a public term private, after you type the term to confirm. `publicize` first warns that the term may then appear when you dictate into chats on public models. `--id <ID>` names one row when the term is both public and private.
+
+#### dictionary settings [options]
+
+Show the dictionary's settings, or change them. Raising a setting asks for confirmation; lowering one does not.
+
+**Options:**
+
+- **`--agent-writes <MODE>`**: What the agent's terms do: wait for you (`suggest`), go in when you ask or agree (`on_request`, the default), or go in at once (`add`)
+- **`--learn-from-chats <ON|OFF>`**: Also find terms in the messages you write, automatically, on this computer
+
+#### dictionary clear [options]
+
+Delete every term, after you type `delete <n>` to confirm. Only the terms you were shown are deleted, so a term another process adds meanwhile stays.
+
+**Options:**
+
+- **`--suggested-only`**: Delete only the suggestions
+
+**Usage:**
+
+```bash
+biorouter dictionary add EPAS1 --spoken "epas one"
+biorouter dictionary add --private KOVALIN7
+biorouter dictionary list --format csv
+biorouter dictionary import terms.txt --dry-run
+biorouter dictionary export terms.json
 ```
 
 ### usage [options]

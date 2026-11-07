@@ -997,6 +997,36 @@ No condition collapsed and no correction turned a correct reference word into an
 
 A review found that the tail also reached correction: the fuzzy matcher's prompt piece guard exempts the entry a span would become by its written form, so with `Modulite.` as the best term a truncated hearing (`Modulit`) of that same term was no longer corrected. Correction now reads the prompt without the period the tail added. The numbers above are unchanged by it. In T1 the best term is `Advil`, five characters and so matched exactly, never fuzzily, so the guard never read it for that term. In T3 it is `paracetamol`, which fuzzy matching can reach, and the dictionary arm of T3, run again on Metal after the fix, gave the same counts on every condition (`small.en` 67, 48 and 51; turbo 74, 64 and 69; the same spurious insertions, no collapse and no false correction) [M].
 
+## Addendum 2026-11-06: latency of the built engine, cold and through the daemon
+
+Measurements the plan's latency work took on the built product on 2026-11-06, as of branch `feat/local-dictation` at `b9fa70191` (PR-16). Same Apple M4 Max, shared with other work, catalog models `whisper-small.en-q8_0` and `whisper-large-v3-turbo-q5_0`, Metal, a debug parent driving whisper.cpp's release build unless a row says release. Tables C1 and C2 belong to this addendum. No row here is an accuracy figure.
+
+**Table C1. A first load with the shared Metal cache cleared, against the same runs with it warm [measured]**
+
+The per user cache (`com.apple.metal` under `DARWIN_USER_CACHE_DIR`, 2.2 GB before, 27 MB after) was cleared with the owner's leave (the plan's O-40), then `biorouter transcribe jfk.wav` ran twice cold and twice warm per model.
+
+| Model | Model ready, cold | Model ready, warm | Transcription, cold | Transcription, warm | Command, cold | Command, warm |
+|---|---|---|---|---|---|---|
+| `small.en` q8_0 | 3,150 to 3,421 ms | 283 to 398 ms | 972 to 1,332 ms | 485 to 598 ms | 4.8 to 5.0 s | 1.2 to 1.4 s |
+| turbo `q5_0` | 4,077 to 4,679 ms | 486 to 666 ms | 1,942 to 2,808 ms | 770 to 1,065 ms | 7.3 to 7.5 s | 1.8 to 2.2 s |
+
+The transcription itself is also slower cold, so the decoder's Metal kernels compile on their first use as well: a warm up that only loads the model leaves part of the compile to the first dictation **[inferred]**. Whether a new executable meets a cold cache was not settled: one freshly built release `biorouter` waited 2,972 ms for its first model and a byte identical copy at another path 181 ms, while a rebuilt debug daemon waited 509 ms and only the session's first turbo load compiled (3,459 ms).
+
+**Table C2. Stop to text through the daemon's `/dictation/*` routes, warm worker [measured]**
+
+12 bench clips of 3.5 to 6.0 s replayed in real time, a `PUT` every 2 s and the rest carried by `finish`, the routes in process (`stop_to_text_on_the_catalog_models`); then 5 of those clips through a real daemon over loopback HTTP, on turbo only, and PR-15's live check through the same daemon on a 5.1 s and a 10.7 s clip.
+
+| Path | `small.en` q8_0 | turbo `q5_0` |
+|---|---|---|
+| Routes in process, 12 bench clips, median (range) | 121 ms (108 to 187) | 299 ms (287 to 317) |
+| The tail's decode alone, 12 bench clips, median | 115 ms | 292 ms |
+| Real daemon over loopback HTTP, 5 bench clips, turbo only, median (range) | not measured on the bench clips | 303 ms (292 to 363) |
+| Real daemon over loopback HTTP, PR-15's live check, a 5.1 s and a 10.7 s clip, warm worker (range) | 118 to 150 ms (and 348 and 460 ms at a load average of 47) | 296 to 338 ms |
+| 60 s dictation with pauses, stop to text | 117 ms | 378 ms |
+| 60 s with no pause, forced 25 s cuts | 347 ms | 457 ms |
+
+In process, the routes, correction and the transcript add about 6 ms to the tail's decode. Over loopback HTTP, stop to text was about 8 ms above the tail's decode on the 5 bench clips; PR-15's live check splits it into the daemon's own time over the tail, 0 to 1 ms with an empty dictionary and 2 to 8 ms (median 3.5) with the 14 benchmark terms, and HTTP with the client, a median of about 8 ms over the daemon (for example 303.9 ms against a daemon time of 296 ms and a tail of 291 ms). On the plan's warm targets of about 0.13 s for `small.en` and 0.28 s for turbo per 5 s utterance, `small.en` meets its target and turbo is within 20 ms of it; turbo's encoder alone costs about 242 ms on Metal whatever the clip's length. A 60 s stream with no pause left 1,142 and 1,316 ms before the forced cut and 347 and 457 ms after it, with the same text length.
+
 ## What the numbers support
 
 Each conclusion names the tables that support it. Where the numbers do not settle a point, it says so. The decisions themselves are made in the [implementation plan](../../dictation/implementation-plan.md)'s decision register.
