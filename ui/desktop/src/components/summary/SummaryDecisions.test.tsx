@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   parseDecisionSettings,
@@ -13,6 +14,7 @@ import { parseSessionSubagents } from '../../utils/sessionSubagents';
 import { wirePhase, wireRow, wireSubagents } from '../../utils/sessionSubagents.fixture';
 import { SummaryDecisions, type SummaryDecisionsData } from './SummaryDecisions';
 import { SummarySubagents } from './SummarySubagents';
+import { PhaseGateDialog } from '../decisions/PhaseGateDialog';
 
 const settings = (monitors: Record<string, unknown>[] = []): DecisionSettings =>
   parseDecisionSettings({ defaultModel: null, monitors })!;
@@ -213,8 +215,56 @@ describe('the Decisions section', () => {
   });
 });
 
+describe('a gate row and the person', () => {
+  const personGate = (
+    personDecision: 'pass' | 'skip' | null,
+    status: 'completed' | 'skipped' | 'in_progress'
+  ) => ({
+    phaseId: 'verify',
+    title: 'Check the numbers',
+    status,
+    gate: parsePhaseGateSnapshot({
+      threshold: 0.8,
+      attempts: 3,
+      maxAttempts: 3,
+      lastPassed: false,
+      lastMinP: 0.62,
+      blocked: false,
+      personDecision,
+    })!,
+  });
+
+  it('says the person passed or skipped the phase, before what the gate itself last said', () => {
+    const { rerender } = draw({ gates: [personGate('pass', 'completed')] });
+    const row = () => screen.getByTestId('decision-source-gate:verify');
+    expect(row()).toHaveTextContent('passed by you · 0.62 < 0.80 · attempt 3 of 3');
+    expect(row().getAttribute('aria-label')).toMatch(/, passed by you · 0\.62 < 0\.80/);
+    const redraw = (gates: ReturnType<typeof personGate>[]) =>
+      rerender(
+        <SummaryDecisions
+          sessionId="s1"
+          data={{ summary: heavySummary(), settings: settings([monitor()]) }}
+          loading={false}
+          error={false}
+          refresh={() => {}}
+          onOpenHistory={() => {}}
+          onOpenMonitors={() => {}}
+          gates={gates}
+        />
+      );
+    redraw([personGate('skip', 'skipped')]);
+    expect(row()).toHaveTextContent('skipped by you');
+    // Recorded while the phase's subagents still work: it stands.
+    redraw([personGate('pass', 'in_progress')]);
+    expect(row()).toHaveTextContent('your pass stands');
+    redraw([personGate(null, 'in_progress')]);
+    expect(row()).not.toHaveTextContent(/by you|stands/);
+    expect(row()).toHaveTextContent('0.62 < 0.80 · attempt 3 of 3');
+  });
+});
+
 describe('a phase gate on its phase row', () => {
-  it('draws a chip that opens the gate’s history, in words and by shape', () => {
+  it('draws a chip that opens the gate’s dialog, in words and by shape', () => {
     const onOpenGate = vi.fn();
     const data = parseSessionSubagents(
       wireSubagents([wireRow({ sessionId: 'c1', phaseId: 'verify' })], {
@@ -278,7 +328,106 @@ describe('a phase gate on its phase row', () => {
         onOpenGate={() => {}}
       />
     );
-    expect(document.querySelector('.br-agents__gate')).toBeNull();
+    // No chip; the open phase offers the person "Add gate" in its place.
+    expect(document.querySelector('.br-agents__gate:not([data-add-gate])')).toBeNull();
+    expect(screen.queryByTestId('phase-gate-research')).toBeNull();
+    expect(screen.getByTestId('phase-add-gate-research')).toHaveAttribute('data-add-gate');
+  });
+});
+
+/**
+ * The chip and "Add gate" open the gate's dialog, wired as BaseChat wires them
+ * (`openPhaseGate` sets the phase, the dialog reads it from the roster). The
+ * dialog holds the gate's history behind Show history.
+ */
+describe('the chip opens the gate dialog', () => {
+  const BASECHAT = readFileSync(join(__dirname, '..', 'BaseChat.tsx'), 'utf8');
+
+  function Harness({ value }: { value: ReturnType<typeof parseSessionSubagents> }) {
+    const [phaseId, setPhaseId] = useState<string | null>(null);
+    const phase = value?.plan?.phases.find((candidate) => candidate.id === phaseId) ?? null;
+    return (
+      <>
+        <SummarySubagents
+          data={value}
+          loading={false}
+          error={false}
+          refresh={() => {}}
+          onOpen={() => {}}
+          onOpenGate={setPhaseId}
+        />
+        <PhaseGateDialog
+          open={phaseId !== null}
+          onOpenChange={(open) => !open && setPhaseId(null)}
+          sessionId="s1"
+          phase={phase}
+          phases={value?.plan?.phases}
+          models={[]}
+        />
+      </>
+    );
+  }
+
+  it('opens the dialog on the gate the chip names, and on the editor from Add gate', () => {
+    const value = parseSessionSubagents(
+      wireSubagents([], {
+        title: 'Plan',
+        goal: null,
+        revision: 1,
+        phases: [
+          wirePhase({
+            id: 'research',
+            title: 'Research',
+            status: 'in_progress',
+            gate: {
+              threshold: 0.9,
+              questionCount: 1,
+              attempts: 1,
+              maxAttempts: 1,
+              lastPassed: false,
+              lastMinP: 0.02,
+              blocked: true,
+              owner: 'agent',
+              questions: { y2031: 'Does the hand-off cite a paper published in 2031?' },
+              needsPerson: true,
+              holds: ['write'],
+            },
+          }),
+          wirePhase({ id: 'write', title: 'Write', heldBy: 'research' }),
+        ],
+      })
+    );
+    render(<Harness value={value} />);
+    fireEvent.click(screen.getByTestId('phase-gate-research'));
+    const dialog = screen.getByTestId('phase-gate-dialog');
+    expect(within(dialog).getByTestId('phase-gate-owner')).toHaveTextContent('Set by the agent');
+    expect(within(dialog).getByTestId('phase-gate-status')).toHaveTextContent('Blocked: needs you');
+    expect(within(dialog).getByTestId('phase-gate-history')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByTestId('phase-gate-dialog')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('phase-add-gate-write'));
+    expect(screen.getByRole('dialog', { name: 'Add a phase gate' })).toBeInTheDocument();
+    expect(screen.getByTestId('phase-gate-editor')).toBeInTheDocument();
+  });
+
+  it('is how BaseChat wires it: the chip opens the dialog, and history lives inside it', () => {
+    // openPhaseGate opens the dialog; it no longer opens the decision history itself.
+    const open =
+      BASECHAT.match(/const openPhaseGate = useCallback\(([\s\S]*?)\}, \[\]\);/)?.[1] ?? '';
+    expect(open).toContain('setGatePhaseId(phaseId)');
+    expect(open).not.toContain('openDecisionHistory');
+    expect(BASECHAT).toMatch(/onOpenGate: openPhaseGate/);
+    const dialog = BASECHAT.match(/<PhaseGateDialog[\s\S]*?\/>/)?.[0] ?? '';
+    expect(dialog).toContain('open={gatePhaseId !== null}');
+    expect(dialog).toContain('onOpenHistory={openDecisionHistory}');
+  });
+
+  it('tells the Monitors dialog when the chat is a subagent’s (item A)', () => {
+    // A subagent's own monitors never reach subagents of its own, so the dialog
+    // must know before the chat has an agent's monitor it could read that from.
+    const monitors = BASECHAT.match(/<MonitorsDialog[\s\S]*?\n {10}\/>/)?.[0] ?? '';
+    expect(monitors).toContain("isSubagentChat={subagentChatKind === 'subagent'}");
   });
 });
 

@@ -35,6 +35,7 @@ import { HOST_MANAGED_MODEL_TITLE } from '../../../privacy/hostManagedModelCopy'
 import { isBrowserSurface } from '../../../../utils/surface';
 import { switchModelCopy } from '../copy';
 import { isDecisionProvider } from '../../../decisions/decisionWire';
+import { DecisionModelInstall } from '../../../decisions/DecisionModelInstall';
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import './model-dialogs.css';
 import {
@@ -154,6 +155,12 @@ type ProviderOption = {
   decision?: { tier: 'private' | 'public' | undefined };
   detail?: string;
 };
+
+/**
+ * The decision provider whose models a person can install from here (`DecisionModelInstall`):
+ * Ollama's, into the Ollama on this computer. Baseten's are hosted and need only a key.
+ */
+const OLLAMA_DECISION_PROVIDER = 'ollama_decision';
 
 /** A decision provider's detail line: its tier when the daemon resolved one, then what it does. */
 function decisionProviderDetail(tier: 'private' | 'public' | undefined): string {
@@ -1383,6 +1390,21 @@ export const SwitchModelModal = ({
                     />
                     {modelMessageNode}
                   </div>
+                )}
+                {/* Ollama's decision models, with none installed on this computer: the
+                    install is offered beside the list, never started for the person.
+                    `quiet` says nothing while one is installed or none can be. */}
+                {provider === OLLAMA_DECISION_PROVIDER && !isCustomModel && (
+                  <DecisionModelInstall
+                    quiet
+                    reason={privacyTier === 'private' ? 'private' : null}
+                    // Read Ollama's decision models again, with the one just installed.
+                    onInstalled={() =>
+                      setModelOptionsByProvider(
+                        ({ [OLLAMA_DECISION_PROVIDER]: _installed, ...rest }) => rest
+                      )
+                    }
+                  />
                 )}
               </>
             )}

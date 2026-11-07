@@ -5,7 +5,12 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Select } from '../ui/Select';
-import { questionToWire, type Question } from '../../utils/sessionDecisions';
+import {
+  questionToWire,
+  thresholdSummary,
+  type Question,
+  type Threshold,
+} from '../../utils/sessionDecisions';
 import { fetchDecisionChatQuestion, saveDecisionChatQuestion } from './decisionChatApi';
 
 export const DECISION_COMPOSER_COPY = {
@@ -36,6 +41,8 @@ export const DECISION_COMPOSER_COPY = {
   needsOptions: 'A choice needs 2 to 26 options, each with its own name.',
   needsLevels: 'A score needs 1 to 10 levels, each with a label.',
   badThreshold: 'The threshold is a probability from 0 to 1.',
+  keptRule: (rule: string) =>
+    `Passes when ${rule}, as set outside this panel. Clear the threshold to set a new one.`,
   refused: (message: string | null) =>
     message ??
     'Biorouter could not save the question. A “Q:” question line at the start of your message still works.',
@@ -60,6 +67,14 @@ export interface DecisionDraft {
   threshold: string;
   /** The option name, or the level index, a choice or score threshold is compared with. */
   target: string;
+  /**
+   * What a stored threshold says that these fields do not edit, kept so a save leaves
+   * the rule as it was: it passes below `threshold` (`below`), and a yes/no question's
+   * threshold is on P(no) (`binarySide`). Both are set over HTTP or the CLI, shown by
+   * a line under the fields, and cleared with the threshold.
+   */
+  below: boolean;
+  binarySide: 'yes' | 'no';
 }
 
 let nextEntryId = 1;
@@ -73,6 +88,8 @@ export function emptyDraft(): DecisionDraft {
     levels: [entry(), entry(), entry()],
     threshold: '',
     target: '',
+    below: false,
+    binarySide: 'yes',
   };
 }
 
@@ -92,6 +109,8 @@ export function draftFromQuestion(question: Question | null): DecisionDraft {
   if (threshold) draft.threshold = String(threshold.p);
   if (threshold?.type === 'option') draft.target = threshold.name;
   if (threshold?.type === 'at_least_level') draft.target = String(threshold.level);
+  if (threshold?.type === 'no') draft.binarySide = 'no';
+  draft.below = threshold?.below === true;
   return draft;
 }
 
@@ -105,13 +124,15 @@ export function questionFromDraft(draft: DecisionDraft): DraftVerdict {
   if (p !== null && (!Number.isFinite(p) || p < 0 || p > 1)) {
     return { ok: false, problem: DECISION_COMPOSER_COPY.badThreshold };
   }
+  const kept = (threshold: Threshold): Threshold =>
+    draft.below ? { ...threshold, below: true } : threshold;
   if (draft.kind === 'binary') {
     return {
       ok: true,
       question: {
         instructions,
         kind: { type: 'binary' },
-        threshold: p !== null ? { type: 'yes', p } : null,
+        threshold: p !== null ? kept({ type: draft.binarySide, p }) : null,
       },
     };
   }
@@ -132,7 +153,7 @@ export function questionFromDraft(draft: DecisionDraft): DraftVerdict {
       question: {
         instructions,
         kind: { type: 'choice', options: names.map((name) => ({ name, description: null })) },
-        threshold: p !== null ? { type: 'option', name: target, p } : null,
+        threshold: p !== null ? kept({ type: 'option', name: target, p }) : null,
       },
     };
   }
@@ -148,7 +169,7 @@ export function questionFromDraft(draft: DecisionDraft): DraftVerdict {
     question: {
       instructions,
       kind: { type: 'score', levels },
-      threshold: p !== null ? { type: 'at_least_level', level, p } : null,
+      threshold: p !== null ? kept({ type: 'at_least_level', level, p }) : null,
     },
   };
 }
@@ -316,6 +337,14 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
           null)
         : null;
 
+  // A stored rule these fields cannot show (below, or P(no)), said so the person
+  // does not read the threshold as P(yes) at or above it.
+  const kept = verdict.ok ? verdict.question.threshold : null;
+  const keptRule =
+    verdict.ok && kept && (kept.below || kept.type === 'no')
+      ? thresholdSummary(kept, verdict.question)
+      : null;
+
   const entries = draft.kind === 'choice' ? draft.options : draft.levels;
   const listKey: 'options' | 'levels' = draft.kind === 'choice' ? 'options' : 'levels';
   const maxEntries = draft.kind === 'choice' ? 26 : 10;
@@ -381,7 +410,12 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
           }
           onChange={(event) => {
             const threshold = event.target.value;
-            edit((current) => ({ ...current, threshold }));
+            // Cleared, the stored rule goes with it: a new threshold is at or above, on yes.
+            edit((current) =>
+              threshold.trim() === ''
+                ? { ...current, threshold, below: false, binarySide: 'yes' }
+                : { ...current, threshold }
+            );
           }}
           onBlur={onBlur}
         />
@@ -474,6 +508,11 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
           </Button>
         </div>
       )}
+      {keptRule ? (
+        <p className="br-decision-composer__status" data-testid="decision-composer-kept-rule">
+          {DECISION_COMPOSER_COPY.keptRule(keptRule)}
+        </p>
+      ) : null}
       <p
         className="br-decision-composer__status"
         role="status"
