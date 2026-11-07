@@ -1480,6 +1480,312 @@ fn no_dictation_request_names_a_path() {
     assert!(checked >= 10, "the dictation schemas are in the document");
 }
 
+// ── PERF-1: the store read on a stream's creation ────────────────────────────────────
+
+/// One "dictation stream target decided" line's figures.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct DictionaryTiming {
+    store_us: u64,
+    request_us: u64,
+    dictionary_us: u64,
+}
+
+/// The figures of each "dictation stream target decided" line logged since `from` bytes
+/// into the captured log.
+fn dictionary_timings(from: usize) -> Vec<DictionaryTiming> {
+    let logs = captured_logs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let text = String::from_utf8_lossy(&logs[from.min(logs.len())..]).into_owned();
+    let field = |line: &str, name: &str| -> u64 {
+        line.split(&format!(" {name}="))
+            .nth(1)
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or(u64::MAX)
+    };
+    text.lines()
+        .filter(|line| line.contains("dictation stream target decided"))
+        .map(|line| DictionaryTiming {
+            store_us: field(line, "store_us"),
+            request_us: field(line, "request_us"),
+            dictionary_us: field(line, "dictionary_us"),
+        })
+        .collect()
+}
+
+fn log_length() -> usize {
+    captured_logs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len()
+}
+
+/// Removes the dictionary folder when dropped, so a test that fills the store leaves the
+/// other tests their few rows even when it fails.
+struct EmptiedStore;
+
+impl Drop for EmptiedStore {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(biorouter::security::dictionary_store::dictionary_dir());
+    }
+}
+
+/// The `/dictionary/*` routes of `state`, behind the secret.
+fn dictionary_routes(state: &Arc<AppState>) -> Router {
+    biorouter_server::routes::dictionary::routes(Arc::clone(state)).layer(
+        axum::middleware::from_fn_with_state(
+            SECRET.to_string(),
+            biorouter_server::auth::check_token,
+        ),
+    )
+}
+
+/// The daemon's store parses and its dictionary cache's counters, together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Builds {
+    parses: u64,
+    copies: u64,
+    indexes: u64,
+}
+
+/// The counters once the daemon's background rebuild after a write, the one counted past
+/// `prewarms`, has finished.
+async fn prewarmed_after(prewarms: u64) -> Builds {
+    let started = Instant::now();
+    while dictation::dictionary_cache().prewarms() <= prewarms {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the rebuild after the write never ran"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    builds()
+}
+
+fn builds() -> Builds {
+    let cache = dictation::dictionary_cache();
+    Builds {
+        parses: biorouter_server::routes::dictionary::shared_store().store_parses(),
+        copies: cache.rows_copied(),
+        indexes: cache.indexes_built(),
+    }
+}
+
+/// PR-16's live check found every stream parsing the whole store (112 to 130 ms at 4,993
+/// rows in a debug build, against 0 ms at 3 rows): a stream opened a new handle each time.
+/// Now a stream reads the daemon's shared handle, so a dictation over an unchanged store of
+/// 4,990 rows parses nothing, and a term added or deleted over HTTP leaves the next stream
+/// nothing to parse either. Past the parse, the stream finds the rows the bias set admitted,
+/// with their ranking and correction indexes, in the daemon's dictionary cache, and builds
+/// only its own part; after a write over HTTP the daemon builds the new set in the
+/// background, so the next stream builds nothing at all. Asserted on the counters, because
+/// a timing assertion would not hold on a loaded runner; the logged times are printed.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_stream_over_an_unchanged_store_parses_nothing() {
+    if !engine_runs() {
+        return;
+    }
+    let state = state().await;
+    let app = app(&state);
+    drop(EmptiedStore);
+    let _emptied = EmptiedStore;
+    // Ten below the active cap, so the add below fits.
+    let lines: String = (0..4_990).map(|i| format!("BRL{i:04}X\n")).collect();
+    let rows = store::transfer::parse_import(store::ImportFormat::Lines, &lines).unwrap();
+    open_store()
+        .write(|file| {
+            Ok(file.import(
+                rows,
+                store::EntryTier::Public,
+                &|_| false,
+                store::schema::now(),
+            ))
+        })
+        .unwrap();
+
+    // The first stream after another handle wrote the file parses it, once, and builds
+    // its set.
+    let from = log_length();
+    let before = builds();
+    let first = eligible_terms(&state, &app, request("external")).await;
+    assert_eq!(first.len(), 4_990);
+    let built = builds();
+    assert_eq!(
+        built.parses,
+        before.parses + 1,
+        "the first stream reads the new file"
+    );
+    assert_eq!(built.copies, before.copies + 1, "and copies its rows once");
+    assert_eq!(built.indexes, before.indexes + 1, "and indexes them once");
+    for _ in 0..3 {
+        assert_eq!(
+            eligible_terms(&state, &app, request("external"))
+                .await
+                .len(),
+            4_990
+        );
+    }
+    assert_eq!(
+        builds(),
+        built,
+        "a stream over an unchanged store parses, copies and indexes nothing"
+    );
+
+    // A term added over HTTP: the write parses once, the daemon builds the new file's set
+    // after the answer, and the next stream builds nothing.
+    let prewarms = dictation::dictionary_cache().prewarms();
+    let dictionary_app = dictionary_routes(&state);
+    let added = call(
+        &dictionary_app,
+        "POST",
+        "/dictionary/entries",
+        Caller::Proof,
+        Body::from(json!({"written": "Biorouter"}).to_string()),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
+    let prewarmed = prewarmed_after(prewarms).await;
+    assert_eq!(prewarmed.parses, built.parses + 1, "the write's own read");
+    assert!(
+        prewarmed.indexes > built.indexes,
+        "the new file's set, built"
+    );
+    let after = eligible_terms(&state, &app, request("external")).await;
+    assert_eq!(after.len(), 4_991);
+    assert!(after.iter().any(|t| t == "Biorouter"));
+    assert_eq!(
+        builds(),
+        prewarmed,
+        "the stream after a write parses, copies and indexes nothing"
+    );
+
+    // A delete over HTTP, then a dictation: the same.
+    let id = added.body["entry"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let prewarms = dictation::dictionary_cache().prewarms();
+    let deleted = call(
+        &dictionary_app,
+        "DELETE",
+        &format!("/dictionary/entries/{id}"),
+        Caller::Proof,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{:?}", deleted.body);
+    let deleted_built = prewarmed_after(prewarms).await;
+    assert_eq!(
+        deleted_built.parses,
+        prewarmed.parses + 1,
+        "the delete's own read"
+    );
+    let after = eligible_terms(&state, &app, request("external")).await;
+    assert_eq!(after.len(), 4_990);
+    assert_eq!(
+        builds(),
+        deleted_built,
+        "the stream after a delete parses, copies and indexes nothing"
+    );
+    let timings = dictionary_timings(from);
+    eprintln!("per stream at 4,990 rows: {timings:?}");
+    assert_eq!(timings.len(), 6, "{timings:?}");
+    assert!(
+        timings.iter().all(|t| t.dictionary_us != u64::MAX),
+        "{timings:?}"
+    );
+}
+
+/// The PERF-1 review found a stream opened at once after a write, while the daemon's
+/// rebuild of the new file's sets still ran, building the same set again beside it: 6.7 ms
+/// with bare rows and 22 to 23 ms with forms in a release build, where the set once built
+/// costs 0.3 ms. Now the stream waits for the rebuild and takes its set. Asserted on the
+/// counters: a write followed at once by a stream copies and indexes as much as a write
+/// whose rebuild the stream let finish, which is what the rebuild alone builds. The store
+/// holds 4,990 rows with a spoken form each, so a set takes long enough to build that the
+/// stream meets the rebuild; the logged times and the waits are printed.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_stream_opened_during_the_rebuild_after_a_write_builds_nothing_twice() {
+    if !engine_runs() {
+        return;
+    }
+    let state = state().await;
+    let app = app(&state);
+    drop(EmptiedStore);
+    let _emptied = EmptiedStore;
+    let lines: String = (0..4_990).map(|i| format!("BRL{i:04}X\n")).collect();
+    let rows = store::transfer::parse_import(store::ImportFormat::Lines, &lines).unwrap();
+    open_store()
+        .write(|file| {
+            let _ = file.import(
+                rows,
+                store::EntryTier::Public,
+                &|_| false,
+                store::schema::now(),
+            );
+            for (i, entry) in file.entries.iter_mut().enumerate() {
+                entry.spoken_forms = vec![format!("barrel {i} spoken")];
+            }
+            Ok(())
+        })
+        .unwrap();
+    let dictionary_app = dictionary_routes(&state);
+    // The stream's input is the most recent one, and its set is built.
+    assert_eq!(
+        eligible_terms(&state, &app, request("external"))
+            .await
+            .len(),
+        4_990
+    );
+    let cache = dictation::dictionary_cache();
+    let mut built = Vec::new();
+    for (written, at_once) in [("Biorouter", false), ("Modulite", true)] {
+        let before = builds();
+        let prewarms = cache.prewarms();
+        let waits = cache.waits();
+        let from = log_length();
+        let added = call(
+            &dictionary_app,
+            "POST",
+            "/dictionary/entries",
+            Caller::Proof,
+            Body::from(json!({ "written": written }).to_string()),
+        )
+        .await;
+        assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
+        let terms = if at_once {
+            let terms = eligible_terms(&state, &app, request("external")).await;
+            prewarmed_after(prewarms).await;
+            terms
+        } else {
+            prewarmed_after(prewarms).await;
+            eligible_terms(&state, &app, request("external")).await
+        };
+        assert!(terms.iter().any(|t| t == written), "{written}");
+        let after = builds();
+        built.push((after.copies - before.copies, after.indexes - before.indexes));
+        eprintln!(
+            "{written}, the stream {}: {:?}, {} wait(s)",
+            if at_once {
+                "at once"
+            } else {
+                "after the rebuild"
+            },
+            dictionary_timings(from),
+            cache.waits() - waits
+        );
+    }
+    assert!(built[0].1 >= 1, "the rebuild indexed the new file's set");
+    assert_eq!(
+        built[1], built[0],
+        "a stream at once builds no set the rebuild builds (copies, indexes)"
+    );
+}
+
 // ── live: stop to text on the catalog models (`--ignored`) ───────────────────────────
 
 /// The median of `values`.
@@ -1618,4 +1924,133 @@ async fn stop_to_text_on_the_catalog_models() {
         }
         drop(state);
     }
+}
+
+/// PERF-1, live: after a dictation that used a term, the usage flush goes through the
+/// daemon's one store handle. It reads the entries from that handle's warm cache under the
+/// lock, where a fresh handle parsed all of `dictionary.json`, and leaves the counters it
+/// wrote there, so the next stream parses neither file. In the same background task the
+/// dictionary cache then copies the rows again for their new counters and keeps its
+/// indexes (the PERF-1 review moved that copy there from the next stream's creation), so
+/// the next stream copies nothing either. The fixture model decodes nothing, so this needs
+/// a real one: `BIOROUTER_DICTATION_LIVE_MODELS` and `BIOROUTER_DICTATION_LIVE_AUDIO` as for
+/// `stop_to_text_on_the_catalog_models`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+#[serial]
+async fn the_usage_flush_goes_through_the_shared_handle() {
+    let models = std::env::var("BIOROUTER_DICTATION_LIVE_MODELS")
+        .expect("BIOROUTER_DICTATION_LIVE_MODELS names the model folder");
+    let clips_dir = PathBuf::from(
+        std::env::var("BIOROUTER_DICTATION_LIVE_AUDIO")
+            .expect("BIOROUTER_DICTATION_LIVE_AUDIO names the clip folder"),
+    );
+    let mut clips: Vec<PathBuf> = std::fs::read_dir(&clips_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().ends_with("_Karen.wav"))
+        .collect();
+    clips.sort();
+    let clip = wav_samples(clips.first().expect("a clip"));
+    let _env = env_lock::lock_env([
+        (biorouter::dictation::service::TEST_MODEL_ENV, None),
+        (
+            biorouter::dictation::paths::MODELS_DIR_ENV,
+            Some(models.as_str()),
+        ),
+    ]);
+    biorouter::config::Config::global()
+        .set_param(
+            biorouter::dictation::service::MODEL_KEY,
+            "whisper-small.en-q8_0",
+        )
+        .unwrap();
+    biorouter::dictation::service::service().unload().await;
+    install_the_desktop_key();
+    let state = AppState::new().await.expect("app state");
+    let app = app(&state);
+    drop(EmptiedStore);
+    let _emptied = EmptiedStore;
+
+    // The clip's own words, to make one of them a term.
+    let heard = dictate(&app, Caller::SecretOnly, request("external"), clip.clone()).await;
+    let text = heard["text"].as_str().unwrap().to_string();
+    let word = text
+        .split(|c: char| !c.is_alphanumeric())
+        .find(|w| w.chars().count() >= 4)
+        .unwrap_or_else(|| panic!("a word in {text:?}"))
+        .to_string();
+    let rows = store::transfer::parse_import(store::ImportFormat::Lines, &word).unwrap();
+    open_store()
+        .write(|file| {
+            Ok(file.import(
+                rows,
+                store::EntryTier::Public,
+                &|_| false,
+                store::schema::now(),
+            ))
+        })
+        .unwrap();
+    let shared = biorouter_server::routes::dictionary::shared_store();
+    let id = shared
+        .view()
+        .unwrap()
+        .entries()
+        .iter()
+        .find(|e| e.written == word)
+        .expect("the term")
+        .id
+        .clone();
+    // One stream so the shared handle and the dictionary cache hold the new file.
+    assert_eq!(
+        eligible_terms(&state, &app, request("external")).await,
+        std::slice::from_ref(&word)
+    );
+
+    let before = builds();
+    let usage_reads = shared.usage_parses();
+    let prewarms = dictation::dictionary_cache().prewarms();
+    let used = dictate(&app, Caller::SecretOnly, request("external"), clip).await;
+    assert!(
+        used["text"].as_str().unwrap().contains(&word),
+        "{word:?} in {:?}",
+        used["text"]
+    );
+    // The flush runs after the text is out, and the cache's copy for the new counters
+    // after it.
+    let refreshed = prewarmed_after(prewarms).await;
+    assert!(
+        shared
+            .view()
+            .unwrap()
+            .usage(&id, store::UsageScope::Public)
+            .is_some(),
+        "the usage was written"
+    );
+    assert_eq!(
+        shared.usage_parses(),
+        usage_reads,
+        "the flush left its counters in the shared cache"
+    );
+    assert_eq!(refreshed.parses, before.parses, "and parsed no entries");
+    assert_eq!(
+        refreshed.copies,
+        before.copies + 1,
+        "the rows copied for the counters, after the text"
+    );
+    assert_eq!(refreshed.indexes, before.indexes, "and the indexes kept");
+    let from = log_length();
+    assert_eq!(
+        eligible_terms(&state, &app, request("external")).await,
+        std::slice::from_ref(&word)
+    );
+    assert_eq!(
+        builds(),
+        refreshed,
+        "the next stream parses, copies and indexes nothing"
+    );
+    assert_eq!(shared.usage_parses(), usage_reads);
+    eprintln!("the stream after the flush: {:?}", dictionary_timings(from));
+    drop(state);
 }

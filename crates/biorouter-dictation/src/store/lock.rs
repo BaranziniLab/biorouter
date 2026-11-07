@@ -13,6 +13,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::schema::LOCK_FILE;
+use super::Stamp;
 
 /// How often a bounded writer retries the lock.
 const RETRY_EVERY: Duration = Duration::from_millis(5);
@@ -89,10 +90,40 @@ pub(crate) fn create_dir_private(dir: &Path) -> io::Result<()> {
     builder.create(dir)
 }
 
+/// Renames `temporary`, written and closed, over `path`, and answers the stamp `path` then
+/// has, so the cache can be keyed by it ([`Stamp`]). The stamp is read through a handle
+/// opened on the temporary file after the handle that wrote it closed, because Windows may
+/// update the last write time only then, and that handle names this very file: a stamp
+/// taken from the path after the rename could be some other writer's file. A rename keeps
+/// the identity, the length and the modification time, but on Unix it sets the change time
+/// (measured on APFS on 2026-11-07; Linux file systems set it too), so there the handle is
+/// asked after the rename. Elsewhere the stamp holds no change time, and the handle is
+/// asked and closed before the rename, as it always was there.
+///
+/// Best effort: the stamp only spares the next read a parse, so a handle that cannot be
+/// opened (on Windows, a scanner or indexer that opened the new file without sharing it
+/// for reading) answers `None` and the rename goes ahead. The caller then leaves its cache
+/// empty and the next read parses the file.
+fn rename_stamped(temporary: &Path, path: &Path) -> io::Result<Option<Stamp>> {
+    let handle = File::open(temporary).ok();
+    #[cfg(unix)]
+    {
+        rename_over(temporary, path)?;
+        Ok(handle.and_then(|file| Stamp::of(&file).ok()))
+    }
+    #[cfg(not(unix))]
+    {
+        let stamp = handle.and_then(|file| Stamp::of(&file).ok());
+        rename_over(temporary, path)?;
+        Ok(stamp)
+    }
+}
+
 /// Replace `path` with `bytes` atomically: a temporary file beside it, written and
 /// flushed to disk, renamed over it, and on Unix the folder flushed so the rename
-/// survives a power loss. The caller holds the lock.
-pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// survives a power loss. The caller holds the lock. Answers the stamp of the file now at
+/// `path`, or `None` when it could not be taken ([`rename_stamped`]).
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<Option<Stamp>> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?
@@ -111,12 +142,12 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
     }
-    rename_over(&temporary, path)?;
+    let stamp = rename_stamped(&temporary, path)?;
     #[cfg(unix)]
     if let Some(parent) = path.parent() {
         File::open(parent)?.sync_all()?;
     }
-    Ok(())
+    Ok(stamp)
 }
 
 /// Replace `path` with `bytes` by the same temporary file and rename as
@@ -124,8 +155,9 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// one, never half of either; only a power cut can lose the write, or leave the file empty.
 /// For `usage.json` alone, whose counters are loss tolerant ("Usage"): the two flushes cost
 /// a one shot `biorouter transcribe` milliseconds between its text and its exit (on macOS
-/// each is an `F_FULLFSYNC`). The caller holds the lock.
-pub(crate) fn replace_unsynced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// each is an `F_FULLFSYNC`). The caller holds the lock. Answers the stamp of the file now
+/// at `path`, or `None` when it could not be taken ([`rename_stamped`]).
+pub(crate) fn replace_unsynced(path: &Path, bytes: &[u8]) -> io::Result<Option<Stamp>> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?
@@ -142,7 +174,7 @@ pub(crate) fn replace_unsynced(path: &Path, bytes: &[u8]) -> io::Result<()> {
         }
         options.open(&temporary)?.write_all(bytes)?;
     }
-    rename_over(&temporary, path)
+    rename_stamped(&temporary, path)
 }
 
 /// `rename`, retried on Windows up to 10 times over 200 ms while another process holds
@@ -197,6 +229,43 @@ mod tests {
         replace_unsynced(&usage, b"second").unwrap();
         assert_eq!(fs::read(&usage).unwrap(), b"second");
         assert!(!dir.path().join("usage.json.tmp").exists());
+    }
+
+    /// The stamp is a cache's convenience, never a condition of the write: a temporary file
+    /// no handle can open gives `None`, and the rename still lands. A file the account may
+    /// not read stands in for a Windows scanner that holds it unshared.
+    #[cfg(unix)]
+    #[test]
+    fn a_stamp_that_cannot_be_taken_is_none_and_keeps_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dictionary.json");
+        let temporary = dir.path().join("dictionary.json.tmp");
+        fs::write(&temporary, b"{}").unwrap();
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o000)).unwrap();
+        if File::open(&temporary).is_ok() {
+            // Run as root, which opens any file: nothing to show.
+            return;
+        }
+        assert_eq!(rename_stamped(&temporary, &path).unwrap(), None);
+        assert!(path.exists(), "the rename landed");
+        assert!(!temporary.exists());
+    }
+
+    /// The stamp a write answers is the stamp its path has once the rename landed, the
+    /// change time included, which the rename itself sets on Unix: the cache keyed by it
+    /// matches the next read's `stat`, so that read parses nothing.
+    #[test]
+    fn the_stamp_a_write_answers_is_the_one_its_path_then_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dictionary.json");
+        for bytes in [&b"first"[..], b"second, longer", b"third"] {
+            let written = write_atomically(&path, bytes).unwrap();
+            assert_eq!(written, Stamp::at(&path).unwrap(), "{bytes:?}");
+            let usage = dir.path().join("usage.json");
+            let replaced = replace_unsynced(&usage, bytes).unwrap();
+            assert_eq!(replaced, Stamp::at(&usage).unwrap(), "{bytes:?}");
+        }
     }
 
     #[cfg(unix)]

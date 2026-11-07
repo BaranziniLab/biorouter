@@ -35,7 +35,6 @@ use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::Router;
 use biorouter::config::with_config_overrides;
 use biorouter::model::ModelConfig;
-use biorouter::privacy::affiliation::InstitutionId;
 use biorouter::privacy::SessionClassification;
 use biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL;
 use biorouter::security::dictionary_store::{self, store};
@@ -852,11 +851,10 @@ async fn a_private_add_takes_the_institutions_of_its_chat() {
     // A chat on a local model whose record holds UCSF's connector: {ucsf}.
     let local = chat(&state, false).await;
     bind(&state, &local, "ollama").await;
-    state
-        .session_manager()
-        .record_session_affiliation(&local, InstitutionId::new("ucsf"))
-        .await
-        .unwrap();
+    // The chat's record holds UCSF's connector, set as the column the ratchet writes
+    // (`["ucsf"]` for a chat that held none), as the census of chat-side ratchets asks a
+    // fixture to: this test never fires the ratchet itself.
+    write_affiliations(&local, r#"["ucsf"]"#).await;
     let ucsf = add_from("LOCALUCSF", json!({"origin_session_id": local})).await;
     assert_eq!(ucsf["affiliation"]["institutions"][0]["id"], "ucsf");
     assert_eq!(
@@ -1085,11 +1083,10 @@ async fn observations_stamp_institutions_and_respect_them() {
     // A local model whose record holds UCSF's connector: a new row records {ucsf}.
     let local = chat(&state, true).await;
     bind(&state, &local, "ollama").await;
-    state
-        .session_manager()
-        .record_session_affiliation(&local, InstitutionId::new("ucsf"))
-        .await
-        .unwrap();
+    // The chat's record holds UCSF's connector, set as the column the ratchet writes
+    // (`["ucsf"]` for a chat that held none), as the census of chat-side ratchets asks a
+    // fixture to: this test never fires the ratchet itself.
+    write_affiliations(&local, r#"["ucsf"]"#).await;
     observe(
         &app,
         Some(&local),
@@ -1378,4 +1375,198 @@ async fn managed_agent_writes_off_refuses_raising_the_settings() {
         json!({"allowed": false, "reason": reason})
     );
     assert_eq!(authority["write"], json!({"allowed": true, "reason": null}));
+}
+
+/// The PERF-1 review's hazard, through the daemon's shared handle: an edit made to
+/// `dictionary.json` in place, on the same inode, that keeps its length and sets its
+/// modification time back (`touch -r`, `rsync -t`, a restore that keeps both) is listed at
+/// once, because the store's stamp holds the inode change time, which no call sets back.
+/// Before, the listing and every dictation served the file as it was until a later write.
+/// The pause gives the edit a change time of its own on a file system whose clock is
+/// coarse.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn an_edit_in_place_that_keeps_the_length_and_the_times_is_listed() {
+    use std::io::Write;
+    use std::os::unix::fs::MetadataExt;
+    let (_state, app) = daemon().await;
+    add(&app, "disease-phenotypes", false).await;
+    let listed = get(&app, "/dictionary/entries", Caller::Proof).await;
+    assert_eq!(written(&listed.body), ["disease-phenotypes"]);
+    let path = dictionary::shared_store().store_path();
+    let before = std::fs::metadata(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let edited = text.replace("disease-phenotypes", "disease-phenotypez");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.write_all(edited.as_bytes()).unwrap();
+    file.set_modified(before.modified().unwrap()).unwrap();
+    drop(file);
+    let after = std::fs::metadata(&path).unwrap();
+    assert_eq!(
+        (after.len(), after.modified().unwrap(), after.ino()),
+        (before.len(), before.modified().unwrap(), before.ino()),
+        "the edit kept the length, the time and the inode"
+    );
+    let listed = get(&app, "/dictionary/entries", Caller::Proof).await;
+    assert_eq!(written(&listed.body), ["disease-phenotypez"]);
+}
+
+/// PERF-1: every write over HTTP parses the store once, its own fresh read under the
+/// store's lock, and leaves the daemon's shared handle holding what it wrote, so the read
+/// the next dictation's stream makes costs two `stat` calls and no parse. Asserted on the
+/// handle's parse count, because a timing assertion would not hold on a loaded runner; the
+/// times are printed. The store holds 4,000 rows, so a reparse would show in them.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn every_write_parses_the_store_once_and_leaves_the_shared_cache_warm() {
+    let (_state, app) = daemon().await;
+    let lines: Vec<String> = (0..4_000).map(|i| format!("BRL{i:04}X")).collect();
+    let imported = post(
+        &app,
+        "/dictionary/import",
+        Caller::Proof,
+        json!({"format": "lines", "content": lines.join("\n")}),
+    )
+    .await;
+    assert_eq!(imported.body["new"], 4_000, "{}", imported.body);
+    // The rows keep, accept and dismiss act on, written by another handle, as the
+    // terminal writes them.
+    let terminal = dictionary_store::open_store();
+    let added = |term: NewTerm| match terminal
+        .write(|file| file.add(term, Reach::All, store::schema::now()))
+        .unwrap()
+    {
+        store::AddOutcome::Created { id, .. } => id.to_string(),
+        other => panic!("{other:?}"),
+    };
+    let agent = added(NewTerm {
+        source: EntrySource::Agent,
+        ..NewTerm::person("EGLN1", EntryTier::Public)
+    });
+    let suggested = |w: &str| NewTerm {
+        source: EntrySource::Correction,
+        status: EntryStatus::Suggested,
+        ..NewTerm::person(w, EntryTier::Public)
+    };
+    let spoke = added(suggested("SPOKE"));
+    let vhl = added(suggested("VHL"));
+
+    let shared = dictionary::shared_store();
+    let started = std::time::Instant::now();
+    shared.view().unwrap();
+    eprintln!(
+        "the terminal's writes: one reparse of the shared handle, {:?}",
+        started.elapsed()
+    );
+    let mut parses = shared.store_parses();
+    let mut settle = |label: &str| {
+        let started = std::time::Instant::now();
+        let view = shared.view().unwrap();
+        let read = started.elapsed();
+        let now = shared.store_parses();
+        eprintln!(
+            "{label}: {} parse(s), then the next read in {read:?} ({} rows)",
+            now - parses,
+            view.entries().len()
+        );
+        assert_eq!(
+            now - parses,
+            1,
+            "{label}: the write's own read under the lock, and none after it"
+        );
+        parses = now;
+    };
+
+    let id = add(&app, "EPAS1", false).await;
+    settle("add");
+    let uri = format!("/dictionary/entries/{id}");
+    let edited = send(
+        &app,
+        "PATCH",
+        &uri,
+        Caller::Proof,
+        Some(json!({"note": "a gene"})),
+        &[("If-Match", "\"1\"".to_string())],
+    )
+    .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.body);
+    settle("edit");
+    let moved = post(
+        &app,
+        &format!("{uri}/tier"),
+        Caller::Proof,
+        json!({"tier": "private"}),
+    )
+    .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+    settle("tier change");
+    let deleted = send(&app, "DELETE", &uri, Caller::Proof, None, &[]).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    settle("delete");
+    let kept = post(
+        &app,
+        "/dictionary/entries/keep",
+        Caller::Proof,
+        json!({"ids": [agent]}),
+    )
+    .await;
+    assert_eq!(kept.body, json!({"kept": 1}));
+    settle("keep");
+    let accepted = post(
+        &app,
+        "/dictionary/suggestions/accept",
+        Caller::Proof,
+        json!({"ids": [spoke]}),
+    )
+    .await;
+    assert_eq!(accepted.body, json!({"accepted": 1}));
+    settle("accept");
+    let dismissed = post(
+        &app,
+        "/dictionary/suggestions/dismiss",
+        Caller::Proof,
+        json!({"ids": [vhl]}),
+    )
+    .await;
+    assert_eq!(dismissed.body, json!({"dismissed": 1}));
+    settle("dismiss");
+    let bulk = post(
+        &app,
+        "/dictionary/entries/delete",
+        Caller::Proof,
+        json!({"ids": [agent, spoke]}),
+    )
+    .await;
+    assert_eq!(bulk.body, json!({"deleted": 2}));
+    settle("bulk delete");
+    let imported = post(
+        &app,
+        "/dictionary/import",
+        Caller::Proof,
+        json!({"format": "lines", "content": "UCSF\nOMOP"}),
+    )
+    .await;
+    assert_eq!(imported.body["new"], 2, "{}", imported.body);
+    settle("import");
+    assert_eq!(
+        observe(
+            &app,
+            None,
+            json!([correction("dct_stream_a", "you see us f", "UCSF")])
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    settle("observations");
+    let settings = post(
+        &app,
+        "/dictionary/settings",
+        Caller::Proof,
+        json!({"learn_from_chats": true}),
+    )
+    .await;
+    assert_eq!(settings.status, StatusCode::OK, "{}", settings.body);
+    settle("settings");
 }

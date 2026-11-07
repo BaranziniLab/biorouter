@@ -28,18 +28,21 @@
 //!
 //! [`DictionaryRequest`] is what one dictation then carries: the ranked plan for its
 //! context, the corrector built for it, and the decoder bonus table, all built when the
-//! dictation starts so the path from stop to text pays for none of them. After the text
-//! is out, [`DictionaryRequest::usage_bumps`] says which rows it used and
+//! dictation starts so the path from stop to text pays for none of them. A daemon builds
+//! its requests through one [`DictionaryCache`], which keeps what does not depend on the
+//! request from one dictation to the next while the store is unchanged (PERF-1). After the
+//! text is out, [`DictionaryRequest::usage_bumps`] says which rows it used and
 //! [`record_usage`] writes them to `usage.json` ("Usage").
 
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use biorouter_dictation::protocol::{BonusParams, SetBias};
-use biorouter_dictation::recognize::correct::{Change, Corrected, Corrector};
+use biorouter_dictation::recognize::correct::{Change, Corrected, CorrectionIndex, Corrector};
 use biorouter_dictation::recognize::prompt;
-use biorouter_dictation::recognize::select::{self, RequestPlan};
+use biorouter_dictation::recognize::select::{self, RankIndex, RequestPlan};
 use biorouter_dictation::recognize::{
     words, BiasScope, BonusTable, EligibleEntries, RecognitionEntry,
 };
@@ -209,8 +212,33 @@ fn bias_set_under(
     standing: Standing,
     enforced: bool,
 ) -> EligibleEntries {
+    match decide(dictionary, view, target, standing, enforced) {
+        Some(decided) => copy_rows(view, &decided),
+        None => EligibleEntries::empty(),
+    }
+}
+
+/// What the bias set's rules decided for one dictation, before any row is copied: its
+/// table, its scope, and which rows of the view passed, by their place in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Decided {
+    table: BonusTable,
+    scope: BiasScope,
+    rows: Vec<u32>,
+}
+
+/// The predicate, for every row: `None` under the managed `dictionary: false` key. Every
+/// dictation runs it in full, a daemon's included ([`DictionaryCache`]), so no rule a set
+/// was once admitted under can stand in for the rules as they are now.
+fn decide(
+    dictionary: &Rule,
+    view: &StoreView,
+    target: &BiasTarget,
+    standing: Standing,
+    enforced: bool,
+) -> Option<Decided> {
     if !dictionary.is_allowed() {
-        return EligibleEntries::empty();
+        return None;
     }
     // Private reach only for a private capable target AND a caller with private standing.
     let reach =
@@ -230,16 +258,406 @@ fn bias_set_under(
             BiasScope::Private,
         ),
     };
-    let usage = table.usage_scope();
-    let rows: Vec<RecognitionEntry> = view
+    let rows = view
         .entries()
         .iter()
-        .filter(|e| RecognitionEntry::is_recognizable(e))
-        .filter(|e| privacy::visible_to(reach, classification_of(e.tier)))
-        .filter(|e| target.person_included || admits(e, target, reach, enforced))
+        .enumerate()
+        .filter(|(_, e)| RecognitionEntry::is_recognizable(e))
+        .filter(|(_, e)| privacy::visible_to(reach, classification_of(e.tier)))
+        .filter(|(_, e)| target.person_included || admits(e, target, reach, enforced))
+        .map(|(at, _)| at as u32)
+        .collect();
+    Some(Decided { table, scope, rows })
+}
+
+/// The rows `decided` admitted, as recognition reads them, with the counters of the map
+/// their table ranks by.
+fn copy_rows(view: &StoreView, decided: &Decided) -> EligibleEntries {
+    let usage = decided.table.usage_scope();
+    let entries = view.entries();
+    let rows: Vec<RecognitionEntry> = decided
+        .rows
+        .iter()
+        .filter_map(|&at| entries.get(at as usize))
         .map(|e| RecognitionEntry::from_entry(e, view.usage(&e.id, usage)))
         .collect();
-    EligibleEntries::new_filtered(rows, table, scope, view.generation())
+    // The bonus table's revision follows the entries file's content stamp, never a count
+    // of reads: an unchanged store and target give the worker the revision it already
+    // holds, so a dictation sends no table again, while every write, in either tier, gives
+    // every table a new revision (oracle rule 9). Usage moves no revision: the table holds
+    // written forms and bias policies, never counters.
+    EligibleEntries::new_filtered(
+        rows,
+        decided.table.clone(),
+        decided.scope,
+        view.content_stamp(),
+    )
+}
+
+/// How many sets a [`DictionaryCache`] keeps: one per table a person dictates into (the
+/// public rows, a private table per model affiliation, every row), most recent first.
+const CACHED_SETS: usize = 4;
+
+/// What a daemon's dictations build from an unchanged dictionary, kept across them
+/// (PERF-1). Without it every stream built its set, its ranking and its corrector from all
+/// 5,000 rows; in a release build the ranking alone took 3.0 to 3.2 ms and the corrector 1.8
+/// to 2.0 ms with bare rows, 16.9 to 19.0 ms with a spoken form and a misrecognition each
+/// [M, 2026-11-07]. The cache keeps, per set, the rows as recognition reads them and the
+/// parts of the ranking and of the corrector that no request changes ([`RankIndex`],
+/// [`CorrectionIndex`]); each request then ranks for its own context and time and builds
+/// the few fuzzy keys its plan names.
+///
+/// A set is found by what the rules decided, never by who asked: the entries file's
+/// content stamp, the table, the scope and the very rows that passed. The predicate runs in
+/// full for every dictation ([`decide`]), so a change of target, standing, master switch,
+/// mixing policy or managed key that admits other rows finds another set, or builds one.
+/// A write in either tier gives the entries file a new content stamp, and every set of the
+/// old one is dropped. A usage flush moves only the counters: the rows are copied again,
+/// with their new figures, and the indexes are kept once the copy is checked to hold the
+/// same rows. After a write of its own, and after each usage flush, the daemon builds the
+/// recent sets again from the new files ([`DictionaryCache::prewarm`]), so the dictation
+/// after it finds its set ready.
+///
+/// A set is built once at a time: a dictation that needs a set another thread is building
+/// (the rebuild after a write, a stream that started first) waits for that build and takes
+/// it, rather than building the same set beside it. The PERF-1 review measured the
+/// duplicate in a release build at 6.7 ms with bare rows and 22 to 23 ms with forms, where
+/// the set once built costs 0.3 ms [M, 2026-11-07].
+#[derive(Default)]
+pub struct DictionaryCache {
+    sets: Mutex<Sets>,
+    /// Signalled whenever a build ends, for the dictations that wait for it.
+    built: Condvar,
+    /// The last few dictations' inputs, distinct, most recent first, so a write the daemon
+    /// makes can build their sets again before the next dictation asks ([`Self::prewarm`]).
+    recent: Mutex<Vec<Recent>>,
+    copies: AtomicU64,
+    indexes: AtomicU64,
+    prewarms: AtomicU64,
+    waits: AtomicU64,
+}
+
+/// What a [`DictionaryCache`] holds under its lock.
+#[derive(Default)]
+struct Sets {
+    /// The sets kept, most recent first.
+    kept: Vec<CachedSet>,
+    /// The sets being built at this moment, by the entries file they are built from and the
+    /// rows they hold.
+    building: Vec<(u64, Decided)>,
+}
+
+/// Marks one set as being built for as long as it lives. Dropping it, when the build ends
+/// or if it panics, takes the mark away and wakes every dictation waiting for the set, so
+/// none waits for a build that will never end.
+struct Flight<'a> {
+    cache: &'a DictionaryCache,
+    content: u64,
+    decided: Decided,
+}
+
+impl Drop for Flight<'_> {
+    fn drop(&mut self) {
+        {
+            let mut sets = self.cache.sets();
+            if let Some(at) = sets
+                .building
+                .iter()
+                .position(|(content, decided)| *content == self.content && *decided == self.decided)
+            {
+                sets.building.swap_remove(at);
+            }
+        }
+        self.cache.built.notify_all();
+    }
+}
+
+/// What one dictation asked the cache for.
+#[derive(Clone, Debug, PartialEq)]
+struct Recent {
+    target: BiasTarget,
+    standing: Standing,
+    enforced: bool,
+}
+
+struct CachedSet {
+    content: u64,
+    usage: u64,
+    decided: Decided,
+    eligible: EligibleEntries,
+    rank: Arc<RankIndex>,
+    correction: Arc<CorrectionIndex>,
+}
+
+/// A set as a request takes it: the rows and the two indexes.
+type SetParts = (EligibleEntries, Arc<RankIndex>, Arc<CorrectionIndex>);
+
+impl CachedSet {
+    fn parts(&self) -> SetParts {
+        (
+            self.eligible.clone(),
+            Arc::clone(&self.rank),
+            Arc::clone(&self.correction),
+        )
+    }
+}
+
+impl DictionaryCache {
+    pub const fn new() -> DictionaryCache {
+        DictionaryCache {
+            sets: Mutex::new(Sets {
+                kept: Vec::new(),
+                building: Vec::new(),
+            }),
+            built: Condvar::new(),
+            recent: Mutex::new(Vec::new()),
+            copies: AtomicU64::new(0),
+            indexes: AtomicU64::new(0),
+            prewarms: AtomicU64::new(0),
+            waits: AtomicU64::new(0),
+        }
+    }
+
+    /// The [`DictionaryRequest`] a dictation aimed at `target`, for a caller with
+    /// `standing`, gets from `view`: what `DictionaryRequest::new` over [`bias_set`] gives,
+    /// reusing what an earlier dictation over the same rows built. It runs the bias set's
+    /// predicate in full, so it is a privacy guard of its own: the wiring census
+    /// (`crates/biorouter/tests/privacy_guard_wiring.rs`) holds its callers, the daemon's
+    /// dictation stream among them.
+    pub fn bias_request(
+        &self,
+        view: &StoreView,
+        target: &BiasTarget,
+        standing: Standing,
+        enforced: bool,
+        context: &str,
+        channels: BiasChannels,
+    ) -> DictionaryRequest {
+        {
+            let asked = Recent {
+                target: target.clone(),
+                standing,
+                enforced,
+            };
+            let mut recent = lock(&self.recent);
+            recent.retain(|other| *other != asked);
+            recent.insert(0, asked);
+            recent.truncate(CACHED_SETS);
+        }
+        let policy = ManagedPolicy::load();
+        self.bias_request_under(
+            &policy.dictation().dictionary,
+            view,
+            target,
+            standing,
+            enforced,
+            context,
+            channels,
+        )
+    }
+
+    /// Builds again, from `view`, the sets the last few dictations asked for, so the
+    /// dictation after a write finds its set ready: the daemon calls it after each of its own
+    /// writes, off the request and after the answer, and after each usage flush, which moves
+    /// only the counters, so the rows are copied again and the indexes kept, after the text
+    /// is out rather than in the next stream's creation. A dictation that asks for one of
+    /// these sets while it is being built waits for it. Each decision runs here in full, with
+    /// the rules as they are now, and a set built here serves a dictation only when that
+    /// dictation's own decision admits exactly its rows, so an input remembered here grants
+    /// nothing. A view of no file builds nothing.
+    pub fn prewarm(&self, view: &StoreView) {
+        if view.content_stamp() != 0 {
+            let policy = ManagedPolicy::load();
+            let recent = lock(&self.recent).clone();
+            for asked in recent {
+                let decided = decide(
+                    &policy.dictation().dictionary,
+                    view,
+                    &asked.target,
+                    asked.standing,
+                    asked.enforced,
+                );
+                if let Some(decided) = decided.filter(|d| !d.rows.is_empty()) {
+                    self.set_for(view, decided);
+                }
+            }
+        }
+        self.prewarms.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// [`Self::bias_request`] under the managed `dictionary` rule `dictionary`.
+    #[allow(clippy::too_many_arguments)]
+    fn bias_request_under(
+        &self,
+        dictionary: &Rule,
+        view: &StoreView,
+        target: &BiasTarget,
+        standing: Standing,
+        enforced: bool,
+        context: &str,
+        channels: BiasChannels,
+    ) -> DictionaryRequest {
+        let Some(decided) = decide(dictionary, view, target, standing, enforced) else {
+            return DictionaryRequest::new(EligibleEntries::empty(), context, channels);
+        };
+        // An empty set, or a view of no file, costs nothing to build and is not kept.
+        if decided.rows.is_empty() || view.content_stamp() == 0 {
+            return DictionaryRequest::new(copy_rows(view, &decided), context, channels);
+        }
+        let (eligible, rank, correction) = self.set_for(view, decided);
+        DictionaryRequest::indexed(eligible, &rank, correction, context, channels)
+    }
+
+    fn sets(&self) -> std::sync::MutexGuard<'_, Sets> {
+        lock(&self.sets)
+    }
+
+    /// The set of `decided` rows of `view`, with its indexes: kept, or built and kept. While
+    /// another thread builds this very set from the same entries file, this one waits for
+    /// it and looks again, so a set is never built twice at once.
+    fn set_for(&self, view: &StoreView, decided: Decided) -> SetParts {
+        let (content, usage) = (view.content_stamp(), view.usage_stamp());
+        let mut sets = self.sets();
+        let earlier = loop {
+            // A set of another version of the entries file can never serve again.
+            sets.kept.retain(|set| set.content == content);
+            let at = sets.kept.iter().position(|set| set.decided == decided);
+            if let Some(at) = at {
+                let set = sets.kept.remove(at);
+                sets.kept.insert(0, set);
+                if sets.kept[0].usage == usage {
+                    return sets.kept[0].parts();
+                }
+            }
+            let in_flight = sets
+                .building
+                .iter()
+                .any(|(other, rows)| *other == content && *rows == decided);
+            if !in_flight {
+                break at.map(|_| sets.kept[0].parts());
+            }
+            self.waits.fetch_add(1, Ordering::Relaxed);
+            sets = self
+                .built
+                .wait(sets)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        };
+        sets.building.push((content, decided.clone()));
+        drop(sets);
+        let flight = Flight {
+            cache: self,
+            content,
+            decided,
+        };
+        let decided = &flight.decided;
+        // Built outside the lock: another table's dictation need not wait for this one.
+        let eligible = copy_rows(view, decided);
+        self.copies.fetch_add(1, Ordering::Relaxed);
+        let (rank, correction) = match earlier {
+            Some((old, rank, correction)) if same_rows(old.entries(), eligible.entries()) => {
+                (rank, correction)
+            }
+            _ => {
+                words::warm();
+                self.indexes.fetch_add(1, Ordering::Relaxed);
+                (
+                    Arc::new(RankIndex::new(&eligible)),
+                    Arc::new(CorrectionIndex::new(&eligible)),
+                )
+            }
+        };
+        {
+            let mut sets = self.sets();
+            sets.kept
+                .retain(|set| set.content == content && set.decided != *decided);
+            sets.kept.insert(
+                0,
+                CachedSet {
+                    content,
+                    usage,
+                    decided: decided.clone(),
+                    eligible: eligible.clone(),
+                    rank: Arc::clone(&rank),
+                    correction: Arc::clone(&correction),
+                },
+            );
+            sets.kept.truncate(CACHED_SETS);
+        }
+        // The set is kept before the mark goes, so a dictation woken by it finds the set.
+        drop(flight);
+        (eligible, rank, correction)
+    }
+
+    /// How many times this cache copied rows out of a view into a set: once per set and
+    /// version of the counters. The latency tests read it.
+    pub fn rows_copied(&self) -> u64 {
+        self.copies.load(Ordering::Relaxed)
+    }
+
+    /// How many times it built a set's ranking and correction indexes: once per set and
+    /// version of the entries file.
+    pub fn indexes_built(&self) -> u64 {
+        self.indexes.load(Ordering::Relaxed)
+    }
+
+    /// How many [`Self::prewarm`] runs have finished, for a test that waits for one.
+    pub fn prewarms(&self) -> u64 {
+        self.prewarms.load(Ordering::Relaxed)
+    }
+
+    /// How many times a dictation, or a rebuild, waited for a set another thread was
+    /// building instead of building it too. The latency tests print it.
+    pub fn waits(&self) -> u64 {
+        self.waits.load(Ordering::Relaxed)
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Whether two copies hold the same rows in the same order, whatever their usage counters:
+/// the only fields neither index reads.
+fn same_rows(a: &[RecognitionEntry], b: &[RecognitionEntry]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_row(a, b))
+}
+
+/// [`same_rows`] for one row. Every field is named, so a field added to
+/// [`RecognitionEntry`] is a compile error here until someone decides which side it is on.
+fn same_row(a: &RecognitionEntry, b: &RecognitionEntry) -> bool {
+    let RecognitionEntry {
+        id,
+        tier,
+        written,
+        spoken_forms,
+        misrecognitions,
+        context_cues,
+        kind,
+        match_policy,
+        bias,
+        uses: _,
+        last_used_at: _,
+        corrected_to: _,
+        updated_at,
+        collides,
+        digits_literal,
+        letter_digit,
+    } = a;
+    *id == b.id
+        && *tier == b.tier
+        && *written == b.written
+        && *spoken_forms == b.spoken_forms
+        && *misrecognitions == b.misrecognitions
+        && *context_cues == b.context_cues
+        && *kind == b.kind
+        && *match_policy == b.match_policy
+        && *bias == b.bias
+        && *updated_at == b.updated_at
+        && *collides == b.collides
+        && *digits_literal == b.digits_literal
+        && *letter_digit == b.letter_digit
 }
 
 /// DR-26 for one row (O-32, O-35, P-16): every institution the row names must admit the
@@ -297,6 +715,30 @@ impl DictionaryRequest {
         }
         let plan = select::plan(&eligible, context, chrono::Utc::now());
         let corrector = Corrector::new(&eligible, &plan);
+        DictionaryRequest::of(eligible, plan, corrector, channels)
+    }
+
+    /// [`Self::new`] with the indexes a [`DictionaryCache`] keeps for `eligible`'s rows: the
+    /// same request, ranked and corrected the same way, at the cost of the request's own
+    /// part alone.
+    fn indexed(
+        eligible: EligibleEntries,
+        rank: &RankIndex,
+        correction: Arc<CorrectionIndex>,
+        context: &str,
+        channels: BiasChannels,
+    ) -> DictionaryRequest {
+        let plan = select::plan_with(&eligible, rank, context, chrono::Utc::now());
+        let corrector = Corrector::with_index(correction, &plan);
+        DictionaryRequest::of(eligible, plan, corrector, channels)
+    }
+
+    fn of(
+        eligible: EligibleEntries,
+        plan: RequestPlan,
+        corrector: Corrector,
+        channels: BiasChannels,
+    ) -> DictionaryRequest {
         let table = channels
             .bonus
             .then(|| eligible.bias_table(BonusParams::default()))
@@ -483,6 +925,57 @@ mod tests {
                     Ok(())
                 })
                 .expect("stamped");
+        }
+
+        /// Fills the store to the active cap with public terms `BRL0000X` and up, each with
+        /// a spoken form and an active misrecognition when `forms`, in one write.
+        fn fill_to_the_cap(&self, forms: bool) {
+            use biorouter_dictation::store::ops::MAX_ACTIVE_PER_TIER;
+            use biorouter_dictation::store::{EntrySource, MatchPolicy, Misrecognition};
+            let at = now();
+            self.store
+                .write(|file| {
+                    for i in 0..MAX_ACTIVE_PER_TIER {
+                        let written = format!("BRL{i:04}X");
+                        file.entries.push(Entry {
+                            id: EntryId::random(),
+                            rev: 1,
+                            match_policy: MatchPolicy::default_for(None, &written),
+                            written,
+                            tier: EntryTier::Public,
+                            status: EntryStatus::Active,
+                            source: EntrySource::Import,
+                            reviewed: true,
+                            spoken_forms: if forms {
+                                vec![format!("barrel {i} spoken")]
+                            } else {
+                                Vec::new()
+                            },
+                            misrecognitions: if forms {
+                                vec![Misrecognition {
+                                    text: format!("barrel {i} heard"),
+                                    count: 2,
+                                    last_seen: at,
+                                }]
+                            } else {
+                                Vec::new()
+                            },
+                            kind: None,
+                            bias: BiasPolicy::Auto,
+                            context_cues: Vec::new(),
+                            note: None,
+                            reason: None,
+                            suggested_in: None,
+                            seen: 1,
+                            created_at: at,
+                            updated_at: at,
+                            provenance: None,
+                            affiliation: None,
+                        });
+                    }
+                    Ok(())
+                })
+                .unwrap();
         }
 
         fn written(&self, target: &BiasTarget, standing: Standing, enforced: bool) -> Vec<String> {
@@ -744,6 +1237,660 @@ mod tests {
         let untouched = DictionaryStore::open(empty.path().join("dictionary"));
         assert!(!record_usage(&untouched, &[], USAGE_FLUSH_BUDGET));
         assert!(!untouched.dir().exists());
+    }
+
+    /// PERF-1: the bonus table's revision holds while the store and the target do, so the
+    /// supervisor sends a worker that holds it nothing new at the next dictation: views from
+    /// any handle, read any number of times, and a usage flush between them, all give the
+    /// revision the first gave. A write in either tier gives a new one (oracle rule 9), and
+    /// another target is another table.
+    #[test]
+    fn the_table_revision_holds_while_the_store_and_the_target_do() {
+        let f = Fixture::new();
+        f.add("EPAS1", EntryTier::Public, None);
+        f.add("PRIVATE1", EntryTier::Private, None);
+        let public = Standing::public();
+        let revision = |store: &DictionaryStore, target: &BiasTarget, standing: Standing| {
+            let view = store.view().unwrap();
+            let request = DictionaryRequest::new(
+                bias_set(&view, target, standing, true),
+                "",
+                BiasChannels::BOTH,
+            );
+            let table = request.bias_table().expect("a table");
+            (table.scope.clone(), table.revision)
+        };
+        let first = revision(&f.store, &BiasTarget::public(), public);
+        assert_eq!(revision(&f.store, &BiasTarget::public(), public), first);
+        let other = DictionaryStore::open(f.store.dir());
+        assert_eq!(
+            revision(&other, &BiasTarget::public(), public),
+            first,
+            "a fresh handle reads the same file, so the same revision"
+        );
+        let id = f.store.view().unwrap().entries()[0].id.clone();
+        let bump = UsageDelta {
+            uses: 1,
+            corrected_to: 0,
+            last_used_at: Some(now()),
+        };
+        assert!(record_usage(
+            &other,
+            &[(id, UsageScope::Public, bump)],
+            USAGE_FLUSH_BUDGET
+        ));
+        assert_eq!(
+            revision(&f.store, &BiasTarget::public(), public),
+            first,
+            "a usage flush moves no revision"
+        );
+
+        let local = private_target(Some(ModelAffiliation::Local));
+        let private = revision(&f.store, &local, Standing::from_checked(true));
+        assert_ne!(private.0, first.0, "another target is another table");
+
+        // A private write rebuilds the public table too, and its timing says nothing.
+        f.add("PRIVATE2", EntryTier::Private, None);
+        let after = revision(&f.store, &BiasTarget::public(), public);
+        assert_eq!(after.0, first.0);
+        assert_ne!(after.1, first.1);
+        assert_ne!(
+            revision(&f.store, &local, Standing::from_checked(true)).1,
+            private.1
+        );
+    }
+
+    /// Where the dictionary sits on a dictation's path, at the cap (5,000 rows), split into
+    /// its parts: the store read (cold parse and warm), the bias set, the ranking and the
+    /// corrector a stream builds when it is created, and the correction of one utterance,
+    /// which runs between the decode and the text. A timing run, by hand:
+    /// `cargo test -p biorouter --lib dictation::bias::tests::measure -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a timing run, by hand"]
+    fn measure_the_dictionary_path_at_the_cap() {
+        use biorouter_dictation::recognize::correct::Corrector;
+        use std::time::Instant;
+
+        fn time<T>(runs: usize, mut work: impl FnMut() -> T) -> Duration {
+            let mut samples: Vec<Duration> = (0..runs)
+                .map(|_| {
+                    let started = Instant::now();
+                    std::hint::black_box(work());
+                    started.elapsed()
+                })
+                .collect();
+            samples.sort();
+            samples[samples.len() / 2]
+        }
+
+        // PR-16's live check imported bare terms (`BRL0000X`); the second shape gives every
+        // row a spoken form and a misrecognition, so the alias automaton and the key map
+        // hold three forms a row.
+        for forms in [false, true] {
+            let f = Fixture::new();
+            f.fill_to_the_cap(forms);
+            let bytes = std::fs::metadata(f.store.store_path()).unwrap().len();
+            let cold = time(5, || DictionaryStore::open(f.store.dir()).view().unwrap());
+            let parses = f.store.store_parses();
+            f.store.view().unwrap();
+            let warm = time(1_000, || f.store.view().unwrap());
+            assert_eq!(
+                f.store.store_parses(),
+                parses,
+                "the write left the cache warm"
+            );
+            let view = f.store.view().unwrap();
+            let target = BiasTarget::public();
+            let set = time(9, || bias_set(&view, &target, Standing::public(), true));
+            let eligible = bias_set(&view, &target, Standing::public(), true);
+            words::warm();
+            let plan = time(9, || select::plan(&eligible, "", Utc::now()));
+            let ranked = select::plan(&eligible, "", Utc::now());
+            let corrector = time(9, || Corrector::new(&eligible, &ranked));
+            let request = time(9, || {
+                DictionaryRequest::new(eligible.clone(), "", BiasChannels::DEFAULT)
+            });
+            let dictionary = DictionaryRequest::new(eligible.clone(), "", BiasChannels::DEFAULT);
+            let prompt = dictionary.prompt_terms();
+            // PERF-1: the daemon's cache. The first request builds the set and its indexes;
+            // the rest find them, and after a usage flush only the rows are copied again.
+            let cache = DictionaryCache::new();
+            let request_of = |view: &StoreView, context: &str| {
+                cache.bias_request(
+                    view,
+                    &target,
+                    Standing::public(),
+                    true,
+                    context,
+                    BiasChannels::DEFAULT,
+                )
+            };
+            let first = time(1, || request_of(&view, ""));
+            let cached = time(51, || request_of(&view, ""));
+            let context = "We talked about the Baranzini group, VHL and barrel 12 spoken.";
+            let cached_context = time(51, || request_of(&view, context));
+            assert_eq!(cache.indexes_built(), 1, "built once");
+            let id = view.entries()[0].id.clone();
+            let bump = UsageDelta {
+                uses: 1,
+                corrected_to: 0,
+                last_used_at: Some(now()),
+            };
+            assert!(record_usage(
+                &f.store,
+                &[(id, UsageScope::Public, bump)],
+                USAGE_FLUSH_BUDGET
+            ));
+            let flushed = f.store.view().unwrap();
+            let after_usage = time(1, || request_of(&flushed, ""));
+            assert_eq!(cache.indexes_built(), 1, "a usage flush keeps the indexes");
+            // A 5 s utterance, and one that holds terms to correct.
+            let plain =
+                "The Baranzini group uses spoke to link VHL mutations to disease phenotypes.";
+            let terms = "Then barrel 12 heard, BRL0040X and barrel 7 spoken went to the core.";
+            let correct_plain = time(201, || dictionary.correct(plain, &prompt));
+            let correct_terms = time(201, || dictionary.correct(terms, &prompt));
+            println!(
+                "{} rows ({}), {bytes} bytes: view cold (parse) {cold:?}; view warm {warm:?}; \
+                 bias set {set:?}; plan {plan:?}; corrector {corrector:?}; whole request \
+                 {request:?}; the cache: first request {first:?}, then {cached:?} \
+                 ({cached_context:?} with context), after a usage flush {after_usage:?}; \
+                 correct a plain utterance {correct_plain:?}; correct one with terms \
+                 {correct_terms:?} ({:?})",
+                eligible.entries().len(),
+                if forms {
+                    "a spoken form and a misrecognition each"
+                } else {
+                    "bare"
+                },
+                dictionary.correct(terms, &prompt).text
+            );
+        }
+    }
+
+    /// What a request carries, for comparing a cached one with one built whole.
+    fn assert_same_request(cached: &DictionaryRequest, whole: &DictionaryRequest, what: &str) {
+        assert_eq!(
+            cached.eligible.entries(),
+            whole.eligible.entries(),
+            "{what}"
+        );
+        assert_eq!(cached.eligible.table(), whole.eligible.table(), "{what}");
+        assert_eq!(cached.scope(), whole.scope(), "{what}");
+        assert_eq!(
+            cached.eligible.revision(),
+            whole.eligible.revision(),
+            "{what}"
+        );
+        assert_eq!(cached.plan, whole.plan, "{what}");
+        assert_eq!(cached.prompt_terms(), whole.prompt_terms(), "{what}");
+        assert_eq!(cached.bias_table(), whole.bias_table(), "{what}");
+        let prompt = whole.prompt_terms();
+        for text in [
+            "E-PAS-1 and the bio router, then bee oh router and PRIVATE-1.",
+            "U-C-S-F-ROW met EGLN-1 at E PAS one.",
+            "Nothing to change here.",
+        ] {
+            assert_eq!(
+                cached.correct(text, &prompt),
+                whole.correct(text, &prompt),
+                "{what}: {text}"
+            );
+        }
+        let at = now();
+        let text = "EPAS1, Biorouter, PRIVATE1, UCSFROW and EGLN1";
+        assert_eq!(
+            cached.usage_bumps(text, at),
+            whole.usage_bumps(text, at),
+            "{what}"
+        );
+    }
+
+    /// PERF-1: a request the daemon's cache gives is the request built whole from
+    /// `bias_set`, for every kind of target and both settings of the master switch: from a
+    /// set it builds, from one it keeps, from one whose rows it copies again after a usage
+    /// flush (keeping its indexes), and after a write in either tier (building new ones).
+    #[test]
+    fn a_cached_request_is_the_request_built_whole() {
+        let f = Fixture::new();
+        f.add("EPAS1", EntryTier::Public, None);
+        f.add("PRIVATE1", EntryTier::Private, None);
+        f.add("UCSFROW", EntryTier::Private, Some(&["ucsf"]));
+        f.add("Biorouter", EntryTier::Public, None);
+        f.store
+            .write(|file| {
+                for e in &mut file.entries {
+                    if e.written == "Biorouter" {
+                        e.spoken_forms = vec!["bio router".into(), "bee oh router".into()];
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        let private = Standing::from_checked(true);
+        let local = private_target(Some(ModelAffiliation::Local));
+        let ucsf = private_target(ModelAffiliation::institutions([inst("ucsf")]));
+        let included = BiasTarget {
+            person_included: true,
+            ..BiasTarget::public()
+        };
+        // Four tables, as many as the cache keeps: public rows, two private tables, every
+        // row; the switch off is the same every row table under another scope, below.
+        let cases = [
+            (BiasTarget::public(), Standing::public(), true),
+            (local.clone(), private, true),
+            (ucsf.clone(), private, true),
+            (included.clone(), private, true),
+        ];
+        let cache = DictionaryCache::new();
+        let check = |what: &str| {
+            let view = f.store.view().unwrap();
+            for (target, standing, enforced) in &cases {
+                for context in ["", "the bio router and EPAS1"] {
+                    let cached = cache.bias_request(
+                        &view,
+                        target,
+                        *standing,
+                        *enforced,
+                        context,
+                        BiasChannels::BOTH,
+                    );
+                    let whole = DictionaryRequest::new(
+                        bias_set(&view, target, *standing, *enforced),
+                        context,
+                        BiasChannels::BOTH,
+                    );
+                    assert_same_request(&cached, &whole, &format!("{what}: {target:?}"));
+                }
+            }
+        };
+        check("built");
+        assert_eq!(cache.indexes_built(), 4, "one set a table");
+        assert_eq!(cache.rows_copied(), 4);
+        check("kept");
+        assert_eq!(
+            cache.indexes_built(),
+            4,
+            "an unchanged store builds nothing"
+        );
+        assert_eq!(cache.rows_copied(), 4);
+
+        let view = f.store.view().unwrap();
+        let id = view.entries()[0].id.clone();
+        let bump = UsageDelta {
+            uses: 3,
+            corrected_to: 1,
+            last_used_at: Some(now()),
+        };
+        assert!(record_usage(
+            &f.store,
+            &[(id, UsageScope::Public, bump)],
+            USAGE_FLUSH_BUDGET
+        ));
+        check("after a usage flush");
+        assert_eq!(cache.rows_copied(), 8, "the counters are copied again");
+        assert_eq!(cache.indexes_built(), 4, "and the indexes kept");
+
+        // A private write: every table's set is built again, the public one included.
+        f.add("EGLN1", EntryTier::Private, None);
+        check("after a private write");
+        assert_eq!(cache.indexes_built(), 8);
+        f.add("EGLN1", EntryTier::Public, None);
+        check("after a public write");
+        assert_eq!(cache.indexes_built(), 12);
+
+        // The switch off: every row, scope public, a set of its own.
+        let view = f.store.view().unwrap();
+        let off = cache.bias_request(
+            &view,
+            &BiasTarget::public(),
+            Standing::public(),
+            false,
+            "",
+            BiasChannels::BOTH,
+        );
+        let whole = DictionaryRequest::new(
+            bias_set(&view, &BiasTarget::public(), Standing::public(), false),
+            "",
+            BiasChannels::BOTH,
+        );
+        assert_same_request(&off, &whole, "the switch off");
+        assert_eq!(off.scope(), BiasScope::Public);
+        assert_eq!(cache.indexes_built(), 13);
+        assert!(
+            cache.sets().kept.len() <= CACHED_SETS,
+            "the cache keeps at most four"
+        );
+
+        // Managed `dictionary: false` through the cache: the empty request, nothing kept.
+        let forbidden = crate::managed::DictationPolicy::off().dictionary;
+        let request = cache.bias_request_under(
+            &forbidden,
+            &view,
+            &local,
+            private,
+            true,
+            "",
+            BiasChannels::BOTH,
+        );
+        assert!(request.eligible.is_empty());
+        assert_eq!(request.correct("E-PAS-1 here", &[]).text, "E-PAS-1 here");
+        assert_eq!(cache.indexes_built(), 13);
+    }
+
+    /// The cache finds a set by the rows the rules admitted, never by the table's name
+    /// alone: a mixing policy, a master switch or an affiliation that admits other rows into
+    /// a table of the same name gets a set of its own, and no request ever carries a row
+    /// its own decision left out (DD-36).
+    #[test]
+    fn the_cache_never_serves_rows_this_decision_left_out() {
+        let f = Fixture::new();
+        f.add("PUBLIC1", EntryTier::Public, None);
+        f.add("PRIVATE1", EntryTier::Private, None);
+        f.add("UCSFROW", EntryTier::Private, Some(&["ucsf"]));
+        f.add("NRK2", EntryTier::Private, Some(&["other"]));
+        let view = f.store.view().unwrap();
+        let cache = DictionaryCache::new();
+        let all = decide(
+            &Rule::Allowed,
+            &view,
+            &private_target(ModelAffiliation::institutions([inst("ucsf")])),
+            Standing::from_checked(true),
+            true,
+        )
+        .unwrap();
+        // The same table and scope with one row fewer, as a stricter mixing policy would
+        // decide it.
+        let mut fewer = all.clone();
+        fewer
+            .rows
+            .retain(|&at| view.entries()[at as usize].written != "UCSFROW");
+        assert_eq!(fewer.table, all.table);
+        assert_ne!(fewer.rows, all.rows);
+        let written = |set: &EligibleEntries| -> Vec<String> {
+            let mut written: Vec<String> =
+                set.entries().iter().map(|e| e.written.clone()).collect();
+            written.sort();
+            written
+        };
+        let (first, _, correction) = cache.set_for(&view, all.clone());
+        assert!(written(&first).contains(&"UCSFROW".to_string()));
+        let (second, _, second_correction) = cache.set_for(&view, fewer.clone());
+        assert!(!written(&second).contains(&"UCSFROW".to_string()));
+        assert!(!Arc::ptr_eq(&correction, &second_correction));
+        assert_eq!(cache.indexes_built(), 2);
+        // Each is kept for its own decision.
+        let (again, _, _) = cache.set_for(&view, fewer);
+        assert_eq!(written(&again), written(&second));
+        let (again, _, _) = cache.set_for(&view, all);
+        assert_eq!(written(&again), written(&first));
+        assert_eq!(cache.indexes_built(), 2);
+
+        // Through the public entry point: the other institution's row never reaches a
+        // UCSF model's request, before or after a request that admitted every row.
+        let private = Standing::from_checked(true);
+        let included = BiasTarget {
+            person_included: true,
+            ..BiasTarget::public()
+        };
+        let every = cache.bias_request(&view, &included, private, true, "", BiasChannels::BOTH);
+        assert!(written(&every.eligible).contains(&"NRK2".to_string()));
+        assert_eq!(every.correct("N-R-K-2 here", &[]).text, "NRK2 here");
+        let ucsf = cache.bias_request(
+            &view,
+            &private_target(ModelAffiliation::institutions([inst("ucsf")])),
+            private,
+            true,
+            "",
+            BiasChannels::BOTH,
+        );
+        assert_eq!(written(&ucsf.eligible), ["PRIVATE1", "PUBLIC1", "UCSFROW"]);
+        assert_eq!(
+            ucsf.correct("N-R-K-2 here", &[]).text,
+            "N-R-K-2 here",
+            "a row of another decision is never corrected to"
+        );
+    }
+
+    /// After a write, `prewarm` builds again, from the new file, the sets recent dictations
+    /// asked for, so the requests after it build nothing; what it built serves a dictation
+    /// only when that dictation's own decision admits the same rows.
+    #[test]
+    fn prewarm_builds_the_recent_sets_from_the_new_file() {
+        let f = Fixture::new();
+        f.add("EPAS1", EntryTier::Public, None);
+        f.add("PRIVATE1", EntryTier::Private, None);
+        let cache = DictionaryCache::new();
+        let local = private_target(Some(ModelAffiliation::Local));
+        let private = Standing::from_checked(true);
+        let ask = |view: &StoreView, target: &BiasTarget, standing: Standing| {
+            cache.bias_request(view, target, standing, true, "", BiasChannels::DEFAULT)
+        };
+        let view = f.store.view().unwrap();
+        ask(&view, &BiasTarget::public(), Standing::public());
+        ask(&view, &local, private);
+        assert_eq!(cache.indexes_built(), 2);
+
+        f.add("EGLN1", EntryTier::Public, None);
+        let view = f.store.view().unwrap();
+        cache.prewarm(&view);
+        assert_eq!(cache.prewarms(), 1);
+        assert_eq!(cache.indexes_built(), 4, "both sets built again");
+        let public = ask(&view, &BiasTarget::public(), Standing::public());
+        let private_set = ask(&view, &local, private);
+        assert_eq!(
+            cache.indexes_built(),
+            4,
+            "the requests after it build nothing"
+        );
+        assert_eq!(cache.rows_copied(), 4);
+        assert_same_request(
+            &public,
+            &DictionaryRequest::new(
+                bias_set(&view, &BiasTarget::public(), Standing::public(), true),
+                "",
+                BiasChannels::DEFAULT,
+            ),
+            "the public set prewarm built",
+        );
+        assert_same_request(
+            &private_set,
+            &DictionaryRequest::new(
+                bias_set(&view, &local, private, true),
+                "",
+                BiasChannels::DEFAULT,
+            ),
+            "the private set prewarm built",
+        );
+        // A caller without private standing aimed at the same model gets the public rows.
+        let public_caller = ask(&view, &local, Standing::public());
+        assert!(public_caller
+            .eligible
+            .entries()
+            .iter()
+            .all(|e| e.written != "PRIVATE1"));
+        // A view of no file builds nothing.
+        let empty = Fixture::new();
+        cache.prewarm(&empty.store.view().unwrap());
+        assert_eq!(cache.prewarms(), 2);
+        assert_eq!(cache.indexes_built(), 4);
+    }
+
+    /// The cache keeps at most four sets, most recent first, and drops every set of an
+    /// older entries file at the next request.
+    #[test]
+    fn the_cache_keeps_four_sets_of_the_current_file() {
+        let f = Fixture::new();
+        f.add("PUBLIC1", EntryTier::Public, None);
+        f.add("PRIVATE1", EntryTier::Private, None);
+        let private = Standing::from_checked(true);
+        let cache = DictionaryCache::new();
+        let view = f.store.view().unwrap();
+        let ask = |view: &StoreView, institution: &str| {
+            cache.bias_request(
+                view,
+                &private_target(ModelAffiliation::institutions([inst(institution)])),
+                private,
+                true,
+                "",
+                BiasChannels::DEFAULT,
+            );
+        };
+        for institution in ["a", "b", "c", "d", "e"] {
+            ask(&view, institution);
+        }
+        assert_eq!(cache.sets().kept.len(), CACHED_SETS);
+        assert_eq!(cache.indexes_built(), 5);
+        ask(&view, "e");
+        assert_eq!(cache.indexes_built(), 5, "the most recent is kept");
+        ask(&view, "a");
+        assert_eq!(cache.indexes_built(), 6, "the oldest was dropped");
+        f.add("PUBLIC2", EntryTier::Public, None);
+        let view = f.store.view().unwrap();
+        ask(&view, "a");
+        assert_eq!(
+            cache.sets().kept.len(),
+            1,
+            "the sets of the older file are gone"
+        );
+    }
+
+    /// PERF-1 review: a dictation that asks for a set another thread is building waits for
+    /// that build and takes it, rather than building the same set beside it, as a stream
+    /// that started while the daemon's rebuild after a write ran did. Two requests released
+    /// together over 5,000 rows with forms copy and index the rows once between them, and
+    /// each is the request built whole; after a write, the rebuild and a request released
+    /// together do the same, and no mark is left behind.
+    #[test]
+    fn a_set_being_built_is_built_once() {
+        let f = Fixture::new();
+        f.fill_to_the_cap(true);
+        let cache = DictionaryCache::new();
+        let target = BiasTarget::public();
+        let ask = |view: &StoreView| {
+            cache.bias_request(
+                view,
+                &target,
+                Standing::public(),
+                true,
+                "",
+                BiasChannels::DEFAULT,
+            )
+        };
+        let barrier = std::sync::Barrier::new(2);
+        let view = f.store.view().unwrap();
+        let (first, second) = std::thread::scope(|s| {
+            let one = s.spawn(|| {
+                barrier.wait();
+                ask(&view)
+            });
+            let two = s.spawn(|| {
+                barrier.wait();
+                ask(&view)
+            });
+            (one.join().unwrap(), two.join().unwrap())
+        });
+        assert_eq!(cache.indexes_built(), 1, "the set was indexed once");
+        assert_eq!(cache.rows_copied(), 1, "and its rows copied once");
+        let whole = DictionaryRequest::new(
+            bias_set(&view, &target, Standing::public(), true),
+            "",
+            BiasChannels::DEFAULT,
+        );
+        assert_same_request(&first, &whole, "one of the two");
+        assert_same_request(&second, &whole, "the other");
+
+        // A write at the cap: the last term goes.
+        f.store
+            .write(|file| {
+                file.entries.pop();
+                Ok(())
+            })
+            .unwrap();
+        let view = f.store.view().unwrap();
+        std::thread::scope(|s| {
+            let rebuild = s.spawn(|| {
+                barrier.wait();
+                cache.prewarm(&view);
+            });
+            let stream = s.spawn(|| {
+                barrier.wait();
+                ask(&view)
+            });
+            rebuild.join().unwrap();
+            stream.join().unwrap();
+        });
+        assert_eq!(cache.indexes_built(), 2, "the new file's set, indexed once");
+        assert_eq!(cache.rows_copied(), 2);
+        assert!(cache.sets().building.is_empty(), "no mark is left behind");
+        eprintln!("waits: {}", cache.waits());
+    }
+
+    /// After a usage flush the daemon calls `prewarm` (PERF-1 review): it copies the rows of
+    /// the recent sets again for their new counters and keeps their indexes, after the text
+    /// is out, so the next dictation copies nothing and still gets the request built whole.
+    #[test]
+    fn prewarm_after_a_usage_flush_leaves_the_next_request_nothing_to_copy() {
+        let f = Fixture::new();
+        f.add("EPAS1", EntryTier::Public, None);
+        f.add("Biorouter", EntryTier::Public, None);
+        let cache = DictionaryCache::new();
+        let ask = |view: &StoreView| {
+            cache.bias_request(
+                view,
+                &BiasTarget::public(),
+                Standing::public(),
+                true,
+                "",
+                BiasChannels::DEFAULT,
+            )
+        };
+        let view = f.store.view().unwrap();
+        ask(&view);
+        assert_eq!((cache.rows_copied(), cache.indexes_built()), (1, 1));
+        let id = view
+            .entries()
+            .iter()
+            .find(|e| e.written == "EPAS1")
+            .unwrap()
+            .id
+            .clone();
+        let bump = UsageDelta {
+            uses: 1,
+            corrected_to: 0,
+            last_used_at: Some(now()),
+        };
+        assert!(record_usage(
+            &f.store,
+            &[(id, UsageScope::Public, bump)],
+            USAGE_FLUSH_BUDGET
+        ));
+        let flushed = f.store.view().unwrap();
+        cache.prewarm(&flushed);
+        assert_eq!(
+            (cache.rows_copied(), cache.indexes_built()),
+            (2, 1),
+            "the rebuild copied the counters and kept the indexes"
+        );
+        let next = ask(&flushed);
+        assert_eq!(
+            (cache.rows_copied(), cache.indexes_built()),
+            (2, 1),
+            "the next request copies nothing"
+        );
+        let whole = DictionaryRequest::new(
+            bias_set(&flushed, &BiasTarget::public(), Standing::public(), true),
+            "",
+            BiasChannels::DEFAULT,
+        );
+        assert_same_request(&next, &whole, "after the flush");
+        let epas = next
+            .eligible
+            .entries()
+            .iter()
+            .find(|e| e.written == "EPAS1")
+            .unwrap();
+        assert_eq!(epas.uses, 1, "with the new counters");
     }
 
     /// Managed `dictionary: false` ("Managed policy keys"): `bias_set` gives the empty set

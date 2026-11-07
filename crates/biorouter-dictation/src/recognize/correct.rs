@@ -18,7 +18,9 @@
 //!
 //! The text inserted is always the entry's written form in its own case. A span one step
 //! changed is never changed again. Everything a request needs is built when the request is
-//! created ([`Corrector::new`]), so correcting at stop costs one pass over the text.
+//! created ([`Corrector::new`]), so correcting at stop costs one pass over the text. What
+//! does not depend on the request ([`CorrectionIndex`]) can be built once per set and
+//! shared ([`Corrector::with_index`]).
 //!
 //! Two guards go beyond the plan's list, each the smallest one its acceptance needs, and
 //! both are the wordy alias rule applied to step 3: a window of two or more tokens whose
@@ -28,6 +30,7 @@
 //! the key of `CRISPRi` rewrote `CRISPR i think`.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use aho_corasick::{AhoCorasick, MatchKind};
 use serde::{Deserialize, Serialize};
@@ -122,10 +125,32 @@ const STOP_WORDS: &[&str] = &[
     "his", "her", "their", "me", "him", "us", "them",
 ];
 
-/// What one request's correction reads, built when the request is created.
-pub struct Corrector {
-    entries: Vec<RecognitionEntry>,
-    in_context: Vec<bool>,
+/// The rows a [`CorrectionIndex`] reads: an eligible set's own, shared, or a copy for this
+/// crate's tests.
+enum Rows {
+    Eligible(EligibleEntries),
+    #[cfg(test)]
+    Copied(Vec<RecognitionEntry>),
+}
+
+impl Rows {
+    fn get(&self) -> &[RecognitionEntry] {
+        match self {
+            Rows::Eligible(eligible) => eligible.entries(),
+            #[cfg(test)]
+            Rows::Copied(entries) => entries,
+        }
+    }
+}
+
+/// What correction reads from a set that no request changes: the alias automaton, the key
+/// maps, the written forms and the cues. Built once per set and shared by every request over
+/// the same rows (PERF-1): at 5,000 rows with a spoken form and a misrecognition each it
+/// takes 16.9 to 19.0 ms to build in a release build, where a request's own part takes
+/// about 1.4 µs [M, 2026-11-07]. Usage counters are not read here, so a set rebuilt only
+/// because they moved can keep it.
+pub struct CorrectionIndex {
+    rows: Rows,
     /// The alias automaton and, per pattern, its entry and whether it is wordy.
     aliases: Option<AhoCorasick>,
     alias_targets: Vec<(usize, bool)>,
@@ -136,22 +161,44 @@ pub struct Corrector {
     all_keys: HashSet<String>,
     /// Every written form, exactly.
     written: HashSet<String>,
-    /// The fuzzy set: entry, its key, its sound codes.
-    fuzzy: Vec<(usize, String, (String, String))>,
     /// Per entry, its cues as lower case word phrases.
     cues: Vec<Vec<String>>,
 }
 
-impl Corrector {
-    /// Builds the automaton, the key map and the fuzzy set for `eligible` as `plan` ranked
-    /// them. It takes the [`EligibleEntries`] the plan was made from, never raw rows, so
+/// What one request's correction reads, built when the request is created: the set's
+/// [`CorrectionIndex`] and what the request's ranking adds, which entries are in its
+/// context and its fuzzy set.
+pub struct Corrector {
+    index: Arc<CorrectionIndex>,
+    in_context: Vec<bool>,
+    /// The fuzzy set: entry, its key, its sound codes.
+    fuzzy: Vec<(usize, String, (String, String))>,
+}
+
+impl CorrectionIndex {
+    /// The index of `eligible`'s rows. It takes an [`EligibleEntries`], never raw rows, so
     /// correction reads exactly the set the prompt and the bonus read (DD-36).
-    pub fn new(eligible: &EligibleEntries, plan: &RequestPlan) -> Corrector {
-        Corrector::over(eligible.entries(), plan)
+    pub fn new(eligible: &EligibleEntries) -> CorrectionIndex {
+        CorrectionIndex::build(Rows::Eligible(eligible.clone()))
     }
 
-    /// [`Corrector::new`] over a slice, for this crate's tests.
-    pub(crate) fn over(entries: &[RecognitionEntry], plan: &RequestPlan) -> Corrector {
+    /// [`CorrectionIndex::new`] over a slice, for this crate's tests.
+    #[cfg(test)]
+    pub(crate) fn over(entries: &[RecognitionEntry]) -> CorrectionIndex {
+        CorrectionIndex::build(Rows::Copied(entries.to_vec()))
+    }
+
+    /// How many entries it indexes.
+    pub fn len(&self) -> usize {
+        self.rows.get().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.get().is_empty()
+    }
+
+    fn build(rows: Rows) -> CorrectionIndex {
+        let entries = rows.get();
         let correctable = |e: &RecognitionEntry| e.match_policy != MatchPolicy::PromptOnly;
 
         let mut patterns: Vec<String> = Vec::new();
@@ -226,7 +273,50 @@ impl Corrector {
         for key in shared {
             keys.remove(&key);
         }
+        let written = entries.iter().map(|e| e.written.clone()).collect();
+        let cues = entries
+            .iter()
+            .map(|e| {
+                e.context_cues
+                    .iter()
+                    .map(|c| phrase(c))
+                    .filter(|c| !c.is_empty())
+                    .collect()
+            })
+            .collect();
 
+        CorrectionIndex {
+            rows,
+            aliases,
+            alias_targets: targets,
+            keys,
+            all_keys,
+            written,
+            cues,
+        }
+    }
+}
+
+impl Corrector {
+    /// Builds the automaton, the key map and the fuzzy set for `eligible` as `plan` ranked
+    /// them. It takes the [`EligibleEntries`] the plan was made from, never raw rows, so
+    /// correction reads exactly the set the prompt and the bonus read (DD-36).
+    pub fn new(eligible: &EligibleEntries, plan: &RequestPlan) -> Corrector {
+        Corrector::with_index(Arc::new(CorrectionIndex::new(eligible)), plan)
+    }
+
+    /// [`Corrector::new`] over a slice, for this crate's tests.
+    #[cfg(test)]
+    pub(crate) fn over(entries: &[RecognitionEntry], plan: &RequestPlan) -> Corrector {
+        Corrector::with_index(Arc::new(CorrectionIndex::over(entries)), plan)
+    }
+
+    /// The corrector of one request whose `plan` was made from the rows `index` was built
+    /// from: only the request's own part is built here, at most 30 fuzzy keys and their
+    /// sound codes. The caller pairs the two; a plan entry past the index's rows is left
+    /// out, never read.
+    pub fn with_index(index: Arc<CorrectionIndex>, plan: &RequestPlan) -> Corrector {
+        let entries = index.rows.get();
         let fuzzy = plan
             .fuzzy_set
             .iter()
@@ -237,46 +327,36 @@ impl Corrector {
                 Some((i, key, sound))
             })
             .collect();
-
+        let in_context = (0..entries.len())
+            .map(|i| plan.in_context.get(i).copied().unwrap_or(false))
+            .collect();
         Corrector {
-            written: entries.iter().map(|e| e.written.clone()).collect(),
-            cues: entries
-                .iter()
-                .map(|e| {
-                    e.context_cues
-                        .iter()
-                        .map(|c| phrase(c))
-                        .filter(|c| !c.is_empty())
-                        .collect()
-                })
-                .collect(),
-            in_context: (0..entries.len())
-                .map(|i| plan.in_context.get(i).copied().unwrap_or(false))
-                .collect(),
-            entries: entries.to_vec(),
-            aliases,
-            alias_targets: targets,
-            keys,
-            all_keys,
+            index,
+            in_context,
             fuzzy,
         }
+    }
+
+    fn entries(&self) -> &[RecognitionEntry] {
+        self.index.rows.get()
     }
 
     /// Corrects `text`. `prompt_sent` is the prompt's terms as the worker fitted them,
     /// for the fuzzy matcher's prompt piece guard.
     pub fn correct(&self, text: &str, prompt_sent: &[String]) -> Corrected {
         let text: String = text.nfc().collect();
-        if self.entries.is_empty() || text.trim().is_empty() {
+        if self.entries().is_empty() || text.trim().is_empty() {
             return Corrected {
                 text,
                 changes: Vec::new(),
             };
         }
         let utterance = utterance_phrases(&text);
-        let licensed: Vec<bool> = (0..self.entries.len())
+        let licensed: Vec<bool> = (0..self.entries().len())
             .map(|i| {
                 self.in_context.get(i).copied().unwrap_or(false)
                     || self
+                        .index
                         .cues
                         .get(i)
                         .is_some_and(|cues| cues.iter().any(|c| utterance.contains(c)))
@@ -297,17 +377,18 @@ impl Corrector {
         doc.apply(Stage::Fuzzy, |piece, before| {
             self.fuzzy_edits(piece, before, &licensed, &prompt_folded)
         });
-        doc.finish(&self.entries)
+        doc.finish(self.entries())
     }
 
     fn alias_edits(&self, piece: &str, _before: Option<char>, licensed: &[bool]) -> Vec<Edit> {
-        let Some(automaton) = &self.aliases else {
+        let Some(automaton) = &self.index.aliases else {
             return Vec::new();
         };
         let folded = Folded::new(piece);
         let mut edits = Vec::new();
         for found in automaton.find_iter(folded.text.as_str()) {
-            let Some(&(entry, wordy)) = self.alias_targets.get(found.pattern().as_usize()) else {
+            let Some(&(entry, wordy)) = self.index.alias_targets.get(found.pattern().as_usize())
+            else {
                 continue;
             };
             let Some(range) = folded.original(found.start(), found.end()) else {
@@ -321,7 +402,7 @@ impl Corrector {
             let Some(from) = piece.get(range.clone()) else {
                 continue;
             };
-            if from == self.entries[entry].written {
+            if from == self.entries()[entry].written {
                 continue;
             }
             edits.push(Edit { range, entry });
@@ -339,7 +420,7 @@ impl Corrector {
                     let window = &segment[p..p + w];
                     let texts: Vec<&str> = window.iter().map(|t| t.text).collect();
                     let key = window_key(&texts);
-                    let Some(&(entry, form_len)) = self.keys.get(&key.text) else {
+                    let Some(&(entry, form_len)) = self.index.keys.get(&key.text) else {
                         continue;
                     };
                     if w > MAX_WINDOW.min(form_len + 1) {
@@ -347,7 +428,7 @@ impl Corrector {
                     }
                     let range = window[0].range.start..window[w - 1].range.end;
                     let span = piece.get(range.clone()).unwrap_or_default();
-                    if self.written.contains(span) {
+                    if self.index.written.contains(span) {
                         // Already a term (this one or another): nothing inside it changes.
                         advance = w;
                         break;
@@ -367,7 +448,7 @@ impl Corrector {
 
     /// The exact key matcher's guards (DD-49).
     fn exact_allowed(&self, entry: usize, window: &[Token], key: &Key, licensed: &[bool]) -> bool {
-        let target = &self.entries[entry];
+        let target = &self.entries()[entry];
         // `PhD two` stays: a digits_literal entry never takes digits from number words.
         if target.digits_literal && key.from_number_words {
             return false;
@@ -439,7 +520,7 @@ impl Corrector {
             }
         }
         let key = window_key(&texts).text;
-        if key.chars().count() < MIN_FUZZY_KEY || self.all_keys.contains(&key) {
+        if key.chars().count() < MIN_FUZZY_KEY || self.index.all_keys.contains(&key) {
             return None;
         }
         let english = texts.iter().any(|t| words::is_english(t));
@@ -465,7 +546,7 @@ impl Corrector {
         let (best, entry) = *scored.first()?;
         if scored.get(1).is_some_and(|(runner_up, other)| {
             best - runner_up < ABSTAIN_WITHIN
-                && self.entries[*other].written != self.entries[entry].written
+                && self.entries()[*other].written != self.entries()[entry].written
         }) {
             return None;
         }
@@ -473,7 +554,7 @@ impl Corrector {
         if english && !licensed_here {
             return None;
         }
-        let target_key = form_key(&self.entries[entry].written).text;
+        let target_key = form_key(&self.entries()[entry].written).text;
         if STOP_PAIRS
             .iter()
             .any(|(a, b)| (key == *a && target_key == *b) || (key == *b && target_key == *a))
@@ -482,7 +563,7 @@ impl Corrector {
         }
         // A truncated piece of another entry that was in the prompt (`Moduli` of
         // `Modulite`) is the prompt leaking, not a misheard term.
-        let target_written = self.entries[entry].written.to_lowercase();
+        let target_written = self.entries()[entry].written.to_lowercase();
         if span_folded.chars().count() >= MIN_PROMPT_PIECE
             && prompt.iter().any(|(term, term_key)| {
                 *term != target_written
@@ -492,7 +573,7 @@ impl Corrector {
         {
             return None;
         }
-        if texts.join(" ") == self.entries[entry].written {
+        if texts.join(" ") == self.entries()[entry].written {
             return None;
         }
         Some((best, entry))
@@ -1106,6 +1187,52 @@ mod tests {
         Corrector::over(&entries, &plan).correct(text, &plan.prompt_terms)
     }
 
+    /// PERF-1: one [`CorrectionIndex`] shared by requests of different contexts corrects
+    /// every text as a corrector built whole for each request does, through each step and
+    /// each context licence; a plan entry past the index's rows is never read.
+    #[test]
+    fn a_shared_index_corrects_as_a_corrector_built_whole() {
+        let entries: Vec<RecognitionEntry> = dictionary()
+            .into_iter()
+            .chain([
+                with(entry("Modulite"), |e| {
+                    e.context_cues = vec!["the rock".into()]
+                }),
+                with(entry("natalizumab"), |e| {
+                    e.match_policy = MatchPolicy::PromptOnly
+                }),
+            ])
+            .collect();
+        let shared = Arc::new(CorrectionIndex::over(&entries));
+        assert_eq!(shared.len(), entries.len());
+        let texts = [
+            "We looked at ventilin, klenl and FLET3 today.",
+            "P-R-O-K-R2 and IGF-1R, then E-PAS-1 and pH D2.",
+            "The bio router in the closet, oh mop and Spoke.",
+            "Then spoke went to UCSD; CRISPR i think, and codeine.",
+            "the rock held moduli and Modulit, near natalizumab.",
+            "`FLET3` at https://example.org/FLET3 and a@b.c stay.",
+        ];
+        for context in ["", "OMOP and Biorouter", "bio router, oh mop and Modulite"] {
+            let plan = plan_entries(&entries, context, chrono::Utc::now());
+            let whole = Corrector::over(&entries, &plan);
+            let indexed = Corrector::with_index(Arc::clone(&shared), &plan);
+            for text in texts {
+                assert_eq!(
+                    indexed.correct(text, &plan.prompt_terms),
+                    whole.correct(text, &plan.prompt_terms),
+                    "{context:?}: {text:?}"
+                );
+            }
+        }
+        let mut stray = plan_entries(&entries, "", chrono::Utc::now());
+        stray.fuzzy_set.push(entries.len() + 3);
+        stray.in_context.push(true);
+        let corrector = Corrector::with_index(Arc::clone(&shared), &stray);
+        assert_eq!(corrector.in_context.len(), entries.len());
+        assert!(corrector.fuzzy.iter().all(|(i, _, _)| *i < entries.len()));
+    }
+
     /// PR-14's positives: each becomes its term, by the step that should catch it.
     #[test]
     fn the_positives_are_corrected() {
@@ -1292,5 +1419,84 @@ mod tests {
         let corrector = Corrector::over(&entries, &plan);
         let out = corrector.correct("piracy to Moduli today", &["Modulite".into()]);
         assert_eq!(out.text, "piracy to Moduli today");
+    }
+
+    /// The correction of one utterance at the cap (5,000 entries), which runs between the
+    /// decode and the text, apart from what a stream builds once when it is created (the
+    /// ranking and the corrector). PERF-1 asks for an index only if a release build spends
+    /// more than about 5 ms per utterance here. A timing run, by hand, in both builds:
+    /// `cargo test --release -p biorouter-dictation --lib recognize::correct::tests::measure -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a timing run, by hand"]
+    fn measure_correction_at_the_cap() {
+        use std::time::{Duration, Instant};
+        fn time<T>(runs: usize, mut work: impl FnMut() -> T) -> Duration {
+            let mut samples: Vec<Duration> = (0..runs)
+                .map(|_| {
+                    let started = Instant::now();
+                    std::hint::black_box(work());
+                    started.elapsed()
+                })
+                .collect();
+            samples.sort();
+            samples[samples.len() / 2]
+        }
+        crate::recognize::words::warm();
+        for forms in [false, true] {
+            let entries: Vec<RecognitionEntry> = (0..crate::store::ops::MAX_ACTIVE_PER_TIER)
+                .map(|i| {
+                    with(entry(&format!("BRL{i:04}X")), |e| {
+                        if forms {
+                            e.spoken_forms = vec![format!("barrel {i} spoken")];
+                            e.misrecognitions = vec![format!("barrel {i} heard")];
+                        }
+                    })
+                })
+                .collect();
+            let plan = time(9, || plan_entries(&entries, "", chrono::Utc::now()));
+            let ranked = plan_entries(&entries, "", chrono::Utc::now());
+            let build = time(9, || Corrector::over(&entries, &ranked));
+            // PERF-1: what a daemon builds once per set, and what each request then adds.
+            let rank_index = time(9, || super::super::select::RankIndex::over(&entries));
+            let ranks = super::super::select::RankIndex::over(&entries);
+            let context = "We talked about the Baranzini group, VHL and barrel 12 spoken.";
+            let plan_indexed = time(51, || {
+                super::super::select::plan_indexed(&entries, Some(&ranks), "", chrono::Utc::now())
+            });
+            let plan_indexed_context = time(51, || {
+                super::super::select::plan_indexed(
+                    &entries,
+                    Some(&ranks),
+                    context,
+                    chrono::Utc::now(),
+                )
+            });
+            let index = time(9, || CorrectionIndex::over(&entries));
+            let shared = Arc::new(CorrectionIndex::over(&entries));
+            let request = time(201, || Corrector::with_index(Arc::clone(&shared), &ranked));
+            let corrector = Corrector::over(&entries, &ranked);
+            let prompt = ranked.prompt_terms.clone();
+            let plain =
+                "The Baranzini group uses spoke to link VHL mutations to disease phenotypes.";
+            let terms = "Then barrel 12 heard, BRL0040X and barrel 7 spoken went to the core.";
+            let minute: String = std::iter::repeat_n(plain, 12).collect::<Vec<_>>().join(" ");
+            let correct_plain = time(201, || corrector.correct(plain, &prompt));
+            let correct_terms = time(201, || corrector.correct(terms, &prompt));
+            let correct_minute = time(51, || corrector.correct(&minute, &prompt));
+            println!(
+                "{} entries ({}): plan {plan:?}; corrector {build:?}; once per set: rank index \
+                 {rank_index:?}, correction index {index:?}; per request with them: plan \
+                 {plan_indexed:?} ({plan_indexed_context:?} with context), corrector \
+                 {request:?}; correct a 5 s utterance {correct_plain:?}, one with terms \
+                 {correct_terms:?} ({:?}), a 60 s dictation {correct_minute:?}",
+                entries.len(),
+                if forms {
+                    "a spoken form and a misrecognition each"
+                } else {
+                    "bare"
+                },
+                corrector.correct(terms, &prompt).text
+            );
+        }
     }
 }

@@ -13,10 +13,12 @@
 //! * [`usage`]: the usage counters, in their own file.
 //!
 //! Writers take the lock, read both files fresh, change, and replace the file
-//! atomically ([`lock`]). Readers take no lock and cache the parsed view by each
-//! file's modification time, length and identity, so a term one process adds is listed
-//! by another at once. A file this version cannot read fails closed: listings are
-//! empty, dictation runs with no terms, every write is refused with
+//! atomically ([`lock`]). Readers take no lock and cache each file's parse by its
+//! modification time, length, identity and, on Unix, change time, so a term one process
+//! adds is listed by another at once. A write leaves its handle's cache holding what it wrote, keyed by the
+//! stamp of the file it renamed into place, so the next read of that handle parses
+//! nothing; a usage bump reparses only `usage.json`. A file this version cannot read fails
+//! closed: listings are empty, dictation runs with no terms, every write is refused with
 //! MSG-DICTIONARY-FILE, and the file is never rewritten from a failed parse.
 //!
 //! A leaf crate: the store holds no absolute path and takes its folder as an argument.
@@ -34,10 +36,11 @@ pub mod usage;
 pub mod validate;
 
 use std::fs::{self, File};
+use std::hash::{Hash, Hasher};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 pub use fold::fold_key;
@@ -132,16 +135,13 @@ impl From<io::Error> for StoreError {
     }
 }
 
-/// Bumped at every reparse in this process. Never exposed by a route (DD-40): it tells
-/// the service when to rebuild its bias tables.
-static GENERATION: AtomicU64 = AtomicU64::new(0);
-
 /// A parsed store, as of one read.
 #[derive(Debug)]
 pub struct StoreView {
-    file: StoreFile,
-    usage: UsageFile,
-    generation: u64,
+    file: Arc<StoreFile>,
+    usage: Arc<UsageFile>,
+    content_stamp: u64,
+    usage_stamp: u64,
 }
 
 impl StoreView {
@@ -170,43 +170,87 @@ impl StoreView {
         }
     }
 
-    /// The in process generation this view was parsed at.
-    pub fn generation(&self) -> u64 {
-        self.generation
+    /// Which version of `dictionary.json` this view holds: a digest of the file's stamp
+    /// (modification time, length, identity and, on Unix, change time), 0 for a store with
+    /// no file. Every view of
+    /// an unchanged file has the same one, in every handle and whatever `usage.json` does,
+    /// and every write gives a new one, because a write renames a new file into place. The
+    /// bonus table's revision is keyed on it, so an unchanged store sends the worker no new
+    /// table while every change, in either tier, rebuilds every table (oracle rule 9).
+    /// Never exposed by a route (DD-40).
+    pub fn content_stamp(&self) -> u64 {
+        self.content_stamp
     }
 
-    /// A view of `file` that no store read, with no usage and generation 0, so a caller
+    /// Which version of `usage.json` this view holds, in the same way: a digest of its
+    /// stamp, 0 with no file. A daemon that keeps what its dictations built from an
+    /// unchanged store (`DictionaryCache` in `biorouter::dictation`) reads it to tell when
+    /// only the counters moved.
+    pub fn usage_stamp(&self) -> u64 {
+        self.usage_stamp
+    }
+
+    /// A view of `file` that no store read, with no usage and content stamp 0, so a caller
     /// can ask the bias set's own rules about a few rows (whether a private row's
     /// institutions admit a chat's model, for an observation) without a second spelling of
     /// them. It is never cached, never a store's view and never what a dictation reads.
     pub fn detached(file: StoreFile) -> Self {
         Self {
-            file,
-            usage: UsageFile::default(),
-            generation: 0,
+            file: Arc::new(file),
+            usage: Arc::new(UsageFile::default()),
+            content_stamp: 0,
+            usage_stamp: 0,
         }
     }
 }
 
 /// What identifies one version of a file without reading it: modification time,
-/// length, and the file's identity, the inode on Unix and the NTFS file index on Windows.
-/// A write renames a new file into place, so the identity changes even when the time and
-/// the length do not. The creation time would not do on Windows: NTFS tunnelling gives a
-/// file created or renamed onto a name removed within the last 15 s that file's creation
-/// time, so every write within 15 s would carry the same one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// length, the file's identity (the inode on Unix and the NTFS file index on Windows), and
+/// on Unix the inode change time. A write renames a new file into place, so the identity
+/// changes even when the time and the length do not. The creation time would not do on
+/// Windows: NTFS tunnelling gives a file created or renamed onto a name removed within the
+/// last 15 s that file's creation time, so every write within 15 s would carry the same
+/// one.
+///
+/// The change time is there for an edit made in place, on the same inode, that keeps the
+/// length and sets the modification time back (`touch -r`, `rsync -t`, a restore that keeps
+/// both): the other three fields then match the version cached before it. The kernel sets
+/// the change time to its clock at every write to the file and every change of its times,
+/// and no call sets it back, so it is the one field such an edit cannot keep. It is read by
+/// the same `stat` as the rest, so it costs nothing. A change of mode or owner moves it
+/// too, and costs one parse. Windows keeps no such field in what is read here, so there an
+/// edit of that kind is seen at the next write (the PERF-1 review, 2026-11-07).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Stamp {
     modified: Option<SystemTime>,
     len: u64,
     identity: u64,
+    /// Seconds and nanoseconds; `None` where it is not read.
+    changed: Option<(i64, i64)>,
 }
 
 impl Stamp {
+    /// A number for this stamp, stable within the process ([`StoreView::content_stamp`]).
+    /// Never 0, which stands for no file.
+    fn digest(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish().max(1)
+    }
+
     fn with_identity(metadata: &fs::Metadata, identity: u64) -> Self {
+        #[cfg(unix)]
+        let changed = {
+            use std::os::unix::fs::MetadataExt;
+            Some((metadata.ctime(), metadata.ctime_nsec()))
+        };
+        #[cfg(not(unix))]
+        let changed = None;
         Self {
             modified: metadata.modified().ok(),
             len: metadata.len(),
             identity,
+            changed,
         }
     }
 
@@ -278,13 +322,121 @@ fn read_stamped(path: &Path) -> io::Result<Option<(Vec<u8>, Stamp)>> {
     Ok(Some((bytes, stamp)))
 }
 
-type CacheKey = (Option<Stamp>, Option<Stamp>);
+/// One file's parse, keyed by the stamp of the version it was read from or written as;
+/// a stamp of `None` for a file that does not exist.
+#[derive(Debug)]
+struct Slot<T> {
+    stamp: Option<Stamp>,
+    value: Arc<T>,
+}
+
+/// What a handle has parsed. Each file has its own slot, keyed by its own stamp, so a
+/// usage bump (after every dictation that wrote a term) reparses only `usage.json`, never
+/// the entries. `view` is the two put together, kept until either slot changes.
+///
+/// The cache stays honest because a slot's stamp is always the stamp of the very version
+/// its value holds: the one read, or for a write the file this handle renamed into place,
+/// stamped through a handle on that very file (`rename_stamped` in `lock.rs`). Any other
+/// writer's rename puts a new file, with a new identity, at the path, and any edit in place
+/// moves the change time, so the next read sees a stamp no slot holds.
+#[derive(Debug, Default)]
+struct Cache {
+    store: Option<Slot<StoreFile>>,
+    usage: Option<Slot<UsageFile>>,
+    view: Option<Arc<StoreView>>,
+}
+
+impl Cache {
+    fn store_is(&self, stamp: &Option<Stamp>) -> bool {
+        self.store.as_ref().is_some_and(|slot| slot.stamp == *stamp)
+    }
+
+    fn usage_is(&self, stamp: &Option<Stamp>) -> bool {
+        self.usage.as_ref().is_some_and(|slot| slot.stamp == *stamp)
+    }
+
+    /// The view, when both files are still the versions it holds.
+    fn current(&self, store: &Option<Stamp>, usage: &Option<Stamp>) -> Option<Arc<StoreView>> {
+        if self.store_is(store) && self.usage_is(usage) {
+            self.view.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Keep `slot` as the entries file's parse. A slot for the version already held changes
+    /// nothing, so views handed out before stay the current one.
+    fn set_store(&mut self, slot: Slot<StoreFile>) {
+        if !self.store_is(&slot.stamp) {
+            self.store = Some(slot);
+            self.view = None;
+        }
+    }
+
+    fn set_usage(&mut self, slot: Slot<UsageFile>) {
+        if !self.usage_is(&slot.stamp) {
+            self.usage = Some(slot);
+            self.view = None;
+        }
+    }
+
+    /// Keep the parse a write just made, when it knows the stamp of the file it renamed into
+    /// place, and otherwise hold nothing for that file, so the next read parses it. A slot
+    /// keyed by a stamp it does not hold would make the cache lie.
+    fn seed_store(&mut self, stamp: Option<Option<Stamp>>, value: StoreFile) {
+        match stamp {
+            Some(stamp) => self.set_store(Slot {
+                stamp,
+                value: Arc::new(value),
+            }),
+            None => {
+                self.store = None;
+                self.view = None;
+            }
+        }
+    }
+
+    /// [`Self::seed_store`] for `usage.json`.
+    fn seed_usage(&mut self, stamp: Option<Stamp>, value: UsageFile) {
+        match stamp {
+            Some(stamp) => self.set_usage(Slot {
+                stamp: Some(stamp),
+                value: Arc::new(value),
+            }),
+            None => {
+                self.usage = None;
+                self.view = None;
+            }
+        }
+    }
+
+    /// The view of the two slots, built once per pair; `None` while either is missing.
+    fn assemble(&mut self) -> Option<Arc<StoreView>> {
+        if self.view.is_none() {
+            let (store, usage) = (self.store.as_ref()?, self.usage.as_ref()?);
+            self.view = Some(Arc::new(StoreView {
+                file: Arc::clone(&store.value),
+                usage: Arc::clone(&usage.value),
+                content_stamp: store.stamp.as_ref().map_or(0, Stamp::digest),
+                usage_stamp: usage.stamp.as_ref().map_or(0, Stamp::digest),
+            }));
+        }
+        self.view.clone()
+    }
+}
 
 /// One account's dictionary.
 #[derive(Debug)]
 pub struct DictionaryStore {
     dir: PathBuf,
-    cache: Mutex<Option<(CacheKey, Arc<StoreView>)>>,
+    cache: Mutex<Cache>,
+    /// Held while a reader reparses, so that a reader arriving meanwhile waits for that
+    /// parse and takes it instead of parsing the same file again.
+    refresh: Mutex<()>,
+    /// How many times this handle has parsed `dictionary.json` ([`Self::store_parses`]).
+    parses: AtomicU64,
+    /// How many times a read of this handle parsed `usage.json` ([`Self::usage_parses`]).
+    usage_parses: AtomicU64,
 }
 
 impl DictionaryStore {
@@ -292,7 +444,10 @@ impl DictionaryStore {
     pub fn open(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
-            cache: Mutex::new(None),
+            cache: Mutex::new(Cache::default()),
+            refresh: Mutex::new(()),
+            parses: AtomicU64::new(0),
+            usage_parses: AtomicU64::new(0),
         }
     }
 
@@ -310,63 +465,138 @@ impl DictionaryStore {
         self.dir.join(USAGE_FILE)
     }
 
-    /// The parsed store, reparsed only when either file changed since the last call. A
-    /// missing store is a new, empty one; a store this version cannot read is
-    /// [`StoreError::Unreadable`]. A usage file that cannot be read counts as empty: a
-    /// lost usage figure costs ranking, never a term.
+    /// How many times this handle has parsed `dictionary.json`, in a read or in a write's
+    /// fresh read under the lock. The latency tests read it: a dictation over an unchanged
+    /// store parses nothing, and a write parses once.
+    pub fn store_parses(&self) -> u64 {
+        self.parses.load(Ordering::Relaxed)
+    }
+
+    /// How many times a read of this handle parsed `usage.json`. A usage flush through
+    /// the handle leaves the counters it wrote in the cache, so the read after it adds
+    /// none; a flush through another handle makes the next read parse the file once.
+    pub fn usage_parses(&self) -> u64 {
+        self.usage_parses.load(Ordering::Relaxed)
+    }
+
+    /// `usage.json` as it is now: a file this version cannot read counts as empty.
+    fn read_usage(&self, path: &Path) -> io::Result<Slot<UsageFile>> {
+        Ok(match read_stamped(path)? {
+            Some((bytes, stamp)) => {
+                self.usage_parses.fetch_add(1, Ordering::Relaxed);
+                Slot {
+                    stamp: Some(stamp),
+                    value: Arc::new(UsageFile::parse(&bytes).unwrap_or_default()),
+                }
+            }
+            None => Slot {
+                stamp: None,
+                value: Arc::new(UsageFile::default()),
+            },
+        })
+    }
+
+    fn cache(&self) -> MutexGuard<'_, Cache> {
+        self.cache.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Read and parse `dictionary.json`, counted in [`Self::store_parses`].
+    fn read_store(&self, path: &Path) -> Result<Slot<StoreFile>, StoreError> {
+        match read_stamped(path)? {
+            Some((bytes, stamp)) => {
+                self.parses.fetch_add(1, Ordering::Relaxed);
+                match StoreFile::parse(&bytes) {
+                    Some(file) => Ok(Slot {
+                        stamp: Some(stamp),
+                        value: Arc::new(file),
+                    }),
+                    None => Err(StoreError::Unreadable {
+                        path: path.to_path_buf(),
+                    }),
+                }
+            }
+            None => Ok(Slot {
+                stamp: None,
+                value: Arc::new(StoreFile::default()),
+            }),
+        }
+    }
+
+    /// The parsed store: two `stat` calls while neither file changed, and otherwise a
+    /// reparse of the file that changed alone. A missing store is a new, empty one; a store
+    /// this version cannot read is [`StoreError::Unreadable`]. A usage file that cannot be
+    /// read counts as empty: a lost usage figure costs ranking, never a term.
     pub fn view(&self) -> Result<Arc<StoreView>, StoreError> {
         let store_path = self.store_path();
         let usage_path = self.usage_path();
-        let key = (Stamp::at(&store_path)?, Stamp::at(&usage_path)?);
-        {
-            let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((cached, view)) = cache.as_ref() {
-                if *cached == key {
-                    return Ok(Arc::clone(view));
-                }
-            }
+        let store_now = Stamp::at(&store_path)?;
+        let usage_now = Stamp::at(&usage_path)?;
+        if let Some(view) = self.cache().current(&store_now, &usage_now) {
+            return Ok(view);
         }
-        let (file, store_stamp) = match read_stamped(&store_path)? {
-            Some((bytes, stamp)) => match StoreFile::parse(&bytes) {
-                Some(file) => (file, Some(stamp)),
-                None => return Err(StoreError::Unreadable { path: store_path }),
-            },
-            None => (StoreFile::default(), None),
+        let _refresh = self.refresh.lock().unwrap_or_else(PoisonError::into_inner);
+        let (store_fresh, usage_fresh) = {
+            let cache = self.cache();
+            if let Some(view) = cache.current(&store_now, &usage_now) {
+                return Ok(view);
+            }
+            (cache.store_is(&store_now), cache.usage_is(&usage_now))
         };
-        let (usage, usage_stamp) = match read_stamped(&usage_path)? {
-            Some((bytes, stamp)) => (UsageFile::parse(&bytes).unwrap_or_default(), Some(stamp)),
-            None => (UsageFile::default(), None),
+        let store = if store_fresh {
+            None
+        } else {
+            Some(self.read_store(&store_path)?)
         };
-        let view = Arc::new(StoreView {
-            file,
-            usage,
-            generation: GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
-        });
-        *self.cache.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(((store_stamp, usage_stamp), Arc::clone(&view)));
-        Ok(view)
+        let usage = if usage_fresh {
+            None
+        } else {
+            Some(self.read_usage(&usage_path)?)
+        };
+        let mut cache = self.cache();
+        if let Some(slot) = store {
+            cache.set_store(slot);
+        }
+        if let Some(slot) = usage {
+            cache.set_usage(slot);
+        }
+        // Both slots are set by now: each was fresh in the cache or was just read.
+        cache
+            .assemble()
+            .ok_or_else(|| StoreError::Io(io::Error::other("the dictionary was not read")))
     }
 
     /// Read the store fresh under `lock`, apply `change`, and write the result if it
-    /// differs from what was read. An `Err` from `change` writes nothing.
+    /// differs from what was read. An `Err` from `change` writes nothing. The cache then
+    /// holds what is on disk, keyed by that file's own stamp: what this write renamed into
+    /// place, or what it read when it changed nothing. So a write parses the store once,
+    /// and the read that follows it, such as the answer's view or the next dictation's,
+    /// parses nothing.
     fn change_locked<T>(
         &self,
         _lock: &StoreLock,
         change: impl FnOnce(&mut StoreFile) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
         let path = self.store_path();
-        let (mut file, before) = match read_stamped(&path)? {
-            Some((bytes, _)) => match StoreFile::parse(&bytes) {
-                Some(file) => (file, bytes),
-                None => return Err(StoreError::Unreadable { path }),
-            },
-            None => (StoreFile::default(), Vec::new()),
+        let (mut file, before, read) = match read_stamped(&path)? {
+            Some((bytes, stamp)) => {
+                self.parses.fetch_add(1, Ordering::Relaxed);
+                match StoreFile::parse(&bytes) {
+                    Some(file) => (file, bytes, Some(stamp)),
+                    None => return Err(StoreError::Unreadable { path }),
+                }
+            }
+            None => (StoreFile::default(), Vec::new(), None),
         };
         let result = change(&mut file)?;
         let after = file.to_bytes();
-        if after != before {
-            write_atomically(&path, &after)?;
-        }
+        // `None` when the write could not stamp the file it renamed into place: the cache
+        // then holds nothing for the entries and the next read parses them.
+        let stamp = if after != before {
+            write_atomically(&path, &after)?.map(Some)
+        } else {
+            Some(read)
+        };
+        self.cache().seed_store(stamp, file);
         Ok(result)
     }
 
@@ -395,14 +625,43 @@ impl DictionaryStore {
         }
     }
 
+    /// The entries file as it is now, for a caller that holds the lock: the cached parse
+    /// while the file is still the version it holds, else a fresh one, which the cache then
+    /// keeps. `None` when there is no file or it cannot be read.
+    fn entries_now(&self) -> io::Result<Option<Arc<StoreFile>>> {
+        let path = self.store_path();
+        let Some(now) = Stamp::at(&path)? else {
+            return Ok(None);
+        };
+        if let Some(slot) = self
+            .cache()
+            .store
+            .as_ref()
+            .filter(|slot| slot.stamp.as_ref() == Some(&now))
+        {
+            return Ok(Some(Arc::clone(&slot.value)));
+        }
+        match self.read_store(&path) {
+            Ok(slot) => {
+                let file = Arc::clone(&slot.value);
+                self.cache().set_store(slot);
+                Ok(Some(file))
+            }
+            Err(StoreError::Io(e)) => Err(e),
+            Err(_) => Ok(None),
+        }
+    }
+
     /// Add a batch of usage bumps to `usage.json` under the store's lock, waiting at most
     /// `budget` for it; `false` when the budget ran out and the batch was dropped. Never
     /// touches `dictionary.json`, so no row's `rev` changes. Counters of rows that no
-    /// longer exist are dropped on the way. A usage file this version cannot read is
-    /// [`StoreError::Unreadable`] and is left as it is; an empty one starts over. The file
-    /// is replaced by a rename with no flush to disk (`replace_unsynced` in `lock.rs`), because
-    /// its counters are loss tolerant and the flush would sit before a one shot
-    /// transcription's exit.
+    /// longer exist are dropped on the way, read from the cached entries while the file is
+    /// unchanged. A usage file this version cannot read is [`StoreError::Unreadable`] and is
+    /// left as it is; an empty one starts over. The file is replaced by a rename with no
+    /// flush to disk (`replace_unsynced` in `lock.rs`), because its counters are loss
+    /// tolerant and the flush would sit before a one shot transcription's exit. This
+    /// handle's cache then holds the counters written, so its next read parses neither
+    /// file; the daemon flushes through its one shared handle for that reason.
     pub fn flush_usage(
         &self,
         deltas: &[(EntryId, UsageScope, UsageDelta)],
@@ -423,14 +682,13 @@ impl DictionaryStore {
             None => UsageFile::default(),
         };
         usage.apply(deltas);
-        if let Some(file) =
-            read_stamped(&self.store_path())?.and_then(|(bytes, _)| StoreFile::parse(&bytes))
-        {
+        if let Some(file) = self.entries_now()? {
             let ids: std::collections::HashSet<&str> =
                 file.entries.iter().map(|e| e.id.as_str()).collect();
             usage.retain_ids(|id| ids.contains(id));
         }
-        replace_unsynced(&usage_path, &usage.to_bytes())?;
+        let stamp = replace_unsynced(&usage_path, &usage.to_bytes())?;
+        self.cache().seed_usage(stamp, usage);
         Ok(true)
     }
 }
@@ -480,7 +738,7 @@ mod tests {
         add(&writer, "EPAS1", EntryTier::Public);
         let view = reader.view().unwrap();
         assert_eq!(view.entries().len(), 1);
-        assert!(view.generation() > cached.generation());
+        assert_ne!(view.content_stamp(), cached.content_stamp());
         // Two writes within one clock tick that leave the length alone still reparse,
         // because each write renames a new file into place.
         let id = view.entries()[0].id.clone();
@@ -540,14 +798,311 @@ mod tests {
     fn each_write_gives_the_file_a_new_identity() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(STORE_FILE);
-        write_atomically(&path, b"EPAS1").unwrap();
+        let written = write_atomically(&path, b"EPAS1").unwrap();
         let first = Stamp::at(&path).unwrap().unwrap();
+        assert_eq!(
+            written,
+            Some(first.clone()),
+            "a write answers the stamp the path then has"
+        );
         write_atomically(&path, b"EPAS2").unwrap();
         let second = Stamp::at(&path).unwrap().unwrap();
         assert_eq!(first.len, second.len);
         assert_ne!(first.identity, second.identity);
         let (_, read) = read_stamped(&path).unwrap().unwrap();
         assert_eq!(read, second, "a read stamps the version it read");
+        let usage = dir.path().join(USAGE_FILE);
+        let written = replace_unsynced(&usage, b"{}").unwrap();
+        assert_eq!(written, Stamp::at(&usage).unwrap());
+    }
+
+    /// A write that could not stamp the file it renamed into place (`rename_stamped` in
+    /// `lock.rs` is best effort) leaves the handle holding nothing for that file, so the
+    /// next read parses it rather than trust a slot keyed by a stamp it does not hold; the
+    /// other file's slot stays.
+    #[test]
+    fn a_write_with_no_stamp_leaves_the_next_read_to_parse() {
+        let (_root, store) = store();
+        add(&store, "EPAS1", EntryTier::Public);
+        let before = store.view().unwrap();
+        let parses = store.store_parses();
+        let file = (*before.file).clone();
+        store.cache().seed_store(None, file);
+        let view = store.view().unwrap();
+        assert_eq!(store.store_parses(), parses + 1, "the entries were parsed");
+        assert_eq!(view.entries(), before.entries());
+        assert_eq!(view.content_stamp(), before.content_stamp());
+        assert!(
+            Arc::ptr_eq(&view.usage, &before.usage),
+            "usage kept its slot"
+        );
+        store.cache().seed_usage(None, UsageFile::default());
+        let again = store.view().unwrap();
+        assert_eq!(store.store_parses(), parses + 1);
+        assert!(
+            Arc::ptr_eq(&again.file, &view.file),
+            "the entries kept theirs"
+        );
+        assert!(
+            !Arc::ptr_eq(&again.usage, &view.usage),
+            "usage was read again"
+        );
+    }
+
+    /// PERF-1: a write leaves the handle's cache holding what it wrote, so the read that
+    /// follows it parses nothing, and what the cache holds is exactly what a reader that
+    /// parses the file gets.
+    #[test]
+    fn a_write_parses_once_and_leaves_the_cache_holding_what_it_wrote() {
+        let (_root, store) = store();
+        let id = add(&store, "EPAS1", EntryTier::Public);
+        assert_eq!(store.store_parses(), 0, "a new store has nothing to parse");
+        store
+            .write(|file| {
+                file.edit(
+                    &id,
+                    None,
+                    EntryEdit {
+                        spoken_forms: Some(vec!["e pass one".into()]),
+                        ..EntryEdit::default()
+                    },
+                    now(),
+                )?;
+                file.add(
+                    NewTerm::person("UCSF", EntryTier::Private),
+                    Reach::All,
+                    now(),
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            store.store_parses(),
+            1,
+            "the write's fresh read under the lock"
+        );
+        let seeded = store.view().unwrap();
+        assert_eq!(
+            store.store_parses(),
+            1,
+            "the read after the write parsed nothing"
+        );
+        assert!(Arc::ptr_eq(&seeded, &store.view().unwrap()));
+        let parsed = StoreFile::parse(&fs::read(store.store_path()).unwrap()).unwrap();
+        assert_eq!(*seeded.file(), parsed, "the cache holds what is on disk");
+        let other = DictionaryStore::open(store.dir());
+        assert_eq!(
+            other.view().unwrap().content_stamp(),
+            seeded.content_stamp()
+        );
+
+        // A write that changes nothing writes nothing and keeps the view current.
+        let outcome = store
+            .write(|file| {
+                file.add(
+                    NewTerm::person("EPAS1", EntryTier::Public),
+                    Reach::All,
+                    now(),
+                )
+            })
+            .unwrap();
+        assert!(matches!(outcome, AddOutcome::Exists { .. }));
+        assert!(Arc::ptr_eq(&seeded, &store.view().unwrap()));
+        assert_eq!(store.store_parses(), 2);
+    }
+
+    /// The cache stays honest after a seeded write: another handle's write (another
+    /// process, the CLI) renames a new file into place, and the next read sees it, within
+    /// one clock tick and at the same length too.
+    #[test]
+    fn a_write_another_handle_makes_after_a_seeded_write_is_seen() {
+        let (_root, store) = store();
+        add(&store, "EPAS1", EntryTier::Public);
+        let id = store.view().unwrap().entries()[0].id.clone();
+        let other = DictionaryStore::open(store.dir());
+        other
+            .write(|file| {
+                file.edit(
+                    &id,
+                    None,
+                    EntryEdit {
+                        written: Some("EPAS2".into()),
+                        ..EntryEdit::default()
+                    },
+                    now(),
+                )
+            })
+            .unwrap();
+        let parses = store.store_parses();
+        let view = store.view().unwrap();
+        assert_eq!(view.entries()[0].written, "EPAS2");
+        assert_eq!(store.store_parses(), parses + 1);
+        // And a write through this handle after that one starts from the other's file.
+        add(&store, "UCSF", EntryTier::Public);
+        let written: Vec<String> = store
+            .view()
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|e| e.written.clone())
+            .collect();
+        assert_eq!(written, ["EPAS2", "UCSF"]);
+    }
+
+    /// The PERF-1 review's hazard: an edit made in place, on the same inode, that keeps the
+    /// length and sets the modification time back (`touch -r`, `rsync -t`, a restore that
+    /// keeps both) is seen at the next read, through the warm cache of the handle that
+    /// wrote the file and through one that only read it. Before the stamp held the change
+    /// time, both kept serving the rows as they were until a later write. The pause lets a
+    /// file system whose clock is coarse (Linux stamps files at the kernel's tick) give the
+    /// edit a change time of its own.
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_in_place_that_keeps_the_length_and_the_times_is_seen() {
+        use std::io::Write;
+        use std::os::unix::fs::MetadataExt;
+        let (_root, store) = store();
+        add(&store, "disease-phenotypes", EntryTier::Public);
+        let reader = DictionaryStore::open(store.dir());
+        for handle in [&store, &reader] {
+            assert_eq!(
+                handle.view().unwrap().entries()[0].written,
+                "disease-phenotypes"
+            );
+        }
+        let path = store.store_path();
+        let before = fs::metadata(&path).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        let edited = text.replace("disease-phenotypes", "disease-phenotypez");
+        std::thread::sleep(Duration::from_millis(50));
+        let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all(edited.as_bytes()).unwrap();
+        file.set_modified(before.modified().unwrap()).unwrap();
+        drop(file);
+        let after = fs::metadata(&path).unwrap();
+        assert_eq!(
+            (after.len(), after.modified().unwrap(), after.ino()),
+            (before.len(), before.modified().unwrap(), before.ino()),
+            "the edit kept the length, the time and the inode"
+        );
+        for handle in [&store, &reader] {
+            let parses = handle.store_parses();
+            let view = handle.view().unwrap();
+            assert_eq!(view.entries()[0].written, "disease-phenotypez");
+            assert_eq!(handle.store_parses(), parses + 1);
+        }
+    }
+
+    /// A usage bump, which follows every dictation that wrote a term, reparses only
+    /// `usage.json`: the entries stay the parse already held, and the content stamp, which
+    /// the bonus table's revision follows, does not move.
+    #[test]
+    fn a_usage_bump_reparses_only_the_usage_file() {
+        let (_root, store) = store();
+        let id = add(&store, "EPAS1", EntryTier::Public);
+        let before = store.view().unwrap();
+        let bump = [(
+            id.clone(),
+            UsageScope::Public,
+            UsageDelta {
+                uses: 1,
+                corrected_to: 0,
+                last_used_at: Some(now()),
+            },
+        )];
+        // From another handle, as a one shot transcription or the daemon's usage task.
+        let other = DictionaryStore::open(store.dir());
+        assert!(other.flush_usage(&bump, Duration::from_millis(50)).unwrap());
+        let parses = store.store_parses();
+        let usage_parses = store.usage_parses();
+        let after = store.view().unwrap();
+        assert_eq!(
+            store.store_parses(),
+            parses,
+            "the entries were not reparsed"
+        );
+        assert_eq!(
+            store.usage_parses(),
+            usage_parses + 1,
+            "another handle's flush: the usage file is read again"
+        );
+        assert_eq!(after.usage_stamp(), view_usage_stamp(&store));
+        assert!(Arc::ptr_eq(&before.file, &after.file));
+        assert_eq!(after.usage(&id, UsageScope::Public).unwrap().uses, 1);
+        assert_eq!(after.content_stamp(), before.content_stamp());
+        // Through this handle: the flush reads the entries from the cache and leaves the
+        // counters it wrote there, so the next read parses neither file.
+        assert!(store.flush_usage(&bump, Duration::from_millis(50)).unwrap());
+        assert_eq!(store.store_parses(), parses);
+        let flushed = store.view().unwrap();
+        assert_eq!(
+            store.usage_parses(),
+            usage_parses + 1,
+            "this handle's flush: the next read parses neither file"
+        );
+        assert_ne!(flushed.usage_stamp(), after.usage_stamp());
+        assert_eq!(flushed.usage_stamp(), view_usage_stamp(&store));
+        assert!(Arc::ptr_eq(&before.file, &flushed.file));
+        assert_eq!(flushed.usage(&id, UsageScope::Public).unwrap().uses, 2);
+        let parsed = UsageFile::parse(&fs::read(store.usage_path()).unwrap()).unwrap();
+        assert_eq!(*flushed.usage, parsed);
+    }
+
+    /// The usage stamp a fresh handle reads for `store`'s folder.
+    fn view_usage_stamp(store: &DictionaryStore) -> u64 {
+        DictionaryStore::open(store.dir())
+            .view()
+            .unwrap()
+            .usage_stamp()
+    }
+
+    /// Readers that arrive together while the store changed parse it once between them:
+    /// one parses, the others wait for its parse and take it. The barrier releases the eight
+    /// readers at once, and 4,000 rows make the parse last far longer than the skew between
+    /// them, so without the refresh lock several would parse and the count would exceed 1.
+    #[test]
+    fn readers_that_arrive_together_parse_once() {
+        let (_root, store) = store();
+        let lines: String = (0..4_000).map(|i| format!("TERM{i}\n")).collect();
+        let rows = transfer::parse_import(ImportFormat::Lines, &lines).unwrap();
+        store
+            .write(|file| Ok(file.import(rows, EntryTier::Public, &|_| false, now())))
+            .unwrap();
+        let store = Arc::new(DictionaryStore::open(store.dir()));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let readers: Vec<_> = (0..8)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.view().unwrap()
+                })
+            })
+            .collect();
+        let views: Vec<Arc<StoreView>> = readers.into_iter().map(|r| r.join().unwrap()).collect();
+        assert_eq!(store.store_parses(), 1);
+        assert!(views.iter().all(|v| Arc::ptr_eq(v, &views[0])));
+    }
+
+    /// The content stamp: the same for every view of an unchanged file, whatever handle
+    /// reads it, new at every write, and 0 with no file.
+    #[test]
+    fn the_content_stamp_follows_the_entries_file() {
+        let (_root, store) = store();
+        assert_eq!(store.view().unwrap().content_stamp(), 0);
+        add(&store, "EPAS1", EntryTier::Public);
+        let first = store.view().unwrap().content_stamp();
+        assert_ne!(first, 0);
+        assert_eq!(
+            DictionaryStore::open(store.dir())
+                .view()
+                .unwrap()
+                .content_stamp(),
+            first
+        );
+        add(&store, "UCSF", EntryTier::Private);
+        assert_ne!(store.view().unwrap().content_stamp(), first);
     }
 
     #[test]
@@ -802,6 +1357,27 @@ mod tests {
                 })
                 .collect(),
         );
+        // PERF-1: the read that follows a write, as the next dictation's is, parses nothing.
+        let parses = store.store_parses();
+        let after_write = median(
+            (0..15)
+                .map(|i| {
+                    store
+                        .write(|file| {
+                            file.add(
+                                NewTerm::person(format!("SEEDED{i}"), EntryTier::Public),
+                                Reach::All,
+                                now(),
+                            )
+                        })
+                        .unwrap();
+                    let started = Instant::now();
+                    store.view().unwrap();
+                    started.elapsed()
+                })
+                .collect(),
+        );
+        assert_eq!(store.store_parses(), parses + 15, "one parse a write");
         let ids: Vec<EntryId> = file.entries.iter().take(30).map(|e| e.id.clone()).collect();
         let flush = median(
             (0..15)
@@ -828,6 +1404,33 @@ mod tests {
                 })
                 .collect(),
         );
+        let usage_reread = median(
+            (0..15)
+                .map(|_| {
+                    let bump = [(
+                        ids[0].clone(),
+                        UsageScope::Public,
+                        UsageDelta {
+                            uses: 1,
+                            corrected_to: 0,
+                            last_used_at: Some(now()),
+                        },
+                    )];
+                    // From another handle, as the daemon's usage task and `transcribe` do.
+                    assert!(DictionaryStore::open(store.dir())
+                        .flush_usage(&bump, Duration::from_millis(50))
+                        .unwrap());
+                    let started = Instant::now();
+                    store.view().unwrap();
+                    started.elapsed()
+                })
+                .collect(),
+        );
+        assert_eq!(
+            store.store_parses(),
+            parses + 15,
+            "a usage bump reparses no entries"
+        );
         let lines: String = (0..1_000)
             .map(|i| format!("IMPORTED{i} = imported {i}\n"))
             .collect();
@@ -839,7 +1442,7 @@ mod tests {
         let import = started.elapsed();
         assert_eq!(plan.rows.len(), 1_000);
         println!(
-            "view cold (parse): {cold:?}; view warm (two stats): {warm:?}; add one term: {write:?}; flush 30 usage bumps: {flush:?}; import 1,000 new rows: {import:?}"
+            "view cold (parse): {cold:?}; view warm (two stats): {warm:?}; add one term: {write:?}; view after a write: {after_write:?}; flush 30 usage bumps: {flush:?}; view after another handle's usage bump: {usage_reread:?}; import 1,000 new rows: {import:?}"
         );
     }
 }

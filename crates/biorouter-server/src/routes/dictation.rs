@@ -63,6 +63,7 @@ use biorouter::dictation::audio::{
     plan_closed_segments, plan_final_segments, PcmSlice, Span, MAX_SEGMENT_MS, SAMPLES_PER_MS,
     STREAM_VAD_TRIGGER_MS,
 };
+use biorouter::dictation::bias::DictionaryCache;
 use biorouter::dictation::catalog::{SttCatalogEntry, CATALOG};
 use biorouter::dictation::models::{InstallOptions, Network, Phase, Progress, WriteMode};
 use biorouter::dictation::paths::{self, Roots};
@@ -1145,11 +1146,24 @@ impl LiveStream {
         tokio::task::spawn_blocking(move || {
             let bumps = dictionary.usage_bumps(&text, chrono::Utc::now());
             text.zeroize();
-            biorouter::dictation::record_usage(
-                &biorouter::security::dictionary_store::open_store(),
+            // Through the daemon's one handle (PERF-1): the flush reads the entries from its
+            // warm cache under the lock, where a fresh handle parsed the whole file, and
+            // leaves the counters it wrote there for the next stream.
+            let store = super::dictionary::shared_store();
+            let flushed = biorouter::dictation::record_usage(
+                &store,
                 &bumps,
                 biorouter::security::dictionary_store::store::USAGE_FLUSH_BUDGET,
             );
+            // The counters moved, so the dictionary cache copies the rows of the recent
+            // sets again for them here, after the text is out, instead of in the next
+            // stream's creation (2.8 ms at 5,000 rows in a release build, the PERF-1
+            // review). A stream that starts meanwhile waits for this copy.
+            if flushed {
+                if let Ok(view) = store.view() {
+                    dictionary_cache().prewarm(&view);
+                }
+            }
         });
     }
 }
@@ -1903,22 +1917,52 @@ async fn stream_dictionary(
     let target_ms = started.elapsed().as_millis() as u64;
     let context = request.context.unwrap_or_default();
     let channels = BiasChannels::for_dictation();
-    let dictionary = tokio::task::spawn_blocking(move || {
-        let eligible = match biorouter::security::dictionary_store::open_store().view() {
-            Ok(view) => biorouter::dictation::bias_set(&view, &target, standing, enforced),
-            Err(_) => biorouter::dictation::recognize::EligibleEntries::empty(),
+    let (dictionary, store_us, request_us) = tokio::task::spawn_blocking(move || {
+        // The daemon's one handle (PERF-1): its parse is cached across streams and left
+        // warm by every write, so an unchanged store costs two `stat` calls here, not a
+        // parse of the whole file, and its content stamp, which the bonus table's revision
+        // follows, stays the same from one dictation to the next.
+        let read = Instant::now();
+        let view = super::dictionary::shared_store().view();
+        let store_us = read.elapsed().as_micros() as u64;
+        // The bias set's rules run in full; what they admitted is then found in the
+        // daemon's cache, so an unchanged store ranks and builds the request's own part
+        // alone (PERF-1).
+        let built = Instant::now();
+        let dictionary = match view {
+            Ok(view) => dictionary_cache()
+                .bias_request(&view, &target, standing, enforced, &context, channels),
+            Err(_) => DictionaryRequest::new(
+                biorouter::dictation::recognize::EligibleEntries::empty(),
+                &context,
+                channels,
+            ),
         };
-        DictionaryRequest::new(eligible, &context, channels)
+        (dictionary, store_us, built.elapsed().as_micros() as u64)
     })
     .await
-    .unwrap_or_else(|_| DictionaryRequest::none());
+    .unwrap_or_else(|_| (DictionaryRequest::none(), 0, 0));
+    let dictionary_us = started.elapsed().as_micros() as u64;
     tracing::debug!(
         stream = %log_id,
         target_ms,
-        dictionary_ms = started.elapsed().as_millis() as u64,
+        store_us,
+        request_us,
+        dictionary_us,
+        dictionary_ms = dictionary_us / 1000,
         "dictation stream target decided"
     );
     dictionary
+}
+
+/// The daemon's one [`DictionaryCache`]: what its dictations built from an unchanged
+/// dictionary, kept across streams beside the one store handle they read
+/// (`routes::dictionary::shared_store`). Public for the latency tests, which read its
+/// counters; no other crate has a use for it.
+#[doc(hidden)]
+pub fn dictionary_cache() -> &'static DictionaryCache {
+    static CACHE: DictionaryCache = DictionaryCache::new();
+    &CACHE
 }
 
 #[utoipa::path(

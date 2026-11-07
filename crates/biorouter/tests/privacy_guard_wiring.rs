@@ -1098,7 +1098,7 @@ const REGISTRY: &[Guard] = &[
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /dictation/streams`, once per stream, beside the target the \
-                       daemon decides; `bias_set` reads both",
+                       daemon decides; `bias_request` reads both (PERF-1)",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
@@ -1381,13 +1381,6 @@ const REGISTRY: &[Guard] = &[
                        rule, and the `use` that brings it in",
             },
             Site {
-                file: "crates/biorouter-server/src/routes/dictation.rs",
-                counts: c(1, 0, 0),
-                kind: SiteKind::Guard,
-                what: "`POST /dictation/streams` (PR-15), with the target the daemon decided \
-                       and `dictation_standing`, built off the path from stop to text",
-            },
-            Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
                 counts: c(1, 0, 1),
                 kind: SiteKind::Guard,
@@ -1403,6 +1396,26 @@ const REGISTRY: &[Guard] = &[
                 what: "the `pub use` re-export",
             },
         ],
+    },
+    // PERF-1: the daemon's dictation stream stopped calling `bias_set` and asks the
+    // daemon's `DictionaryCache` instead, which runs the same predicate for every request
+    // and serves a kept set only when that request's own decision admitted exactly its
+    // rows. The stream's row moved here from `bias_set`'s, so the census still sees the
+    // stream ask a guard, and fails if it stops.
+    Guard {
+        ident: "bias_request",
+        defined_in: "crates/biorouter/src/dictation/bias.rs",
+        decides: "which dictionary rows a daemon's dictation may use (PERF-1, DD-36): \
+                  `bias_set`'s predicate, run in full for every request, with the rows it \
+                  admitted found in the daemon's `DictionaryCache` instead of copied again",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter-server/src/routes/dictation.rs",
+            counts: c(1, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`POST /dictation/streams` (PR-15, PERF-1), with the target the daemon \
+                   decided and `dictation_standing`, built off the path from stop to text",
+        }],
     },
     Guard {
         ident: "chat_reach",

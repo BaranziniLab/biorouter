@@ -129,7 +129,11 @@ pub fn msg_same_letters(written: &str) -> String {
 
 /// The one store handle this daemon reads, so its parsed view is cached across requests
 /// (two `stat` calls while nothing changed). Reopened if the configuration folder moved.
-pub(crate) fn shared_store() -> Arc<DictionaryStore> {
+/// Every route here and every dictation stream (`routes::dictation`) reads it, and a write
+/// through it leaves its cache holding what it wrote (PERF-1). Public for the latency
+/// tests, which read its parse count; no other crate has a use for it.
+#[doc(hidden)]
+pub fn shared_store() -> Arc<DictionaryStore> {
     static STORE: Mutex<Option<Arc<DictionaryStore>>> = Mutex::new(None);
     let dir = dictionary_store::dictionary_dir();
     let mut held = STORE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -297,6 +301,23 @@ fn policy_allows_writes() -> Answer<()> {
         Some(reason) => Err(DictionaryError::policy(reason)),
         None => Ok(()),
     }
+}
+
+/// After every write, read the shared store once more off the request, so the next
+/// dictation's stream finds the parse warm and never pays for one (PERF-1). The write
+/// already left the cache holding what it wrote, so this is two `stat` calls; it parses
+/// only when the file changed again since (the terminal wrote it), and a stream that starts
+/// during that parse waits for it instead of parsing a second time. Then the dictation
+/// cache builds again the sets the last few dictations used, from the new file, so the next
+/// dictation finds its set ready too, and one that starts while its set is being built
+/// waits for that build rather than building the set a second time beside it. The answer
+/// never waits for either.
+fn warm_after_write() {
+    drop(tokio::task::spawn_blocking(|| {
+        if let Ok(view) = shared_store().view() {
+            super::dictation::dictionary_cache().prewarm(&view);
+        }
+    }));
 }
 
 /// Run a store operation off the async runtime.
@@ -1033,6 +1054,7 @@ pub async fn add_dictionary_entry(
         Ok((outcome, entry, store.view()?))
     })
     .await?;
+    warm_after_write();
     let (created, warning) = match outcome {
         AddOutcome::Created { same_letters, .. } => {
             (true, same_letters.as_deref().map(msg_same_letters))
@@ -1252,6 +1274,7 @@ pub async fn edit_dictionary_entry(
         Ok((entry, store.view()?))
     })
     .await?;
+    warm_after_write();
     Ok(Json(DictionaryEntryChanged {
         entry: entry_view(&entry, &view, standing),
     }))
@@ -1283,6 +1306,7 @@ pub async fn delete_dictionary_entry(
         })
     })
     .await?;
+    warm_after_write();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1324,6 +1348,7 @@ pub async fn change_dictionary_entry_tier(
         Ok((kept, store.view()?))
     })
     .await?;
+    warm_after_write();
     let entry = view
         .find(&kept)
         .ok_or_else(|| DictionaryError::from(write_failed()))?;
@@ -1430,6 +1455,7 @@ pub async fn delete_dictionary_entries(
         })
     })
     .await?;
+    warm_after_write();
     Ok(Json(DictionaryDeleted {
         deleted: deleted as u64,
     }))
@@ -1467,6 +1493,7 @@ pub async fn keep_dictionary_entries(
         })
     })
     .await?;
+    warm_after_write();
     Ok(Json(DictionaryKept { kept }))
 }
 
@@ -1504,6 +1531,7 @@ pub async fn accept_dictionary_suggestions(
         })
     })
     .await?;
+    warm_after_write();
     Ok(Json(DictionaryAccepted { accepted }))
 }
 
@@ -1534,6 +1562,7 @@ pub async fn dismiss_dictionary_suggestions(
         })
     })
     .await?;
+    warm_after_write();
     Ok(Json(DictionaryDismissed {
         dismissed: dismissed as u64,
     }))
@@ -1641,6 +1670,9 @@ pub async fn import_dictionary(
         }
     })
     .await?;
+    if !dry_run {
+        warm_after_write();
+    }
     let count = |which: fn(&RowOutcome) -> bool| plan.count(reach, which) as u64;
     Ok(Json(DictionaryImportAnswer {
         new: count(|o| matches!(o, RowOutcome::New)),
@@ -1880,6 +1912,7 @@ pub async fn post_dictionary_observations(
         Ok(())
     })
     .await?;
+    warm_after_write();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2064,6 +2097,7 @@ pub async fn change_dictionary_settings(
         })
     })
     .await??;
+    warm_after_write();
     Ok(Json(settings_answer(&caller).await?))
 }
 

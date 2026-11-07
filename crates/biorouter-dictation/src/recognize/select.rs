@@ -129,10 +129,91 @@ pub fn clip_context(context: &str) -> &str {
     context.get(..end).unwrap_or_default()
 }
 
+/// What ranking reads from a set that depends on neither the request nor the usage
+/// counters, built once and shared by every request over the same rows (PERF-1): each
+/// entry's place in the tie order, and its forms as the context search compares them. A
+/// daemon keeps one per unchanged set, so a request ranks with a score per entry and one
+/// sort of integers rather than folding 5,000 written forms and comparing strings.
+#[derive(Clone, Debug)]
+pub struct RankIndex {
+    /// Per entry, its place in the tie order: `updated_at` descending, then the fold key,
+    /// then the written form, then the id (DD-45).
+    tie: Vec<u32>,
+    /// Per entry, every form of at most 6 words as lower case words joined with one space.
+    phrases: Vec<Vec<String>>,
+}
+
+impl RankIndex {
+    /// The index of `eligible`'s rows, in their order.
+    pub fn new(eligible: &EligibleEntries) -> RankIndex {
+        RankIndex::over(eligible.entries())
+    }
+
+    pub(crate) fn over(entries: &[RecognitionEntry]) -> RankIndex {
+        RankIndex {
+            tie: tie_order(entries),
+            phrases: entries.iter().map(form_phrases).collect(),
+        }
+    }
+
+    /// How many entries it indexes.
+    pub fn len(&self) -> usize {
+        self.tie.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tie.is_empty()
+    }
+}
+
+/// Each entry's place in DD-45's tie order. A stable sort, so rows equal in every key keep
+/// their order, as the ranking's own stable sort kept them.
+fn tie_order(entries: &[RecognitionEntry]) -> Vec<u32> {
+    let folded: Vec<String> = entries.iter().map(|e| fold_key(&e.written)).collect();
+    let mut order: Vec<usize> = (0..entries.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (ea, eb) = (&entries[a], &entries[b]);
+        eb.updated_at
+            .cmp(&ea.updated_at)
+            .then(folded[a].cmp(&folded[b]))
+            .then(ea.written.cmp(&eb.written))
+            .then(ea.id.cmp(&eb.id))
+    });
+    let mut tie = vec![0u32; entries.len()];
+    for (place, &entry) in order.iter().enumerate() {
+        tie[entry] = place as u32;
+    }
+    tie
+}
+
+/// An entry's forms as [`in_context`] compares them with the context's phrases.
+fn form_phrases(entry: &RecognitionEntry) -> Vec<String> {
+    std::iter::once(&entry.written)
+        .chain(&entry.spoken_forms)
+        .chain(&entry.misrecognitions)
+        .filter_map(|form| {
+            let words = words_of(form);
+            (!words.is_empty() && words.len() <= MAX_FORM_WORDS).then(|| words.join(" "))
+        })
+        .collect()
+}
+
 /// Ranks `eligible` for one request with `context`, and takes the prompt and the fuzzy set
 /// from the top 30.
 pub fn plan(eligible: &EligibleEntries, context: &str, now: DateTime<Utc>) -> RequestPlan {
     plan_entries(eligible.entries(), context, now)
+}
+
+/// [`plan`] with the [`RankIndex`] of `eligible`'s rows, which gives the same plan. An
+/// index of another number of rows is not this set's, and the plan is then made without
+/// it.
+pub fn plan_with(
+    eligible: &EligibleEntries,
+    index: &RankIndex,
+    context: &str,
+    now: DateTime<Utc>,
+) -> RequestPlan {
+    plan_indexed(eligible.entries(), Some(index), context, now)
 }
 
 /// [`plan`] over a slice, for this crate's tests. Not public: a ranking is made only from
@@ -142,24 +223,44 @@ pub(crate) fn plan_entries(
     context: &str,
     now: DateTime<Utc>,
 ) -> RequestPlan {
+    plan_indexed(entries, None, context, now)
+}
+
+/// The one ranking: with an index it reads the tie order and the form phrases from it,
+/// without one it derives what it needs. Both give the same plan.
+pub(crate) fn plan_indexed(
+    entries: &[RecognitionEntry],
+    index: Option<&RankIndex>,
+    context: &str,
+    now: DateTime<Utc>,
+) -> RequestPlan {
+    let index = index.filter(|index| index.len() == entries.len());
     let phrases = context_phrases(clip_context(context));
-    let in_context: Vec<bool> = entries.iter().map(|e| in_context(e, &phrases)).collect();
+    let in_context: Vec<bool> = match index {
+        Some(index) if !phrases.is_empty() => index
+            .phrases
+            .iter()
+            .map(|forms| forms.iter().any(|form| phrases.contains(form)))
+            .collect(),
+        _ => entries.iter().map(|e| in_context(e, &phrases)).collect(),
+    };
     let scores: Vec<f64> = entries
         .iter()
         .zip(&in_context)
         .map(|(e, c)| score(e, *c, now))
         .collect();
-    let folded: Vec<String> = entries.iter().map(|e| fold_key(&e.written)).collect();
+    let built;
+    let tie = match index {
+        Some(index) => &index.tie,
+        None => {
+            built = tie_order(entries);
+            &built
+        }
+    };
+    // The tie order is a total order over the entries, so this sort needs no stability and
+    // gives the order DD-45's comparison gives.
     let mut ranked: Vec<usize> = (0..entries.len()).collect();
-    ranked.sort_by(|&a, &b| {
-        let (ea, eb) = (&entries[a], &entries[b]);
-        scores[b]
-            .total_cmp(&scores[a])
-            .then(eb.updated_at.cmp(&ea.updated_at))
-            .then(folded[a].cmp(&folded[b]))
-            .then(ea.written.cmp(&eb.written))
-            .then(ea.id.cmp(&eb.id))
-    });
+    ranked.sort_unstable_by(|&a, &b| scores[b].total_cmp(&scores[a]).then(tie[a].cmp(&tie[b])));
     let prompt_terms = prompt::pick(entries, &ranked, &in_context);
     let fuzzy_set = ranked
         .iter()
@@ -312,6 +413,113 @@ mod tests {
         assert_eq!(plan.fuzzy_set.len(), TOP);
         assert!(plan.fuzzy_set.iter().all(|&i| entries[i].fuzzy_capable()));
         assert!(!plan.fuzzy_set.contains(&40), "EPAS1 is exact");
+    }
+
+    /// The ranking PR-14b shipped, kept here as the reference: one stable sort by the score,
+    /// then DD-45's tie keys compared as strings.
+    fn reference_ranked(entries: &[RecognitionEntry], context: &str) -> Vec<usize> {
+        let phrases = context_phrases(clip_context(context));
+        let in_context: Vec<bool> = entries.iter().map(|e| in_context(e, &phrases)).collect();
+        let scores: Vec<f64> = entries
+            .iter()
+            .zip(&in_context)
+            .map(|(e, c)| score(e, *c, now()))
+            .collect();
+        let folded: Vec<String> = entries.iter().map(|e| fold_key(&e.written)).collect();
+        let mut ranked: Vec<usize> = (0..entries.len()).collect();
+        ranked.sort_by(|&a, &b| {
+            let (ea, eb) = (&entries[a], &entries[b]);
+            scores[b]
+                .total_cmp(&scores[a])
+                .then(eb.updated_at.cmp(&ea.updated_at))
+                .then(folded[a].cmp(&folded[b]))
+                .then(ea.written.cmp(&eb.written))
+                .then(ea.id.cmp(&eb.id))
+        });
+        ranked
+    }
+
+    /// PERF-1: a plan made with a [`RankIndex`] is the plan made without one, and both rank
+    /// as the reference does, over ties, usage, collisions, pins, spoken forms and
+    /// misrecognitions, with and without context; an index of other rows is not used.
+    #[test]
+    fn the_index_gives_the_plan_made_without_it() {
+        let names = [
+            "EPAS1",
+            "Epas1",
+            "SPOKE",
+            "EGLN1",
+            "UCSF",
+            "Baranzini",
+            "OMOP",
+            "VHL",
+            "ZQA1",
+            "natalizumab",
+            "CRISPRi",
+            "Biorouter",
+            "scRNA-seq",
+            "HIF-2α",
+            "PHD2",
+            "Modulite",
+        ];
+        let mut entries: Vec<RecognitionEntry> = Vec::new();
+        for round in 0..6u8 {
+            for (i, name) in names.iter().enumerate() {
+                let i = i as u8;
+                entries.push(with(
+                    entry(&format!("{name}{}", "x".repeat(round.into()))),
+                    |e| {
+                        e.id = format!("dct_{round}_{i}");
+                        // Three groups share an `updated_at` second, so the tie keys decide.
+                        e.updated_at -= Duration::days(i64::from((i + round) % 3));
+                        if (i + round).is_multiple_of(4) {
+                            e.uses = u64::from(i);
+                            e.last_used_at = Some(now() - Duration::days(i64::from(i)));
+                        }
+                        if (i + round).is_multiple_of(5) {
+                            e.corrected_to = 1;
+                        }
+                        if (i + round).is_multiple_of(7) {
+                            e.bias = BiasPolicy::Always;
+                        }
+                        if (i + round).is_multiple_of(6) {
+                            e.bias = BiasPolicy::Never;
+                        }
+                        if i.is_multiple_of(3) {
+                            e.spoken_forms = vec![format!("spoken {i} form {round}")];
+                        }
+                        if i % 4 == 1 {
+                            e.misrecognitions = vec![format!("heard {i} wrong {round}")];
+                        }
+                    },
+                ));
+            }
+        }
+        let index = RankIndex::over(&entries);
+        for context in [
+            "",
+            "We saw EPAS1 and spoken 3 form 2, then SPOKE; heard 5 wrong 0 and UCSFx.",
+            "baranzini xx and omop xxx with vhl",
+        ] {
+            let reference = reference_ranked(&entries, context);
+            let without = plan_entries(&entries, context, now());
+            let indexed = plan_indexed(&entries, Some(&index), context, now());
+            assert_eq!(without.ranked, reference, "{context:?}");
+            assert_eq!(indexed, without, "{context:?}");
+        }
+        assert!(
+            plan_entries(&entries, names.join(" ").as_str(), now())
+                .in_context
+                .iter()
+                .any(|c| *c),
+            "the fixture puts some entries in context"
+        );
+        let other = RankIndex::over(&entries[1..]);
+        assert_eq!(
+            plan_indexed(&entries, Some(&other), "EPAS1", now()),
+            plan_entries(&entries, "EPAS1", now()),
+            "an index of other rows is left out"
+        );
     }
 
     #[test]
