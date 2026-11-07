@@ -7,6 +7,7 @@
 //! * [`validate`]: the one validator every writer calls.
 //! * [`fold`]: fold keys, for tombstones and the "same letters" warning.
 //! * [`ops`]: what each write does, with the tier, tombstone and cap rules.
+//! * [`observe`]: what a correction the person made to dictated text does (PR-16).
 //! * [`tier_user`]: tier changes, behind the person's proof.
 //! * [`transfer`]: import and export.
 //! * [`usage`]: the usage counters, in their own file.
@@ -24,6 +25,7 @@
 mod lock;
 
 pub mod fold;
+pub mod observe;
 pub mod ops;
 pub mod schema;
 pub mod tier_user;
@@ -39,11 +41,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 pub use fold::fold_key;
+pub use observe::{Observation, ObservationKind, ObservationStamp, Observed};
 pub use ops::{AddOutcome, EntryEdit, NewTerm, Reach};
 pub use schema::{
     AgentWrites, BiasPolicy, Entry, EntryId, EntrySource, EntryStatus, EntryTier, MatchPolicy,
-    Misrecognition, Provenance, ProvenanceReason, RowAffiliation, StoreFile, StoreSettings,
-    TermKind, Tombstone,
+    Misrecognition, Provenance, ProvenanceReason, RowAffiliation, Sighting, StoreFile,
+    StoreSettings, TermKind, Tombstone,
 };
 pub use tier_user::UserDictionaryTierChange;
 pub use transfer::{ImportFormat, ImportPlan, ImportRow, RowOutcome};
@@ -170,6 +173,18 @@ impl StoreView {
     /// The in process generation this view was parsed at.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// A view of `file` that no store read, with no usage and generation 0, so a caller
+    /// can ask the bias set's own rules about a few rows (whether a private row's
+    /// institutions admit a chat's model, for an observation) without a second spelling of
+    /// them. It is never cached, never a store's view and never what a dictation reads.
+    pub fn detached(file: StoreFile) -> Self {
+        Self {
+            file,
+            usage: UsageFile::default(),
+            generation: 0,
+        }
     }
 }
 

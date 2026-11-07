@@ -427,6 +427,18 @@ const REGISTRY: &[Guard] = &[
                        import is the `use` that brings the module in",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/dictionary.rs",
+                counts: c(1, 14, 1),
+                kind: SiteKind::Guard,
+                what: "`read_chat` (PR-16, O-35, O-36): the gate before a stamp reads the chat \
+                       an add started in (`origin_session_id`) or an observation names, a \
+                       refusal giving the unknown institutions for an add and a silent no op \
+                       for an observation. The fourteen refs are the MODULE qualifier: on this \
+                       call, on `target_tier`, on `gate_dictionary_entry` in the router, and on \
+                       `http_caller` in each of the eleven handlers that resolve their caller; \
+                       the import is the `use` that brings the module in",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
                 counts: c(1, 7, 0),
                 kind: SiteKind::Guard,
@@ -685,6 +697,16 @@ const REGISTRY: &[Guard] = &[
                        `dictation_standing`, which reads only its proof and stated capability",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/dictionary.rs",
+                counts: c(11, 0, 0),
+                kind: SiteKind::Guard,
+                what: "every `/dictionary/*` handler (PR-16, DD-37, DD-38), each resolving its \
+                       caller once for the listing decision, the write rules, the stamp and \
+                       private standing: the listing, add, edit, delete, tier change, the bulk \
+                       routes' shared reader, import, export, observations, and both halves of \
+                       the settings",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
                 counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
@@ -716,9 +738,11 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: SESSION_REACH,
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`gate_knowledge_base`, the layer on every `/knowledge/bases/{id}` route",
+                what: "`gate_knowledge_base`, the layer on every `/knowledge/bases/{id}` route, \
+                       and `gate_dictionary_entry`, the layer on every `/dictionary/entries/{id}` \
+                       route (PR-16)",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/workflow.rs",
@@ -1039,6 +1063,14 @@ const REGISTRY: &[Guard] = &[
                        `session_reach` admitted the caller",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/dictionary.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`read_chat` (PR-16): the stored tier an observation's stamp reads \
+                       through `chat_reach` beside the live model, asked only after \
+                       `session_reach` admitted the caller",
+            },
+            Site {
                 file: SESSION_REACH,
                 counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
@@ -1060,12 +1092,120 @@ const REGISTRY: &[Guard] = &[
                   DD-29, DD-30): the user action proof or a private provider stated in \
                   `X-Caller-Provider`, never a `serve` daemon's operator tier (SD-10)",
         status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /dictation/streams`, once per stream, beside the target the \
+                       daemon decides; `bias_set` reads both",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/dictionary.rs",
+                counts: c(6, 0, 0),
+                kind: SiteKind::Guard,
+                what: "the dictionary routes (PR-16, oracle rule 5): whether a listing, an \
+                       add's, an edit's and a tier change's answer carry the usage figures and \
+                       `suggested_in`; whether an export may include private rows; and the \
+                       standing an observation's `bias_set` admission check reads",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`authorizes_dictionary_write` (a private add or import without private \
+                       standing is refused on a daemon with no key) and \
+                       `dictionary_write_stamp` (such a daemon stamps a write with the \
+                       caller's standing): the same standing a dictation is biased by, never \
+                       the served operator's tier",
+            },
+        ],
+    },
+    Guard {
+        ident: "lists_dictionary_entry",
+        defined_in: SESSION_REACH,
+        decides: "whether a caller may be shown a dictionary row of a tier (PR-16, DD-37): \
+                  the listing decision a chat of that classification gets, omission and \
+                  never a count",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/dictionary.rs",
+                counts: c(3, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`listable`, the one per row test the listing, the row an edit or a \
+                       delete names, and the ids a bulk route names all ask, again under the \
+                       store's lock before each write; the tiers the same letters warning and \
+                       the import counts consult (`reach_of`); and whether an observation's \
+                       stamp is a tier the caller may list (a silent no op when not)",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`authorizes_dictionary_write`, which admits a keyless write only for a \
+                       row the caller can list, and `gate_dictionary_entry`, which answers an \
+                       unlisted id exactly as a missing one",
+            },
+        ],
+    },
+    Guard {
+        ident: "authorizes_dictionary_write",
+        defined_in: SESSION_REACH,
+        decides: "whether a caller may make a dictionary write (PR-16, DD-38), from the \
+                  request alone: the proof on a daemon that holds a key; on one that holds \
+                  none, a listable row, with tier changes, raised settings and a private add \
+                  without private standing refused with the host sentences",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/dictionary.rs",
+                counts: c(10, 0, 0),
+                kind: SiteKind::Guard,
+                what: "every write and the export: add, edit, delete, the tier change (again \
+                       after the gate, right before the tier proof is built), the bulk routes' \
+                       shared reader, import, export, observations, the settings change, and the \
+                       settings answer's `authority`, which asks the same function so no surface \
+                       offers a control it would refuse",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`gate_dictionary_entry`, which decides the tier route before it reads \
+                       the id, so its answer is the same for every id",
+            },
+        ],
+    },
+    Guard {
+        ident: "dictionary_write_stamp",
+        defined_in: SESSION_REACH,
+        decides: "the tier a dictionary write is stamped with (PR-16, Who stamps the tier): \
+                  the person's choice on a daemon that holds a key, the caller's standing on \
+                  one that holds none, and never a tier a client sends",
+        status: Status::Wired,
         sites: &[Site {
-            file: "crates/biorouter-server/src/routes/dictation.rs",
-            counts: c(1, 0, 0),
+            file: "crates/biorouter-server/src/routes/dictionary.rs",
+            counts: c(3, 0, 0),
             kind: SiteKind::Guard,
-            what: "`POST /dictation/streams`, once per stream, beside the target the daemon \
-                   decides; `bias_set` reads both",
+            what: "an add, an edit (whose higher stamp lands in the private twin) and an \
+                   import's default tier",
+        }],
+    },
+    Guard {
+        ident: "gate_dictionary_entry",
+        defined_in: SESSION_REACH,
+        decides: "the route layer on every `/dictionary/entries/{id}` route (PR-16, oracle \
+                  rule 2): 404 with MSG-NOT-FOUND for a missing id and an unlisted one alike, \
+                  and the tier route's authority decided before the id is read",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter-server/src/routes/dictionary.rs",
+            counts: c(0, 1, 0),
+            kind: SiteKind::Guard,
+            what: "`route_layer(from_fn(session_reach::gate_dictionary_entry))` on \
+                   `entry_routes()` in `routes`. A REFERENCE, as `gate_knowledge_base`'s is: a \
+                   middleware never appears with parentheses",
         }],
     },
     // ----------------------------------------------------- extension tiering
@@ -1248,6 +1388,15 @@ const REGISTRY: &[Guard] = &[
                        and `dictation_standing`, built off the path from stop to text",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/dictionary.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`POST /dictionary/observations` (PR-16, P-16): whether a private row's \
+                       institutions all admit the chat's model, asked of that one row through \
+                       the bias set itself so the rule has no second spelling, and the `use` \
+                       that brings it in",
+            },
+            Site {
                 file: "crates/biorouter/src/dictation/mod.rs",
                 counts: c(0, 0, 1),
                 kind: SiteKind::Guard,
@@ -1270,6 +1419,14 @@ const REGISTRY: &[Guard] = &[
                 kind: SiteKind::Guard,
                 what: "`POST /dictation/streams` into a chat (PR-15), after `session_reach` \
                        admitted the caller",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/dictionary.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`read_chat` (PR-16): the stamp of an observation and of an add's origin \
+                       chat, as a stamp reads it (Private unless Public), after \
+                       `session_reach` admitted the caller",
             },
             Site {
                 file: "crates/biorouter/src/dictation/mod.rs",
@@ -2203,5 +2360,83 @@ fn every_privacy_guard_has_a_live_caller_or_a_reason() {
          defect this campaign has shipped five times; it is invisible to unit tests and to \
          code review, and this is the only thing in the tree that sees it.",
         failures.join("\n")
+    );
+}
+
+/// The name of the `fn` item a line of code text opens, if it opens one.
+fn opened_fn(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    let after = match t.strip_prefix("fn ") {
+        Some(rest) => rest,
+        None => t.split_once(" fn ")?.1,
+    };
+    let name: String = after
+        .trim_start()
+        .chars()
+        .take_while(|ch| is_word(*ch))
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// **Private standing is built in two places** (DD-29, DD-30, DD-77; PR-16).
+///
+/// `bias_set` lets private terms shape a transcript only for a caller whose `Standing`
+/// is private, and `Standing`'s field is private, so `Standing::from_checked` is the one
+/// way to build such a value. This pins every production call of it to the two functions
+/// that check a caller first: `HttpCaller::dictation_standing` (the user action proof or
+/// a stated private capability, never a `serve` daemon's operator tier) and the terminal
+/// rule of DD-77, `target::cli_bias`. A third call is a door that hands out private
+/// standing without either check, which every behavioural test of the two existing doors
+/// still passes.
+///
+/// PR-25, which adds the terminal's consent prompt, may move the terminal call into
+/// `crates/biorouter-cli/src/dictation/consent.rs`; its row here moves with it.
+#[test]
+fn private_standing_is_built_in_two_files() {
+    const BIAS: &str = "crates/biorouter/src/dictation/bias.rs";
+    let tree = scan_tree();
+    let mut defined = false;
+    let mut found: Vec<(String, String)> = Vec::new();
+    for (rel, lines) in &tree.production {
+        for (index, (line_no, text)) in lines.iter().enumerate() {
+            let (calls, refs) = occurrences(text, "from_checked");
+            if calls + refs == 0 {
+                continue;
+            }
+            if rel == BIAS && defines(text, "from_checked") {
+                defined = true;
+                continue;
+            }
+            let within = lines[..=index]
+                .iter()
+                .rev()
+                .find_map(|(_, line)| opened_fn(line))
+                .unwrap_or_else(|| format!("no fn before line {line_no}"));
+            for _ in 0..calls + refs {
+                found.push((rel.clone(), within.clone()));
+            }
+        }
+    }
+    assert!(
+        defined,
+        "the scan did not see `Standing::from_checked` defined in {BIAS}. Either it moved, \
+         and this test must follow it, or the walk read nothing, which reports the same \
+         empty set as a clean tree."
+    );
+    found.sort();
+    let mut want = vec![
+        (SESSION_REACH.to_string(), "dictation_standing".to_string()),
+        (
+            "crates/biorouter/src/dictation/target.rs".to_string(),
+            "cli_bias".to_string(),
+        ),
+    ];
+    want.sort();
+    assert_eq!(
+        found, want,
+        "`Standing::from_checked` is called outside the two functions that check a caller \
+         before handing out private standing (file, enclosing fn). A new door must ask \
+         `HttpCaller::dictation_standing` or the terminal rule instead of building a \
+         `Standing` of its own."
     );
 }

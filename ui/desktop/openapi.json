@@ -6509,6 +6509,758 @@
         }
       }
     },
+    "/dictionary/entries": {
+      "get": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "list_dictionary_entries",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "`active`, `suggested` or `all` (the default).",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/DictionaryStatusFilter"
+                }
+              ],
+              "nullable": true
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "A case folded substring of the written form, the spoken forms and the note.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page; opaque.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The rows this caller may list, with an ETag over this page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryEntryList"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Unchanged since the If-None-Match tag"
+          },
+          "422": {
+            "description": "bad_request: a query this daemon cannot read, or a cursor it did not give",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable (MSG-DICTIONARY-FILE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "add_dictionary_entry",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The row already exists in the stamp tier; created is false",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryEntryAnswer"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "A new row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryEntryAnswer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent (MSG-DICTIONARY-AGENT), host_private (MSG-DICTIONARY-HOST-PRIVATE) or policy (MSG-POLICY)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "cap (MSG-DICTIONARY-CAP)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A validation code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable (MSG-DICTIONARY-FILE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/entries/delete": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "delete_dictionary_entries",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryIdsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many of the listed rows were deleted, each with its tombstone; allowed under managed policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryDeleted"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/entries/keep": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "keep_dictionary_entries",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryIdsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many agent rows the person had not reviewed are now reviewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryKept"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent or policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/entries/{id}": {
+      "delete": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "delete_dictionary_entry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The entry's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted, with a tombstone for its (fold key, tier); allowed under managed policy"
+          },
+          "403": {
+            "description": "agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found (MSG-NOT-FOUND)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "edit_dictionary_entry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The entry's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The row after the edit (on a daemon with no key, a private standing caller's edit of a public row lands in its private twin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryEntryChanged"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent or policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found (MSG-NOT-FOUND)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "duplicate (MSG-DICTIONARY-DUPLICATE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "stale (MSG-DICTIONARY-STALE), with the row's rev",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A validation code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/entries/{id}/tier": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "change_dictionary_entry_tier",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The entry's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryTierRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The row that holds the term afterwards: moved, or merged into its twin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryEntryChanged"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent, host_tier (MSG-DICTIONARY-HOST-TIER, decided before the id is read) or policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found (MSG-NOT-FOUND)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "cap",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/export": {
+      "get": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "export_dictionary",
+        "parameters": [
+          {
+            "name": "include_private",
+            "in": "query",
+            "description": "Include private rows: honoured only with private standing, after the person\nconfirmed MSG-EXPORT-PRIVATE.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The export JSON (biorouter.dictionary v1) as an attachment: no ids, session ids or usage; allowed under managed policy",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "bad_request: a query this daemon cannot read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/import": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "import_dictionary",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The import's counts; it merges and never deletes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryImportAnswer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent, host_private (MSG-DICTIONARY-HOST-PRIVATE, before any row is read) or policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "too_large: over 1 MiB or 5,000 rows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "not_an_export or unparsable: the file as a whole could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/observations": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "post_dictionary_observations",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryObservationsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Always, including a silent no op: a chat out of reach, a stamp this caller cannot list, a pair holding a secret or PII, or one seen before"
+          },
+          "403": {
+            "description": "agent or policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "too_large: more than 16 pairs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/settings": {
+      "get": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "get_dictionary_settings",
+        "responses": {
+          "200": {
+            "description": "The stored settings and what this caller may do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionarySettings"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable (MSG-DICTIONARY-FILE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "change_dictionary_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionarySettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionarySettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent, host_settings (MSG-DICTIONARY-HOST-SETTINGS, a raise on a daemon with no key) or policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/suggestions/accept": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "accept_dictionary_suggestions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryIdsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many suggestions are now active and reviewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryAccepted"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent or policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "cap: nothing was accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/suggestions/dismiss": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "dismiss_dictionary_suggestions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryIdsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many suggestions were deleted, each with its tombstone; allowed under managed policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryDismissed"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/handle_openrouter": {
       "post": {
         "tags": [
@@ -14289,6 +15041,775 @@
             "format": "int64",
             "description": "From `finish` to the tail's decode starting: a segment still decoding when the\nperson stopped, or a model still loading.",
             "minimum": 0
+          }
+        }
+      },
+      "DictionaryAccepted": {
+        "type": "object",
+        "required": [
+          "accepted"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DictionaryAddRequest": {
+        "type": "object",
+        "description": "`POST /dictionary/entries`.",
+        "required": [
+          "written"
+        ],
+        "properties": {
+          "bias": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryBias"
+              }
+            ],
+            "nullable": true
+          },
+          "context_cues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryTermKind"
+              }
+            ],
+            "nullable": true
+          },
+          "match": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryMatch"
+              }
+            ],
+            "nullable": true
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "origin_session_id": {
+            "type": "string",
+            "description": "The chat the add started in (the context menu's **Add to Biorouter dictionary…**):\na private row takes its institutions (O-36), read after `session_reach` admits\nthe caller.",
+            "nullable": true
+          },
+          "origin_unresolved": {
+            "type": "boolean",
+            "description": "The add started in a chat the renderer could not resolve (a shared transcript): a\nprivate row's institutions are unknown, `[]`."
+          },
+          "private": {
+            "type": "boolean",
+            "description": "**Only in private chats.** On a daemon with no key, refused without private\nstanding (MSG-DICTIONARY-HOST-PRIVATE); there every term is stamped with the\ncaller's standing."
+          },
+          "spoken_forms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "written": {
+            "type": "string"
+          }
+        }
+      },
+      "DictionaryAffiliation": {
+        "type": "object",
+        "description": "A private row's institutions: empty when they are unknown, which only local models\nclear (O-32, O-35).",
+        "required": [
+          "institutions"
+        ],
+        "properties": {
+          "institutions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DictionaryInstitution"
+            }
+          }
+        }
+      },
+      "DictionaryAgentWrites": {
+        "type": "string",
+        "description": "What the agent's dictionary writes do (O-3).",
+        "enum": [
+          "suggest",
+          "on_request",
+          "add"
+        ]
+      },
+      "DictionaryAllowance": {
+        "type": "object",
+        "description": "Whether one control may be used, and if not, the sentence to show before the click.",
+        "required": [
+          "allowed"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "DictionaryAuthority": {
+        "type": "object",
+        "description": "What this caller may do, before any click, so no surface offers a doomed control.",
+        "required": [
+          "write",
+          "add_private",
+          "tier_change",
+          "raise_settings"
+        ],
+        "properties": {
+          "add_private": {
+            "$ref": "#/components/schemas/DictionaryAllowance"
+          },
+          "raise_settings": {
+            "$ref": "#/components/schemas/DictionaryAllowance"
+          },
+          "tier_change": {
+            "$ref": "#/components/schemas/DictionaryAllowance"
+          },
+          "write": {
+            "$ref": "#/components/schemas/DictionaryAllowance"
+          }
+        }
+      },
+      "DictionaryBias": {
+        "type": "string",
+        "description": "Whether a row reaches the prompt; `always` is \"pinned\".",
+        "enum": [
+          "auto",
+          "always",
+          "never"
+        ]
+      },
+      "DictionaryDeleted": {
+        "type": "object",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DictionaryDismissed": {
+        "type": "object",
+        "required": [
+          "dismissed"
+        ],
+        "properties": {
+          "dismissed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DictionaryEditRequest": {
+        "type": "object",
+        "description": "`PATCH /dictionary/entries/{id}`: any of these fields; an absent field stays as it is,\nand `kind` or `note` sent as `null` clears it.",
+        "properties": {
+          "bias": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryBias"
+              }
+            ],
+            "nullable": true
+          },
+          "context_cues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryTermKind"
+              }
+            ],
+            "nullable": true
+          },
+          "match": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryMatch"
+              }
+            ],
+            "nullable": true
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "spoken_forms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "written": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "DictionaryEntryAnswer": {
+        "type": "object",
+        "description": "201 for a new row, with MSG-SAME-LETTERS when a row this caller can list folds to the\nsame letters; 200 with `created: false` when the row already exists in the stamp tier.",
+        "required": [
+          "entry",
+          "created"
+        ],
+        "properties": {
+          "created": {
+            "type": "boolean"
+          },
+          "entry": {
+            "$ref": "#/components/schemas/DictionaryEntryView"
+          },
+          "warning": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "DictionaryEntryChanged": {
+        "type": "object",
+        "description": "One row, after a change.",
+        "required": [
+          "entry"
+        ],
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/DictionaryEntryView"
+          }
+        }
+      },
+      "DictionaryEntryList": {
+        "type": "object",
+        "description": "200 from `GET /dictionary/entries`: at most 500 rows, newest change first. It carries no\ncount of rows, listed or withheld (oracle rule 10).",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DictionaryEntryView"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "DictionaryEntrySource": {
+        "type": "string",
+        "enum": [
+          "user",
+          "import",
+          "agent",
+          "auto",
+          "correction"
+        ]
+      },
+      "DictionaryEntryStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "suggested"
+        ]
+      },
+      "DictionaryEntryView": {
+        "type": "object",
+        "description": "`EntryView` (\"Routes\"): the stored row minus `seen`. `affiliation` is non null on\nprivate rows only. The usage figures, `suggested_in` and `came_from_a_chat` are present\nonly for a caller with private standing (oracle rule 5).",
+        "required": [
+          "id",
+          "rev",
+          "written",
+          "tier",
+          "status",
+          "source",
+          "reviewed",
+          "spoken_forms",
+          "misrecognitions",
+          "match",
+          "bias",
+          "context_cues",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "affiliation": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryAffiliation"
+              }
+            ],
+            "nullable": true
+          },
+          "bias": {
+            "$ref": "#/components/schemas/DictionaryBias"
+          },
+          "came_from_a_chat": {
+            "type": "boolean",
+            "description": "Private rows, for a caller with private standing: whether the row shows that it\ncame from a chat (`Entry::came_from_a_chat`), which picks MSG-PUBLICIZE-WARN over\nMSG-PUBLICIZE-WARN-NO-CHAT before **Make public…**.",
+            "nullable": true
+          },
+          "context_cues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "corrected_to": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryTermKind"
+              }
+            ],
+            "nullable": true
+          },
+          "last_used_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "match": {
+            "$ref": "#/components/schemas/DictionaryMatch"
+          },
+          "misrecognitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DictionaryMisrecognition"
+            }
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "provenance": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryProvenance"
+              }
+            ],
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "rev": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The `If-Match` token of an edit.",
+            "minimum": 0
+          },
+          "reviewed": {
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/components/schemas/DictionaryEntrySource"
+          },
+          "spoken_forms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/DictionaryEntryStatus"
+          },
+          "suggested_in": {
+            "type": "string",
+            "nullable": true
+          },
+          "tier": {
+            "$ref": "#/components/schemas/DictionaryTier"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "uses": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "written": {
+            "type": "string"
+          }
+        }
+      },
+      "DictionaryErrorBody": {
+        "type": "object",
+        "description": "Every refusal of a dictionary route.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "`agent`, `host_tier`, `host_settings`, `host_private`, `not_found`, `policy`,\n`unreadable`, `stale`, `cap`, `duplicate`, `too_large`, `bad_request`,\n`write_failed`, or a validation code (`too_long`, `url`, …)."
+          },
+          "message": {
+            "type": "string",
+            "description": "The sentence to show. It never names a term."
+          },
+          "rev": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`stale` only: the row's revision now.",
+            "nullable": true,
+            "minimum": 0
+          }
+        }
+      },
+      "DictionaryIdsRequest": {
+        "type": "object",
+        "description": "A list of entry ids, at most 5,000. An id that names nothing or a row this caller may\nnot list is skipped as missing.",
+        "required": [
+          "ids"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "DictionaryImportAnswer": {
+        "type": "object",
+        "description": "What the import did, or would do, over the rows this caller can list (oracle rule 3).",
+        "required": [
+          "new",
+          "merged",
+          "duplicate",
+          "invalid"
+        ],
+        "properties": {
+          "duplicate": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "invalid": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DictionaryImportInvalid"
+            }
+          },
+          "merged": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "new": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DictionaryImportFormat": {
+        "type": "string",
+        "description": "The import formats: one term per line, CSV or TSV with `written,spoken_forms,note`, or\nthe export JSON.",
+        "enum": [
+          "lines",
+          "csv",
+          "tsv",
+          "json"
+        ]
+      },
+      "DictionaryImportInvalid": {
+        "type": "object",
+        "required": [
+          "line",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "A validation code, `cap` or `unreadable`."
+          },
+          "line": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DictionaryImportRequest": {
+        "type": "object",
+        "description": "`POST /dictionary/import`: at most 1 MiB of content and 5,000 rows.",
+        "required": [
+          "format",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Plan only: the counts the import would give, writing nothing."
+          },
+          "format": {
+            "$ref": "#/components/schemas/DictionaryImportFormat"
+          },
+          "private": {
+            "type": "boolean",
+            "description": "Import the rows not marked private as private. On a daemon with no key, refused\nwithout private standing, as is any row marked `\"tier\": \"private\"`."
+          }
+        }
+      },
+      "DictionaryInstitution": {
+        "type": "object",
+        "description": "One institution a private row names, with its published name (`null` when the\nregistry publishes none).",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "DictionaryKept": {
+        "type": "object",
+        "required": [
+          "kept"
+        ],
+        "properties": {
+          "kept": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DictionaryMatch": {
+        "type": "string",
+        "description": "How far correction may go for a row.",
+        "enum": [
+          "fuzzy",
+          "exact",
+          "prompt_only"
+        ]
+      },
+      "DictionaryMisrecognition": {
+        "type": "object",
+        "required": [
+          "text",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "DictionaryObservation": {
+        "type": "object",
+        "description": "One correction pair the composer's ledger found: never the transcript.",
+        "required": [
+          "record_id",
+          "kind",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "entry_id": {
+            "type": "string",
+            "description": "`rejected`: the row that made the change the person undid.",
+            "nullable": true
+          },
+          "from": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DictionaryObservationKind"
+          },
+          "record_id": {
+            "type": "string",
+            "description": "The dictation's stream id."
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
+      "DictionaryObservationKind": {
+        "type": "string",
+        "enum": [
+          "correction",
+          "rejected"
+        ]
+      },
+      "DictionaryObservationsRequest": {
+        "type": "object",
+        "description": "`POST /dictionary/observations`: at most 16 pairs, from the chat the send went to.",
+        "required": [
+          "observations"
+        ],
+        "properties": {
+          "observations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DictionaryObservation"
+            }
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "DictionaryProvenance": {
+        "type": "object",
+        "required": [
+          "reason",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/DictionaryProvenanceReason"
+          }
+        }
+      },
+      "DictionaryProvenanceReason": {
+        "type": "string",
+        "description": "Why a row changed tier.",
+        "enum": [
+          "publicized_by_user",
+          "privatized_by_user"
+        ]
+      },
+      "DictionarySettings": {
+        "type": "object",
+        "description": "200 from `GET` and `POST /dictionary/settings`. `suggest_from_chats` joins it with the\n`dictionary` capability (PR-23).",
+        "required": [
+          "learn_from_chats",
+          "agent_writes",
+          "authority"
+        ],
+        "properties": {
+          "agent_writes": {
+            "$ref": "#/components/schemas/DictionaryAgentWrites"
+          },
+          "authority": {
+            "$ref": "#/components/schemas/DictionaryAuthority"
+          },
+          "learn_from_chats": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DictionarySettingsRequest": {
+        "type": "object",
+        "description": "`POST /dictionary/settings`.",
+        "properties": {
+          "agent_writes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DictionaryAgentWrites"
+              }
+            ],
+            "nullable": true
+          },
+          "learn_from_chats": {
+            "type": "boolean",
+            "nullable": true
+          }
+        }
+      },
+      "DictionaryStatusFilter": {
+        "type": "string",
+        "description": "Which rows a listing holds.",
+        "enum": [
+          "active",
+          "suggested",
+          "all"
+        ]
+      },
+      "DictionaryTermKind": {
+        "type": "string",
+        "enum": [
+          "gene_symbol",
+          "acronym",
+          "name",
+          "term"
+        ]
+      },
+      "DictionaryTier": {
+        "type": "string",
+        "description": "Which dictations may use a row.",
+        "enum": [
+          "public",
+          "private"
+        ]
+      },
+      "DictionaryTierRequest": {
+        "type": "object",
+        "description": "`POST /dictionary/entries/{id}/tier`.",
+        "required": [
+          "tier"
+        ],
+        "properties": {
+          "tier": {
+            "$ref": "#/components/schemas/DictionaryTier"
           }
         }
       },

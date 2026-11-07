@@ -367,7 +367,60 @@ impl Entry {
         self.rev += 1;
         self.updated_at = at;
     }
+
+    /// Whether a private row shows that it came from a chat, so MSG-PUBLICIZE-WARN may say
+    /// so; any other row gets MSG-PUBLICIZE-WARN-NO-CHAT, which claims no chat. The CLI's
+    /// `publicize` and the Dictionary page (PR-20) both ask this.
+    ///
+    /// A row the person made private (`privatized_by_user`) did not, whatever made it
+    /// first, and neither did an imported one. A row from the agent (`dictionary__add_terms`)
+    /// or the chat extractor did. A person's add or a learned correction did when it names
+    /// its chat (`suggested_in`) or carries one or more institutions, which only a chat's
+    /// stamp gives such a row. One that carries no institution shows no private chat:
+    /// `null` is what a person's add with no chat carries, and also an add inside a chat
+    /// whose model and connectors name no institution; `[]` is what an add carries when its
+    /// chat could not be read or resolved, such as a shared transcript, which need not be a
+    /// private chat.
+    pub fn came_from_a_chat(&self) -> bool {
+        if self
+            .provenance
+            .as_ref()
+            .is_some_and(|p| p.reason == ProvenanceReason::PrivatizedByUser)
+        {
+            return false;
+        }
+        match self.source {
+            EntrySource::Agent | EntrySource::Auto => true,
+            EntrySource::Import => false,
+            EntrySource::User | EntrySource::Correction => {
+                self.suggested_in.is_some()
+                    || self
+                        .affiliation
+                        .as_ref()
+                        .is_some_and(|a| !a.institutions.is_empty())
+            }
+        }
+    }
 }
+
+/// One observation the store has applied (`POST /dictionary/observations`, DD-58), kept so
+/// that a resend, or the same correction posted again, never counts twice. It holds digests
+/// only, never the correction's words: `key` identifies the (`record_id`, `from`, `to`)
+/// triple and, for a rejection, `rejected` the (entry, `from`) pair whose second distinct
+/// sighting changes the entry. At most [`MAX_SIGHTINGS_PER_TIER`] per tier; the oldest go
+/// first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sighting {
+    pub key: String,
+    pub tier: EntryTier,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<String>,
+    pub at: DateTime<Utc>,
+}
+
+/// The sightings a store keeps per tier.
+pub const MAX_SIGHTINGS_PER_TIER: usize = 1_000;
 
 /// The two stored settings. `suggest_from_chats` is not here: it is whether the
 /// `dictionary` capability is on for new chats, kept in the configuration (PR-23).
@@ -396,6 +449,10 @@ pub struct StoreFile {
     pub settings: StoreSettings,
     pub entries: Vec<Entry>,
     pub tombstones: Vec<Tombstone>,
+    /// The observations applied so far, by digest (PR-16). Absent from a store that has
+    /// had none, so such a store's bytes are what PR-13 wrote.
+    #[serde(default)]
+    pub sightings: Vec<Sighting>,
 }
 
 impl Default for StoreFile {
@@ -407,6 +464,7 @@ impl Default for StoreFile {
             settings: StoreSettings::default(),
             entries: Vec::new(),
             tombstones: Vec::new(),
+            sightings: Vec::new(),
         }
     }
 }
@@ -457,6 +515,10 @@ impl StoreFile {
         list(&mut out, &self.entries);
         out.push_str(",\n  \"tombstones\": ");
         list(&mut out, &self.tombstones);
+        if !self.sightings.is_empty() {
+            out.push_str(",\n  \"sightings\": ");
+            list(&mut out, &self.sightings);
+        }
         out.push_str("\n}\n");
         out.into_bytes()
     }

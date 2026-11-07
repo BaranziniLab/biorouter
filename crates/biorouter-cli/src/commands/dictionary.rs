@@ -48,7 +48,7 @@ pub const MSG_DICTIONARY_TTY: &str = "Changing the dictionary needs you at an in
 /// `export --include-private` where DD-77 does not admit it (exit 2).
 pub const MSG_EXPORT_PRIVATE_REFUSED: &str = "Exporting private terms needs you at your own terminal and a private model configured on this computer. Run the command without --include-private to export public terms.";
 /// MSG-PUBLICIZE-WARN, before publicizing a private row that came from a chat
-/// ([`came_from_a_chat`]).
+/// ([`Entry::came_from_a_chat`]).
 pub const MSG_PUBLICIZE_WARN: &str = "This term came from a private chat. Making it public lets it appear when you dictate into chats on public models.";
 /// MSG-PUBLICIZE-WARN-NO-CHAT, before publicizing a private row nothing shows came from a
 /// chat: one the person added as private, made private, or imported.
@@ -1140,38 +1140,6 @@ fn export(
     Ok(())
 }
 
-/// Whether a private row shows that it came from a chat, so MSG-PUBLICIZE-WARN may say so.
-/// A row the person made private (`privatized_by_user`) did not, whatever made it first,
-/// and neither did an imported one. A row from the agent (`dictionary__add_terms`) or the
-/// chat extractor did. A person's add or a learned correction did when it names its chat
-/// (`suggested_in`) or carries one or more institutions, which only a chat's stamp gives
-/// such a row. One that carries no institution shows no private chat: `null` is what a
-/// person's add with no chat carries, and also an add inside a chat whose model and
-/// connectors name no institution; `[]` is what an add carries when its chat could not be
-/// read or resolved, such as a shared transcript, which need not be a private chat. Such a
-/// row gets MSG-PUBLICIZE-WARN-NO-CHAT, which claims no chat.
-fn came_from_a_chat(row: &Entry) -> bool {
-    use store::schema::ProvenanceReason;
-    if row
-        .provenance
-        .as_ref()
-        .is_some_and(|p| p.reason == ProvenanceReason::PrivatizedByUser)
-    {
-        return false;
-    }
-    match row.source {
-        EntrySource::Agent | EntrySource::Auto => true,
-        EntrySource::Import => false,
-        EntrySource::User | EntrySource::Correction => {
-            row.suggested_in.is_some()
-                || row
-                    .affiliation
-                    .as_ref()
-                    .is_some_and(|a| !a.institutions.is_empty())
-        }
-    }
-}
-
 /// `publicize` and `privatize`: the person types the term exactly (O-5), and only then
 /// is the tier proof built, here and nowhere else in this crate.
 fn change_tier(
@@ -1193,7 +1161,7 @@ fn change_tier(
         return Ok(());
     };
     if tier == EntryTier::Public {
-        let warning = if came_from_a_chat(&row) {
+        let warning = if row.came_from_a_chat() {
             MSG_PUBLICIZE_WARN
         } else {
             MSG_PUBLICIZE_WARN_NO_CHAT
