@@ -4382,22 +4382,11 @@ impl SessionStorage {
             .open(path)?;
         biorouter_sandbox::protect_owner_private_handle(&directory)?;
         for name in [DB_NAME, "sessions.db-wal", "sessions.db-shm"] {
-            let file = match fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(path.join(name))
-            {
-                Ok(file) => file,
+            match biorouter_sandbox::protect_owner_private_sqlite_file(&path.join(name)) {
+                Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
-            };
-            if !file.metadata()?.is_file() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "session database and sidecars must be regular files",
-                ));
             }
-            biorouter_sandbox::protect_owner_private_handle(&file)?;
         }
         Ok(())
     }

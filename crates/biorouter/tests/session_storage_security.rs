@@ -1,6 +1,108 @@
 use biorouter::session::{SessionManager, SessionType};
 use std::fs;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn independent_sqlite_reader_process() {
+    use sqlx::{Connection, SqliteConnection};
+
+    let Some(path) = std::env::var_os("BIOROUTER_TEST_SQLITE_READER_PATH") else {
+        return;
+    };
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false);
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert!(count > 0);
+    connection.close().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn live_storage_validation_preserves_cross_process_wal_locks_and_later_writes() {
+    use std::os::unix::fs::MetadataExt;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let data = fixture.path().to_path_buf();
+    let manager = SessionManager::new(data.clone());
+    let first = manager
+        .create_session(data.clone(), "BEFORE_READER".into(), SessionType::User)
+        .await
+        .unwrap();
+    let wal = data.join("sessions/sessions.db-wal");
+    let original = fs::metadata(&wal).unwrap();
+
+    manager.validate_storage().unwrap();
+    let second_manager = SessionManager::new(data.clone());
+    assert_eq!(
+        second_manager
+            .get_session(&first.id, false)
+            .await
+            .unwrap()
+            .name,
+        "BEFORE_READER"
+    );
+
+    // A normal read-write SQLite connection cleans up WAL sidecars if a live
+    // owner's permission checks accidentally released its POSIX locks.
+    let reader = || {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "independent_sqlite_reader_process",
+                "--nocapture",
+            ])
+            .env(
+                "BIOROUTER_TEST_SQLITE_READER_PATH",
+                data.join("sessions/sessions.db"),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let current = fs::metadata(&wal).expect("reader removed a live pool's WAL");
+        assert_eq!(
+            (current.dev(), current.ino()),
+            (original.dev(), original.ino())
+        );
+        assert_eq!(current.nlink(), 1);
+    };
+    reader();
+
+    manager
+        .update(&first.id)
+        .user_provided_name("AFTER_READER")
+        .apply()
+        .await
+        .unwrap();
+    let later = manager
+        .create_session(data.clone(), "LATER_SESSION".into(), SessionType::User)
+        .await
+        .unwrap();
+    reader();
+    second_manager.close().await;
+    manager.close().await;
+
+    let reopened = SessionManager::new(data);
+    assert_eq!(
+        reopened.get_session(&first.id, false).await.unwrap().name,
+        "AFTER_READER"
+    );
+    assert_eq!(
+        reopened.get_session(&later.id, false).await.unwrap().name,
+        "LATER_SESSION"
+    );
+    reopened.close().await;
+}
+
 #[tokio::test]
 async fn explicit_real_directory_relocation_preserves_history_and_reopening() {
     let fixture = tempfile::tempdir().unwrap();
