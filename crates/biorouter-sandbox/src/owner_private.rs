@@ -2,9 +2,8 @@ use std::fs::File;
 use std::io;
 
 #[cfg(unix)]
-pub(crate) fn protect(file: &File, directory: bool) -> io::Result<()> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let metadata = file.metadata()?;
+fn validate_owner(metadata: &std::fs::Metadata, directory: bool) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
     if !directory && metadata.nlink() != 1 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -17,6 +16,13 @@ pub(crate) fn protect(file: &File, directory: bool) -> io::Result<()> {
             "Private storage must be owned by the current account",
         ));
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn protect(file: &File, directory: bool) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    validate_owner(&file.metadata()?, directory)?;
     let mode = if directory { 0o700 } else { 0o600 };
     file.set_permissions(std::fs::Permissions::from_mode(mode))?;
     #[cfg(target_os = "macos")]
@@ -61,6 +67,136 @@ pub(crate) fn protect(file: &File, directory: bool) -> io::Result<()> {
         }
     }
     if file.metadata()?.permissions().mode() & 0o777 != mode {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "The filesystem does not enforce owner-only permissions",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_sqlite_metadata(metadata: &std::fs::Metadata) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if metadata.nlink() == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "SQLite removed the storage file during its permissions check",
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "session database and sidecars must be regular files",
+        ));
+    }
+    validate_owner(metadata, false)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn protect_sqlite_file(path: &std::path::Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    // Ordinary descriptor closes release this process's SQLite fcntl locks.
+    // O_PATH pins the inode without releasing those locks on close.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+        .open(path)?;
+    validate_sqlite_metadata(&file.metadata()?)?;
+    let pinned = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
+    let mutation_error = || {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::NotFound {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Private SQLite storage requires accessible /proc/self/fd inode paths",
+            )
+        } else {
+            error
+        }
+    };
+    if unsafe { libc::chmod(pinned.as_ptr(), 0o600) } != 0 {
+        return Err(mutation_error());
+    }
+    if unsafe { libc::removexattr(pinned.as_ptr(), c"system.posix_acl_access".as_ptr()) } != 0 {
+        let error = io::Error::last_os_error();
+        if !matches!(error.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)) {
+            return Err(mutation_error());
+        }
+    }
+    let metadata = file.metadata()?;
+    validate_sqlite_metadata(&metadata)?;
+    if metadata.permissions().mode() & 0o777 != 0o600 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "The filesystem does not enforce owner-only permissions",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(crate) fn protect_sqlite_file(path: &std::path::Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let before = std::fs::symlink_metadata(path)?;
+    validate_sqlite_metadata(&before)?;
+    let name = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "storage path contains a null byte",
+        )
+    })?;
+    if unsafe {
+        libc::fchmodat(
+            libc::AT_FDCWD,
+            name.as_ptr(),
+            0o600,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        const ACL_TYPE_EXTENDED: libc::c_int = 0x100;
+
+        unsafe extern "C" {
+            fn acl_init(count: libc::c_int) -> *mut libc::c_void;
+            fn acl_set_link_np(
+                path: *const libc::c_char,
+                kind: libc::c_int,
+                acl: *mut libc::c_void,
+            ) -> libc::c_int;
+            fn acl_free(acl: *mut libc::c_void) -> libc::c_int;
+        }
+        let acl = unsafe { acl_init(0) };
+        if acl.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let result = unsafe { acl_set_link_np(name.as_ptr(), ACL_TYPE_EXTENDED, acl) };
+        let error = (result != 0).then(io::Error::last_os_error);
+        unsafe { acl_free(acl) };
+        if let Some(error) = error {
+            return Err(error);
+        }
+    }
+    let after = std::fs::symlink_metadata(path)?;
+    validate_sqlite_metadata(&after)?;
+    if (after.dev(), after.ino()) != (before.dev(), before.ino()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Private storage changed during its permissions check",
+        ));
+    }
+    if after.permissions().mode() & 0o777 != 0o600 {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "The filesystem does not enforce owner-only permissions",

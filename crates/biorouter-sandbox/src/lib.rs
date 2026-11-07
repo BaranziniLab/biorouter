@@ -44,6 +44,13 @@ pub fn protect_owner_private_handle(file: &std::fs::File) -> std::io::Result<()>
     owner_private::protect(file, file.metadata()?.is_dir())
 }
 
+/// Restrict a regular SQLite file without releasing this process's SQLite locks.
+/// The containing directory must already be private to the current account.
+#[cfg(unix)]
+pub fn protect_owner_private_sqlite_file(path: &std::path::Path) -> std::io::Result<()> {
+    owner_private::protect_sqlite_file(path)
+}
+
 /// Refuse Windows ACL migration while another unprivileged account can mutate a directory.
 #[cfg(windows)]
 pub fn validate_owner_private_directory_acl_handle(file: &std::fs::File) -> std::io::Result<()> {
