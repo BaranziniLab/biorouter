@@ -492,6 +492,93 @@ impl DictationService {
         })
     }
 
+    /// One segment of a live dictation stream (`POST /dictation/streams`, PR-15): one
+    /// decode of at most 25 s of `pcm`, then the recognizer's checks of each decode that
+    /// [`super::file`] makes for a recording. An output that is a whole echo of the prompt,
+    /// or a collapse, is decoded once more without the prompt (on `stream + 1`, so the
+    /// retry goes round robin beside the stream's own decodes instead of behind them),
+    /// and the retry's text is kept only when it is not an echo itself; a trailing
+    /// recital of the prompt is stripped. Pieces that are only tags are dropped.
+    ///
+    /// `speech_ms` is the voice detector's speech inside `pcm`; `None` for a stream's
+    /// tail, which goes to the worker without a separate detector pass (its integrated
+    /// detector trims it), and is then read from the decode's own pieces.
+    ///
+    /// The returned pieces keep their times inside `pcm`. Cancelling `req.cancel` answers
+    /// `Cancelled` at once and drops the jobs.
+    pub async fn decode_segment(
+        &self,
+        mut spec: LoadSpec,
+        stream: u64,
+        pcm: PcmSlice,
+        speech_ms: Option<u64>,
+        req: &TranscribeRequest,
+    ) -> Result<SegmentDecode, DictationError> {
+        use biorouter_dictation::recognize::{echo, text};
+
+        let supervisor = self.ready_supervisor()?;
+        if spec.n_threads == 0 {
+            spec.n_threads = self.request_threads(&supervisor).await;
+        }
+        let spec = Arc::new(spec);
+        let params = req.params(spec.n_threads);
+        let first = run_job(
+            &supervisor,
+            &spec,
+            stream,
+            pcm.clone(),
+            params.clone(),
+            &req.cancel,
+        )
+        .await?;
+        let mut decoded = SegmentDecode::default();
+        decoded.count(&first);
+        let sent = sent_prompt(&params.prompt_terms, first.prompt_terms_used).to_vec();
+        let speech = speech_ms.unwrap_or_else(|| pieces_ms(&first.segments));
+        let assessment = echo::assess(&first.text, &sent, speech);
+        let mut kept = Some(first);
+        if let Some(reason) = assessment
+            .retry
+            .filter(|_| echo::retry_changes_anything(!params.prompt_terms.is_empty()))
+        {
+            decoded.retried = Some(reason);
+            let unprompted = TranscribeParams {
+                prompt_terms: Vec::new(),
+                ..params.clone()
+            };
+            let again =
+                run_job(&supervisor, &spec, stream + 1, pcm, unprompted, &req.cancel).await?;
+            decoded.count(&again);
+            kept = echo::adopt_retry(&again.text, &sent).then_some(again);
+        } else if assessment.recital_stripped {
+            if let Some(result) = kept.as_mut() {
+                result.segments = vec![biorouter_dictation::protocol::SegmentText {
+                    t0_ms: result.segments.first().map_or(0, |s| s.t0_ms),
+                    t1_ms: result.segments.last().map_or(0, |s| s.t1_ms),
+                    text: assessment.text.clone(),
+                }];
+            }
+        }
+        if let Some(result) = kept {
+            decoded.pieces = result
+                .segments
+                .into_iter()
+                .filter(|piece| text::piece_has_words(&piece.text))
+                .map(|mut piece| {
+                    piece.text = piece.text.trim().to_string();
+                    piece
+                })
+                .collect();
+        }
+        Ok(decoded)
+    }
+
+    /// Whether the worker holds a loaded model now: a stream that finds it so needs no
+    /// new memory, and is not asked [`memory_refusal`]'s question.
+    pub fn is_loaded(&self) -> bool {
+        self.status().state == EngineState::Ready
+    }
+
     /// Has the worker build `dictionary`'s decoder bonus table now, when a dictation
     /// starts, so its first decode finds it ready (DD-46). Returns at once; a worker still
     /// loading builds it right after its model.
@@ -688,8 +775,8 @@ impl DictationService {
     }
 
     /// DD-32: `min(8, available_parallelism)`, halved (at least 1) while the llama
-    /// sidecar is serving. The sidecar gets 250 ms to answer; silence counts as not
-    /// serving. The loopback Ollama half needs agent state and arrives with PR-15.
+    /// sidecar or a loopback Ollama is serving. The sidecar gets 250 ms to answer, and so
+    /// does the daemon's [`set_local_serving_probe`]; silence counts as not serving.
     pub async fn threads(&self) -> u32 {
         if let Some((at, n)) = *self.threads.lock().unwrap_or_else(PoisonError::into_inner) {
             if at.elapsed() < THREADS_REUSE {
@@ -703,20 +790,35 @@ impl DictationService {
         // never runs that work.
         let probe =
             tokio::spawn(async { crate::providers::llamacpp_sidecar::global().status().await });
-        let serving = tokio::time::timeout(SIDECAR_PROBE, probe)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .is_some_and(|status| {
-                matches!(
-                    status.state,
-                    crate::providers::llamacpp_sidecar::SidecarState::Ready
-                        | crate::providers::llamacpp_sidecar::SidecarState::Starting
-                )
-            });
-        let n = threads_rule(base_threads(), serving);
+        let local = local_serving_probe();
+        let ollama = tokio::spawn(async move {
+            match local {
+                Some(probe) => probe().await,
+                None => false,
+            }
+        });
+        let (sidecar, ollama) = tokio::join!(
+            tokio::time::timeout(SIDECAR_PROBE, probe),
+            tokio::time::timeout(SIDECAR_PROBE, ollama)
+        );
+        let sidecar = sidecar.ok().and_then(Result::ok).is_some_and(|status| {
+            matches!(
+                status.state,
+                crate::providers::llamacpp_sidecar::SidecarState::Ready
+                    | crate::providers::llamacpp_sidecar::SidecarState::Starting
+            )
+        });
+        let ollama = ollama.ok().and_then(Result::ok).unwrap_or(false);
+        let n = threads_rule(base_threads(), sidecar || ollama);
         *self.threads.lock().unwrap_or_else(PoisonError::into_inner) = Some((Instant::now(), n));
         n
+    }
+
+    /// Forgets the count [`Self::threads`] reuses for [`THREADS_REUSE`], so the next call
+    /// asks again. For the daemon's test that a loopback Ollama halves it.
+    #[doc(hidden)]
+    pub fn forget_thread_count(&self) {
+        *self.threads.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// The supervisor, after the gates every spawn passes: an engine is linked, the
@@ -757,12 +859,346 @@ impl DictationService {
     pub fn one_shot(&self) {
         self.one_shot.store(true, Ordering::Relaxed);
     }
+
+    /// The running worker's process id. For the route tests that stop a worker mid
+    /// stream, as a crash would.
+    #[doc(hidden)]
+    pub fn worker_pid(&self) -> Option<u32> {
+        self.supervisor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .filter(|s| s.is_running())
+            .and_then(|s| s.worker_pid())
+    }
+}
+
+/// Whether a loopback Ollama in this process is generating now (DD-32's second half):
+/// the daemon knows its live agents, this service does not, so the daemon installs the
+/// question when its state is built.
+pub type LocalServingProbe = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync,
+>;
+
+fn local_serving_slot() -> &'static Mutex<Option<LocalServingProbe>> {
+    static SLOT: OnceLock<Mutex<Option<LocalServingProbe>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Installs the daemon's answer to "is a loopback Ollama serving?" for the thread count;
+/// the last one installed wins. A process without one (the CLI) counts only the llama
+/// sidecar.
+pub fn set_local_serving_probe(probe: LocalServingProbe) {
+    *local_serving_slot()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(probe);
+}
+
+fn local_serving_probe() -> Option<LocalServingProbe> {
+    local_serving_slot()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// What the installed probe answers now, with no bound: `false` when none is installed.
+/// For the daemon's test that it installs one.
+#[doc(hidden)]
+pub async fn local_serving_now() -> bool {
+    match local_serving_probe() {
+        Some(probe) => probe().await,
+        None => false,
+    }
 }
 
 /// Why nothing can run here, before any download: no engine in this build, or a
 /// processor the engine cannot use (MSG-NO-ENGINE, MSG-CPU). `None` when it can.
 pub fn spawn_refusal() -> Option<DictationError> {
     gate(biorouter_dictation::ENGINE_COMPILED, cpu::host_report()).err()
+}
+
+/// What [`DictationService::decode_segment`] found in one segment.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SegmentDecode {
+    /// The kept pieces, trimmed, with their times inside the segment.
+    pub pieces: Vec<biorouter_dictation::protocol::SegmentText>,
+    /// Why the segment was decoded a second time, if it was.
+    pub retried: Option<biorouter_dictation::recognize::RetryReason>,
+    /// The worker's own encoder and decoder time, retries included.
+    pub encode_ms: u64,
+    pub decode_ms: u64,
+}
+
+impl SegmentDecode {
+    fn count(&mut self, result: &TranscribeResult) {
+        self.encode_ms += result.timings.encode_ms.round() as u64;
+        self.decode_ms += result.timings.decode_ms.round() as u64;
+    }
+}
+
+/// One transcription job, answered or cancelled.
+async fn run_job(
+    supervisor: &Supervisor,
+    spec: &Arc<LoadSpec>,
+    stream: u64,
+    pcm: PcmSlice,
+    params: TranscribeParams,
+    cancel: &CancellationToken,
+) -> Result<TranscribeResult, DictationError> {
+    let (job, answer) = supervisor.submit_transcribe(Arc::clone(spec), stream, pcm, params);
+    tokio::select! {
+        answer = answer => answer.unwrap_or(Err(SupervisorError::Stopped)).map_err(Into::into),
+        () = cancel.cancelled() => {
+            supervisor.cancel(job);
+            Err(DictationError::Cancelled)
+        }
+    }
+}
+
+/// The terms the worker fitted into the token budget: the last `used` of `terms`.
+fn sent_prompt(terms: &[String], used: u32) -> &[String] {
+    let used = (used as usize).min(terms.len());
+    terms.get(terms.len() - used..).unwrap_or_default()
+}
+
+/// The milliseconds a decode's pieces cover, overlaps counted once: the speech of a
+/// segment no separate detector pass measured.
+fn pieces_ms(pieces: &[biorouter_dictation::protocol::SegmentText]) -> u64 {
+    let mut spans: Vec<(u64, u64)> = pieces.iter().map(|p| (p.t0_ms, p.t1_ms)).collect();
+    spans.sort_unstable();
+    let (mut total, mut reach) = (0u64, 0u64);
+    for (t0, t1) in spans {
+        let start = t0.max(reach);
+        if t1 > start {
+            total += t1 - start;
+        }
+        reach = reach.max(t1);
+    }
+    total
+}
+
+/// The memory a load needs beyond the model file itself, calibrated on the measured peaks
+/// of 1.06 GB (turbo) and 0.60 to 0.72 GB (small.en) [I] (DD-32).
+pub const LOAD_HEADROOM_BYTES: u64 = 512 << 20;
+
+/// MSG-SERVER-MEMORY: a load this server cannot hold now (DD-32).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemoryShortfall {
+    pub model: String,
+    pub needed: u64,
+    pub free: u64,
+}
+
+impl std::fmt::Display for MemoryShortfall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "This server does not have enough free memory to load {} ({} GB needed, {} GB free). Try again later, or ask the administrator to install the Light model.",
+            self.model,
+            biorouter_dictation::models::gb(self.needed),
+            biorouter_dictation::models::gb_down(self.free)
+        )
+    }
+}
+
+/// DD-32's memory check before a load, as a rule: the model file plus
+/// [`LOAD_HEADROOM_BYTES`] against the smaller of the system's available memory and the
+/// cgroup's room (`memory.max` minus `memory.current`). An unknown figure is no limit.
+pub fn memory_shortfall(
+    model: &str,
+    model_bytes: u64,
+    available: Option<u64>,
+    cgroup_room: Option<u64>,
+) -> Option<MemoryShortfall> {
+    let needed = model_bytes.saturating_add(LOAD_HEADROOM_BYTES);
+    let free = match (available, cgroup_room) {
+        (Some(a), Some(c)) => a.min(c),
+        (Some(a), None) => a,
+        (None, Some(c)) => c,
+        (None, None) => return None,
+    };
+    (free < needed).then(|| MemoryShortfall {
+        model: model.to_string(),
+        needed,
+        free,
+    })
+}
+
+/// [`memory_shortfall`] for `spec` on this host, before a load. Linux only: other systems
+/// are not checked, and the RAM floors of suitability apply instead. A worker that holds
+/// a model already needs no new memory, so the check is skipped while one is loaded.
+pub fn memory_refusal(spec: &LoadSpec, model: &str) -> Option<MemoryShortfall> {
+    if service().is_loaded() {
+        return None;
+    }
+    if let Some(free) = test_free_memory() {
+        return memory_shortfall(model, spec.model_size, Some(free), None);
+    }
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    memory_shortfall(model, spec.model_size, mem_available(), cgroup_room())
+}
+
+/// Environment only, and read only by a debug build, like [`TEST_MODEL_ENV`]: the free
+/// memory in bytes [`memory_refusal`] sees, on every system, so the route tests can reach
+/// MSG-SERVER-MEMORY. A release build ignores it.
+pub const TEST_FREE_MEMORY_ENV: &str = "BIOROUTER_DICTATION_TEST_FREE_MEMORY";
+
+fn test_free_memory() -> Option<u64> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var(TEST_FREE_MEMORY_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// `MemAvailable` from `/proc/meminfo`, in bytes.
+fn mem_available() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    parse_mem_available(&meminfo)
+}
+
+fn parse_mem_available(meminfo: &str) -> Option<u64> {
+    let line = meminfo.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kib: u64 = line
+        .trim_start_matches("MemAvailable:")
+        .trim()
+        .trim_end_matches("kB")
+        .trim()
+        .parse()
+        .ok()?;
+    kib.checked_mul(1024)
+}
+
+/// The room the cgroup v2 this process runs in leaves: `memory.max` minus
+/// `memory.current`; `None` without a limit (`max`) or without cgroup v2.
+fn cgroup_room() -> Option<u64> {
+    let max = std::fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?;
+    let current = std::fs::read_to_string("/sys/fs/cgroup/memory.current").ok()?;
+    parse_cgroup_room(&max, &current)
+}
+
+fn parse_cgroup_room(max: &str, current: &str) -> Option<u64> {
+    let max: u64 = max.trim().parse().ok()?;
+    let current: u64 = current.trim().parse().ok()?;
+    Some(max.saturating_sub(current))
+}
+
+/// Where the daemon records the executable its last startup warm up ran from.
+pub fn startup_warm_up_path() -> PathBuf {
+    Paths::in_local_data_dir("dictation/warm-up.json")
+}
+
+/// How long after the daemon starts its warm up begins, so it never competes with the
+/// startup itself.
+pub const STARTUP_WARM_UP_DELAY: Duration = Duration::from_secs(5);
+
+/// An executable as the startup warm up recognizes it: path, size and modification time.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ExecutableStamp {
+    pub path: String,
+    pub size: u64,
+    pub modified_ns: u128,
+}
+
+impl ExecutableStamp {
+    pub fn of(path: &Path) -> Option<ExecutableStamp> {
+        let meta = std::fs::metadata(path).ok()?;
+        let modified_ns = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        Some(ExecutableStamp {
+            path: path.display().to_string(),
+            size: meta.len(),
+            modified_ns,
+        })
+    }
+}
+
+/// Whether the startup warm up should run: Metal is the only backend whose first load
+/// compiles anything, the per user Metal pipeline cache is keyed by the executable, and
+/// a recorded stamp equal to this executable's means the cache already holds its
+/// pipelines (PR-12 measured 2,972 ms to a ready model for a new binary against 156 ms
+/// on the next run [M]).
+pub fn startup_warm_up_needed(
+    backend: &str,
+    current: Option<&ExecutableStamp>,
+    recorded: Option<&ExecutableStamp>,
+) -> bool {
+    backend == "metal" && current.is_some() && current != recorded
+}
+
+/// Starts the daemon's one background warm up of the active model (PR-15's latency
+/// note), [`STARTUP_WARM_UP_DELAY`] after it is called, and returns at once. It runs only
+/// when an engine and a model are there, the policy allows dictation, the backend is
+/// Metal, the process is not an administrator's (the cache belongs to the account that
+/// compiles), and this executable differs from the one recorded at the last warm up. The
+/// worker then unloads on its normal idle timer. It never delays startup or a request:
+/// a stream that arrives meanwhile shares the same worker and load.
+pub fn spawn_startup_warm_up() {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async {
+        tokio::time::sleep(STARTUP_WARM_UP_DELAY).await;
+        if let Some(warm) = startup_warm_up().await {
+            tracing::info!(
+                model = %warm.model,
+                backend = %warm.backend,
+                ready_ms = warm.ready_ms,
+                decode_ms = warm.decode_ms,
+                "dictation startup warm up finished"
+            );
+        }
+    });
+}
+
+/// The startup warm up itself; `None` when it had nothing to do or failed.
+pub async fn startup_warm_up() -> Option<WarmUp> {
+    if spawn_refusal().is_some() || biorouter_dictation::models::running_as_administrator() {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let current = ExecutableStamp::of(&exe);
+    let path = startup_warm_up_path();
+    let recorded: Option<ExecutableStamp> = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    if !startup_warm_up_needed(default_backend(), current.as_ref(), recorded.as_ref()) {
+        return None;
+    }
+    let model = tokio::task::spawn_blocking(|| {
+        let policy = crate::managed::ManagedPolicy::load().dictation().clone();
+        if !policy.enabled.is_allowed() {
+            return None;
+        }
+        let roots = Roots::current();
+        active_model(
+            &mut paths::Lookup::new(&roots),
+            &policy,
+            configured_model().as_deref(),
+            cpu::host_report().class,
+        )
+        .map(|entry| entry.id)
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let warm = service().warm_up(model).await.ok()?;
+    if let Some(current) = current {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_vec(&current) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+    Some(warm)
 }
 
 /// This computer's hardware class (`AS`, `CPU` or `NO`).
@@ -1759,5 +2195,87 @@ mod tests {
             test_model_spec(&dir.path().join("missing.bin"), "en"),
             Err(DictationError::Internal(_))
         ));
+    }
+
+    /// DD-32: the model file plus 512 MiB against the smaller of the two free figures;
+    /// an unknown figure is no limit; MSG-SERVER-MEMORY rounds the need up and the free
+    /// memory down.
+    #[test]
+    fn the_memory_check_before_a_load() {
+        let model = 574_041_195u64;
+        let needed = model + LOAD_HEADROOM_BYTES;
+        assert_eq!(memory_shortfall("turbo", model, None, None), None);
+        assert_eq!(
+            memory_shortfall("turbo", model, Some(needed), None),
+            None,
+            "exactly enough is enough"
+        );
+        let short = memory_shortfall("turbo", model, Some(needed - 1), None).unwrap();
+        assert_eq!((short.needed, short.free), (needed, needed - 1));
+        let short = memory_shortfall("turbo", model, Some(16 << 30), Some(600_000_000)).unwrap();
+        assert_eq!(short.free, 600_000_000, "the cgroup's room binds first");
+        assert_eq!(
+            short.to_string(),
+            "This server does not have enough free memory to load turbo (1.2 GB needed, 0.6 GB \
+             free). Try again later, or ask the administrator to install the Light model."
+        );
+        assert!(memory_shortfall("turbo", model, None, Some(needed)).is_none());
+
+        let meminfo =
+            "MemTotal:       32734764 kB\nMemFree:  100 kB\nMemAvailable:   20000000 kB\n";
+        assert_eq!(parse_mem_available(meminfo), Some(20_000_000 * 1024));
+        assert_eq!(parse_mem_available("MemTotal: 1 kB\n"), None);
+        assert_eq!(parse_cgroup_room("max\n", "100\n"), None, "no limit");
+        assert_eq!(parse_cgroup_room("1000\n", "400\n"), Some(600));
+        assert_eq!(parse_cgroup_room("1000\n", "4000\n"), Some(0));
+    }
+
+    /// The startup warm up runs on Metal only, and only for an executable the last warm
+    /// up did not record.
+    #[test]
+    fn the_startup_warm_up_follows_the_executable() {
+        let a = ExecutableStamp {
+            path: "/Applications/Biorouter.app/Contents/Resources/bin/biorouterd".into(),
+            size: 108_000_000,
+            modified_ns: 1,
+        };
+        let updated = ExecutableStamp {
+            modified_ns: 2,
+            ..a.clone()
+        };
+        assert!(startup_warm_up_needed("metal", Some(&a), None));
+        assert!(startup_warm_up_needed("metal", Some(&updated), Some(&a)));
+        assert!(!startup_warm_up_needed("metal", Some(&a), Some(&a)));
+        assert!(!startup_warm_up_needed("cpu", Some(&a), None));
+        assert!(!startup_warm_up_needed("metal", None, None));
+        let me = std::env::current_exe().unwrap();
+        let stamp = ExecutableStamp::of(&me).expect("this test binary");
+        assert_eq!(stamp.size, std::fs::metadata(&me).unwrap().len());
+        assert!(startup_warm_up_path().ends_with("dictation/warm-up.json"));
+    }
+
+    /// The prompt the worker fitted is the tail of the sent prompt; a tail decode's speech
+    /// is the time its pieces cover, overlaps once.
+    #[test]
+    fn the_segment_helpers() {
+        let terms: Vec<String> = ["a", "b", "c."].iter().map(|s| s.to_string()).collect();
+        assert_eq!(sent_prompt(&terms, 2), ["b", "c."]);
+        assert_eq!(sent_prompt(&terms, 9), terms.as_slice());
+        assert!(sent_prompt(&terms, 0).is_empty());
+        use biorouter_dictation::protocol::SegmentText;
+        let piece = |t0_ms, t1_ms| SegmentText {
+            t0_ms,
+            t1_ms,
+            text: String::new(),
+        };
+        assert_eq!(pieces_ms(&[]), 0);
+        assert_eq!(
+            pieces_ms(&[
+                piece(1_000, 3_000),
+                piece(2_000, 4_000),
+                piece(5_000, 5_500)
+            ]),
+            3_500
+        );
     }
 }

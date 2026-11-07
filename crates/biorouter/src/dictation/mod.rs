@@ -4,7 +4,10 @@
 //! [`paths`], the order in which the folders that may hold speech models are read,
 //! [`file`], which transcribes a whole recording (`biorouter transcribe`), [`bias`], the
 //! one producer of the dictionary entries a dictation may use (DD-36), and [`target`],
-//! which decides whether a dictation is aimed at a private chat (DD-30, DD-77).
+//! which decides whether a dictation is aimed at a private chat, and the tier a new
+//! chat's bind would produce (DD-30, DD-77). The daemon's `/dictation/*` routes (PR-15)
+//! hold their streams themselves and decode each segment through
+//! [`DictationService::decode_segment`].
 //!
 //! The engine itself never runs here (DD-4): it runs in a worker process that the
 //! service starts from this binary with a hidden first argument. A build without the
@@ -30,16 +33,43 @@ pub use biorouter_dictation::protocol::{Hello, Loaded, TranscribeResult};
 pub use biorouter_dictation::supervisor::LoadSpec;
 pub use service::{
     service, DictatedRecording, DictationError, DictationService, EngineBuild, EngineState,
-    EngineStatus, TranscribeRequest, WarmUp, WorkerProbe,
+    EngineStatus, MemoryShortfall, SegmentDecode, TranscribeRequest, WarmUp, WorkerProbe,
 };
-pub use target::{chat_reach, cli_bias, ChatReach, CliTerminal};
+pub use target::{chat_reach, cli_bias, new_chat_bind_tier, ChatReach, CliTerminal};
 
 /// MSG-NO-ENGINE.
 pub const MSG_NO_ENGINE: &str = "This build of Biorouter has no local dictation engine.";
 
+/// MSG-OFFLINE with `<folder>` filled in: the one sentence every surface shows when an
+/// install cannot reach the model repository, the daemon's install job included.
+pub fn msg_offline(folder: &std::path::Path) -> String {
+    format!(
+        "This computer cannot reach Biorouter's model repository. On a computer that can, run `biorouter dictation urls` and download the files it lists, copy them here, then run `biorouter dictation install --from <file>` (or put them in {} and choose Rescan).",
+        folder.display()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    /// MSG-OFFLINE as `surfaces.md` writes it, with the folder in place of `<folder>`.
+    #[test]
+    fn the_offline_sentence_is_the_catalogs() {
+        let catalog = repo_file("docs/dictation/surfaces.md");
+        let row = catalog
+            .lines()
+            .find(|l| l.starts_with("| MSG-OFFLINE |"))
+            .expect("MSG-OFFLINE's row");
+        let sentence = row
+            .trim_start_matches("| MSG-OFFLINE |")
+            .split(" | ")
+            .next()
+            .unwrap()
+            .trim()
+            .replace("\\<folder>", "/models");
+        assert_eq!(super::msg_offline(Path::new("/models")), sentence);
+    }
 
     fn repo_file(relative: &str) -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))

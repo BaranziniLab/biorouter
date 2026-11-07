@@ -417,6 +417,16 @@ const REGISTRY: &[Guard] = &[
                        conversation authority to the Crew connection",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/dictation.rs",
+                counts: c(1, 3, 1),
+                kind: SiteKind::Guard,
+                what: "`POST /dictation/streams` into a chat (PR-15, DD-29, DD-30): the gate \
+                       before the chat's tier and live model are read, a refusal degrading to \
+                       public terms with a byte identical answer. The three refs are the \
+                       MODULE qualifier on this call, `target_tier` and `http_caller`, and the \
+                       import is the `use` that brings the module in",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
                 counts: c(1, 7, 0),
                 kind: SiteKind::Guard,
@@ -666,6 +676,13 @@ const REGISTRY: &[Guard] = &[
                        filtered, and a write unable to move what its caller cannot see), and \
                        `POST /knowledge/bases` — which refused a taken id and so answered \
                        whether a PRIVATE base held it (adversarial review 2026-09-12)",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /dictation/streams` (PR-15, DD-30), resolved once per stream for \
+                       `dictation_standing`, which reads only its proof and stated capability",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
@@ -1009,19 +1026,46 @@ const REGISTRY: &[Guard] = &[
         ident: "target_tier",
         defined_in: SESSION_REACH,
         decides: "resolves the named session's tier metadata-only, failing closed to Unreadable",
-        status: Status::WiredThrough("session_reach"),
+        // `WiredThrough("session_reach")` until PR-15, when the dictation stream became
+        // its first caller outside this file.
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /dictation/streams` into a chat (PR-15, DD-30): the stored tier \
+                       `chat_reach` reads beside the live model, asked only after \
+                       `session_reach` admitted the caller",
+            },
+            Site {
+                file: SESSION_REACH,
+                counts: c(2, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`session_reach`'s tier lookup, deliberately `with_messages: false` so \
+                       resolving a tier is never the way to load the transcript being refused; \
+                       and `HttpCaller::lists_work`'s, for a row of running work that names a \
+                       chat — the same lookup, so an unreadable chat fails closed there too. \
+                       `schedule_reach` asked it once per chat a schedule names until \
+                       2026-09-14, when that decision moved whole into \
+                       `scheduler::schedule_work` so the `/schedule` and `/loop` slash verbs \
+                       could answer with the same definition rather than a second one",
+            },
+        ],
+    },
+    Guard {
+        ident: "dictation_standing",
+        defined_in: SESSION_REACH,
+        decides: "whether private dictionary entries may shape a caller's dictation (PR-15, \
+                  DD-29, DD-30): the user action proof or a private provider stated in \
+                  `X-Caller-Provider`, never a `serve` daemon's operator tier (SD-10)",
+        status: Status::Wired,
         sites: &[Site {
-            file: SESSION_REACH,
-            counts: c(2, 0, 0),
+            file: "crates/biorouter-server/src/routes/dictation.rs",
+            counts: c(1, 0, 0),
             kind: SiteKind::Guard,
-            what: "`session_reach`'s tier lookup, deliberately `with_messages: false` so \
-                   resolving a tier is never the way to load the transcript being refused; \
-                   and `HttpCaller::lists_work`'s, for a row of running work that names a \
-                   chat — the same lookup, so an unreadable chat fails closed there too. \
-                   `schedule_reach` asked it once per chat a schedule names until \
-                   2026-09-14, when that decision moved whole into \
-                   `scheduler::schedule_work` so the `/schedule` and `/loop` slash verbs \
-                   could answer with the same definition rather than a second one",
+            what: "`POST /dictation/streams`, once per stream, beside the target the daemon \
+                   decides; `bias_set` reads both",
         }],
     },
     // ----------------------------------------------------- extension tiering
@@ -1195,6 +1239,37 @@ const REGISTRY: &[Guard] = &[
                 kind: SiteKind::Guard,
                 what: "`biorouter transcribe`, with the target and standing of DD-77's terminal \
                        rule, and the `use` that brings it in",
+            },
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /dictation/streams` (PR-15), with the target the daemon decided \
+                       and `dictation_standing`, built off the path from stop to text",
+            },
+            Site {
+                file: "crates/biorouter/src/dictation/mod.rs",
+                counts: c(0, 0, 1),
+                kind: SiteKind::Guard,
+                what: "the `pub use` re-export",
+            },
+        ],
+    },
+    Guard {
+        ident: "chat_reach",
+        defined_in: "crates/biorouter/src/dictation/target.rs",
+        decides: "whether a chat is private, from its stored tier and its live agent's \
+                  bound model (DD-30): the one answer the dictation stream target, the \
+                  observation stamp and the extractor stamp share, a target counting \
+                  `Unknown` as public and a stamp as private",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/dictation.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /dictation/streams` into a chat (PR-15), after `session_reach` \
+                       admitted the caller",
             },
             Site {
                 file: "crates/biorouter/src/dictation/mod.rs",

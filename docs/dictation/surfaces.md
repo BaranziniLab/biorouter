@@ -178,15 +178,15 @@ What the measurements showed [M]:
 
 ### The client side of a stream
 
-DD-27 to DD-31. `components/dictation/transport.ts` is the only stream client, and it reaches `/dictation/streams` only through `components/dictation/dictationApi.ts`, so the composer test factories that mock `../api` need no new export.
+DD-27 to DD-31. `components/dictation/transport.ts` is the only stream client, and it reaches `/dictation/streams` only through `components/dictation/dictationApi.ts`. That module calls the generated functions it uses by name and reads them only when it sends a request, so a composer test that mocks `../api` with a factory lacking them still renders.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /dictation/streams` | JSON at most 8 KiB `{sample_rate, format: "s16le", language?, target_kind: "chat" \| "new_chat" \| "editor" \| "crew" \| "external", session_id?, new_chat_provider?, include_private_terms?, context?}` (`context` at most 2 KiB, ranking only, never logged; `new_chat_provider` only with `new_chat`; `include_private_terms` only with `crew` or `external`) | 201 `{stream_id, max_chunk_bytes: 524288, idle_timeout_s: 60, max_seconds: 600}`; 409 `noModel`; 429 `tooManyStreams` with `Retry-After`; 403 with the policy sentence |
-| `PUT /dictation/streams/{id}/audio?seq=N` | `application/octet-stream`, raw s16le, at most 524,288 B | 200 `{received_s, partial?, queue_position}`; 409 `outOfOrder {expected_seq}`; 410 expired or cancelled; 413 |
-| `POST /dictation/streams/{id}/finish` | none | 200 transcript, or 202 `{pending: true}` after 3 s; 500 `engineFailed` when the worker exits or misses its deadline |
-| `GET /dictation/streams/{id}` | none | as finish, answered at once |
-| `DELETE /dictation/streams/{id}` | none | 204; queued segments dropped |
+| `POST /dictation/streams` | JSON at most 8 KiB `{sample_rate, format: "s16le", language?, target_kind: "chat" \| "new_chat" \| "editor" \| "crew" \| "external", session_id?, new_chat_provider?, new_chat_model?, include_private_terms?, context?}` (`context` at most 2 KiB, ranking only, never logged; `new_chat_provider` and `new_chat_model` only with `new_chat`; `include_private_terms` only with `crew` or `external`) | 201 `{stream_id, max_chunk_bytes: 524288, idle_timeout_s: 60, max_seconds: 600}`; 409 `noModel`; 429 `tooManyStreams` with `Retry-After`; 403 with the policy sentence; 503 `serverMemory` |
+| `PUT /dictation/streams/{id}/audio?seq=N` | `application/octet-stream`, raw s16le, at most 524,288 B | 200 `{received_s, partial?, queue_position}`; 409 `outOfOrder {expected_seq}`; 410 expired or cancelled; 413; 500 `engineFailed` once a decode failed while the person spoke |
+| `POST /dictation/streams/{id}/finish[?seq=N]` | none, or the last chunk with its `seq` | 200 transcript, or 202 `{pending: true}` after 3 s; 500 `engineFailed` when the worker exits or misses its deadline; for the chunk, the `PUT`'s 409 and 413 |
+| `GET /dictation/streams/{id}?wait_ms=3000` | none | as finish, held until the transcript is ready, at most 3 s |
+| `DELETE /dictation/streams/{id}` | none | 204; queued segments dropped, the audio and the transcript zeroed |
 
 Every route takes `X-Secret-Key` through `check_token`. Stream creation also sends `await userActionHeaders()`: the user action proof on the desktop, and on `serve` an `X-Caller-Provider` naming the host's configured provider [C `ui/desktop/src/utils/userAction.ts` `userActionHeaders`]. As decided by the owner on 2026-11-05 (O-17), the proof is not required to create a stream; it only decides whether private entries may bias (DD-29).
 
@@ -209,12 +209,12 @@ The stream, step by step:
 3. **Upload** every 2 to 3 s (64,000 to 96,000 B at 16 kHz), never more than `max_chunk_bytes`. Exactly one `PUT` is in flight, with a 10 s timeout. On a timeout the same `seq` is sent again with the same bytes; the daemon treats a repeated `seq` as idempotent. The sixth timeout in a row on one chunk (60 s, the daemon's idle expiry) ends the dictation with MSG-LOST, and so does a fourth network error, 5xx or 429 answer in a row on a chunk the next step cannot shrink. The daemon never answers a `PUT` with 429, so one comes from a proxy that rate limits, and it is waited out like any other transient failure, for at most 10 s at a time. Capture keeps buffering while a `PUT` waits. A failure in this step, or in steps 4, 5 and 7, ends the dictation when it happens, also while the person is still speaking (`onFailed`): the microphone goes off and the card shows the notice, rather than recording into a stream that can take nothing more until the stop.
 4. **Shrink** on a 413, or on a network error for a chunk over 64 KiB: halve the chunk size and resend, with a floor of 64 KiB. A 413 at 64 KiB ends the dictation with MSG-413, because the proxy in front cannot pass even the smallest chunk. After a network error the first, larger body may have arrived with only its answer lost; the daemon then ignores the halved repeat of that `seq` and answers with the full chunk's `received_s`, and the client skips the half it would otherwise send twice.
 5. **Reorder** on 409 `outOfOrder`: resend from `expected_seq`.
-6. **Wait visibly.** When a `PUT` or a poll has had no answer for 1.5 s, the card shows MSG-WAIT until it answers.
+6. **Wait visibly.** When a `PUT` or a held read has had no answer for 1.5 s, the card shows MSG-WAIT until it answers.
 7. **Recover** from a 410 that the person did not cause (the 60 s idle expiry after a long stall): open one new stream and replay the buffered audio from `seq=0`. A second failure ends the dictation in the `error` phase with MSG-LOST and inserts nothing.
 8. **Preview** partial text: when a `PUT` answer carries `partial`, show it in a muted preview line inside the card, never in the field (DD-31).
 9. **Cap**: show MSG-CAP-WARN 30 s before `max_seconds` (at 570 s of 600), then stop, insert and show MSG-CAP-STOPPED at 600 s. The cap is a stop, never an error.
-10. **Finish** on stop: upload the remainder, then `POST …/finish`. A 200 carries the transcript; a 202 means poll `GET /dictation/streams/{id}` every 500 ms, each answered at once. No request is ever held open.
-11. **Engine failure**: a 500 `engineFailed` from `finish` or a poll (the worker crashed, or missed its result deadline after the GPU retry) ends the dictation in the `error` phase with MSG-ENGINE-FAILED and its **Retry** action in the card's notice row. **Retry** opens a new stream and replays the buffered chunks; nothing is inserted until it succeeds.
+10. **Finish** on stop: wait for a `PUT` still in flight, then `POST …/finish?seq=N` carrying the remainder when it fits in one chunk (a remainder over the chunk size goes up as `PUT`s first), so a stop costs one round trip (PR-15). A finish that times out is sent again with the same `seq` and bytes, which the daemon answers as a repeat; a 413 on the carried chunk halves it and sends the rest as `PUT`s, and a 409 `outOfOrder` resends from `expected_seq`. A 200 carries the transcript; a 202 means read `GET /dictation/streams/{id}?wait_ms=3000`, which the daemon holds until the transcript is ready, one read after another with no sleep between them; only a failed read backs off by 500 ms per failure. No request is held longer than `finish` itself.
+11. **Engine failure**: a 500 `engineFailed` from `finish` or a poll (the worker crashed, or missed its result deadline after the GPU retry) ends the dictation in the `error` phase with MSG-ENGINE-FAILED and its **Retry** action in the card's notice row. A `PUT` answers the same 500 once a segment's decode failed while the person still speaks, because the stream then takes no more audio; the client says so at once through `onFailed`, as in step 3, and never resends it as a passing 5xx. **Retry** opens a new stream and replays the buffered chunks; nothing is inserted until it succeeds.
 12. **Cancel** with `DELETE`; queued segments are dropped and nothing is inserted.
 
 ```ts
@@ -227,6 +227,7 @@ export interface StreamRequest {
   target_kind: DictationTargetKind;
   session_id?: string;            // 'chat' and 'editor' only
   new_chat_provider?: string;     // 'new_chat' only; honoured only with the user action proof
+  new_chat_model?: string;        // 'new_chat' only, beside new_chat_provider, under the same rule
   include_private_terms?: boolean; // 'crew' and 'external' only; sent only after MSG-PRIVATE-TERMS, for one recording
   context?: string;               // at most 2 KiB, ranking only
 }
@@ -238,6 +239,7 @@ export interface Transcript {
   bias_scope: 'public' | 'private';
   retried: null | { reason: string };
   no_speech: boolean;
+  timings?: { segments: number; wait_ms: number; tail_ms: number; tail_audio_s: number };
 }
 export interface DictationStream {
   readonly id: string | null;                      // a replay or a retry replaces it
@@ -260,9 +262,11 @@ export function createDictationStream(req: StreamRequest, options?: { signal?: A
 export function openDictationStream(req: StreamRequest, signal: AbortSignal): Promise<DictationStream>;
 ```
 
-The `PUT` is a hand written `fetch(getApiUrl(…))` (`ui/desktop/src/config.ts` `getApiUrl`) with `X-Secret-Key` and `Content-Type: application/octet-stream`, because the body is raw bytes. A packaged `file://` page sent it with no CORS preflight [M]; a `serve` page is same origin.
+The status read, stream creation, the held read and the delete go through the client generated from the daemon's OpenAPI document (PR-15), given the same daemon address `getApiUrl` gives; the shapes `dictationApi.ts` declares are checked against the generated ones by the type check. The `PUT` and `finish`, whose bodies are raw bytes, are a hand written `fetch(getApiUrl(…))` (`ui/desktop/src/config.ts` `getApiUrl`) with `X-Secret-Key` and `Content-Type: application/octet-stream`. A packaged `file://` page sent them with no CORS preflight [M]; a `serve` page is same origin.
 
-Measured in the `dictation-capture-electron` probe against a loopback stand in for the daemon that holds each `PUT` 15 ms (Apple Silicon, Electron 39.8.10, 2026-11-05, six runs of a 3 s dictation, then nine more in the live check, two of them of 5 s speech clips) [M]: the create left the page 1 to 23 ms after the press, after capture had started; on stop, the final `PUT` left 6 to 10 ms after the click, `finish` 25 to 29 ms after it, and the text was in the field 1 or 2 ms after the transcript arrived. So the client adds about 10 ms and one `PUT` round trip to the daemon's own time. No run sent a CORS preflight.
+Measured in the `dictation-capture-electron` probe against a loopback stand in for the daemon that holds each `PUT` 15 ms (Apple Silicon, Electron 39.8.10, 2026-11-05, six runs of a 3 s dictation, then nine more in the live check, two of them of 5 s speech clips) [M]: the create left the page 1 to 23 ms after the press, after capture had started; on stop, the final `PUT` left 6 to 10 ms after the click, `finish` 25 to 29 ms after it, and the text was in the field 1 or 2 ms after the transcript arrived. So the client then added about 10 ms and one `PUT` round trip to the daemon's own time. No run sent a CORS preflight. With `finish` carrying the last chunk (PR-15; the same probe, 2026-11-06, a 3 s dictation, load average above 20) [M]: one `PUT` while the person spoke and none after the stop; `finish` left the page 1 ms after the stop with the last 32,768 B, reached the stand in 2 ms after it, and the text was in the field 4 ms after the stop. Press to the first audio frame was 36.5 ms in that run.
+
+The same probe against the real routes (PR-15's live check, 2026-11-06, load average about 10): with `BIOROUTER_DICTATION_CAPTURE_DAEMON` set, the stand in records the same times and passes every request on to a running dev `biorouterd` with both catalog models and the 14 benchmark terms, so the fake microphone's audio reaches a real model [M]. For two speech clips of 5.1 and 6.1 s on each model, press to the first audio frame (the card showing recording) took 30 to 48 ms; on stop, the worklet's last chunk came 8 ms after the click and `finish` reached the daemon 10 ms after it, carrying 22 to 56 KB of tail; the text was in the field 1 or 2 ms after the transcript. Stop to text in the field was 148 and 197 ms on `small.en` q8_0 and 318 and 330 ms on turbo `q5_0`, of which the daemon's own `finish` to transcript was 128, 177, 298 and 311 ms, with no held read and no wait for the load. With the dictionary the second clip came out as "EGLN1 encodes PHD2, which hydroxylates HIF-2α under normal oxygen."
 
 Why there is no long lived dictation request: the renderer already holds up to five long requests by design, two observer streams (`MAX_LIVE_OBSERVER_STREAMS = 2` at `crates/biorouter-server/src/state.rs:879`), two long polls and one `/reply` [C]. Electron, Chromium, Firefox and WebKit allow six HTTP/1.1 connections per origin; with five held a `PUT` took 2 to 10 ms, and with six held it waited for a long poll to end [M]. Over HTTP/2 no engine of the three stalled, and with ten streams held a `PUT` took 7 to 17 ms [M]. Uploads of 64 to 512 KiB took about 3 to 14 ms through nginx across the three engines [M]. M-5 measures the real app with two windows and two `serve` tabs.
 

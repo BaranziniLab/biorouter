@@ -221,6 +221,19 @@ export type AgentInitializationError = {
 };
 
 /**
+ * Whether one door is open, and if not, the sentence to show. This is the shape
+ * every `policy` entry takes in `GET /dictation/status` and every refusal's
+ * reason (P-15).
+ */
+export type Allowance = {
+    allowed: boolean;
+    /**
+     * The sentence to show when `allowed` is false; `None` when it is true.
+     */
+    reason?: string | null;
+};
+
+/**
  * Why the caller has to choose, and what the choices are.
  */
 export type Ambiguity = {
@@ -1546,6 +1559,324 @@ export type Diagnostics = {
      * How many were raised, which is `items.len()` unless the cap bit.
      */
     total?: number;
+};
+
+/**
+ * 200 from `PUT /dictation/streams/{id}/audio`.
+ */
+export type DictationAudioAck = {
+    /**
+     * The corrected text of the segments decoded so far, when it changed since the last
+     * answer: a muted preview only, never inserted (DD-31).
+     */
+    partial?: string | null;
+    /**
+     * This stream's segments still waiting to be decoded.
+     */
+    queue_position: number;
+    /**
+     * Seconds of audio the stream holds after this chunk.
+     */
+    received_s: number;
+};
+
+export type DictationBench = {
+    elapsed_ms: number;
+    model: string;
+    rtf: number;
+};
+
+export type DictationBiasScope = 'public' | 'private';
+
+export type DictationCancelled = {
+    cancelled: boolean;
+};
+
+export type DictationEngine = {
+    /**
+     * `metal` or `cpu`; `None` without an engine or on a refused processor.
+     */
+    backend?: string | null;
+    compiled: boolean;
+    device?: string | null;
+    missing_cpu_features: Array<string>;
+    rss_bytes?: number | null;
+    state: DictationEngineState;
+    threads: number;
+};
+
+export type DictationEngineState = 'no_engine' | 'unsupported_cpu' | 'stopped' | 'starting' | 'ready' | 'error';
+
+/**
+ * Every refusal of a dictation route.
+ */
+export type DictationErrorBody = {
+    code: string;
+    expected_seq?: number | null;
+    /**
+     * The sentence to show, or empty where the client has its own.
+     */
+    message: string;
+};
+
+export type DictationInstallJob = {
+    bytes_done: number;
+    bytes_per_second: number;
+    bytes_total: number;
+    error?: string | null;
+    model: string;
+    phase: DictationInstallPhase;
+};
+
+export type DictationInstallPhase = 'downloading' | 'verifying' | 'installed' | 'failed';
+
+export type DictationInstallStarted = {
+    model: string;
+    phase: DictationInstallPhase;
+};
+
+export type DictationLimits = {
+    max_chunk_bytes: number;
+    max_seconds: number;
+    max_streams: number;
+};
+
+export type DictationModel = {
+    bytes: number;
+    display_name: string;
+    id: string;
+    /**
+     * A verified copy is in some folder.
+     */
+    installed: boolean;
+    location?: DictationModelLocation | null;
+    /**
+     * The class default.
+     */
+    recommended: boolean;
+    suitability: DictationSuitability;
+    superseded: boolean;
+};
+
+export type DictationModelLocation = 'user' | 'system' | 'managed' | 'env';
+
+export type DictationModelRequest = {
+    /**
+     * A catalog id.
+     */
+    model: string;
+};
+
+export type DictationModelsRemoved = {
+    /**
+     * The ids removed from this account's folder: the model, and its voice detector
+     * when no other speech model there needs it.
+     */
+    removed: Array<string>;
+};
+
+export type DictationPolicyView = {
+    agent_writes: Allowance;
+    allowed_models?: Array<string> | null;
+    capture: Allowance;
+    dictionary: Allowance;
+    enabled: Allowance;
+    external_engine: Allowance;
+    install: Allowance;
+    managed: boolean;
+};
+
+export type DictationQueue = {
+    segments: number;
+    streams: number;
+};
+
+export type DictationRescan = {
+    /**
+     * Catalog ids placed from files found by their SHA-256.
+     */
+    added: Array<string>;
+    /**
+     * File names no catalog pin matched.
+     */
+    unrecognized: Array<string>;
+};
+
+export type DictationSelectRequest = {
+    language?: string | null;
+    model?: string | null;
+};
+
+export type DictationSelection = {
+    active_model?: string | null;
+    language: string;
+};
+
+/**
+ * `GET /dictation/status`. Reading it never starts a worker.
+ */
+export type DictationStatus = {
+    account: string;
+    active_model?: string | null;
+    engine: DictationEngine;
+    host: string;
+    install: Allowance;
+    install_job?: DictationInstallJob | null;
+    language: string;
+    limits: DictationLimits;
+    /**
+     * Every catalog speech model, installed or not.
+     */
+    models: Array<DictationModel>;
+    models_dir: string;
+    policy: DictationPolicyView;
+    queue: DictationQueue;
+};
+
+/**
+ * 201 from `POST /dictation/streams`.
+ */
+export type DictationStreamCreated = {
+    idle_timeout_s: number;
+    max_chunk_bytes: number;
+    max_seconds: number;
+    stream_id: string;
+};
+
+/**
+ * `POST /dictation/streams`.
+ */
+export type DictationStreamRequest = {
+    /**
+     * At most 2 KiB; ranks the dictionary's terms and is never logged.
+     */
+    context?: string | null;
+    /**
+     * Always `s16le`.
+     */
+    format: string;
+    /**
+     * `crew` and `external` only: sent only after the person confirmed MSG-PRIVATE-TERMS
+     * for this recording, honoured only with the proof and private standing (O-8).
+     */
+    include_private_terms?: boolean;
+    /**
+     * A language code, or `auto`; the configured language when absent.
+     */
+    language?: string | null;
+    /**
+     * `new_chat` only: the tab's model pick, beside `new_chat_provider` and under the same
+     * rule, so a provider whose tier reads the model (an Ollama cloud tag) is judged as
+     * the new chat will bind it.
+     */
+    new_chat_model?: string | null;
+    /**
+     * `new_chat` only: the tab's provider pick, honoured only with the user action proof.
+     */
+    new_chat_provider?: string | null;
+    /**
+     * 16000, or the declared native rate (8,000 to 96,000).
+     */
+    sample_rate: number;
+    /**
+     * `chat` and `editor` only.
+     */
+    session_id?: string | null;
+    target_kind: DictationTargetKind;
+};
+
+export type DictationSuitability = 'recommended' | 'suitable' | 'too_slow' | 'below_minimum' | 'unsupported_cpu' | 'unknown';
+
+/**
+ * Where the dictated text goes.
+ */
+export type DictationTargetKind = 'chat' | 'new_chat' | 'editor' | 'crew' | 'external';
+
+/**
+ * The transcript, from `finish` or a read.
+ */
+export type DictationTranscript = {
+    audio_s: number;
+    bias_scope: DictationBiasScope;
+    changes: Array<DictationTranscriptChange>;
+    /**
+     * From `finish` to the transcript being ready.
+     */
+    elapsed_ms: number;
+    model: string;
+    no_speech: boolean;
+    /**
+     * As the engine wrote it, after the nonspeech filter.
+     */
+    raw_text: string;
+    retried?: DictationTranscriptRetry | null;
+    segments: Array<DictationTranscriptSegment>;
+    /**
+     * The corrected text.
+     */
+    text: string;
+    timings: DictationTranscriptTimings;
+};
+
+export type DictationTranscriptChange = {
+    end: number;
+    entry_id: string;
+    from: string;
+    /**
+     * `alias`, `exact` or `fuzzy`.
+     */
+    stage: string;
+    /**
+     * Characters (Unicode scalar values) of `text`.
+     */
+    start: number;
+    to: string;
+};
+
+/**
+ * 202 from `finish` or a read: the transcript is not ready yet.
+ */
+export type DictationTranscriptPending = {
+    pending: boolean;
+};
+
+export type DictationTranscriptRetry = {
+    /**
+     * `echo` or `collapse`.
+     */
+    reason: string;
+};
+
+export type DictationTranscriptSegment = {
+    /**
+     * Seconds from the start of the stream.
+     */
+    t0: number;
+    t1: number;
+    text: string;
+};
+
+/**
+ * Where the stop path's time went, as the daemon saw it.
+ */
+export type DictationTranscriptTimings = {
+    /**
+     * Segments decoded, the tail included.
+     */
+    segments: number;
+    /**
+     * Seconds of audio the tail held.
+     */
+    tail_audio_s: number;
+    /**
+     * The tail's decode.
+     */
+    tail_ms: number;
+    /**
+     * From `finish` to the tail's decode starting: a segment still decoding when the
+     * person stopped, or a model still loading.
+     */
+    wait_ms: number;
 };
 
 /**
@@ -10008,6 +10339,416 @@ export type DiagnosticsResponses = {
 };
 
 export type DiagnosticsResponse = DiagnosticsResponses[keyof DiagnosticsResponses];
+
+export type BenchDictationModelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictation/bench';
+};
+
+export type BenchDictationModelErrors = {
+    /**
+     * policy
+     */
+    403: DictationErrorBody;
+    /**
+     * notCompiled, unsupportedCpu or noModel
+     */
+    409: DictationErrorBody;
+    /**
+     * engineFailed
+     */
+    500: DictationErrorBody;
+};
+
+export type BenchDictationModelError = BenchDictationModelErrors[keyof BenchDictationModelErrors];
+
+export type BenchDictationModelResponses = {
+    /**
+     * The active model's real time factor on this host, recorded for suitability
+     */
+    200: DictationBench;
+};
+
+export type BenchDictationModelResponse = BenchDictationModelResponses[keyof BenchDictationModelResponses];
+
+export type CancelDictationInstallData = {
+    body: DictationModelRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/cancel';
+};
+
+export type CancelDictationInstallResponses = {
+    /**
+     * Whether a running install of that model was cancelled; its partial stays for a resume
+     */
+    200: DictationCancelled;
+};
+
+export type CancelDictationInstallResponse = CancelDictationInstallResponses[keyof CancelDictationInstallResponses];
+
+export type DeleteDictationModelData = {
+    body: DictationModelRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/delete';
+};
+
+export type DeleteDictationModelErrors = {
+    /**
+     * proofRequired on a daemon that holds a user action key
+     */
+    403: DictationErrorBody;
+    /**
+     * notDeletable (a system, managed or env copy) or installBusy
+     */
+    409: DictationErrorBody;
+    /**
+     * Not a catalog model
+     */
+    422: DictationErrorBody;
+};
+
+export type DeleteDictationModelError = DeleteDictationModelErrors[keyof DeleteDictationModelErrors];
+
+export type DeleteDictationModelResponses = {
+    /**
+     * Removed from this account's folder; never refused by policy
+     */
+    200: DictationModelsRemoved;
+};
+
+export type DeleteDictationModelResponse = DeleteDictationModelResponses[keyof DeleteDictationModelResponses];
+
+export type InstallDictationModelData = {
+    body: DictationModelRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/install';
+};
+
+export type InstallDictationModelErrors = {
+    /**
+     * policy, proofRequired (MSG-INSTALL-AGENT) or installLocked (MSG-INSTALL-LOCKED)
+     */
+    403: DictationErrorBody;
+    /**
+     * notCompiled, unsupportedCpu or installBusy
+     */
+    409: DictationErrorBody;
+    /**
+     * Not a catalog speech model
+     */
+    422: DictationErrorBody;
+};
+
+export type InstallDictationModelError = InstallDictationModelErrors[keyof InstallDictationModelErrors];
+
+export type InstallDictationModelResponses = {
+    /**
+     * Already installed
+     */
+    200: DictationInstallStarted;
+    /**
+     * Installing; progress is in the status
+     */
+    202: DictationInstallStarted;
+};
+
+export type InstallDictationModelResponse = InstallDictationModelResponses[keyof InstallDictationModelResponses];
+
+export type RescanDictationModelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/rescan';
+};
+
+export type RescanDictationModelsErrors = {
+    /**
+     * policy: managed policy turns dictation off
+     */
+    403: DictationErrorBody;
+};
+
+export type RescanDictationModelsError = RescanDictationModelsErrors[keyof RescanDictationModelsErrors];
+
+export type RescanDictationModelsResponses = {
+    /**
+     * Files in the models folders identified by SHA-256 against the catalog, and placed in this account's folder unless managed policy forbids downloads, when nothing is placed
+     */
+    200: DictationRescan;
+};
+
+export type RescanDictationModelsResponse = RescanDictationModelsResponses[keyof RescanDictationModelsResponses];
+
+export type SelectDictationModelData = {
+    body: DictationSelectRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/select';
+};
+
+export type SelectDictationModelErrors = {
+    /**
+     * policy, or proofRequired on a daemon that holds a user action key
+     */
+    403: DictationErrorBody;
+    /**
+     * noModel, or languageUnsupported for an English only model
+     */
+    409: DictationErrorBody;
+    /**
+     * An unknown model or language
+     */
+    422: DictationErrorBody;
+};
+
+export type SelectDictationModelError = SelectDictationModelErrors[keyof SelectDictationModelErrors];
+
+export type SelectDictationModelResponses = {
+    /**
+     * Saved as BIOROUTER_DICTATION_MODEL and BIOROUTER_DICTATION_LANGUAGE
+     */
+    200: DictationSelection;
+};
+
+export type SelectDictationModelResponse = SelectDictationModelResponses[keyof SelectDictationModelResponses];
+
+export type DictationStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictation/status';
+};
+
+export type DictationStatusResponses = {
+    /**
+     * The engine, the models, the policy and this caller's install allowance; never starts a worker
+     */
+    200: DictationStatus;
+};
+
+export type DictationStatusResponse = DictationStatusResponses[keyof DictationStatusResponses];
+
+export type CreateDictationStreamData = {
+    body: DictationStreamRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/streams';
+};
+
+export type CreateDictationStreamErrors = {
+    /**
+     * Managed policy turns dictation or live capture off
+     */
+    403: DictationErrorBody;
+    /**
+     * No engine, an unsupported processor, no model, or an English only model asked for another language
+     */
+    409: DictationErrorBody;
+    /**
+     * A body over 8 KiB or a context over 2 KiB
+     */
+    413: DictationErrorBody;
+    /**
+     * A malformed body
+     */
+    422: DictationErrorBody;
+    /**
+     * Eight open streams or 32 queued segments; Retry-After set
+     */
+    429: DictationErrorBody;
+    /**
+     * Not enough free memory to load the model
+     */
+    503: DictationErrorBody;
+};
+
+export type CreateDictationStreamError = CreateDictationStreamErrors[keyof CreateDictationStreamErrors];
+
+export type CreateDictationStreamResponses = {
+    /**
+     * The stream is open; the worker is being prepared
+     */
+    201: DictationStreamCreated;
+};
+
+export type CreateDictationStreamResponse = CreateDictationStreamResponses[keyof CreateDictationStreamResponses];
+
+export type DeleteDictationStreamData = {
+    body?: never;
+    path: {
+        /**
+         * The stream id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/dictation/streams/{id}';
+};
+
+export type DeleteDictationStreamResponses = {
+    /**
+     * Dropped: queued segments cancelled, audio and transcript zeroed
+     */
+    204: void;
+};
+
+export type DeleteDictationStreamResponse = DeleteDictationStreamResponses[keyof DeleteDictationStreamResponses];
+
+export type GetDictationStreamData = {
+    body?: never;
+    path: {
+        /**
+         * The stream id
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * Hold the read up to this many milliseconds (at most 3,000) for the transcript.
+         */
+        wait_ms?: number | null;
+    };
+    url: '/dictation/streams/{id}';
+};
+
+export type GetDictationStreamErrors = {
+    /**
+     * Expired, cancelled, or delivered and dropped
+     */
+    410: DictationErrorBody;
+    /**
+     * engineFailed
+     */
+    500: DictationErrorBody;
+};
+
+export type GetDictationStreamError = GetDictationStreamErrors[keyof GetDictationStreamErrors];
+
+export type GetDictationStreamResponses = {
+    /**
+     * The transcript
+     */
+    200: DictationTranscript;
+    /**
+     * Not ready yet
+     */
+    202: DictationTranscriptPending;
+};
+
+export type GetDictationStreamResponse = GetDictationStreamResponses[keyof GetDictationStreamResponses];
+
+export type AppendDictationAudioData = {
+    /**
+     * Raw 16 bit little endian samples, at most 524,288 B
+     */
+    body: Blob | File;
+    path: {
+        /**
+         * The stream id
+         */
+        id: string;
+    };
+    query: {
+        /**
+         * The chunk's sequence number, from 0.
+         */
+        seq: number;
+    };
+    url: '/dictation/streams/{id}/audio';
+};
+
+export type AppendDictationAudioErrors = {
+    /**
+     * A seq above the next expected one
+     */
+    409: DictationErrorBody;
+    /**
+     * Expired, cancelled or delivered and dropped
+     */
+    410: DictationErrorBody;
+    /**
+     * A chunk over 524,288 B, or past 600 s of audio
+     */
+    413: DictationErrorBody;
+    /**
+     * An odd number of bytes
+     */
+    422: DictationErrorBody;
+    /**
+     * engineFailed: a decode failed while the person spoke; the stream takes no more audio
+     */
+    500: DictationErrorBody;
+};
+
+export type AppendDictationAudioError = AppendDictationAudioErrors[keyof AppendDictationAudioErrors];
+
+export type AppendDictationAudioResponses = {
+    /**
+     * Appended, or a repeat answered as before
+     */
+    200: DictationAudioAck;
+};
+
+export type AppendDictationAudioResponse = AppendDictationAudioResponses[keyof AppendDictationAudioResponses];
+
+export type FinishDictationStreamData = {
+    /**
+     * Optional: the tail chunk, with its seq in the query, so a stop costs one round trip
+     */
+    body: Blob | File;
+    path: {
+        /**
+         * The stream id
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * With a body: the sequence number of the tail chunk `finish` carries.
+         */
+        seq?: number | null;
+    };
+    url: '/dictation/streams/{id}/finish';
+};
+
+export type FinishDictationStreamErrors = {
+    /**
+     * The tail chunk's seq is above the next expected one
+     */
+    409: DictationErrorBody;
+    /**
+     * Expired or cancelled
+     */
+    410: DictationErrorBody;
+    /**
+     * A tail chunk over 524,288 B
+     */
+    413: DictationErrorBody;
+    /**
+     * engineFailed: the worker exited or missed its deadline, at the stop or while the person spoke
+     */
+    500: DictationErrorBody;
+};
+
+export type FinishDictationStreamError = FinishDictationStreamErrors[keyof FinishDictationStreamErrors];
+
+export type FinishDictationStreamResponses = {
+    /**
+     * The transcript
+     */
+    200: DictationTranscript;
+    /**
+     * Not ready after 3 s; read it with GET
+     */
+    202: DictationTranscriptPending;
+};
+
+export type FinishDictationStreamResponse = FinishDictationStreamResponses[keyof FinishDictationStreamResponses];
 
 export type StartOpenrouterSetupData = {
     body?: never;

@@ -250,7 +250,13 @@ fn read_loop<R: Read>(mut input: R, shared: &Shared, tx: &mpsc::Sender<Incoming>
             Ok(ToWorker::Load(load)) => Incoming::Load(load),
             Ok(ToWorker::Transcribe(t)) => Incoming::Transcribe(t, frame.payload),
             Ok(ToWorker::VadSegments(v)) => Incoming::Vad(v, frame.payload),
-            Ok(ToWorker::SetBias(set)) => Incoming::SetBias(set),
+            Ok(ToWorker::SetBias(set)) => {
+                // Only a decoder bonus table reads the English word list, and the bonus is
+                // off by default (DD-44), so the list is decoded only when a table is on
+                // its way: here, on the reader thread, as soon as its frame arrives.
+                warm_word_list();
+                Incoming::SetBias(set)
+            }
             Ok(ToWorker::Unknown) => Incoming::Unsupported(id),
         };
         if tx.send(incoming).is_err() {
@@ -361,11 +367,10 @@ impl EngineThread {
                 "voice detector file name must be ASCII",
             );
         }
-        // The first bonus table reads the English word list, and the supervisor sends
-        // `set_bias` right after `loaded`, ahead of the first detector request and decode.
-        // Decoded there, the list cost a one shot `transcribe` about 20 ms on its path from
-        // file to text in a debug build [M]; decoded here, it overlaps the model load.
-        warm_word_list();
+        // The English word list is not decoded here: only a decoder bonus table reads it,
+        // and with the bonus off by default (DD-44) a load that decoded it spent about
+        // 20 ms of a debug build's CPU [M] on a list nothing read. The reader thread starts
+        // it when a `set_bias` frame arrives (`warm_word_list`).
         let model_path = PathBuf::from(&load.model_path);
         let vad_path = Path::new(&load.vad_dir).join(&load.vad_file);
         let options = LoadOptions {

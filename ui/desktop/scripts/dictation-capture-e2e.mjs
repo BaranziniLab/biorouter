@@ -24,6 +24,11 @@
 //    received is left in `received.wav` beside the evidence. A speech run
 //    (BIOROUTER_DICTATION_CAPTURE_SPEECH_WAV, see below) hears a recording instead of
 //    the tone and runs only this step, so a real model can transcribe that file.
+//    With BIOROUTER_DICTATION_CAPTURE_DAEMON set to a running biorouterd's address
+//    (its secret in BIOROUTER_DICTATION_CAPTURE_DAEMON_SECRET, the user action proof in
+//    BIOROUTER_DICTATION_CAPTURE_DAEMON_PROOF), the stand in records the same timings
+//    and passes every request on to that daemon, so the text in the field is what the
+//    real routes and a real model answered.
 //
 // Latency is reported, not only asserted: press to `getUserMedia`, to the first audio
 // frame in the worklet, to the first 100 ms chunk, and stop to the worklet's last
@@ -200,7 +205,9 @@ const fetches: Array<{ at: number; method: string; path: string }> = [];
 const realFetch = window.fetch.bind(window);
 window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
-  fetches.push({ at: Date.now(), method: init?.method ?? 'GET', path: url.pathname });
+  // The generated client passes a Request; the audio routes pass a URL and an init.
+  const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+  fetches.push({ at: Date.now(), method, path: url.pathname });
   return realFetch(input, init);
 };
 
@@ -353,6 +360,10 @@ function analyse(chunks: Int16Array[], rate: number) {
       storesDraft: false,
     });
     field.addEventListener('input', () => ((window as any).__insertedAt ??= Date.now()));
+    // The session shows "recording" on the first audio frame (capture's onLive).
+    subscribeDictation(() => {
+      if (getDictationSnapshot().activity === 'recording') (window as any).__recordingAt ??= Date.now();
+    });
     // In the app a composer renders when the snapshot changes, in a microtask
     // (React's useSyncExternalStore). BIOROUTER_DICTATION_CAPTURE_RENDER_MS stands in
     // for the cost of that render, so where it falls on the stop path shows.
@@ -387,6 +398,7 @@ function analyse(chunks: Int16Array[], rate: number) {
     value: (document.getElementById('field') as HTMLTextAreaElement).value,
     presses: (window as any).__presses ?? [],
     insertedAt: (window as any).__insertedAt ?? null,
+    recordingAt: (window as any).__recordingAt ?? null,
     busy: (window as any).__busy ?? [],
     fetches,
     portEvents,
@@ -619,6 +631,43 @@ const STATUS = {
   host: 'probe',
   models_dir: '/tmp',
 };
+// A real daemon to pass requests on to, instead of the canned answers above.
+const realDaemon = process.env.BIOROUTER_DICTATION_CAPTURE_DAEMON ?? null;
+results.realDaemon = Boolean(realDaemon);
+/** Sends one request on to the real daemon with its secret, and relays its answer. */
+function forward(req, url, body, res, onAnswer) {
+  const headers = { 'X-Secret-Key': process.env.BIOROUTER_DICTATION_CAPTURE_DAEMON_SECRET ?? '' };
+  if (req.headers['x-user-action']) {
+    headers['X-User-Action'] = process.env.BIOROUTER_DICTATION_CAPTURE_DAEMON_PROOF ?? '';
+  }
+  if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
+  if (body.length > 0) headers['Content-Length'] = body.length;
+  const upstream = http.request(
+    new URL(url.pathname + url.search, realDaemon),
+    { method: req.method, headers },
+    (answer) => {
+      const parts = [];
+      answer.on('data', (c) => parts.push(c));
+      answer.on('end', () => {
+        const raw = Buffer.concat(parts);
+        onAnswer?.(answer.statusCode, raw);
+        const out = {};
+        if (answer.headers['content-type']) out['Content-Type'] = answer.headers['content-type'];
+        if (answer.headers['retry-after']) out['Retry-After'] = answer.headers['retry-after'];
+        res.writeHead(answer.statusCode, out).end(raw);
+      });
+    }
+  );
+  upstream.on('error', (error) => res.writeHead(502).end(String(error)));
+  upstream.end(body.length > 0 ? body : undefined);
+}
+/** Keeps the real daemon's transcript and when it was relayed. */
+function keepTranscript(status, raw) {
+  if (status !== 200) return;
+  daemon.finishAnsweredAt = Date.now();
+  daemon.transcript = JSON.parse(raw.toString('utf8'));
+}
+
 const server = http.createServer((req, res) => {
   const at = Date.now();
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -637,6 +686,41 @@ const server = http.createServer((req, res) => {
       res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(value));
     const secretOk = req.headers['x-secret-key'] === 'probe-secret';
     if (!secretOk) return json(401, { code: 'unauthorized', message: '' });
+    if (realDaemon) {
+      // The same records as below; the answers are the real daemon's.
+      if (req.method === 'GET' && url.pathname === '/dictation/status') daemon.statusReads++;
+      if (req.method === 'POST' && url.pathname === '/dictation/streams') {
+        daemon.creates.push({
+          at,
+          proof: req.headers['x-user-action'] ?? null,
+          body: JSON.parse(body.toString('utf8')),
+        });
+      }
+      if (req.method === 'PUT') {
+        daemon.inflight++;
+        daemon.maxInflight = Math.max(daemon.maxInflight, daemon.inflight);
+        daemon.bytes += body.length;
+        const seq = Number(url.searchParams.get('seq'));
+        daemon.puts.push({ at, seq, bytes: body.length, type: req.headers['content-type'] });
+        (daemon.bodies ??= new Map()).set(seq, body);
+        return forward(req, url, body, res, () => daemon.inflight--);
+      }
+      if (req.method === 'POST' && url.pathname.endsWith('/finish')) {
+        const seq = url.searchParams.has('seq') ? Number(url.searchParams.get('seq')) : null;
+        daemon.finishes.push({ at, seq, bytes: body.length, type: req.headers['content-type'] });
+        if (seq !== null && body.length > 0) {
+          daemon.bytes += body.length;
+          (daemon.bodies ??= new Map()).set(seq, body);
+        }
+        return forward(req, url, body, res, keepTranscript);
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/dictation/streams/')) {
+        daemon.reads = (daemon.reads ?? 0) + 1;
+        return forward(req, url, body, res, keepTranscript);
+      }
+      if (req.method === 'DELETE') daemon.deletes.push({ at, path: url.pathname });
+      return forward(req, url, body, res);
+    }
     if (req.method === 'GET' && url.pathname === '/dictation/status') {
       daemon.statusReads++;
       return json(200, STATUS);
@@ -670,7 +754,13 @@ const server = http.createServer((req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname.endsWith('/finish')) {
-      daemon.finishes.push({ at });
+      // `finish` carries the last chunk (PR-15), with its seq, as the daemon takes it.
+      const seq = url.searchParams.has('seq') ? Number(url.searchParams.get('seq')) : null;
+      daemon.finishes.push({ at, seq, bytes: body.length, type: req.headers['content-type'] });
+      if (seq !== null && body.length > 0) {
+        daemon.bytes += body.length;
+        (daemon.bodies ??= new Map()).set(seq, body);
+      }
       daemon.finishAnsweredAt = Date.now();
       return json(200, { ...TRANSCRIPT, audio_s: daemon.bytes / 32000 });
     }
@@ -878,7 +968,7 @@ try {
   );
   assert.equal(
     dictated.value,
-    TRANSCRIPT.text,
+    realDaemon ? daemon.transcript?.text : TRANSCRIPT.text,
     `the field holds ${JSON.stringify(dictated.value)}`
   );
   assert.equal(daemon.creates.length, 1);
@@ -901,7 +991,19 @@ try {
     'no audio went up while the person spoke'
   );
   assert.equal(daemon.finishes.length, 1);
-  const finalPut = daemon.puts.at(-1);
+  // The stop costs one round trip: what was left went up with `finish`, not a PUT.
+  const putsAfterStop = daemon.puts.filter((p) => p.at >= stopAt);
+  assert.equal(putsAfterStop.length, 0, `${putsAfterStop.length} PUTs went up after the stop`);
+  const [finish] = daemon.finishes;
+  assert(
+    finish.bytes === 0 || finish.type === 'application/octet-stream',
+    'the tail chunk on finish was not raw audio'
+  );
+  assert.equal(
+    finish.seq,
+    finish.bytes > 0 ? daemon.puts.length : null,
+    'finish carried the wrong seq'
+  );
   const audioSeconds = daemon.bytes / 32000;
   assert(
     audioSeconds > dictateMs / 1000 - 0.5 && audioSeconds < dictateMs / 1000 + 0.6,
@@ -920,7 +1022,6 @@ try {
   assert(daemon.deletes.length >= 1, 'the stream was not released after the insert');
   const sent = (method, test) =>
     dictated.fetches.filter((f) => f.method === method && test(f.path));
-  const finalPutSent = sent('PUT', (p) => p.endsWith('/audio')).at(-1);
   const finishSent = sent('POST', (p) => p.endsWith('/finish'))[0];
   const createSent = sent('POST', (p) => p === '/dictation/streams')[0];
   const afterStop = (kind) => dictated.portEvents.find((e) => e.kind === kind && e.at >= stopAt);
@@ -931,18 +1032,28 @@ try {
     audioSeconds,
     preflights: daemon.preflights ?? 0,
     puts: daemon.puts.map((p) => ({ seq: p.seq, bytes: p.bytes, msAfterPress: p.at - pressAt })),
+    pressToRecordingMs: dictated.recordingAt === null ? null : dictated.recordingAt - pressAt,
     pressToCreateSentMs: createSent.at - pressAt,
     pressToCreateMs: daemon.creates[0].at - pressAt,
     pressToFirstPutMs: daemon.puts[0].at - pressAt,
     stopToFlushPostedMs: flushPosted.at - stopAt,
     stopToFinalChunkMs: finalChunk.at - stopAt,
-    stopToFinalPutSentMs: finalPutSent.at - stopAt,
-    stopToFinalPutMs: finalPut.at - stopAt,
+    finishTailBytes: finish.bytes,
     stopToFinishSentMs: finishSent.at - stopAt,
     stopToFinishMs: daemon.finishes[0].at - stopAt,
     finishAnswerToInsertedMs: dictated.insertedAt - daemon.finishAnsweredAt,
     stopToInsertedMs: dictated.insertedAt - stopAt,
     snapshot: dictated.snapshot,
+    heldReads: daemon.reads ?? 0,
+    transcript: realDaemon
+      ? {
+          text: daemon.transcript?.text,
+          model: daemon.transcript?.model,
+          elapsedMs: daemon.transcript?.elapsed_ms,
+          timings: daemon.transcript?.timings,
+          biasScope: daemon.transcript?.bias_scope,
+        }
+      : null,
   };
   assert.deepEqual(errors, [], `renderer errors: ${errors.join(' | ')}`);
 } catch (error) {
@@ -980,15 +1091,19 @@ if (results.hiddenWindow) {
 }
 if (results.dictation) {
   const d = results.dictation;
-  console.log('dictation through the session and the transport (loopback daemon):');
   console.log(
-    `  ${d.audioSeconds.toFixed(2)} s of audio in ${d.puts.length} PUTs, ${d.preflights} CORS preflights; press to create sent ${d.pressToCreateSentMs} ms (received ${d.pressToCreateMs} ms), to first PUT ${d.pressToFirstPutMs} ms`
+    `dictation through the session and the transport (${realDaemon ? `the daemon at ${realDaemon}` : 'loopback daemon'}):`
   );
   console.log(
-    `  stop to flush posted ${d.stopToFlushPostedMs} ms, to the worklet's last chunk ${d.stopToFinalChunkMs} ms, to final PUT sent ${d.stopToFinalPutSentMs} ms (received ${d.stopToFinalPutMs} ms), to finish sent ${d.stopToFinishSentMs} ms (received ${d.stopToFinishMs} ms)`
+    `  ${d.audioSeconds.toFixed(2)} s of audio in ${d.puts.length} PUTs, ${d.preflights} CORS preflights; press to recording (first audio frame) ${d.pressToRecordingMs} ms, to create sent ${d.pressToCreateSentMs} ms (received ${d.pressToCreateMs} ms), to first PUT ${d.pressToFirstPutMs} ms`
   );
   console.log(
-    `  transcript to text in the field ${d.finishAnswerToInsertedMs} ms, stop to text ${d.stopToInsertedMs} ms (the loopback daemon adds 15 ms per PUT)`
+    `  stop to flush posted ${d.stopToFlushPostedMs} ms, to the worklet's last chunk ${d.stopToFinalChunkMs} ms, to finish sent with ${d.finishTailBytes} B of tail ${d.stopToFinishSentMs} ms (received ${d.stopToFinishMs} ms)`
+  );
+  console.log(
+    realDaemon
+      ? `  transcript to text in the field ${d.finishAnswerToInsertedMs} ms, stop to text ${d.stopToInsertedMs} ms; the daemon's finish to transcript ${d.transcript.elapsedMs} ms (${JSON.stringify(d.transcript.timings)}), ${d.heldReads} held reads, ${d.transcript.model}: ${JSON.stringify(d.transcript.text)}`
+      : `  transcript to text in the field ${d.finishAnswerToInsertedMs} ms, stop to text ${d.stopToInsertedMs} ms (the loopback daemon adds 15 ms per PUT)`
   );
 }
 console.log(`evidence: ${path.join(outputDir, 'dictation-capture.json')}`);

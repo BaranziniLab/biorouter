@@ -9,9 +9,145 @@
 //! target treats `Unknown` as public (a target that failed toward private would let private
 //! terms shape text bound for a chat whose tier nobody knows).
 
-use crate::privacy::{ProviderTier, SessionClassification};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
+
+use crate::config::Config;
+use crate::model::ModelConfig;
+use crate::privacy::config_keys::NOT_CAPABILITY_CONFIG_KEYS;
+use crate::privacy::{
+    ModelAffiliation, ProviderTier, SessionClassification, CAPABILITY_CONFIG_KEYS,
+};
 
 use super::bias::{BiasTarget, Standing};
+
+/// How long [`new_chat_bind_tier`] waits for a provider to be built before it answers
+/// Public. Building one reads configuration and, for some providers, a local file; it
+/// sends nothing, so this bound is only a backstop.
+const NEW_CHAT_BUILD_BOUND: Duration = Duration::from_secs(5);
+/// Answers kept by [`new_chat_bind_tier`]: the configured default and a few per tab picks.
+const NEW_CHAT_CACHE_ENTRIES: usize = 32;
+/// How long one answer of [`new_chat_bind_tier`] is kept. A tier can move with no
+/// configuration value changing: `ollama`'s `tier()` also reads what `/api/show` said
+/// about the model (`remote_host` or `remote_model`, a cloud model renamed with
+/// `ollama cp`), which arrives only once the model was asked about, so an answer given
+/// before then is rebuilt within this long. The dictation service's thread count is
+/// reused for the same time.
+pub const NEW_CHAT_CACHE_TTL: Duration = Duration::from_secs(10);
+
+/// The answer [`new_chat_bind_tier`] gives: the tier a new chat would bind at and its
+/// model's affiliation, from one provider instance.
+pub type BindTier = (ProviderTier, Option<ModelAffiliation>);
+
+/// The tier and model affiliation a new chat's bind would produce (DD-30), for a stream
+/// whose target chat does not exist yet (Home, a new tab).
+///
+/// The provider is `pick` when the caller holds the user action proof (the route passes
+/// `None` otherwise, so an unproven caller cannot choose the tier its own stream is
+/// judged by), else `BIOROUTER_PROVIDER` with `BIOROUTER_MODEL`. A pick that names a
+/// model is built with it; a pick of the configured provider with no model takes the
+/// configured model; any other pick takes the provider's default model.
+///
+/// The provider is built exactly as `/agent/start` builds it (`providers::create`, which
+/// takes the lead and worker path while `BIOROUTER_LEAD_MODEL` is set), and the answer is
+/// the instance's own `tier()` and `affiliation()`, never a declared tier: `ollama`
+/// declares Private and is Public for a cloud tag or a remote `OLLAMA_HOST`, `llamacpp`
+/// likewise for a remote `LLAMACPP_EXTERNAL_HOST`, and a lead and worker pair is the
+/// lesser of its two halves (`ProviderTier::least` inside the composite's `tier()`).
+///
+/// Answers are cached by the pick and the value of every key a tier input file reads,
+/// `privacy::CAPABILITY_CONFIG_KEYS` and `privacy::NOT_CAPABILITY_CONFIG_KEYS` both,
+/// because the second list holds tier inputs too (`VERSA_AZURE_ENDPOINT` moves
+/// `versa_azure` off the UCSF gateway, which makes it Public with no affiliation); so a
+/// configuration change is a new key. An answer is kept for [`NEW_CHAT_CACHE_TTL`], for
+/// the inputs no configuration value carries. A failure to build answers Public with an
+/// unstated affiliation and is not cached.
+pub async fn new_chat_bind_tier(pick: Option<&str>, pick_model: Option<&str>) -> BindTier {
+    let config = Config::global();
+    let configured_provider = config.get_biorouter_provider().ok();
+    let configured_model = config.get_biorouter_model().ok();
+    let pick = pick.map(str::trim).filter(|p| !p.is_empty());
+    let pick_model = pick_model.map(str::trim).filter(|m| !m.is_empty());
+    let (provider, model) = match pick {
+        Some(provider) => {
+            let model = pick_model.map(str::to_string).or_else(|| {
+                (configured_provider.as_deref() == Some(provider))
+                    .then(|| configured_model.clone())
+                    .flatten()
+            });
+            (Some(provider.to_string()), model)
+        }
+        None => (configured_provider, configured_model),
+    };
+    let Some(provider) = provider else {
+        return (ProviderTier::Public, None);
+    };
+    let key = bind_cache_key(&provider, model.as_deref(), |name| {
+        config.get_param::<String>(name).ok()
+    });
+    if let Some(answer) = cached(&bind_cache(), &key, Instant::now()) {
+        return answer;
+    }
+    let build = async {
+        match &model {
+            Some(model) => crate::providers::create(&provider, ModelConfig::new(model)?).await,
+            None => crate::providers::create_with_default_model(&provider).await,
+        }
+    };
+    match tokio::time::timeout(NEW_CHAT_BUILD_BOUND, build).await {
+        Ok(Ok(instance)) => {
+            let answer = (instance.tier(), instance.affiliation());
+            let mut cache = bind_cache();
+            if cache.len() >= NEW_CHAT_CACHE_ENTRIES {
+                cache.clear();
+            }
+            cache.insert(key, (Instant::now(), answer));
+            answer
+        }
+        _ => (ProviderTier::Public, None),
+    }
+}
+
+type BindCache = HashMap<String, (Instant, BindTier)>;
+
+fn bind_cache() -> std::sync::MutexGuard<'static, BindCache> {
+    static CACHE: OnceLock<Mutex<BindCache>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The answer kept for `key`, unless it is older than [`NEW_CHAT_CACHE_TTL`] at `now`.
+fn cached(cache: &BindCache, key: &str, now: Instant) -> Option<BindTier> {
+    cache
+        .get(key)
+        .filter(|(at, _)| now.saturating_duration_since(*at) < NEW_CHAT_CACHE_TTL)
+        .map(|(_, answer)| *answer)
+}
+
+/// The cache key of one bind: the provider, its model, and the value of every key a tier
+/// input file reads (both lists of `privacy::config_keys`, which its own test keeps
+/// complete). NUL separates the parts, which no configuration value carries.
+fn bind_cache_key(
+    provider: &str,
+    model: Option<&str>,
+    read: impl Fn(&str) -> Option<String>,
+) -> String {
+    let mut key = format!("{provider}\0{}", model.unwrap_or("\u{1}"));
+    let names = CAPABILITY_CONFIG_KEYS
+        .iter()
+        .copied()
+        .chain(NOT_CAPABILITY_CONFIG_KEYS.iter().map(|(name, _why)| *name));
+    for name in names {
+        key.push('\0');
+        key.push_str(name);
+        key.push('=');
+        key.push_str(read(name).as_deref().unwrap_or("\u{1}"));
+    }
+    key
+}
 
 /// Whether a chat is private, as far as its stored row and its live model tell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,5 +295,154 @@ mod tests {
             let (target, standing) = cli_bias(broken);
             assert!(!target.private && !standing.is_private(), "{broken:?}");
         }
+    }
+
+    fn overrides(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// DD-30: a new chat is judged by the tier its bind would produce, never by a
+    /// declared tier. `ollama` declares Private; a remote `OLLAMA_HOST` or a cloud tag is
+    /// Public, and a private worker under a public lead binds the lesser of the two.
+    /// Building these providers opens no connection.
+    #[tokio::test]
+    async fn a_new_chat_is_judged_by_the_tier_its_bind_would_produce() {
+        use crate::config::with_config_overrides;
+
+        let local = overrides(&[
+            ("BIOROUTER_PROVIDER", "ollama"),
+            ("BIOROUTER_MODEL", "qwen3.8:27b"),
+            ("OLLAMA_HOST", "127.0.0.1"),
+        ]);
+        let (tier, affiliation) =
+            with_config_overrides(local.clone(), new_chat_bind_tier(None, None)).await;
+        assert_eq!(tier, ProviderTier::Private);
+        assert_eq!(affiliation, Some(ModelAffiliation::Local));
+
+        let remote = overrides(&[
+            ("BIOROUTER_PROVIDER", "ollama"),
+            ("BIOROUTER_MODEL", "qwen3.8:27b"),
+            ("OLLAMA_HOST", "https://ollama.example"),
+        ]);
+        let (tier, affiliation) =
+            with_config_overrides(remote, new_chat_bind_tier(None, None)).await;
+        assert_eq!(tier, ProviderTier::Public, "a remote OLLAMA_HOST");
+        assert_eq!(affiliation, None);
+
+        let cloud = overrides(&[
+            ("BIOROUTER_PROVIDER", "ollama"),
+            ("BIOROUTER_MODEL", "gpt-oss:120b-cloud"),
+            ("OLLAMA_HOST", "127.0.0.1"),
+        ]);
+        let (tier, _) = with_config_overrides(cloud, new_chat_bind_tier(None, None)).await;
+        assert_eq!(
+            tier,
+            ProviderTier::Public,
+            "a cloud tag through a loopback host"
+        );
+
+        let pair = overrides(&[
+            ("BIOROUTER_PROVIDER", "llamacpp"),
+            ("BIOROUTER_MODEL", "qwen3.8-27b"),
+            ("BIOROUTER_LEAD_PROVIDER", "ollama"),
+            ("BIOROUTER_LEAD_MODEL", "qwen3.8:27b"),
+            ("OLLAMA_HOST", "https://ollama.example"),
+        ]);
+        let (tier, _) = with_config_overrides(pair, new_chat_bind_tier(None, None)).await;
+        assert_eq!(
+            tier,
+            ProviderTier::Public,
+            "a private worker under a public lead binds the lesser"
+        );
+
+        // A pick replaces the configured provider; a pick of a provider this install
+        // does not know answers Public.
+        let (tier, _) = with_config_overrides(
+            local.clone(),
+            new_chat_bind_tier(Some("ollama"), Some("gpt-oss:120b-cloud")),
+        )
+        .await;
+        assert_eq!(tier, ProviderTier::Public);
+        let (tier, affiliation) =
+            with_config_overrides(local, new_chat_bind_tier(Some("no-such-provider"), None)).await;
+        assert_eq!((tier, affiliation), (ProviderTier::Public, None));
+        // Nothing configured and no pick: Public.
+        let (tier, _) = with_config_overrides(HashMap::new(), new_chat_bind_tier(None, None)).await;
+        assert_eq!(tier, ProviderTier::Public);
+    }
+
+    /// The cache key moves with every key a tier input file reads, both lists of
+    /// `config_keys`, so a configuration change is never answered from an older bind.
+    #[test]
+    fn the_bind_cache_key_follows_every_tier_input_key() {
+        let base = |_: &str| None;
+        let reference = bind_cache_key("ollama", Some("m"), base);
+        let names = CAPABILITY_CONFIG_KEYS
+            .iter()
+            .copied()
+            .chain(NOT_CAPABILITY_CONFIG_KEYS.iter().map(|(name, _)| *name));
+        for name in names {
+            let moved = bind_cache_key("ollama", Some("m"), |key: &str| {
+                (key == name).then(|| "x".to_string())
+            });
+            assert_ne!(moved, reference, "{name}");
+        }
+        assert_ne!(bind_cache_key("ollama", None, base), reference);
+        assert_ne!(bind_cache_key("llamacpp", Some("m"), base), reference);
+    }
+
+    /// An answer is kept for [`NEW_CHAT_CACHE_TTL`] and rebuilt after it, for the tier
+    /// inputs no configuration value carries (what `/api/show` told `ollama`).
+    #[test]
+    fn a_kept_answer_lasts_its_lifetime_only() {
+        let now = Instant::now();
+        let mut cache = BindCache::new();
+        let answer = (ProviderTier::Private, Some(ModelAffiliation::Local));
+        cache.insert("k".into(), (now, answer));
+        assert_eq!(cached(&cache, "k", now), Some(answer));
+        assert_eq!(
+            cached(
+                &cache,
+                "k",
+                now + NEW_CHAT_CACHE_TTL - Duration::from_millis(1)
+            ),
+            Some(answer)
+        );
+        assert_eq!(cached(&cache, "k", now + NEW_CHAT_CACHE_TTL), None);
+        assert_eq!(cached(&cache, "other", now), None);
+    }
+
+    /// `VERSA_AZURE_ENDPOINT` is a tier input outside `CAPABILITY_CONFIG_KEYS`: once
+    /// `versa_azure` on its UCSF gateway was cached as Private with UCSF's affiliation,
+    /// an endpoint moved off site is answered Public with none, not from the cache.
+    #[tokio::test]
+    async fn a_moved_versa_endpoint_is_not_answered_from_the_cache() {
+        use crate::config::with_config_overrides;
+        use crate::privacy::affiliation::InstitutionId;
+        use crate::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL;
+
+        let mut versa = overrides(&[
+            ("BIOROUTER_PROVIDER", "versa_azure"),
+            ("BIOROUTER_MODEL", VERSA_AZURE_DEFAULT_MODEL),
+            ("VERSA_AZURE_API_KEY", "placeholder-never-sent"),
+        ]);
+        let (tier, affiliation) =
+            with_config_overrides(versa.clone(), new_chat_bind_tier(None, None)).await;
+        assert_eq!(tier, ProviderTier::Private, "the UCSF gateway");
+        assert_eq!(
+            affiliation,
+            Some(ModelAffiliation::institution(InstitutionId::new("ucsf")))
+        );
+        versa.insert(
+            "VERSA_AZURE_ENDPOINT".to_string(),
+            "https://elsewhere.example/general".to_string(),
+        );
+        let (tier, affiliation) =
+            with_config_overrides(versa, new_chat_bind_tier(None, None)).await;
+        assert_eq!(tier, ProviderTier::Public, "an endpoint off the gateway");
+        assert_eq!(affiliation, None);
     }
 }

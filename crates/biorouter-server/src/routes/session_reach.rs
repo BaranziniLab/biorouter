@@ -1046,6 +1046,26 @@ impl HttpCaller {
         self.admits(target)
     }
 
+    /// Whether private dictionary entries may shape this caller's dictation (DD-29,
+    /// DD-30): the user-action proof, or a private provider stated in
+    /// [`CALLER_PROVIDER_HEADER`].
+    ///
+    /// ⚠ **Never the served-operator standing**, for the reason [`session_reach`]
+    /// never reads it: SD-10 gives a `biorouter serve` browser its operator's reach
+    /// on listings and knowledge bases and nothing else, and biasing a transcript
+    /// is neither (decided by the owner on 2026-11-05). A `serve` page on a private
+    /// host keeps private standing anyway, because `userActionHeaders()` states the
+    /// host's provider in [`CALLER_PROVIDER_HEADER`] on a browser surface (SD-12).
+    ///
+    /// Standing alone admits nothing: `bias_set` also needs a private capable
+    /// target, which the stream route decides from the target chat, never from the
+    /// caller. With tiers switched off every entry is eligible whatever this says.
+    pub fn dictation_standing(&self) -> biorouter::dictation::Standing {
+        biorouter::dictation::Standing::from_checked(
+            self.proof == UserActionProof::Proven || self.stated.is_private(),
+        )
+    }
+
     /// The one spelling of this caller's listing decision, which both
     /// listing predicates above are.
     fn admits(&self, target: TargetTier) -> bool {
@@ -1790,7 +1810,27 @@ mod tests {
         let knowledge_rs = include_str!("knowledge.rs");
         let active_work_rs = include_str!("active_work.rs");
         let schedule_rs = include_str!("schedule.rs");
+        let dictation_rs = include_str!("dictation.rs");
         for (src, func, gate_call, first_touch, what) in [
+            // ── PR-15: a dictation stream into a chat (DD-29, DD-30) ──
+            //
+            // The stream reads the chat only to decide its bias scope, and a refusal
+            // degrades to public terms with a byte identical answer; a tier or agent
+            // read before the gate would make that answer an existence oracle.
+            (
+                dictation_rs,
+                "async fn stream_target(",
+                "session_reach(",
+                "target_tier(",
+                "the chat's stored tier, which says whether it exists and is private",
+            ),
+            (
+                dictation_rs,
+                "async fn stream_target(",
+                "session_reach(",
+                "peek_agent(",
+                "the live agent's bound model, which says whether the chat is private",
+            ),
             (
                 reply_rs,
                 "pub async fn reply",
@@ -2150,6 +2190,32 @@ mod tests {
             stated,
             served_operator,
             proof,
+        }
+    }
+
+    /// DD-30: dictation standing is the proof or a stated private provider, and
+    /// never a `serve` daemon's operator tier, which SD-10 keeps to listings and
+    /// knowledge bases.
+    #[test]
+    fn dictation_standing_reads_the_proof_and_the_stated_provider_only() {
+        use ProviderTier::{Private, Public};
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        for (stated, served, proof, want) in [
+            (Public, Public, Proven, true),
+            (Private, Public, Unproven, true),
+            (Private, Public, NoKeyInstalled, true),
+            (Public, Private, Unproven, false),
+            (Public, Private, NoKeyInstalled, false),
+            (Public, Public, Unproven, false),
+            (Public, Public, NoKeyInstalled, false),
+        ] {
+            assert_eq!(
+                caller(stated, served, proof)
+                    .dictation_standing()
+                    .is_private(),
+                want,
+                "{stated:?} {served:?} {proof:?}"
+            );
         }
     }
 

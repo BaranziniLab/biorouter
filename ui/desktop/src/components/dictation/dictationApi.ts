@@ -1,23 +1,36 @@
 /**
  * The renderer's only HTTP door to the daemon's `/dictation/*` routes.
  *
- * Written by hand against the request and response shapes in
- * `docs/dictation/engine-and-models.md` ("Daemon routes and transport"), because
- * the routes (PR-15) and the generated client did not exist when the renderer
- * side landed. Everything above this module (the stream client in
- * `transport.ts`, the status store) sees only the normalized results declared
- * here, so moving the JSON calls onto the generated client changes this one
- * file. The audio `PUT` stays a hand written `fetch` either way: its body is raw
- * bytes, and a packaged `file://` page sends it with no CORS preflight
- * (measured).
+ * The JSON routes go through the client generated from the daemon's OpenAPI
+ * document (PR-15): the status read, stream creation, the held read after a 202
+ * and the delete. The two routes whose body is raw audio, `PUT …/audio` and
+ * `finish` (which carries the last chunk, so a stop costs one round trip), stay a
+ * hand written `fetch`, because their body is bytes the generated client would
+ * have to be talked out of serializing. Everything above this module (the stream
+ * client in `transport.ts`, the status store) sees only the normalized results
+ * declared here, and the types they read are checked against the generated ones
+ * below, so a change to a route's shape fails the type check here first.
  *
- * Headers: every route takes `X-Secret-Key`. Stream creation and the status
- * read also carry `userActionHeaders()`, the proof of a person on the desktop
- * and the host's provider on `serve`; per request, never as a default, for the
- * reason `utils/userAction.ts` gives. On a daemon with a user action key the
- * proof decides only which dictionary entries may bias and whether this caller
- * may install a model; streams take the secret alone (O-17).
+ * Headers: every route takes `X-Secret-Key`. Stream creation and the status read
+ * also carry `userActionHeaders()`, the proof of a person on the desktop and the
+ * host's provider on `serve`; per request, never as a default, for the reason
+ * `utils/userAction.ts` gives. On a daemon with a user action key the proof
+ * decides only which dictionary entries may bias and whether this caller may
+ * install a model; streams take the secret alone (O-17).
  */
+import {
+  createDictationStream,
+  deleteDictationStream,
+  dictationStatus,
+  getDictationStream,
+} from '../../api';
+import type {
+  DictationAudioAck as GeneratedAudioAck,
+  DictationStatus as GeneratedStatus,
+  DictationStreamCreated as GeneratedStreamCreated,
+  DictationStreamRequest as GeneratedStreamRequest,
+  DictationTranscript as GeneratedTranscript,
+} from '../../api';
 import { getApiUrl } from '../../config';
 import { userActionHeaders } from '../../utils/userAction';
 
@@ -33,6 +46,8 @@ export interface StreamRequest {
   session_id?: string;
   /** `new_chat` only; honoured only with the user action proof. */
   new_chat_provider?: string;
+  /** `new_chat` only, beside `new_chat_provider` and under the same rule. */
+  new_chat_model?: string;
   /** `crew` and `external` only; sent only after MSG-PRIVATE-TERMS, for one recording. */
   include_private_terms?: boolean;
   /** At most 2 KiB, ranking only. */
@@ -63,6 +78,15 @@ export interface TranscriptChange {
   entry_id?: string;
 }
 
+/** Where the stop path's time went, as the daemon saw it. */
+export interface TranscriptTimings {
+  segments: number;
+  /** From `finish` to the tail's decode starting: a segment still decoding, or a load. */
+  wait_ms: number;
+  tail_ms: number;
+  tail_audio_s: number;
+}
+
 export interface Transcript {
   text: string;
   raw_text: string;
@@ -74,9 +98,10 @@ export interface Transcript {
   bias_scope: 'public' | 'private';
   retried: null | { reason: string };
   no_speech: boolean;
+  timings?: TranscriptTimings;
 }
 
-/** `202 {pending: true}` from finish or a poll. */
+/** `202 {pending: true}` from finish or a read. */
 export interface TranscriptPending {
   pending: true;
 }
@@ -137,6 +162,23 @@ export interface DictationStatus {
   models_dir: string;
 }
 
+/**
+ * The module's shapes against the generated ones. A generated answer must be
+ * readable as the shape declared here, and a request built here must be one the
+ * route takes; a route that changes its shape fails the type check on this line
+ * rather than in a renderer that reads a field that is gone. (The declared shapes
+ * stay because they are narrower: `backend` is `'metal' | 'cpu'`, not any string.)
+ */
+type Readable<Generated, Declared> = keyof Declared extends keyof Generated ? true : false;
+const shapesAgree: [
+  Readable<GeneratedStatus, DictationStatus>,
+  Readable<GeneratedTranscript, Transcript>,
+  Readable<GeneratedStreamCreated, StreamCreated>,
+  Readable<GeneratedAudioAck, AudioAck>,
+  StreamRequest extends GeneratedStreamRequest ? true : false,
+] = [true, true, true, true, true];
+void shapesAgree;
+
 /** Every refusal's body: `{code, message, expected_seq?}`. */
 export interface DictationErrorBody {
   code: string;
@@ -154,6 +196,12 @@ export type DictationResult<T> =
       retryAfterS: number | null;
     };
 
+/** The tail chunk `finish` carries: the next `seq` and its bytes. */
+export interface FinishTail {
+  seq: number;
+  body: Uint8Array;
+}
+
 export interface DictationApi {
   status(signal?: AbortSignal): Promise<DictationResult<DictationStatus>>;
   createStream(body: StreamRequest, signal?: AbortSignal): Promise<DictationResult<StreamCreated>>;
@@ -163,14 +211,16 @@ export interface DictationApi {
     body: Uint8Array,
     signal?: AbortSignal
   ): Promise<DictationResult<AudioAck>>;
-  /** 200 with the transcript, or 202 with `{pending: true}`. */
+  /** 200 with the transcript, or 202 with `{pending: true}`; `tail` rides along. */
   finish(
     streamId: string,
+    tail?: FinishTail,
     signal?: AbortSignal
   ): Promise<DictationResult<Transcript | TranscriptPending>>;
-  /** As `finish`, answered at once. */
+  /** As `finish`, held by the daemon up to `waitMs` (at most 3,000) for the transcript. */
   poll(
     streamId: string,
+    waitMs?: number,
     signal?: AbortSignal
   ): Promise<DictationResult<Transcript | TranscriptPending>>;
   /** `DELETE`; best effort, never throws. */
@@ -198,8 +248,8 @@ export function resetDictationApiForTests(): void {
   secretKey = null;
 }
 
-function retryAfter(response: Response): number | null {
-  const raw = response.headers.get('Retry-After');
+function retryAfter(response: Response | undefined): number | null {
+  const raw = response?.headers.get('Retry-After');
   if (!raw) return null;
   const seconds = Number(raw);
   if (Number.isFinite(seconds) && seconds >= 0) return seconds;
@@ -229,21 +279,12 @@ function errorBody(status: number, body: unknown): DictationErrorBody {
   return { code: `http${status}`, message: '' };
 }
 
-async function call<T>(
-  path: string,
-  init: RequestInit & { userAction?: boolean },
-  okStatuses: readonly number[] = [200]
-): Promise<DictationResult<T>> {
-  const [key, proof] = await Promise.all([
-    secret(),
-    init.userAction ? userActionHeaders() : Promise.resolve({}),
-  ]);
-  const response = await fetch(getApiUrl(path), {
-    ...init,
-    headers: { ...(init.headers as Record<string, string>), 'X-Secret-Key': key, ...proof },
-  });
+function settle<T>(
+  response: Response,
+  body: unknown,
+  okStatuses: readonly number[]
+): DictationResult<T> {
   if (response.status === 401) secretKey = null;
-  const body = await readBody(response);
   if (okStatuses.includes(response.status)) {
     return { ok: true, status: response.status, data: body as T };
   }
@@ -255,46 +296,93 @@ async function call<T>(
   };
 }
 
+/**
+ * What every generated call is given: the secret and, where asked, the proof; and the
+ * same daemon address the audio routes use (`getApiUrl`), so the two halves of this
+ * module never reach two different daemons, also in a page that never configured the
+ * shared client (the capture probe).
+ */
+async function request(
+  userAction: boolean
+): Promise<{ baseUrl: string; headers: Record<string, string> }> {
+  return { baseUrl: getApiUrl('/').replace(/\/$/, ''), headers: await headers(userAction) };
+}
+
+async function headers(userAction: boolean): Promise<Record<string, string>> {
+  const [key, proof] = await Promise.all([
+    secret(),
+    userAction ? userActionHeaders() : Promise.resolve({}),
+  ]);
+  return { 'X-Secret-Key': key, ...proof };
+}
+
+/** The generated client's answer as a result; a request that never got one throws. */
+async function generated<T>(
+  call: Promise<{ data?: unknown; error?: unknown; response?: Response }>,
+  okStatuses: readonly number[]
+): Promise<DictationResult<T>> {
+  const { data, error, response } = await call;
+  if (!response) throw error ?? new Error('no response');
+  return settle<T>(response, data ?? error ?? null, okStatuses);
+}
+
+/** One of the two routes whose body is raw audio. */
+async function sendBytes<T>(
+  path: string,
+  method: 'PUT' | 'POST',
+  body: Uint8Array | undefined,
+  signal: AbortSignal | undefined,
+  okStatuses: readonly number[]
+): Promise<DictationResult<T>> {
+  const response = await fetch(getApiUrl(path), {
+    method,
+    signal,
+    headers: {
+      ...(await headers(false)),
+      ...(body ? { 'Content-Type': 'application/octet-stream' } : {}),
+    },
+    body: body as unknown as RequestInit['body'],
+  });
+  return settle<T>(response, await readBody(response), okStatuses);
+}
+
 const streamPath = (streamId: string): string =>
   `/dictation/streams/${encodeURIComponent(streamId)}`;
 
 export const dictationApi: DictationApi = {
-  status: (signal) =>
-    call<DictationStatus>('/dictation/status', { method: 'GET', signal, userAction: true }),
-  createStream: (body, signal) =>
-    call<StreamCreated>(
-      '/dictation/streams',
-      {
-        method: 'POST',
-        signal,
-        userAction: true,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      },
+  status: async (signal) =>
+    generated<DictationStatus>(dictationStatus({ signal, ...(await request(true)) }), [200]),
+  createStream: async (body, signal) =>
+    generated<StreamCreated>(
+      createDictationStream({ body, signal, ...(await request(true)) }),
       [200, 201]
     ),
   putAudio: (streamId, seq, body, signal) =>
-    call<AudioAck>(`${streamPath(streamId)}/audio?seq=${seq}`, {
-      method: 'PUT',
+    sendBytes<AudioAck>(`${streamPath(streamId)}/audio?seq=${seq}`, 'PUT', body, signal, [200]),
+  finish: (streamId, tail, signal) =>
+    sendBytes<Transcript | TranscriptPending>(
+      tail ? `${streamPath(streamId)}/finish?seq=${tail.seq}` : `${streamPath(streamId)}/finish`,
+      'POST',
+      tail?.body,
       signal,
-      headers: { 'Content-Type': 'application/octet-stream' },
-      body: body as unknown as NonNullable<RequestInit['body']>,
-    }),
-  finish: (streamId, signal) =>
-    call<Transcript | TranscriptPending>(
-      `${streamPath(streamId)}/finish`,
-      { method: 'POST', signal },
       [200, 202]
     ),
-  poll: (streamId, signal) =>
-    call<Transcript | TranscriptPending>(
-      streamPath(streamId),
-      { method: 'GET', signal },
+  poll: async (streamId, waitMs, signal) =>
+    generated<Transcript | TranscriptPending>(
+      getDictationStream({
+        path: { id: streamId },
+        query: waitMs ? { wait_ms: waitMs } : undefined,
+        signal,
+        ...(await request(false)),
+      }),
       [200, 202]
     ),
   drop: async (streamId) => {
     try {
-      await call<void>(streamPath(streamId), { method: 'DELETE' }, [200, 204]);
+      await generated<void>(
+        deleteDictationStream({ path: { id: streamId }, ...(await request(false)) }),
+        [200, 204]
+      );
     } catch {
       // Best effort: the daemon drops an idle stream after 60 s anyway.
     }

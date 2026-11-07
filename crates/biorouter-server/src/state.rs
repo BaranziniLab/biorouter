@@ -913,6 +913,10 @@ pub struct AppState {
     pub extension_loading_tasks: ExtensionLoadingTasks,
     // Used by knowledge route handlers (Task 5+).
     pub knowledge_service: Arc<KnowledgeService>,
+    /// Local dictation's open streams, queued segment count and model install
+    /// (PR-15, DD-27 to DD-32): one table per daemon, so each test's `AppState`
+    /// starts with its own limits.
+    pub dictation: Arc<crate::routes::dictation::DictationStreams>,
 }
 
 impl AppState {
@@ -920,8 +924,11 @@ impl AppState {
         let agent_manager = AgentManager::instance().await?;
         let tunnel_manager = Arc::new(TunnelManager::new());
         let knowledge_service = Arc::new(KnowledgeService::new_default()?);
+        // The daemon's one warm up of the active model after an app update, a few
+        // seconds from now and never in the way of startup or a request (PR-15).
+        biorouter::dictation::service::spawn_startup_warm_up();
 
-        Ok(Arc::new(Self {
+        let state = Arc::new(Self {
             agent_manager,
             workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
             active_turns: Arc::new(StdMutex::new(TurnRegistry::default())),
@@ -929,7 +936,52 @@ impl AppState {
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
             knowledge_service,
-        }))
+            dictation: Arc::new(crate::routes::dictation::DictationStreams::default()),
+        });
+        // DD-32: the dictation worker takes half its threads while a loopback Ollama
+        // generates in this daemon; only the daemon knows its live turns.
+        let weak = Arc::downgrade(&state);
+        biorouter::dictation::service::set_local_serving_probe(Arc::new(move || {
+            let weak = weak.clone();
+            Box::pin(async move {
+                match weak.upgrade() {
+                    Some(state) => state.local_ollama_serving().await,
+                    None => false,
+                }
+            })
+        }));
+        Ok(state)
+    }
+
+    /// Whether a turn in flight in this daemon runs on an Ollama model served from this
+    /// computer: the `ollama` provider at a private tier, which it reports only for a
+    /// loopback host and a model that is not forwarded to ollama.com (DD-32). A turn is
+    /// what makes Ollama compete for the processor; a model it merely keeps loaded does
+    /// not.
+    ///
+    /// A chat a Crew grant scopes is never asked, as the stream target's `live_model`
+    /// never asks one: `Agent::provider` checks such a chat with the Crew workspace over
+    /// SSH when its last admission is older than 15 s, and forgets that admission first,
+    /// so a dictation started beside a running Crew turn would send the workspace a
+    /// request on that chat's behalf. Without the Crew registry no chat is asked.
+    pub async fn local_ollama_serving(&self) -> bool {
+        let Ok(crew) = biorouter::crew::manager() else {
+            return false;
+        };
+        for session_id in self.active_turn_session_ids() {
+            if crew.is_scoped_session(&session_id).await {
+                continue;
+            }
+            let Some(agent) = self.peek_agent(&session_id).await else {
+                continue;
+            };
+            if let Ok(provider) = agent.provider().await {
+                if provider.get_name() == "ollama" && provider.tier().is_private() {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// [`AppState::new`] with its `KnowledgeService` rooted at `knowledge_root`
@@ -960,6 +1012,7 @@ impl AppState {
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
             knowledge_service,
+            dictation: Arc::new(crate::routes::dictation::DictationStreams::default()),
         }))
     }
 

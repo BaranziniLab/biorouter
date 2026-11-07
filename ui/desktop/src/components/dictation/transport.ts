@@ -4,9 +4,10 @@
  *
  * Audio goes up while the person speaks, in small `PUT`s, so the daemon can
  * decode closed segments before they stop; on stop only the last couple of
- * seconds are left to send, and `finish` follows the last `PUT` at once. No
- * request is ever held open by the client: the daemon's `finish` waits up to
- * 3 s, then answers 202, and the client polls.
+ * seconds are left to send, and `finish` carries them itself, so the stop costs
+ * one round trip. The daemon's `finish` waits up to 3 s, then answers 202, and
+ * the client then reads the stream with a `GET` the daemon holds up to 3 s, so
+ * the text arrives the moment it is ready and no sleep sits between two polls.
  *
  * The rules, each with its reason in the design documents:
  *
@@ -30,11 +31,16 @@
  *   from `seq=0`; a second one ends the dictation with MSG-LOST.
  * - A failure while the person still speaks is reported at once through
  *   `onFailed`, not at the stop, and the stream takes no more audio.
- * - MSG-WAIT shows while a `PUT` or a poll has had no answer for 1.5 s.
+ * - After the stop, the audio not yet acknowledged goes up with `finish` when it
+ *   fits in one chunk; a resend carries the same `seq`, a 413 halves it and sends
+ *   the rest as `PUT`s first, and a 409 `outOfOrder` resends from `expected_seq`.
+ * - MSG-WAIT shows while a `PUT` or a held read has had no answer for 1.5 s.
  * - MSG-CAP-WARN fires 30 s before `max_seconds`; at `max_seconds` the stream
  *   takes no more audio and asks the caller to stop and insert.
  * - A `500 engineFailed` keeps the audio, and `retry()` replays it into a new
- *   stream; the caller drops it after 5 minutes.
+ *   stream; the caller drops it after 5 minutes. A `PUT` answers it when a decode
+ *   failed while the person still speaks, and the stream takes no more audio, so it
+ *   is reported at once through `onFailed`, never retried as a passing 5xx.
  *
  * The audio is held in renderer memory only, until the transcript has been
  * inserted (`release()`) or the dictation is cancelled, and is zeroed when it is
@@ -61,7 +67,10 @@ export const DEFAULT_MAX_CHUNK_BYTES = 524_288;
 export const DEFAULT_MAX_SECONDS = 600;
 export const CAP_WARNING_LEAD_S = 30;
 export const WAIT_NOTICE_MS = 1_500;
+/** The backoff step after a failed request; never a wait between two good polls. */
 export const POLL_EVERY_MS = 500;
+/** How long a read after a 202 asks the daemon to hold it: its own limit, 3 s. */
+export const HELD_READ_MS = 3_000;
 /** `finish` holds up to 3 s on the daemon; anything far past that is a hung request. */
 export const FINISH_TIMEOUT_MS = 15_000;
 /**
@@ -146,8 +155,9 @@ export interface DictationStream {
   onBusy(cb: (seconds: number) => void): () => void;
   /**
    * The upload failed while the person still speaks (a 413 at the floor, the
-   * sixth timeout, a fourth 5xx, a second 410, a refused re-create). The stream
-   * takes no more audio; `finish` rejects with the same error.
+   * sixth timeout, a fourth 5xx, a second 410, a refused re-create, a `PUT`
+   * answering `500 engineFailed`). The stream takes no more audio; `finish`
+   * rejects with the same error.
    */
   onFailed(cb: (error: DictationStreamError) => void): () => void;
 }
@@ -404,7 +414,11 @@ class Stream implements DictationStream {
 
   private wantsUpload(): boolean {
     const pending = this.total - this.cursor;
-    return pending > 0 && (this.closing || pending >= this.threshold);
+    if (pending <= 0) return false;
+    // After the stop, what fits in one chunk rides on `finish` instead of a `PUT`, so
+    // the stop costs one round trip (PR-15).
+    if (this.closing) return pending * 2 > this.chunkLimitBytes;
+    return pending >= this.threshold;
   }
 
   private kick(): void {
@@ -429,7 +443,10 @@ class Stream implements DictationStream {
     }
   }
 
-  /** Wait until everything pushed has been acknowledged, or the stream failed. */
+  /**
+   * Wait until everything pushed has been acknowledged except a last chunk for
+   * `finish` to carry, or the stream failed.
+   */
   private async drain(): Promise<void> {
     for (;;) {
       if (this.cancelled) throw CANCELLED();
@@ -446,7 +463,7 @@ class Stream implements DictationStream {
         await this.pump;
         continue;
       }
-      if (this.total - this.cursor <= 0) return;
+      if (!this.wantsUpload()) return;
     }
   }
 
@@ -550,6 +567,14 @@ class Stream implements DictationStream {
           );
           continue;
         default:
+          if (result.status === 500 && result.error.code === 'engineFailed') {
+            // A decode failed while the person speaks: the daemon takes no more audio
+            // into this stream, so a resend cannot help. Retry replays what is kept here.
+            throw new DictationStreamError('engineFailed', result.error.message, {
+              status: 500,
+              serverCode: result.error.code,
+            });
+          }
           if (result.status >= 500 && ++transient <= MAX_TRANSIENT_FAILURES) {
             await this.sleep(POLL_EVERY_MS * transient);
             continue;
@@ -594,15 +619,26 @@ class Stream implements DictationStream {
     }
   }
 
+  /**
+   * `finish`, carrying what is left after the last acknowledged chunk (it fits in one,
+   * `drain` saw to that), so the stop is one round trip. A resend after a timeout or a
+   * network error carries the same `seq` and bytes, which the daemon answers as a
+   * repeat. `'restarted'` sends the caller back through `drain`: after a 410, and after a
+   * 413 or a 409 that the tail chunk met, which leave audio for the `PUT`s to send.
+   */
   private async finishOnce(): Promise<Transcript | 'restarted'> {
     const streamId = this.id as string;
+    const start = this.cursor;
+    const seq = this.seq;
+    const count = this.total - start;
+    const tail = count > 0 ? { seq, body: this.bytes(start, count) } : undefined;
     let transient = 0;
     let result: DictationResult<Transcript | TranscriptPending>;
     for (;;) {
       if (this.cancelled) throw CANCELLED();
       try {
         result = await this.timed(
-          (signal) => this.api.finish(streamId, signal),
+          (signal) => this.api.finish(streamId, tail, signal),
           FINISH_TIMEOUT_MS,
           false
         );
@@ -611,6 +647,35 @@ class Stream implements DictationStream {
         if (this.cancelled) throw CANCELLED();
         if (++transient > MAX_TRANSIENT_FAILURES) throw new DictationStreamError('lost');
         if (!(error instanceof RequestTimeout)) await this.sleep(POLL_EVERY_MS * transient);
+      }
+    }
+
+    if (tail && (result.ok || result.status >= 500)) {
+      // The daemon took the tail chunk: `finish` checks it before it finishes, and only a
+      // refusal of the chunk itself (413, 409, 422) leaves it unsent.
+      this.seqStarts[seq] = start;
+      this.cursor = start + count;
+      this.seq = seq + 1;
+    }
+    if (tail && !result.ok && result.status === 413) {
+      if (tail.body.byteLength <= MIN_CHUNK_BYTES) {
+        throw new DictationStreamError('proxy413', '', { status: 413 });
+      }
+      this.halve(tail.body.byteLength);
+      return 'restarted';
+    }
+    if (tail && !result.ok && result.status === 409 && result.error.code === 'outOfOrder') {
+      const expected = result.error.expected_seq;
+      if (
+        typeof expected === 'number' &&
+        expected >= 0 &&
+        expected < seq &&
+        this.seqStarts[expected] !== undefined
+      ) {
+        this.cursor = this.seqStarts[expected];
+        this.seq = expected;
+        this.seqStarts.length = expected;
+        return 'restarted';
       }
     }
 
@@ -639,14 +704,19 @@ class Stream implements DictationStream {
           serverCode: result.error.code,
         });
       }
-      // 202: poll every 500 ms; each poll answers at once.
-      await this.sleep(POLL_EVERY_MS);
+      // 202: a read the daemon holds until the transcript is ready, at most
+      // HELD_READ_MS, so the text arrives the moment it exists and no client sleep
+      // sits between two polls (PR-15). Only a failed read backs off.
       try {
-        result = await this.timed((signal) => this.api.poll(streamId, signal), PUT_TIMEOUT_MS);
+        result = await this.timed(
+          (signal) => this.api.poll(streamId, HELD_READ_MS, signal),
+          PUT_TIMEOUT_MS
+        );
         transient = 0;
       } catch {
         if (this.cancelled) throw CANCELLED();
         if (++transient > MAX_TRANSIENT_FAILURES) throw new DictationStreamError('lost');
+        await this.sleep(POLL_EVERY_MS * transient);
         result = { ok: true, status: 202, data: { pending: true } };
       }
     }

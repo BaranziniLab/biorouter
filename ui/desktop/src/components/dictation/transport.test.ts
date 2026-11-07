@@ -3,6 +3,7 @@ import { dictationApi, resetDictationApiForTests, type DictationApi } from './di
 import {
   createDictationStream,
   DictationStreamError,
+  HELD_READ_MS,
   MIN_CHUNK_BYTES,
   type DictationStream,
   type StreamRequest,
@@ -31,6 +32,7 @@ type Req = {
   method: string;
   path: string;
   seq: number | null;
+  waitMs: number | null;
   body: Uint8Array | null;
   json: unknown;
   headers: Record<string, string>;
@@ -94,22 +96,35 @@ class FakeDaemon {
     return this.requests.filter((r) => r.method === 'PUT');
   }
 
-  fetch = async (input: string, init: RequestInit = {}) => {
-    const url = new URL(input);
+  /** Finish requests, in order. */
+  finishes(): Req[] {
+    return this.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/finish'));
+  }
+
+  /**
+   * Both shapes a request reaches `fetch` in: the hand written audio routes pass a URL
+   * and an init, the generated client a `Request`.
+   */
+  fetch = async (input: string | Request, init: RequestInit = {}) => {
+    const request = typeof input === 'string' ? null : input;
+    const url = new URL(request ? request.url : (input as string));
+    const rawHeaders: Record<string, string> = request
+      ? Object.fromEntries(request.headers.entries())
+      : ((init.headers as Record<string, string>) ?? {});
     const headers = Object.fromEntries(
-      Object.entries((init.headers as Record<string, string>) ?? {}).map(([k, v]) => [
-        k.toLowerCase(),
-        v,
-      ])
+      Object.entries(rawHeaders).map(([k, v]) => [k.toLowerCase(), v])
     );
+    const text = request ? await request.text() : null;
+    const signal = request ? request.signal : init.signal;
     const req: Req = {
-      method: init.method ?? 'GET',
+      method: request ? request.method : (init.method ?? 'GET'),
       path: url.pathname,
       seq: url.searchParams.has('seq') ? Number(url.searchParams.get('seq')) : null,
+      waitMs: url.searchParams.has('wait_ms') ? Number(url.searchParams.get('wait_ms')) : null,
       body: init.body instanceof Uint8Array ? new Uint8Array(init.body) : null,
-      json: typeof init.body === 'string' ? JSON.parse(init.body) : null,
+      json: text ? JSON.parse(text) : typeof init.body === 'string' ? JSON.parse(init.body) : null,
       headers,
-      signal: init.signal,
+      signal,
     };
     this.requests.push(req);
     const id = url.pathname.split('/')[3] ?? '';
@@ -121,7 +136,7 @@ class FakeDaemon {
       this.inflightPuts++;
       this.maxInflightPuts = Math.max(this.maxInflightPuts, this.inflightPuts);
       try {
-        reply = await raceAbort(this.onPut(req, id), init.signal);
+        reply = await raceAbort(this.onPut(req, id), signal);
       } finally {
         this.inflightPuts--;
       }
@@ -134,13 +149,26 @@ class FakeDaemon {
     } else {
       reply = { status: 404 };
     }
-    const settled = await raceAbort(reply, init.signal);
-    const text = settled.body === undefined ? '' : JSON.stringify(settled.body);
-    return {
+    const settled = await raceAbort(reply, signal);
+    // As the daemon does: the tail chunk `finish` carries is taken before it answers,
+    // unless the answer refuses the chunk itself.
+    if (
+      req.method === 'POST' &&
+      url.pathname.endsWith('/finish') &&
+      req.body &&
+      req.seq !== null &&
+      ![409, 413, 422].includes(settled.status)
+    ) {
+      this.accept(req, id);
+    }
+    const body = settled.body === undefined ? null : JSON.stringify(settled.body);
+    return new Response(body, {
       status: settled.status,
-      headers: new Headers(settled.headers ?? {}),
-      text: async () => text,
-    } as unknown as Response;
+      headers: {
+        ...(body === null ? {} : { 'Content-Type': 'application/json' }),
+        ...(settled.headers ?? {}),
+      },
+    });
   };
 }
 
@@ -487,9 +515,12 @@ describe('uploading while the person speaks', () => {
     expect(puts[1].seq).toBe(0);
     expect(puts[1].body!.byteLength).toBe(262144);
     // The repeat was answered with the full chunk's total, so seq 1 starts after
-    // the full chunk and the second half is never sent twice.
-    expect(puts[2].seq).toBe(1);
-    expect(puts[2].body!.byteLength).toBe(640000 - 524288);
+    // the full chunk and the second half is never sent twice: what is left fits in
+    // one chunk and rides on finish.
+    expect(puts).toHaveLength(2);
+    const [finish] = daemon.finishes();
+    expect(finish.seq).toBe(1);
+    expect(finish.body!.byteLength).toBe(640000 - 524288);
     expect(Array.from(daemon.audio('n'))).toEqual(Array.from(audio(20)));
   });
 
@@ -528,6 +559,7 @@ describe('uploading while the person speaks', () => {
     expect(Array.from(daemon.audio('s2'))).toEqual(Array.from(audio(5)));
 
     daemon.onPut = () => ({ status: 410 });
+    daemon.onFinish = () => ({ status: 410 });
     const lost = createDictationStream(REQUEST);
     await lost.ready;
     lost.push(audio(1));
@@ -603,6 +635,34 @@ describe('when the upload fails while the person speaks', () => {
     }
   });
 
+  it('a PUT answering 500 engineFailed is reported at once, never resent, and Retry replays the audio', async () => {
+    daemon.onPut = (req, id) =>
+      id === 's1' && req.seq === 1
+        ? { status: 500, body: { code: 'engineFailed', message: 'The worker stopped.' } }
+        : daemon.accept(req, id);
+    const stream = createDictationStream(REQUEST);
+    const failed = vi.fn();
+    stream.onFailed(failed);
+    await stream.ready;
+    await speak(stream, 4.5);
+    expect(failed).toHaveBeenCalledTimes(1);
+    const error = failed.mock.calls[0][0] as DictationStreamError;
+    expect(error.code).toBe('engineFailed');
+    expect(error.serverMessage).toBe('The worker stopped.');
+    expect(error.retryable).toBe(true);
+    // One answer was enough: the 500 was not taken for a passing 5xx and resent.
+    expect(daemon.puts().filter((p) => p.seq === 1)).toHaveLength(1);
+    await expect(stream.finish()).rejects.toMatchObject({ code: 'engineFailed' });
+
+    const second = stream.retry();
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(second).resolves.toEqual(TRANSCRIPT);
+    expect(stream.id).toBe('s2');
+    // What was kept up to the failure went into the new stream.
+    expect(daemon.audio('s2').length).toBe(Math.round(stream.audioSeconds * RATE));
+    expect(daemon.audio('s2').length).toBeGreaterThanOrEqual(4 * RATE);
+  });
+
   it('a cancel is not a failure', async () => {
     daemon.onPut = () => never<Reply>();
     const stream = createDictationStream(REQUEST);
@@ -618,7 +678,113 @@ describe('when the upload fails while the person speaks', () => {
 });
 
 describe('finishing', () => {
-  it('polls every 500 ms after a 202, with no request held open', async () => {
+  it('sends what is left with finish, so the stop is one round trip', async () => {
+    const stream = createDictationStream(REQUEST);
+    await stream.ready;
+    const end = await speak(stream, 5.3);
+    const before = daemon.puts().length;
+    const transcript = stream.finish();
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(transcript).resolves.toEqual(TRANSCRIPT);
+    // No PUT after the stop: the last 1.3 s went up with finish.
+    expect(daemon.puts()).toHaveLength(before);
+    const [finish] = daemon.finishes();
+    expect(finish.seq).toBe(before);
+    expect(finish.headers['content-type']).toBe('application/octet-stream');
+    expect(finish.headers['x-secret-key']).toBe('secret-1');
+    expect(finish.body!.byteLength).toBe((end - 4 * RATE) * 2);
+    expect(Array.from(daemon.audio('s1'))).toEqual(Array.from(audio(end / RATE)));
+
+    // Nothing left after the last PUT: finish carries no body and no seq.
+    const quiet = createDictationStream(REQUEST);
+    await quiet.ready;
+    await speak(quiet, 2);
+    await vi.advanceTimersByTimeAsync(10);
+    const done = quiet.finish();
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(done).resolves.toEqual(TRANSCRIPT);
+    expect(last(daemon.finishes())).toMatchObject({ seq: null, body: null });
+  });
+
+  it('a finish that times out is resent with the same seq and the same tail', async () => {
+    let first = true;
+    daemon.onFinish = () => {
+      if (first) {
+        first = false;
+        return never<Reply>();
+      }
+      return { status: 200, body: TRANSCRIPT };
+    };
+    const stream = createDictationStream(REQUEST);
+    await stream.ready;
+    stream.push(audio(1));
+    const transcript = stream.finish();
+    await vi.advanceTimersByTimeAsync(15_001);
+    await expect(transcript).resolves.toEqual(TRANSCRIPT);
+    const [a, b] = daemon.finishes();
+    expect(b.seq).toBe(a.seq);
+    expect(Array.from(b.body!)).toEqual(Array.from(a.body!));
+  });
+
+  it('a 413 on the tail halves it and sends the rest as PUTs first', async () => {
+    daemon.onFinish = (req) =>
+      req.body && req.body.byteLength > 65_536
+        ? { status: 413 }
+        : { status: 200, body: TRANSCRIPT };
+    // The create answers after the stop, so all 3 s are left for finish.
+    let answer!: (reply: Reply) => void;
+    daemon.onCreate = () => new Promise<Reply>((resolve) => (answer = resolve));
+    const stream = createDictationStream(REQUEST);
+    stream.push(audio(3));
+    const transcript = stream.finish();
+    await flush();
+    answer({
+      status: 201,
+      body: { stream_id: 'late', max_chunk_bytes: 524288, idle_timeout_s: 60, max_seconds: 600 },
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(transcript).resolves.toEqual(TRANSCRIPT);
+    expect(daemon.finishes()[0].body!.byteLength).toBe(3 * RATE * 2);
+    expect(daemon.puts().map((p) => p.body!.byteLength)).toEqual([65_536]);
+    expect(last(daemon.finishes())!.seq).toBe(1);
+    expect(Array.from(daemon.audio('late'))).toEqual(Array.from(audio(3)));
+
+    // At the 64 KiB floor a 413 on the tail is MSG-413.
+    daemon.onFinish = (req) => (req.body ? { status: 413 } : { status: 200, body: TRANSCRIPT });
+    daemon.onCreate = () => ({
+      status: 201,
+      body: { stream_id: 'small', max_chunk_bytes: 524288, idle_timeout_s: 60, max_seconds: 600 },
+    });
+    const small = createDictationStream(REQUEST);
+    await small.ready;
+    small.push(audio(1));
+    const refused = small.finish();
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(refused).rejects.toMatchObject({ code: 'proxy413' });
+  });
+
+  it('a 409 outOfOrder on the tail resends from expected_seq', async () => {
+    let refused = false;
+    daemon.onFinish = (_req, id) => {
+      if (!refused) {
+        refused = true;
+        daemon.streams.get(id)!.delete(1);
+        return { status: 409, body: { code: 'outOfOrder', message: '', expected_seq: 1 } };
+      }
+      return { status: 200, body: TRANSCRIPT };
+    };
+    const stream = createDictationStream(REQUEST);
+    await stream.ready;
+    await speak(stream, 5);
+    const transcript = stream.finish();
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(transcript).resolves.toEqual(TRANSCRIPT);
+    expect(daemon.puts().map((p) => p.seq)).toEqual([0, 1]);
+    expect(daemon.finishes().map((f) => f.seq)).toEqual([2, 1]);
+    expect(Array.from(daemon.audio('s1'))).toEqual(Array.from(audio(5)));
+  });
+
+  it('after a 202 reads with a held GET, never a sleep between two polls', async () => {
     daemon.onFinish = () => ({ status: 202, body: { pending: true } });
     let polls = 0;
     daemon.onPoll = () =>
@@ -627,16 +793,40 @@ describe('finishing', () => {
     await stream.ready;
     stream.push(audio(1));
     const transcript = stream.finish();
-    await flush();
-    expect(polls).toBe(0);
-    await vi.advanceTimersByTimeAsync(500);
-    expect(polls).toBe(1);
-    await vi.advanceTimersByTimeAsync(500);
-    expect(polls).toBe(2);
-    await vi.advanceTimersByTimeAsync(500);
+    // Each read is answered at once here, so all three run well inside one old
+    // 500 ms poll interval.
+    await vi.advanceTimersByTimeAsync(400);
+    expect(polls).toBe(3);
     await expect(transcript).resolves.toEqual(TRANSCRIPT);
     const gets = daemon.requests.filter((r) => r.method === 'GET');
     expect(gets.every((r) => r.path === `/dictation/streams/${stream.id}`)).toBe(true);
+    expect(gets.every((r) => r.waitMs === HELD_READ_MS)).toBe(true);
+  });
+
+  it('a held read answers the moment the daemon does', async () => {
+    daemon.onFinish = () => ({ status: 202, body: { pending: true } });
+    let polls = 0;
+    daemon.onPoll = () => {
+      polls++;
+      return new Promise<Reply>((resolve) =>
+        setTimeout(() => resolve({ status: 200, body: TRANSCRIPT }), 2_400)
+      );
+    };
+    const stream = createDictationStream(REQUEST);
+    await stream.ready;
+    stream.push(audio(1));
+    let settled = false;
+    const transcript = stream.finish().then((t) => {
+      settled = true;
+      return t;
+    });
+    await vi.advanceTimersByTimeAsync(2_399);
+    expect(settled).toBe(false);
+    expect(polls).toBe(1);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(settled).toBe(true);
+    await expect(transcript).resolves.toEqual(TRANSCRIPT);
+    expect(polls).toBe(1);
   });
 
   it('maps 500 engineFailed to a retryable failure, and Retry replays the audio into a new stream', async () => {
