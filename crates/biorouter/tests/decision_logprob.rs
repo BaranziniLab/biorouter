@@ -7,13 +7,14 @@
 //! (`docs.ollama.com/api/chat`): a top-level `logprobs` array of
 //! `{token, logprob, bytes, top_logprobs}`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use biorouter::decision::{
-    Answer, DecisionAdapter, DecisionContext, DecisionError, DecisionKind, DecisionModel,
-    DecisionModelEntry, DecisionModelRef, DecisionModelSource, DecisionRequest, DecisionResult,
-    DecisionService, DecisionSession, DecisionUseGate, ProbabilitySource, Question, Threshold,
+    Answer, DecisionAdapter, DecisionContext, DecisionError, DecisionKind, DecisionLogEntry,
+    DecisionModel, DecisionModelEntry, DecisionModelRef, DecisionModelSource, DecisionOutcome,
+    DecisionRequest, DecisionResult, DecisionService, DecisionSession, DecisionSink, DecisionUsage,
+    DecisionUseGate, ProbabilitySource, Question, Threshold,
 };
 use biorouter::privacy::ProviderTier;
 use biorouter::providers::api_client::{ApiClient, AuthMethod};
@@ -223,6 +224,95 @@ async fn ollama_without_logprobs_downgrades_to_a_verbalized_answer_with_a_reason
         (d.probabilities["yes"] - 0.8).abs() < 1e-9,
         "not a made-up 1.0"
     );
+}
+
+/// Every row the service hands its sink.
+struct Rows(Arc<Mutex<Vec<DecisionLogEntry>>>);
+
+#[async_trait]
+impl DecisionSink for Rows {
+    async fn record(&self, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        self.0.lock().unwrap().push(entry);
+        Ok(())
+    }
+}
+
+/// One request per question, so a reply that cannot be read partway follows
+/// requests already answered and billed: the error, and the failure row,
+/// carry every one of them, the unreadable reply's own included.
+#[tokio::test]
+async fn a_malformed_reply_partway_keeps_the_usage_of_questions_already_asked() {
+    let server = MockServer::start().await;
+    // The first question is answered with logprobs.
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "message": {"role": "assistant", "content": "Yes"},
+            "logprobs": [{"token": "Yes", "logprob": -0.05,
+                "top_logprobs": [{"token": "Yes", "logprob": -0.05}, {"token": "No", "logprob": -3.9}]}],
+            "done": true,
+            "prompt_eval_count": 20, "eval_count": 1
+        })))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Every later request comes back 2xx with no logprobs and a reply that
+    // cannot be read: the second question's logprob request, then its
+    // verbalized fallback. Both were billed.
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "message": {"role": "assistant", "content": "I cannot tell from this."},
+            "done": true,
+            "prompt_eval_count": 30, "eval_count": 4
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let model = minicheck(&server, false);
+    let wanted = model.model_ref();
+    let rows = Arc::new(Mutex::new(Vec::new()));
+    let mut questions = claim(None);
+    questions.insert(
+        "stated".to_string(),
+        Question {
+            instructions: "Is a diagnosis year stated?".into(),
+            kind: DecisionKind::Binary {},
+            threshold: None,
+        },
+    );
+    let err = DecisionService::new(Arc::new(Pinned(model)))
+        .with_use_gate(Arc::new(Allow))
+        .with_default_model(None)
+        .with_sink(Arc::new(Rows(Arc::clone(&rows))))
+        .decide(
+            None,
+            Some(&wanted),
+            &DecisionRequest {
+                questions,
+                context: DecisionContext::Text(
+                    "Document: The patient was diagnosed with MS in 2019.".into(),
+                ),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, DecisionError::Malformed { detail, .. } if detail.contains("`stated`")),
+        "{err:?}"
+    );
+    let billed = DecisionUsage {
+        input_tokens: Some(20 + 30 + 30),
+        output_tokens: Some(1 + 4 + 4),
+    };
+    assert_eq!(err.billed_usage(), billed);
+
+    let rows = rows.lock().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].outcome, DecisionOutcome::Error);
+    assert_eq!(rows[0].usage, billed, "the failure row carries it");
 }
 
 fn openai_model(server: &MockServer) -> Arc<dyn DecisionModel> {

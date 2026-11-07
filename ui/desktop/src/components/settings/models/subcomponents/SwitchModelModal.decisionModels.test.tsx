@@ -8,6 +8,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../api';
+import type { DecisionInstallStatus } from '../../../../utils/sessionDecisions';
 import { SwitchModelModal, groupProviderOptions } from './SwitchModelModal';
 import { switchModelCopy } from '../copy';
 
@@ -16,7 +17,41 @@ const mocks = vi.hoisted(() => ({
   getProviderModels: vi.fn(),
   read: vi.fn(),
   changeModel: vi.fn(),
+  install: vi.fn(),
+  startInstall: vi.fn(),
 }));
+
+vi.mock('../../../../utils/sessionDecisions', async (original) => ({
+  ...(await original<typeof import('../../../../utils/sessionDecisions')>()),
+  fetchDecisionInstall: mocks.install,
+  startDecisionInstall: mocks.startInstall,
+}));
+
+/** `GET /decisions/models/install` with Ollama running here, and tev1:0.8b installed or not. */
+function installStatus(installed: boolean): { data: DecisionInstallStatus; missing: boolean } {
+  return {
+    data: {
+      offers: [
+        {
+          model: 'tev1:0.8b',
+          displayName: 'tev1:0.8b',
+          approxSize: 'about 1.5 GB',
+          note: 'small and fast',
+          isDefault: true,
+          installed,
+        },
+      ],
+      ollama: {
+        baseUrl: 'http://127.0.0.1:11434/',
+        state: 'running',
+        version: null,
+        message: null,
+      },
+      job: null,
+    },
+    missing: false,
+  };
+}
 
 vi.mock('../../../ConfigContext', () => ({
   useConfig: () => ({
@@ -79,10 +114,16 @@ beforeEach(() => {
   mocks.getProviderModels.mockResolvedValue(['gpt-5.5-2026-04-24']);
   mocks.read.mockResolvedValue('');
   mocks.changeModel.mockResolvedValue(true);
+  mocks.install.mockResolvedValue(installStatus(true));
 });
 
 async function openProviderMenu() {
   await screen.findByText('gpt-5.5-2026-04-24');
+  fireEvent.keyDown(screen.getAllByRole('combobox')[0], { key: 'ArrowDown', code: 'ArrowDown' });
+}
+
+/** The provider menu, opened again once another provider is chosen. */
+async function openProviderMenuAgain() {
   fireEvent.keyDown(screen.getAllByRole('combobox')[0], { key: 'ArrowDown', code: 'ArrowDown' });
 }
 
@@ -147,6 +188,63 @@ describe('decision models in the model picker', () => {
         expect.anything()
       )
     );
+  });
+
+  /**
+   * Ollama's decision models with none on this computer: picking one would bind a
+   * model that answers nothing, so the install is offered beside the list.
+   */
+  it('an empty decision group shows the install panel', async () => {
+    mocks.getProviders.mockResolvedValue([
+      ROWS[0],
+      provider('ollama_decision', 'Ollama decision models', 'private'),
+    ]);
+    mocks.getProviderModels.mockImplementation(async (name: string) =>
+      name === 'ollama_decision' ? [] : ['gpt-5.5-2026-04-24']
+    );
+    mocks.install.mockResolvedValue(installStatus(false));
+    render(
+      <SwitchModelModal sessionId="s1" privacyTier="private" onClose={vi.fn()} setView={vi.fn()} />
+    );
+    await openProviderMenu();
+    fireEvent.click(await screen.findByRole('option', { name: /Ollama decision models/ }));
+    const panel = await screen.findByTestId('decision-model-install');
+    expect(panel).toHaveTextContent(
+      'This chat is private, so only a decision model on this computer may read it, and none is installed.'
+    );
+    mocks.startInstall.mockResolvedValue({
+      ...installStatus(false).data,
+      job: {
+        model: 'tev1:0.8b',
+        state: 'installed',
+        completedBytes: 1,
+        totalBytes: 1,
+        status: 'success',
+        error: null,
+      },
+    });
+    const calls = mocks.getProviderModels.mock.calls.length;
+    fireEvent.click(within(panel).getByRole('button', { name: 'Install tev1:0.8b' }));
+    expect(mocks.startInstall).toHaveBeenCalledWith('tev1:0.8b');
+    expect(await screen.findByText('tev1:0.8b is installed.')).toBeInTheDocument();
+    // The list is read again, with the model just installed in it.
+    await waitFor(() => expect(mocks.getProviderModels.mock.calls.length).toBeGreaterThan(calls));
+  });
+
+  it('says nothing about installing when the decision model is there, or for Baseten', async () => {
+    render(<SwitchModelModal sessionId="s1" onClose={vi.fn()} setView={vi.fn()} />);
+    await openProviderMenu();
+    fireEvent.click(await screen.findByRole('option', { name: /Ollama decision models/ }));
+    expect(await screen.findByText('tev1:0.8b')).toBeInTheDocument();
+    await waitFor(() => expect(mocks.install).toHaveBeenCalled());
+    expect(screen.queryByTestId('decision-model-install')).toBeNull();
+    mocks.install.mockClear();
+
+    await openProviderMenuAgain();
+    fireEvent.click(await screen.findByRole('option', { name: /Baseten decision models/ }));
+    await screen.findByText('decision-models/joey-1');
+    expect(screen.queryByTestId('decision-model-install')).toBeNull();
+    expect(mocks.install).not.toHaveBeenCalled();
   });
 
   it('keeps a public decision model out of a private chat, before it is chosen', async () => {

@@ -746,4 +746,29 @@ mod tests {
         assert!(!encoded_again.is_empty());
         assert_eq!(encoded, encoded_again);
     }
+
+    /// A save reads its workflow from the JSON body, not from a file, so the
+    /// misplaced-key refusal has to come from `Workflow`'s own `Deserialize`:
+    /// a top-level `monitors` is refused with its place, not saved without it.
+    #[test]
+    fn a_save_with_a_top_level_monitors_key_is_refused_naming_its_place() {
+        let refusal = deserialize_save_workflow_request(serde_json::json!({
+            "workflow": {
+                "title": "Count",
+                "description": "Count to thirty",
+                "prompt": "Echo the numbers 1 to 30.",
+                "monitors": [{"id": "reached-ten", "name": "Reached ten"}]
+            }
+        }))
+        .expect_err("a top-level `monitors` must not be dropped from a saved workflow");
+        assert_eq!(refusal.status, StatusCode::BAD_REQUEST);
+        assert!(
+            refusal.message.starts_with(
+                "save workflow validation failed at workflow.monitors: `monitors` is not a \
+                 top-level workflow field: monitors go under `decision_settings.monitors`."
+            ),
+            "{}",
+            refusal.message
+        );
+    }
 }

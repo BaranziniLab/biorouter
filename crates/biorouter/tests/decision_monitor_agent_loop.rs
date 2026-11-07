@@ -18,6 +18,17 @@
 //! another monitor's reached the agent); an elicitation answer leaves the
 //! running turn's decision turn alone; and a batch of 600 decisions in one turn
 //! is ONE marker.
+//!
+//! And, since the monitors are read at every point: a monitor added, edited or
+//! removed while a turn runs applies at that turn's next point; a stop monitor
+//! with no re-arm level stops every turn while its answer holds; a stopped
+//! turn leaves the next turn's model a note saying why; nothing is skipped in
+//! silence (unreadable settings, a check made while the person's message
+//! waits, a slow one, a text-only window over a tool run, a subagent's
+//! `turn_end` point, a wound-down turn); the latches survive a restart; a
+//! monitor's stop stops the subagents the chat started, and waits for them
+//! only so long; and a stop made by a copy of a person's monitor in a subagent
+//! stops its siblings and the chat that started it.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -26,7 +37,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use biorouter::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME;
-use biorouter::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
+use biorouter::agents::subagent_handle::{self, BackgroundSubagent, ChildStopCause};
+use biorouter::agents::subagent_result::SubagentResult;
+use biorouter::agents::{Agent, AgentConfig, AgentEvent, ReplyBudget, SessionConfig};
 use biorouter::config::permission::PermissionManager;
 use biorouter::config::BioRouterMode;
 use biorouter::conversation::message::{
@@ -34,9 +47,10 @@ use biorouter::conversation::message::{
 };
 use biorouter::decision::log::DecisionTurnMarker;
 use biorouter::decision::model::DecisionCaps;
+use biorouter::decision::monitor::{EscalatedStop, MonitorRegistry, Step};
 use biorouter::decision::settings::{
-    DecisionSettings, MonitorAction, MonitorCriterion, MonitorErrorPolicy, MonitorTiming,
-    MonitorWindow,
+    DecisionSettings, MonitorAction, MonitorCriterion, MonitorDirection, MonitorErrorPolicy,
+    MonitorOwner, MonitorStopReason, MonitorTiming, MonitorWindow,
 };
 use biorouter::decision::types::{DecisionKindTag, ModelVerdicts, QuestionVerdict};
 use biorouter::decision::{
@@ -54,6 +68,7 @@ use futures::StreamExt;
 use indexmap::IndexMap;
 use rmcp::model::{CallToolRequestParams, Tool};
 use tempfile::TempDir;
+use tokio_util::sync::CancellationToken;
 
 #[ctor::ctor]
 fn sandbox() {
@@ -92,6 +107,8 @@ struct Decisions {
     seen: Mutex<Vec<DecisionRequest>>,
     /// The model's window, in tokens.
     context_tokens: usize,
+    /// How long each request takes, in order; none once the list runs out.
+    delays: Mutex<VecDeque<Duration>>,
 }
 
 impl Decisions {
@@ -115,7 +132,14 @@ impl Decisions {
             lists: AtomicUsize::new(0),
             seen: Mutex::new(Vec::new()),
             context_tokens,
+            delays: Mutex::new(VecDeque::new()),
         })
+    }
+
+    /// The answers to the first requests, in order; `otherwise` after them.
+    fn answering(self: Arc<Self>, answers: &[Answer]) -> Arc<Self> {
+        self.answers.lock().unwrap().extend(answers.iter().copied());
+        self
     }
 
     fn requests(&self) -> usize {
@@ -175,6 +199,10 @@ impl DecisionModel for ScriptedModel {
     async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
         self.0.requests.fetch_add(1, Ordering::SeqCst);
         self.0.seen.lock().unwrap().push(request.clone());
+        let delay = self.0.delays.lock().unwrap().pop_front();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
         let answer = self
             .0
             .answers
@@ -272,6 +300,13 @@ struct Llm {
     /// Run during the first call, as the `decide` tool would: a batch with
     /// this many chunks, through this service.
     batch_on_first_call: Option<(Arc<DecisionService>, Arc<SessionManager>, usize)>,
+    /// Saved as the chat's monitors during the call with this index, as a
+    /// person (or another process) would while the turn runs. An empty list
+    /// removes them all.
+    monitors_on_call: Option<(usize, Vec<MonitorCriterion>)>,
+    /// Run during the call with this index.
+    hook_on_call: Option<(usize, Arc<dyn Fn() + Send + Sync>)>,
+    sessions: OnceLock<Arc<SessionManager>>,
 }
 
 impl Llm {
@@ -287,6 +322,9 @@ impl Llm {
             steer_on_first_call: None,
             injection_on_first_call: None,
             batch_on_first_call: None,
+            monitors_on_call: None,
+            hook_on_call: None,
+            sessions: OnceLock::new(),
         }
     }
 
@@ -387,6 +425,23 @@ impl Provider for Llm {
                 self.run_batch(service, sessions, *chunks).await;
             }
         }
+        if let Some((_, monitors)) = self.monitors_on_call.as_ref().filter(|(at, _)| *at == n) {
+            let sessions = self.sessions.get().expect("a chat's store");
+            let session_id = self.session_id.get().expect("a session");
+            biorouter::decision::settings::save(
+                sessions,
+                session_id,
+                DecisionSettings {
+                    default_model: None,
+                    monitors: monitors.clone(),
+                },
+            )
+            .await
+            .expect("valid monitors are stored mid-turn");
+        }
+        if let Some((_, hook)) = self.hook_on_call.as_ref().filter(|(at, _)| *at == n) {
+            hook();
+        }
         let reply = self
             .script
             .lock()
@@ -481,6 +536,17 @@ async fn chat(
     classification: SessionClassification,
     monitors: Vec<MonitorCriterion>,
 ) -> Chat {
+    chat_of(SessionType::User, llm, decisions, classification, monitors).await
+}
+
+/// [`chat`], for a chat of `session_type` (a subagent's, say).
+async fn chat_of(
+    session_type: SessionType,
+    llm: Arc<Llm>,
+    decisions: &Arc<Decisions>,
+    classification: SessionClassification,
+    monitors: Vec<MonitorCriterion>,
+) -> Chat {
     let dir = TempDir::new().unwrap();
     let sessions = Arc::new(SessionManager::new_ephemeral(dir.path().join("data")));
     let agent = Agent::with_config(AgentConfig::new(
@@ -493,7 +559,7 @@ async fn chat(
         .create_session(
             dir.path().to_path_buf(),
             "decision monitor test".into(),
-            SessionType::User,
+            session_type,
         )
         .await
         .unwrap();
@@ -525,12 +591,31 @@ async fn chat(
     let agent = Arc::new(agent);
     let _ = llm.agent.set(agent.clone());
     let _ = llm.session_id.set(session.id.clone());
+    let _ = llm.sessions.set(sessions.clone());
     Chat {
         agent,
         sessions,
         session_id: session.id,
         _dir: dir,
     }
+}
+
+/// A restart: a new agent over the same store, asking the same decision
+/// models and the same chat model, as the daemon's would after it came back.
+/// Nothing of the old agent's memory carries over.
+async fn restart(chat: &mut Chat, llm: &Arc<Llm>, decisions: &Arc<Decisions>) {
+    let agent = Agent::with_config(AgentConfig::new(
+        chat.sessions.clone(),
+        Arc::new(PermissionManager::new(chat._dir.path().join("permissions"))),
+        None,
+        BioRouterMode::Auto,
+    ));
+    agent.set_decision_service(service(decisions));
+    agent
+        .update_provider(llm.clone() as Arc<dyn Provider>, &chat.session_id)
+        .await
+        .unwrap();
+    chat.agent = Arc::new(agent);
 }
 
 fn config(chat: &Chat) -> SessionConfig {
@@ -546,9 +631,13 @@ fn config(chat: &Chat) -> SessionConfig {
 }
 
 async fn send(chat: &Chat, text: &str) -> Vec<Message> {
+    send_with(chat, text, config(chat)).await
+}
+
+async fn send_with(chat: &Chat, text: &str, config: SessionConfig) -> Vec<Message> {
     let stream = chat
         .agent
-        .reply(Message::user().with_text(text), config(chat), None)
+        .reply(Message::user().with_text(text), config, None)
         .await
         .expect("a reply stream");
     tokio::pin!(stream);
@@ -581,6 +670,12 @@ fn monitor(id: &str, name: &str, action: MonitorAction, threshold: f64) -> Monit
         on_error: MonitorErrorPolicy::Notify,
         max_evals_per_turn: 50,
         enabled: true,
+        direction: Default::default(),
+        rearm_above: None,
+        set_by: Default::default(),
+        set_by_session: None,
+        inherited_from: None,
+        apply_to_subagents: false,
     }
 }
 
@@ -1009,10 +1104,15 @@ async fn a_steer_the_person_typed_beats_a_monitor_stop() {
         .texts_seen_on_call(1)
         .iter()
         .any(|t| t.contains("Actually, use R instead.")));
+    // Was 1: the point at which the person's message waited was dropped, so
+    // nothing was checked there. A point now checks within its grace and
+    // holds the stop for the person's message; the second check, after the
+    // message was answered, makes the stop. The person's message still wins
+    // (it was answered, call 1), which is what this test is about.
     assert_eq!(
         decisions.requests(),
-        1,
-        "no monitor was asked while the person's message waited"
+        2,
+        "the monitor was checked while the person's message waited, and again after it"
     );
     assert_eq!(
         count_containing(&notices(&messages), "so the turn stops here"),
@@ -1660,12 +1760,18 @@ async fn a_steer_beside_a_stop_tells_the_agent_in_the_turn_carried_on() {
         Reply::Text("Done."),
     ));
     let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    // The stop monitor opts into stopping once (a re-arm level). Without one
+    // it would stop the carried-on turn too while P holds, which is now the
+    // default (`a_stop_monitor_stops_again_after_the_person_carries_on`);
+    // this test is about the steer held beside it.
+    let mut form = monitor("form", "Form reached", MonitorAction::Stop, 0.85);
+    form.rearm_below = Some(0.3);
     let chat = chat(
         llm.clone(),
         &decisions,
         SessionClassification::Public,
         vec![
-            monitor("form", "Form reached", MonitorAction::Stop, 0.85),
+            form,
             monitor("loop", "Stuck in a loop", MonitorAction::Steer, 0.5),
         ],
     )
@@ -1842,5 +1948,1467 @@ async fn six_hundred_decisions_in_one_turn_are_one_marker() {
         stored.len() <= 4,
         "the transcript holds the prompt, the reply and the marker, not the calls: {}",
         stored.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Monitors read at every point, and what a stop leaves behind.
+// ---------------------------------------------------------------------------
+
+/// The frame of the note a stopped turn leaves its model.
+const STOP_NOTE: &str = "<decision-monitor-stop>";
+
+/// The stored rows the model reads and the person is never shown, holding
+/// `needle`.
+fn model_only_rows<'a>(messages: &'a [Message], needle: &str) -> Vec<&'a Message> {
+    messages
+        .iter()
+        .filter(|m| !m.is_user_visible() && m.is_agent_visible())
+        .filter(|m| m.as_concat_text().contains(needle))
+        .collect()
+}
+
+/// Where the first of `messages` that `matches` sits.
+fn position(messages: &[Message], matches: impl Fn(&Message) -> bool) -> usize {
+    messages
+        .iter()
+        .position(matches)
+        .expect("the message is stored")
+}
+
+/// Whether `message` shows the person a notice holding `needle`.
+fn shows(message: &Message, needle: &str) -> bool {
+    notices(std::slice::from_ref(message))
+        .iter()
+        .any(|n| n.contains(needle))
+}
+
+const FORM_STOPS: &str =
+    "Monitor 'Form reached' fired (P 0.95, threshold 0.85), so the turn stops here.";
+
+/// A stop monitor with no re-arm level stops every turn in which its answer
+/// holds (PR #469's rule): the person carries on, and the first check that
+/// still holds stops the turn again, as its notice says it will.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_monitor_stops_again_after_the_person_carries_on() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    )
+    .await;
+
+    let first = send(&chat, "Fill in the form.").await;
+    let second = send(&chat, "Carry on.").await;
+
+    assert_eq!(llm.calls(), 2, "each turn stopped at its first check");
+    assert_eq!(decisions.requests(), 2);
+    assert_eq!(count_containing(&notices(&first), FORM_STOPS), 1);
+    let shown = notices(&second);
+    assert_eq!(count_containing(&shown, FORM_STOPS), 1, "{shown:?}");
+    assert_eq!(
+        count_containing(&shown, "stops the turn again while its answer holds"),
+        1,
+        "{shown:?}"
+    );
+}
+
+/// With a re-arm level a stop monitor stops once and stays quiet until P
+/// falls below it, so the turn the person carries on runs to its end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_monitor_with_a_rearm_level_does_not_stop_the_turn_carried_on() {
+    let llm = Arc::new(Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool],
+        Reply::Text("Done."),
+    ));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let mut form = monitor("form", "Form reached", MonitorAction::Stop, 0.85);
+    form.rearm_below = Some(0.3);
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![form],
+    )
+    .await;
+
+    let first = send(&chat, "Fill in the form.").await;
+    let second = send(&chat, "Carry on.").await;
+
+    assert_eq!(llm.calls(), 2);
+    assert_eq!(decisions.requests(), 2, "checked in both turns");
+    let shown = notices(&first);
+    assert_eq!(count_containing(&shown, FORM_STOPS), 1, "{shown:?}");
+    assert_eq!(
+        count_containing(&shown, "It stays quiet until P falls below 0.30."),
+        1,
+        "{shown:?}"
+    );
+    assert_eq!(
+        count_containing(&notices(&second), "so the turn stops here"),
+        0
+    );
+    assert!(second
+        .iter()
+        .any(|m| m.role == rmcp::model::Role::Assistant && m.as_concat_text().contains("Done.")));
+}
+
+/// A monitor saved while a turn runs (from another window, the CLI, the
+/// agent that started this chat) is checked at that turn's next point, not
+/// from the next turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_monitor_added_while_the_turn_runs_is_checked_at_the_next_point() {
+    let mut llm = Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool, Reply::Tool, Reply::Tool],
+        Reply::Text("All done."),
+    );
+    llm.monitors_on_call = Some((
+        1,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.5)],
+    ));
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![],
+    )
+    .await;
+
+    let messages = send(&chat, "Fill in the consent form.").await;
+
+    assert_eq!(llm.calls(), 4);
+    assert_eq!(
+        decisions.requests(),
+        3,
+        "checked at each point after it was saved, and none before"
+    );
+    assert_eq!(
+        count_containing(&notices(&messages), "Monitor 'Form reached' fired"),
+        1
+    );
+    let marker = markers(&messages);
+    assert_eq!(marker.len(), 1, "the running turn's marker counts it");
+    assert_eq!(marker[0].items.len(), 1);
+    assert_eq!(marker[0].items[0].count, 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_monitor_added_mid_turn_stops_that_turn() {
+    let mut llm = Llm::new(ProviderTier::Public, vec![], Reply::Tool);
+    llm.monitors_on_call = Some((
+        1,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    ));
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![],
+    )
+    .await;
+
+    let messages = send(&chat, "Fill in the consent form.").await;
+
+    assert_eq!(
+        llm.calls(),
+        2,
+        "the point after the call that saved it stopped the turn"
+    );
+    assert_eq!(decisions.requests(), 1);
+    assert_eq!(count_containing(&notices(&messages), FORM_STOPS), 1);
+}
+
+/// A monitor edited while the turn runs is asked its new question at the next
+/// point.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_monitor_edited_mid_turn_is_asked_its_new_question() {
+    let mut edited = monitor("form", "Form reached", MonitorAction::Notify, 0.95);
+    edited.question.instructions = "Has the agent submitted the consent form?".into();
+    let mut llm = Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool, Reply::Tool],
+        Reply::Text("All done."),
+    );
+    llm.monitors_on_call = Some((1, vec![edited]));
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.95)],
+    )
+    .await;
+
+    send(&chat, "Fill in the consent form.").await;
+
+    let asked: Vec<String> = decisions
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.questions["form"].instructions.clone())
+        .collect();
+    assert_eq!(
+        asked,
+        vec![
+            "Has the agent reached the consent form page?".to_string(),
+            "Has the agent submitted the consent form?".to_string(),
+            "Has the agent submitted the consent form?".to_string(),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_monitor_removed_mid_turn_is_not_asked_again() {
+    let mut llm = Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool, Reply::Tool, Reply::Tool],
+        Reply::Text("All done."),
+    );
+    llm.monitors_on_call = Some((1, vec![]));
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.5)],
+    )
+    .await;
+
+    let messages = send(&chat, "Fill in the consent form.").await;
+
+    assert_eq!(llm.calls(), 4);
+    assert_eq!(
+        decisions.requests(),
+        1,
+        "asked once, before the save that removed it"
+    );
+    let marker = markers(&messages);
+    assert_eq!(marker.len(), 1, "the check it made is still the turn's");
+    assert_eq!(marker[0].items[0].count, 1);
+}
+
+/// A stopped turn leaves its model a note, stored but never shown to the
+/// person, naming the monitor and why it stopped, between the person's
+/// notice and the turn's marker. The next turn's model reads it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_turn_tells_the_agent_why_on_the_next_turn() {
+    let llm = Arc::new(Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool],
+        Reply::Text("Done."),
+    ));
+    let decisions =
+        Decisions::new(ProviderTier::Private, Answer::Yes(0.1)).answering(&[Answer::Yes(0.95)]);
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    )
+    .await;
+
+    let first = send(&chat, "Fill in the form.").await;
+
+    assert_eq!(llm.calls(), 1);
+    let stored_rows = stored(&chat).await;
+    let notes = model_only_rows(&stored_rows, STOP_NOTE);
+    assert_eq!(notes.len(), 1, "one note for the one stop");
+    let note = notes[0].as_concat_text();
+    assert!(note.contains("name: \"Form reached\""), "{note}");
+    assert!(
+        note.contains(
+            "reason: fired: the probability of the answer it watches for was 0.95 (threshold \
+             0.85)"
+        ),
+        "{note}"
+    );
+    assert!(
+        !notices(&first).iter().any(|n| n.contains(STOP_NOTE)),
+        "the person is never shown it"
+    );
+    let notice_at = position(&stored_rows, |m| shows(m, "so the turn stops here"));
+    let note_at = position(&stored_rows, |m| m.as_concat_text().contains(STOP_NOTE));
+    let marker_at = position(&stored_rows, |m| m.metadata.decision_summary.is_some());
+    assert!(
+        notice_at < note_at && note_at < marker_at,
+        "notice {notice_at}, note {note_at}, marker {marker_at}"
+    );
+    // The stop is the turn's, for the chat that started it to read, once.
+    let report = chat
+        .agent
+        .take_monitor_stop(&chat.session_id)
+        .expect("the turn's stop");
+    assert_eq!(report.name, "Form reached");
+    assert_eq!(report.reason, MonitorStopReason::Fired);
+    assert_eq!(report.p, Some(0.95));
+    assert!(chat.agent.take_monitor_stop(&chat.session_id).is_none());
+
+    send(&chat, "Carry on.").await;
+
+    assert!(
+        llm.texts_seen_on_call(1)
+            .iter()
+            .any(|t| t.contains("stopped here by a decision model")),
+        "the next turn's model read why: {:?}",
+        llm.texts_seen_on_call(1)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fail_closed_stop_tells_the_agent_the_check_failed() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Fail);
+    let mut pause = monitor("safety", "Safety check", MonitorAction::Notify, 0.5);
+    pause.on_error = MonitorErrorPolicy::Pause;
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![pause],
+    )
+    .await;
+
+    send(&chat, "Go.").await;
+
+    assert_eq!(llm.calls(), 1);
+    let stored_rows = stored(&chat).await;
+    let notes = model_only_rows(&stored_rows, STOP_NOTE);
+    assert_eq!(notes.len(), 1);
+    let note = notes[0].as_concat_text();
+    assert!(note.contains("name: \"Safety check\""), "{note}");
+    assert!(
+        note.contains("reason: could not be checked (")
+            && note.contains("it is set to stop the turn when that happens"),
+        "{note}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cap_stop_tells_the_agent_its_limit() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let mut looping = monitor("loop", "Stuck in a loop", MonitorAction::Notify, 0.9);
+    looping.max_evals_per_turn = 2;
+    looping.on_error = MonitorErrorPolicy::Pause;
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![looping],
+    )
+    .await;
+
+    send(&chat, "Fill in the consent form.").await;
+
+    assert_eq!(llm.calls(), 2);
+    let stored_rows = stored(&chat).await;
+    let notes = model_only_rows(&stored_rows, STOP_NOTE);
+    assert_eq!(notes.len(), 1);
+    let note = notes[0].as_concat_text();
+    assert!(
+        note.contains("reason: reached its limit of 2 checks this turn"),
+        "{note}"
+    );
+}
+
+/// A stop held back for the person's message is no stop: no notice, no
+/// note. Here the check after the message was answered no longer fires.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_stop_writes_no_note() {
+    let mut llm = Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool],
+        Reply::Text("Redone in R."),
+    );
+    llm.steer_on_first_call = Some("Actually, use R instead.");
+    let llm = Arc::new(llm);
+    let decisions =
+        Decisions::new(ProviderTier::Private, Answer::Yes(0.1)).answering(&[Answer::Yes(0.95)]);
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    )
+    .await;
+
+    let messages = send(&chat, "Plot the data in Python.").await;
+
+    assert_eq!(llm.calls(), 2, "the person's message was answered");
+    assert_eq!(
+        decisions.requests(),
+        2,
+        "checked while the message waited, and again after"
+    );
+    assert_eq!(
+        count_containing(&notices(&messages), "the turn stops here"),
+        0
+    );
+    assert!(model_only_rows(&stored(&chat).await, STOP_NOTE).is_empty());
+    assert!(chat.agent.take_monitor_stop(&chat.session_id).is_none());
+}
+
+/// Stores `monitor` as a record this build cannot read: one unknown key.
+async fn store_unreadable_monitors(chat: &Chat, monitor: MonitorCriterion) {
+    let mut value = serde_json::to_value(DecisionSettings {
+        default_model: None,
+        monitors: vec![monitor],
+    })
+    .unwrap();
+    value["monitors"][0]["bogus"] = serde_json::json!(1);
+    chat.sessions
+        .update_extension_state(
+            &chat.session_id,
+            biorouter::decision::settings::DECISION_SETTINGS_STATE,
+            biorouter::decision::settings::DECISION_SETTINGS_VERSION,
+            move |_| Ok(value),
+        )
+        .await
+        .unwrap()
+        .expect("the chat exists");
+}
+
+/// Monitors this build cannot read, one of them set to pause when it cannot
+/// check, stop the turn rather than letting it run unwatched.
+#[tokio::test(flavor = "multi_thread")]
+async fn unreadable_monitors_naming_pause_stop_the_turn() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![],
+    )
+    .await;
+    let mut pause = monitor("safety", "Safety check", MonitorAction::Notify, 0.5);
+    pause.on_error = MonitorErrorPolicy::Pause;
+    store_unreadable_monitors(&chat, pause).await;
+
+    let messages = send(&chat, "Run echo 1, then echo 2.").await;
+
+    assert_eq!(llm.calls(), 1);
+    assert_eq!(decisions.requests(), 0, "nothing could be read to ask");
+    let shown = notices(&messages);
+    assert_eq!(
+        shown
+            .iter()
+            .filter(|n| n.contains("This chat's monitors could not be read (")
+                && n.contains("so the turn stops here"))
+            .count(),
+        1,
+        "{shown:?}"
+    );
+    let stored_rows = stored(&chat).await;
+    assert_eq!(
+        model_only_rows(&stored_rows, "this chat's monitors could not be read").len(),
+        1,
+        "the next turn's model is told why"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unreadable_monitors_without_pause_say_so_once_and_the_turn_goes_on() {
+    let llm = Arc::new(Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool, Reply::Tool],
+        Reply::Text("Done."),
+    ));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![],
+    )
+    .await;
+    store_unreadable_monitors(
+        &chat,
+        monitor("form", "Form reached", MonitorAction::Notify, 0.5),
+    )
+    .await;
+
+    let messages = send(&chat, "Run echo 1, then echo 2.").await;
+
+    assert_eq!(llm.calls(), 3, "the turn went on");
+    let shown = notices(&messages);
+    assert_eq!(
+        count_containing(&shown, "so none are checked this turn"),
+        1,
+        "{shown:?}"
+    );
+    assert_eq!(
+        count_containing(&shown, "could not be read"),
+        1,
+        "{shown:?}"
+    );
+    assert_eq!(count_containing(&shown, "the turn stops here"), 0);
+}
+
+/// A check made while a message the person typed waits (within the grace)
+/// is made and folded in: its stop is held for the person's message, which
+/// is answered, and the next check makes the stop.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_check_made_while_the_persons_message_waits_holds_the_stop_until_it_is_answered() {
+    let mut llm = Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool],
+        Reply::Text("Redone in R."),
+    );
+    llm.steer_on_first_call = Some("Actually, use R instead.");
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    )
+    .await;
+
+    send(&chat, "Plot the data in Python.").await;
+
+    assert_eq!(llm.calls(), 2, "the person's message was answered");
+    assert_eq!(decisions.requests(), 2);
+    let stored_rows = stored(&chat).await;
+    let steer_at = position(&stored_rows, |m| {
+        m.as_concat_text().contains("Actually, use R instead.")
+    });
+    let stop_at = position(&stored_rows, |m| shows(m, "so the turn stops here"));
+    assert!(
+        steer_at < stop_at,
+        "the stop waited for the person's message: steer {steer_at}, stop {stop_at}"
+    );
+    assert_eq!(model_only_rows(&stored_rows, STOP_NOTE).len(), 1);
+}
+
+/// A notify check made while the person's message waits is shown where it
+/// was made, before that message, rather than dropped and remade after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notify_check_made_while_the_persons_message_waits_is_shown() {
+    let mut llm = Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool],
+        Reply::Text("Redone in R."),
+    );
+    llm.steer_on_first_call = Some("Actually, use R instead.");
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.5)],
+    )
+    .await;
+
+    let messages = send(&chat, "Plot the data in Python.").await;
+
+    assert_eq!(llm.calls(), 2);
+    assert_eq!(decisions.requests(), 2);
+    assert_eq!(
+        count_containing(&notices(&messages), "Monitor 'Form reached' fired"),
+        1
+    );
+    let stored_rows = stored(&chat).await;
+    let notice_at = position(&stored_rows, |m| shows(m, "Monitor 'Form reached' fired"));
+    let steer_at = position(&stored_rows, |m| {
+        m.as_concat_text().contains("Actually, use R instead.")
+    });
+    assert!(
+        notice_at < steer_at,
+        "shown where it was checked: notice {notice_at}, steer {steer_at}"
+    );
+}
+
+/// A check slower than the grace gives way to the person's message: the
+/// message is not held up for it, and the monitor is checked at the next
+/// point.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_check_gives_way_to_the_persons_message_and_is_made_at_the_next_point() {
+    let mut llm = Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool],
+        Reply::Text("Redone in R."),
+    );
+    llm.steer_on_first_call = Some("Actually, use R instead.");
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    decisions
+        .delays
+        .lock()
+        .unwrap()
+        .push_back(Duration::from_millis(500));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.5)],
+    )
+    .await;
+    chat.agent
+        .set_monitor_steer_grace(Duration::from_millis(50));
+
+    let messages = send(&chat, "Plot the data in Python.").await;
+
+    assert_eq!(llm.calls(), 2);
+    assert_eq!(
+        decisions.requests(),
+        2,
+        "the slow check was started, then made again at the next point"
+    );
+    assert_eq!(
+        count_containing(&notices(&messages), "Monitor 'Form reached' fired"),
+        1
+    );
+    let stored_rows = stored(&chat).await;
+    let steer_at = position(&stored_rows, |m| {
+        m.as_concat_text().contains("Actually, use R instead.")
+    });
+    let notice_at = position(&stored_rows, |m| shows(m, "Monitor 'Form reached' fired"));
+    assert!(
+        steer_at < notice_at,
+        "the slow check gave way: steer {steer_at}, notice {notice_at}"
+    );
+}
+
+/// A text-only window counts the messages with text, so a run of tool steps
+/// never empties it, and every point of the run asks.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_text_only_monitor_is_asked_every_step_of_a_tool_run() {
+    let llm = Arc::new(Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool; 5],
+        Reply::Text("Done."),
+    ));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let mut text_only = monitor("form", "Form reached", MonitorAction::Notify, 0.5);
+    text_only.window = MonitorWindow {
+        entries: 2,
+        max_chars: 2000,
+        tool_calls: false,
+    };
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![text_only],
+    )
+    .await;
+
+    let messages = send(&chat, "Run echo 1 through echo 5.").await;
+
+    assert_eq!(llm.calls(), 6);
+    assert_eq!(decisions.requests(), 6, "asked at every point");
+    assert_eq!(
+        count_containing(&notices(&messages), "not checked"),
+        0,
+        "{:?}",
+        notices(&messages)
+    );
+}
+
+/// A subagent's chat runs its `turn_end` monitors as its turn ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_runs_in_a_subagent_chat() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Text("Done.")));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let mut check = monitor("check", "Task done", MonitorAction::Stop, 0.5);
+    check.timing = MonitorTiming::TurnEnd;
+    let chat = chat_of(
+        SessionType::SubAgent,
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![check],
+    )
+    .await;
+
+    let messages = send(&chat, "Summarise the notes.").await;
+
+    assert_eq!(llm.calls(), 1);
+    assert_eq!(
+        decisions.requests(),
+        1,
+        "checked as the subagent's turn ended"
+    );
+    assert_eq!(
+        count_containing(
+            &notices(&messages),
+            "Monitor 'Task done' fired (P 0.90, threshold 0.50), so the turn stops here."
+        ),
+        1,
+        "{:?}",
+        notices(&messages)
+    );
+    let report = chat
+        .agent
+        .take_monitor_stop(&chat.session_id)
+        .expect("the subagent's stop, for the chat that started it");
+    assert_eq!(report.name, "Task done");
+}
+
+/// …and a `turn_end` steer there sends the subagent back to work once, with
+/// the monitor's note.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_steer_monitor_continues_a_subagent_once() {
+    let llm = Arc::new(Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Text("Done.")],
+        Reply::Text("Done, and checked."),
+    ));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let mut check = monitor("check", "Task done", MonitorAction::Steer, 0.5);
+    check.timing = MonitorTiming::TurnEnd;
+    let chat = chat_of(
+        SessionType::SubAgent,
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![check],
+    )
+    .await;
+
+    send(&chat, "Summarise the notes.").await;
+
+    assert_eq!(llm.calls(), 2, "the subagent answered the note once");
+    assert!(
+        llm.texts_seen_on_call(1)
+            .iter()
+            .any(|t| t.contains("<decision-monitor>")),
+        "{:?}",
+        llm.texts_seen_on_call(1)
+    );
+}
+
+/// A `turn_end` point reached as the budget winds the turn down asks nothing
+/// (a billed check would spend past the budget) and says which monitor it did
+/// not check.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_skipped_by_a_budget_wrap_up_says_so() {
+    let llm = Arc::new(Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool],
+        Reply::Text("Done."),
+    ));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let mut check = monitor("check", "Task done", MonitorAction::Stop, 0.5);
+    check.timing = MonitorTiming::TurnEnd;
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![check],
+    )
+    .await;
+    let mut budgeted = config(&chat);
+    // The chat model's first call spends 15 tokens, so the second iteration
+    // finds the budget spent and the model is told to wrap up.
+    budgeted.budget = Some(ReplyBudget {
+        max_seconds: None,
+        max_tokens: Some(10),
+        max_usd: None,
+    });
+
+    let messages = send_with(&chat, "Summarise the notes.", budgeted).await;
+
+    let shown = notices(&messages);
+    assert_eq!(count_containing(&shown, "Budget reached"), 1, "{shown:?}");
+    assert_eq!(decisions.requests(), 0, "nothing was asked past the budget");
+    assert_eq!(
+        count_containing(
+            &shown,
+            "Monitor 'Task done' was not checked at the end of this turn: the turn was being \
+             wound down because it reached its budget."
+        ),
+        1,
+        "{shown:?}"
+    );
+    assert_eq!(count_containing(&shown, "the turn stops here"), 0);
+}
+
+/// A `turn_end` monitor `Task done` set to pause when it cannot check, for
+/// the turns below that end on a limit before their `turn_end` point.
+fn paused_turn_end_monitor() -> MonitorCriterion {
+    let mut check = monitor("check", "Task done", MonitorAction::Stop, 0.5);
+    check.timing = MonitorTiming::TurnEnd;
+    check.on_error = MonitorErrorPolicy::Pause;
+    check
+}
+
+/// Whether `message` holds `needle` anywhere in its text.
+fn says(message: &Message, needle: &str) -> bool {
+    message.as_concat_text().contains(needle) || shows(message, needle)
+}
+
+/// [`config`] with an action limit of 4: under the 6 identical tool failures
+/// after which the repetition guard ends the turn itself, so the limit is
+/// what ends a turn of [`Reply::Tool`].
+fn four_actions(chat: &Chat) -> SessionConfig {
+    let mut limited = config(chat);
+    limited.max_turns = Some(4);
+    limited
+}
+
+/// A turn that ends on its action limit never reaches its `turn_end` point.
+/// Nothing is asked there (the turn is ending on a limit), but the monitor it
+/// would have checked is named, a `pause` one too, after the limit's own
+/// message and kept with the chat: it is not skipped in silence.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_skipped_by_the_action_limit_says_so() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![paused_turn_end_monitor()],
+    )
+    .await;
+
+    let messages = send_with(&chat, "Keep working on the notes.", four_actions(&chat)).await;
+
+    assert_eq!(llm.calls(), 4, "the action limit (4) ended the turn");
+    assert_eq!(decisions.requests(), 0, "nothing was asked at the limit");
+    const NOTICE: &str = "Monitor 'Task done' was not checked at the end of this turn: the turn \
+                          ended because it reached its action limit.";
+    let shown = notices(&messages);
+    assert_eq!(count_containing(&shown, NOTICE), 1, "{shown:?}");
+    assert_eq!(count_containing(&shown, "the turn stops here"), 0);
+    let limit = position(&messages, |m| says(m, "I've reached my action limit"));
+    assert!(limit < position(&messages, |m| shows(m, NOTICE)));
+    assert_eq!(count_containing(&notices(&stored(&chat).await), NOTICE), 1);
+}
+
+/// …and so does a turn that ends on its tool-call limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_skipped_by_the_tool_call_limit_says_so() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![paused_turn_end_monitor()],
+    )
+    .await;
+    let mut limited = config(&chat);
+    limited.max_tool_calls = Some(2);
+
+    let messages = send_with(&chat, "Keep working on the notes.", limited).await;
+
+    assert_eq!(llm.calls(), 3, "the third call went past the limit of 2");
+    assert_eq!(decisions.requests(), 0, "nothing was asked at the limit");
+    let shown = notices(&messages);
+    assert_eq!(
+        count_containing(
+            &shown,
+            "Monitor 'Task done' was not checked at the end of this turn: the turn ended \
+             because it reached its tool-call limit."
+        ),
+        1,
+        "{shown:?}"
+    );
+    assert!(messages
+        .iter()
+        .any(|m| says(m, "past my per-turn limit of 2")));
+}
+
+/// …and so does a turn the budget stops at the loop top, because the model
+/// kept working past its wrap-up and so never ended the turn itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_skipped_by_the_budget_stop_says_so() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![paused_turn_end_monitor()],
+    )
+    .await;
+    let mut budgeted = config(&chat);
+    budgeted.budget = Some(ReplyBudget {
+        max_seconds: None,
+        max_tokens: Some(10),
+        max_usd: None,
+    });
+
+    let messages = send_with(&chat, "Keep working on the notes.", budgeted).await;
+
+    assert!(
+        messages
+            .iter()
+            .any(|m| says(m, "I've reached the budget for this reply")),
+        "the budget stop ended the turn"
+    );
+    assert_eq!(decisions.requests(), 0, "nothing was asked past the budget");
+    let shown = notices(&messages);
+    assert_eq!(count_containing(&shown, BUDGET_NOTICE), 1, "{shown:?}");
+    let kept = notices(&stored(&chat).await);
+    assert_eq!(count_containing(&kept, BUDGET_NOTICE), 1, "{kept:?}");
+}
+
+/// What a turn wound down by its budget says of the `turn_end` monitor
+/// `Task done` it did not check.
+const BUDGET_NOTICE: &str = "Monitor 'Task done' was not checked at the end of this turn: the \
+                             turn was being wound down because it reached its budget.";
+
+/// …once a turn, when the turn reached its `turn_end` point while being wound
+/// down and then went on to the budget stop at the loop top. Here a steer the
+/// person typed while the model wrapped up carries the turn on past the point
+/// that named the monitor, the model then keeps working past its grace, and
+/// the budget stop ends the turn: the monitor is named at the point, and not
+/// again at the stop, in the stream or in the chat.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_named_at_the_wrap_up_is_not_named_again_by_the_budget_stop() {
+    let steerer: Arc<OnceLock<Arc<Agent>>> = Arc::new(OnceLock::new());
+    // The first call spends the budget; the second, made after the wrap-up
+    // instruction, ends the turn, and the person types during it.
+    let mut llm = Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool, Reply::Text("Here is where I got to.")],
+        Reply::Tool,
+    );
+    let agent = steerer.clone();
+    llm.hook_on_call = Some((
+        1,
+        Arc::new(move || {
+            agent
+                .get()
+                .expect("the chat's agent")
+                .try_queue_soft_interrupt("Also check the appendix.".to_string(), None)
+                .expect("a steer offered mid-turn is accepted");
+        }),
+    ));
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![paused_turn_end_monitor()],
+    )
+    .await;
+    let _ = steerer.set(chat.agent.clone());
+    let mut budgeted = config(&chat);
+    budgeted.budget = Some(ReplyBudget {
+        max_seconds: None,
+        max_tokens: Some(10),
+        max_usd: None,
+    });
+
+    let messages = send_with(&chat, "Keep working on the notes.", budgeted).await;
+
+    assert!(
+        llm.texts_seen_on_call(2)
+            .iter()
+            .any(|t| t.contains("Also check the appendix.")),
+        "the steer carried the turn on past its wound-down `turn_end` point"
+    );
+    let stop = position(&messages, |m| {
+        says(m, "I've reached the budget for this reply")
+    });
+    assert_eq!(decisions.requests(), 0, "nothing was asked past the budget");
+    let shown = notices(&messages);
+    assert_eq!(count_containing(&shown, BUDGET_NOTICE), 1, "{shown:?}");
+    assert!(
+        position(&messages, |m| shows(m, BUDGET_NOTICE)) < stop,
+        "the wound-down point named it, before the budget stop"
+    );
+    let kept = notices(&stored(&chat).await);
+    assert_eq!(count_containing(&kept, BUDGET_NOTICE), 1, "{kept:?}");
+}
+
+/// A turn that ends on a limit says nothing of a chat with no `turn_end`
+/// monitor: a `post_iteration` one was checked at every step.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_limit_says_nothing_of_monitors_it_did_not_skip() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.5)],
+    )
+    .await;
+
+    let messages = send_with(&chat, "Keep working on the notes.", four_actions(&chat)).await;
+
+    assert!(messages
+        .iter()
+        .any(|m| says(m, "I've reached my action limit")));
+    assert_eq!(llm.calls(), 4);
+    assert_eq!(decisions.requests(), 4, "checked after every step");
+    assert_eq!(
+        count_containing(&notices(&messages), "not checked"),
+        0,
+        "{:?}",
+        notices(&messages)
+    );
+}
+
+/// A notify monitor that fired stays quiet in the next turn while its answer
+/// holds, across a restart too: its latch is kept with the chat.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_latched_notify_monitor_stays_quiet_after_a_restart() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Text("Done.")));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let mut chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.5)],
+    )
+    .await;
+
+    let first = send(&chat, "Fill in the form.").await;
+    assert_eq!(
+        count_containing(&notices(&first), "Monitor 'Form reached' fired"),
+        1
+    );
+    restart(&mut chat, &llm, &decisions).await;
+    let second = send(&chat, "Again.").await;
+
+    assert_eq!(decisions.requests(), 2, "still checked after the restart");
+    assert_eq!(
+        count_containing(&notices(&second), "Monitor 'Form reached' fired"),
+        0,
+        "the latch outlived the restart: {:?}",
+        notices(&second)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_monitor_with_a_rearm_level_stays_latched_after_a_restart() {
+    let llm = Arc::new(Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool],
+        Reply::Text("Done."),
+    ));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let mut form = monitor("form", "Form reached", MonitorAction::Stop, 0.85);
+    form.rearm_below = Some(0.3);
+    let mut chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![form],
+    )
+    .await;
+
+    let first = send(&chat, "Fill in the form.").await;
+    assert_eq!(count_containing(&notices(&first), FORM_STOPS), 1);
+    restart(&mut chat, &llm, &decisions).await;
+    let second = send(&chat, "Carry on.").await;
+
+    assert_eq!(llm.calls(), 2);
+    assert_eq!(
+        count_containing(&notices(&second), "the turn stops here"),
+        0,
+        "{:?}",
+        notices(&second)
+    );
+}
+
+/// A latch is kept for what the monitor asked: a monitor edited after the
+/// restart asks anew, and fires again.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edited_monitor_does_not_inherit_a_persisted_latch() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Text("Done.")));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let mut chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.5)],
+    )
+    .await;
+
+    send(&chat, "Fill in the form.").await;
+    restart(&mut chat, &llm, &decisions).await;
+    let mut edited = monitor("form", "Form reached", MonitorAction::Notify, 0.5);
+    edited.question.instructions = "Has the agent submitted the consent form?".into();
+    biorouter::decision::settings::save(
+        &chat.sessions,
+        &chat.session_id,
+        DecisionSettings {
+            default_model: None,
+            monitors: vec![edited],
+        },
+    )
+    .await
+    .unwrap();
+    let second = send(&chat, "Again.").await;
+
+    assert_eq!(
+        count_containing(&notices(&second), "Monitor 'Form reached' fired"),
+        1,
+        "{:?}",
+        notices(&second)
+    );
+}
+
+/// The latch record is written by a turn's points only: never when the
+/// chat's monitors are saved, which is not activity in the chat (R-30).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_state_record_is_written_inside_the_turn_only() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Text("Done.")));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.5)],
+    )
+    .await;
+    let record = || async {
+        chat.sessions
+            .get_extension_state_json(
+                &chat.session_id,
+                biorouter::decision::settings::DECISION_MONITOR_STATE,
+                biorouter::decision::settings::DECISION_MONITOR_STATE_VERSION,
+            )
+            .await
+            .unwrap()
+    };
+    assert_eq!(record().await, None, "saving the monitors wrote none");
+
+    send(&chat, "Fill in the form.").await;
+
+    let written = record().await.expect("the turn's point wrote the latch");
+    let value: serde_json::Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(
+        value["criteria"]["form"]["latched"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        value["criteria"]["form"]["fingerprint"]
+            .as_str()
+            .map(str::len),
+        Some(16)
+    );
+    biorouter::decision::settings::save(
+        &chat.sessions,
+        &chat.session_id,
+        DecisionSettings {
+            default_model: None,
+            monitors: vec![
+                monitor("form", "Form reached", MonitorAction::Notify, 0.5),
+                monitor("loop", "Stuck in a loop", MonitorAction::Notify, 0.9),
+            ],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        record().await.as_deref(),
+        Some(written.as_str()),
+        "a save outside a turn left the record alone"
+    );
+}
+
+/// A monitor set to fire below its threshold fires when P falls under it,
+/// and not before.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_below_monitor_fires_when_p_falls() {
+    let llm = Arc::new(Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool, Reply::Tool],
+        Reply::Text("Done."),
+    ));
+    let decisions =
+        Decisions::new(ProviderTier::Private, Answer::Yes(0.1)).answering(&[Answer::Yes(0.9)]);
+    let mut falling = monitor("form", "Form reached", MonitorAction::Notify, 0.3);
+    falling.direction = MonitorDirection::Below;
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![falling],
+    )
+    .await;
+
+    let messages = send(&chat, "Fill in the form.").await;
+
+    assert_eq!(decisions.requests(), 3);
+    let shown = notices(&messages);
+    assert_eq!(
+        count_containing(
+            &shown,
+            "Monitor 'Form reached' fired (P 0.10, below its threshold 0.30)."
+        ),
+        1,
+        "{shown:?}"
+    );
+    // One fire notice in all: the first check (P 0.90, above the threshold)
+    // did not fire. The turn's marker also says "fired", so it is left out.
+    assert_eq!(
+        count_containing(&shown, "Monitor 'Form reached' fired"),
+        1,
+        "{shown:?}"
+    );
+}
+
+/// A running subagent of `parent` that finishes, with what it did so far,
+/// when it is asked to stop.
+fn running_child(parent: &str, title: &str) -> Arc<BackgroundSubagent> {
+    let token = CancellationToken::new();
+    let handle = BackgroundSubagent::register(
+        parent,
+        format!("child-{}", uuid::Uuid::new_v4()),
+        title,
+        token.clone(),
+    );
+    let finishing = handle.clone();
+    tokio::spawn(async move {
+        token.cancelled().await;
+        finishing.complete(SubagentResult::from_error("stopped with its work so far"));
+    });
+    handle
+}
+
+/// A monitor's stop stops the subagents the chat started (they run on their
+/// own tokens, so they would go on spending against it), collects what each
+/// had done, and says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_monitor_stops_the_subagents_the_chat_started() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    )
+    .await;
+    let trials = running_child(&chat.session_id, "Search the trials");
+    let notes = running_child(&chat.session_id, "Read the notes");
+
+    let messages = tokio::time::timeout(Duration::from_secs(20), send(&chat, "Fan out."))
+        .await
+        .expect("the stopped turn ends without waiting on its subagents' own pace");
+
+    assert_eq!(llm.calls(), 1);
+    for child in [&trials, &notes] {
+        assert!(child.is_cancelled(), "{}", child.title);
+        assert_eq!(
+            child.stop_cause(),
+            Some(ChildStopCause::ParentMonitor {
+                monitor: "Form reached".into()
+            })
+        );
+    }
+    let shown = notices(&messages);
+    let cascade = "It also stopped 2 subagents this chat started ('Search the trials', 'Read \
+                   the notes'). What each had done is collected below.";
+    assert_eq!(count_containing(&shown, cascade), 1, "{shown:?}");
+    let stored_rows = stored(&chat).await;
+    assert_eq!(
+        stored_rows
+            .iter()
+            .filter(|m| m.as_concat_text().contains("reached a terminal result"))
+            .count(),
+        2,
+        "what each had done is collected"
+    );
+    assert!(
+        position(&stored_rows, |m| shows(m, "so the turn stops here"))
+            < position(&stored_rows, |m| shows(m, "It also stopped 2 subagents"))
+    );
+}
+
+/// The wait for the subagents a monitor's stop stopped is bounded: one that
+/// does not stop is named, and the turn ends without it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_wait_after_a_monitor_stop_is_bounded() {
+    std::env::set_var("BIOROUTER_MONITOR_STOP_SETTLE_SECS", "1");
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Stop, 0.85)],
+    )
+    .await;
+    // Asked to stop, it never does (a tool that ignores cancellation).
+    let stuck = BackgroundSubagent::register(
+        &chat.session_id,
+        format!("child-{}", uuid::Uuid::new_v4()),
+        "Sleep for five minutes",
+        CancellationToken::new(),
+    );
+
+    let messages = tokio::time::timeout(Duration::from_secs(20), send(&chat, "Fan out."))
+        .await
+        .expect("the wait is bounded");
+    std::env::remove_var("BIOROUTER_MONITOR_STOP_SETTLE_SECS");
+
+    assert!(stuck.is_cancelled());
+    let shown = notices(&messages);
+    assert_eq!(
+        count_containing(&shown, "It also stopped 1 subagent this chat started"),
+        1,
+        "{shown:?}"
+    );
+    assert_eq!(
+        count_containing(
+            &shown,
+            "1 subagent had not stopped 1 second after the monitor stopped this chat: 'Sleep for \
+             five minutes'. They are still being stopped; their results are collected when this \
+             chat carries on."
+        ),
+        1,
+        "{shown:?}"
+    );
+}
+
+/// A stop made in a subagent by a copy of a person's monitor that also
+/// watches every subagent of the chat that started it stops the whole run:
+/// the subagent's running siblings now, and that chat at its next point.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_inherited_stop_in_a_subagent_stops_its_siblings_and_reaches_the_chat_that_started_it() {
+    let parent = format!("orchestrator-{}", uuid::Uuid::new_v4());
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.95));
+    let mut inherited = monitor("form", "Form reached", MonitorAction::Stop, 0.85);
+    inherited.inherited_from = Some(parent.clone());
+    let chat = chat_of(
+        SessionType::SubAgent,
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![inherited],
+    )
+    .await;
+    let own = BackgroundSubagent::register(
+        &parent,
+        chat.session_id.clone(),
+        "Fill in the form",
+        CancellationToken::new(),
+    );
+    let sibling = running_child(&parent, "Check the dates");
+
+    let messages = tokio::time::timeout(Duration::from_secs(20), send(&chat, "Fill it in."))
+        .await
+        .expect("the subagent's turn ends");
+
+    assert_eq!(llm.calls(), 1);
+    assert_eq!(count_containing(&notices(&messages), FORM_STOPS), 1);
+    assert!(sibling.is_cancelled());
+    assert_eq!(
+        sibling.stop_cause(),
+        Some(ChildStopCause::SiblingMonitor {
+            monitor: "Form reached".into(),
+            sibling: "Fill in the form".into(),
+        })
+    );
+    assert!(
+        !own.is_cancelled(),
+        "the subagent stopped itself; its own run is not cancelled from outside"
+    );
+    let report = chat
+        .agent
+        .take_monitor_stop(&chat.session_id)
+        .expect("the subagent's stop");
+    assert_eq!(report.set_by, MonitorOwner::Person);
+    assert_eq!(report.inherited_from.as_deref(), Some(parent.as_str()));
+    // Carried to the chat that started it, for its next point.
+    let escalated = MonitorRegistry::default().take_escalation_events(&parent, false);
+    assert_eq!(escalated.len(), 1);
+    let Step::ChildStopped(stop) = &escalated[0].step else {
+        panic!("a stop carried from the subagent: {:?}", escalated[0].step)
+    };
+    assert_eq!(stop.child_session_id, chat.session_id);
+    assert_eq!(stop.child_title, "Fill in the form");
+    assert_eq!(stop.p, Some(0.95));
+    subagent_handle::open_parent_continuation_admission(&parent);
+}
+
+/// A stop carried from a subagent stops the chat that started it at its next
+/// point, monitors of its own or none, and tells its model why.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_escalated_from_a_subagent_stops_the_chat_that_started_it() {
+    let target: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
+    let mut llm = Llm::new(ProviderTier::Public, vec![], Reply::Tool);
+    let parent = target.clone();
+    llm.hook_on_call = Some((
+        0,
+        Arc::new(move || {
+            biorouter::decision::monitor::escalate(
+                parent.get().expect("the chat"),
+                EscalatedStop {
+                    child_session_id: "child-1".into(),
+                    child_title: "Fill in the form".into(),
+                    monitor_id: "form".into(),
+                    name: "Form reached".into(),
+                    question: "Has the agent reached the consent form page?".into(),
+                    threshold: 0.85,
+                    below: false,
+                    p: Some(0.95),
+                },
+            );
+        }),
+    ));
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![],
+    )
+    .await;
+    target.set(chat.session_id.clone()).unwrap();
+
+    let messages = send(&chat, "Fan out.").await;
+
+    assert_eq!(llm.calls(), 1);
+    assert_eq!(decisions.requests(), 0, "the stop came from the subagent");
+    let shown = notices(&messages);
+    assert_eq!(
+        count_containing(
+            &shown,
+            "Monitor 'Form reached' (set to also watch this chat's subagents) stopped subagent \
+             'Fill in the form' (P 0.95, threshold 0.85), so this chat and its other subagents \
+             stop here."
+        ),
+        1,
+        "{shown:?}"
+    );
+    let stored_rows = stored(&chat).await;
+    let notes = model_only_rows(&stored_rows, STOP_NOTE);
+    assert_eq!(notes.len(), 1);
+    assert!(
+        notes[0]
+            .as_concat_text()
+            .contains("it stopped subagent \"Fill in the form\""),
+        "{}",
+        notes[0].as_concat_text()
+    );
+    let report = chat
+        .agent
+        .take_monitor_stop(&chat.session_id)
+        .expect("this chat's stop");
+    assert_eq!(
+        report.reason,
+        MonitorStopReason::ChildStopped {
+            child_session_id: "child-1".into(),
+            child_title: "Fill in the form".into(),
+        }
     );
 }

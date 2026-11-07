@@ -867,3 +867,244 @@ parameters:
         "an absent default reads as absent, not as an error"
     );
 }
+
+/// Item 8, the other direction: a workflow made from a chat that runs under
+/// monitors and a gated phase plan carries them, so "Create workflow from
+/// this chat" turns a supervised run into a file that starts its chats the
+/// same way. The plan comes without any of its state, and the monitors are
+/// the person's only: an agent's monitor and the mark of an inherited copy
+/// are what a running subagent's chat holds, a workflow may declare neither,
+/// and the file must still save.
+#[tokio::test]
+async fn a_workflow_made_from_a_supervised_chat_carries_its_monitors_and_gates() {
+    use biorouter::agents::orchestration_plan::{
+        apply_workflow_plan, plan_record, OrchestratePhaseInput, PhaseGateInput, PlanPhaseInput,
+        PLAN_STATE, PLAN_VERSION,
+    };
+    use biorouter::decision::settings::{
+        DecisionSettings, DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION,
+    };
+
+    let h = harness().await;
+    let knowledge = biorouter_mcp::knowledge::service::KnowledgeService::new_default()
+        .expect("a knowledge service in the sandboxed root");
+    let sessions = h.agent.config.session_manager.clone();
+
+    // The chat's record: its default decision model, the person's monitor,
+    // a copy of a parent chat's monitor, and one the parent's agent set.
+    let question = serde_json::json!({
+        "instructions": "Has the agent already echoed 10 or a larger number?",
+        "kind": {"binary": {}}
+    });
+    let chat_settings: DecisionSettings = serde_json::from_value(serde_json::json!({
+        "defaultModel": {"provider": "ollama_decision", "model": "tev1:0.8b"},
+        "monitors": [
+            {"id": "reached-ten", "name": "Reached ten", "question": question,
+             "threshold": 0.7, "action": "stop", "onError": "pause"},
+            {"id": "from-parent", "name": "From the parent", "question": question,
+             "threshold": 0.8, "action": "notify", "inheritedFrom": "parent-chat"},
+            {"id": "agent-watch", "name": "Agent watch", "question": question,
+             "threshold": 0.9, "action": "stop", "setBy": "agent",
+             "setBySession": "parent-chat"}
+        ]
+    }))
+    .expect("the record's own shape");
+    sessions
+        .update_extension_state(
+            &h.session_id,
+            DECISION_SETTINGS_STATE,
+            DECISION_SETTINGS_VERSION,
+            |_| Ok(serde_json::to_value(&chat_settings).unwrap()),
+        )
+        .await
+        .unwrap();
+
+    // A plan with a gated phase.
+    let plan = apply_workflow_plan(
+        "Count plan",
+        Some("Count to ten and stop"),
+        vec![
+            OrchestratePhaseInput {
+                phase: PlanPhaseInput {
+                    id: "count".to_string(),
+                    title: "Count".to_string(),
+                    kind: Some("research".to_string()),
+                    goal: None,
+                    depends_on: vec![],
+                },
+                gate: None,
+                monitors: None,
+            },
+            OrchestratePhaseInput {
+                phase: PlanPhaseInput {
+                    id: "check".to_string(),
+                    title: "Check".to_string(),
+                    kind: Some("verification".to_string()),
+                    goal: Some("Confirm it stopped".to_string()),
+                    depends_on: vec!["count".to_string()],
+                },
+                gate: Some(PhaseGateInput {
+                    questions: [(
+                        "stopped".to_string(),
+                        "Did the counting stop at ten?".to_string(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                    threshold: Some(0.75),
+                    max_attempts: Some(2),
+                    allow_uncalibrated: None,
+                    model: Some("ollama_decision/tev1:0.8b".to_string()),
+                }),
+                monitors: None,
+            },
+        ],
+        chrono::Utc::now(),
+    )
+    .expect("a valid plan");
+    sessions
+        .update_extension_state(&h.session_id, PLAN_STATE, PLAN_VERSION, |_| {
+            Ok(plan_record(&plan))
+        })
+        .await
+        .unwrap();
+
+    let session = sessions.get_session(&h.session_id, true).await.unwrap();
+    let mut workflow = h
+        .agent
+        .create_workflow(session.conversation.clone().unwrap())
+        .await
+        .expect("the route's generation");
+    let enrichment = service::session_enrichment(&h.agent, &knowledge, &h.session_id, None)
+        .await
+        .expect("the route's enrichment");
+    service::apply_session_enrichment(&mut workflow, enrichment);
+
+    let captured = workflow
+        .decision_settings
+        .as_ref()
+        .expect("the chat's monitors are captured");
+    assert_eq!(
+        captured.default_model.as_ref().map(|model| model.label()),
+        Some("ollama_decision/tev1:0.8b".to_string())
+    );
+    let ids: Vec<&str> = captured.monitors.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["reached-ten", "from-parent"],
+        "the person's monitors, the inherited copy included; never the agent's"
+    );
+    assert!(
+        captured.monitors.iter().all(|m| m.inherited_from.is_none()),
+        "a copy becomes the workflow's own monitor"
+    );
+
+    let captured_plan = workflow
+        .orchestration_plan
+        .as_ref()
+        .expect("the chat's plan is captured");
+    assert_eq!(captured_plan.title, "Count plan");
+    assert_eq!(captured_plan.goal.as_deref(), Some("Count to ten and stop"));
+    let phases: Vec<&str> = captured_plan
+        .phases
+        .iter()
+        .map(|phase| phase.id.as_str())
+        .collect();
+    assert_eq!(phases, vec!["count", "check"]);
+    let gate = captured_plan.phases[1]
+        .gate
+        .as_ref()
+        .expect("the gate is captured");
+    assert_eq!(
+        gate.questions.get("stopped").map(String::as_str),
+        Some("Did the counting stop at ten?")
+    );
+    assert_eq!(gate.threshold, Some(0.75));
+    assert_eq!(gate.max_attempts, Some(2));
+    assert_eq!(gate.model.as_deref(), Some("ollama_decision/tev1:0.8b"));
+    assert_eq!(
+        captured_plan.phases[1].depends_on,
+        vec!["count".to_string()]
+    );
+
+    // What the save route accepts, and what the file reads back as.
+    service::validate(&workflow).unwrap_or_else(|err| {
+        panic!(
+            "a workflow made from a supervised chat must save: {err}\n\n{}",
+            workflow.to_yaml().unwrap_or_default()
+        )
+    });
+    let yaml = workflow.to_yaml().unwrap();
+    let reread = biorouter::workflow::Workflow::from_content(&yaml).unwrap();
+    assert_eq!(reread.decision_settings, workflow.decision_settings);
+    assert_eq!(reread.orchestration_plan, workflow.orchestration_plan);
+
+    // The model's own capture gives the same document.
+    let (_id, result) = h
+        .agent
+        .dispatch_tool_call(
+            CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: "platform__manage_workflow".into(),
+                arguments: serde_json::json!({ "action": "generate" })
+                    .as_object()
+                    .cloned(),
+            },
+            "req-generate-supervised".to_string(),
+            None,
+            &session,
+        )
+        .await;
+    let content = result
+        .expect("the generate action dispatches")
+        .result
+        .await
+        .expect("the generate action succeeds");
+    let text = content
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let tool_yaml = text
+        .split_once("\n\nversion:")
+        .map(|(_, rest)| format!("version:{rest}"))
+        .unwrap_or_else(|| panic!("the generate result must contain the workflow YAML:\n{text}"));
+    assert_eq!(
+        comparable(&yaml),
+        comparable(&tool_yaml),
+        "both surfaces capture the same supervision"
+    );
+}
+
+/// A chat with no monitors and no plan gives a workflow neither block, so an
+/// ordinary capture is unchanged.
+#[tokio::test]
+async fn a_workflow_made_from_an_unsupervised_chat_declares_no_supervision() {
+    let h = harness().await;
+    let knowledge = biorouter_mcp::knowledge::service::KnowledgeService::new_default()
+        .expect("a knowledge service in the sandboxed root");
+    let session = h
+        .agent
+        .config
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap();
+    let mut workflow = h
+        .agent
+        .create_workflow(session.conversation.clone().unwrap())
+        .await
+        .unwrap();
+    let enrichment = service::session_enrichment(&h.agent, &knowledge, &h.session_id, None)
+        .await
+        .unwrap();
+    service::apply_session_enrichment(&mut workflow, enrichment);
+    assert!(workflow.decision_settings.is_none());
+    assert!(workflow.orchestration_plan.is_none());
+    let yaml = workflow.to_yaml().unwrap();
+    assert!(
+        !yaml.contains("decision_settings") && !yaml.contains("orchestration_plan"),
+        "{yaml}"
+    );
+}

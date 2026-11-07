@@ -557,20 +557,22 @@ fn answer_key(decision: &Decision) -> String {
     }
 }
 
+/// The answer a threshold is about. A `below` threshold is about its inner
+/// threshold's answer.
 fn pass_on(threshold: Option<&Threshold>) -> Option<String> {
     threshold.map(|t| match t {
         Threshold::Yes(_) => "yes".to_string(),
         Threshold::No(_) => "no".to_string(),
         Threshold::Option { name, .. } => name.clone(),
         Threshold::AtLeastLevel { level, .. } => format!("level >= {level}"),
+        Threshold::Below(inner) => pass_on(Some(inner.as_ref())).unwrap_or_default(),
     })
 }
 
+/// The bound a threshold compares against (its inner threshold's for a
+/// `below`).
 fn threshold_p(threshold: Option<&Threshold>) -> Option<f64> {
-    threshold.map(|t| match t {
-        Threshold::Yes(p) | Threshold::No(p) => *p,
-        Threshold::Option { p, .. } | Threshold::AtLeastLevel { p, .. } => *p,
-    })
+    threshold.map(Threshold::probability)
 }
 
 /// The probability the review rule reads for one decision: the threshold's
@@ -1193,10 +1195,11 @@ impl ModelRow {
 /// The models as the model reads them: those this chat may use first.
 pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
     if rows.is_empty() {
-        return "No decision model is available. Pull one into a local Ollama (for example \
-                `ollama pull tev1:0.8b`), add a Baseten API key, or set \
-                BIOROUTER_DECISION_MODEL."
-            .to_string();
+        // A download is the person's choice, and no tool installs one.
+        return format!(
+            "No decision model is available. Ask the user to install one: {}",
+            crate::decision::INSTALL_ADVICE
+        );
     }
     let mut text = if private_chat {
         "This chat is private: only private decision models (ones that run on this computer \
@@ -2381,6 +2384,27 @@ mod tests {
 
     #[test]
     fn an_empty_catalog_says_how_to_get_a_decision_model() {
-        assert!(render_models(&[], false).contains("ollama pull tev1:0.8b"));
+        let text = render_models(&[], false);
+        assert!(
+            text.starts_with("No decision model is available. Ask the user to install one: "),
+            "{text}"
+        );
+        assert!(text.ends_with(crate::decision::INSTALL_ADVICE), "{text}");
+        assert!(text.contains("biorouter models decision pull"), "{text}");
+    }
+
+    /// A `below` threshold is reported as its inner threshold's answer and
+    /// bound; whether it passed is the decision's own `passed`.
+    #[test]
+    fn a_below_threshold_reports_its_inner_answer_and_bound() {
+        let below = Threshold::Below(Box::new(Threshold::Option {
+            name: "rrms".into(),
+            p: 0.3,
+        }));
+        assert_eq!(pass_on(Some(&below)).as_deref(), Some("rrms"));
+        assert_eq!(threshold_p(Some(&below)), Some(0.3));
+        let low = Threshold::Below(Box::new(Threshold::AtLeastLevel { level: 2, p: 0.6 }));
+        assert_eq!(pass_on(Some(&low)).as_deref(), Some("level >= 2"));
+        assert_eq!(threshold_p(Some(&low)), Some(0.6));
     }
 }

@@ -86,6 +86,11 @@ fn settings() -> Value {
     settings_with_action("notify")
 }
 
+/// A monitor that is switched off. A write is checked for what it turns on
+/// (`routes::decisions`' save check, driven over a fake decision source in the
+/// lib's own tests), and a monitor that is off turns nothing on, so these
+/// writes ask no decision model: this binary runs where no Ollama answers, and
+/// what it measures is the gate, not the check.
 fn settings_with_action(action: &str) -> Value {
     json!({
         "monitors": [{
@@ -96,11 +101,14 @@ fn settings_with_action(action: &str) -> Value {
                 "kind": { "binary": {} }
             },
             "threshold": 0.85,
-            "action": action
+            "action": action,
+            "enabled": false
         }]
     })
 }
 
+/// A decision chat's question. The chats here are bound to no decision model,
+/// so the save check asks nothing of it either.
 fn chat_question() -> Value {
     json!({ "question": { "instructions": "Is it done?", "kind": { "binary": {} } } })
 }

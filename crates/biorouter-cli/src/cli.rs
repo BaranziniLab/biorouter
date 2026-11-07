@@ -857,6 +857,36 @@ enum SessionCommand {
         )]
         user_action_key_stdin: bool,
     },
+    #[command(
+        about = "List a session's phase gates, or set, remove, pass, skip or retry one",
+        long_about = "A phase gate asks a decision model yes/no questions about a phase's \
+                      hand-off before the phase may complete, and holds every phase listed \
+                      after it until it passes. Whoever set a gate (the agent, you, or the \
+                      workflow the chat was started from), the agent cannot change, remove or \
+                      skip it: only you can, here or in the app. With no subcommand the gates \
+                      are listed. With a running daemon they are read and written through it; \
+                      without one, in the local session store."
+    )]
+    Gates {
+        /// Session id of the chat whose plan holds the phases.
+        session_id: String,
+        #[command(subcommand)]
+        command: Option<crate::commands::session_gates::GatesCommand>,
+        #[arg(
+            long,
+            global = true,
+            value_enum,
+            default_value_t = crate::commands::session_gates::GatesFormat::Text,
+            help = "Output format (text, json)"
+        )]
+        format: crate::commands::session_gates::GatesFormat,
+        #[arg(
+            long,
+            global = true,
+            help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, instead of being asked for it on the terminal"
+        )]
+        user_action_key_stdin: bool,
+    },
     #[command(about = "Stop the turn a session is running (idempotent)")]
     Cancel {
         /// Session id whose running turn should be stopped.
@@ -1192,6 +1222,20 @@ enum DecisionModelCommand {
             value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
         )]
         format: String,
+    },
+    /// Install a decision model into the Ollama on this computer
+    #[command(
+        about = "Install a decision model into the Ollama on this computer (default tev1:0.8b)",
+        long_about = "Downloads a decision model Biorouter offers (tev1:0.8b, about 1.5 GB, or \
+                      clef-flash:latest, about 12 GB) into the Ollama that OLLAMA_HOST names, \
+                      which must run on this computer, and checks that Ollama answers decisions \
+                      with it. A decision model on this computer is the only kind that may read \
+                      a private chat. No daemon is needed: the next model listing sees it."
+    )]
+    Pull {
+        /// The model to install: tev1:0.8b (the default) or clef-flash:latest.
+        #[arg(value_name = "MODEL")]
+        model: Option<String>,
     },
 }
 
@@ -2224,6 +2268,20 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             )
             .await?;
         }
+        SessionCommand::Gates {
+            session_id,
+            command,
+            format,
+            user_action_key_stdin,
+        } => {
+            crate::commands::session_gates::handle_session_gates(
+                &session_id,
+                command,
+                format,
+                user_action_key_stdin,
+            )
+            .await?;
+        }
         SessionCommand::Cancel {
             session_id,
             user_action_key_stdin,
@@ -2871,6 +2929,9 @@ async fn handle_models_subcommand(command: ModelsCommand) -> Result<()> {
             DecisionModelCommand::List { format } => {
                 crate::commands::decide::handle_models_decision_list(&format).await
             }
+            DecisionModelCommand::Pull { model } => {
+                crate::commands::decision_pull::handle_models_decision_pull(model).await
+            }
         },
     }
 }
@@ -3460,6 +3521,37 @@ mod cli_tests {
         };
         assert_eq!(format, "json");
         assert!(Cli::try_parse_from(["biorouter", "models", "decision", "ls"]).is_ok());
+
+        // `pull` installs the default unless a model is named.
+        let pull = |argv: &[&str]| -> Option<Option<String>> {
+            match Cli::try_parse_from(argv).ok()?.command {
+                Some(Command::Models {
+                    command:
+                        ModelsCommand::Decision {
+                            command: DecisionModelCommand::Pull { model },
+                        },
+                }) => Some(model),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            pull(&["biorouter", "models", "decision", "pull"]),
+            Some(None)
+        );
+        assert_eq!(
+            pull(&[
+                "biorouter",
+                "models",
+                "decision",
+                "pull",
+                "clef-flash:latest"
+            ]),
+            Some(Some("clef-flash:latest".to_string()))
+        );
+        assert_eq!(
+            crate::commands::decision_pull::requested_model(None),
+            "tev1:0.8b"
+        );
         assert!(Cli::try_parse_from([
             "biorouter",
             "models",
@@ -3585,6 +3677,85 @@ mod cli_tests {
             })
         ));
         assert!(parse(&["biorouter", "session", "monitors", "s1"]).is_none());
+    }
+
+    #[test]
+    fn session_gates_parses_with_and_without_a_subcommand() {
+        use crate::commands::session_gates::{GatesCommand, GatesFormat};
+        let parse = |argv: &[&str]| -> Option<SessionCommand> {
+            match Cli::try_parse_from(argv).ok()?.command {
+                Some(Command::Session { command, .. }) => command,
+                _ => None,
+            }
+        };
+        // Bare, it lists, in text.
+        let Some(SessionCommand::Gates {
+            session_id,
+            command: None,
+            format: GatesFormat::Text,
+            user_action_key_stdin: false,
+        }) = parse(&["biorouter", "session", "gates", "20261106_1"])
+        else {
+            panic!("bare `session gates <id>` did not parse");
+        };
+        assert_eq!(session_id, "20261106_1");
+        // `--format` and the key flag are global to the subcommands.
+        assert!(matches!(
+            parse(&[
+                "biorouter",
+                "session",
+                "gates",
+                "s1",
+                "list",
+                "--format",
+                "json"
+            ]),
+            Some(SessionCommand::Gates {
+                command: Some(GatesCommand::List),
+                format: GatesFormat::Json,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&["biorouter", "session", "gates", "s1", "--format", "json"]),
+            Some(SessionCommand::Gates {
+                command: None,
+                format: GatesFormat::Json,
+                ..
+            })
+        ));
+        let Some(SessionCommand::Gates {
+            command: Some(GatesCommand::Set(set)),
+            user_action_key_stdin: true,
+            ..
+        }) = parse(&[
+            "biorouter",
+            "session",
+            "gates",
+            "s1",
+            "set",
+            "research",
+            "--ask",
+            "facts=Does the hand-off list two facts about the moon?",
+            "--threshold",
+            "0.3",
+            "--user-action-key-stdin",
+        ])
+        else {
+            panic!("`session gates <id> set` did not parse");
+        };
+        assert_eq!(set.phase, "research");
+        assert_eq!(set.threshold, Some(0.3));
+        for word in ["remove", "pass", "skip", "retry"] {
+            assert!(
+                parse(&["biorouter", "session", "gates", "s1", word, "research"]).is_some(),
+                "{word}"
+            );
+        }
+        assert!(
+            parse(&["biorouter", "session", "gates"]).is_none(),
+            "an id is needed"
+        );
     }
 
     #[test]

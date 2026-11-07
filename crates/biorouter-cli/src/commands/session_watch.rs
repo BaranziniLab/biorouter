@@ -2464,6 +2464,11 @@ pub async fn handle_session_attach(
 /// `cancelled: false`, never an error." A CLI that exited non-zero on it would
 /// re-introduce exactly the unreliability BR-62 removed. The only `Err` here is
 /// a body that did not answer the question at all.
+///
+/// A Stop also stops the subagents the chat started (item B), and the daemon
+/// lists them in `stopped_subagents`; a second line says how many, whether or
+/// not the chat itself had a turn running. A daemon from before that field
+/// sends none, and nothing is added.
 pub(crate) fn render_cancel(response: &serde_json::Value) -> Result<String> {
     let cancelled = response
         .get("cancelled")
@@ -2471,16 +2476,42 @@ pub(crate) fn render_cancel(response: &serde_json::Value) -> Result<String> {
         .ok_or_else(|| {
             anyhow!("the daemon's cancel response did not say whether it cancelled anything")
         })?;
-    if !cancelled {
-        return Ok("nothing to cancel: this session had no turn in flight".to_string());
-    }
-    Ok(format!(
-        "cancelled turn {}",
+    let turn = if cancelled {
+        format!(
+            "cancelled turn {}",
+            response
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(unnamed)")
+        )
+    } else {
+        "nothing to cancel: this session had no turn in flight".to_string()
+    };
+    Ok(match stopped_subagents_line(response) {
+        Some(line) => format!("{turn}\n{line}"),
+        None => turn,
+    })
+}
+
+/// [`stopped_subagents_sentence`] for the cancel response's `stopped_subagents`.
+fn stopped_subagents_line(response: &serde_json::Value) -> Option<String> {
+    stopped_subagents_sentence(
         response
-            .get("turn_id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("(unnamed)")
-    ))
+            .get("stopped_subagents")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len),
+    )
+}
+
+/// What a Stop that also stopped `stopped` of the chat's subagents says about
+/// them: "Also stopped {n} subagents this chat started.", or `None` for none.
+/// One sentence for `session cancel` and an interactive session's Ctrl-C.
+pub(crate) fn stopped_subagents_sentence(stopped: usize) -> Option<String> {
+    match stopped {
+        0 => None,
+        1 => Some("Also stopped 1 subagent this chat started.".to_string()),
+        n => Some(format!("Also stopped {n} subagents this chat started.")),
+    }
 }
 
 /// `biorouter session cancel <id>` — stop the turn a session is running.
@@ -4526,5 +4557,42 @@ mod tests {
             "the two outcomes are both successes and must still read differently"
         );
         assert!(render_cancel(&stopped).unwrap().contains("t-7"));
+    }
+
+    /// Item B: a Stop that also stopped the chat's subagents says so, from the
+    /// daemon's `stopped_subagents`, under the line about the chat's own turn.
+    #[test]
+    fn a_cancel_that_stopped_subagents_says_how_many() {
+        let both = serde_json::json!({
+            "cancelled": true,
+            "turn_id": "t-8",
+            "settled": false,
+            "stopped_subagents": ["child-a", "child-b"],
+        });
+        assert_eq!(
+            render_cancel(&both).unwrap(),
+            "cancelled turn t-8\nAlso stopped 2 subagents this chat started."
+        );
+
+        // The chat itself was idle, but its background subagents were not.
+        let idle = serde_json::json!({
+            "cancelled": false,
+            "turn_id": null,
+            "settled": true,
+            "stopped_subagents": ["child-a"],
+        });
+        assert_eq!(
+            render_cancel(&idle).unwrap(),
+            "nothing to cancel: this session had no turn in flight\n\
+             Also stopped 1 subagent this chat started."
+        );
+
+        // None stopped, or a daemon from before the field: nothing is added.
+        for response in [
+            serde_json::json!({ "cancelled": true, "turn_id": "t-9", "stopped_subagents": [] }),
+            serde_json::json!({ "cancelled": true, "turn_id": "t-9" }),
+        ] {
+            assert_eq!(render_cancel(&response).unwrap(), "cancelled turn t-9");
+        }
     }
 }

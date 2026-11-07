@@ -180,6 +180,8 @@ mod tests {
             response: None,
             sub_workflows: None,
             retry: None,
+            decision_settings: None,
+            orchestration_plan: None,
         }
     }
 
@@ -225,6 +227,8 @@ mod tests {
             response: None,
             sub_workflows: None,
             retry: None,
+            decision_settings: None,
+            orchestration_plan: None,
         };
 
         let secrets = discover_workflow_secrets(&workflow);
@@ -272,6 +276,8 @@ mod tests {
             response: None,
             sub_workflows: None,
             retry: None,
+            decision_settings: None,
+            orchestration_plan: None,
         };
 
         let secrets = discover_workflow_secrets(&workflow);
@@ -327,6 +333,8 @@ mod tests {
             parameters: None,
             response: None,
             retry: None,
+            decision_settings: None,
+            orchestration_plan: None,
         };
 
         let secrets = discover_workflow_secrets(&workflow);

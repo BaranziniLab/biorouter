@@ -496,12 +496,14 @@ impl ToolInspector for WorkspaceMutationInspector {
 
 /// The tool families that carry a PAYLOAD into another conversation, and so
 /// have something for a first crossing to disclose. `workspace_close` is
-/// deliberately absent: it carries no text.
+/// deliberately absent: it carries no text. So are `workspace_monitor`'s
+/// `list` and `remove`: one reads, the other takes off the caller's own
+/// monitors by id and writes no text.
 ///
 /// ⚠ **Two halves ask this, and they must be the same half.** The inspector
-/// below asks it to decide whether to raise the card; `handle_send_prompt` and
-/// `handle_set_tools` ask it to decide whether a landed write may mark the pair
-/// as having crossed. A record for a change this function calls payload-free
+/// below asks it to decide whether to raise the card; `handle_send_prompt`,
+/// `handle_set_tools` and `handle_monitor` ask it to decide whether a landed
+/// write may mark the pair as having crossed. A record for a change this function calls payload-free
 /// would consume the pair's one disclosure without ever having shown one — and
 /// that is not hypothetical: `workspace_set_tools { set_knowledge_bases: [] }`
 /// is a real, accepted change (it CLEARS the target's bases) that produces no
@@ -509,6 +511,9 @@ impl ToolInspector for WorkspaceMutationInspector {
 /// caller silence the disclosure with a call the user never saw. Asking one
 /// function is what makes the two halves unable to disagree.
 pub(crate) fn crossing_payload(tool_name: &str, args: &JsonObject) -> Option<(String, String)> {
+    if is_monitor_call(tool_name) {
+        return monitor_add_payload(args);
+    }
     let target = args.get("session_id").and_then(serde_json::Value::as_str)?;
     let payload = if is_send_prompt_call(tool_name) {
         let mode = args
@@ -547,6 +552,63 @@ pub(crate) fn crossing_payload(tool_name: &str, args: &JsonObject) -> Option<(St
         return None;
     };
     Some((target.to_string(), payload))
+}
+
+pub(crate) fn is_monitor_call(tool_name: &str) -> bool {
+    tool_name == "workspace_monitor" || tool_name == "workspace__workspace_monitor"
+}
+
+/// What `workspace_monitor action:"add"` would put on a subagent: each
+/// monitor's name, its id when the caller chose one, and its question.
+///
+/// That is prose the caller's model wrote, and once stored on the subagent it
+/// reaches the subagent's models: its decision model reads the question on
+/// every check, and a steer monitor quotes the name and question into the
+/// subagent's own conversation. So a private chat adding one to a public
+/// subagent is a first crossing, exactly as `workspace_send_prompt` with the
+/// same words would be.
+///
+/// ⚠ **The action and the target are read the way `handle_monitor` reads
+/// them**, trimmed and with the action's case folded. A reading stricter than
+/// the handler's is a bypass: `"action": "Add"` or a `session_id` with a
+/// trailing space would raise no card here and still write there. A monitor
+/// whose shape this function does not recognise is shown as its raw JSON
+/// rather than skipped, so an odd shape the handler still accepts is never
+/// shown as less than it is.
+fn monitor_add_payload(args: &JsonObject) -> Option<(String, String)> {
+    let action = args.get("action").and_then(serde_json::Value::as_str)?;
+    if !action.trim().eq_ignore_ascii_case("add") {
+        return None;
+    }
+    let target = args
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)?
+        .trim();
+    let monitors = args.get("monitors").and_then(serde_json::Value::as_array)?;
+    if monitors.is_empty() {
+        return None;
+    }
+    let text = |monitor: &serde_json::Value, key: &str| {
+        monitor
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let shown: Vec<String> = monitors
+        .iter()
+        .map(
+            |monitor| match (text(monitor, "name"), text(monitor, "question")) {
+                (Some(name), Some(question)) => {
+                    match text(monitor, "id").filter(|id| !id.trim().is_empty()) {
+                        Some(id) => format!("add monitor '{name}' (id {id}): {question}"),
+                        None => format!("add monitor '{name}': {question}"),
+                    }
+                }
+                _ => format!("add monitor {monitor}"),
+            },
+        )
+        .collect();
+    Some((target.to_string(), shown.join("; ")))
 }
 
 /// The payload a `workspace_open { new: { prompt } }` would carry into a
@@ -1662,6 +1724,166 @@ mod tests {
                 BioRouterMode::Auto,
                 &Session::default(),
             )
+            .await
+            .unwrap();
+        assert!(results.is_empty(), "{results:?}");
+    }
+
+    // ------------------------------------------------------- workspace_monitor
+    // `add` writes the caller's prose onto a subagent, so it discloses like
+    // `workspace_send_prompt`; `list` and `remove` carry no text.
+
+    fn monitor_add(action: &str, session_id: &str) -> rmcp::model::JsonObject {
+        args(serde_json::json!({
+            "action": action,
+            "session_id": session_id,
+            "monitors": [
+                {
+                    "name": "Off task",
+                    "question": "Is the agent reading the MS cohort's notes?",
+                    "threshold": 0.8,
+                    "action": "stop"
+                },
+                {
+                    "name": "Scope",
+                    "id": "scope-guard",
+                    "question": "Is the agent editing files outside src/?",
+                    "threshold": 0.7,
+                    "action": "steer"
+                }
+            ]
+        }))
+    }
+
+    /// The payload is every added monitor's name and question (and an id the
+    /// caller chose), for both spellings of the tool, read the way the
+    /// handler reads the action and the target: trimmed, the action's case
+    /// folded. A stricter reading would be a one-word bypass.
+    #[test]
+    fn a_monitor_add_discloses_each_monitors_name_and_question() {
+        for name in ["workspace_monitor", "workspace__workspace_monitor"] {
+            for action in ["add", " Add ", "ADD"] {
+                let (target, payload) = crossing_payload(name, &monitor_add(action, " s-public "))
+                    .unwrap_or_else(|| panic!("{name} {action:?} writes text and must disclose"));
+                assert_eq!(target, "s-public", "the handler writes the trimmed id");
+                for shown in [
+                    "add monitor 'Off task': Is the agent reading the MS cohort's notes?",
+                    "add monitor 'Scope' (id scope-guard): Is the agent editing files outside src/?",
+                ] {
+                    assert!(payload.contains(shown), "{payload}");
+                }
+                // The one function all three halves ask agrees.
+                let (disclosed_target, _) =
+                    crossing_disclosure(name, &monitor_add(action, "s-public")).unwrap();
+                assert_eq!(disclosed_target.as_deref(), Some("s-public"));
+            }
+        }
+
+        // A shape this function does not recognise is shown raw, not skipped.
+        let (_, raw) = crossing_payload(
+            "workspace_monitor",
+            &args(serde_json::json!({
+                "action": "add", "session_id": "s-public",
+                "monitors": [{ "label": "Off task", "question": 7 }]
+            })),
+        )
+        .expect("an add with monitors discloses whatever shape they are");
+        assert!(raw.contains("\"label\":\"Off task\""), "{raw}");
+    }
+
+    /// `list` reads and `remove` takes off the caller's own monitors by id:
+    /// neither writes text, so neither raises a card or may record a crossing.
+    /// An `add` with no monitors writes nothing either (the handler refuses).
+    #[test]
+    fn a_monitor_list_or_remove_discloses_nothing() {
+        for action in ["list", "remove"] {
+            assert!(
+                crossing_disclosure("workspace__workspace_monitor", &monitor_add(action, "s"))
+                    .is_none(),
+                "{action}"
+            );
+        }
+        assert!(crossing_payload(
+            "workspace_monitor",
+            &args(serde_json::json!({
+                "action": "remove", "session_id": "s", "ids": ["off-task"]
+            })),
+        )
+        .is_none());
+        for monitors in [serde_json::json!([]), serde_json::Value::Null] {
+            assert!(crossing_payload(
+                "workspace_monitor",
+                &args(serde_json::json!({
+                    "action": "add", "session_id": "s", "monitors": monitors
+                })),
+            )
+            .is_none());
+        }
+    }
+
+    /// **The card, end to end**: a private-capability chat adding a monitor to
+    /// a public subagent is asked to approve the exact monitor text before the
+    /// handler runs.
+    ///
+    /// Against the lib binary's sandboxed `SessionManager::instance()` (see
+    /// `test_sandbox`), which is the store the inspector resolves the target
+    /// through. The caller id is minted here, so no other test's ledger entry
+    /// can name this pair.
+    #[tokio::test]
+    async fn a_private_chats_monitor_on_a_public_subagent_raises_the_card() {
+        let sm = crate::session::session_manager::SessionManager::instance();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "Subagent: public worker".into(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            target.privacy_tier,
+            crate::privacy::SessionClassification::Public,
+            "precondition: a new subagent row is public"
+        );
+        let caller = Session {
+            id: format!("monitor-card-caller-{}", Uuid::new_v4().simple()),
+            ..Session::default()
+        };
+        let request = |id: &str, action: &str| ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                name: "workspace__workspace_monitor".into(),
+                arguments: Some(monitor_add(action, &target.id)),
+                meta: None,
+                task: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        };
+        let inspector =
+            WorkspaceCrossingInspector::new(std::sync::Arc::new(tokio::sync::Mutex::new(None)));
+        let private =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+
+        let results = inspector
+            .inspect_with_pinned_capability(&[request("req-add", "add")], &caller, Some(private))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "{results:?}");
+        let InspectionAction::RequireApproval(Some(prompt)) = &results[0].action else {
+            panic!(
+                "a first crossing must require approval: {:?}",
+                results[0].action
+            );
+        };
+        assert!(
+            prompt.contains("Is the agent reading the MS cohort's notes?"),
+            "the card must show the monitor text it would send: {prompt}"
+        );
+
+        // A `list` of the same subagent writes nothing and asks nothing.
+        let results = inspector
+            .inspect_with_pinned_capability(&[request("req-list", "list")], &caller, Some(private))
             .await
             .unwrap();
         assert!(results.is_empty(), "{results:?}");

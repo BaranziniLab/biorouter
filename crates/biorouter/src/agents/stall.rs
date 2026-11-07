@@ -349,6 +349,14 @@ fn tail_tool_names(conversation: &Conversation) -> HashMap<&str, &str> {
     names
 }
 
+/// Whether `message` puts at least one line in a [`progress_tail`]: it holds
+/// text, a tool call or a tool result, not only a system notification or
+/// blank text. A monitor's window counts only such messages, so a message
+/// that would render to nothing never takes one of its places.
+pub(crate) fn renders_in_tail(message: &Message) -> bool {
+    !render_message(message, &HashMap::new()).is_empty()
+}
+
 /// One conversation message → zero or more tail lines (text, tool calls, tool
 /// results), in order.
 fn render_message(message: &Message, tool_names: &HashMap<&str, &str>) -> Vec<String> {
@@ -845,6 +853,33 @@ mod tests {
     #[test]
     fn empty_conversation_has_no_tail() {
         assert!(progress_tail(&Conversation::default()).is_none());
+    }
+
+    /// A message renders in the tail when it holds text, a tool call or a
+    /// tool result; a notification alone, or blank text, renders nothing.
+    #[test]
+    fn a_message_renders_in_the_tail_only_with_text_or_tool_traffic() {
+        assert!(renders_in_tail(&Message::user().with_text("fix the build")));
+        assert!(renders_in_tail(&Message::assistant().with_tool_request(
+            "1",
+            Ok(rmcp::model::CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: "developer__shell".into(),
+                arguments: None,
+            }),
+        )));
+        assert!(renders_in_tail(&Message::user().with_tool_response(
+            "1",
+            Ok(CallToolResult::success(vec![Content::text("done")])),
+        )));
+        assert!(!renders_in_tail(&Message::assistant().with_text("   \n ")));
+        assert!(!renders_in_tail(
+            &Message::assistant().with_system_notification(
+                crate::conversation::message::SystemNotificationType::InlineMessage,
+                "Monitor 'x' fired.",
+            )
+        ));
     }
 
     #[test]

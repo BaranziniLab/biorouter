@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { ModalShell } from '../ModalShell';
+import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
+import { Checkbox } from '../ui/Checkbox';
 import { Field, fieldLabelId } from '../ui/field';
 import { Input } from '../ui/input';
 import { SegmentedControl } from '../ui/segmented-control';
@@ -19,6 +21,7 @@ import {
   fetchDecisionSettings,
   formatProbability,
   monitorThreshold,
+  monitorToWire,
   outcomeLabel,
   refusalText,
   saveDecisionSettings,
@@ -30,14 +33,21 @@ import {
   type DecisionTier,
   type MonitorAction,
   type MonitorCriterion,
+  type MonitorDirection,
+  type MonitorErrorPolicy,
   type MonitorTiming,
 } from '../../utils/sessionDecisions';
+import {
+  DECISION_INSTALL_COPY,
+  DecisionModelInstall,
+  type DecisionInstallReason,
+} from './DecisionModelInstall';
 import './decisionsPanel.css';
 
 export const MONITORS_COPY = {
   title: 'Monitors',
   subtitle:
-    'A decision model reads the newest part of this chat and acts when its answer reaches the threshold.',
+    'A decision model reads the newest part of this chat and acts when its answer crosses the threshold.',
   empty: 'No monitors yet.',
   add: 'Add a monitor',
   limit: `A chat can have at most ${MAX_MONITORS} monitors.`,
@@ -86,13 +96,34 @@ export const MONITORS_COPY = {
       : 'Could not load the decision models.',
   catalogStatus: (status: number) => `Biorouter answered with status ${status}.`,
   retry: 'Retry',
-  threshold: 'Fires at',
-  thresholdHelp: 'The probability of the answer it fires on, at or above this.',
+  firesWhen: 'Fires when',
+  directions: { at_or_above: 'At or above', below: 'Below' } as Record<MonitorDirection, string>,
+  threshold: 'Threshold',
+  thresholdHelp: 'Fires when the probability of the answer it watches is at or above this.',
+  thresholdHelpBelow: 'Fires when the probability of the answer it watches falls below this.',
   action: 'Then',
   actions: { stop: 'Stop the turn', notify: 'Notify me', steer: 'Tell the agent' } as Record<
     MonitorAction,
     string
   >,
+  /**
+   * A stop monitor with a re-arm level (set over HTTP or the CLI). This dialog
+   * keeps it, held at the threshold while the threshold is past it.
+   */
+  stopsOnce: (p: string) => `Stops once, then stays quiet until P falls below ${p}`,
+  stopsOnceBelow: (p: string) => `Stops once, then stays quiet until P rises to ${p}`,
+  onError: 'If a check fails',
+  onErrors: { notify: 'Notify me', pause: 'Pause the turn' } as Record<MonitorErrorPolicy, string>,
+  onErrorHelp:
+    'Pause stops the turn whenever the decision model cannot answer, so a safety rule never goes unchecked.',
+  pausesOnError: 'pauses if a check fails',
+  subagents: 'Also watch the subagents this chat starts',
+  setByAgent: 'Set by the agent',
+  inherited: 'From the chat that started this subagent',
+  noUsableModel:
+    'No decision model this chat may use is installed, so this monitor cannot run until one is.',
+  /** The install panel's first sentence, by why no model is usable (`DecisionModelInstall`). */
+  install: { ...DECISION_INSTALL_COPY.why, about: DECISION_INSTALL_COPY.about },
   timing: 'Checks',
   timings: { post_iteration: 'After each step', turn_end: 'When the turn ends' } as Record<
     MonitorTiming,
@@ -113,18 +144,73 @@ export const MONITORS_COPY = {
 
 const copy = MONITORS_COPY;
 
-/** The threshold's stops: 0.50 to 0.95 by 0.05, then 0.99. */
+/**
+ * The threshold's stops: 0.01, then 0.05 to 0.95 by 0.05, then 0.99 (21 stops).
+ * Low ones are for a monitor that fires below its threshold ("P(yes) < 0.10").
+ */
 export const THRESHOLD_STEPS = [
-  ...Array.from({ length: 10 }, (_, i) => (0.5 + i * 0.05).toFixed(2)),
-  '0.99',
-].map((value) => ({ value, label: value }));
+  0.01,
+  ...Array.from({ length: 19 }, (_, i) => (i + 1) * 0.05),
+  0.99,
+].map((p) => ({ value: p.toFixed(2), label: p.toFixed(2) }));
 
-function nearestStep(p: number): string {
-  let best = THRESHOLD_STEPS[0].value;
-  for (const step of THRESHOLD_STEPS) {
-    if (Math.abs(Number(step.value) - p) < Math.abs(Number(best) - p)) best = step.value;
+/**
+ * The stops for a monitor whose threshold is `p`: {@link THRESHOLD_STEPS}, plus
+ * `p` as a stop of its own, in order, when it is none of them. A threshold set
+ * over the CLI or HTTP (0.33) then sits where it is and is saved unchanged;
+ * snapping it to the nearest stop would change a rule nobody touched.
+ */
+export function thresholdStepsFor(p: number): { value: string; label: string }[] {
+  if (!Number.isFinite(p) || THRESHOLD_STEPS.some((step) => Number(step.value) === p)) {
+    return THRESHOLD_STEPS;
   }
-  return best;
+  const own = { value: String(p), label: formatProbability(p) };
+  const at = THRESHOLD_STEPS.findIndex((step) => Number(step.value) > p);
+  return at < 0
+    ? [...THRESHOLD_STEPS, own]
+    : [...THRESHOLD_STEPS.slice(0, at), own, ...THRESHOLD_STEPS.slice(at)];
+}
+
+/** The stop whose value is `p` exactly, among `steps` (which hold it: `thresholdStepsFor`). */
+function stepValueFor(p: number, steps: readonly { value: string }[]): string {
+  return steps.find((step) => Number(step.value) === p)?.value ?? steps[0].value;
+}
+
+/**
+ * The re-arm levels a monitor keeps when its threshold moves to `threshold`.
+ *
+ * The daemon refuses a level on the far side of the threshold (`settings.rs`'s
+ * `validate`): a monitor that fires at or above re-arms below a level no higher
+ * than its threshold, and one that fires below re-arms at a level no lower than
+ * it. This dialog has no field for the level, so a threshold moved past a kept
+ * level would make a Save the dialog could not fix. The level is held at the
+ * threshold instead, so a stop monitor still stops once and then waits for P to
+ * cross back over the threshold.
+ *
+ * It is held from the level the monitor had when the edit began (`opened`), so a
+ * drag past it and back gives it back. A monitor with no level gets none, and
+ * neither does one whose level the direction switch cleared.
+ */
+export function rearmForThreshold(
+  draft: MonitorCriterion,
+  threshold: number,
+  opened: MonitorCriterion | null
+): Pick<MonitorCriterion, 'rearmBelow' | 'rearmAbove'> {
+  const below = draft.direction === 'below';
+  const kept = below ? draft.rearmAbove : draft.rearmBelow;
+  if (typeof kept !== 'number') {
+    return { rearmBelow: draft.rearmBelow, rearmAbove: draft.rearmAbove };
+  }
+  const openedLevel =
+    opened && (opened.direction === 'below') === below
+      ? below
+        ? opened.rearmAbove
+        : opened.rearmBelow
+      : null;
+  const level = typeof openedLevel === 'number' ? openedLevel : kept;
+  return below
+    ? { rearmBelow: draft.rearmBelow, rearmAbove: Math.max(level, threshold) }
+    : { rearmBelow: Math.min(level, threshold), rearmAbove: draft.rearmAbove };
 }
 
 /** `Form reached` -> `form-reached`, unique among `taken`. */
@@ -156,10 +242,27 @@ export function newMonitor(): MonitorCriterion {
     consecutive: 1,
     rearmBelow: null,
     action: 'notify',
+    // As the daemon and the CLI default: a flaky local model must not stop the
+    // turns of a person who did not ask for that.
     onError: 'notify',
     maxEvalsPerTurn: 50,
     enabled: true,
+    direction: 'at_or_above',
+    rearmAbove: null,
+    setBy: 'person',
+    setBySession: null,
+    inheritedFrom: null,
+    applyToSubagents: false,
   };
+}
+
+/**
+ * A person's change to a monitor an agent set makes it the person's: the agent
+ * then can neither change nor remove it (`apply_agent_edit` in `settings.rs`
+ * never touches a person's monitor). Any other monitor is returned as it is.
+ */
+export function ownedByThePerson(monitor: MonitorCriterion): MonitorCriterion {
+  return monitor.setBy === 'agent' ? { ...monitor, setBy: 'person', setBySession: null } : monitor;
 }
 
 export interface MonitorErrors {
@@ -185,9 +288,13 @@ function modelEntryFor(
 /**
  * What the daemon would refuse in one monitor (`settings.rs`'s `validate`), said
  * by the field it belongs to, and what every check of it would refuse: a model
- * the chat may not use, or, with `chatRefusal` (a Crew grant on the chat), any
- * model at all, the chat's decision model included. Empty when the monitor can
- * be saved.
+ * the chat may not use, or, with `chatRefusal` (a Crew grant on the chat that no
+ * longer stands), any model at all, the chat's decision model included. Empty
+ * when the monitor can be saved.
+ *
+ * The model is judged only for a monitor that is on, as the daemon's save check
+ * is: a monitor that is off never runs, so a person can always switch off (and
+ * save) one whose model went away.
  */
 export function validateMonitor(
   monitor: MonitorCriterion,
@@ -212,6 +319,7 @@ export function validateMonitor(
       errors.options = copy.optionsDuplicate;
     if (!monitor.option || !names.includes(monitor.option)) errors.option = copy.firesOnMissing;
   }
+  if (!monitor.enabled) return errors;
   const entry = modelEntryFor(monitor.model, context.models);
   if (context.chatRefusal) errors.model = context.chatRefusal;
   else if (entry?.unavailableReason) errors.model = entry.unavailableReason;
@@ -221,24 +329,41 @@ export function validateMonitor(
   return errors;
 }
 
+/** Why the chat may not use a listed model, or `null` when it may (the picker's rule). */
+function modelReason(entry: DecisionModelEntry, chatTier: DecisionTier | null): string | null {
+  // The daemon's own reason first (tier, an institution, a Crew grant); the tier
+  // rule here only when it gave none (an older daemon).
+  return (
+    entry.unavailableReason ??
+    (chatTier === 'private' && entry.tier === 'public' ? copy.modelPublicRefused : null)
+  );
+}
+
+/** The opening of the Crew refusal the daemon gives a hosted model (`CREW_SCOPED_REFUSAL`). */
+const CREW_REASON_OPENING = 'This chat works under a Crew grant';
+
 function hasErrors(errors: MonitorErrors): boolean {
   return Object.values(errors).some(Boolean);
 }
 
 /**
- * One line under a monitor's name: its threshold, action, timing and model. The
- * threshold reads as the decision card and history read the same monitor's calls
- * (`thresholdSummary`): `P(no) ≥ 0.85`, `P(rrms) ≥ 0.70`, `P(level ≥ mild) ≥ 0.85`.
+ * One line under a monitor's name: its threshold, action, timing and model, and
+ * that it pauses the turn when a check fails. The threshold reads as the decision
+ * card and history read the same monitor's calls (`thresholdSummary`):
+ * `P(no) ≥ 0.85`, `P(rrms) ≥ 0.70`, `P(level ≥ mild) ≥ 0.85`, and `P(yes) < 0.30`
+ * for a monitor that fires below its threshold.
  */
 export function monitorSummary(monitor: MonitorCriterion): string {
   const threshold = monitorThreshold(monitor);
+  const sign = monitor.direction === 'below' ? '<' : '≥';
   return [
     threshold
       ? thresholdSummary(threshold, monitor.question)
-      : `P(${monitor.option ?? 'yes'}) ≥ ${formatProbability(monitor.threshold)}`,
+      : `P(${monitor.option ?? 'yes'}) ${sign} ${formatProbability(monitor.threshold)}`,
     copy.actions[monitor.action],
     copy.timings[monitor.timing],
     decisionModelLabel(monitor.model) ?? copy.chatDefault,
+    ...(monitor.onError === 'pause' ? [copy.pausesOnError] : []),
   ].join(' · ');
 }
 
@@ -284,42 +409,61 @@ function MonitorEditor({
   catalogProblem,
   onRetryCatalog,
   readOnly,
+  nothingUsable,
+  isSubagentChat,
+  opened,
 }: {
   draft: MonitorCriterion;
   onChange: (next: MonitorCriterion) => void;
   errors: MonitorErrors;
   models: readonly DecisionModelEntry[];
   chatTier: DecisionTier | null;
-  /** Why this chat may use no decision model at all (a Crew grant), or `null`. */
+  /** Why this chat may use no decision model at all (a Crew grant that no longer stands), or `null`. */
   chatRefusal: string | null;
   /** Why the model list could not be read, or `null`. */
   catalogProblem: CatalogProblem | null;
   onRetryCatalog: () => void;
   readOnly: boolean;
+  /** The list was read and no model in it may read this chat: said under Model, never a refusal. */
+  nothingUsable: boolean;
+  /** A subagent's chat, whose monitors cannot be set to watch subagents of its own. */
+  isSubagentChat: boolean;
+  /**
+   * The monitor as it was when this edit began (`null` for a new one). The
+   * slider's stops are built from its threshold, not from the draft's: a stored
+   * 0.33 keeps its stop for the whole edit, so a drag off it neither shrinks the
+   * scale under the pointer nor loses 0.33 as a value to come back to. Its re-arm
+   * level is the one a threshold drag holds back and gives back
+   * (`rearmForThreshold`), for the same reason.
+   */
+  opened: MonitorCriterion | null;
 }) {
   const base = useId();
   const kind = draft.question.kind;
+  const below = draft.direction === 'below';
+  const thresholdSteps = thresholdStepsFor(opened?.threshold ?? draft.threshold);
   const options: ModelOption[] = [
     // No row stands for the chat's decision model, so the chat-wide reason is its own.
     { value: '', label: copy.chatDefault, model: null, reason: chatRefusal },
-    ...models.map((entry) => {
-      const refused = chatTier === 'private' && entry.tier === 'public';
-      return {
-        value: modelKey({ provider: entry.provider, model: entry.model, adapter: null }),
-        label: [
-          entry.displayName,
-          entry.tier === 'private' ? copy.private : entry.tier === 'public' ? copy.public : null,
-          entry.local ? copy.local : null,
-        ]
-          .filter(Boolean)
-          .join(' · '),
-        model: { provider: entry.provider, model: entry.model, adapter: null },
-        // The daemon's own reason first (tier, or an institution the model does not
-        // cover); the tier rule here only when it gave none.
-        reason: entry.unavailableReason ?? (refused ? copy.modelPublicRefused : null),
-      };
-    }),
+    ...models.map((entry) => ({
+      value: modelKey({ provider: entry.provider, model: entry.model, adapter: null }),
+      label: [
+        entry.displayName,
+        entry.tier === 'private' ? copy.private : entry.tier === 'public' ? copy.public : null,
+        entry.local ? copy.local : null,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      model: { provider: entry.provider, model: entry.model, adapter: null },
+      reason: modelReason(entry, chatTier),
+    })),
   ];
+  // A stop monitor with a re-arm level stops once, not every turn its answer holds.
+  const rearm = below ? draft.rearmAbove : draft.rearmBelow;
+  const stopsOnce =
+    draft.action === 'stop' && typeof rearm === 'number'
+      ? (below ? copy.stopsOnceBelow : copy.stopsOnce)(formatProbability(rearm))
+      : null;
   const selectedKey = modelKey(
     draft.model
       ? {
@@ -556,6 +700,28 @@ function MonitorEditor({
           </Field>
         </>
       ) : null}
+      <Field id={`${base}-fires-when`} label={copy.firesWhen}>
+        <SegmentedControl
+          aria-labelledby={fieldLabelId(`${base}-fires-when`)}
+          value={below ? 'below' : 'at_or_above'}
+          disabled={readOnly}
+          data-testid="monitor-direction"
+          options={(['at_or_above', 'below'] as const).map((value) => ({
+            value,
+            label: copy.directions[value],
+          }))}
+          // A re-arm level is on the other side of the threshold in each direction,
+          // so neither one survives the switch.
+          onValueChange={(value) =>
+            onChange({
+              ...draft,
+              direction: value === 'below' ? 'below' : 'at_or_above',
+              rearmBelow: null,
+              rearmAbove: null,
+            })
+          }
+        />
+      </Field>
       <div className="br-form-field flex min-w-0 flex-col gap-1.5" data-testid="monitor-model">
         <label htmlFor={`${base}-model`} className="text-label text-text-default">
           {copy.model}
@@ -606,6 +772,12 @@ function MonitorEditor({
           <p className="br-monitors__error" role="alert">
             {errors.model}
           </p>
+        ) : nothingUsable ? (
+          // A note, not a refusal: Save stays open, or a stopped Ollama would keep
+          // a person from turning monitors off or removing them.
+          <p className="br-monitors__note" data-testid="monitor-no-usable-model">
+            {copy.noUsableModel}
+          </p>
         ) : chatTier === 'private' ? (
           <p className="br-monitors__note">{copy.modelHelp}</p>
         ) : null}
@@ -617,18 +789,26 @@ function MonitorEditor({
         <div className="br-monitors__threshold">
           <Slider
             aria-labelledby={`${base}-threshold`}
-            description={copy.thresholdHelp}
-            steps={THRESHOLD_STEPS}
-            value={nearestStep(draft.threshold)}
+            aria-describedby={`${base}-threshold-help`}
+            steps={thresholdSteps}
+            value={stepValueFor(draft.threshold, thresholdSteps)}
             disabled={readOnly}
             data-testid="monitor-threshold"
             className="min-w-0 flex-1"
-            onValueChange={(value) => onChange({ ...draft, threshold: Number(value) })}
+            // A kept re-arm level moves with a threshold that passes it, or the
+            // daemon would refuse the Save and nothing here could change the level.
+            onValueChange={(value) => {
+              const threshold = Number(value);
+              onChange({ ...draft, threshold, ...rearmForThreshold(draft, threshold, opened) });
+            }}
           />
           <span className="br-monitors__threshold-value" aria-hidden="true">
             {formatProbability(draft.threshold)}
           </span>
         </div>
+        <p className="br-monitors__note" id={`${base}-threshold-help`}>
+          {below ? copy.thresholdHelpBelow : copy.thresholdHelp}
+        </p>
       </div>
       <div className="br-form-field flex min-w-0 flex-col gap-1.5">
         <span className="text-label text-text-default" id={`${base}-action`}>
@@ -645,7 +825,27 @@ function MonitorEditor({
           }))}
           onValueChange={(value) => onChange({ ...draft, action: value as MonitorAction })}
         />
+        {stopsOnce ? (
+          <p className="br-monitors__note" data-testid="monitor-stops-once">
+            {stopsOnce}
+          </p>
+        ) : null}
       </div>
+      <Field id={`${base}-on-error`} label={copy.onError} helper={copy.onErrorHelp}>
+        <SegmentedControl
+          aria-labelledby={fieldLabelId(`${base}-on-error`)}
+          value={draft.onError}
+          disabled={readOnly}
+          data-testid="monitor-on-error"
+          options={(['notify', 'pause'] as const).map((value) => ({
+            value,
+            label: copy.onErrors[value],
+          }))}
+          onValueChange={(value) =>
+            onChange({ ...draft, onError: value === 'pause' ? 'pause' : 'notify' })
+          }
+        />
+      </Field>
       <div className="br-form-field flex min-w-0 flex-col gap-1.5">
         <span className="text-label text-text-default" id={`${base}-timing`}>
           {copy.timing}
@@ -662,6 +862,18 @@ function MonitorEditor({
           onValueChange={(value) => onChange({ ...draft, timing: value as MonitorTiming })}
         />
       </div>
+      {/* A subagent's own monitors never reach subagents of its own (`settings.rs`). The
+          label wraps the box, so the square itself toggles it (`ui/Checkbox`). */}
+      {isSubagentChat ? null : (
+        <label className="br-dh-check" data-testid="monitor-subagents">
+          <Checkbox
+            checked={draft.applyToSubagents === true}
+            disabled={readOnly}
+            onChange={(event) => onChange({ ...draft, applyToSubagents: event.target.checked })}
+          />
+          <span>{copy.subagents}</span>
+        </label>
+      )}
       <label className="br-dh-check">
         <Switch
           checked={draft.enabled}
@@ -698,6 +910,17 @@ export interface MonitorsDialogProps {
   chatRefusal?: string | null;
   /** Show the monitors without letting them change (a read-only surface). */
   readOnly?: boolean;
+  /**
+   * The chat is a subagent's: its monitors cannot be set to also watch subagents
+   * of its own. Also read from the monitors themselves (an agent's, or one copied
+   * from the chat that started it, live only in a subagent's chat).
+   */
+  isSubagentChat?: boolean;
+  /**
+   * The chat works under a Crew grant, for the install panel's first sentence.
+   * Also read from the catalog: the daemon names the grant in each hosted model's reason.
+   */
+  isCrewChat?: boolean;
 }
 
 /**
@@ -715,6 +938,13 @@ export interface MonitorsDialogProps {
  * The write needs the person's proof on a daemon that holds a user-action key,
  * and none on one that holds no key (a `biorouter serve` browser), so the
  * dialog works the same on both surfaces; a refusal is shown, never swallowed.
+ * The daemon checks that what a save turns on can run for this chat now and
+ * answers 422 with its sentence when it cannot; that sentence is shown too.
+ *
+ * When the list was read and no model in it may read this chat, the install
+ * panel (`DecisionModelInstall`) offers to install a local one at the top, and
+ * the model list is read again once it is installed. Save is never held back for
+ * that: a monitor may be removed or switched off whatever its model.
  */
 export function MonitorsDialog({
   open,
@@ -726,6 +956,8 @@ export function MonitorsDialog({
   models: givenModels,
   chatRefusal: givenChatRefusal,
   readOnly = false,
+  isSubagentChat: givenSubagentChat = false,
+  isCrewChat: givenCrewChat = false,
 }: MonitorsDialogProps) {
   const [monitors, setMonitors] = useState<MonitorCriterion[]>(settings?.monitors ?? []);
   const [editing, setEditing] = useState<{ index: number | null; draft: MonitorCriterion } | null>(
@@ -740,6 +972,8 @@ export function MonitorsDialog({
   // without touching the monitor being edited.
   const [catalogIssue, setCatalogIssue] = useState<CatalogProblem | null>(null);
   const [catalogAttempt, setCatalogAttempt] = useState(0);
+  // Whether a list has been read at all this open: until then, "none usable" is unknown.
+  const [catalogRead, setCatalogRead] = useState(false);
   const models = givenModels ?? fetchedModels;
   // A Crew grant rules out every model, the chat's decision model included: no
   // row stands for that one, so the catalog says it once for the chat.
@@ -783,6 +1017,10 @@ export function MonitorsDialog({
   }, [open]);
 
   useEffect(() => {
+    if (!open) setCatalogRead(false);
+  }, [open]);
+
+  useEffect(() => {
     if (!open || givenModels) return;
     const controller = new AbortController();
     // A new read says nothing until it answers: no sentence about an older answer.
@@ -793,6 +1031,7 @@ export function MonitorsDialog({
         if (controller.signal.aborted) return;
         setFetchedModels(catalog.models);
         setFetchedChatRefusal(catalog.sessionUnavailableReason);
+        setCatalogRead(true);
         // An older daemon lists nothing because it cannot; Retry would get the same answer.
         if (catalog.missing) setCatalogIssue({ text: copy.catalogMissing, retry: false });
       })
@@ -801,6 +1040,26 @@ export function MonitorsDialog({
       });
     return () => controller.abort();
   }, [open, givenModels, sessionId, catalogAttempt]);
+
+  // The list was read, and no model in it may read this chat. A Crew grant that no
+  // longer stands (`chatRefusal`) refuses every model, an installed one too, so the
+  // install panel would offer what cannot help.
+  const nothingUsable =
+    (givenModels !== undefined || catalogRead) &&
+    !catalogIssue &&
+    !chatRefusal &&
+    !models.some((entry) => modelReason(entry, chatTier) === null);
+  const isSubagentChat =
+    givenSubagentChat ||
+    monitors.some((monitor) => monitor.setBy === 'agent' || !!monitor.inheritedFrom);
+  const isCrewChat =
+    givenCrewChat ||
+    models.some((entry) => entry.unavailableReason?.startsWith(CREW_REASON_OPENING) === true);
+  const installReason: DecisionInstallReason = isCrewChat
+    ? 'crew'
+    : chatTier === 'private'
+      ? 'private'
+      : 'none';
 
   const draftErrors = useMemo(
     () => (editing ? validateMonitor(editing.draft, { chatTier, models, chatRefusal }) : {}),
@@ -816,7 +1075,7 @@ export function MonitorsDialog({
     const taken = new Set(
       monitors.filter((_, i) => i !== editing.index).map((monitor) => monitor.id)
     );
-    const draft = {
+    const trimmed: MonitorCriterion = {
       ...editing.draft,
       name: editing.draft.name.trim(),
       id: editing.draft.id || monitorSlug(editing.draft.name, taken),
@@ -835,6 +1094,13 @@ export function MonitorsDialog({
             : editing.draft.question.kind,
       },
     };
+    // An agent's monitor the person changed is the person's now; opened and
+    // closed with nothing changed, it stays the agent's.
+    const original = editing.index === null ? null : monitors[editing.index];
+    const changed =
+      original !== null &&
+      JSON.stringify(monitorToWire(trimmed)) !== JSON.stringify(monitorToWire(original));
+    const draft = changed ? ownedByThePerson(trimmed) : trimmed;
     const next =
       editing.index === null
         ? [...monitors, draft]
@@ -849,7 +1115,8 @@ export function MonitorsDialog({
     if (stored !== 'ready') return;
     const next = commitDraft();
     if (!next) return;
-    // Every monitor is checked again: a stored one may name a model this chat can no longer use.
+    // Every monitor that is on is checked again: a stored one may name a model this
+    // chat can no longer use. One that is off is not, so it can always be saved off.
     const invalid = next.findIndex((monitor) =>
       hasErrors(validateMonitor(monitor, { chatTier, models, chatRefusal }))
     );
@@ -905,6 +1172,13 @@ export function MonitorsDialog({
       testId="monitors-dialog"
     >
       <div className="br-monitors">
+        {nothingUsable && !readOnly ? (
+          <DecisionModelInstall
+            reason={installReason}
+            // Read the list again: the model just installed is in it now.
+            onInstalled={() => setCatalogAttempt((attempt) => attempt + 1)}
+          />
+        ) : null}
         {stored === 'loading' ? (
           <p className="br-monitors__note" role="status" data-testid="monitors-loading">
             {copy.loading}
@@ -928,6 +1202,16 @@ export function MonitorsDialog({
                   <span className="br-monitors__item-text">
                     <span className="br-monitors__item-name">{monitor.name}</span>
                     <span className="br-monitors__item-meta">{monitorSummary(monitor)}</span>
+                    {monitor.setBy === 'agent' || monitor.inheritedFrom ? (
+                      <span className="flex flex-wrap gap-1 pt-1">
+                        {monitor.setBy === 'agent' ? (
+                          <Badge data-testid="monitor-set-by-agent">{copy.setByAgent}</Badge>
+                        ) : null}
+                        {monitor.inheritedFrom ? (
+                          <Badge data-testid="monitor-inherited">{copy.inherited}</Badge>
+                        ) : null}
+                      </span>
+                    ) : null}
                   </span>
                   <Switch
                     checked={monitor.enabled}
@@ -936,7 +1220,10 @@ export function MonitorsDialog({
                     onCheckedChange={(checked) =>
                       setMonitors((current) =>
                         current.map((entry, i) =>
-                          i === index ? { ...entry, enabled: checked === true } : entry
+                          // Switched by the person, an agent's monitor is the person's.
+                          i === index
+                            ? ownedByThePerson({ ...entry, enabled: checked === true })
+                            : entry
                         )
                       )
                     }
@@ -979,6 +1266,9 @@ export function MonitorsDialog({
               catalogProblem={catalogIssue}
               onRetryCatalog={() => setCatalogAttempt((attempt) => attempt + 1)}
               readOnly={readOnly}
+              nothingUsable={nothingUsable}
+              isSubagentChat={isSubagentChat}
+              opened={editing.index === null ? null : (monitors[editing.index] ?? null)}
               onChange={(draft) => setEditing({ ...editing, draft })}
             />
             <div className="br-monitors__actions">

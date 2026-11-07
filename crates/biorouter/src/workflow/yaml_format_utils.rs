@@ -9,25 +9,31 @@ use std::fmt::Write;
 ///   prompt: |
 ///     Hello "World"
 ///     {% if user == "admin" %}Welcome{% endif %}
+///
+/// Only top-level keys are rewritten. The same names occur deeper in a
+/// workflow: a monitor's `question.instructions`, a frontend extension's
+/// `instructions`, a gate question or sub-workflow value someone named
+/// `prompt`, and ordinary text inside another field's block scalar. There a
+/// literal `\n` is the author's text, and splitting at it would change what
+/// they wrote. A line with no indentation is always a top-level key here,
+/// because a block scalar's text is indented under its key and `serde_yaml`
+/// never wraps a scalar onto a second line.
 pub fn reformat_fields_with_multiline_values(yaml: &str, multiline_fields: &[&str]) -> String {
     let mut result = String::new();
 
     for line in yaml.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() {
+        if line.trim_start().is_empty() {
             writeln!(result).unwrap();
             continue;
         }
 
-        let indent = line.len() - trimmed.len();
-        let indent_str = " ".repeat(indent);
-
+        // `line`, not its trimmed form: an indented key is not a top-level one.
         let matched_field = multiline_fields
             .iter()
-            .find(|&f| trimmed.starts_with(&format!("{f}: ")));
+            .find(|&f| line.starts_with(&format!("{f}: ")));
 
         if let Some(field) = matched_field {
-            if let Some((_, raw_val)) = trimmed.split_once(": ") {
+            if let Some((_, raw_val)) = line.split_once(": ") {
                 if raw_val.contains("\\n") {
                     // Clean escaped content and unescape quotes
                     let mut value = raw_val.trim_matches('"').to_string();
@@ -35,9 +41,9 @@ pub fn reformat_fields_with_multiline_values(yaml: &str, multiline_fields: &[&st
                     // Unescape quotes and double backslashes (MiniJinja + newlines)
                     value = value.replace("\\\"", "\"").replace("\\\\n", "\\n");
 
-                    writeln!(result, "{indent_str}{field}: |").unwrap();
+                    writeln!(result, "{field}: |").unwrap();
                     for l in value.split("\\n") {
-                        writeln!(result, "{indent_str}  {l}").unwrap();
+                        writeln!(result, "  {l}").unwrap();
                     }
                     continue;
                 }
@@ -94,12 +100,85 @@ mod tests {
     }
 
     #[test]
-    fn handles_indented_nested_field() {
-        let yaml = "settings:\n  prompt: \"line1\\\\nline2\"";
-        let expected = "settings:\n  prompt: |\n    line1\n    line2\n";
+    fn leaves_indented_nested_fields_alone() {
+        let yaml = "settings:\n  prompt: \"line1\\\\nline2\"\n  question:\n    instructions: Is there a literal '\\n'?";
+        let expected = format!("{yaml}\n");
 
-        let result = reformat_fields_with_multiline_values(yaml, &["prompt"]);
+        let result = reformat_fields_with_multiline_values(yaml, &["prompt", "instructions"]);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn leaves_field_like_text_inside_a_block_scalar_alone() {
+        let yaml = "prompt: |-\n  Use printf.\n  instructions: keep the literal \\n in the format";
+        let expected = format!("{yaml}\n");
+
+        let result = reformat_fields_with_multiline_values(yaml, &["prompt", "instructions"]);
+        assert_eq!(result, expected);
+    }
+
+    /// A monitor's question, a gate question named `prompt` and a line of a
+    /// multi-line prompt that reads like a key all keep a literal `\n`
+    /// through `Workflow::to_yaml`, which capture, `/workflows/save` and the
+    /// user-values PUT write with.
+    #[test]
+    fn workflow_to_yaml_keeps_a_literal_backslash_n_in_nested_text() {
+        use crate::workflow::Workflow;
+
+        let declared = Workflow::from_content(
+            r#"
+title: Watched
+description: Watched work
+prompt: |-
+  Print the numbers with printf.
+  instructions: keep the literal \n in the format string
+decision_settings:
+  defaultModel: {provider: test_decision, model: cloud}
+  monitors:
+    - id: literal
+      name: Literal
+      question:
+        instructions: Does the output contain a literal '\n' sequence?
+        kind: {binary: {}}
+      threshold: 0.7
+      action: stop
+      onError: pause
+orchestration_plan:
+  title: Printing
+  phases:
+    - {id: print, title: Print}
+    - id: check
+      title: Check
+      kind: verification
+      depends_on: [print]
+      gate:
+        questions: {prompt: Was every line ended with a literal \n?}
+        threshold: 0.9
+        max_attempts: 2
+        model: test_decision/cloud
+"#,
+        )
+        .unwrap();
+
+        let yaml = declared.to_yaml().unwrap();
+        let again = Workflow::from_content(&yaml).unwrap();
+
+        assert_eq!(
+            again.decision_settings.as_ref().unwrap().monitors[0]
+                .question
+                .instructions,
+            r"Does the output contain a literal '\n' sequence?",
+            "{yaml}"
+        );
+        assert_eq!(
+            again.decision_settings, declared.decision_settings,
+            "{yaml}"
+        );
+        assert_eq!(
+            again.orchestration_plan, declared.orchestration_plan,
+            "{yaml}"
+        );
+        assert_eq!(again.prompt, declared.prompt, "{yaml}");
     }
 
     #[test]

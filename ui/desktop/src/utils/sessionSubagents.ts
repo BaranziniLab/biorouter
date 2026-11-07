@@ -116,6 +116,12 @@ export interface PhaseSnapshot {
    * a daemon before decision gates sends none, and the row then draws no chip.
    */
   gate?: PhaseGateSnapshot | null;
+  /**
+   * The id of the earlier gated phase this open phase waits for, while that
+   * gate holds it. Optional: a daemon before held phases sends none, and a
+   * phase then reads as waiting for nothing.
+   */
+  heldBy?: string | null;
 }
 
 export interface OrchestrationSnapshot {
@@ -229,6 +235,7 @@ function parsePhase(value: unknown): PhaseSnapshot | null {
     startedAt: text(phase.startedAt),
     finishedAt: text(phase.finishedAt),
     gate: parsePhaseGateSnapshot(phase.gate),
+    heldBy: text(phase.heldBy),
   };
 }
 
@@ -412,6 +419,24 @@ export function phaseOpenByDefault(phase: PhaseSnapshot, phaseCount: number): bo
 
 export function completedPhaseCount(plan: OrchestrationSnapshot): number {
   return plan.phases.filter((phase) => phase.status === 'completed').length;
+}
+
+/** A phase the plan has closed: completed or skipped. A gate holds only an open one. */
+export function isClosedPhase(phase: Pick<PhaseSnapshot, 'status'>): boolean {
+  return phase.status === 'completed' || phase.status === 'skipped';
+}
+
+/**
+ * The title of the phase whose gate holds `phase`, or `null` when nothing holds
+ * it. The holder's id stands in for a title the plan no longer lists.
+ */
+export function heldByTitle(
+  plan: Pick<OrchestrationSnapshot, 'phases'> | null | undefined,
+  phase: Pick<PhaseSnapshot, 'heldBy' | 'status'>
+): string | null {
+  const holder = phase.heldBy;
+  if (!holder || isClosedPhase(phase)) return null;
+  return plan?.phases.find((candidate) => candidate.id === holder)?.title ?? holder;
 }
 
 // ---------------------------------------------------------------------------

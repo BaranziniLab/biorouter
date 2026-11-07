@@ -103,4 +103,12 @@ pub trait DecisionModelSource: Send + Sync {
     async fn list(&self) -> Vec<DecisionModelEntry>;
     /// Open the model `wanted` names, whether or not `list` would show it.
     async fn open(&self, wanted: &DecisionModelRef) -> DecisionResult<Arc<dyn DecisionModel>>;
+
+    /// Why the listing may be missing models that are installed, as the
+    /// sentence a person acts on (a local server that is not answering), or
+    /// `None`. A refusal for "no model" says it in place of the install
+    /// advice, which would be wrong for a model already on this computer.
+    async fn unavailable_hint(&self) -> Option<String> {
+        None
+    }
 }

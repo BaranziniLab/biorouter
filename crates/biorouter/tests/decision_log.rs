@@ -1,7 +1,8 @@
 //! The decision log end to end: the decision service writing through the
 //! production sink into a real session store, read back by every reader a
 //! surface uses, then gone with the chat. Offline: the model is an in-process
-//! fake, and nothing reaches a network.
+//! fake, or the real System One adapter against wiremock on loopback, and
+//! nothing reaches a network.
 //!
 //! The migration test opens a store the way an older build leaves it (schema
 //! 20, no `decisions` table, chats and messages on disk) with raw SQL, then
@@ -19,16 +20,21 @@ use biorouter::decision::types::{
     DecisionAdapter, DecisionKindTag, ModelVerdicts, ProbabilitySource, QuestionVerdict,
 };
 use biorouter::decision::{
-    DecisionCaps, DecisionChunk, DecisionContext, DecisionKind, DecisionModel, DecisionModelEntry,
-    DecisionModelRef, DecisionModelSource, DecisionOrigin, DecisionOutcome, DecisionRequest,
-    DecisionResult, DecisionService, DecisionSession, DecisionUseGate, Question, Threshold,
+    settle_late_answers, DecisionCaps, DecisionChunk, DecisionContext, DecisionError, DecisionKind,
+    DecisionLogEntry, DecisionModel, DecisionModelEntry, DecisionModelRef, DecisionModelSource,
+    DecisionOrigin, DecisionOutcome, DecisionRequest, DecisionResult, DecisionService,
+    DecisionSession, DecisionSink, DecisionUsage, DecisionUseGate, Question, Threshold,
 };
 use biorouter::privacy::affiliation::ModelAffiliation;
 use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::providers::decision::catalog::baseten_entry;
+use biorouter::providers::decision::SystemOneAdapter;
 use biorouter::session::{SessionManager, SessionType};
 use indexmap::IndexMap;
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[ctor::ctor]
 fn sandbox() {
@@ -457,4 +463,344 @@ async fn a_store_stamped_21_without_the_table_still_gets_it() {
     let listed = manager.list_sessions().await.unwrap();
     assert_eq!(listed.len(), 1, "the full listing reads the table");
     manager.close().await;
+}
+
+const JOEY: &str = "decision-models/baseten-joey-2b-latest";
+
+/// One `token_events` row: key, provider, model, input, output.
+type LedgerEvent = (String, String, String, Option<i64>, Option<i64>);
+
+/// Opens the one model it holds, whatever is asked for.
+struct Opens(Arc<dyn DecisionModel>);
+
+#[async_trait]
+impl DecisionModelSource for Opens {
+    async fn list(&self) -> Vec<DecisionModelEntry> {
+        Vec::new()
+    }
+    async fn open(&self, _: &DecisionModelRef) -> DecisionResult<Arc<dyn DecisionModel>> {
+        Ok(Arc::clone(&self.0))
+    }
+}
+
+/// A Baseten answer that cannot be read was billed: the failure row keeps its
+/// tokens, the usage ledger counts it once under the row's id at Baseten's
+/// price, and the chat's last activity does not move (R-30).
+#[tokio::test]
+async fn a_malformed_system_one_answer_is_counted_in_usage() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "joey-2b-0.3",
+            "answers": {"has_ms": {"type": "choice", "choice": "continue"}},
+            "usage": {"input_tokens": 42, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let joey: Arc<dyn DecisionModel> = Arc::new(
+        SystemOneAdapter::baseten(
+            &server.uri(),
+            "synthetic-test-key".into(),
+            baseten_entry(JOEY, 16_384),
+        )
+        .unwrap(),
+    );
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let manager = Arc::new(SessionManager::new(dir.path().into()));
+    let id = chat(&manager, &dir).await;
+    let pool = raw_pool(&dir.path().join("sessions").join("sessions.db")).await;
+    // An old activity stamp, so a write that moved it would show.
+    sqlx::query("UPDATE sessions SET updated_at = '2026-01-01 00:00:00' WHERE id = ?")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let service = DecisionService::new(Arc::new(Opens(joey)))
+        .with_default_model(None)
+        .with_use_gate(Arc::new(NoCrew))
+        .with_sink(Arc::new(SqliteDecisionSink {
+            session_manager: Arc::clone(&manager),
+        }));
+    let err = service
+        .decide(
+            Some(&DecisionSession::new(
+                &id,
+                SessionClassification::Public,
+                true,
+            )),
+            Some(&DecisionModelRef::new("baseten_decision", JOEY)),
+            &DecisionRequest {
+                questions: has_ms(),
+                context: DecisionContext::Text("SYNTHETIC NOTE: RRMS since 2019.".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, biorouter::decision::DecisionError::Malformed { .. }),
+        "{err:?}"
+    );
+
+    // The failure row carries the tokens.
+    let rows = list(&manager, &id, &DecisionQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(rows.total, 1);
+    let row = &rows.records[0];
+    assert_eq!(row.outcome, DecisionOutcome::Error);
+    assert_eq!((row.input_tokens, row.output_tokens), (Some(42), Some(1)));
+    assert!(
+        row.error
+            .as_deref()
+            .is_some_and(|e| e.contains("could not be read")),
+        "{:?}",
+        row.error
+    );
+
+    // One ledger row under the decision's own id, keyed by the slug the price
+    // table knows.
+    let events: Vec<LedgerEvent> = sqlx::query_as(
+        "SELECT event_key, provider, model_id, input_tokens, output_tokens \
+           FROM token_events WHERE session_id = ?",
+    )
+    .bind(&id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        events,
+        vec![(
+            format!("decision:{}", row.id),
+            "baseten_decision".to_string(),
+            JOEY.to_string(),
+            Some(42),
+            Some(1),
+        )]
+    );
+
+    // The chat's usage counts one decision request, and it has a price.
+    let usage = manager.get_session_model_usage(&id).await.unwrap();
+    let decision = usage
+        .iter()
+        .find(|row| row.provider.as_deref() == Some("baseten_decision"))
+        .unwrap_or_else(|| panic!("a decision row: {usage:?}"));
+    assert_eq!(decision.turns, 1, "one request");
+    assert_eq!((decision.input_tokens, decision.output_tokens), (42, 1));
+    let cost = biorouter::providers::pricing::estimate_cost_usd(
+        "baseten_decision",
+        decision.model_id.as_deref().unwrap(),
+        decision.input_tokens as u64,
+        decision.output_tokens as u64,
+    )
+    .expect("joey-1 has a price");
+    assert!(cost > 0.0, "{cost}");
+
+    let updated_at: String =
+        sqlx::query_scalar("SELECT CAST(updated_at AS TEXT) FROM sessions WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        updated_at, "2026-01-01 00:00:00",
+        "a decision's usage is not activity (R-30)"
+    );
+    pool.close().await;
+}
+
+/// How [`Billed`] answers. Each is billed 42 input and 1 output token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answers {
+    /// A reading of the question asked.
+    Readable,
+    /// An answer the adapter could not read.
+    Unreadable,
+    /// A reading of a question nobody asked, so the one asked has no answer.
+    OffTopic,
+}
+
+/// A Baseten decision model that answers at once.
+struct Billed(Answers);
+
+#[async_trait]
+impl DecisionModel for Billed {
+    fn model_ref(&self) -> DecisionModelRef {
+        DecisionModelRef::new("baseten_decision", JOEY)
+    }
+    fn display_name(&self) -> String {
+        "joey-1".to_string()
+    }
+    fn tier(&self) -> ProviderTier {
+        ProviderTier::Public
+    }
+    fn affiliation(&self) -> Option<ModelAffiliation> {
+        None
+    }
+    fn caps(&self) -> DecisionCaps {
+        DecisionCaps {
+            kinds: vec![DecisionKindTag::Binary],
+            max_questions: 64,
+            context_tokens: 16_384,
+            max_concurrency: 4,
+            max_request_bytes: None,
+            local: false,
+        }
+    }
+    async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
+        let usage = DecisionUsage {
+            input_tokens: Some(42),
+            output_tokens: Some(1),
+        };
+        let question = match self.0 {
+            Answers::Unreadable => {
+                return Err(
+                    DecisionError::malformed("joey-1", "the answer was not JSON")
+                        .with_billed_usage(usage),
+                )
+            }
+            Answers::Readable => request.questions.keys().next().unwrap().clone(),
+            Answers::OffTopic => "not_asked".to_string(),
+        };
+        Ok(ModelVerdicts {
+            verdicts: vec![QuestionVerdict {
+                question,
+                probabilities: IndexMap::from([
+                    ("yes".to_string(), 0.96),
+                    ("no".to_string(), 0.04),
+                ]),
+                source: ProbabilitySource::Native,
+                calibrated: true,
+                reported_choice: None,
+                raw: json!({"yes": 0.96}),
+            }],
+            usage,
+            served_model: Some("joey-2b-0.3".to_string()),
+        })
+    }
+}
+
+/// The production sink, holding each row a caller writes until `release`,
+/// once its write has started (`started`), so a test can stop the caller
+/// there.
+struct HeldRows {
+    inner: SqliteDecisionSink,
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait]
+impl DecisionSink for HeldRows {
+    async fn record(&self, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        self.started.notify_one();
+        self.release.notified().await;
+        self.inner.record(entry).await
+    }
+    async fn record_as(&self, id: &str, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        self.started.notify_one();
+        self.release.notified().await;
+        self.inner.record_as(id, entry).await
+    }
+    async fn record_late(&self, id: &str, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        self.inner.record_late(id, entry).await
+    }
+}
+
+/// A caller stopped after its model answered in time, while the answer's row
+/// is being stored (Stop or an overdue steer around a monitor, an HTTP client
+/// that went away), does not take the store with it: the chat gets exactly one
+/// decision row carrying the tokens and exactly one usage-ledger event for it,
+/// by the time a process about to exit has settled. Nothing else would store
+/// that answer, because the caller read it, so it is no late answer. The same
+/// holds for an answer that could not be read, or did not answer the
+/// question, and was billed all the same.
+#[tokio::test]
+async fn a_caller_stopped_while_its_answer_is_stored_still_logs_and_bills_it_once() {
+    for answers in [Answers::Readable, Answers::Unreadable, Answers::OffTopic] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = Arc::new(SessionManager::new(dir.path().into()));
+        let id = chat(&manager, &dir).await;
+        let pool = raw_pool(&dir.path().join("sessions").join("sessions.db")).await;
+        let sink = Arc::new(HeldRows {
+            inner: SqliteDecisionSink {
+                session_manager: Arc::clone(&manager),
+            },
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let service = DecisionService::new(Arc::new(Opens(Arc::new(Billed(answers)))))
+            .with_default_model(None)
+            .with_use_gate(Arc::new(NoCrew))
+            .with_sink(sink.clone());
+        let session = DecisionSession::new(&id, SessionClassification::Public, true);
+        let joey = DecisionModelRef::new("baseten_decision", JOEY);
+        let request = DecisionRequest {
+            questions: has_ms(),
+            context: DecisionContext::Text("SYNTHETIC NOTE: RRMS since 2019.".into()),
+        };
+        tokio::select! {
+            decided = service.decide(Some(&session), Some(&joey), &request) => {
+                panic!("{answers:?}: the row is held, so the caller cannot finish: {decided:?}")
+            }
+            // The answer was read in time and its row's write has started:
+            // the caller is stopped here.
+            () = sink.started.notified() => {}
+        }
+        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions WHERE session_id = ?")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored, 0,
+            "{answers:?}: nothing is stored while the row is held"
+        );
+
+        sink.release.notify_one();
+        assert_eq!(
+            settle_late_answers(std::time::Duration::from_secs(10)).await,
+            0,
+            "{answers:?}: the store settles"
+        );
+
+        let rows = list(&manager, &id, &DecisionQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(rows.total, 1, "{answers:?}: exactly one decision row");
+        let row = &rows.records[0];
+        let outcome = if answers == Answers::Readable {
+            DecisionOutcome::Passed
+        } else {
+            DecisionOutcome::Error
+        };
+        assert_eq!(row.outcome, outcome, "{answers:?}");
+        assert_eq!(
+            (row.input_tokens, row.output_tokens),
+            (Some(42), Some(1)),
+            "{answers:?}: the row carries the tokens"
+        );
+        let events: Vec<LedgerEvent> = sqlx::query_as(
+            "SELECT event_key, provider, model_id, input_tokens, output_tokens \
+               FROM token_events WHERE session_id = ?",
+        )
+        .bind(&id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![(
+                format!("decision:{}", row.id),
+                "baseten_decision".to_string(),
+                JOEY.to_string(),
+                Some(42),
+                Some(1),
+            )],
+            "{answers:?}: exactly one ledger event, under the row's id"
+        );
+        pool.close().await;
+    }
 }

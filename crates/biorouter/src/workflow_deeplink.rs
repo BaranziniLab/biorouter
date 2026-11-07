@@ -8,6 +8,11 @@ use crate::workflow::Workflow;
 pub enum DecodeError {
     #[error("Failed to decode workflow deeplink")]
     AllMethodsFailed,
+    /// The link decodes to JSON that is not a readable workflow, such as one
+    /// with `monitors` at the top level. It says why rather than reading as a
+    /// link that failed to decode.
+    #[error("The workflow in this link cannot be read: {0}")]
+    Unreadable(String),
 }
 
 /// Render a workflow as a shareable link.
@@ -44,10 +49,24 @@ pub fn encode(workflow: &Workflow) -> Result<String, serde_json::Error> {
 }
 
 pub fn decode(link: &str) -> Result<Workflow, DecodeError> {
+    // The first reason a decoded link's JSON was not a workflow (a data error,
+    // not a syntax one: text that is not JSON at all is just a wrong guess at
+    // the encoding).
+    let mut unreadable: Option<String> = None;
+    let mut parse = |workflow_json: &str| match serde_json::from_str::<Workflow>(workflow_json) {
+        Ok(workflow) => Some(workflow),
+        Err(error) => {
+            if error.is_data() && unreadable.is_none() {
+                unreadable = Some(error.to_string());
+            }
+            None
+        }
+    };
+
     // Handle the current format: URL-safe Base64 without padding.
     if let Ok(decoded_bytes) = URL_SAFE_NO_PAD.decode(link) {
         if let Ok(workflow_json) = String::from_utf8(decoded_bytes) {
-            if let Ok(workflow) = serde_json::from_str::<Workflow>(&workflow_json) {
+            if let Some(workflow) = parse(&workflow_json) {
                 return Ok(workflow);
             }
         }
@@ -59,14 +78,14 @@ pub fn decode(link: &str) -> Result<Workflow, DecodeError> {
             base64::engine::general_purpose::STANDARD.decode(url_decoded.as_bytes())
         {
             if let Ok(workflow_json) = String::from_utf8(decoded_bytes) {
-                if let Ok(workflow) = serde_json::from_str::<Workflow>(&workflow_json) {
+                if let Some(workflow) = parse(&workflow_json) {
                     return Ok(workflow);
                 }
             }
         }
     }
 
-    Err(DecodeError::AllMethodsFailed)
+    Err(unreadable.map_or(DecodeError::AllMethodsFailed, DecodeError::Unreadable))
 }
 
 #[cfg(test)]

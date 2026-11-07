@@ -245,6 +245,12 @@ fn monitor() -> MonitorCriterion {
         on_error: MonitorErrorPolicy::Notify,
         max_evals_per_turn: 50,
         enabled: true,
+        direction: Default::default(),
+        rearm_above: None,
+        set_by: Default::default(),
+        set_by_session: None,
+        inherited_from: None,
+        apply_to_subagents: false,
     }
 }
 

@@ -317,12 +317,19 @@ impl DecisionModel for SystemOneAdapter {
             let body = response.json::<Value>().await.unwrap_or(Value::Null);
             return Err(self.error_for_status(status.as_u16(), &body));
         }
+        // A body that is not JSON was billed too, but says for how much in no
+        // form that can be read, so nothing is counted and nothing estimated.
         let payload: Value = response
             .json()
             .await
             .map_err(|_| DecisionError::malformed(&self.entry.model, "the body was not JSON"))?;
-        parse_response(request, &payload)
-            .map_err(|detail| DecisionError::malformed(&self.entry.model, detail))
+        // Read before the answers are judged: the model answered, so the
+        // request was billed whether or not its answers can be used, and an
+        // answer that cannot be read still carries what it cost.
+        let usage = reported_usage(&payload);
+        parse_response(request, &payload).map_err(|detail| {
+            DecisionError::malformed(&self.entry.model, detail).with_billed_usage(usage)
+        })
     }
 }
 
@@ -474,19 +481,37 @@ pub fn parse_response(request: &DecisionRequest, payload: &Value) -> Result<Mode
             .ok_or_else(|| format!("no answer for question `{name}`"))?;
         verdicts.push(parse_answer(name, question, answer)?);
     }
-    let usage = payload.get("usage");
-    let count = |key: &str| usage.and_then(|u| u.get(key)).and_then(Value::as_i64);
     Ok(ModelVerdicts {
         verdicts,
-        usage: DecisionUsage {
-            input_tokens: count("input_tokens"),
-            output_tokens: count("output_tokens"),
-        },
-        served_model: payload
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        usage: reported_usage(payload),
+        served_model: served_model(payload),
     })
+}
+
+/// The tokens a 2xx System One body says the request was billed for: its
+/// `usage.input_tokens` and `usage.output_tokens`, read whether or not the
+/// answers can be. A count that is missing, not a whole number or below zero
+/// is `None`, never a guess, and a body with no `usage` gives the default.
+pub fn reported_usage(payload: &Value) -> DecisionUsage {
+    let usage = payload.get("usage");
+    let count = |key: &str| {
+        usage
+            .and_then(|u| u.get(key))
+            .and_then(Value::as_i64)
+            .filter(|n| *n >= 0)
+    };
+    DecisionUsage {
+        input_tokens: count("input_tokens"),
+        output_tokens: count("output_tokens"),
+    }
+}
+
+/// The model the server says answered, which can differ from the one asked.
+fn served_model(payload: &Value) -> Option<String> {
+    payload
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn parse_answer(
@@ -761,6 +786,51 @@ mod tests {
         }});
         assert!(parse_response(&req, &out_of_range).is_err());
         assert!(parse_response(&req, &json!({"error": "x"})).is_err());
+    }
+
+    /// The answer is judged unreadable, but the request was billed: its usage
+    /// is read all the same, and only a count that is really there is kept.
+    #[test]
+    fn usage_is_read_even_when_the_answers_cannot_be() {
+        let req = request(DecisionContext::Text("s".into()));
+        let wrong_type = json!({
+            "answers": {"has_ms": {"type": "choice", "choice": "continue"}},
+            "usage": {"input_tokens": 42, "output_tokens": 1}
+        });
+        assert!(parse_response(&req, &wrong_type).is_err());
+        assert_eq!(
+            reported_usage(&wrong_type),
+            DecisionUsage {
+                input_tokens: Some(42),
+                output_tokens: Some(1)
+            }
+        );
+        // No answers at all, and still a usage.
+        let no_answers = json!({"usage": {"input_tokens": 7, "output_tokens": 0}});
+        assert_eq!(
+            reported_usage(&no_answers),
+            DecisionUsage {
+                input_tokens: Some(7),
+                output_tokens: Some(0)
+            }
+        );
+        // No usage: nothing is invented.
+        assert_eq!(
+            reported_usage(&json!({"answers": {}})),
+            DecisionUsage::default()
+        );
+        // A count that is not a whole number of tokens is not a count.
+        assert_eq!(
+            reported_usage(&json!({"usage": {"input_tokens": "42", "output_tokens": 1.5}})),
+            DecisionUsage::default()
+        );
+        assert_eq!(
+            reported_usage(&json!({"usage": {"input_tokens": -3, "output_tokens": 2}})),
+            DecisionUsage {
+                input_tokens: None,
+                output_tokens: Some(2)
+            }
+        );
     }
 
     #[test]

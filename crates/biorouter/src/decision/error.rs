@@ -8,6 +8,14 @@
 //! `error_type` token is kept, because it says what to fix without saying what
 //! was sent.
 
+use super::types::DecisionUsage;
+
+/// How a person gets a decision model that runs on this computer: the one
+/// sentence every surface that finds none quotes (the service's no-model
+/// refusals, `biorouter decide`, the `decision_models` tool).
+pub const INSTALL_ADVICE: &str = "Install one on this computer with `biorouter models decision \
+     pull` (tev1:0.8b, about 1.5 GB), or with Install in a chat's Monitors dialog.";
+
 /// A failed decision.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum DecisionError {
@@ -45,16 +53,56 @@ pub enum DecisionError {
         error_type: Option<String>,
         message: String,
     },
-    /// The backend answered in a shape that cannot be trusted (502).
+    /// The backend answered in a shape that cannot be trusted (502). The
+    /// model answered, so the request was billed: `usage` is what it
+    /// reported, when the adapter could read that much, so the failure row
+    /// and the usage ledger still count it. Build it with
+    /// [`DecisionError::malformed`] and add the usage with
+    /// [`DecisionError::with_billed_usage`].
     #[error("{model} returned an answer that could not be read: {detail}")]
-    Malformed { model: String, detail: String },
+    Malformed {
+        model: String,
+        detail: String,
+        usage: DecisionUsage,
+    },
 }
 
 impl DecisionError {
+    /// An answer that could not be read, with no usage yet.
     pub fn malformed(model: &str, detail: impl Into<String>) -> Self {
         Self::Malformed {
             model: model.to_string(),
             detail: detail.into(),
+            usage: DecisionUsage::default(),
+        }
+    }
+
+    /// The tokens the request was billed for although it failed: a
+    /// [`Self::Malformed`] answer's usage, else none. A backend that refused
+    /// or failed the request (non-2xx) reports no usage, and its body is
+    /// never read, so a [`Self::Backend`] error bills nothing here.
+    pub fn billed_usage(&self) -> DecisionUsage {
+        match self {
+            Self::Malformed { usage, .. } => *usage,
+            _ => DecisionUsage::default(),
+        }
+    }
+
+    /// The same error with `usage` added to what it was billed for. Only a
+    /// [`Self::Malformed`] answer carries usage; every other variant is
+    /// returned unchanged.
+    pub fn with_billed_usage(self, usage: DecisionUsage) -> Self {
+        match self {
+            Self::Malformed {
+                model,
+                detail,
+                usage: before,
+            } => Self::Malformed {
+                model,
+                detail,
+                usage: before + usage,
+            },
+            other => other,
         }
     }
 
@@ -72,3 +120,47 @@ impl DecisionError {
 }
 
 pub type DecisionResult<T> = Result<T, DecisionError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage(input: i64, output: i64) -> DecisionUsage {
+        DecisionUsage {
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+        }
+    }
+
+    /// Only an answer that could not be read carries what it was billed for;
+    /// adding usage to any other error changes nothing, and the sentence a
+    /// person reads never mentions it.
+    #[test]
+    fn billed_usage_rides_only_malformed() {
+        let malformed = DecisionError::malformed("joey-1", "no answer for question `q`");
+        assert_eq!(malformed.billed_usage(), DecisionUsage::default());
+        let billed = malformed.clone().with_billed_usage(usage(30, 1));
+        assert_eq!(billed.billed_usage(), usage(30, 1));
+        assert_eq!(
+            billed.clone().with_billed_usage(usage(5, 2)).billed_usage(),
+            usage(35, 3),
+            "usage adds up"
+        );
+        assert_eq!(billed.to_string(), malformed.to_string());
+
+        let backend = DecisionError::Backend {
+            model: "joey-1".into(),
+            status: Some(500),
+            error_type: None,
+            message: "boom".into(),
+        };
+        let timeout = DecisionError::Timeout {
+            model: "joey-1".into(),
+            seconds: 10,
+        };
+        for other in [backend, timeout, DecisionError::Invalid("x".into())] {
+            assert_eq!(other.clone().with_billed_usage(usage(30, 1)), other);
+            assert_eq!(other.billed_usage(), DecisionUsage::default());
+        }
+    }
+}

@@ -10,6 +10,7 @@ import {
 } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   Check,
   CheckCircle,
   ChevronRight,
@@ -27,6 +28,7 @@ import {
   MoreHorizontal,
   PauseCircle,
   Play,
+  Plus,
   ScrollText,
   Search,
   StopCircle,
@@ -44,7 +46,9 @@ import {
   SUBAGENT_GROUPS,
   completedPhaseCount,
   formatElapsed,
+  heldByTitle,
   inSpawnOrder,
+  isClosedPhase,
   isQuiet,
   phaseOpenByDefault,
   rowsByPhase,
@@ -64,12 +68,32 @@ import {
   type SubagentRow,
   type SubagentRunStatus,
 } from '../../utils/sessionSubagents';
-import { formatProbability, type PhaseGateSnapshot } from '../../utils/sessionDecisions';
+import {
+  formatProbability,
+  phaseGateState,
+  type PhaseGateSnapshot,
+  type PhaseGateState,
+} from '../../utils/sessionDecisions';
 import { summaryCopy } from './copy';
 import './summaryAgents.css';
 import './summaryDecisions.css';
 
 const copy = summaryCopy.agents;
+
+/**
+ * The words the person's gate controls added to a phase row. Kept here, beside
+ * the chip that says them, rather than in `summary/copy.ts`.
+ */
+export const PHASE_GATE_ROW_COPY = {
+  needsYou: 'Gate blocked: needs you',
+  passedByYou: 'Passed by you',
+  skippedByYou: 'Skipped by you',
+  passStands: 'Your pass stands',
+  skipStands: 'Your skip stands',
+  waitsFor: (title: string) => `Waits for ${title}'s gate`,
+  addGate: 'Add gate',
+  addGateLabel: (phase: string) => `Add gate, ${phase}`,
+};
 
 type Glyph = typeof CircleIcon;
 
@@ -123,8 +147,10 @@ export interface SummarySubagentsData {
   /** Open the subagent as a tab and make it the active one. */
   onOpen: (sessionId: string, title?: string) => void;
   /**
-   * Open the decision history filtered to a phase's gate. Without it a phase's
-   * gate chip is drawn, but is not a control.
+   * Open a phase's gate dialog (`decisions/PhaseGateDialog.tsx`), which holds the
+   * person's controls and the gate's decision history; for an open phase with no
+   * gate, the dialog opens on its editor ("Add gate"). Without it a phase's gate
+   * chip is drawn, but is not a control, and no phase offers "Add gate".
    */
   onOpenGate?: (phaseId: string) => void;
 }
@@ -242,6 +268,10 @@ function buildList(
 }
 
 const gateKey = (phase: PhaseSnapshot) => `gate:${phase.id}`;
+const addGateKey = (phase: PhaseSnapshot) => `addgate:${phase.id}`;
+
+/** An open phase with no gate offers "Add gate" (to the person, when the chip is a control). */
+const offersAddGate = (phase: PhaseSnapshot) => !phase.gate && !isClosedPhase(phase);
 
 function buildView(
   data: SessionSubagents | null,
@@ -265,8 +295,9 @@ function buildView(
       const open = openState[key] ?? phaseOpenByDefault(phase, data.plan!.phases.length);
       const view: PhaseView = { phase, key, open, rows: slice(members, key, showAll) };
       if (members.length > 0) keys.push(key);
-      // The gate chip sits under the phase's heading, before its rows.
+      // The gate chip (or "Add gate") sits under the phase's heading, before its rows.
       if (gatesOpen && phase.gate) keys.push(gateKey(phase));
+      if (gatesOpen && offersAddGate(phase)) keys.push(addGateKey(phase));
       if (members.length > 0 && open) pushSlice(keys, view.rows);
       return view;
     });
@@ -446,6 +477,8 @@ interface RowControls {
   onOpen: SummarySubagentsData['onOpen'];
   onOpenGate?: SummarySubagentsData['onOpenGate'];
   phaseTitles: Map<string, string>;
+  /** The plan, for the title of the phase whose gate holds another. */
+  plan: SessionSubagents['plan'];
 }
 
 function SubagentRowItem({
@@ -612,9 +645,10 @@ function RowList({
   );
 }
 
-function phaseCountsLine(phase: PhaseSnapshot): string {
+function phaseCountsLine(phase: PhaseSnapshot, heldBy: string | null): string {
   const { counts } = phase;
   return [
+    heldBy ? PHASE_GATE_ROW_COPY.waitsFor(heldBy) : null,
     counts.running > 0 ? copy.running(counts.running) : null,
     counts.quiet > 0 ? copy.quiet(counts.quiet) : null,
     counts.blocked > 0 ? copy.blocked(counts.blocked) : null,
@@ -627,10 +661,27 @@ function phaseCountsLine(phase: PhaseSnapshot): string {
     .join(' · ');
 }
 
-/** `Gate 0.91 ≥ 0.80 passed`, `Gate 0.62 < 0.80, attempt 2 of 3`, `Gate blocked`. */
-export function gateChipText(gate: PhaseGateSnapshot): string {
+/**
+ * `Gate 0.91 ≥ 0.80 passed`, `Gate 0.62 < 0.80, attempt 2 of 3`, `Gate blocked`;
+ * with the person's controls, `Gate blocked: needs you`, `Passed by you` and
+ * `Skipped by you` (a phase the person closed), and `Your pass stands` (one
+ * recorded while its subagents still work). Without the phase, its status is
+ * not known, and a person's decision reads as one that stands.
+ */
+export function gateChipText(
+  gate: PhaseGateSnapshot,
+  phase?: Pick<PhaseSnapshot, 'status'>
+): string {
   const gateCopy = summaryCopy.decisions.gate;
   const t = formatProbability(gate.threshold);
+  const closed = phase ? isClosedPhase(phase) : false;
+  if (gate.personDecision === 'pass') {
+    return closed ? PHASE_GATE_ROW_COPY.passedByYou : PHASE_GATE_ROW_COPY.passStands;
+  }
+  if (gate.personDecision === 'skip') {
+    return closed ? PHASE_GATE_ROW_COPY.skippedByYou : PHASE_GATE_ROW_COPY.skipStands;
+  }
+  if (gate.needsPerson) return PHASE_GATE_ROW_COPY.needsYou;
   if (gate.blocked) return gateCopy.blocked;
   if (gate.lastPassed === true && gate.lastMinP !== null) {
     return gateCopy.passed(formatProbability(gate.lastMinP), t);
@@ -646,31 +697,27 @@ export function gateChipText(gate: PhaseGateSnapshot): string {
   return gateCopy.pending(t);
 }
 
-function gateState(gate: PhaseGateSnapshot): 'blocked' | 'passed' | 'failed' | 'pending' {
-  if (gate.blocked) return 'blocked';
-  if (gate.lastPassed === true) return 'passed';
-  if (gate.lastPassed === false) return 'failed';
-  return 'pending';
-}
-
-const GATE_ICONS: Record<ReturnType<typeof gateState>, Glyph> = {
+const GATE_ICONS: Record<PhaseGateState, Glyph> = {
   pending: CircleIcon,
   passed: Check,
   failed: X,
   blocked: AlertTriangle,
+  skipped: ArrowRight,
 };
 
 /**
  * A phase gate as a chip on its phase row (owner rule: a gate's evaluations are
- * never transcript rows). Pressing it opens the decision history filtered to
- * that gate. Its state is a glyph and its words, never colour alone.
+ * never transcript rows). Pressing it opens the gate's dialog, with the person's
+ * controls and, inside it, the gate's decision history. Its state is a glyph and
+ * its words, never colour alone.
  */
 function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowControls }) {
   const gate = phase.gate;
   if (!gate) return null;
-  const state = gateState(gate);
+  // The Decisions section's gate row reads the same rule.
+  const state = phaseGateState(gate);
   const Icon = GATE_ICONS[state];
-  const text = gateChipText(gate);
+  const text = gateChipText(gate, phase);
   const content = (
     <>
       <span className="br-summary__glyph" aria-hidden="true">
@@ -695,6 +742,7 @@ function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowCont
         className="br-agents__gate"
         data-row={key}
         data-state={state}
+        data-needs-person={gate.needsPerson && !gate.personDecision ? '' : undefined}
         data-testid={`phase-gate-${phase.id}`}
         aria-label={`${text}, ${phase.title}`}
         tabIndex={controls.tabIndexFor(key)}
@@ -702,6 +750,56 @@ function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowCont
         onClick={() => open(phase.id)}
       >
         {content}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * "Add gate" on an open phase with no gate: a quiet text button that shows on
+ * the phase's hover and on its own focus. It is always in the row order (the
+ * arrows reach it), so a keyboard finds it the way a pointer does. Pressing it
+ * opens the gate dialog on its editor.
+ */
+function AddGateButton({
+  phase,
+  controls,
+  shown,
+}: {
+  phase: PhaseSnapshot;
+  controls: RowControls;
+  shown: boolean;
+}) {
+  const [focused, setFocused] = useState(false);
+  const open = controls.onOpenGate;
+  if (!open || !offersAddGate(phase)) return null;
+  const key = addGateKey(phase);
+  const visible = shown || focused;
+  return (
+    <div data-row-item="">
+      <button
+        type="button"
+        className="br-agents__gate"
+        data-row={key}
+        data-add-gate=""
+        data-visible={visible ? '' : undefined}
+        data-testid={`phase-add-gate-${phase.id}`}
+        aria-label={PHASE_GATE_ROW_COPY.addGateLabel(phase.title)}
+        tabIndex={controls.tabIndexFor(key)}
+        // Quiet until wanted: hidden, but still in the row order and still a
+        // target, so a focus or a pointer that finds it shows it.
+        style={{ opacity: visible ? 1 : 0 }}
+        onFocus={() => {
+          setFocused(true);
+          controls.onRowFocus(key);
+        }}
+        onBlur={() => setFocused(false)}
+        onClick={() => open(phase.id)}
+      >
+        <span className="br-summary__glyph" aria-hidden="true">
+          <Plus />
+        </span>
+        <span className="br-agents__gate-text">{PHASE_GATE_ROW_COPY.addGate}</span>
       </button>
     </div>
   );
@@ -722,13 +820,15 @@ function PhaseItem({
 }) {
   const { phase, key, open, rows } = view;
   const listId = useId();
+  const [hovered, setHovered] = useState(false);
   const Icon = PHASE_ICONS[phase.kind];
   const total = Math.max(phase.counts.total, rows.total);
   const done = Math.min(phase.counts.done, total);
-  const countsLine = phaseCountsLine(phase);
+  const heldBy = heldByTitle(controls.plan, phase);
+  const countsLine = phaseCountsLine(phase, heldBy);
   // "Read the trials, Research, In progress, 1 of 3 subagents done": named
-  // explicitly, for the reason a subagent row is.
-  const label = `${phase.title}, ${copy.phaseKind[phase.kind]}, ${copy.phaseStatus[phase.status]}, ${summaryCopy.todoCount(done, total)}${copy.phaseAgentsSuffix}`;
+  // explicitly, for the reason a subagent row is. A held phase says what it waits for.
+  const label = `${phase.title}, ${copy.phaseKind[phase.kind]}, ${copy.phaseStatus[phase.status]}, ${summaryCopy.todoCount(done, total)}${copy.phaseAgentsSuffix}${heldBy ? `, ${PHASE_GATE_ROW_COPY.waitsFor(heldBy)}` : ''}`;
   const heading = (
     <>
       <span className="br-summary__glyph" aria-hidden="true">
@@ -743,7 +843,14 @@ function PhaseItem({
     </>
   );
   return (
-    <li className="br-agents__phase" data-status={phase.status} data-phase-id={phase.id}>
+    <li
+      className="br-agents__phase"
+      data-status={phase.status}
+      data-phase-id={phase.id}
+      data-held-by={heldBy ? (phase.heldBy ?? undefined) : undefined}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {rows.total > 0 ? (
         <div data-row-item="">
           <button
@@ -781,6 +888,7 @@ function PhaseItem({
       />
       {countsLine ? <p className="br-agents__phase-counts">{countsLine}</p> : null}
       <GateChip phase={phase} controls={controls} />
+      <AddGateButton phase={phase} controls={controls} shown={hovered} />
       {open && rows.total > 0 ? (
         <RowList
           id={listId}
@@ -940,6 +1048,7 @@ export function SummarySubagents({
     onOpen,
     onOpenGate,
     phaseTitles,
+    plan: data.plan,
   };
   const toggle = (key: string, open: boolean) =>
     setOpenState((current) => ({ ...current, [key]: open }));

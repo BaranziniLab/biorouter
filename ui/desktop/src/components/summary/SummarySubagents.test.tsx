@@ -1,7 +1,12 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { parseSessionSubagents, type SessionSubagents } from '../../utils/sessionSubagents';
-import { wirePhase, wireRow, wireSubagents } from '../../utils/sessionSubagents.fixture';
+import {
+  olderPhase,
+  wirePhase,
+  wireRow,
+  wireSubagents,
+} from '../../utils/sessionSubagents.fixture';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { SummarySubagents, type SummarySubagentsData } from './SummarySubagents';
 import { summaryCopy } from './copy';
@@ -513,5 +518,180 @@ describe('a failed refresh', () => {
     expect(alert).toHaveTextContent(copy.refreshFailed);
     fireEvent.click(within(alert).getByRole('button', { name: summaryCopy.retry }));
     expect(refresh).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Item C: the person's gate controls on the plan. A gate's chip opens its
+ * dialog (`decisions/PhaseGateDialog.tsx`, mounted by BaseChat), says when the
+ * gate waits for the person and when the person passed or skipped the phase; a
+ * phase a gate holds says what it waits for; an open phase with no gate offers
+ * "Add gate".
+ */
+describe('phase gates and the person', () => {
+  const GATE = {
+    threshold: 0.9,
+    questionCount: 1,
+    attempts: 1,
+    maxAttempts: 1,
+    lastPassed: false,
+    lastMinP: 0.02,
+    blocked: true,
+    owner: 'agent',
+    questions: { y2031: 'Does the hand-off cite a paper published in 2031?' },
+    needsPerson: true,
+    holds: ['write', 'review'],
+  };
+  const gatedPlan = (gate: Record<string, unknown>, research: Record<string, unknown> = {}) => ({
+    title: 'Moon facts',
+    goal: null,
+    revision: 1,
+    phases: [
+      wirePhase({ id: 'research', title: 'Research', status: 'in_progress', gate, ...research }),
+      wirePhase({ id: 'write', title: 'Write', kind: 'synthesis', heldBy: 'research' }),
+      wirePhase({ id: 'review', title: 'Review', kind: 'review', heldBy: 'research' }),
+    ],
+  });
+  const phaseItem = (id: string) =>
+    document.querySelector<HTMLElement>(`[data-phase-id="${id}"]`) as HTMLElement;
+
+  it('says a gate that failed every attempt needs the person, and the chip opens its dialog', () => {
+    const onOpenGate = vi.fn();
+    draw(data([], gatedPlan(GATE)), { onOpenGate });
+    const chip = screen.getByTestId('phase-gate-research');
+    expect(chip).toHaveTextContent('Gate blocked: needs you');
+    expect(chip).toHaveAttribute('data-state', 'blocked');
+    expect(chip).toHaveAttribute('data-needs-person');
+    expect(chip).toHaveAccessibleName('Gate blocked: needs you, Research');
+    fireEvent.click(chip);
+    expect(onOpenGate).toHaveBeenCalledWith('research');
+  });
+
+  it('says what a held phase waits for, by the gated phase’s title', () => {
+    draw(data([], gatedPlan(GATE)), { onOpenGate: () => {} });
+    for (const id of ['write', 'review']) {
+      const item = phaseItem(id);
+      expect(within(item).getByText("Waits for Research's gate")).toHaveClass(
+        'br-agents__phase-counts'
+      );
+      expect(item).toHaveAttribute('data-held-by', 'research');
+    }
+    expect(
+      within(phaseItem('write')).getByRole('group', { name: /Waits for Research's gate$/ })
+    ).toBeInTheDocument();
+    expect(within(phaseItem('research')).queryByText(/Waits for/)).toBeNull();
+  });
+
+  it('says the person passed or skipped a phase they closed, and that a decision stands while it waits', () => {
+    const { rerender } = draw(
+      data(
+        [],
+        gatedPlan(
+          { ...GATE, blocked: false, needsPerson: false, personDecision: 'pass', holds: [] },
+          { status: 'completed' }
+        )
+      ),
+      { onOpenGate: () => {} }
+    );
+    const redraw = (gate: Record<string, unknown>, status: string) =>
+      rerender(
+        <SummarySubagents
+          data={data([], gatedPlan(gate, { status }))}
+          loading={false}
+          error={false}
+          refresh={() => {}}
+          onOpen={() => {}}
+          onOpenGate={() => {}}
+        />
+      );
+    expect(screen.getByTestId('phase-gate-research')).toHaveTextContent('Passed by you');
+    expect(screen.getByTestId('phase-gate-research')).toHaveAttribute('data-state', 'passed');
+    redraw({ ...GATE, blocked: false, needsPerson: false, personDecision: 'skip' }, 'skipped');
+    expect(screen.getByTestId('phase-gate-research')).toHaveTextContent('Skipped by you');
+    expect(screen.getByTestId('phase-gate-research')).toHaveAttribute('data-state', 'skipped');
+    // Recorded while its subagents still work: the pass stands, it has not closed the phase.
+    redraw({ ...GATE, personDecision: 'pass' }, 'in_progress');
+    expect(screen.getByTestId('phase-gate-research')).toHaveTextContent('Your pass stands');
+    expect(screen.getByTestId('phase-gate-research')).not.toHaveAttribute('data-needs-person');
+  });
+
+  it('still draws a gate an older daemon describes, which names no owner, holder or decision', () => {
+    draw(
+      data([], {
+        title: 'Plan',
+        goal: null,
+        revision: 1,
+        phases: [
+          olderPhase({
+            id: 'verify',
+            title: 'Check the numbers',
+            status: 'in_progress',
+            gate: {
+              threshold: 0.8,
+              questionCount: 2,
+              attempts: 0,
+              maxAttempts: 3,
+              lastPassed: null,
+              lastMinP: null,
+              blocked: false,
+            },
+          }),
+          olderPhase({ id: 'report', title: 'Report' }),
+        ],
+      }),
+      { onOpenGate: () => {} }
+    );
+    expect(screen.getByTestId('phase-gate-verify')).toHaveTextContent('Gate at 0.80');
+    expect(screen.getByTestId('phase-gate-verify')).toHaveAttribute('data-state', 'pending');
+    // No holder named: the next phase waits for nothing it can say.
+    expect(within(phaseItem('report')).queryByText(/Waits for/)).toBeNull();
+    expect(phaseItem('report')).not.toHaveAttribute('data-held-by');
+  });
+
+  it('offers a quiet Add gate on an open phase with no gate, shown on hover and on focus', () => {
+    const onOpenGate = vi.fn();
+    draw(
+      data([], {
+        title: 'Plan',
+        goal: null,
+        revision: 1,
+        phases: [
+          wirePhase({ id: 'done', title: 'Done already', status: 'completed' }),
+          wirePhase({ id: 'draft', title: 'Draft', status: 'in_progress' }),
+          wirePhase({ id: 'ship', title: 'Ship' }),
+        ],
+      }),
+      { onOpenGate }
+    );
+    // A closed phase has nothing to gate.
+    expect(screen.queryByTestId('phase-add-gate-done')).toBeNull();
+    const add = screen.getByTestId('phase-add-gate-draft');
+    expect(add).toHaveTextContent('Add gate');
+    expect(add).toHaveAccessibleName('Add gate, Draft');
+    // Quiet at rest; the phase's hover shows it, and leaving hides it again.
+    expect(add).toHaveStyle({ opacity: '0' });
+    fireEvent.mouseEnter(phaseItem('draft'));
+    expect(add).toHaveStyle({ opacity: '1' });
+    fireEvent.mouseLeave(phaseItem('draft'));
+    expect(add).toHaveStyle({ opacity: '0' });
+    // Its own focus shows it too: the keyboard finds it where the pointer does. In
+    // a plan with nothing else to reach, it holds the area's one Tab stop.
+    const ship = screen.getByTestId('phase-add-gate-ship');
+    expect([add.tabIndex, ship.tabIndex]).toEqual([0, -1]);
+    act(() => add.focus());
+    expect(add).toHaveStyle({ opacity: '1' });
+    fireEvent.keyDown(add, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(ship);
+    expect(ship).toHaveStyle({ opacity: '1' });
+    expect(add).toHaveStyle({ opacity: '0' });
+    fireEvent.click(ship);
+    expect(onOpenGate).toHaveBeenCalledWith('ship');
+  });
+
+  it('offers no Add gate where the chip is not a control', () => {
+    draw(
+      data([], { title: 'Plan', goal: null, revision: 1, phases: [wirePhase({ id: 'draft' })] })
+    );
+    expect(screen.queryByTestId('phase-add-gate-draft')).toBeNull();
   });
 });

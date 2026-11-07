@@ -60,13 +60,14 @@ import { useSessionTodos } from '../hooks/useSessionTodos';
 import { useSessionSubagents } from '../hooks/useSessionSubagents';
 import { useSessionDecisions } from '../hooks/useSessionDecisions';
 import { MonitorsDialog } from './decisions/MonitorsDialog';
+import { PhaseGateDialog } from './decisions/PhaseGateDialog';
 import {
   decisionHistoryArtifact,
   firedMonitorIds,
   type DecisionGateSource,
   type DecisionHistoryFilter,
 } from '../utils/sessionDecisions';
-import { isActiveStatus, openSubagentTab } from '../utils/sessionSubagents';
+import { isActiveStatus, openSubagentTab, type PhaseStatus } from '../utils/sessionSubagents';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { useLoadingChat } from './summary/useLoadingChat';
 import { composerFollowsUp, useFirstSend } from './summary/useFirstSend';
@@ -2487,8 +2488,9 @@ function BaseChatContent({
     turnRunning: !chatLoading && summaryActive && isRunningState(chatState),
   });
   // The chat's decision-model activity, aggregated per source (never one row
-  // per call), on the same gate as the roster: shown, or a turn running. It
-  // polls only while a turn runs in a chat with monitors or decision calls.
+  // per call), on the same gate as the roster: shown, or a turn running. While
+  // a turn runs it polls the settings (other writers change them), and the
+  // summary too in a chat with monitors or decision calls.
   const sessionDecisions = useSessionDecisions(sessionId, messages, {
     visible: !chatLoading && (reviewOpen || summaryRail.shown),
     turnRunning: !chatLoading && summaryActive && isRunningState(chatState),
@@ -2506,14 +2508,28 @@ function BaseChatContent({
     setReviewOpen(false);
     setMonitorsOpen(true);
   }, []);
-  const openPhaseGate = useCallback(
-    (phaseId: string) => openDecisionHistory({ origin: 'gate', originId: phaseId }),
-    [openDecisionHistory]
+  // A phase's gate dialog: the person's controls over the gate (pass, skip,
+  // retry, edit, remove) and, inside it, the gate's decision history. A phase
+  // with no gate opens it on its editor ("Add gate"). Mounted here, beside the
+  // Monitors dialog, for the same reason: the summary's popover form unmounts
+  // when it closes.
+  const [gatePhaseId, setGatePhaseId] = useState<string | null>(null);
+  const openPhaseGate = useCallback((phaseId: string) => {
+    setReviewOpen(false);
+    setGatePhaseId(phaseId);
+  }, []);
+  const gatePhase = useMemo(
+    () => sessionSubagents.data?.plan?.phases.find((phase) => phase.id === gatePhaseId) ?? null,
+    [sessionSubagents.data, gatePhaseId]
   );
-  const decisionGates = useMemo<DecisionGateSource[]>(
+  // With each phase's status, so a gate row can tell a pass that closed its
+  // phase from one that stands until the phase's subagents finish.
+  const decisionGates = useMemo<(DecisionGateSource & { status: PhaseStatus })[]>(
     () =>
       (sessionSubagents.data?.plan?.phases ?? []).flatMap((phase) =>
-        phase.gate ? [{ phaseId: phase.id, title: phase.title, gate: phase.gate }] : []
+        phase.gate
+          ? [{ phaseId: phase.id, title: phase.title, gate: phase.gate, status: phase.status }]
+          : []
       ),
     [sessionSubagents.data]
   );
@@ -3313,8 +3329,35 @@ function BaseChatContent({
                   : null
             }
             settings={sessionDecisions.data?.settings ?? null}
+            // A subagent's own monitors never reach subagents of its own, so the
+            // dialog offers no "Also watch the subagents" there.
+            isSubagentChat={subagentChatKind === 'subagent'}
             onSaved={(stored) => {
               sessionDecisions.applySettings(stored);
+              sessionDecisions.refresh();
+            }}
+          />
+
+          <PhaseGateDialog
+            open={gatePhaseId !== null}
+            onOpenChange={(open) => {
+              if (!open) setGatePhaseId(null);
+            }}
+            sessionId={sessionId}
+            phase={gatePhase}
+            phases={sessionSubagents.data?.plan?.phases}
+            chatTier={
+              session?.privacy_tier === 'private'
+                ? 'private'
+                : session?.privacy_tier === 'public'
+                  ? 'public'
+                  : null
+            }
+            onOpenHistory={openDecisionHistory}
+            onChanged={() => {
+              // The plan changed (a phase closed, a gate went or came): read it,
+              // and the gate rows of the Decisions section with it.
+              sessionSubagents.refresh();
               sessionDecisions.refresh();
             }}
           />
@@ -3415,6 +3458,11 @@ function BaseChatContent({
             title: workflow.title,
             description: workflow.description,
             instructions: workflow.instructions || undefined,
+            // The monitors and phase plan the workflow starts this chat with.
+            supervision: {
+              decisionSettings: workflow.decision_settings,
+              orchestrationPlan: workflow.orchestration_plan,
+            },
           }}
           hasSecurityWarnings={hasWorkflowSecurityWarnings}
         />

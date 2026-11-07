@@ -2784,18 +2784,15 @@ async fn execute_job(
     let workflow_path = Path::new(&job.source);
     let workflow_content = fs::read_to_string(workflow_path)?;
 
-    let workflow: Workflow = {
-        let extension = workflow_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("yaml")
-            .to_lowercase();
-
-        match extension.as_str() {
-            "json" | "jsonl" => serde_json::from_str(&workflow_content)?,
-            _ => serde_yaml::from_str(&workflow_content)?,
-        }
-    };
+    // Item 8: read the file the way every other door reads a workflow
+    // (`Workflow::from_content`; YAML reads JSON too), so a top-level key that
+    // belongs inside `decision_settings` or `orchestration_plan` refuses the
+    // run instead of disappearing. The raw `serde_yaml` / `serde_json` parse
+    // this replaced kept such a key out of its `Workflow` without a word, and
+    // the run started without the monitors or plan its file declares. Nothing
+    // exists yet, so a refused run leaves nothing behind.
+    let workflow = Workflow::from_content(&workflow_content)
+        .map_err(|error| error.context(crate::workflow::runtime::WORKFLOW_NOT_STARTED))?;
 
     let agent = Agent::new();
 
@@ -2917,12 +2914,17 @@ async fn execute_job(
             .apply()
             .await?;
 
+        // Seeds the monitors and phase plan the workflow declares into this new
+        // chat first, with the master switch this run already sampled. A seed
+        // that cannot apply them refuses here, so the run never starts and its
+        // error reads "The workflow was not started: <sentence>".
         crate::workflow::runtime::install_prepared(
             &agent,
             &session.id,
             &workflow,
             true,
             prepared_workflow_prompt,
+            tiers_enforced,
         )
         .await?;
         Ok::<(), anyhow::Error>(())
@@ -4082,6 +4084,19 @@ mod tests {
             knowledge < skills_and_components,
             "knowledge precedes prompt assembly"
         );
+        // Item 8: the supervision a workflow declares is seeded before anything
+        // else is installed, so a refusal leaves nothing half-applied.
+        // Spelled in two halves: `workflow::service`'s census of the doors that
+        // seed reads this file's tests as production (they are not its last
+        // `#[cfg(test)]` module), and this needle is not a door.
+        let needle = ["supervision", "::seed("].concat();
+        let seeded = install
+            .find(&needle)
+            .expect("the shared install seeds the workflow's supervision");
+        assert!(
+            seeded < knowledge,
+            "the supervision seed precedes the knowledge selection"
+        );
     }
 
     /// Issue #148A: `run_now` is awaited inside an axum handler, and axum drops
@@ -4243,6 +4258,217 @@ mod tests {
             left.is_empty(),
             "a run that never started left its empty chat behind: {left:?}"
         );
+        assert!(ollama
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.url.path() != "/api/chat"));
+    }
+
+    /// Item 8: a scheduled run seeds the supervision its workflow declares,
+    /// and a seed that cannot apply it does not start the run. A phased plan
+    /// outside the Autonomous approval mode is the case this drives, through
+    /// `execute_job` itself: the error the job records says the workflow was
+    /// not started and why, the run's chat is discarded, and the model is
+    /// never asked anything. (The seed refuses before it asks any decision
+    /// model, so the process's decision service is never reached either.)
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_scheduled_workflow_whose_plan_cannot_run_is_not_started_and_says_why() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let ollama = MockServer::start().await;
+        for (route, body) in [
+            ("/api/version", serde_json::json!({"version":"0.40.13"})),
+            (
+                "/api/tags",
+                serde_json::json!({"models":[{"name":"llama3.1:8b"}]}),
+            ),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&ollama)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "capabilities":["completion", "tools"],
+                "model_info":{"general.architecture":"llama", "llama.context_length":131072}
+            })))
+            .mount(&ollama)
+            .await;
+        let dir = tempdir().unwrap();
+        let workflow = dir.path().join("phased.yaml");
+        fs::write(
+            &workflow,
+            "version: 1.0.0\ntitle: Phased probe\ndescription: probe\nprompt: test\n\
+             extensions: []\norchestration_plan:\n  title: Probe plan\n  phases:\n  \
+             - {id: search, title: Search, kind: research}\n",
+        )
+        .unwrap();
+        let job_id = format!("phased-{}", uuid::Uuid::new_v4().simple());
+        let overrides = HashMap::from([
+            ("BIOROUTER_PROVIDER".to_string(), "ollama".to_string()),
+            ("BIOROUTER_MODEL".to_string(), "llama3.1:8b".to_string()),
+            ("OLLAMA_HOST".to_string(), ollama.uri()),
+            ("BIOROUTER_MODE".to_string(), "approve".to_string()),
+        ]);
+        // Boxed, as the cron tick (`Box::pin(run_cron_tick(..))`) and "Run now"
+        // (`tokio::spawn`) hold it: a whole run's future pinned on this test
+        // thread's stack measures the test's stack, not the run.
+        let error = crate::config::with_config_overrides(
+            overrides,
+            Box::pin(execute_job(
+                dormant_job(&job_id, &workflow),
+                Arc::new(Mutex::new(JobsMap::new())),
+                job_id.clone(),
+                CancellationToken::new(),
+            )),
+        )
+        .await
+        .expect_err("a phased plan outside the Autonomous approval mode must not run");
+        assert!(
+            error
+                .downcast_ref::<crate::workflow::supervision::SeedRefusal>()
+                .is_some(),
+            "the run failed at its supervision seed: {error:#}"
+        );
+        // What `RunCompletion` records as the job's `last_error`.
+        let recorded = RunCompletion::from_result(&Err(error), Utc::now())
+            .error
+            .expect("a failed run records its error");
+        assert!(
+            recorded.starts_with(
+                "The workflow was not started: it declares a phased plan, which runs only in \
+                 the Autonomous approval mode"
+            ) && recorded.contains("the Manual approval mode"),
+            "{recorded}"
+        );
+
+        let name = format!("Scheduled job: {job_id}");
+        let left: Vec<String> = SessionManager::instance()
+            .list_sessions_by_types_including_empty(&[SessionType::Scheduled])
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|session| session.name == name)
+            .map(|session| session.id)
+            .collect();
+        assert!(
+            left.is_empty(),
+            "a run refused at its seed left its empty chat behind: {left:?}"
+        );
+        assert!(ollama
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.url.path() != "/api/chat"));
+    }
+
+    /// Item 8: a scheduled workflow that writes `monitors:` at the top level,
+    /// where `Workflow` would drop it without a word, is not run unsupervised.
+    /// The scheduler reads its file the way every other door does, so the run
+    /// fails with the sentence naming where the key belongs, leaves no chat
+    /// and asks the model nothing. A JSON file is read the same way. Driven
+    /// through `execute_job`, with a healthy loopback Ollama, so a run that
+    /// dropped the key would go on to make its chat and ask the model.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_scheduled_workflow_with_a_misplaced_supervision_key_is_not_started() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let ollama = MockServer::start().await;
+        for (route, body) in [
+            ("/api/version", serde_json::json!({"version":"0.40.13"})),
+            (
+                "/api/tags",
+                serde_json::json!({"models":[{"name":"llama3.1:8b"}]}),
+            ),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&ollama)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "capabilities":["completion", "tools"],
+                "model_info":{"general.architecture":"llama", "llama.context_length":131072}
+            })))
+            .mount(&ollama)
+            .await;
+        let dir = tempdir().unwrap();
+        let monitor = "{\"id\": \"reached-ten\", \"name\": \"Reached ten\", \"question\": \
+                       {\"instructions\": \"Has the agent echoed 10?\", \"kind\": \
+                       {\"binary\": {}}}, \"threshold\": 0.7, \"action\": \"stop\"}";
+        let files = [
+            (
+                "misplaced.yaml",
+                format!(
+                    "version: 1.0.0\ntitle: Misplaced monitors\ndescription: probe\n\
+                     prompt: test\nextensions: []\nmonitors:\n- {monitor}\n"
+                ),
+            ),
+            (
+                "misplaced.json",
+                format!(
+                    "{{\"version\": \"1.0.0\", \"title\": \"Misplaced monitors\", \
+                     \"description\": \"probe\", \"prompt\": \"test\", \"extensions\": [], \
+                     \"monitors\": [{monitor}]}}"
+                ),
+            ),
+        ];
+        for (file, content) in files {
+            let workflow = dir.path().join(file);
+            fs::write(&workflow, content).unwrap();
+            let job_id = format!("misplaced-{}", uuid::Uuid::new_v4().simple());
+            let overrides = HashMap::from([
+                ("BIOROUTER_PROVIDER".to_string(), "ollama".to_string()),
+                ("BIOROUTER_MODEL".to_string(), "llama3.1:8b".to_string()),
+                ("OLLAMA_HOST".to_string(), ollama.uri()),
+            ]);
+            // Boxed, as the cron tick and "Run now" hold it (see the test
+            // above).
+            let error = crate::config::with_config_overrides(
+                overrides,
+                Box::pin(execute_job(
+                    dormant_job(&job_id, &workflow),
+                    Arc::new(Mutex::new(JobsMap::new())),
+                    job_id.clone(),
+                    CancellationToken::new(),
+                )),
+            )
+            .await
+            .expect_err("a workflow with a misplaced `monitors:` key must not run");
+            // What `RunCompletion` records as the job's `last_error`.
+            let recorded = RunCompletion::from_result(&Err(error), Utc::now())
+                .error
+                .expect("a failed run records its error");
+            assert_eq!(
+                recorded,
+                "The workflow was not started: `monitors` is not a top-level workflow field: \
+                 monitors go under `decision_settings.monitors`.",
+                "{file}"
+            );
+
+            let name = format!("Scheduled job: {job_id}");
+            let left: Vec<String> = SessionManager::instance()
+                .list_sessions_by_types_including_empty(&[SessionType::Scheduled])
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|session| session.name == name)
+                .map(|session| session.id)
+                .collect();
+            assert!(
+                left.is_empty(),
+                "{file}: a refused run left a chat: {left:?}"
+            );
+        }
         assert!(ollama
             .received_requests()
             .await
