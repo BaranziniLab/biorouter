@@ -13,6 +13,7 @@ struct Fake {
     fail: Option<ErrorCode>,
     lose_after: Option<Duration>,
     starts: Arc<AtomicUsize>,
+    queued_samples: Arc<AtomicUsize>,
     stopped: Arc<AtomicBool>,
     started_at: Option<Instant>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -26,6 +27,7 @@ impl Fake {
             fail: None,
             lose_after: None,
             starts: Arc::new(AtomicUsize::new(0)),
+            queued_samples: Arc::new(AtomicUsize::new(0)),
             stopped: Arc::new(AtomicBool::new(false)),
             started_at: None,
             thread: None,
@@ -56,13 +58,19 @@ impl Backend for Fake {
         if let Some(code) = self.fail {
             return Err(code);
         }
-        let (chunk, value, stopped) = (self.chunk, self.value, Arc::clone(&self.stopped));
+        let (chunk, value, stopped, queued_samples) = (
+            self.chunk,
+            self.value,
+            Arc::clone(&self.stopped),
+            Arc::clone(&self.queued_samples),
+        );
         self.started_at = Some(Instant::now());
         self.thread = Some(std::thread::spawn(move || {
             while !stopped.load(Ordering::SeqCst) {
                 if sink.send(Event::Samples(vec![value; chunk])).is_err() {
                     return;
                 }
+                queued_samples.fetch_add(chunk, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(10));
             }
         }));
@@ -221,13 +229,26 @@ fn the_level_is_peak_and_rms() {
 #[test]
 fn frames_round_trip_from_probe_to_stopped() {
     let mut fake = Fake::new();
-    let (code, frames, _) = run_child(&mut fake, false, |w| {
+    let queued_samples = Arc::clone(&fake.queued_samples);
+    let ready_to_stop = Arc::new(AtomicBool::new(false));
+    let ready_to_stop_in_script = Arc::clone(&ready_to_stop);
+    let (code, frames, _) = run_child(&mut fake, false, move |w| {
         w.write_all(&frame(&ToCapture::Start { device: None }))
             .unwrap();
-        std::thread::sleep(Duration::from_millis(350));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while queued_samples.load(Ordering::SeqCst) < 16_000 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        ready_to_stop_in_script.store(
+            queued_samples.load(Ordering::SeqCst) >= 16_000,
+            Ordering::SeqCst,
+        );
         w.write_all(&frame(&ToCapture::Stop)).unwrap();
-        std::thread::sleep(Duration::from_millis(200));
     });
+    assert!(
+        ready_to_stop.load(Ordering::SeqCst),
+        "fake did not queue 16,000 samples before stop"
+    );
     assert_eq!(code, exit::OK);
     assert!(matches!(&frames[0].0, FromCapture::Probe(p) if p.backend.as_deref() == Some("Fake")));
     assert!(matches!(&frames[1].0, FromCapture::Ready(r) if r.rate == 16_000));
@@ -255,7 +276,6 @@ fn frames_round_trip_from_probe_to_stopped() {
         }
     }
     assert_eq!(delivered, *counted);
-    // 350 ms at 80 samples a millisecond: about 28,000 samples.
     assert!(*counted >= 16_000, "{counted}");
     assert!(fake.stopped.load(Ordering::SeqCst), "the device was closed");
 }
