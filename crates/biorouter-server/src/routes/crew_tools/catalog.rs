@@ -454,7 +454,7 @@ pub(crate) static ACTIONS: &[Action] = &[
     Action {
         tool: PersonTool::Change,
         name: "join",
-        summary: "Join a workspace: from an invitation the person pasted, or a saved connection that is ready to join.",
+        summary: "Join a workspace: from an invitation the person pasted, or a saved connection that is ready to join. From an invitation it can also take another SSH login, port, key file or jump host, a work folder and agent access.",
         params: &[
             CONNECTION,
             p("invitation", Text, "The invitation text the host sent, with its brcrew1: line."),
@@ -462,8 +462,14 @@ pub(crate) static ACTIONS: &[Action] = &[
             p("mode", Choice(&["private", "public"]), "How this computer treats the workspace."),
             INSTITUTION,
             p("local_name", Text, "This computer's name for the connection."),
+            p("ssh_target", Text, "With an invitation: a login from the person's own SSH settings to sign in with instead, like hpc or bob@hpc.example.edu. The invitation's port and jump host then don't apply."),
+            p("port", Number, "With an invitation: the SSH port, when it is not the invitation's."),
+            p("identity_file", Text, "With an invitation: the SSH key file on this computer to sign in with."),
+            p("proxy_jump", Text, "With an invitation: a jump host to reach the server through, or an empty text for none, even when the invitation suggests one."),
+            p("folder", Text, "With an invitation: the agents' work folder's full path on the server, for agent_access folder or full."),
+            p("agent_access", Choice(&["off", "folder", "full"]), "With an invitation: what agents may do on the server: off, folder (a confined work folder) or full (run as the person)."),
         ],
-        example: r#"{"connection":"baranzini-lab"}"#,
+        example: r#"{"invitation":"brcrew1:...","port":2222,"proxy_jump":"gateway.example.edu","agent_access":"folder"}"#,
         run: Some(setup::join),
     },
     Action {
@@ -811,11 +817,11 @@ pub(crate) static ACTIONS: &[Action] = &[
     Action {
         tool: PersonTool::Change,
         name: "profile_revoke_device",
-        summary: "Revoke one of the person's own computers in the workspace, by its fingerprint, or this computer.",
+        summary: "Remove one of the person's own computers from the workspace, by its fingerprint, or this computer.",
         params: &[
             CONNECTION,
             p("fingerprint", Text, "The computer's fingerprint, as profile_devices lists it."),
-            p("this_device", Flag, "Revoke this computer."),
+            p("this_device", Flag, "Remove this computer."),
         ],
         example: r#"{"fingerprint":"3F2A 9C1E 77B0 D4E1"}"#,
         run: Some(workspace::profile_revoke_device),
@@ -834,9 +840,15 @@ pub(crate) static ACTIONS: &[Action] = &[
     Action {
         tool: PersonTool::Change,
         name: "send",
-        summary: "Post a message in a channel as the person.",
-        params: &[CONNECTION, CHANNEL, req("text", Text, "The message.")],
-        example: r##"{"channel":"#methods","text":"The run finished."}"##,
+        summary: "Post one message in a channel as the person, with files from this computer and references to files on the server when asked.",
+        params: &[
+            CONNECTION,
+            CHANNEL,
+            p("text", Text, "The message. It may be left out when the message carries files or references."),
+            p("attachments", Texts, "Files on this computer to share in the message, each by its full path, at most 10."),
+            p("references", Texts, "Files on the server to reference in the message, each by its full path, at most 10."),
+        ],
+        example: r##"{"channel":"#methods","text":"The run finished.","attachments":["~/results/plot.png","~/results/counts.csv"]}"##,
         run: Some(messages::send_message),
     },
     Action {

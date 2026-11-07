@@ -15,4 +15,20 @@ export const crewStepCopy = {
    * whatever the file says.
    */
   notWaiting: 'A Crew step waited here. It is not waiting any more, so there is nothing to do.',
+  /**
+   * What a step says once the daemon ended it while this window watched (WI-17), by how. A step
+   * is never answered as done: the chat learns that from the daemon, so these never claim it.
+   */
+  ended: {
+    answered: 'This step is over. The chat carries on.',
+    dismissed: 'Skipped. The chat carries on without this step.',
+    timed_out: 'This step timed out before it was taken. The chat carries on without it.',
+    withdrawn: 'This step no longer waits for you. The chat carries on.',
+  },
+  /**
+   * A changed host key's notice read back from a transcript: fixed words with no host and no
+   * fingerprint, since there they would be whatever the file says.
+   */
+  changedKeyNotice:
+    "A server's host key changed here, so Crew did not connect. Nothing connects to it until the server's IT team confirms the change.",
 } as const;

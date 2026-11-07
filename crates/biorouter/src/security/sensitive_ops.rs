@@ -68,8 +68,11 @@
 //!      key), and `UserKnownHostsFile` or `GlobalKnownHostsFile` set to anything
 //!      but the default (`ssh-keyscan host > /tmp/kh` then
 //!      `-o UserKnownHostsFile=/tmp/kh` trusts the scan), read in all the same
-//!      places; the same ssh command line handed over by `rsync -e`/`--rsh`,
-//!      `mosh --ssh`, `GIT_SSH_COMMAND`, `RSYNC_RSH` or git's `core.sshCommand`,
+//!      places; the same options given to `sshfs` (`-o` options, comma-separated
+//!      as FUSE reads them, and `-F`), and the ssh command line it runs with
+//!      `-o ssh_command=CMD`; the same ssh command line handed over by
+//!      `rsync -e`/`--rsh`, `mosh --ssh`, `GIT_SSH_COMMAND`, `RSYNC_RSH` or git's
+//!      `core.sshCommand`,
 //!      with the variable set in any shell's spelling (POSIX `NAME=value`,
 //!      PowerShell `$env:NAME = value`, cmd `set NAME=value`, `setx`); a wrapper
 //!      program run in ssh's place (`GIT_SSH`, `scp -S`, `sftp -S`, a remote
@@ -1363,7 +1366,17 @@ const HOST_KEY_PROGRAMS: &[&str] = &[
     "rsync",
     "git",
     "mosh",
+    "sshfs",
+    "mount.sshfs",
+    "mount.fuse.sshfs",
 ];
+
+/// sshfs, which mounts a server's files over ssh, under every name its packages install it.
+const SSHFS_PROGRAMS: &[&str] = &["sshfs", "mount.sshfs", "mount.fuse.sshfs"];
+
+/// sshfs's short options that take a value: `-o` options, `-F` an ssh configuration file and
+/// `-p` a port.
+const SSHFS_VALUE_FLAGS: &str = "oFp";
 
 /// How deep an ssh command line handed over inside another (`rsync -e`, a `ProxyCommand`) is
 /// followed.
@@ -1797,6 +1810,55 @@ fn mosh_ssh_command(args: &[String]) -> Option<String> {
     })
 }
 
+/// The options one sshfs `-o` value holds, as FUSE reads it: split at each comma, a backslash
+/// keeping the character after it (`\,` is a comma inside an option).
+fn fuse_options(value: &str) -> Vec<String> {
+    let mut options = vec![String::new()];
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        let kept = match c {
+            ',' => {
+                options.push(String::new());
+                continue;
+            }
+            '\\' => chars.next().unwrap_or('\\'),
+            c => c,
+        };
+        if let Some(option) = options.last_mut() {
+            option.push(kept);
+        }
+    }
+    options.retain(|option| !option.trim().is_empty());
+    options
+}
+
+/// The finding for sshfs run with `args`: an ssh option among its `-o` options (sshfs hands
+/// every one it does not know to the ssh it runs, a `ProxyCommand` included), the command
+/// `-o ssh_command=CMD` runs in ssh's place, or a `-F` configuration file.
+fn sshfs_trusts(args: &[String], scan: &TrustScan<'_>) -> Option<String> {
+    for (flag, value) in short_option_values(args, SSHFS_VALUE_FLAGS) {
+        let found = match flag {
+            'o' => fuse_options(&value)
+                .iter()
+                .find_map(|option| match option.split_once('=') {
+                    Some((key, command)) if key.trim().eq_ignore_ascii_case("ssh_command") => {
+                        ssh_command_trusts(command, scan, 1)
+                            .map(|setting| host_key_finding(&setting, "sshfs -o ssh_command"))
+                    }
+                    _ => option_trusts(option, scan, 0)
+                        .map(|setting| host_key_finding(&setting, "sshfs")),
+                }),
+            'F' => config_file_trusts(&value, scan, 0)
+                .map(|setting| host_key_finding(&setting, "sshfs")),
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
 /// The command `rsync` would run as its remote shell: `-e CMD`, `-eCMD` (also inside a cluster
 /// such as `-avze`), `--rsh=CMD` or `--rsh CMD`.
 fn rsync_remote_shell(args: &[String]) -> Option<String> {
@@ -1872,6 +1934,7 @@ fn words_trust_host_key(words: &[String], scan: &TrustScan<'_>) -> Option<String
         "mosh" => mosh_ssh_command(args)
             .and_then(|command| ssh_command_trusts(&command, scan, 1))
             .map(|setting| host_key_finding(&setting, "mosh --ssh")),
+        sshfs if SSHFS_PROGRAMS.contains(&sshfs) => sshfs_trusts(args, scan),
         client => {
             ssh_args_trust(client, args, scan, 0).map(|setting| host_key_finding(&setting, client))
         }
@@ -4867,6 +4930,106 @@ record_result("ok");"#;
             let found = trust_findings(command, &env);
             assert!(found.is_empty(), "{command} must not ask, got {found:?}");
         }
+    }
+
+    /// sshfs hands its `-o` options to the ssh it runs, so every spelling ssh's own `-o` is read
+    /// in asks here too: comma-separated among FUSE options, attached, any letter case, the
+    /// known-hosts options, a `ProxyCommand`, an `-o ssh_command` that runs a trusting ssh, a
+    /// `-F` file, the mount helpers' names and a shell wrapping it. A mount that checks keys
+    /// does not.
+    #[test]
+    fn criterion_seven_grades_sshfs_options_in_every_spelling() {
+        let env = nix_env();
+        for command in [
+            "sshfs -o StrictHostKeyChecking=no hpc.example.edu:/data /mnt/data",
+            "sshfs hpc.example.edu:/data /mnt/data -o StrictHostKeyChecking=accept-new",
+            "sshfs -oStrictHostKeyChecking=off hpc.example.edu: /mnt/data",
+            "sshfs -o stricthostkeychecking=False hpc.example.edu: /mnt/data",
+            "sshfs -o 'StrictHostKeyChecking no' hpc.example.edu: /mnt/data",
+            "sshfs -o allow_other,reconnect,StrictHostKeyChecking=no hpc.example.edu: /mnt/data",
+            "sshfs -o reconnect -o ServerAliveInterval=15,StrictHostKeyChecking=accept-new hpc: /mnt",
+            "sshfs -o UserKnownHostsFile=/dev/null hpc.example.edu: /mnt/data",
+            "sshfs -o GlobalKnownHostsFile=/tmp/kh hpc.example.edu: /mnt/data",
+            "sshfs -o 'KnownHostsCommand=ssh-keyscan %H' hpc.example.edu: /mnt/data",
+            "sshfs -o 'ProxyCommand=ssh -o StrictHostKeyChecking=no -W %h:%p gate' hpc: /mnt",
+            "sshfs -o ssh_command='ssh -o StrictHostKeyChecking=no' hpc.example.edu: /mnt/data",
+            "sshfs -o 'reconnect,ssh_command=sshpass -e ssh -oStrictHostKeyChecking=accept-new' hpc: /mnt",
+            "sshfs -o 'SSH_COMMAND=ssh -o UserKnownHostsFile=/tmp/kh' hpc: /mnt",
+            r"sshfs -o 'ssh_command=ssh\ -o\ StrictHostKeyChecking=no' hpc: /mnt",
+            "printf 'StrictHostKeyChecking no\\n' > /tmp/never-there/cfg && sshfs -F /tmp/never-there/cfg hpc: /mnt",
+            "/usr/bin/sshfs -o StrictHostKeyChecking=no hpc.example.edu: /mnt/data",
+            "sudo sshfs -o allow_other,StrictHostKeyChecking=no hpc: /mnt",
+            "mount.fuse.sshfs hpc.example.edu:/data /mnt/data -o StrictHostKeyChecking=no",
+            "mount.sshfs hpc.example.edu:/data /mnt/data -o UserKnownHostsFile=/dev/null",
+            "bash -c \"sshfs -o StrictHostKeyChecking=no hpc: /mnt\"",
+        ] {
+            let found = trust_findings(command, &env);
+            assert!(!found.is_empty(), "{command} must ask first");
+            let described = found.describe();
+            assert!(described.contains("host key"), "{command}: {described}");
+            assert!(described.contains("sshfs"), "{command}: {described}");
+        }
+        for command in [
+            "sshfs hpc.example.edu:/data /mnt/data",
+            "sshfs -o StrictHostKeyChecking=yes hpc.example.edu: /mnt/data",
+            "sshfs -o reconnect,ServerAliveInterval=15,allow_other hpc: /mnt",
+            "sshfs -p 2222 -o IdentityFile=~/.ssh/lab hpc: /mnt",
+            "sshfs -o ssh_command='ssh -i ~/.ssh/lab' hpc: /mnt",
+            "sshfs -o UserKnownHostsFile=~/.ssh/known_hosts hpc: /mnt",
+            "sshfs -o KnownHostsCommand=none hpc: /mnt",
+            "sshfs -F /nonexistent/cfg hpc: /mnt",
+            "fusermount -u /mnt/data",
+            "umount /mnt/data",
+        ] {
+            let found = trust_findings(command, &env);
+            assert!(found.is_empty(), "{command} must not ask, got {found:?}");
+        }
+    }
+
+    /// sshfs reads a `-F` file and runs an `-o ssh_command` wrapper the way ssh and git do:
+    /// the file is read, a trusting one asks and a checking one does not.
+    #[cfg(unix)]
+    #[test]
+    fn criterion_seven_reads_the_files_sshfs_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let trusting = dir.path().join("trusting");
+        let checking = dir.path().join("checking");
+        std::fs::write(&trusting, "Host *\n    StrictHostKeyChecking accept-new\n").unwrap();
+        std::fs::write(&checking, "Host *\n    StrictHostKeyChecking yes\n").unwrap();
+        let wrapper = dir.path().join("trusting-ssh");
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\nexec ssh -o StrictHostKeyChecking=no \"$@\"\n",
+        )
+        .unwrap();
+        let env =
+            EnvFacts::for_platform(Platform::host(), &dir.path().to_string_lossy(), "/home/me");
+        for (command, asks) in [
+            (format!("sshfs -F {} hpc: /mnt", trusting.display()), true),
+            (format!("sshfs hpc: /mnt -F{}", trusting.display()), true),
+            ("sshfs -F trusting hpc: /mnt".to_owned(), true),
+            (format!("sshfs -F {} hpc: /mnt", checking.display()), false),
+            (
+                format!("sshfs -o ssh_command={} hpc: /mnt", wrapper.display()),
+                true,
+            ),
+            (
+                format!("sshfs -o ssh_command={} hpc: /mnt", checking.display()),
+                false,
+            ),
+        ] {
+            let found = trust_findings(&command, &env);
+            assert_eq!(!found.is_empty(), asks, "{command}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn fuse_options_split_at_commas_and_keep_an_escaped_one() {
+        assert_eq!(
+            fuse_options(r"allow_other,ssh_command=ssh\ -o\ A=b\,c,,reconnect"),
+            ["allow_other", "ssh_command=ssh -o A=b,c", "reconnect"]
+        );
+        assert!(fuse_options("").is_empty());
     }
 
     /// Files that name each other cannot keep the inspection reading: grading one line opens

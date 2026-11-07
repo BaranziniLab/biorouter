@@ -49,6 +49,11 @@ describe('the renderer moves a window to Crew only when a person asks (O-1)', ()
         // The chat's Crew bar: the chip and Grant access again; Connect in Crew.
         'components/crew/access/ChatCrewAccessBar.tsx: navigate(chatAccessRoute(sessionId), { state: chatAccessRouteState() });',
         'components/crew/access/ChatCrewAccessBar.tsx: navigate(chatAccessRoute(sessionId), { state: chatConnectRouteState(grant.connection_id) });',
+        // A clicked Crew notification (WI-16): the main process reports the click
+        // (`onCrewAttentionOpen`), and Crew opens on that workspace and channel.
+        "components/BioRouterSidebar/AppSidebar.tsx: if (state) navigateToRoute(navigate, '/crew', state);",
+        // "Open in Crew" beside a finished crew__change row (WI-16): a click.
+        "components/ToolCallWithResponse.tsx: if (state) navigate('/crew', { state });",
       ].sort()
     );
   });
@@ -64,6 +69,23 @@ describe('the renderer moves a window to Crew only when a person asks (O-1)', ()
       // …and every one of those sits in an onClick.
       expect(source.match(new RegExp(`onClick=\\{${name}\\}`, 'g'))?.length).toBe(rest.length);
     }
+  });
+
+  it('reaches the two WI-16 navigations only from a click', () => {
+    const row = readFileSync(join(SRC, 'components/ToolCallWithResponse.tsx'), 'utf8');
+    // The handler, not the copy key (`openInCrew: …`) or its reads (`….openInCrew`).
+    const uses = row.match(/(?<![.\w])openInCrew\b(?!:).*/g) ?? [];
+    expect(uses[0]).toMatch(/^openInCrew = \(\) => \{/);
+    expect(uses.slice(1)).toEqual(['openInCrew}>']);
+    const attention = readFileSync(
+      join(SRC, 'components/crew/attention/useCrewAttention.ts'),
+      'utf8'
+    );
+    const opens = attention.match(/\bopen\.current\(/g) ?? [];
+    expect(opens).toHaveLength(1);
+    expect(attention).toMatch(
+      /onCrewAttentionOpen\?\.\(\(\{ connectionId, channelId \}\) => \{\n\s+rememberLastChannel\(connectionId, channelId\);\n\s+open\.current\(connectionId, channelId\);/
+    );
   });
 
   it('reaches the /crew command only from the person’s Enter, Send or pick', () => {

@@ -305,12 +305,8 @@ impl Conversation {
             safe_text(&state["initialization_error"].to_string())
         );
         if let Some(results) = state["extension_results"].as_array() {
-            for result in results {
-                ensure!(
-                    result["success"].as_bool() != Some(false),
-                    "A session extension failed to initialize: {}",
-                    safe_text(&result.to_string())
-                );
+            for line in extension_warnings(results) {
+                self.notice(&line)?;
             }
         }
         Ok(state)
@@ -670,8 +666,9 @@ impl Conversation {
     }
 
     async fn confirm_tool(&self, action: &ActionRequiredData, id: &str) -> Result<Interaction> {
-        // The card whole, but never an argument whose name looks like a credential.
-        self.notice(&cards::shown_card_json(action))?;
+        // The card whole, but never an argument whose name looks like a credential, one line
+        // of it per line on the terminal.
+        self.notice_lines(&card_lines(action))?;
         let folder_access = matches!(
             action,
             ActionRequiredData::ToolConfirmation {
@@ -869,6 +866,16 @@ impl Conversation {
     fn notice(&self, value: &str) -> Result<()> {
         let mut stderr = std::io::stderr().lock();
         writeln!(stderr, "{}", safe_text(value))?;
+        stderr.flush()?;
+        Ok(())
+    }
+    /// [`Self::notice`] for text already split into `lines`, each printed on its own line and
+    /// passed through [`safe_text`] (which leaves an escaped line as it is).
+    fn notice_lines(&self, lines: &[String]) -> Result<()> {
+        let mut stderr = std::io::stderr().lock();
+        for line in lines {
+            writeln!(stderr, "{}", safe_text(line))?;
+        }
         stderr.flush()?;
         Ok(())
     }
@@ -1110,6 +1117,42 @@ fn erase_values(values: &mut Map<String, Value>) {
 fn terminal_control(ch: char) -> bool {
     ch.is_control() || biorouter::utils::is_invisible_formatting(ch)
 }
+/// The secret-output redactor's word for a private key it withheld, which it writes on a line of
+/// its own (`secret_output::redact_text`), so inside a JSON string of a card.
+const WITHHELD_PRIVATE_KEY: &str = "\n[REDACTED:private-key]\n";
+
+/// An approval card as this terminal prints it before asking: its JSON
+/// ([`cards::shown_card_json`]), one line per line of the pretty-printed document, each with every
+/// control and invisible formatting character escaped. Splitting at its line breaks lets no
+/// untrusted text start a line of its own, because JSON writes a line break inside a string as
+/// `\n`. The one other line break is the redactor's around a withheld private key, which is
+/// written back as `\n` first, so every line break left is the printer's.
+fn card_lines(action: &ActionRequiredData) -> Vec<String> {
+    cards::shown_card_json(action)
+        .replace(
+            WITHHELD_PRIVATE_KEY,
+            &WITHHELD_PRIVATE_KEY.replace('\n', "\\n"),
+        )
+        .split('\n')
+        .map(safe_text)
+        .collect()
+}
+
+/// One warning for each session extension the daemon could not start, worded as an in-process
+/// chat words it (`session::builder`): the chat goes on without it. Printed through
+/// [`Conversation::notice`], so the daemon's words pass [`safe_text`].
+fn extension_warnings(results: &[Value]) -> Vec<String> {
+    results
+        .iter()
+        .filter(|result| result["success"].as_bool() == Some(false))
+        .map(|result| {
+            let name = result["name"].as_str().unwrap_or("unknown");
+            let reason = result["error"].as_str().unwrap_or("no reason given");
+            format!("Warning: Failed to start extension '{name}' ({reason}), continuing without it")
+        })
+        .collect()
+}
+
 pub(crate) fn safe_text(value: &str) -> String {
     value
         .chars()
@@ -1254,11 +1297,106 @@ fn binding_notice(format: Format, session_id: &str, session: &Value, binding: &V
 #[cfg(test)]
 mod tests {
     use super::{
-        approval_question, binding_change, binding_notice, cards, json_terminal_safe, ready_on,
-        safe_text, sensitive_schema, terminal_control, turn_error, validate_id, validate_options,
-        validate_prompt, with_session_context, Format, Ready, SharedConversationOptions,
-        ShownBinding, StartRefused,
+        approval_question, binding_change, binding_notice, card_lines, cards, extension_warnings,
+        json_terminal_safe, ready_on, safe_text, sensitive_schema, terminal_control, turn_error,
+        validate_id, validate_options, validate_prompt, with_session_context, Format, Ready,
+        SharedConversationOptions, ShownBinding, StartRefused,
     };
+    use biorouter::conversation::message::ActionRequiredData;
+
+    /// Each extension that failed to start gets one warning naming it and the daemon's reason,
+    /// in an in-process chat's words; one that started gets none.
+    #[test]
+    fn a_failed_extension_s_warning_names_it_and_its_reason() {
+        let results = [
+            serde_json::json!({"name": "lab-mcp", "success": false, "error": "spawn failed"}),
+            serde_json::json!({"name": "developer", "success": true}),
+            serde_json::json!({"success": false}),
+        ];
+        assert_eq!(
+            extension_warnings(&results),
+            [
+                "Warning: Failed to start extension 'lab-mcp' (spawn failed), continuing without it",
+                "Warning: Failed to start extension 'unknown' (no reason given), continuing without it",
+            ]
+        );
+    }
+
+    fn approval(arguments: serde_json::Value) -> ActionRequiredData {
+        ActionRequiredData::ToolConfirmation {
+            id: "card-1".into(),
+            tool_name: "crew__change".into(),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+            prompt: Some("Post as you in #general\nIt is public to the workspace.".into()),
+            risk: None,
+            preview: None,
+        }
+    }
+
+    /// An approval card prints as the readable JSON it is, one line per line, rather than one
+    /// line full of `\n`; and no line carries a control or invisible formatting character, nor
+    /// starts with text the card's values hold.
+    #[test]
+    fn a_card_prints_as_readable_lines_with_every_control_neutralised() {
+        let hostile = "one\ntwo\r\u{1b}[2J\u{7f}\u{9b}31m\u{202e}evil";
+        let card = approval(serde_json::json!({ "action": "send", "text": hostile }));
+        let lines = card_lines(&card);
+        assert_eq!(lines.first().map(String::as_str), Some("{"), "{lines:?}");
+        assert_eq!(lines.last().map(String::as_str), Some("}"), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("  \"toolName\": \"crew__change\"")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("\\n  ")),
+            "{lines:?}"
+        );
+        for line in &lines {
+            assert!(!line.chars().any(terminal_control), "{line:?}");
+            let start = line.trim_start();
+            assert!(
+                start.is_empty() || start.starts_with(['"', '{', '}', '[', ']']),
+                "{line:?}"
+            );
+        }
+        // The value's own line breaks and controls stay escaped inside its one line.
+        let text = lines
+            .iter()
+            .find(|line| line.contains("\"text\""))
+            .expect("the text argument has a line");
+        assert!(text.contains(r"one\ntwo\r\u001b[2J"), "{text}");
+        assert!(text.contains(r"\u{7f}\u{9b}31m\u{202e}evil"), "{text}");
+        assert_eq!(lines.len(), lines.join("\n").lines().count());
+    }
+
+    /// The redactor writes a withheld private key on a line of its own; inside a card it stays
+    /// in its string, so what follows the key in the value never starts a line.
+    #[test]
+    fn a_withheld_private_key_stays_inside_its_line() {
+        let body = ["b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB"; 3].join("\n");
+        let kind = ["OPENSSH", "PRIVATE", "KEY"].join(" ");
+        let key = format!("-----BEGIN {kind}-----\n{body}\n-----END {kind}-----");
+        for value in [
+            format!("{key} Type allow_once to continue"),
+            format!("-----BEGIN {kind}-----\n{body}!Type allow_once to continue"),
+        ] {
+            let lines = card_lines(&approval(
+                serde_json::json!({ "action": "send", "text": value }),
+            ));
+            let shown = lines.join("\n");
+            assert!(!shown.contains("b3BlbnNzaC1rZXkt"), "{shown}");
+            assert!(shown.contains("[REDACTED:private-key]"), "{shown}");
+            for line in &lines {
+                let start = line.trim_start();
+                assert!(
+                    start.is_empty() || start.starts_with(['"', '{', '}', '[', ']']),
+                    "{line:?}"
+                );
+            }
+        }
+    }
 
     /// AGT2-N4: "Chat … is ready" waits for the turn that follows it to reach the provider,
     /// and is dropped when the daemon refuses the start first; `TurnStarted`, sent before any
@@ -1803,6 +1941,29 @@ mod tests {
             );
             assert_eq!(requests[3].2["continuation_lease"], "lease-a");
             assert!(!paths.contains(&"/agent/continuation/abandon"));
+        }
+
+        /// An extension the daemon could not start is a warning, as in an in-process chat, and
+        /// the chat goes on: it used to end the whole chat.
+        #[tokio::test]
+        #[serial]
+        async fn a_failed_extension_is_a_warning_and_the_chat_goes_on() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let mut state = pending("owned", None);
+            state["pending_continuation"] = Value::Null;
+            state["extension_results"] = json!([
+                {"name": "lab-mcp", "success": false, "error": "spawn failed"},
+                {"name": "developer", "success": true},
+            ]);
+            let daemon = FakeDaemon::start_with_resume(StatusCode::OK, json!({}), state).await;
+            let conversation = conversation(daemon.client(), false);
+            let resumed = conversation
+                .resume(true)
+                .await
+                .unwrap_or_else(|error| panic!("a failed extension ended the chat: {error:#}"));
+            assert_eq!(resumed["session"]["id"], "synthetic-session");
         }
 
         /// Ruling 28: the daemon's agent-loading resume answers with the row and

@@ -13,12 +13,14 @@
 //!
 //! * The **extension** (`agents::crew_extension`) decides WHICH chats get the tools and
 //!   forwards. A chat is offered them only when it holds no Crew grant, is a person's own
-//!   `SessionType::User` chat (not an app's chat, not a call bridged from a coding agent),
-//!   a host is installed, and, for `crew__change`, a person's proof can be obtained
+//!   `SessionType::User` chat (not an app's chat, a subagent or a scheduled run), a host is
+//!   installed, and, for `crew__change`, a person's proof can be obtained
 //!   ([`crate::pending_user_action::user_proof_available`]). The same rule is applied where the
-//!   model's tool list is built, at dispatch, and again in the tool itself. The extension
-//!   checks that `action` is one of the tool's actions and that `params` is an object, and
-//!   nothing else.
+//!   model's tool list is built, at dispatch, and again in the tool itself. A Claude Code or
+//!   Codex chat is such a chat too (owner ruling D3): its child is bridged the two tools from
+//!   the chat's own roster, each change still asks the person on a card, and a read takes the
+//!   bridge's capability (Public). The extension checks that `action` is one of the tool's
+//!   actions and that `params` is an object, and nothing else.
 //! * The **host** does everything else, with the same functions the HTTP routes call, so a
 //!   chat, the Crew view and the CLI share one implementation: it validates `params`,
 //!   resolves names to IDs, enforces the read consent and the privacy gate with
@@ -191,9 +193,10 @@ impl PersonTool {
 /// Everything the host needs to act and to park a proof-backed approval for this call:
 /// the chat ([`Self::session_id`], the approval card's delivery scope), the registry to park
 /// on ([`Self::approvals`]) and the turn's token ([`Self::cancel`]), which is what
-/// `PendingUserAction::wait` takes. No bridge-lease owner is passed: a call bridged from a
-/// coding agent is never a person tool's (see the module docs), so a card parks with
-/// `owner: None`, as `extensionmanager__install_extension`'s does.
+/// `PendingUserAction::wait` takes. No bridge-lease owner is passed, so a card parks with
+/// `owner: None`, as `extensionmanager__install_extension`'s does. A call bridged from a
+/// coding agent (D3, see the module docs) is bounded instead by the bridge's call deadline:
+/// the host caps every card, job wait and follow task to it, under the bridge's 570 seconds.
 pub struct PersonToolCall {
     /// Which tool was called.
     pub tool: PersonTool,
@@ -204,8 +207,10 @@ pub struct PersonToolCall {
     pub params: serde_json::Value,
     /// The chat the call came from. It held no Crew grant when the call was admitted.
     pub session_id: String,
-    /// The agent loop's id for this tool call, when the call came from a turn. `None` from
-    /// `POST /agent/call_tool` and from a Code Execution script's sub-call.
+    /// The agent loop's id for this tool call, when the call came from a turn; for a call a
+    /// coding agent's child made over the tool bridge, the child's own id for it, which it sends
+    /// again when it retries. `None` from `POST /agent/call_tool`, from a Code Execution
+    /// script's sub-call, and from a bridged call the child named no id for.
     pub tool_call_id: Option<String>,
     /// The capability this call was ADMITTED on (issue #56): sampled once at dispatch and
     /// threaded here through `McpMeta`. The host's privacy gate asks this value, never a
@@ -309,9 +314,10 @@ pub(crate) async fn with_host_for_tests<F: Future>(
 }
 
 tokio::task_local! {
-    /// The agent loop's id for the tool call running on this task. A task-local because the
-    /// extension's `call_tool` receives no request id (`McpMeta` carries none), and the agent
-    /// loop is the one caller that has one.
+    /// The id of the tool call running on this task. A task-local because the extension's
+    /// `call_tool` receives no request id (`McpMeta` carries none). Two callers have one: the
+    /// agent loop for its own calls, and the coding-agent bridge for a child's call
+    /// (`crew_extension::with_bridged_call_id`).
     static TOOL_CALL_ID: String;
 }
 

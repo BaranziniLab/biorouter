@@ -420,6 +420,9 @@ fn safe_lines(text: &str) -> String {
 }
 
 async fn execute(options: CrewOptions, sent: Arc<AtomicBool>) -> Result<()> {
+    // D5, before anything else, so nothing is read from stdin, started or sent: an agent's
+    // own shell reads Crew but never changes it as the person ([`agent_shell`]).
+    agent_shell::refuse(&options.command, needs_terminal::in_agent_shell())?;
     // Before any prompt: nothing here can work without the shared daemon's Unix socket.
     crate::daemon_client::require_supported_platform(cfg!(unix))?;
     let CrewOptions {
@@ -498,6 +501,634 @@ async fn execute(options: CrewOptions, sent: Arc<AtomicBool>) -> Result<()> {
         Err(error) => return Err(api.worded_failure(error).await),
     };
     reply.print(api.format)
+}
+
+/// `biorouter crew` in an agent's own shell (owner ruling D5): reads keep working, and every
+/// command that changes Crew as the person is refused before anything is sent, with a sentence
+/// that points the agent to `crew__change`, where the person sees a card and allows it first.
+///
+/// An agent's shell is known by `BIOROUTER_TERMINAL` ([`needs_terminal::in_agent_shell`]),
+/// which `developer__shell` and the retry runner set on every command they run. Without it,
+/// nothing here changes anything.
+///
+/// ⚠ **Accident prevention, not a boundary.** An agent can unset the variable (local agent
+/// forgery is out of scope by owner ruling). What it stops is a model's ordinary `biorouter
+/// crew send …` acting as the person with no card, the way the broker's
+/// `agent_session_refused` stops an agent's job on the server from adding or removing the
+/// person's computers.
+///
+/// Which commands change Crew is the chat's own line: a command is a change exactly when the
+/// chat makes it with `crew__change` (`biorouter::crew::tool_host::CHANGE_ACTIONS`), or when
+/// it is one of the person-only controls no chat offers. The tests hold [`as_you`] to that
+/// list, and [`as_you`] has no catch-all arm, so a new command does not build until it says
+/// which it is.
+mod agent_shell {
+    use super::args::{
+        ChannelCommand, ConnectionCommand, ContextCommand, CredentialCommand, CrewCommand,
+        DaemonCommand, DefaultsCommand, EnrollmentCommand, FileCommand, GrantCommand,
+        InvitationCommand, MembersArgs, MembersCommand, OwnershipCommand, PrivacyCommand,
+        ProfileCommand, TaskCommand, TeamCommand, WorkspaceCommand,
+    };
+    use super::usage;
+    use AsYou::{Changes, PersonOnly, Reads};
+
+    /// The JSON code of the refusal.
+    const REFUSED: &str = "crew_agent_shell_refused";
+    /// The refusal of a change a chat makes with `crew__change`. The action's name follows.
+    const USE_CREW_CHANGE: &str = "An agent's shell can't change Crew as you. Use crew__change in the chat, which asks the person first.";
+    /// The refusal of a person-only control, which no chat offers.
+    const ONLY_YOU: &str = "An agent's shell can't change Crew as you. Only you can do this, in the Crew view or with biorouter crew in your own terminal.";
+
+    /// What a command does as the person.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum AsYou {
+        /// Reads, or changes nothing in Crew. `daemon start` only starts what every read
+        /// starts by itself.
+        Reads,
+        /// A change a chat makes with `crew__change`, under this action.
+        Changes(&'static str),
+        /// A person-only control that no chat offers: daemon stop, `workspace bootstrap`,
+        /// `enroll prepare` and `accept`, `connections prepare` and `save`, `grants grant`.
+        PersonOnly,
+    }
+
+    /// `Ok` unless this runs in an agent's shell and `command` changes Crew as the person. The
+    /// refusal is a [`super::Usage`]: it exits with status 2, as a command line refused before
+    /// anything was sent does, and carries [`REFUSED`] in JSON.
+    pub(super) fn refuse(command: &CrewCommand, agent_shell: bool) -> anyhow::Result<()> {
+        if !agent_shell {
+            return Ok(());
+        }
+        match as_you(command) {
+            Reads => Ok(()),
+            Changes(action) => Err(usage(
+                format!("{USE_CREW_CHANGE} The action is {action}."),
+                REFUSED,
+            )),
+            PersonOnly => Err(usage(ONLY_YOU, REFUSED)),
+        }
+    }
+
+    /// What `command` does as the person, named by the chat's action for it.
+    fn as_you(command: &CrewCommand) -> AsYou {
+        match command {
+            CrewCommand::Daemon(DaemonCommand::Status | DaemonCommand::Start) => Reads,
+            CrewCommand::Daemon(DaemonCommand::Stop) => PersonOnly,
+            CrewCommand::Credentials(command) => credentials(command),
+            CrewCommand::Status
+            | CrewCommand::Doctor(_)
+            | CrewCommand::History(_)
+            | CrewCommand::Search { .. }
+            | CrewCommand::Watch(_)
+            | CrewCommand::Context { .. } => Reads,
+            CrewCommand::Setup(args) if args.check => Reads,
+            CrewCommand::Setup(_) => Changes("setup"),
+            CrewCommand::Host(_) => Changes("host"),
+            CrewCommand::Open(_) => Changes("open"),
+            CrewCommand::Connections(command) => connections(command),
+            CrewCommand::Auth(_) => Changes("auth"),
+            CrewCommand::Connect => Changes("connect"),
+            CrewCommand::Disconnect => Changes("disconnect"),
+            CrewCommand::Join(_) => Changes("join"),
+            CrewCommand::Rejoin => Changes("rejoin"),
+            CrewCommand::Workspace(command) => workspace(command),
+            CrewCommand::Enroll(command) => enrollment(command),
+            CrewCommand::Members(MembersArgs { command: None }) => Reads,
+            CrewCommand::Members(MembersArgs {
+                command: Some(MembersCommand::Add { .. }),
+            }) => Changes("members_add"),
+            CrewCommand::Teams(command) => teams(command),
+            CrewCommand::Channels(command) => channels(command),
+            CrewCommand::Invites(command) => invitations(command),
+            CrewCommand::Profile(command) => profile(command),
+            CrewCommand::Ownership(OwnershipCommand::Offer { .. }) => Changes("ownership_offer"),
+            CrewCommand::Ownership(OwnershipCommand::Accept { .. }) => Changes("ownership_accept"),
+            CrewCommand::RemoveMember { .. } => Changes("remove_member"),
+            CrewCommand::Send(_) => Changes("send"),
+            CrewCommand::Files(command) => files(command),
+            CrewCommand::Tasks(command) => tasks(command),
+            CrewCommand::Ask { .. } => Changes("tasks_ask"),
+            CrewCommand::Defaults(command) => defaults(command),
+            CrewCommand::Grants(command) => grants(command),
+            CrewCommand::Privacy(command) => privacy(command),
+        }
+    }
+
+    fn credentials(command: &CredentialCommand) -> AsYou {
+        match command {
+            CredentialCommand::Status => Reads,
+            CredentialCommand::Init => Changes("credentials_init"),
+            CredentialCommand::Unlock => Changes("credentials_unlock"),
+            CredentialCommand::Lock => Changes("credentials_lock"),
+        }
+    }
+
+    fn connections(command: &ConnectionCommand) -> AsYou {
+        match command {
+            ConnectionCommand::List
+            | ConnectionCommand::Show
+            | ConnectionCommand::Invitation { .. } => Reads,
+            ConnectionCommand::JoinInvitation(args) if args.preview => Reads,
+            // Saving from an invitation is the first half of the chat's `join`.
+            ConnectionCommand::JoinInvitation(_) => Changes("join"),
+            ConnectionCommand::Prepare | ConnectionCommand::Save { .. } => PersonOnly,
+            ConnectionCommand::Update { .. } => Changes("connections_update"),
+            ConnectionCommand::Remove { .. } => Changes("connections_remove"),
+            ConnectionCommand::SetAccess { .. } => Changes("connections_set_access"),
+        }
+    }
+
+    fn workspace(command: &WorkspaceCommand) -> AsYou {
+        match command {
+            WorkspaceCommand::Show | WorkspaceCommand::Context(ContextCommand::Show) => Reads,
+            WorkspaceCommand::Bootstrap => PersonOnly,
+            WorkspaceCommand::Rename { .. } => Changes("workspace_rename"),
+            WorkspaceCommand::Delete { .. } => Changes("workspace_delete"),
+            WorkspaceCommand::Governance { .. } => Changes("workspace_governance"),
+            WorkspaceCommand::Context(ContextCommand::Set { .. } | ContextCommand::Edit) => {
+                Changes("context_set")
+            }
+            // Drafting signs in to the server as the person, saved or not, so the chat cards
+            // it too.
+            WorkspaceCommand::Context(ContextCommand::Draft { .. }) => Changes("context_draft"),
+        }
+    }
+
+    fn enrollment(command: &EnrollmentCommand) -> AsYou {
+        match command {
+            EnrollmentCommand::Pending => Reads,
+            EnrollmentCommand::Prepare | EnrollmentCommand::Accept(_) => PersonOnly,
+            EnrollmentCommand::Invite(_) => Changes("enroll_invite"),
+            EnrollmentCommand::Approve { .. } => Changes("enroll_approve"),
+            EnrollmentCommand::Cancel { .. } => Changes("enroll_cancel"),
+            EnrollmentCommand::Revoke { .. } => Changes("enroll_revoke"),
+        }
+    }
+
+    fn teams(command: &TeamCommand) -> AsYou {
+        match command {
+            TeamCommand::List => Reads,
+            TeamCommand::Create { .. } => Changes("teams_create"),
+            TeamCommand::Rename { .. } => Changes("teams_rename"),
+            TeamCommand::Join { .. } => Changes("teams_join"),
+            TeamCommand::Delete { .. } => Changes("teams_delete"),
+        }
+    }
+
+    fn channels(command: &ChannelCommand) -> AsYou {
+        match command {
+            ChannelCommand::List { .. } => Reads,
+            ChannelCommand::Create { .. } => Changes("channels_create"),
+            ChannelCommand::Archive { .. } => Changes("channels_archive"),
+            ChannelCommand::MarkRead { .. } => Changes("channels_read"),
+            ChannelCommand::Rename { .. } => Changes("channels_rename"),
+            ChannelCommand::Join { .. } => Changes("channels_join"),
+            ChannelCommand::Delete { .. } => Changes("channels_delete"),
+        }
+    }
+
+    fn invitations(command: &InvitationCommand) -> AsYou {
+        match command {
+            InvitationCommand::List => Reads,
+            InvitationCommand::Create { .. } => Changes("invites_send"),
+            InvitationCommand::Accept { .. } => Changes("invites_accept"),
+        }
+    }
+
+    fn profile(command: &ProfileCommand) -> AsYou {
+        match command {
+            ProfileCommand::Show | ProfileCommand::Devices { acknowledge: false } => Reads,
+            ProfileCommand::Devices { acknowledge: true } => Changes("profile_devices_acknowledge"),
+            ProfileCommand::Set { .. } => Changes("profile_set"),
+            ProfileCommand::RevokeDevice { .. } => Changes("profile_revoke_device"),
+        }
+    }
+
+    fn files(command: &FileCommand) -> AsYou {
+        match command {
+            FileCommand::Status { .. }
+            | FileCommand::Watch { .. }
+            | FileCommand::Pending
+            | FileCommand::ShowReference { .. }
+            | FileCommand::Show { .. }
+            | FileCommand::List { .. } => Reads,
+            FileCommand::Upload { .. } => Changes("files_share"),
+            FileCommand::Resume { .. } => Changes("files_resume"),
+            FileCommand::Pause { .. } => Changes("files_pause"),
+            FileCommand::Forget { .. } => Changes("files_forget"),
+            FileCommand::Download { .. } => Changes("files_download"),
+            FileCommand::Reference { .. } => Changes("files_reference"),
+        }
+    }
+
+    fn tasks(command: &TaskCommand) -> AsYou {
+        match command {
+            TaskCommand::List | TaskCommand::Show { .. } | TaskCommand::Watch { .. } => Reads,
+            TaskCommand::Start { .. } => Changes("tasks_ask"),
+            TaskCommand::Cancel { .. } => Changes("tasks_cancel"),
+        }
+    }
+
+    fn defaults(command: &DefaultsCommand) -> AsYou {
+        match command {
+            DefaultsCommand::Show => Reads,
+            DefaultsCommand::Set { .. } => Changes("defaults_set"),
+            DefaultsCommand::Clear => Changes("defaults_clear"),
+        }
+    }
+
+    fn grants(command: &GrantCommand) -> AsYou {
+        match command {
+            GrantCommand::List => Reads,
+            // Giving a chat Crew access stays the person's (RV-D5).
+            GrantCommand::Grant { .. } => PersonOnly,
+            GrantCommand::Revoke { .. } => Changes("grants_revoke"),
+        }
+    }
+
+    fn privacy(command: &PrivacyCommand) -> AsYou {
+        match command {
+            PrivacyCommand::Show => Reads,
+            PrivacyCommand::SetPersonal { .. } => Changes("privacy_set_personal"),
+            PrivacyCommand::SetWorkspace { .. } => Changes("privacy_set_workspace"),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::{error_code, CrewOptions, Usage};
+        use super::*;
+        use crate::commands::needs_terminal::{NeedsTerminal, AGENT_SHELL_MARKER};
+        use biorouter::crew::tool_host::{CHANGE_ACTIONS, READ_ACTIONS};
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Line {
+            #[command(flatten)]
+            crew: CrewOptions,
+        }
+
+        /// `biorouter crew <words>`, as clap reads it.
+        fn options(words: &[&str]) -> CrewOptions {
+            let mut argv = vec!["crew"];
+            argv.extend_from_slice(words);
+            match Line::try_parse_from(argv) {
+                Ok(line) => line.crew,
+                Err(error) => panic!("{words:?} should parse: {error}"),
+            }
+        }
+
+        /// What a command should be, by the chat's name for it ("" where no chat action
+        /// matches a read).
+        #[derive(Debug, Clone, Copy)]
+        enum Chat {
+            Read(&'static str),
+            Change(&'static str),
+            Person(&'static str),
+        }
+        use Chat::{Change, Person, Read};
+
+        const SESSION: &str = "20261107_1";
+
+        /// Every command, at least once, with the chat's name for it.
+        const EVERY_COMMAND: &[(&[&str], Chat)] = &[
+            (&["daemon", "status"], Read("")),
+            (&["daemon", "start"], Read("")),
+            (&["daemon", "stop"], Person("daemon_stop")),
+            (&["credentials", "status"], Read("credentials_status")),
+            (&["credentials", "init"], Change("credentials_init")),
+            (&["credentials", "unlock"], Change("credentials_unlock")),
+            (&["credentials", "lock"], Change("credentials_lock")),
+            (&["status"], Read("status")),
+            (&["setup", "--check"], Read("setup_check")),
+            (&["doctor"], Read("setup_check")),
+            (&["setup"], Change("setup")),
+            (
+                &["host", "--name", "lab", "--server", "bob@hpc"],
+                Change("host"),
+            ),
+            (&["open", "lab", "--server", "bob@hpc"], Change("open")),
+            (&["connections", "list"], Read("")),
+            (&["connections", "show"], Read("connections_show")),
+            (
+                &["connections", "invitation"],
+                Read("connections_invitation"),
+            ),
+            (
+                &["connections", "join-invitation", "-", "--preview"],
+                Read("connections_preview"),
+            ),
+            (&["connections", "join-invitation", "-"], Change("join")),
+            (&["connections", "prepare"], Person("connections_prepare")),
+            (&["connections", "save", "-"], Person("connections_save")),
+            (
+                &["connections", "update", "-"],
+                Change("connections_update"),
+            ),
+            (&["connections", "remove"], Change("connections_remove")),
+            (
+                &["connections", "set-access", "off"],
+                Change("connections_set_access"),
+            ),
+            (&["auth"], Change("auth")),
+            (&["auth", "--setup-job", "job-1"], Change("auth")),
+            (&["connect"], Change("connect")),
+            (&["disconnect"], Change("disconnect")),
+            (&["join"], Change("join")),
+            (&["join", "--no-wait"], Change("join")),
+            (&["rejoin"], Change("rejoin")),
+            (&["workspace", "show"], Read("workspace_show")),
+            (&["workspace", "bootstrap"], Person("workspace_bootstrap")),
+            (
+                &["workspace", "rename", "lab-2"],
+                Change("workspace_rename"),
+            ),
+            (&["workspace", "delete"], Change("workspace_delete")),
+            (
+                &["workspace", "governance", "open"],
+                Change("workspace_governance"),
+            ),
+            (&["workspace", "context", "show"], Read("context_show")),
+            (&["workspace", "context", "set", "-"], Change("context_set")),
+            (&["workspace", "context", "edit"], Change("context_set")),
+            (&["workspace", "context", "draft"], Change("context_draft")),
+            (
+                &["workspace", "context", "draft", "--save"],
+                Change("context_draft"),
+            ),
+            (&["enroll", "prepare"], Person("enroll_prepare")),
+            (&["enroll", "invite", "@bob"], Change("enroll_invite")),
+            (&["enroll", "pending"], Read("enroll_pending")),
+            (
+                &["enroll", "approve", "@bob", "7QK2-M9XA-3JTP-WZ4D"],
+                Change("enroll_approve"),
+            ),
+            (&["enroll", "cancel", "@bob"], Change("enroll_cancel")),
+            (&["enroll", "accept"], Person("enroll_accept")),
+            (&["enroll", "revoke", "@bob"], Change("enroll_revoke")),
+            (&["members"], Read("members")),
+            (
+                &["members", "add", "@bob", "--team", "analysis-lab"],
+                Change("members_add"),
+            ),
+            (&["teams", "list"], Read("teams_list")),
+            (&["teams", "create", "Analysis Lab"], Change("teams_create")),
+            (
+                &["teams", "rename", "analysis-lab", "Lab"],
+                Change("teams_rename"),
+            ),
+            (&["teams", "join", "analysis-lab"], Change("teams_join")),
+            (&["teams", "delete", "analysis-lab"], Change("teams_delete")),
+            (&["channels", "list"], Read("channels_list")),
+            (
+                &["channels", "create", "methods", "--team", "analysis-lab"],
+                Change("channels_create"),
+            ),
+            (
+                &["channels", "archive", "#methods"],
+                Change("channels_archive"),
+            ),
+            (
+                &["channels", "mark-read", "#methods"],
+                Change("channels_read"),
+            ),
+            (
+                &["channels", "rename", "#methods", "assays"],
+                Change("channels_rename"),
+            ),
+            (&["channels", "join", "#methods"], Change("channels_join")),
+            (
+                &["channels", "delete", "#methods"],
+                Change("channels_delete"),
+            ),
+            (&["invites", "list"], Read("invites_list")),
+            (
+                &["invites", "create", "@bob", "--team", "analysis-lab"],
+                Change("invites_send"),
+            ),
+            (&["invites", "accept"], Change("invites_accept")),
+            (&["profile", "show"], Read("profile_show")),
+            (&["profile", "set", "Bob"], Change("profile_set")),
+            (&["profile", "devices"], Read("profile_devices")),
+            (
+                &["profile", "devices", "--acknowledge"],
+                Change("profile_devices_acknowledge"),
+            ),
+            (
+                &["profile", "revoke-device", "--this-device"],
+                Change("profile_revoke_device"),
+            ),
+            (
+                &["ownership", "offer", "#methods", "@bob"],
+                Change("ownership_offer"),
+            ),
+            (
+                &["ownership", "accept", "#methods"],
+                Change("ownership_accept"),
+            ),
+            (
+                &["remove-member", "#methods", "@bob"],
+                Change("remove_member"),
+            ),
+            (&["history", "#methods"], Read("history")),
+            (&["search", "#methods", "qpcr"], Read("search")),
+            (&["watch", "#methods"], Read("")),
+            (&["send", "#methods", "--text", "hi"], Change("send")),
+            (&["context", SESSION], Read("")),
+            (
+                &["files", "upload", "#methods", "data.csv"],
+                Change("files_share"),
+            ),
+            (
+                &["files", "resume", "t-1", "data.csv"],
+                Change("files_resume"),
+            ),
+            (&["files", "status", "t-1"], Read("files_status")),
+            (&["files", "watch", "t-1"], Read("")),
+            (&["files", "pending"], Read("files_pending")),
+            (&["files", "pause", "t-1"], Change("files_pause")),
+            (&["files", "forget", "t-1"], Change("files_forget")),
+            (
+                &["files", "download", "a-1", "--output", "data.csv"],
+                Change("files_download"),
+            ),
+            (
+                &[
+                    "files",
+                    "reference",
+                    "#methods",
+                    "/data/run",
+                    "--label",
+                    "run",
+                ],
+                Change("files_reference"),
+            ),
+            (&["files", "show-reference", "r-1"], Read("")),
+            (&["files", "show", "a-1"], Read("")),
+            (&["files", "list", "#methods"], Read("files_list")),
+            (
+                &[
+                    "tasks",
+                    "start",
+                    "#methods",
+                    "--text",
+                    "hi",
+                    "--allow-posting",
+                ],
+                Change("tasks_ask"),
+            ),
+            (&["tasks", "list"], Read("tasks_list")),
+            (&["tasks", "show", "run-1"], Read("")),
+            (&["tasks", "watch", "run-1"], Read("tasks_watch")),
+            (&["tasks", "cancel", "run-1"], Change("tasks_cancel")),
+            (&["ask", "#methods", "summarise", "it"], Change("tasks_ask")),
+            (&["defaults", "show"], Read("defaults_show")),
+            (
+                &["defaults", "set", "--provider", "p", "--model", "m"],
+                Change("defaults_set"),
+            ),
+            (&["defaults", "clear"], Change("defaults_clear")),
+            (&["grants", "list"], Read("grants_list")),
+            (&["grants", "grant", SESSION, "#methods"], Person("grant")),
+            (&["grants", "revoke", SESSION], Change("grants_revoke")),
+            (&["privacy", "show"], Read("privacy_show")),
+            (
+                &["privacy", "set-personal", "private"],
+                Change("privacy_set_personal"),
+            ),
+            (
+                &["privacy", "set-workspace", "private"],
+                Change("privacy_set_workspace"),
+            ),
+        ];
+
+        /// The CLI's line between reading and changing is the chat's: each change is a
+        /// `crew__change` action, each read with a chat name is a `crew__read` one, and a
+        /// person-only control is neither.
+        #[test]
+        fn the_line_between_reading_and_changing_is_the_chats() {
+            for &(words, chat) in EVERY_COMMAND {
+                let found = as_you(&options(words).command);
+                match chat {
+                    Read(name) => {
+                        assert_eq!(found, Reads, "{words:?}");
+                        assert!(
+                            name.is_empty() || READ_ACTIONS.contains(&name),
+                            "{words:?}: {name} is not a crew__read action"
+                        );
+                    }
+                    Change(action) => {
+                        assert_eq!(found, Changes(action), "{words:?}");
+                        assert!(
+                            CHANGE_ACTIONS.contains(&action),
+                            "{words:?}: {action} is not a crew__change action"
+                        );
+                    }
+                    Person(name) => {
+                        assert_eq!(found, PersonOnly, "{words:?}");
+                        assert!(
+                            !READ_ACTIONS.contains(&name) && !CHANGE_ACTIONS.contains(&name),
+                            "{words:?}: a chat offers {name}, so it is not person-only"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// In an agent's shell, each change is refused with the sentence and its action, a
+        /// person-only control with its own sentence, and every read runs. Without the marker
+        /// nothing is refused.
+        #[test]
+        fn an_agent_shell_is_refused_every_change_and_nothing_else() {
+            for &(words, chat) in EVERY_COMMAND {
+                let command = options(words).command;
+                assert!(refuse(&command, false).is_ok(), "{words:?} outside");
+                let refused = refuse(&command, true);
+                let expected = match chat {
+                    Read(_) => {
+                        assert!(refused.is_ok(), "{words:?} is a read");
+                        continue;
+                    }
+                    Change(action) => format!("{USE_CREW_CHANGE} The action is {action}."),
+                    Person(_) => ONLY_YOU.to_owned(),
+                };
+                let error = refused.expect_err("a change in an agent's shell");
+                assert_eq!(error.to_string(), expected, "{words:?}");
+                assert!(error.is::<Usage>(), "{words:?} exits as a usage refusal");
+                assert_eq!(error_code(&error).as_deref(), Some(REFUSED), "{words:?}");
+            }
+        }
+
+        /// The copy rules: plain sentences, no dashes, the tool named as the chat offers it.
+        #[test]
+        fn the_refusals_read_plainly() {
+            for sentence in [USE_CREW_CHANGE, ONLY_YOU] {
+                assert!(sentence.starts_with("An agent's shell can't change Crew as you. "));
+                assert!(!sentence.contains(['\u{2013}', '\u{2014}']), "{sentence}");
+            }
+            assert!(USE_CREW_CHANGE.contains("crew__change"));
+        }
+
+        /// The whole command, as `main` runs it, with `BIOROUTER_TERMINAL` set and then
+        /// removed: the changes the work item names are refused before anything is sent (no
+        /// daemon is asked for), with the usage status, and `status` and `history` go on to
+        /// ask for the daemon. Without the marker, the changes go on too. `--no-start` keeps
+        /// every command from starting one, so each that passes stops at "no daemon".
+        #[cfg(unix)]
+        #[test]
+        fn biorouter_terminal_refuses_changes_and_keeps_reads() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime");
+            let run = |words: &[&str]| {
+                let mut words = words.to_vec();
+                words.push("--no-start");
+                runtime
+                    .block_on(super::super::handle(options(&words)))
+                    .expect_err("no daemon runs in this test")
+            };
+            let changes: [&[&str]; 3] = [
+                &["send", "#methods", "--text", "hi"],
+                &["channels", "create", "methods", "--team", "analysis-lab"],
+                &["credentials", "unlock"],
+            ];
+            let reads: [&[&str]; 2] = [&["status"], &["history", "#methods"]];
+            let no_daemon = crate::daemon_client::DAEMON_NOT_RUNNING;
+            {
+                let _marked = env_lock::lock_env([(AGENT_SHELL_MARKER, Some("1"))]);
+                for words in changes {
+                    let error = run(words);
+                    assert!(
+                        error.is::<NeedsTerminal>(),
+                        "{words:?} exits with the usage status: {error:#}"
+                    );
+                    assert!(
+                        error.to_string().starts_with(USE_CREW_CHANGE),
+                        "{words:?}: {error:#}"
+                    );
+                }
+                for words in reads {
+                    let error = run(words);
+                    assert!(
+                        error.to_string().starts_with(no_daemon),
+                        "{words:?} reads in an agent's shell: {error:#}"
+                    );
+                }
+            }
+            let _unmarked = env_lock::lock_env([(AGENT_SHELL_MARKER, None::<&str>)]);
+            for words in changes.into_iter().chain(reads) {
+                let error = run(words);
+                assert!(
+                    error.to_string().starts_with(no_daemon),
+                    "{words:?} without the marker: {error:#}"
+                );
+            }
+        }
+    }
 }
 
 /// The shared daemon, or a scripted stand-in in tests. Every request goes through

@@ -42,6 +42,23 @@ pub struct CredentialStatus {
     pub available: bool,
 }
 
+/// Whether this profile's Crew vault is set up and unlocked: [`CredentialStatus`]'s
+/// `initialized` and `locked`, read from the vault alone. It never asks the OS keyring, so it is
+/// cheap enough to read again and again while a vault card waits for the person
+/// ([`super::CrewManager::vault_state`]); on Linux, asking the keyring is a Secret Service call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VaultState {
+    pub initialized: bool,
+    pub locked: bool,
+}
+
+impl VaultState {
+    /// Set up and unlocked: every key in the vault can be read.
+    pub fn open(self) -> bool {
+        self.initialized && !self.locked
+    }
+}
+
 /// A credential the store answered for and does not hold: the OS keyring has no entry, the
 /// development key file is missing, or the unlocked vault lacks it (account ownership AO-9).
 /// Kept apart from every other failure, so a lost device key can be told from a locked vault or
@@ -199,14 +216,10 @@ impl CredentialVault {
         &self,
         keyring_answers: impl FnOnce() -> bool,
     ) -> Result<CredentialStatus> {
-        let mut state = self.state()?;
-        let selected = self.selected(&mut state)?;
-        if selected {
-            self.read_envelope()?;
-        }
+        let vault = self.vault_state()?;
         // Where keys really are (T-49): a development profile with the keyring disabled keeps
         // them as files, and must never be reported as the system keychain.
-        let backend = if selected {
+        let backend = if vault.initialized {
             "encrypted_vault"
         } else if super::file_credentials_enabled() {
             "file"
@@ -215,9 +228,23 @@ impl CredentialVault {
         };
         Ok(CredentialStatus {
             backend,
+            initialized: vault.initialized,
+            locked: vault.locked,
+            available: backend != "keyring" || keyring_answers(),
+        })
+    }
+
+    /// Whether the vault is set up and unlocked, as [`Self::status`] reads it, without asking
+    /// the OS keyring anything.
+    pub(super) fn vault_state(&self) -> Result<VaultState> {
+        let mut state = self.state()?;
+        let selected = self.selected(&mut state)?;
+        if selected {
+            self.read_envelope()?;
+        }
+        Ok(VaultState {
             initialized: selected,
             locked: selected && state.unlocked.is_none(),
-            available: backend != "keyring" || keyring_answers(),
         })
     }
 

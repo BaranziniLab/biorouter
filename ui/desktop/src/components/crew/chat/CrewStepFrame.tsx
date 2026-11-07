@@ -3,6 +3,7 @@ import { dismissCrewStep } from '../../../api';
 import { userActionHeaders } from '../../../utils/userAction';
 import { Lock } from '../../icons/app-icons';
 import { crewStepCopy } from './CrewStepCard.copy';
+import type { CardEnding } from './streamedCrewSteps';
 
 /**
  * The frame every Crew step card shares (the owner's D1 ruling on AO-12): a
@@ -42,16 +43,29 @@ export function CrewStepFrame({
 
 /**
  * What a Crew step draws where nothing waits on it: one fixed line, with no button and nothing
- * the card carried (`crewStepCopy.notWaiting`).
+ * the card carried. For a card this window saw the daemon end (WI-17), the line says how it
+ * ended (`crewStepCopy.ended`); for one read back from a transcript, only that nothing waits
+ * (`crewStepCopy.notWaiting`), or the fixed `line` its caller names.
  */
-export function CrewStepEnded({ kind }: { kind: string }) {
+export function CrewStepEnded({
+  kind,
+  ending,
+  line,
+}: {
+  kind: string;
+  /** How the daemon said it ended, when this window saw it end. */
+  ending?: CardEnding;
+  /** A fixed line in place of the default one. */
+  line?: string;
+}) {
   return (
     <p
       className="biorouter-message-content text-supporting text-text-muted"
       data-testid="crew-step-ended"
       data-crew-step={kind}
+      data-ending={ending}
     >
-      {crewStepCopy.notWaiting}
+      {line ?? (ending ? crewStepCopy.ended[ending] : crewStepCopy.notWaiting)}
     </p>
   );
 }

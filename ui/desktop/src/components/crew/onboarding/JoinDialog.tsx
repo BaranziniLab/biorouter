@@ -1184,6 +1184,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   intent="member"
                   server={server || workspaceLabel}
                   testId="crew-join-setup"
+                  connections={crew.connections}
                 />
               ) : (preview && !existingId) || manual ? (
                 <p id={installsId} className="text-supporting text-text-muted">

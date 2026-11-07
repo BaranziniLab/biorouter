@@ -102,8 +102,9 @@ const INSTRUCTIONS: &str = concat!(
 /// Said to a chat that holds a Crew grant and calls a person tool (AO-12, gate B-1).
 pub(crate) const PERSON_TOOL_IN_A_GRANTED_CHAT: &str = "This chat has Crew access through a grant, so it works only through crew__connections and crew__request and can't act as you. Use the Crew view or biorouter crew for anything else.";
 /// Said where a person tool is not a person's to use: an app's chat, a subagent, a scheduled
-/// run, a hidden or terminal session, or a call bridged from a coding agent.
-pub(crate) const PERSON_TOOL_NOT_A_PERSONS_CHAT: &str = "Crew actions as you are available only in your own chats, not in an app, a subagent, a scheduled run or a coding agent's tool call.";
+/// run, or a hidden or terminal session. A coding agent's call in the person's own chat is
+/// theirs (owner ruling D3).
+pub(crate) const PERSON_TOOL_NOT_A_PERSONS_CHAT: &str = "Crew actions as you are available only in your own chats, not in an app, a subagent or a scheduled run.";
 /// Said where no [`tool_host::CrewToolHost`] is installed (a CLI process with no daemon).
 pub(crate) const PERSON_TOOL_NO_HOST: &str = "This Biorouter runs without its daemon, so a chat can't act in Crew here. Use the Crew view in the app or biorouter crew in a terminal.";
 /// Said where no person's proof can be obtained, so a change's approval could never be given
@@ -125,8 +126,9 @@ pub(crate) struct CrewToolStanding {
     /// A Crew grant restricts the chat: its own, or one it cannot be confirmed not to hold
     /// ([`crate::crew::CrewManager::is_scoped_session`]).
     pub scoped: bool,
-    /// A person's own chat: `SessionType::User`, not an app's chat, not a call bridged from a
-    /// coding agent. `false` whenever that cannot be confirmed.
+    /// A person's own chat: `SessionType::User` and not an app's chat. `false` whenever that
+    /// cannot be confirmed. A call a coding agent's child makes over the tool bridge in such a
+    /// chat is the person's too (owner ruling D3): every change still waits for their card.
     pub persons_chat: bool,
     /// A [`tool_host::CrewToolHost`] is installed.
     pub host: bool,
@@ -222,6 +224,34 @@ pub(crate) async fn roster_standing(
     Some(crew_tool_standing_for(crew, extensions, session_id).await)
 }
 
+/// Whether `name` (prefixed) is one of this extension's tools. A coding agent's bridge takes
+/// Crew tools only from the chat's own roster, which [`CrewToolStanding::offers`] already
+/// narrowed, never from the unfiltered registry (`Agent::prepare_coding_agent_bridge_plan`).
+pub(crate) fn is_crew_tool(name: &str) -> bool {
+    name.starts_with(TOOL_PREFIX)
+}
+
+/// Run `future`, a coding agent's bridged call of the tool `name` (prefixed), with the child's
+/// own id for that call, `child_call_id`, as the tool-call id a person tool's host keys each
+/// change on (owner ruling D3). The child sends the same id when it retries the call, so a
+/// retried bridged change is applied at most once, as a retried agent-loop call is. Any other
+/// tool, or a call the child named no id for, runs as it is.
+///
+/// For the bridge's `BridgeGrant::call_for_child`, the one place the child's id is known
+/// (`bridge::child_call_id`): it wraps its `self.call(call)` in this.
+pub async fn with_bridged_call_id<F: std::future::Future>(
+    name: &str,
+    child_call_id: Option<&str>,
+    future: F,
+) -> F::Output {
+    match child_call_id {
+        Some(id) if PersonTool::from_name(name).is_some() => {
+            tool_host::with_tool_call_id(id.to_owned(), future).await
+        }
+        _ => future.await,
+    }
+}
+
 /// `tools` without the Crew tools the chat `session_id` is not offered, by the rule the model's
 /// own list follows (`Agent::list_tools`: gate B-1's `authorize_session_tool`, then
 /// [`CrewToolStanding::offers`]), for a surface that lists a chat's tools to a person
@@ -292,23 +322,23 @@ async fn dispatch_refusal(
 }
 
 /// Whether `session_id` is a person's own chat (AO-12): a `SessionType::User` chat that is not
-/// an app's and is not being reached through a coding agent's tool bridge. Fails closed: a chat
-/// whose row or extensions cannot be read is not one.
+/// an app's. Fails closed: a chat whose row or extensions cannot be read is not one.
 ///
 /// An app's chat is recognised two ways, because neither alone is durable: the daemon's name
 /// for it (`app:…`, which the auto-namer can replace after the first turn) and the app-control
 /// server its agent carries (absent from an app that turned its page control off). Apps cannot
 /// arm the Crew extension in the first place (`app_platform_tools`), so this is a second fence.
-/// A coding agent's child reaches tools only through the bridge, whose policy offers no Crew
-/// tool; a call arriving that way is refused here as well.
+///
+/// A coding agent's child (Claude Code, Codex) reaching the tools over the bridge is asked the
+/// same question and nothing more (owner ruling D3): in the person's own chat it may read and
+/// change Crew as they can, each change on their proof-backed card, and a read still takes the
+/// bridge's capability, which for both coding agents is Public. In an app's chat or a subagent
+/// it is refused, as any model there is.
 async fn is_persons_chat(
     sessions: &SessionManager,
     extensions: Option<&ExtensionManager>,
     session_id: &str,
 ) -> bool {
-    if crate::providers::coding_agent::bridge::bridged_call_budget().is_some() {
-        return false;
-    }
     let Some(extensions) = extensions else {
         return false;
     };

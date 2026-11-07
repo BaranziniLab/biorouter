@@ -134,7 +134,14 @@ struct Scenario {
     capabilities: Vec<String>,
     /// `ssh -G` resolves this scenario's host to this name (a local alias's real server).
     resolves_to: Option<String>,
-    /// Method → the whole envelope, `{"result": …}` or `{"error": …}`.
+    /// What `ssh -G` says this host's `StrictHostKeyChecking` is; `yes` when absent.
+    #[serde(default)]
+    host_key_checking: Option<String>,
+    /// The account `ssh -G` says this host (an alias with no user in it) signs in as.
+    #[serde(default)]
+    user: Option<String>,
+    /// Method → the whole envelope, `{"result": …}` or `{"error": …}`. `method#name` answers
+    /// only a frame whose `name` (or `label`) parameter is `name`, before `method` does.
     answers: serde_json::Map<String, Value>,
 }
 
@@ -152,6 +159,8 @@ impl Scenario {
             policy_epoch: 1,
             capabilities: capabilities.iter().map(|c| (*c).to_owned()).collect(),
             resolves_to: None,
+            host_key_checking: None,
+            user: None,
             answers: serde_json::Map::new(),
         }
     }
@@ -236,14 +245,31 @@ mod fake_ssh {
             return 255;
         };
         if args.first().map(String::as_str) == Some("-G") {
-            let hostname = load(root, &host)
-                .and_then(|scenario| scenario.resolves_to)
+            let scenario = load(root, &host);
+            let hostname = scenario
+                .as_ref()
+                .and_then(|scenario| scenario.resolves_to.clone())
                 .unwrap_or_else(|| host.clone());
+            let user = scenario.as_ref().and_then(|scenario| scenario.user.clone());
+            let checking = scenario
+                .and_then(|scenario| scenario.host_key_checking)
+                .unwrap_or_else(|| "yes".into());
             let mut out = std::io::stdout().lock();
-            // First wins in both of the daemon's readers, so the host's own lines go first.
+            // First wins in both of the daemon's readers, so the host's own lines go first: its
+            // jump route as `-J` names it, as OpenSSH's own `-G` reports it, then its policy.
             let _ = writeln!(out, "hostname {hostname}\nport 22");
+            if let Some(user) = user {
+                let _ = writeln!(out, "user {user}");
+            }
+            if let Some(jump) = args
+                .windows(2)
+                .find(|pair| pair[0] == "-J")
+                .map(|pair| pair[1].clone())
+            {
+                let _ = writeln!(out, "proxyjump {jump}");
+            }
+            let _ = writeln!(out, "stricthostkeychecking {checking}");
             for line in [
-                "stricthostkeychecking yes",
                 "forwardagent no",
                 "forwardx11 no",
                 "permitlocalcommand no",
@@ -301,9 +327,15 @@ mod fake_ssh {
                         "expires_at": 4_000_000_000u64,
                     }})
                 }
-                method => scenario.answers.get(method).cloned().unwrap_or_else(|| {
-                    json!({"error": {"code": "unsupported", "message": "unsupported: fixture has no answer"}})
-                }),
+                method => {
+                    let named = frame["params"]["name"]
+                        .as_str()
+                        .or_else(|| frame["params"]["label"].as_str())
+                        .and_then(|name| scenario.answers.get(&format!("{method}#{name}")));
+                    named.or_else(|| scenario.answers.get(method)).cloned().unwrap_or_else(|| {
+                        json!({"error": {"code": "unsupported", "message": "unsupported: fixture has no answer"}})
+                    })
+                }
             };
             envelope["id"] = frame["id"].clone();
             if writeln!(out, "{envelope}")
@@ -1636,6 +1668,9 @@ fn a_private_chat_s_posts_are_marked_private() {
         )
         .await;
         assert_eq!(posted.ok()["message_id"], "m-new");
+        // What a chat row needs to open the post in Crew (WI-16).
+        assert_eq!(posted.ok()["connection_id"], connection.id.as_str());
+        assert_eq!(posted.ok()["channel_id"], GENERAL);
         let prompt = &posted.cards[0].prompt;
         // The live run's card named neither: AO-12's summary names the workspace and server.
         let server = server_of(&connection).await;
@@ -1801,6 +1836,8 @@ fn files_are_shared_and_referenced_as_the_card_said() {
         )
         .await;
         assert_eq!(referenced.ok()["reference_id"], "r-new");
+        assert_eq!(referenced.ok()["connection_id"], connection.id.as_str());
+        assert_eq!(referenced.ok()["channel_id"], METHODS);
         let references = sent(HOST, "reference.create");
         assert_eq!(references[0]["params"]["path"], "/data/lab/results.csv");
         assert_eq!(references[0]["params"]["label"], "results.csv");
@@ -1853,6 +1890,8 @@ fn files_are_shared_and_referenced_as_the_card_said() {
         let answer = shared.ok().clone();
         assert_eq!(answer["shared"], true, "{answer}");
         assert_eq!(answer["blob_id"], BLOB);
+        assert_eq!(answer["connection_id"], connection.id.as_str());
+        assert_eq!(answer["channel_id"], GENERAL);
         let begins = sent(HOST, "blob.begin");
         assert_eq!(begins.len(), 1, "{begins:?}");
         assert_eq!(begins[0]["params"]["personal_mode"], "private");
@@ -2568,6 +2607,549 @@ fn a_chat_holding_another_institution_s_content_reads_no_workspace_of_a_differen
         .await;
         assert_eq!(read.cards.len(), 1, "the read consent");
         assert_eq!(read.ok()["channel_id"], GENERAL);
+        remove(&connection).await;
+    });
+}
+
+/// The connection a workspace's invitation was saved as on this computer, if any.
+async fn saved_for(workspace_id: &str) -> Option<biorouter::crew::Connection> {
+    crew()
+        .list()
+        .await
+        .into_iter()
+        .find(|connection| connection.workspace_id == workspace_id)
+}
+
+/// A join from an invitation with the Join screen's Advanced route (WI-5): its one card lists
+/// every choice (the login and route it signs in by, the key file, the work folder and agent
+/// access, full access in OW-6's words, and the host's sentence only for the account that hosts
+/// the workspace), and nothing is saved when it is denied. Choices that can't apply are refused
+/// before any card.
+#[test]
+#[serial]
+fn a_join_s_card_lists_every_choice_of_the_advanced_route() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d0051";
+        const HOST: &str = "join-choices.example.test";
+        const JUMP: &str = "jump-checked.example.test";
+        stage(
+            HOST,
+            &scenario(WORKSPACE, "private", snapshot("private", true)),
+        );
+        let key = local_folder("keys").join("id_lab").display().to_string();
+        let text = invitation(WORKSPACE, HOST, Some("ucsf"));
+        let session = chat("join choices").await;
+
+        let denied = call(
+            &session,
+            public(),
+            PersonTool::Change,
+            "join",
+            json!({
+                "invitation": text, "username": "bob", "port": 2222, "proxy_jump": JUMP,
+                "identity_file": key, "agent_access": "full", "folder": "/home/bob/crew-work/lab",
+            }),
+            &["deny"],
+        )
+        .await;
+        denied.refusal();
+        assert_eq!(denied.cards.len(), 1, "{:?}", denied.cards);
+        let card = &denied.cards[0];
+        assert_eq!(card.tool, "crew__change");
+        assert_eq!(card.arguments["action"], "join");
+        for (name, value) in [
+            ("port", json!(2222)),
+            ("proxy_jump", json!(JUMP)),
+            ("identity_file", json!(key)),
+            ("folder", json!("/home/bob/crew-work/lab")),
+            ("agent_access", json!("full")),
+            ("invitation", json!(text)),
+        ] {
+            assert_eq!(card.arguments[name], value, "{name}: {card:?}");
+        }
+        let lines: Vec<&str> = card.prompt.lines().collect();
+        let route = format!(
+            "It signs in as bob@{HOST} on port 2222 through {JUMP}, with the key file {key}."
+        );
+        assert!(lines.contains(&route.as_str()), "{lines:?}");
+        let server = card.arguments["server"]
+            .as_str()
+            .expect("the card's server");
+        let full = format!(
+            "Agents get full access: they can run any command as you on {server}, read and change any file your account can, and use the network. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark."
+        );
+        assert!(lines.contains(&full.as_str()), "{lines:?}");
+        assert!(
+            lines.contains(&"Their work folder is /home/bob/crew-work/lab. To set this up, it installs or updates Crew in your account there first."),
+            "{lines:?}"
+        );
+        assert!(
+            !card.prompt.contains("You host"),
+            "bob doesn't host lab: {lines:?}"
+        );
+        assert!(saved_for(WORKSPACE).await.is_none(), "a denied join saved");
+
+        // Alice, invited to her own workspace, hosts it: full access says so too. No route was
+        // chosen, so none is said.
+        let hosted = call(
+            &session,
+            public(),
+            PersonTool::Change,
+            "join",
+            json!({"invitation": text, "agent_access": "full"}),
+            &["deny"],
+        )
+        .await;
+        let prompt = &hosted.cards[0].prompt;
+        assert!(
+            prompt.contains("You host lab from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of lab."),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("It signs in as"), "{prompt}");
+        assert!(
+            prompt.contains("To set this up, it installs or updates Crew in your account there first, and makes their work folder."),
+            "{prompt}"
+        );
+
+        // A login from the person's SSH settings names no user, so the account is the one
+        // `ssh -G` says it signs in as: the host's alias gets the host's sentence, another's
+        // doesn't.
+        for (alias, user, hosts) in [("lab-alice", "alice", true), ("lab-bob", "bob", false)] {
+            let mut resolved = scenario(WORKSPACE, "private", snapshot("private", true));
+            resolved.resolves_to = Some(HOST.into());
+            resolved.user = Some(user.into());
+            stage(alias, &resolved);
+            let card = call(
+                &session,
+                public(),
+                PersonTool::Change,
+                "join",
+                json!({"invitation": text, "ssh_target": alias, "agent_access": "full"}),
+                &["deny"],
+            )
+            .await;
+            assert_eq!(card.cards.len(), 1, "{alias}: {:?}", card.cards);
+            let prompt = &card.cards[0].prompt;
+            assert_eq!(
+                prompt.contains("You host lab from this account"),
+                hosts,
+                "{alias}: {prompt}"
+            );
+        }
+        assert!(saved_for(WORKSPACE).await.is_none(), "a denied join saved");
+
+        for (params, refusal) in [
+            (
+                json!({"invitation": text, "folder": "/home/bob/crew-work/lab"}),
+                "folder is for agent_access folder or full",
+            ),
+            (
+                json!({"invitation": text, "agent_access": "off", "folder": "/home/bob/x"}),
+                "folder is for agent_access folder or full",
+            ),
+            (
+                json!({"invitation": text, "port": 70000}),
+                "Choose a port between 1 and 65535.",
+            ),
+            (
+                json!({"invitation": text, "agent_access": "folder", "folder": "~/crew-work"}),
+                "Give the work folder's full path on the server",
+            ),
+            (
+                json!({"invitation": text, "identity_file": "keys/id_lab"}),
+                "Give the SSH key file's full path on this computer.",
+            ),
+            (
+                json!({"connection": "lab", "port": 2222}),
+                "Those settings are for joining from an invitation.",
+            ),
+        ] {
+            let refused = call(&session, public(), PersonTool::Change, "join", params, &[]).await;
+            assert!(refused.cards.is_empty(), "{refusal}: {:?}", refused.cards);
+            assert!(
+                refused.refusal().contains(refusal),
+                "{refusal}: {}",
+                refused.refusal()
+            );
+        }
+        assert!(saved_for(WORKSPACE).await.is_none());
+    });
+}
+
+/// Allowed, a join from an invitation saves the connection with the port and jump host it was
+/// given before it connects, and every hop still answers to `ssh_policy`: a jump host whose own
+/// settings would take an unknown host key (no `StrictHostKeyChecking yes`) is refused, with the
+/// connection kept as saved and nothing sent to the server. The same invitation can't then take
+/// route choices over that saved connection. Through a jump host that checks host keys, the join
+/// connects and joins, and answers the connection's ID.
+#[test]
+#[serial]
+fn a_join_saves_its_route_before_connecting_and_every_hop_is_checked() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d0052";
+        const HOST: &str = "join-route.example.test";
+        const JUMP: &str = "jump-route-checked.example.test";
+        const LAX_JUMP: &str = "jump-route-lax.example.test";
+        stage(
+            HOST,
+            &scenario(WORKSPACE, "private", snapshot("private", true)).answer(
+                "account.status",
+                json!({"result": {"role": "member", "host_username": "alice"}}),
+            ),
+        );
+        let mut lax = Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES);
+        lax.host_key_checking = Some("no".into());
+        stage(LAX_JUMP, &lax);
+        let text = invitation(WORKSPACE, HOST, Some("ucsf"));
+        let session = chat("join route").await;
+
+        let through_lax = call(
+            &session,
+            public(),
+            PersonTool::Change,
+            "join",
+            json!({"invitation": text, "username": "bob", "port": 2222, "proxy_jump": LAX_JUMP}),
+            &["allow_once"],
+        )
+        .await;
+        assert_eq!(through_lax.cards.len(), 1, "{:?}", through_lax.cards);
+        // The model is told what the policy refused and what to change, not "try again".
+        let told = through_lax.refusal();
+        assert!(
+            told.contains("StrictHostKeyChecking yes")
+                && told.contains(&format!("{LAX_JUMP} (the jump host"))
+                && told.contains("(code: crew_ssh_settings_refused)"),
+            "{told}"
+        );
+        let kept = saved_for(WORKSPACE)
+            .await
+            .expect("the join saved the connection before connecting");
+        assert_eq!(kept.ssh_target, format!("bob@{HOST}"));
+        assert_eq!(kept.port, Some(2222));
+        assert_eq!(kept.proxy_jump.as_deref(), Some(LAX_JUMP));
+        assert_ne!(kept.status, "connected");
+        assert!(
+            received(HOST, "hello").is_empty(),
+            "nothing may reach the server through that jump host"
+        );
+        // What refused it: ssh_policy, on the jump hop of the route the join saved.
+        let policy = crew()
+            .connect(&kept.id)
+            .await
+            .expect_err("a jump host that takes unknown host keys");
+        let policy = format!("{policy:#}");
+        assert!(
+            policy.contains("StrictHostKeyChecking yes")
+                && policy.contains(&format!("{LAX_JUMP} (the jump host")),
+            "{policy}"
+        );
+
+        let again = call(
+            &session,
+            public(),
+            PersonTool::Change,
+            "join",
+            json!({"invitation": text, "username": "bob", "port": 2222, "proxy_jump": JUMP}),
+            &[],
+        )
+        .await;
+        assert!(again.cards.is_empty(), "{:?}", again.cards);
+        assert!(
+            again.refusal().contains(
+                "This computer already has a connection to lab, and joining uses it as it is."
+            ),
+            "{}",
+            again.refusal()
+        );
+        remove(&kept).await;
+
+        let joined = call(
+            &session,
+            public(),
+            PersonTool::Change,
+            "join",
+            json!({"invitation": text, "username": "bob", "port": 2222, "proxy_jump": JUMP, "agent_access": "off"}),
+            &["allow_once"],
+        )
+        .await;
+        assert_eq!(joined.cards.len(), 1, "{:?}", joined.cards);
+        let answer = joined.ok();
+        assert_eq!(answer["joined"], true, "{answer}");
+        let connection = saved_for(WORKSPACE).await.expect("the joined connection");
+        assert_eq!(answer["connection_id"], connection.id.as_str());
+        assert_eq!(connection.port, Some(2222));
+        assert_eq!(connection.proxy_jump.as_deref(), Some(JUMP));
+        assert!(
+            !received(HOST, "hello").is_empty(),
+            "it connected through the jump host"
+        );
+        assert!(
+            joined.cards[0].prompt.contains("Agents can't work on"),
+            "{}",
+            joined.cards[0].prompt
+        );
+        remove(&connection).await;
+    });
+}
+
+/// One `send` with two files from this computer and two references to server files parks one
+/// card showing everything it posts, marked Private from a Private chat and with the crossing
+/// into a public-safe channel said, sends nothing when denied, and posts exactly one message
+/// carrying them all when allowed (WI-5). What can't be sent is refused before any card.
+#[test]
+#[serial]
+fn one_send_posts_several_files_and_references_in_one_message() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d0053";
+        const HOST: &str = "send-items.example.test";
+        const OTHER_BLOB: &str = "6b1f0c2e-1d4a-4c5e-9a0b-00000000b10c";
+        let files: [(&str, &[u8], &str); 2] = [
+            ("notes.csv", b"a,b\n1,2\n", BLOB),
+            ("counts.csv", b"x\n3\n", OTHER_BLOB),
+        ];
+        let folder = local_folder("send-items");
+        let mut scenario = scenario(WORKSPACE, "private", snapshot("private", true))
+            .answer(
+                "reference.create#a.csv",
+                json!({"result": {"id": "r-a", "restricted": true}}),
+            )
+            .answer(
+                "reference.create#b.csv",
+                json!({"result": {"id": "r-b", "restricted": true}}),
+            );
+        let mut paths = Vec::new();
+        for (name, contents, blob) in files {
+            let path = folder.join(name);
+            fs::write(&path, contents).unwrap();
+            paths.push(path.display().to_string());
+            let sha256 = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(contents));
+            scenario = scenario.answer(
+                &format!("blob.begin#{name}"),
+                json!({"result": {
+                    "id": blob, "channel_id": GENERAL, "size": contents.len(), "sha256": sha256,
+                    "offset": contents.len(), "complete": true, "restricted": true,
+                }}),
+            );
+        }
+        let connection = workspace(HOST, false, scenario).await;
+        let session = private_chat("send items").await;
+        let params = on(
+            &connection,
+            json!({"channel": "#general", "text": "two files", "attachments": paths}),
+        );
+
+        let denied = change(
+            &session,
+            private_local().await,
+            "send",
+            params.clone(),
+            "deny",
+        )
+        .await;
+        denied.refusal();
+        let card = &denied.cards[0];
+        let server = server_of(&connection).await;
+        assert!(
+            card.prompt.starts_with(&format!(
+                "Post this with 2 files from this computer in #general (Analysis Lab) in lab on {server} as you\n"
+            )),
+            "{}",
+            card.prompt
+        );
+        let lines: Vec<&str> = card.prompt.lines().collect();
+        for (line, path) in [
+            ("notes.csv (8 bytes)", &paths[0]),
+            ("counts.csv (4 bytes)", &paths[1]),
+        ] {
+            let shown = format!("{line}, from {path}.");
+            assert!(lines.contains(&shown.as_str()), "{lines:?}");
+        }
+        assert!(
+            lines.contains(
+                &"The files and the post are marked Private, so public models never read them."
+            ),
+            "{lines:?}"
+        );
+        assert!(
+            card.prompt
+                .contains("a public-safe channel: a private-to-public crossing. Everything it sends is shown here."),
+            "{}",
+            card.prompt
+        );
+        assert_eq!(card.arguments["text"], "two files");
+        assert_eq!(
+            card.arguments["attachments"],
+            json!([
+                {"path": paths[0], "size_bytes": 8},
+                {"path": paths[1], "size_bytes": 4},
+            ])
+        );
+        assert!(sent(HOST, "blob.begin").is_empty());
+        assert!(sent(HOST, "message.post").is_empty());
+
+        let too_many: Vec<String> = (0..11).map(|n| format!("/data/lab/{n}.csv")).collect();
+        for (params, refusal) in [
+            (
+                json!({"channel": "#general"}),
+                "send needs text, attachments or references.",
+            ),
+            (
+                json!({"channel": "#general", "attachments": ["notes.csv"]}),
+                "Give the file's full path on this computer",
+            ),
+            (
+                json!({"channel": "#general", "attachments": [paths[0], paths[0]]}),
+                "is named twice",
+            ),
+            (
+                json!({"channel": "#general", "attachments": [folder.display().to_string()]}),
+                "is not a file",
+            ),
+            (
+                json!({"channel": "#general", "references": too_many}),
+                "One message carries at most 10 references.",
+            ),
+            (
+                json!({"channel": "#general", "references": ["/data/../etc/passwd"]}),
+                "Give the file's full path on the server",
+            ),
+        ] {
+            let refused = call(
+                &session,
+                private_local().await,
+                PersonTool::Change,
+                "send",
+                on(&connection, params),
+                &[],
+            )
+            .await;
+            assert!(refused.cards.is_empty(), "{refusal}: {:?}", refused.cards);
+            assert!(
+                refused.refusal().contains(refusal),
+                "{refusal}: {}",
+                refused.refusal()
+            );
+        }
+
+        // References alone: created, then posted in one message.
+        let referenced = change(
+            &session,
+            private_local().await,
+            "send",
+            on(
+                &connection,
+                json!({"channel": "#methods", "references": ["/data/lab/a.csv", "/data/lab/b.csv"]}),
+            ),
+            "allow_once",
+        )
+        .await;
+        let prompt = &referenced.cards[0].prompt;
+        assert!(
+            prompt
+                .starts_with("Post 2 references to files on the server in #methods (Analysis Lab)"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("/data/lab/a.csv on the server."),
+            "{prompt}"
+        );
+        assert_eq!(
+            referenced.cards[0].arguments["references"],
+            json!(["/data/lab/a.csv", "/data/lab/b.csv"])
+        );
+        let answer = referenced.ok();
+        assert_eq!(answer["reference_ids"], json!(["r-a", "r-b"]), "{answer}");
+        assert_eq!(answer["connection_id"], connection.id.as_str());
+        assert_eq!(answer["channel_id"], METHODS);
+        let posts = sent(HOST, "message.post");
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0]["params"]["references"], json!(["r-a", "r-b"]));
+        assert_eq!(posts[0]["params"]["body"], "");
+
+        // The transfer store opens every folder on its way without following links: as for
+        // files_share, the upload runs only where the test's state folder is reached directly
+        // (BIOROUTER_PATH_ROOT on a real folder, and CI).
+        let store = biorouter::config::paths::Paths::state_dir();
+        fs::create_dir_all(&store).unwrap();
+        if fs::canonicalize(&store).ok().as_deref() != Some(store.as_path()) {
+            eprintln!(
+                "send's uploads not run: {} is reached through a link",
+                store.display()
+            );
+            remove(&connection).await;
+            return;
+        }
+        let shared = change(
+            &session,
+            private_local().await,
+            "send",
+            params,
+            "allow_once",
+        )
+        .await;
+        let answer = shared.ok().clone();
+        assert_eq!(answer["shared"], true, "{answer}");
+        assert_eq!(answer["connection_id"], connection.id.as_str());
+        assert_eq!(answer["channel_id"], GENERAL);
+        assert_eq!(answer["message_id"], "m-new");
+        let begins = sent(HOST, "blob.begin");
+        assert_eq!(begins.len(), 2, "{begins:?}");
+        let posts = sent(HOST, "message.post");
+        assert_eq!(
+            posts.len(),
+            2,
+            "one post for the references, one for the files: {posts:?}"
+        );
+        assert_eq!(posts[1]["params"]["attachments"], json!([BLOB, OTHER_BLOB]));
+        assert_eq!(posts[1]["params"]["body"], "two files");
+        assert_eq!(posts[1]["params"]["personal_mode"], "private");
+        assert_eq!(
+            answer["attachments"],
+            json!([
+                {"name": "notes.csv", "blob_id": BLOB, "transfer_id": answer["transfer_ids"][0]},
+                {"name": "counts.csv", "blob_id": OTHER_BLOB, "transfer_id": answer["transfer_ids"][1]},
+            ])
+        );
+        remove(&connection).await;
+    });
+}
+
+/// The saved-connection changes answer the connection they changed, as a chat row needs it to
+/// open the connection in Crew (WI-16): connecting, and changing the saved connection.
+#[test]
+#[serial]
+fn connection_changes_answer_the_connection_s_id() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000d0054";
+        const HOST: &str = "connection-ids.example.test";
+        let connection = workspace(
+            HOST,
+            false,
+            scenario(WORKSPACE, "private", snapshot("private", true)),
+        )
+        .await;
+        let session = chat("connection ids").await;
+        let renamed = call(
+            &session,
+            public(),
+            PersonTool::Change,
+            "connections_update",
+            json!({"connection": connection.id, "name": "lab-renamed"}),
+            &["allow_once"],
+        )
+        .await;
+        assert_eq!(renamed.ok()["connection_id"], connection.id.as_str());
+        crew().disconnect(&connection.id).await.unwrap();
+        let connected = call(
+            &session,
+            public(),
+            PersonTool::Change,
+            "connect",
+            json!({"connection": connection.id}),
+            &["allow_once"],
+        )
+        .await;
+        assert_eq!(connected.ok()["connection_id"], connection.id.as_str());
         remove(&connection).await;
     });
 }

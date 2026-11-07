@@ -24,6 +24,9 @@
 //!   before content returns.
 //! * **Long work** ([`Ctx::wait_for_job`], [`Ctx::follow`]): an action that starts a job waits at
 //!   most 20 seconds, or until Stop, and then answers where the job stands.
+//! * **Coding agents** ([`within_call`]): a call a Claude Code or Codex child makes over the
+//!   tool bridge (owner ruling D3) answers before the bridge stops waiting for it, every card
+//!   and job wait in it included, and keys its changes on the child's own id for the call.
 //! * **Refusals** ([`tool_error`]): a sentence with its code and, where a step needs the person
 //!   (signing in, a host key, a locked key store), that step. Never a secret, and never a name
 //!   from a workspace the call may not read.
@@ -75,10 +78,16 @@ pub(crate) use catalog::Action;
 /// An action: given the call, its answer.
 pub(crate) type Run = for<'a> fn(&'a Ctx) -> BoxFuture<'a, Result<Value>>;
 
-/// How long a change's card, or the read consent, waits for the person.
+/// How long a change's card, or the read consent, waits for the person. A call bridged from a
+/// coding agent waits less ([`within_call`]).
 const APPROVAL_TTL: Duration = Duration::from_secs(600);
-/// How long an action that starts a job waits before answering where it stands (AO-12).
+/// How long an action that starts a job waits before answering where it stands (AO-12). A call
+/// bridged from a coding agent waits less ([`within_call`]).
 pub(crate) const JOB_WAIT: Duration = Duration::from_secs(20);
+/// A Crew call bridged from a coding agent stops waiting this long before the bridge's budget
+/// (`bridged_call_budget`) runs out, so it answers in time (owner ruling D3). It is the margin
+/// the bridge's own approval window leaves: 570 seconds of the bridge's 600.
+const BRIDGE_MARGIN: Duration = Duration::from_secs(30);
 /// How often a waited-on job is asked where it stands.
 const JOB_POLL: Duration = Duration::from_millis(250);
 /// The largest payload a card shows: anything a parameter can carry.
@@ -144,18 +153,18 @@ impl CrewToolHost for ChatCrewHost {
             state: Arc::clone(&self.state),
             action,
         };
-        let answered = CALL_APPROVAL
-            .scope(RefCell::default(), async {
-                // A refusal by Crew's locked vault before any approval may be answered with the
-                // vault card first, and the action run once more.
-                match vault::run_unlocked(&ctx, run).await {
-                    Ok(answer) => Ok(answer),
-                    // A refusal on a server's host key may be answered with the host-key card
-                    // first, and the action tried again on the approval already given.
-                    Err(error) => retrying_after_a_host_key(hostkey::on_refusal(&ctx, error)).await,
-                }
-            })
-            .await;
+        // A call bridged from a coding agent answers before the bridge stops waiting (D3).
+        let answered = within_the_bridge(CALL_APPROVAL.scope(RefCell::default(), async {
+            // A refusal by Crew's locked vault before any approval may be answered with the
+            // vault card first, and the action run once more.
+            match vault::run_unlocked(&ctx, run).await {
+                Ok(answer) => Ok(answer),
+                // A refusal on a server's host key may be answered with the host-key card
+                // first, and the action tried again on the approval already given.
+                Err(error) => retrying_after_a_host_key(hostkey::on_refusal(&ctx, error)).await,
+            }
+        }))
+        .await;
         match answered {
             Ok(answer) => Ok(answer),
             Err(error) => {
@@ -286,6 +295,14 @@ pub(crate) async fn tool_error(error: anyhow::Error, connection: Option<String>)
         let text = refusal_text(Some(refused.code), &refused.message, named);
         return anyhow::anyhow!(hostkey::enrich(text, Some(refused.code), &[]));
     }
+    // Crew's SSH policy refusing the route says what to change, in the daemon's own words.
+    if let Some(refused) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<biorouter::crew::SshPolicyRefused>())
+    {
+        let code = biorouter::crew::SshPolicyRefused::CODE;
+        return anyhow::anyhow!(refusal_text(Some(code), refused.sentence(), named));
+    }
     // A workspace's own refusal is passed on as the broker's envelope, which the `crew`
     // extension words for the model (`agent_error_text`), as it words `crew__request`'s. A
     // technical text the daemon has a sentence for is said in that sentence instead, as the
@@ -397,6 +414,45 @@ fn allowed_for_this_retry(shown: &str, now: Instant) -> bool {
         .unwrap_or(false)
 }
 
+tokio::task_local! {
+    /// When this person-tool call must have answered (owner ruling D3): for a call a coding
+    /// agent's child made over the tool bridge, the bridge's budget less [`BRIDGE_MARGIN`] from
+    /// when the call began; `None` for any other call. Scoped to one call in
+    /// [`ChatCrewHost::call`] ([`within_the_bridge`]) and carried into the work [`Ctx::follow`]
+    /// runs apart from it, so a card that work parks ends in time as well.
+    static CALL_DEADLINE: Option<Instant>;
+}
+
+/// Run `call`, a person-tool call beginning now, with its deadline ([`CALL_DEADLINE`]): set
+/// when the call came over a coding agent's tool bridge, none otherwise.
+async fn within_the_bridge<T>(call: impl std::future::Future<Output = T>) -> T {
+    let deadline = biorouter::providers::coding_agent::bridge::bridged_call_budget()
+        .map(|budget| Instant::now() + budget.saturating_sub(BRIDGE_MARGIN));
+    CALL_DEADLINE.scope(deadline, call).await
+}
+
+/// This call's deadline, when it has one.
+fn call_deadline() -> Option<Instant> {
+    CALL_DEADLINE.try_with(|deadline| *deadline).ok().flatten()
+}
+
+/// `wait`, cut to what is left of this call's time when it has a deadline (D3), and zero once
+/// that is up. Every card and every job wait in a call bridged from a coding agent is cut so,
+/// all together and not one by one: a call that asks for the vault and then for its approval
+/// still answers before the bridge stops waiting for it, so a card the person could still
+/// answer never turns into a transport error the child reads as a broken server.
+pub(crate) fn within_call(wait: Duration) -> Duration {
+    match call_deadline() {
+        Some(deadline) => wait.min(deadline.saturating_duration_since(Instant::now())),
+        None => wait,
+    }
+}
+
+/// `at`, or this call's deadline when that comes first.
+fn no_later_than_the_call(at: Instant) -> Instant {
+    call_deadline().map_or(at, |deadline| at.min(deadline))
+}
+
 /// A Crew step card parked in a chat ([`Ctx::park_step`], [`park_step_in`]). Dropping it
 /// without [`Self::end`] takes the card down.
 pub(crate) struct PendingStep {
@@ -412,7 +468,9 @@ pub(crate) struct PendingStep {
 /// `stop`: what [`Ctx::park_step`] does, for work that runs apart from its call (a spawned task
 /// [`Ctx::follow`] waits on, which does not inherit the call's task-local scope, so the caller
 /// asks `no_human_surface` where the call runs). `None` where no person's proof can be obtained
-/// (`biorouter serve`, SD-8) or the call was already stopped.
+/// (`biorouter serve`, SD-8), the call was already stopped, or a call bridged from a coding
+/// agent has no time left to show it ([`within_call`]). The card waits `ttl`, never more than
+/// [`APPROVAL_TTL`] nor past a bridged call's deadline.
 pub(crate) fn park_step_in(
     approvals: &Arc<PendingUserActions>,
     session_id: &str,
@@ -420,14 +478,15 @@ pub(crate) fn park_step_in(
     step: CrewStepRequest,
     ttl: Duration,
 ) -> Option<PendingStep> {
-    if !user_proof_available() || stop.is_cancelled() {
+    let ttl = within_call(ttl.min(APPROVAL_TTL));
+    if !user_proof_available() || stop.is_cancelled() || ttl.is_zero() {
         return None;
     }
     let withdraw = stop.child_token();
     let parked = approvals.park(Some(session_id), None, UserActionRequest::CrewStep(step));
     Some(PendingStep {
         parked,
-        ttl: ttl.min(APPROVAL_TTL),
+        ttl,
         withdraw,
         stop: stop.clone(),
     })
@@ -731,6 +790,8 @@ impl Progress {
 
 /// Wait for `task` for at most `budget`, not counting the time `progress` says it waited for
 /// the person, or until `stop`. `None` when the budget ran out or the call was stopped first.
+/// A call bridged from a coding agent stops at its deadline as well, the person's time
+/// included (D3): a card the work parked ends by then too ([`park_step_in`]).
 async fn finished_within<T>(
     task: &mut tokio::task::JoinHandle<T>,
     progress: &Progress,
@@ -738,14 +799,15 @@ async fn finished_within<T>(
     budget: Duration,
 ) -> Option<Result<T, tokio::task::JoinError>> {
     let started = Instant::now();
+    let out_of_time = || call_deadline().is_some_and(|deadline| Instant::now() >= deadline);
     loop {
         let awaiting = progress.awaiting();
         let left = (budget + progress.person_time()).saturating_sub(started.elapsed());
-        if left.is_zero() && !awaiting {
+        if (left.is_zero() && !awaiting) || out_of_time() {
             return None;
         }
         // While the person is at a card the budget stands still; look again soon.
-        let nap = if awaiting { JOB_POLL } else { left };
+        let nap = within_call(if awaiting { JOB_POLL } else { left });
         tokio::select! {
             joined = &mut *task => return Some(joined),
             () = tokio::time::sleep(nap) => {}
@@ -1237,7 +1299,9 @@ impl Ctx {
     // ------------------------------------------------------------------------------ approvals
 
     /// Park one proof-backed card in this chat, named for the tool the call came through, and
-    /// wait for the person, [`APPROVAL_TTL`] at most, or until Stop.
+    /// wait for the person, [`APPROVAL_TTL`] at most, or until Stop. A call bridged from a
+    /// coding agent waits only until its deadline ([`within_call`]), and parks nothing once that
+    /// has passed.
     async fn park(
         &self,
         risk: ToolRisk,
@@ -1245,6 +1309,10 @@ impl Ctx {
         arguments: Map<String, Value>,
         preview: ToolPreview,
     ) -> UserActionOutcome {
+        let ttl = within_call(APPROVAL_TTL);
+        if ttl.is_zero() {
+            return UserActionOutcome::TimedOut;
+        }
         let request = UserActionRequest::ToolApproval(ToolApprovalRequest {
             tool_name: self.call.tool.name().to_owned(),
             arguments,
@@ -1257,7 +1325,7 @@ impl Ctx {
         self.call
             .approvals
             .park(Some(&self.call.session_id), None, request)
-            .wait(APPROVAL_TTL, Some(&self.call.cancel))
+            .wait(ttl, Some(&self.call.cancel))
             .await
     }
 
@@ -1305,14 +1373,14 @@ impl Ctx {
 
     /// Park a Crew step card in this chat (the owner's D1 ruling): a sign-in, the vault or a
     /// host key, written from the daemon's own records by the caller. Waits for nothing:
-    /// [`PendingStep::end`] waits, at most `ttl` (never more than [`APPROVAL_TTL`]), for the
-    /// person to dismiss it, the chat to stop, or the caller to withdraw it once the daemon
-    /// sees the step done.
+    /// [`PendingStep::end`] waits, at most `ttl` (never more than [`APPROVAL_TTL`], nor past a
+    /// bridged call's deadline), for the person to dismiss it, the chat to stop, or the caller
+    /// to withdraw it once the daemon sees the step done.
     ///
     /// `None` where no card can be answered: no person's proof can be obtained in this process
     /// (`biorouter serve`, SD-8), the call has no surface a person watches
-    /// (`POST /agent/call_tool`), or it was stopped. The caller then says the step in words, as
-    /// before.
+    /// (`POST /agent/call_tool`), it was stopped, or a bridged call has no time left. The
+    /// caller then says the step in words, as before.
     pub(crate) fn park_step(&self, step: CrewStepRequest, ttl: Duration) -> Option<PendingStep> {
         if biorouter::user_surface::no_human_surface() {
             return None;
@@ -1333,7 +1401,9 @@ impl Ctx {
     ///
     /// Each status read goes first to the sign-in and host-key hooks ([`signin::on_status`],
     /// [`hostkey::on_status`]), which may park a card for the person and answer instead. A hook
-    /// that waited returns `None`, and the job is read again before it is judged.
+    /// that waited returns `None`, and the job is read again before it is judged. A call
+    /// bridged from a coding agent answers by its deadline, whatever the person's card took
+    /// ([`no_later_than_the_call`]).
     pub(crate) async fn wait_for_job(&self, job_id: &str) -> Value {
         let mut deadline = Instant::now() + JOB_WAIT;
         let gone = || {
@@ -1359,7 +1429,10 @@ impl Ctx {
                 return gone();
             };
             let settled = !matches!(status.state, SetupState::Running);
-            if settled || Instant::now() >= deadline || self.call.cancel.is_cancelled() {
+            if settled
+                || Instant::now() >= no_later_than_the_call(deadline)
+                || self.call.cancel.is_cancelled()
+            {
                 return job_answer(&status, !settled);
             }
             tokio::select! {
@@ -1372,12 +1445,13 @@ impl Ctx {
     /// Run `work` (a flow of several steps, such as open or join) for at most [`JOB_WAIT`], or
     /// until Stop. Done in time, its answer; otherwise it keeps running and the answer says
     /// where it stands, from `progress`. Time `work` spends waiting for the person on a card
-    /// ([`Progress::awaiting_person`]) is not counted.
+    /// ([`Progress::awaiting_person`]) is not counted, except against a bridged call's deadline,
+    /// which `work` carries too, so a card it parks ends by then ([`CALL_DEADLINE`]).
     pub(crate) async fn follow<F>(&self, progress: Progress, work: F) -> Result<Value>
     where
         F: std::future::Future<Output = Result<Value>> + Send + 'static,
     {
-        let mut task = tokio::spawn(work);
+        let mut task = tokio::spawn(CALL_DEADLINE.scope(call_deadline(), work));
         let finished = finished_within(&mut task, &progress, &self.call.cancel, JOB_WAIT).await;
         match finished {
             Some(Ok(answer)) => answer,
@@ -1648,20 +1722,53 @@ pub(crate) fn document_diff(path: &str, old: &str, new: &str) -> ToolPreview {
     }
 }
 
-/// The idempotency key for one change, from the tool call's ID when the agent loop gave one,
-/// so a retried call is applied at most once; a fresh one otherwise.
+/// The idempotency key for one change, from the tool call's ID when the call has one, so a
+/// retried call is applied at most once; a fresh one otherwise. The ID is the agent loop's for
+/// its own calls, and the child's own for a call a coding agent made over the tool bridge
+/// (`crew_extension::with_bridged_call_id`, D3), which the child sends again when it retries.
+///
+/// The ID is not ours (a vendor's CLI names it), so the key also carries a digest of what the
+/// call asks for: an ID sent again for a different change never matches the first. The ID's
+/// part is cut to [`KEY_ID_CHARS`], so the step that ends the key is never cut off.
 pub(crate) fn idempotency_key(ctx: &Ctx, step: usize) -> String {
-    let base = ctx
-        .call
-        .tool_call_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut key: String = format!("chat-{base}-{step}")
+    let Some(id) = ctx.call.tool_call_id.as_deref() else {
+        return format!("chat-{}-{step}", uuid::Uuid::new_v4());
+    };
+    let id: String = id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+        .take(KEY_ID_CHARS)
         .collect();
-    key.truncate(128);
-    key
+    format!("chat-{id}-{}-{step}", request_digest(&ctx.call))
+}
+
+/// The most of a call's ID an idempotency key keeps.
+const KEY_ID_CHARS: usize = 64;
+
+/// 16 hex digits of SHA-256 over the call's tool, action and params (object keys sorted).
+fn request_digest(call: &PersonToolCall) -> String {
+    use sha2::Digest as _;
+    let asked = serde_json::json!([call.tool.name(), call.action, sorted_keys(&call.params)]);
+    let digest = sha2::Sha256::digest(asked.to_string().as_bytes());
+    hex::encode(&digest[..8])
+}
+
+/// `value` with every object's keys in order, so the same request always reads the same.
+fn sorted_keys(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), sorted_keys(value)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sorted_keys).collect()),
+        other => other.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -1881,5 +1988,221 @@ mod step_tests {
         })
         .await;
         assert!(!parked);
+    }
+}
+
+/// Owner ruling D3: a call a coding agent's child makes over the tool bridge answers before the
+/// bridge stops waiting for it, and keys its changes on its own id.
+#[cfg(test)]
+mod bridged_call_tests {
+    use super::test_support::test_ctx;
+    use super::*;
+    use biorouter::conversation::message::CrewVaultAction;
+    use biorouter::crew::tool_host::PersonTool;
+    use biorouter::providers::coding_agent::bridge::with_call_budget_for_test;
+
+    fn unlock() -> CrewStepRequest {
+        CrewStepRequest::Vault {
+            action: CrewVaultAction::Unlock,
+        }
+    }
+
+    async fn ctx() -> Ctx {
+        test_ctx(PersonTool::Change, "credentials_unlock", json!({})).await
+    }
+
+    /// Run `f` as a call bridged with `budget` left runs: inside the bridge's budget, with the
+    /// host's own deadline.
+    async fn bridged<T>(budget: Duration, f: impl std::future::Future<Output = T>) -> T {
+        with_call_budget_for_test(budget, within_the_bridge(f)).await
+    }
+
+    /// A step card in a bridged call waits only until the call's deadline, the bridge's budget
+    /// less its margin, so it ends before the bridge's 570-second approval window does. Outside
+    /// a bridged call it waits as asked, and with no time left no card is parked at all.
+    #[tokio::test]
+    async fn a_bridged_call_s_step_card_ends_before_the_bridge_does() {
+        let ctx = ctx().await;
+        let step = within_the_bridge(async { ctx.park_step(unlock(), APPROVAL_TTL) })
+            .await
+            .expect("a card outside the bridge");
+        assert_eq!(step.ttl, APPROVAL_TTL);
+        drop(step);
+
+        let budget = biorouter::providers::coding_agent::bridge::child_tool_call_budget();
+        let step = bridged(budget, async { ctx.park_step(unlock(), APPROVAL_TTL) })
+            .await
+            .expect("a card inside the bridge's budget");
+        assert!(step.ttl <= Duration::from_secs(570), "{:?}", step.ttl);
+        assert!(step.ttl > Duration::from_secs(560), "{:?}", step.ttl);
+        drop(step);
+
+        let parked = bridged(BRIDGE_MARGIN, async {
+            ctx.park_step(unlock(), Duration::from_secs(60)).is_some()
+        })
+        .await;
+        assert!(!parked, "no time left, so no card");
+        assert!(!ctx
+            .call
+            .approvals
+            .has_pending_in_session(&ctx.call.session_id));
+    }
+
+    /// Every card of one bridged call shares its deadline: an approval asked after another used
+    /// the call's time is not parked, and the call answers in time instead of at 600 seconds.
+    #[tokio::test]
+    async fn a_bridged_call_s_approvals_share_one_deadline() {
+        let ctx = ctx().await;
+        let card = || {
+            let arguments = Map::new();
+            let preview = ToolPreview::arguments_within(&arguments, 64);
+            ctx.park(
+                ToolRisk::High,
+                "Post hi in #general".into(),
+                arguments,
+                preview,
+            )
+        };
+        let started = Instant::now();
+        let (first, second) = bridged(BRIDGE_MARGIN + Duration::from_millis(300), async {
+            (card().await, card().await)
+        })
+        .await;
+        assert!(matches!(first, UserActionOutcome::TimedOut), "{first:?}");
+        assert!(matches!(second, UserActionOutcome::TimedOut), "{second:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!ctx
+            .call
+            .approvals
+            .has_pending_in_session(&ctx.call.session_id));
+    }
+
+    /// Work a bridged call runs apart from it carries the call's deadline, so a card that work
+    /// parks ends in time, and the call answers by its deadline even while the person is still
+    /// at that card. A call that is not bridged has no deadline there either.
+    #[tokio::test]
+    async fn work_a_bridged_call_runs_apart_carries_its_deadline() {
+        let ctx = ctx().await;
+        let carried = |progress| {
+            ctx.follow(progress, async {
+                Ok(json!({"deadline": call_deadline().is_some()}))
+            })
+        };
+        let inside = bridged(Duration::from_secs(600), carried(Progress::default()))
+            .await
+            .unwrap();
+        assert_eq!(inside["deadline"], true);
+        let outside = within_the_bridge(carried(Progress::default()))
+            .await
+            .unwrap();
+        assert_eq!(outside["deadline"], false);
+
+        let progress = Progress::default();
+        let watched = progress.clone();
+        let started = Instant::now();
+        let answer = bridged(BRIDGE_MARGIN + Duration::from_millis(300), async {
+            ctx.follow(progress, async move {
+                let _person = watched.awaiting_person();
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(json!({"signed_in": true}))
+            })
+            .await
+        })
+        .await
+        .unwrap();
+        assert_eq!(answer["state"], "running", "{answer}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A job wait in a bridged call ends by the call's deadline, whatever it was extended by.
+    #[tokio::test]
+    async fn a_job_wait_ends_by_the_call_s_deadline() {
+        let later = Instant::now() + Duration::from_secs(3600);
+        assert_eq!(
+            within_the_bridge(async { no_later_than_the_call(later) }).await,
+            later
+        );
+        let (deadline, waited) = bridged(Duration::from_secs(600), async {
+            (call_deadline().unwrap(), within_call(JOB_WAIT))
+        })
+        .await;
+        assert!(deadline < later);
+        assert_eq!(waited, JOB_WAIT);
+        let cut = bridged(BRIDGE_MARGIN + Duration::from_secs(5), async {
+            (no_later_than_the_call(later), within_call(JOB_WAIT))
+        })
+        .await;
+        assert!(cut.0 < Instant::now() + Duration::from_secs(6));
+        assert!(cut.1 <= Duration::from_secs(5), "{:?}", cut.1);
+    }
+
+    /// A change's idempotency key is its call's own id, which for a bridged call is the child's:
+    /// the child's retry of the same call carries the same key, and each change of one call its
+    /// own. A call with no id gets a fresh key every time.
+    #[tokio::test]
+    async fn the_idempotency_key_is_the_call_s_own_id() {
+        let mut ctx = ctx().await;
+        ctx.call.tool_call_id = Some("toolu_01AbC".into());
+        let key = idempotency_key(&ctx, 0);
+        assert!(key.starts_with("chat-toolu_01AbC-"), "{key}");
+        assert!(key.ends_with("-0"), "{key}");
+        assert_eq!(idempotency_key(&ctx, 0), key);
+        assert_ne!(idempotency_key(&ctx, 0), idempotency_key(&ctx, 1));
+        ctx.call.tool_call_id = None;
+        assert_ne!(idempotency_key(&ctx, 0), idempotency_key(&ctx, 0));
+    }
+
+    /// The child names the ID, so the same ID sent with a different change is another key, and
+    /// the same change with its params in another order is the same key. A long ID never cuts
+    /// off the step, so two steps of one call never share a key.
+    #[tokio::test]
+    async fn an_id_reused_for_another_change_is_another_key() {
+        let mut ctx = ctx().await;
+        ctx.call.tool_call_id = Some("toolu_01AbC".into());
+        ctx.call.params = json!({"channel": "#general", "text": "hi"});
+        let first = idempotency_key(&ctx, 0);
+        ctx.call.params = json!({"text": "hi", "channel": "#general"});
+        assert_eq!(idempotency_key(&ctx, 0), first, "the same change");
+        ctx.call.params = json!({"channel": "#general", "text": "bye"});
+        assert_ne!(idempotency_key(&ctx, 0), first, "other params");
+        ctx.call.params = json!({"channel": "#general", "text": "hi"});
+        ctx.call.action = "something_else".into();
+        assert_ne!(idempotency_key(&ctx, 0), first, "another action");
+
+        ctx.call.tool_call_id = Some("x".repeat(400));
+        let (zero, one) = (idempotency_key(&ctx, 0), idempotency_key(&ctx, 1));
+        assert_ne!(zero, one);
+        assert!(zero.len() <= 128 && one.ends_with("-1"), "{one}");
+    }
+
+    /// A bridged call's read takes the bridge's capability, Public for both coding agents, and a
+    /// public model never reads a Private workspace: refused, naming nothing from it.
+    #[tokio::test]
+    async fn a_public_bridged_read_of_a_private_workspace_is_withheld() {
+        let ctx = test_ctx(PersonTool::Read, "channels_list", json!({})).await;
+        assert_eq!(ctx.call.capability.tier(), ProviderTier::Public);
+        let connection: Connection = serde_json::from_value(json!({
+            "id": "lab-id", "name": "lab", "ssh_target": "wanjun@leo", "port": null,
+            "identity_file": null, "proxy_jump": null, "socket_path": "/tmp/crew.sock",
+            "owner_uid": 1000, "workspace_id": "lab-ws", "workspace_public_key": "00",
+            "cluster_connection_id": "cluster", "mode": "private", "policy_epoch": 1,
+            "status": "connected", "last_error": null, "device_id": "11", "public_key": "22",
+        }))
+        .expect("a saved connection");
+        let snapshot = json!({
+            "workspace": {"name": "secret-lab", "mode": "private", "institution_id": "ucsf"},
+            "protected_channel_ids": [],
+            "channels": [{"id": "c1", "name": "methods"}],
+        });
+        let refused = bridged(
+            Duration::from_secs(600),
+            ctx.content_scope(&connection, &snapshot),
+        )
+        .await
+        .expect_err("a public model reads no Private workspace");
+        let said = refused.downcast_ref::<Said>().expect("said in a sentence");
+        assert_eq!(said.code, Some(crew_refusal::PUBLIC_MODEL_REFUSED));
+        assert_eq!(said.sentence, PUBLIC_MODEL_READ);
+        assert!(!said.sentence.contains("secret-lab"));
     }
 }

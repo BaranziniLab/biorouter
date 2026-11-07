@@ -1,7 +1,7 @@
 # Connections and troubleshooting
 
 > **What this is.** How Crew connects to your lab's workspace, how to sign in, set Crew up in your server account and change connection settings, what a deleted workspace looks like, and what each status and error message asks you to do.
-> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app. No SSH or terminal experience is needed.
 
 Your lab's workspace runs on a shared lab server. Your computer reaches it over SSH, the secure login that lab servers use. The Biorouter background service on your computer keeps the connection open and checks the server's identity.
@@ -87,23 +87,23 @@ The Sign in window asks for the server's password even when your SSH settings sa
 
 ### Sign in for a chat
 
-When a chat sets Crew up, connects or joins for you and the server asks for a password or a code, the chat shows a card, "Sign in to {login}". Choose **Sign in**, and the same Sign in window opens. What you type there goes to ssh on the server, never to the chat, the model or the chat's history. When the server accepts you, the card reads "Signed in. The chat carries on." and the chat goes on by itself. **Dismiss** ends the chat's wait with nothing signed in, and a setup that waited still waits, with **Sign in** at the top of Crew.
+When a chat sets Crew up, connects or joins for you and the server asks for a password or a code, the chat shows a card, "Sign in to {login}". Choose **Sign in**, and the same Sign in window opens. What you type there goes to ssh on the server, never to the chat, the model or the chat's history. When the server accepts you, the card reads "Signed in. The chat carries on." and the chat goes on by itself. **Dismiss** ends the chat's wait with nothing signed in, and a setup that waited still waits, with **Sign in** at the top of Crew. If the server accepts you but Crew is not in your server account yet, the Sign in window says "Crew isn’t set up for your account on {server}. Biorouter can install it in your own account. It goes in ~/.local/bin and needs no administrator." Close the window, and ask the chat to set Crew up, or choose **Set up Crew for my account** in Crew.
 
 The chat can also open the Sign in window when the server refused this computer's SSH key and the key has a passphrase that no SSH agent holds: type the passphrase there. A chat in a `biorouter serve` browser, where Crew does not work, or through ACP cannot show the card, and names `biorouter crew auth` instead ([Sign in, unlock and check a server's key](agents-and-chat-access.md#sign-in-unlock-and-check-a-servers-key)).
 
 ## Server identity checks
 
-Every server has a host key that proves its identity. Your computer keeps the keys it trusts in its known hosts file, `~/.ssh/known_hosts`. Crew connects only to a server whose key is there, and checks that the workspace key matches your invitation. Crew never adds a key for you. A failed check shows "Can’t verify server" and one of three screens.
+Every server has a host key that proves its identity. Your computer keeps the keys it trusts in its known hosts file, `~/.ssh/known_hosts`. Crew connects only to a server whose key is there, and checks that the workspace key matches your invitation. Crew adds a key only when you choose **Trust this key** for a new key you checked, never a changed one. A failed check shows "Can’t verify server" and one of three screens.
 
 ### An unverified server
 
 "Can’t verify {server address} yet" means the server's key is not in your known hosts file. This is normal the first time on each computer. When the key that is missing belongs to a jump host, the screen names the jump host instead, and that is the one to verify.
 
 1. Ask your IT team for the server's fingerprint. It starts with `SHA256:`.
-2. Follow [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer). **How do I verify it?** offers **Open a terminal here**. If terminals are new to you, ask IT to help.
-3. Choose **Try again**. Crew connects, and the Sign in window opens if the server asks.
+2. Compare it with "Fingerprint this computer read from the server" on the screen. While Crew reads it, the screen says "Reading the server’s fingerprint…". If the two match, choose **Trust this key**, and Crew connects again by itself ([Trust the key in Crew](joining-a-workspace.md#trust-the-key-in-crew)). If they differ, stop and tell IT.
+3. If the screen shows no fingerprint, for example for a connection saved with a jump host, follow [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer). **How do I verify it?** offers **Open a terminal here**. If terminals are new to you, ask IT to help. Then choose **Try again**. Crew connects, and the Sign in window opens if the server asks.
 
-A chat that meets an unverified server shows a card with the same title and the fingerprint Crew read from the server itself, with **How do I verify it?**, **Open a terminal here** and **Not now**. It never offers to accept the key. Follow the same steps, and once the key is in `~/.ssh/known_hosts`, the chat goes on by itself, within a second or two. It watches only that file and `~/.ssh/known_hosts2`. If your SSH settings keep known hosts in another file, choose **Not now**, then ask the chat to try again once the key is there.
+A chat that meets an unverified server shows a card with the same title, "Fingerprint this computer read from the server", **Trust this key**, **How do I verify it?**, **Open a terminal here** and **Not now**. Follow the same steps. Once the key is in your known hosts file, whether you chose **Trust this key** or added it in a terminal, the chat goes on by itself, within a second or two. It looks in every known hosts file your SSH settings name for that login, so a key you keep in another file counts too.
 
 ### A changed server identity
 
@@ -114,7 +114,7 @@ A chat that meets an unverified server shows a card with the same title and the 
 3. Choose the workspace name, then **Reconnect**. Expect "Can’t verify {server address} yet".
 4. Follow [An unverified server](#an-unverified-server) with the new fingerprint.
 
-In a chat, the card for a changed key shows the fingerprint Crew knew and the one the server offered now, with **Copy details for IT** and nothing else. The chat does not wait or try again. Never let an agent remove the old key for you: in **Completely Autonomous** mode, `ssh-keygen -R` from an agent's shell asks you first ([Permission modes](../security/permission-modes.md#what-still-asks-whatever-your-mode)).
+In a chat, the card for a changed key shows the fingerprint Crew knew and the one the server offered now, with **Copy details for IT** and nothing else. There is no **Trust this key** for a changed key, in a chat or in Crew. The chat does not wait or try again. Never let an agent remove the old key for you: in **Completely Autonomous** mode, `ssh-keygen -R` from an agent's shell asks you first ([Permission modes](../security/permission-modes.md#what-still-asks-whatever-your-mode)).
 
 ### A different workspace
 
@@ -235,7 +235,7 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 | "Crew couldn’t verify…" | See [Server identity checks](#server-identity-checks). |
 | "Crew isn’t running for you…" or "Signed in, but Crew couldn't start…" | Crew is missing from your server account. Crew sets it up by itself after you sign in, or choose **Set up Crew for my account**. See [Crew missing from your server account](#crew-missing-from-your-server-account). |
 | "The host deleted {workspace}." | See [A deleted workspace](#a-deleted-workspace). |
-| "Crew SSH host…", such as "Crew SSH host gateway (the jump host on this connection's route) requires StrictHostKeyChecking yes…" | Your SSH settings file lacks a setting that Crew requires for that jump host. Send the sentence to IT with a link to [SSH requirements](administration.md#ssh-requirements), then connect again. If it adds "This computer is the workspace's server, so it needs no jump host", clear **Jump hosts** in **Connection settings…** instead ([Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server)). |
+| "Crew SSH host…", such as "Crew SSH host gateway (the jump host on this connection's route) requires StrictHostKeyChecking yes…" | Your SSH settings file lacks a setting that Crew requires for that jump host. Send the sentence to IT with a link to [SSH requirements](administration.md#ssh-requirements), then connect again. A chat is told the same sentence, with the code `crew_ssh_settings_refused`. If it adds "This computer is the workspace's server, so it needs no jump host", clear **Jump hosts** in **Connection settings…** instead ([Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server)). |
 | "You already use this server for {other workspace}…" | One computer uses one institution for each server. Ask your host which is right. |
 | "…dropped while it was idle." | Wait, or choose **Reconnect**. |
 | "SSH bridge failed…" | The connection broke during a request, and Crew does not resend it. Choose **Reconnect**. Before you repeat your last action, check if it went through. |

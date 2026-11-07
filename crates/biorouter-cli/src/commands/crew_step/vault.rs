@@ -4,7 +4,14 @@
 //! through the chat's own [`crate::daemon_client::CrewClient`]. The value is never echoed,
 //! printed or added to the chat; the card is never answered as done, because the call that
 //! parked it reads the vault and takes it down itself. Skipping posts the card's dismissal.
+//!
+//! ⚠ **The person opens the prompt; a card never opens it by itself**, as on the desktop and as
+//! a sign-in card here ([`super::sign_in`]). The card asks first ([`question`]), and only Enter
+//! with nothing typed opens the hidden prompt. A card arrives when the model calls for it, so
+//! opening at once read whatever the person was typing (often their next message) as a
+//! passphrase and posted it to the vault route as a failed attempt.
 
+use super::sign_in::{choice, Choice, ANSWER_BYTES, ASKS};
 use super::StepSurface;
 use crate::daemon_client::{new_secret, read_secret};
 use anyhow::Result;
@@ -21,13 +28,29 @@ const NEW_VAULT_PASSPHRASE: &str = "New vault passphrase:";
 const VAULT_PASSPHRASE_AGAIN: &str = "Type the same vault passphrase again:";
 const VAULT_PASSPHRASES_DIFFER: &str = "The two passphrases don't match. The vault was not set up.";
 
-/// Said before the prompt: what is asked, where it goes, and how to skip.
+/// Said before anything is asked: what the card needs, and where the passphrase goes.
 fn opening(action: CrewVaultAction) -> &'static str {
     match action {
-        CrewVaultAction::Unlock => "This chat needs Crew's vault on this computer, and it is locked. Type its passphrase at the hidden prompt below. It goes only to Crew on this computer, never to the chat. Press Enter with nothing typed to skip.",
-        CrewVaultAction::Init => "This chat needs a vault on this computer for Crew's keys. Choose its passphrase at the hidden prompt below and type it twice. It goes only to Crew on this computer, never to the chat. Press Enter with nothing typed to skip.",
+        CrewVaultAction::Unlock => "This chat needs Crew's vault on this computer, and it is locked. Its passphrase goes only to Crew on this computer, never to the chat.",
+        CrewVaultAction::Init => "This chat needs a vault on this computer for Crew's keys. You choose its passphrase and type it twice. It goes only to Crew on this computer, never to the chat.",
     }
 }
+
+/// Asked before the hidden prompt opens.
+fn question(action: CrewVaultAction) -> &'static str {
+    match action {
+        CrewVaultAction::Unlock => "Unlock Crew's vault now? Press Enter to open the hidden passphrase prompt, or type n to skip: ",
+        CrewVaultAction::Init => "Set up Crew's vault now? Press Enter to open the hidden passphrase prompt, or type n to skip: ",
+    }
+}
+
+/// Said when a line answers neither way. What was typed is not repeated, posted or sent
+/// anywhere: it may be a passphrase typed too early.
+const ANSWER_AGAIN: &str = "That opened nothing and went nowhere. Press Enter with nothing typed to open the passphrase prompt, or type n to skip.";
+
+/// Said once the hidden prompt is open.
+const AT_THE_PROMPT: &str =
+    "Type the passphrase at the hidden prompt. Press Enter with nothing typed to skip.";
 
 /// Said once the daemon took the passphrase.
 fn done(action: CrewVaultAction) -> &'static str {
@@ -64,6 +87,9 @@ trait Desk {
     fn say(&self, line: &str) -> Result<()>;
     /// Whether a hidden prompt can be shown here.
     fn can_prompt(&self) -> bool;
+    /// One line the person types after `question`, `Ok(None)` for Esc or Ctrl-C. Zeroized,
+    /// because a person may type a passphrase here before the prompt opens.
+    async fn ask(&self, question: &str) -> Result<Option<Zeroizing<String>>>;
     /// The passphrase for `action`, from the hidden prompt (twice for init). `Ok(None)` is a
     /// skip: nothing typed. An `Err` is said, and the passphrase asked again.
     async fn passphrase(&self, action: CrewVaultAction) -> Result<Option<Zeroizing<String>>>;
@@ -80,6 +106,10 @@ impl Desk for StepSurface<'_> {
 
     fn can_prompt(&self) -> bool {
         std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+    }
+
+    async fn ask(&self, question: &str) -> Result<Option<Zeroizing<String>>> {
+        crate::commands::shared_conversation::terminal_input(question, false, ANSWER_BYTES).await
     }
 
     async fn passphrase(&self, action: CrewVaultAction) -> Result<Option<Zeroizing<String>>> {
@@ -143,6 +173,10 @@ async fn take_at(desk: &impl Desk, action: CrewVaultAction) -> Result<()> {
         return Ok(());
     }
     desk.say(opening(action))?;
+    if !person_opens(desk, action).await? {
+        return leave(desk, action).await;
+    }
+    desk.say(AT_THE_PROMPT)?;
     for _ in 0..ATTEMPTS {
         let passphrase = match desk.passphrase(action).await {
             Ok(Some(passphrase)) => passphrase,
@@ -167,6 +201,22 @@ async fn take_at(desk: &impl Desk, action: CrewVaultAction) -> Result<()> {
         }
     }
     leave(desk, action).await
+}
+
+/// Whether the person chose to open the hidden prompt: [`question`] asked up to [`ASKS`]
+/// times, and only Enter with nothing typed says yes. A terminal that could not be read says
+/// no. A line that says neither (a message, a passphrase typed too early) is never used.
+async fn person_opens(desk: &impl Desk, action: CrewVaultAction) -> Result<bool> {
+    for asked in 1..=ASKS {
+        let typed = desk.ask(question(action)).await.unwrap_or(None);
+        match choice(typed.as_ref().map(|typed| typed.as_str())) {
+            Choice::Open => return Ok(true),
+            Choice::Skip => return Ok(false),
+            Choice::Again if asked < ASKS => desk.say(ANSWER_AGAIN)?,
+            Choice::Again => {}
+        }
+    }
+    Ok(false)
 }
 
 /// Leave the card: say where to finish, and take it down so the chat goes on.
@@ -198,6 +248,9 @@ mod tests {
     struct Fake {
         terminal: bool,
         typed: RefCell<Vec<Typed>>,
+        /// The lines typed at the question, in order; Enter once none are left. `None` is Esc.
+        answered: RefCell<Vec<Option<&'static str>>>,
+        questions: RefCell<Vec<String>>,
         answers: RefCell<Vec<Result<Value, &'static str>>>,
         said: RefCell<Vec<String>>,
         posted: RefCell<Vec<(CrewVaultAction, Value)>>,
@@ -209,11 +262,18 @@ mod tests {
             Self {
                 terminal: true,
                 typed: RefCell::new(typed.iter().rev().copied().collect()),
+                answered: RefCell::default(),
+                questions: RefCell::default(),
                 answers: RefCell::new(answers.into_iter().rev().collect()),
                 said: RefCell::default(),
                 posted: RefCell::default(),
                 dismissed: RefCell::default(),
             }
+        }
+
+        fn answering(mut self, lines: &[Option<&'static str>]) -> Self {
+            self.answered = RefCell::new(lines.iter().rev().copied().collect());
+            self
         }
 
         fn said(&self) -> String {
@@ -229,6 +289,16 @@ mod tests {
 
         fn can_prompt(&self) -> bool {
             self.terminal
+        }
+
+        async fn ask(&self, question: &str) -> Result<Option<Zeroizing<String>>> {
+            self.questions.borrow_mut().push(question.to_owned());
+            Ok(self
+                .answered
+                .borrow_mut()
+                .pop()
+                .unwrap_or(Some(""))
+                .map(|line| Zeroizing::new(line.to_owned())))
         }
 
         async fn passphrase(&self, _action: CrewVaultAction) -> Result<Option<Zeroizing<String>>> {
@@ -287,6 +357,53 @@ mod tests {
         assert!(said.contains("incorrect passphrase"), "{said}");
         assert!(said.ends_with(done(CrewVaultAction::Unlock)), "{said}");
         assert_eq!(*fake.dismissed.borrow(), 0);
+    }
+
+    /// WI-17 (e): the card asks before any prompt opens, so a line the person had already typed
+    /// (their next message, or a passphrase typed too early) answers the question, is never
+    /// read as a passphrase and never posted: the prompt opens only on Enter with nothing typed.
+    #[tokio::test]
+    async fn the_prompt_opens_only_when_the_person_presses_enter() {
+        let early = "CANARY-7f3a my next chat message";
+        let fake = Fake::new(&[Typed::Text("the real one")], vec![Ok(unlocked())])
+            .answering(&[Some(early)]);
+        take_at(&fake, CrewVaultAction::Unlock).await.unwrap();
+        assert_eq!(
+            *fake.questions.borrow(),
+            [question(CrewVaultAction::Unlock); 2],
+            "asked again after a line that said neither"
+        );
+        assert_eq!(
+            *fake.posted.borrow(),
+            [(
+                CrewVaultAction::Unlock,
+                json!({"passphrase": "the real one"})
+            )],
+            "only the passphrase typed at the open prompt is posted"
+        );
+        let said = fake.said();
+        assert!(!said.contains("CANARY-7f3a"), "{said}");
+        assert!(said.contains(ANSWER_AGAIN), "{said}");
+        assert!(said.ends_with(done(CrewVaultAction::Unlock)), "{said}");
+
+        // `n` (or Esc) skips: no prompt opens, nothing is posted, and the card is dismissed.
+        for skip in [Some("n"), None] {
+            let fake = Fake::new(&[], vec![]).answering(&[skip]);
+            take_at(&fake, CrewVaultAction::Init).await.unwrap();
+            assert!(fake.posted.borrow().is_empty(), "{skip:?}");
+            assert_eq!(*fake.dismissed.borrow(), 1, "{skip:?}");
+            assert!(
+                fake.said().ends_with(left(CrewVaultAction::Init)),
+                "{skip:?}"
+            );
+        }
+
+        // Three lines that say neither skip too, and none of them reaches the vault route.
+        let fake = Fake::new(&[], vec![]).answering(&[Some(early), Some(early), Some(early)]);
+        take_at(&fake, CrewVaultAction::Unlock).await.unwrap();
+        assert!(fake.posted.borrow().is_empty());
+        assert_eq!(*fake.dismissed.borrow(), 1);
+        assert!(!fake.said().contains("CANARY-7f3a"));
     }
 
     /// A refusal that ever repeated the passphrase is not shown.
@@ -373,7 +490,14 @@ mod tests {
     #[test]
     fn the_words_follow_the_copy_rules() {
         for action in [CrewVaultAction::Unlock, CrewVaultAction::Init] {
-            for text in [opening(action), done(action), left(action)] {
+            for text in [
+                opening(action),
+                question(action),
+                ANSWER_AGAIN,
+                AT_THE_PROMPT,
+                done(action),
+                left(action),
+            ] {
                 assert!(!text.contains(['\u{2014}', '\u{2013}']), "{text}");
                 assert!(!text.to_lowercase().contains("device"), "{text}");
             }

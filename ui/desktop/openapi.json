@@ -4989,6 +4989,148 @@
         }
       }
     },
+    "/crew/host-keys/read": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Read a server's host key straight from this computer.",
+        "operationId": "crew_host_keys_read",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostKeyReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The key this computer read from the server, straight from here with `ssh-keyscan`, the first of the types ssh prefers. Shown to the person to compare with the fingerprint their IT team gave them; nothing is written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostKeyRead"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid`: a body that is not this route's, or a host, port or login that is not a plain name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_request_refused`: the person's SSH settings reach the server through a jump host, a ProxyCommand or under a HostKeyAlias, or a saved Crew connection to it has a jump host (a key read from here could be another machine's), or the SSH settings or the saved connections could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`crew_ssh_unreachable`: the server gave this computer no host key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/host-keys/trust": {
+      "post": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "Trust a server's unknown host key the person verified.",
+        "operationId": "crew_host_keys_trust",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostKeyTrustRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Trusted: the daemon read the server's key again, found the one with this fingerprint, and added it to the first `UserKnownHostsFile` `ssh -G` names (hashed when `HashKnownHosts` is set), under the name OpenSSH looks it up by. `already_trusted` when that file already held exactly this key and nothing else, so nothing was written. A chat waiting on the host-key card sees the key and goes on",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostKeyTrusted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid`: a body that is not this route's, a host, port or login that is not a plain name, or a fingerprint that is not `SHA256:` and its digest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_ssh_host_key_changed`: the known hosts files already hold a key for this server (another key, a revoked one or a certificate authority: Crew never replaces one), or the key the server gives now does not have this fingerprint. Nothing was written. `crew_request_refused`: the SSH settings reach the server another way (a saved Crew connection's jump host included), could not be read, or name no known hosts file Crew can write; or a known hosts file could not be read, so a key already on file could not be ruled out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`crew_ssh_unreachable`: the server gave this computer no host key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/crew/host/start": {
       "post": {
         "tags": [
@@ -13608,7 +13750,7 @@
       },
       "CrewErrorCode": {
         "type": "string",
-        "description": "Every code a Crew answer carries: a refusal's `code`, a saved connection's\n`last_error_code`, and a host-start run's `error.code`. Each route's responses say which it\nanswers and when. A client branches on these, never on a refusal's words, so the generated\nclient names every one; `openapi_contract_tests` fails on a code a Crew source answers that\nis missing here, and on one listed here that nothing answers any more.",
+        "description": "Every code a Crew answer carries: a refusal's `code`, a saved connection's\n`last_error_code`, and a host-start run's `error.code`. Each route's responses say which it\nanswers and when. A client branches on these, never on a refusal's words, so the generated\nclient names every one; `openapi_contract_tests` fails on a code a Crew source answers that\nis missing here, and on one listed here that nothing answers any more. A chat's Crew tools\nalso give the model `crew_ssh_settings_refused`, with the check's own sentence, when Crew's\nSSH settings check refuses the route to a server (a jump host without\n`StrictHostKeyChecking yes`, say); no route answers it.",
         "enum": [
           "crew_user_action_required",
           "crew_human_authority_unavailable",
@@ -13627,6 +13769,7 @@
           "crew_ssh_host_key_changed",
           "crew_ssh_unreachable",
           "crew_ssh_failed",
+          "crew_ssh_settings_refused",
           "crew_bridge_missing",
           "crew_broker_not_running",
           "crew_handoff_failed",
@@ -16699,6 +16842,121 @@
           }
         }
       },
+      "HostKeyRead": {
+        "type": "object",
+        "description": "A key this computer read from a server.",
+        "required": [
+          "host",
+          "port",
+          "fingerprint",
+          "key_type"
+        ],
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "description": "`SHA256:…`, as `ssh-keygen -l` prints it."
+          },
+          "host": {
+            "type": "string"
+          },
+          "key_type": {
+            "type": "string",
+            "description": "The key's type, as OpenSSH names it (`ssh-ed25519`)."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "HostKeyReadRequest": {
+        "type": "object",
+        "description": "Which server's key to read.",
+        "required": [
+          "host",
+          "port"
+        ],
+        "properties": {
+          "host": {
+            "type": "string",
+            "description": "The host as OpenSSH looked the key up by, without brackets or port."
+          },
+          "login": {
+            "type": "string",
+            "description": "The SSH login the refused step used (`you@lab-server`), so its own SSH settings are\nchecked for a jump host or another name.",
+            "nullable": true
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "HostKeyTrustRequest": {
+        "type": "object",
+        "description": "Which server's key to trust, and the fingerprint the person was shown and verified.",
+        "required": [
+          "host",
+          "port",
+          "fingerprint"
+        ],
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "description": "`SHA256:…`, as the person was shown it."
+          },
+          "host": {
+            "type": "string",
+            "description": "The host as OpenSSH looked the key up by, without brackets or port."
+          },
+          "login": {
+            "type": "string",
+            "description": "The SSH login the refused step used (`you@lab-server`).",
+            "nullable": true
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "HostKeyTrusted": {
+        "type": "object",
+        "description": "A trusted key.",
+        "required": [
+          "host",
+          "port",
+          "fingerprint",
+          "already_trusted",
+          "known_hosts_file"
+        ],
+        "properties": {
+          "already_trusted": {
+            "type": "boolean",
+            "description": "The known hosts file already held exactly this key, so nothing was written."
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "known_hosts_file": {
+            "type": "string",
+            "description": "The file the key is in."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "HostStartError": {
         "type": "object",
         "required": [
@@ -18977,6 +19235,36 @@
                 "type": "string",
                 "enum": [
                   "SteerWaiting"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "WI-17: a card this chat drew stopped waiting: answered, dismissed, out of time, or\nwithdrawn by the call that raised it (a Crew step the daemon saw done, a turn that was\nstopped). The card's ID and how it ended, never a value and never what was chosen. A\nsurface draws the card as ended at once, and a client that holds a typed line for it\nstops holding it.\n\nSent only to a reader that asks for it with [`CARD_ENDINGS_HEADER`], so a client that\npredates it never meets a frame type it refuses. A card that already ended is never\nreplayed to a late reader, with or without the header (`turn_stream`).",
+            "required": [
+              "id",
+              "ending",
+              "type"
+            ],
+            "properties": {
+              "ending": {
+                "type": "string",
+                "description": "How a card stopped waiting, on the wire ([`MessageEvent::ActionRequiredEnded`]). Mirrors\n[`biorouter::pending_user_action::CardEnding`]: as coarse, and on purpose, since an allowed\napproval and a refused one both read `answered`.",
+                "enum": [
+                  "answered",
+                  "dismissed",
+                  "timed_out",
+                  "withdrawn"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "ActionRequiredEnded"
                 ]
               }
             }
@@ -26101,6 +26389,18 @@
             "allOf": [
               {
                 "$ref": "#/components/schemas/Author"
+              }
+            ],
+            "nullable": true
+          },
+          "capabilities": {
+            "allOf": [
+              {
+                "type": "string",
+                "description": "What a workflow's `capabilities:` key may say.\n\nA workflow that lists its own `extensions` still keeps every capability the\nperson turned on for all chats on this computer (Crew, Developer, Skills and\nthe rest), beside the ones it lists: a capability is part of the app, and a\nlist written for one task should not switch it off without saying so.\n`capabilities: explicit` is how a workflow says so, and its chats get\nexactly the list.",
+                "enum": [
+                  "explicit"
+                ]
               }
             ],
             "nullable": true

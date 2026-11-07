@@ -588,10 +588,11 @@ fn a_daemon_that_cannot_ask_a_person_offers_crew_read_only() {
     assert_eq!(offered, ["crew__read"]);
 }
 
-/// A coding agent's child reaches Biorouter only over the tool bridge, and the bridge's
-/// reviewed policy carries no Crew tool, whatever the chat has enabled.
+/// A coding agent's child is bridged the person tools in the person's own chat (D3; pinned in
+/// `agent.rs`), but the subagent it delegates to inherits no Crew tool, whatever the chat has
+/// enabled: a subagent is not a person's chat.
 #[test]
-fn the_coding_agent_bridge_never_carries_a_crew_tool() {
+fn a_coding_agent_s_delegated_child_never_inherits_a_crew_tool() {
     for name in WORKER_TOOLS
         .into_iter()
         .chain(PersonTool::ALL.map(PersonTool::name))
@@ -889,30 +890,114 @@ async fn without_a_host_a_person_tool_is_refused_by_name() {
     assert_eq!(refused, PERSON_TOOL_NO_HOST);
 }
 
-/// A call reaching the tool through a coding agent's bridge is not a person's: refused at
-/// dispatch, and nothing reaches the host.
-#[tokio::test]
-async fn a_bridged_call_cannot_use_a_person_tool() {
-    let (agent, session) = chat(SessionType::User, "A chat").await;
-    let recorded = host();
-    let refused = tool_host::with_host_for_tests(
-        as_host(&recorded),
-        crate::providers::coding_agent::bridge::with_call_budget_for_test(
-            std::time::Duration::from_secs(30),
+/// `dispatch`, as a coding agent's child makes the call over the tool bridge: inside the
+/// bridge's budget, with the child's own id for the call.
+async fn bridged_dispatch(
+    agent: &Agent,
+    session: &Session,
+    name: &str,
+    arguments: Value,
+    capability: CallCapability,
+) -> Result<CallToolResult, String> {
+    crate::providers::coding_agent::bridge::with_call_budget_for_test(
+        crate::providers::coding_agent::bridge::child_tool_call_budget(),
+        with_bridged_call_id(
+            name,
+            Some("toolu_01AbC"),
             dispatch(
-                &agent,
-                &session,
-                "crew__read",
-                json!({"action": "status"}),
-                CallCapability::for_test(ProviderTier::Private, true),
+                agent,
+                session,
+                name,
+                arguments,
+                capability,
                 CancellationToken::new(),
             ),
         ),
     )
     .await
-    .expect_err("refused at dispatch");
-    assert_eq!(refused, PERSON_TOOL_NOT_A_PERSONS_CHAT);
+}
+
+/// Owner ruling D3: a coding agent's call in the person's own chat is theirs. Both person tools
+/// reach the host, on the capability the bridge admitted the call on (Public for a coding
+/// agent), with the child's own id for the call as the tool-call id the host keys changes on.
+#[tokio::test]
+async fn a_bridged_call_in_a_persons_chat_reaches_the_host() {
+    let (agent, session) = chat(SessionType::User, "A chat").await;
+    let recorded = host();
+    let capability = CallCapability::for_test(ProviderTier::Public, true);
+    tool_host::with_host_for_tests(as_host(&recorded), async {
+        for (name, arguments) in [
+            ("crew__read", json!({"action": "status"})),
+            (
+                "crew__change",
+                json!({"action": "send", "params": {"channel": "#general", "text": "hi"}}),
+            ),
+        ] {
+            let result = bridged_dispatch(&agent, &session, name, arguments, capability)
+                .await
+                .expect("dispatched and answered");
+            assert_eq!(result.is_error, Some(false), "{name}: {}", text_of(&result));
+        }
+    })
+    .await;
+    let calls = recorded.calls.lock().unwrap();
+    let tools: Vec<PersonTool> = calls.iter().map(|call| call.tool).collect();
+    assert_eq!(tools, [PersonTool::Read, PersonTool::Change]);
+    for call in calls.iter() {
+        assert_eq!(call.session_id, session.id);
+        assert_eq!(call.capability, capability);
+        assert_eq!(call.tool_call_id.as_deref(), Some("toolu_01AbC"));
+    }
+}
+
+/// D3 keeps every other fence: a bridged call in an app's chat, a subagent or a scheduled run
+/// is refused at dispatch, as any model's call there is, and nothing reaches the host.
+#[tokio::test]
+async fn a_bridged_call_elsewhere_is_refused_as_any_call_there_is() {
+    let recorded = host();
+    for (session_type, name) in [
+        (SessionType::User, "app:lab-notebook"),
+        (SessionType::SubAgent, "A subagent"),
+        (SessionType::Scheduled, "A scheduled run"),
+    ] {
+        let (agent, session) = chat(session_type, name).await;
+        for tool in ["crew__read", "crew__change"] {
+            let refused = tool_host::with_host_for_tests(
+                as_host(&recorded),
+                bridged_dispatch(
+                    &agent,
+                    &session,
+                    tool,
+                    json!({"action": "status"}),
+                    CallCapability::for_test(ProviderTier::Public, true),
+                ),
+            )
+            .await
+            .expect_err("refused at dispatch");
+            assert_eq!(refused, PERSON_TOOL_NOT_A_PERSONS_CHAT, "{name}: {tool}");
+        }
+    }
     assert_eq!(recorded.count(), 0);
+}
+
+/// The child's id becomes the tool-call id only for a person tool and only when the child named
+/// one; any other tool's call runs as it is.
+#[tokio::test]
+async fn the_childs_call_id_is_a_person_tools_call_id() {
+    let id = |name: &'static str, child: Option<&'static str>| {
+        with_bridged_call_id(name, child, async { tool_host::current_tool_call_id() })
+    };
+    assert_eq!(
+        id("crew__change", Some("toolu_01")).await.as_deref(),
+        Some("toolu_01")
+    );
+    assert_eq!(
+        id("crew__read", Some("call_7")).await.as_deref(),
+        Some("call_7")
+    );
+    assert_eq!(id("crew__change", None).await, None);
+    assert_eq!(id("crew__request", Some("toolu_01")).await, None);
+    assert_eq!(id("developer__shell", Some("toolu_01")).await, None);
 }
 
 /// The extension checks the action and the shape of the parameters, and a call that fails

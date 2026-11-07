@@ -179,6 +179,11 @@ impl Place {
     pub(super) fn channel(&self, channel: &Resolved) -> String {
         card_channel(&self.snapshot, channel)
     }
+
+    /// A change's answer, with this workspace's connection ([`on_connection`]).
+    pub(super) fn answer(&self, answer: Value) -> Value {
+        on_connection(&self.connection, answer)
+    }
 }
 
 /// Whether the connection's privacy in force is Private, as the daemon judges a write's
@@ -383,12 +388,78 @@ pub(super) fn post_params(
     params
 }
 
-/// What a post answers the model: its IDs, never anything the workspace added.
+/// What a post answers the model: its IDs, never anything the workspace added. The channel's ID
+/// is the one the workspace answered with, so the chat's row can open Crew on the message
+/// (WI-16); the caller adds the connection's ([`on_connection`]).
 pub(super) fn posted(result: &Value) -> Value {
-    json!({
+    let mut answer = json!({
         "posted": true,
         "message_id": result["id"],
         "sequence": result["sequence"],
         "restricted": result["restricted"],
-    })
+    });
+    if let Some(channel) = result["channel_id"].as_str() {
+        answer["channel_id"] = json!(channel);
+    }
+    answer
+}
+
+/// `answer` with the saved connection the change was made through (WI-16): the chat's row opens
+/// Crew there, and Crew's change feed names it (`ChangeIds::from_answer`). Its ID is this
+/// computer's own name for the connection, which the call already named or resolved.
+pub(super) fn on_connection(connection: &Connection, mut answer: Value) -> Value {
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("connection_id".to_owned(), json!(connection.id));
+    }
+    answer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(id: &str) -> Connection {
+        serde_json::from_value(json!({
+            "id": id, "name": "lab", "ssh_target": "you@hpc", "port": null,
+            "identity_file": null, "proxy_jump": null, "socket_path": "/tmp/crew.sock",
+            "owner_uid": 1000, "workspace_id": "lab-id", "workspace_public_key": "00",
+            "cluster_connection_id": "cluster", "mode": "private", "policy_epoch": 1,
+            "status": "connected", "last_error": null, "device_id": "11", "public_key": "22",
+        }))
+        .expect("a saved connection")
+    }
+
+    /// A post names the message and the channel the workspace says it went to, so the chat's
+    /// row can open Crew on it (WI-16); nothing else the workspace answered reaches the model.
+    #[test]
+    fn a_post_names_its_message_and_channel_and_nothing_else() {
+        let result = json!({
+            "id": "m-new", "sequence": "m-new", "restricted": false, "channel_id": "c-general",
+            "body": "what the workspace stored", "actor_id": "p-alice",
+        });
+        assert_eq!(
+            posted(&result),
+            json!({
+                "posted": true, "message_id": "m-new", "sequence": "m-new",
+                "restricted": false, "channel_id": "c-general",
+            })
+        );
+        // A workspace that answers no channel adds none, rather than a null.
+        let bare = posted(&json!({"id": "m-2", "sequence": "m-2", "restricted": true}));
+        assert!(bare.get("channel_id").is_none(), "{bare}");
+    }
+
+    /// A change's answer names the connection it was made through, replacing any other value
+    /// under that key, and leaves an answer that is not an object as it is.
+    #[test]
+    fn a_change_answer_names_its_connection() {
+        let connection = saved("conn-lab");
+        let answer = on_connection(
+            &connection,
+            json!({"created": true, "channel_id": "c-new", "connection_id": "from elsewhere"}),
+        );
+        assert_eq!(answer["connection_id"], "conn-lab");
+        assert_eq!(answer["channel_id"], "c-new");
+        assert_eq!(on_connection(&connection, json!("done")), json!("done"));
+    }
 }

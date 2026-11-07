@@ -356,6 +356,31 @@ fn context_sources(
     Ok(sources)
 }
 
+/// Where a task being started stands, and where it goes: the connection and the channel the card
+/// named, so an answer that says the start is still going names them as a finished one does
+/// (`RunView`), and the chat's row can open Crew there (WI-16).
+fn start_progress(connection_id: &str, channel_id: &str) -> Progress {
+    let progress = Progress::default();
+    progress.set("stage", "start");
+    progress.set("connection_id", connection_id);
+    progress.set("channel_id", channel_id);
+    progress
+}
+
+/// What stopping a task answers: the route's own answer, with the task, its run and the
+/// connection it ran through (WI-16). Not the task's channel: this action reads no privacy scope,
+/// so it names nothing the chat's model might not be shown.
+fn cancel_answer(connection_id: &str, run_id: &str, cancelled: Value) -> Value {
+    let mut answer = cancelled;
+    if !answer.is_object() {
+        answer = json!({});
+    }
+    answer["task"] = json!(run_id);
+    answer["run_id"] = json!(run_id);
+    answer["connection_id"] = json!(connection_id);
+    answer
+}
+
 /// `biorouter crew ask CHANNEL PROMPT` / `tasks start`: start the person's own agent on a task
 /// that posts its result in a channel, with its own grant. The card names the channel, the
 /// channels it may read, its model and its server access, and shows the prompt whole.
@@ -436,8 +461,7 @@ pub(super) fn tasks_ask(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             restricted,
             institution_ids,
         };
-        let progress = Progress::default();
-        progress.set("stage", "start");
+        let progress = start_progress(&place.connection.id, &channel.id);
         let state = ctx.state.clone();
         let connection_id = place.connection.id.clone();
         ctx.follow(progress, async move {
@@ -484,8 +508,42 @@ pub(super) fn tasks_cancel(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let Json(cancelled) = cancel_owned_task(&connection.id, &run.run_id)
             .await
             .map_err(route_refusal)?;
-        let mut answer = serde_json::to_value(&cancelled)?;
-        answer["task"] = json!(run.run_id);
-        Ok(answer)
+        Ok(cancel_answer(
+            &connection.id,
+            &run.run_id,
+            serde_json::to_value(&cancelled)?,
+        ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A start that is still going when the answer is due names the connection and channel the
+    /// card named, as the finished start's `RunView` does, so the chat's row can open Crew there.
+    #[test]
+    fn a_start_still_going_names_its_connection_and_channel() {
+        let progress = start_progress("conn-lab", "c-general");
+        let answer = progress.snapshot();
+        assert_eq!(answer["connection_id"], "conn-lab");
+        assert_eq!(answer["channel_id"], "c-general");
+        assert_eq!(answer["stage"], "start");
+    }
+
+    /// Stopping a task answers the route's words with the task, its run and the connection, and
+    /// never its channel.
+    #[test]
+    fn a_stop_names_its_task_run_and_connection_only() {
+        let answer = cancel_answer(
+            "conn-lab",
+            "run-1",
+            json!({"cancelled": true, "status": "cancelled"}),
+        );
+        assert_eq!(answer["cancelled"], true);
+        assert_eq!(answer["task"], "run-1");
+        assert_eq!(answer["run_id"], "run-1");
+        assert_eq!(answer["connection_id"], "conn-lab");
+        assert!(answer.get("channel_id").is_none(), "{answer}");
+    }
 }

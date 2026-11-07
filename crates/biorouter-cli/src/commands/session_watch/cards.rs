@@ -51,13 +51,31 @@ const READ_CONSENT_ACTION: &str = "read as you";
 /// desktop also accepts when the marker is missing.
 const READ_CONSENT_HEADING: &str = "Let this chat read ";
 
-/// Where a card this terminal can't answer is answered.
-const ANSWER_ELSEWHERE: &str =
-    "Answer it in the desktop app or in a biorouter session --shared-daemon chat";
+/// Where a card this terminal can't answer is answered, where the chat's ID is not at hand.
+///
+/// ⚠ It used to add "or in a biorouter session --shared-daemon chat", which promised more than
+/// is true: a terminal chat answers only the cards of its own conversation, so a fresh one
+/// answers nothing here. Where the ID is at hand, [`answer_elsewhere`] names the one terminal
+/// chat that can.
+const ANSWER_ELSEWHERE: &str = "Answer it in the desktop app";
+
+/// [`ANSWER_ELSEWHERE`] for the chat `session_id`: the desktop app, or a terminal chat on this
+/// same chat, which is the only terminal chat that answers its cards.
+fn answer_elsewhere(session_id: &str) -> String {
+    format!(
+        "{ANSWER_ELSEWHERE}, or open this chat in a terminal with biorouter session --shared-daemon --resume --session-id {session_id}"
+    )
+}
 
 /// The one-line form of a card (`watch`, and the line `attach` prints first) clips its heading
 /// to this many characters. The details `attach` asks with are never clipped.
 const LINE_CHARS: usize = 240;
+
+/// What a value this terminal never prints shows instead: the word the daemon's secret-output
+/// redactor writes for a value under a secret's name, which is what the desktop's tool card shows
+/// for a hidden value. The redactor never rewrites its own marker, so a value hidden by key name
+/// and one the redactor hid read the same, whatever the key's spelling.
+const HIDDEN_VALUE: &str = "[REDACTED:secret-value]";
 
 /// Argument names whose values are never printed, matched case-insensitively on a substring.
 const CREDENTIAL_NAMES: &[&str] = &[
@@ -189,6 +207,16 @@ pub(crate) fn card_line(data: &Value) -> Option<String> {
             first_line(&prompt).unwrap_or_default(),
             key_names(&keys)
         ),
+        // A changed host key's notice (WI-17) waits for nothing and is kept in the chat, so it
+        // asks for no answer, live or read back.
+        Ok(ActionRequiredData::CrewStep { step, .. })
+            if biorouter::pending_user_action::crew_step_is_a_notice(&step) =>
+        {
+            format!(
+                "[crew] {}. Nothing connects to it until the server's IT team confirms the change.",
+                crew_step_heading(&step)
+            )
+        }
         Ok(ActionRequiredData::CrewStep { step, .. }) => format!(
             "[crew] {}. {ANSWER_ELSEWHERE}, never by typing here.",
             crew_step_heading(&step)
@@ -224,7 +252,7 @@ fn hide_credentials(value: &Value) -> Value {
                 .iter()
                 .map(|(name, value)| {
                     let shown = if looks_like_a_credential(name) {
-                        Value::String("(hidden)".into())
+                        Value::String(HIDDEN_VALUE.into())
                     } else {
                         hide_credentials(value)
                     };
@@ -380,6 +408,14 @@ pub(crate) enum CardEvent {
     /// A tool call's response, carrying the call's ID. The agent's own approval card carries
     /// the same ID, so this means that card was answered, here or anywhere else.
     Responded(String),
+    /// A card only another surface answers (a credential card, a Crew step). Its line is
+    /// already printed; its heading names it again when it ends.
+    Shown { id: String, heading: String },
+    /// The daemon said a card ended (WI-17, `ActionRequiredEnded`): answered, dismissed, out of
+    /// time or withdrawn, here or anywhere else. Its ID and the daemon's word for how, nothing
+    /// more. The one way a card raised by a tool (a Crew change, a bridged call), whose ID is
+    /// not its call's, is known to be over before the turn ends.
+    Ended { id: String, ending: String },
     /// The turn ended, so no card of it is still waiting.
     TurnEnded,
 }
@@ -420,6 +456,19 @@ fn block_event(block: &Value) -> Option<CardEvent> {
                     }))
                 }
                 ActionRequiredData::Elicitation { .. } => Some(CardEvent::Question),
+                ActionRequiredData::SecretRequest { id, prompt, .. } => Some(CardEvent::Shown {
+                    id: id.clone(),
+                    heading: first_line(prompt).unwrap_or_else(|| "A credential card".into()),
+                }),
+                // A changed host key's notice waits for nothing, so nothing will say it ended.
+                ActionRequiredData::CrewStep { id, step }
+                    if !biorouter::pending_user_action::crew_step_is_a_notice(step) =>
+                {
+                    Some(CardEvent::Shown {
+                        id: id.clone(),
+                        heading: crew_step_heading(step),
+                    })
+                }
                 _ => None,
             }
         }
@@ -427,12 +476,50 @@ fn block_event(block: &Value) -> Option<CardEvent> {
     }
 }
 
+/// How a card ended, in a phrase ([`CardEvent::Ended`]); the daemon's word is one of four, and
+/// a word this build does not know still means the card stopped waiting.
+fn ended_phrase(ending: &str) -> &'static str {
+    match ending {
+        "answered" => "answered",
+        "dismissed" => "dismissed",
+        "timed_out" => "timed out",
+        _ => "no longer waiting",
+    }
+}
+
+/// The line `watch` prints for a card's end (`ActionRequiredEnded`): it keeps no card, so it
+/// names none. `attach` names the card instead ([`Waiting`]).
+pub(crate) fn ended_frame_line(frame: &Value) -> String {
+    let ending = frame
+        .get("ending")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    format!(
+        "[closed] A request in this chat is over: {}.",
+        ended_phrase(ending)
+    )
+}
+
 /// What one observer frame tells `attach` about cards: each live card and tool response in a
-/// `Message` frame, and the end of a turn. A join snapshot never carries an approval, which is
-/// never stored.
+/// `Message` frame, each card's end, and the end of a turn. The join snapshot never carries a
+/// card that waits, which is never stored; the cards still waiting follow it as live
+/// `Message` frames.
 pub(crate) fn card_events(frame: &Value) -> Vec<CardEvent> {
     match frame.get("type").and_then(Value::as_str) {
         Some("Finish" | "Error") => vec![CardEvent::TurnEnded],
+        Some("ActionRequiredEnded") => frame
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|id| CardEvent::Ended {
+                id: id.to_owned(),
+                ending: frame
+                    .get("ending")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+            .into_iter()
+            .collect(),
         Some("Message") => frame
             .get("message")
             .and_then(|message| message.get("content"))
@@ -496,22 +583,26 @@ impl Answering {
         }
     }
 
-    /// What is printed under a card this `attach` won't answer.
-    fn elsewhere(self) -> String {
+    /// What is printed under a card this `attach` of the chat `session_id` won't answer.
+    fn elsewhere(self, session_id: &str) -> String {
+        let elsewhere = answer_elsewhere(session_id);
         match self {
-            Answering::Here => format!("{ANSWER_ELSEWHERE}."),
+            Answering::Here => format!("{elsewhere}."),
             Answering::ReadOnly => {
-                format!("{ANSWER_ELSEWHERE}, or attach without --read-only to answer it here.")
+                format!("{elsewhere}. Or attach without --read-only to answer it here.")
             }
             Answering::NotATerminal => format!(
-                "{ANSWER_ELSEWHERE}. This attach isn't reading your typing, so it answers no request. What it reads still goes to the chat as a message."
+                "{elsewhere}. This attach isn't reading your typing, so it answers no request. What it reads still goes to the chat as a message."
             ),
             Answering::AgentShell => format!(
-                "{ANSWER_ELSEWHERE}. This attach runs in an agent's shell, so it answers no request. What it reads still goes to the chat as a message."
+                "{elsewhere}. This attach runs in an agent's shell, so it answers no request. What it reads still goes to the chat as a message."
             ),
         }
     }
 }
+
+/// How many cards that `attach` cannot answer it remembers at once, to name each when it ends.
+const SHOWN_LIMIT: usize = 64;
 
 /// The approvals an `attach` is waiting to answer, oldest first. While one waits, a typed line
 /// answers it and is never sent to the chat.
@@ -520,6 +611,9 @@ pub(crate) struct Waiting {
     /// Whether a line read here answers an approval ([`Answering::Here`]) or none ever does.
     answering: Answering,
     cards: VecDeque<ApprovalCard>,
+    /// The cards shown here that only another surface answers, by ID and heading, oldest first,
+    /// so their end can name them ([`CardEvent::Shown`]).
+    shown: VecDeque<(String, String)>,
 }
 
 impl Waiting {
@@ -528,7 +622,49 @@ impl Waiting {
             session_id: session_id.to_string(),
             answering,
             cards: VecDeque::new(),
+            shown: VecDeque::new(),
         }
+    }
+
+    /// Stop holding the approval at `at`, saying `closed`: the next line typed here is a
+    /// message again, or the answer to the request after it. Says nothing for one behind the
+    /// first, which was never asked.
+    fn close_held(&mut self, at: usize, closed: &str) -> Vec<String> {
+        self.cards.remove(at);
+        if at > 0 {
+            return Vec::new();
+        }
+        let mut lines = vec![closed.to_string()];
+        if let Some(next) = self.cards.front() {
+            lines.extend(self.ask(next));
+        }
+        lines
+    }
+
+    /// What to print for the daemon's word that the card `id` ended as `ending`. An approval
+    /// held here stops being held. A card shown here that another surface answers is named
+    /// again. One this terminal answered, or never showed, needs nothing.
+    fn on_ended(&mut self, id: &str, ending: &str) -> Vec<String> {
+        if let Some(at) = self.cards.iter().position(|held| held.id == id) {
+            let closed = match ending {
+                "answered" => "[approval closed] This request was answered somewhere else.",
+                "dismissed" => "[approval closed] This request was dismissed somewhere else.",
+                "timed_out" => "[approval closed] This request timed out.",
+                _ => "[approval closed] This request is no longer waiting.",
+            };
+            return self.close_held(at, closed);
+        }
+        let Some(at) = self.shown.iter().position(|(shown, _)| shown == id) else {
+            return Vec::new();
+        };
+        let Some((_, heading)) = self.shown.remove(at) else {
+            return Vec::new();
+        };
+        vec![safe_text(&redacted(&format!(
+            "[closed] {}: {}.",
+            clip(&heading, LINE_CHARS),
+            ended_phrase(ending)
+        )))]
     }
 
     /// The question for `card`: its details, then which words answer it.
@@ -555,7 +691,7 @@ impl Waiting {
             // Shown whole as anywhere, but never held: a line read here stays a message.
             CardEvent::Approval(card) if self.answering != Answering::Here => {
                 let mut lines = card.details;
-                lines.push(self.answering.elsewhere());
+                lines.push(self.answering.elsewhere(&self.session_id));
                 lines
             }
             CardEvent::Approval(card) => {
@@ -567,10 +703,11 @@ impl Waiting {
                 }
             }
             CardEvent::Question if self.answering == Answering::ReadOnly => {
-                vec![format!("{ANSWER_ELSEWHERE}.")]
+                vec![format!("{}.", answer_elsewhere(&self.session_id))]
             }
             CardEvent::Question => vec![format!(
-                "{ANSWER_ELSEWHERE}. What you type here goes to the chat as a message."
+                "{}. What you type here goes to the chat as a message.",
+                answer_elsewhere(&self.session_id)
             )],
             // Answered somewhere else: the next line typed here is a message again, or the
             // answer to the request after it. One this terminal answered is already gone.
@@ -578,19 +715,29 @@ impl Waiting {
                 let Some(at) = self.cards.iter().position(|held| held.id == id) else {
                     return Vec::new();
                 };
-                self.cards.remove(at);
-                if at > 0 {
-                    return Vec::new();
-                }
-                let mut lines =
-                    vec!["[approval closed] This request was answered somewhere else.".to_string()];
-                if let Some(next) = self.cards.front() {
-                    lines.extend(self.ask(next));
-                }
-                lines
+                self.close_held(
+                    at,
+                    "[approval closed] This request was answered somewhere else.",
+                )
             }
-            CardEvent::TurnEnded if self.cards.is_empty() => Vec::new(),
+            // Its line is already printed; it is named again only when it ends.
+            CardEvent::Shown { id, heading } => {
+                if !self.shown.iter().any(|(shown, _)| *shown == id) {
+                    self.shown.push_back((id, heading));
+                    while self.shown.len() > SHOWN_LIMIT {
+                        self.shown.pop_front();
+                    }
+                }
+                Vec::new()
+            }
+            CardEvent::Ended { id, ending } => self.on_ended(&id, &ending),
+            CardEvent::TurnEnded if self.cards.is_empty() => {
+                // Each card's own end came first; a turn's end leaves none waiting.
+                self.shown.clear();
+                Vec::new()
+            }
             CardEvent::TurnEnded => {
+                self.shown.clear();
                 self.cards.clear();
                 vec![
                     "[approval closed] The turn ended, so its request is no longer waiting."
@@ -809,7 +956,7 @@ mod tests {
         });
         assert_eq!(
             step,
-            "[crew] Sign in to you@hpc.example.edu. Answer it in the desktop app or in a biorouter session --shared-daemon chat, never by typing here."
+            "[crew] Sign in to you@hpc.example.edu. Answer it in the desktop app, never by typing here."
         );
 
         let credentials = text_of(ActionRequiredData::SecretRequest {
@@ -850,7 +997,7 @@ mod tests {
             .expect("a card");
         assert_eq!(
             line,
-            "[waiting] This chat is waiting for your answer. Answer it in the desktop app or in a biorouter session --shared-daemon chat."
+            "[waiting] This chat is waiting for your answer. Answer it in the desktop app."
         );
     }
 
@@ -890,6 +1037,10 @@ mod tests {
             !changed.contains("SHA256:"),
             "a line names no key: {changed}"
         );
+        // WI-17: a changed key's card is a notice kept in the chat, so its line asks for no
+        // answer anywhere.
+        assert!(changed.contains("IT team confirms the change"), "{changed}");
+        assert!(!changed.contains("Answer it"), "{changed}");
         let unknown = card_line(
             &serde_json::to_value(ActionRequiredData::CrewStep {
                 id: "u".into(),
@@ -1052,9 +1203,11 @@ mod tests {
         let shown = shown_card_json(&card);
         assert!(!shown.contains(CANARY), "{shown}");
         assert!(shown.contains("lab-tools"), "{shown}");
-        // The key is still named; its value is hidden here, and the secret-output redactor,
-        // which runs over the whole card after, may word the same gap its own way.
-        assert!(shown.contains("\"LAB_API_TOKEN\""), "{shown}");
+        // The key is still named and its value hidden.
+        assert!(
+            shown.contains("\"LAB_API_TOKEN\": \"[REDACTED:secret-value]\""),
+            "{shown}"
+        );
         assert!(!shown.contains("\"preview\""), "{shown}");
         assert_eq!(
             hide_credentials(&serde_json::json!({
@@ -1063,7 +1216,7 @@ mod tests {
             })),
             serde_json::json!({
                 "folder": "data",
-                "nested": [{ "Passphrase": "(hidden)", "label": "lab" }],
+                "nested": [{ "Passphrase": HIDDEN_VALUE, "label": "lab" }],
             })
         );
 
@@ -1083,6 +1236,41 @@ mod tests {
         assert!(
             shown_card_json(&edit).contains("# Notes"),
             "a new file is still shown"
+        );
+    }
+
+    /// A value hidden by its credential-like key reads the same whatever the key's spelling: an
+    /// environment-style name (which the secret-output redactor also knows) and any other used
+    /// to show two different words, because the redactor rewrote this terminal's own marker.
+    /// Both now show the redactor's word, which is the desktop tool card's, in a shared-daemon
+    /// chat and in `attach` alike.
+    #[test]
+    fn every_hidden_value_reads_the_same_whatever_its_key() {
+        let card = confirmation(
+            "extensionmanager__install",
+            serde_json::json!({
+                "name": "lab-tools",
+                "env": { "LAB_API_TOKEN": CANARY },
+                "passphrase": CANARY,
+                "headers": { "Authorization": CANARY },
+            }),
+            Some("Install lab-tools"),
+        );
+        let hidden = |key: &str| format!("\"{key}\": \"{HIDDEN_VALUE}\"");
+        for (surface, shown) in [
+            ("shared-daemon chat", shown_card_json(&card)),
+            ("attach", approval_details(&card).join("\n")),
+        ] {
+            assert!(!shown.contains(CANARY), "{surface}: {shown}");
+            assert!(!shown.contains("(hidden)"), "{surface}: {shown}");
+            for key in ["LAB_API_TOKEN", "passphrase", "Authorization"] {
+                assert!(shown.contains(&hidden(key)), "{surface}, {key}: {shown}");
+            }
+        }
+        assert_eq!(
+            biorouter::guardrails::secret_output::redact_text(&hidden("LAB_API_TOKEN")),
+            None,
+            "the redactor leaves the marker as it is"
         );
     }
 
@@ -1247,9 +1435,133 @@ mod tests {
         }));
         assert_eq!(
             lines,
-            vec!["Answer it in the desktop app or in a biorouter session --shared-daemon chat, or attach without --read-only to answer it here.".to_string()]
+            vec!["Answer it in the desktop app, or open this chat in a terminal with biorouter session --shared-daemon --resume --session-id s. Or attach without --read-only to answer it here.".to_string()]
         );
         assert_eq!(waiting.on_line("anything"), LineUse::Message);
+    }
+
+    /// WI-17 (4): where a card is answered names only what can answer it. A terminal chat
+    /// answers only its own conversation's cards, so a line that has the chat's ID names the
+    /// one terminal chat that can, and a line without it names the desktop app alone.
+    #[test]
+    fn where_to_answer_never_promises_a_terminal_that_cannot() {
+        let line =
+            card_line(&serde_json::json!({ "actionType": "somethingNew", "id": "x" })).unwrap();
+        assert!(!line.contains("--shared-daemon"), "{line}");
+        let mut waiting = Waiting::new("chat-7", Answering::Here);
+        let lines = waiting.on_event(CardEvent::Question);
+        assert!(
+            lines[0].contains("biorouter session --shared-daemon --resume --session-id chat-7"),
+            "{lines:?}"
+        );
+        assert!(!lines[0].contains("a biorouter session --shared-daemon chat"));
+    }
+
+    /// WI-17 (c) and (d) in `attach`: an approval the daemon says ended stops holding the next
+    /// line at once, whatever its ID (a card a tool raised, whose ID is not its call's, used to
+    /// hold every line until the turn ended); a Crew step or credential card shown here is named
+    /// again when it ends; and an end for a card this terminal answered or never showed says
+    /// nothing.
+    #[test]
+    fn an_end_stops_the_wait_and_names_what_ended() {
+        let mut waiting = Waiting::new("s", Answering::Here);
+        let card = |id: &str| ApprovalCard {
+            id: id.into(),
+            read_consent: false,
+            details: vec![format!("Details of {id}")],
+        };
+        waiting.on_event(CardEvent::Approval(card("a")));
+        waiting.on_event(CardEvent::Approval(card("b")));
+        let lines = waiting.on_event(CardEvent::Ended {
+            id: "a".into(),
+            ending: "dismissed".into(),
+        });
+        assert_eq!(
+            lines[0],
+            "[approval closed] This request was dismissed somewhere else."
+        );
+        assert!(lines.contains(&"Details of b".to_string()), "{lines:?}");
+        // The one behind the first, ended before it was asked, goes quietly.
+        let _ = waiting.on_event(CardEvent::Approval(card("c")));
+        assert!(waiting
+            .on_event(CardEvent::Ended {
+                id: "c".into(),
+                ending: "timed_out".into(),
+            })
+            .is_empty());
+        let lines = waiting.on_event(CardEvent::Ended {
+            id: "b".into(),
+            ending: "a word from a newer daemon".into(),
+        });
+        assert_eq!(
+            lines,
+            ["[approval closed] This request is no longer waiting."]
+        );
+        assert_eq!(waiting.on_line("my next message"), LineUse::Message);
+
+        waiting.on_event(CardEvent::Shown {
+            id: "step".into(),
+            heading: "Sign in to you@hpc.example.edu".into(),
+        });
+        assert_eq!(
+            waiting.on_event(CardEvent::Ended {
+                id: "step".into(),
+                ending: "withdrawn".into(),
+            }),
+            ["[closed] Sign in to you@hpc.example.edu: no longer waiting."]
+        );
+        assert!(waiting
+            .on_event(CardEvent::Ended {
+                id: "never-shown".into(),
+                ending: "answered".into(),
+            })
+            .is_empty());
+    }
+
+    /// The frames that carry a card's life reach `attach` as card events: a Crew step and a
+    /// credential card as shown, a changed host key's notice as nothing that will end, and the
+    /// daemon's end frame as its ID and ending. `watch` prints the end without naming the card.
+    #[test]
+    fn the_end_frame_and_the_cards_that_end_reach_attach() {
+        let step = frame_of(ActionRequiredData::CrewStep {
+            id: "step-1".into(),
+            step: CrewStepRequest::Vault {
+                action: CrewVaultAction::Unlock,
+            },
+        });
+        assert_eq!(
+            card_events(&step),
+            [CardEvent::Shown {
+                id: "step-1".into(),
+                heading: "Unlock Crew's vault".into(),
+            }]
+        );
+        let notice = frame_of(ActionRequiredData::CrewStep {
+            id: "notice-1".into(),
+            step: CrewStepRequest::HostKey {
+                host: "hpc.example.edu".into(),
+                port: 22,
+                login: "you".into(),
+                offered: None,
+                known: None,
+                changed: true,
+            },
+        });
+        assert!(card_events(&notice).is_empty());
+        let end = serde_json::json!({
+            "type": "ActionRequiredEnded", "id": "step-1", "ending": "dismissed", "seq": 4
+        });
+        assert_eq!(
+            card_events(&end),
+            [CardEvent::Ended {
+                id: "step-1".into(),
+                ending: "dismissed".into(),
+            }]
+        );
+        assert_eq!(
+            ended_frame_line(&end),
+            "[closed] A request in this chat is over: dismissed."
+        );
     }
 
     /// Accident prevention, as D5 is for `biorouter crew`: `printf 'allow_once\n' | biorouter
@@ -1329,7 +1641,7 @@ mod tests {
                 false,
                 "s"
             ),
-            "[not answered] The person decides this. Answer it in the desktop app or in a biorouter session --shared-daemon chat."
+            "[not answered] The person decides this. Answer it in the desktop app."
         );
     }
 }

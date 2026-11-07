@@ -10,11 +10,16 @@
 //! A write from a chat classified Private is marked Private (`personal_mode`), and its card says
 //! when it crosses into something Public. A file is shared and downloaded through the same
 //! transfer service `POST /crew/files` and `POST /crew/transfers` use; the card names the file's
-//! resolved path and size.
+//! resolved path and size. `send` posts one message as the composer does: its text, files from
+//! this computer and references to server files, all on one card and in one `message.post`.
+//!
+//! Every change answers the connection and channel it was made in (`connection_id`,
+//! `channel_id`), so the chat's row can open it in Crew.
 
 use std::collections::BTreeSet;
 
 use anyhow::Result;
+use biorouter::crew::CrewManager;
 use biorouter_server::crew::local_files::Direction;
 use biorouter_server::crew::transfers::{
     service, FileCapability, FilePurpose, FileRequest, Receipt, StartRequest, TransferService,
@@ -299,39 +304,393 @@ pub(super) fn files_status(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
 
 // ----------------------------------------------------------------------------------- changes
 
-/// `biorouter crew send CHANNEL --text TEXT`: post a message as the person. The card shows the
-/// whole message; from a Private chat it is marked Private.
+/// The most local files, and the most server references, one message from a chat carries.
+const MAX_MESSAGE_ITEMS: usize = 10;
+
+/// `answer` with the connection and channel a change was made in, at its top, so a chat row
+/// can name them and open them in Crew.
+fn in_channel(mut answer: Value, connection_id: &str, channel_id: &str) -> Value {
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("connection_id".into(), json!(connection_id));
+        fields.insert("channel_id".into(), json!(channel_id));
+    }
+    answer
+}
+
+/// One local file a message shares: its resolved path, the name it is shared under, its size,
+/// and what the card said it is ([`FileStamp`]), compared again when it is selected.
+struct Outgoing {
+    path: std::path::PathBuf,
+    name: String,
+    size: u64,
+    stamp: FileStamp,
+}
+
+/// The local files `typed` names, each resolved and read for its card. Refused before any card
+/// when one is not a file, is named twice, or there are more than [`MAX_MESSAGE_ITEMS`].
+fn outgoing_files(typed: &[String]) -> Result<Vec<Outgoing>> {
+    if typed.len() > MAX_MESSAGE_ITEMS {
+        return Err(said(
+            None,
+            format!("One message carries at most {MAX_MESSAGE_ITEMS} files. Send the rest in another message."),
+        ));
+    }
+    let mut files: Vec<Outgoing> = Vec::with_capacity(typed.len());
+    for text in typed {
+        let path = local_path(text)?;
+        if files.iter().any(|file| file.path == path) {
+            return Err(said(
+                None,
+                format!("{} is named twice. Name each file once.", path.display()),
+            ));
+        }
+        let (metadata, name) = shareable_file(&path)?;
+        files.push(Outgoing {
+            path,
+            name,
+            size: metadata.len(),
+            stamp: FileStamp::of(&metadata),
+        });
+    }
+    Ok(files)
+}
+
+/// A file on the server a post references: its full path, and the label the post shows.
+struct ServerFile {
+    path: String,
+    label: String,
+}
+
+/// A server file `path` names: a full path without `..`.
+fn server_file(path: &str) -> Result<ServerFile> {
+    let remote = std::path::Path::new(path);
+    if !path.starts_with('/')
+        || remote
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(said(
+            None,
+            "Give the file's full path on the server, like /data/lab/results.csv, without ..",
+        ));
+    }
+    let label = remote.file_name().map_or_else(
+        || path.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    Ok(ServerFile {
+        path: path.to_owned(),
+        label,
+    })
+}
+
+/// The server files `typed` names ([`server_file`]), each once, at most [`MAX_MESSAGE_ITEMS`].
+fn server_files(typed: &[String]) -> Result<Vec<ServerFile>> {
+    if typed.len() > MAX_MESSAGE_ITEMS {
+        return Err(said(
+            None,
+            format!("One message carries at most {MAX_MESSAGE_ITEMS} references. Send the rest in another message."),
+        ));
+    }
+    let mut files: Vec<ServerFile> = Vec::with_capacity(typed.len());
+    for path in typed {
+        let file = server_file(path)?;
+        if files.iter().any(|known| known.path == file.path) {
+            return Err(said(
+                None,
+                format!("{path} is named twice. Name each file once."),
+            ));
+        }
+        files.push(file);
+    }
+    Ok(files)
+}
+
+/// `3 files from this computer and a reference to a file on the server`: what a message carries
+/// besides its text, as its card's heading says it.
+fn carried(files: usize, references: usize) -> String {
+    let files = match files {
+        0 => None,
+        1 => Some("1 file from this computer".to_owned()),
+        many => Some(format!("{many} files from this computer")),
+    };
+    let references = match references {
+        0 => None,
+        1 => Some("a reference to a file on the server".to_owned()),
+        many => Some(format!("{many} references to files on the server")),
+    };
+    files
+        .into_iter()
+        .chain(references)
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
+/// The card a message parks: everything it posts. The text whole, each local file by name,
+/// size and resolved path, each server file by its path, the channel, and the Private marking
+/// when the write is Private. A message with text alone is said as it always was. The caller
+/// adds the crossing line.
+fn message_card(
+    place: &Place,
+    channel: &Resolved,
+    text: &str,
+    files: &[Outgoing],
+    references: &[ServerFile],
+    private: bool,
+) -> Card {
+    let at = place.channel(channel);
+    let items = carried(files.len(), references.len());
+    let card = if items.is_empty() {
+        place.card(|here| format!("Post this in {at} in {here} as you"))
+    } else if text.is_empty() {
+        place.card(|here| format!("Post {items} in {at} in {here} as you"))
+    } else {
+        place.card(|here| format!("Post this with {items} in {at} in {here} as you"))
+    };
+    let mut card = card.show("channel", channel.label.clone());
+    if !text.is_empty() {
+        card = card.show("text", text.to_owned());
+    }
+    for file in files {
+        card = card.line(format!(
+            "{} ({}), from {}.",
+            file.name,
+            size_words(file.size),
+            file.path.display()
+        ));
+    }
+    for file in references {
+        card = card.line(format!("{} on the server.", file.path));
+    }
+    if !files.is_empty() {
+        let shown: Vec<Value> = files
+            .iter()
+            .map(|file| json!({"path": file.path.display().to_string(), "size_bytes": file.size}))
+            .collect();
+        card = card.show("attachments", shown);
+    }
+    if !references.is_empty() {
+        card = card
+            .line("Referenced files stay on the server; members who can read them there open them from the post. The post is restricted, so public models never read it.")
+            .show("references", references.iter().map(|file| file.path.clone()).collect::<Vec<_>>());
+    }
+    if private {
+        card = card.line(if files.is_empty() {
+            "It is marked Private, so public models never read it."
+        } else {
+            "The files and the post are marked Private, so public models never read them."
+        });
+    }
+    card
+}
+
+/// `biorouter crew send CHANNEL --text TEXT`, with the composer's attachments and references:
+/// post one message as the person. The card shows everything it posts; from a Private chat it
+/// is marked Private, and so are the files it shares.
 pub(super) fn send_message(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let typed = ctx.required("channel")?;
-        ctx.required("text")?;
-        let text = ctx.raw_text("text").unwrap_or_default();
+        let text = ctx
+            .raw_text("text")
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_default();
+        let files = outgoing_files(&ctx.texts("attachments"))?;
+        let references = server_files(&ctx.texts("references"))?;
+        if text.is_empty() && files.is_empty() && references.is_empty() {
+            return Err(said(None, "send needs text, attachments or references."));
+        }
         check_message_size(&text)?;
         let place = place(ctx).await?;
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         yours(&place.snapshot, &channel, &typed)?;
-        let private = private_write(ctx, &place).await?;
-        let mut card = place
-            .card(|here| format!("Post this in {} in {here} as you", place.channel(&channel)))
-            .show("channel", channel.label.clone())
-            .show("text", text.clone());
-        if private {
-            card = card.line("It is marked Private, so public models never read it.");
-        }
+        // A post with a reference is restricted by the workspace, so with no file of its own it
+        // is marked Private where that can be kept, as files_reference marks it.
+        let private = if files.is_empty() && !references.is_empty() {
+            private_where_kept(ctx, &place).await?
+        } else {
+            private_write(ctx, &place).await?
+        };
+        let mut card = message_card(&place, &channel, &text, &files, &references, private);
         if let Some(line) = crossing(ctx, &place, public_safe(&place, &channel.id)).await {
             card = card.line(line);
         }
         ctx.approve(card).await?;
-        let result = send(
-            ctx,
-            &place.connection,
-            "message.post",
-            post_params(&channel.id, &text, &[], &[], private),
-            0,
-        )
-        .await?;
-        Ok(posted(&result))
+        // One idempotency key per step, in order: each upload, each reference, the post.
+        let (uploads, referenced) = (files.len(), references.len());
+        let message = Message {
+            connection_id: place.connection.id.clone(),
+            channel_id: channel.id.clone(),
+            text,
+            private,
+            references,
+            reference_keys: (uploads..uploads + referenced)
+                .map(|step| idempotency_key(ctx, step))
+                .collect(),
+            post_key: idempotency_key(ctx, uploads + referenced),
+        };
+        if files.is_empty() {
+            let crew = ctx.crew()?;
+            return message.post(&crew, &[]).await;
+        }
+        share_and_post(ctx, message, files).await
     })
+}
+
+/// A message to post once its files are uploaded: where it goes, its text, the server files it
+/// references, and the idempotency key of each step after the uploads, from the tool call's ID.
+struct Message {
+    connection_id: String,
+    channel_id: String,
+    text: String,
+    private: bool,
+    references: Vec<ServerFile>,
+    reference_keys: Vec<String>,
+    post_key: String,
+}
+
+impl Message {
+    /// Create the references, then post the message with `blob_ids` and them, as one post.
+    /// Answers the post's IDs.
+    async fn post(&self, crew: &CrewManager, blob_ids: &[String]) -> Result<Value> {
+        let mut reference_ids = Vec::with_capacity(self.references.len());
+        for (file, key) in self.references.iter().zip(&self.reference_keys) {
+            let created = crew
+                .human_request(
+                    &self.connection_id,
+                    "reference.create",
+                    json!({"channel_id": self.channel_id, "path": file.path, "label": file.label, "idempotency_key": key}),
+                    Some(key.clone()),
+                )
+                .await?;
+            let id = created["id"]
+                .as_str()
+                .ok_or_else(|| said(None, super::FAILED))?;
+            reference_ids.push(id.to_owned());
+        }
+        let mut params = post_params(
+            &self.channel_id,
+            &self.text,
+            blob_ids,
+            &reference_ids,
+            self.private,
+        );
+        params["idempotency_key"] = json!(self.post_key);
+        let result = crew
+            .human_request(
+                &self.connection_id,
+                "message.post",
+                params,
+                Some(self.post_key.clone()),
+            )
+            .await?;
+        let mut answer = in_channel(posted(&result), &self.connection_id, &self.channel_id);
+        if !reference_ids.is_empty() {
+            answer["reference_ids"] = json!(reference_ids);
+        }
+        Ok(answer)
+    }
+}
+
+/// Select each of `files` for an upload, only as its card showed it, and start every upload; the
+/// step keys are the call's first ones, one per file. A file changed since the card is refused
+/// with nothing started; an upload that can't start pauses the ones already started, which wait
+/// in Crew, under Files.
+async fn start_uploads(
+    ctx: &Ctx,
+    message: &Message,
+    files: &[Outgoing],
+) -> Result<(std::sync::Arc<TransferService>, Vec<String>)> {
+    let transfers = service().await.map_err(transfer_refusal)?;
+    let mut selected = Vec::with_capacity(files.len());
+    for (step, file) in files.iter().enumerate() {
+        let key = idempotency_key(ctx, step);
+        let request = FileRequest {
+            approval_pending: false,
+            expected_mode: message
+                .private
+                .then_some(biorouter::crew::ClusterMode::Private),
+            purpose: FilePurpose::Transfer,
+            connection_id: message.connection_id.clone(),
+            channel_id: message.channel_id.clone(),
+            direction: Direction::Upload,
+            path: file.path.clone(),
+            overwrite: false,
+            blob_id: None,
+            transfer_id: None,
+            request_id: Some(key.clone()),
+        };
+        match select_shown(request, &file.stamp, &file.name).await {
+            Ok(capability) => selected.push((key, capability.capability_id)),
+            Err(error) => {
+                for (_, capability) in &selected {
+                    let _ = transfers.discard(capability).await;
+                }
+                return Err(error);
+            }
+        }
+    }
+    let mut started: Vec<String> = Vec::with_capacity(selected.len());
+    for (index, (key, capability)) in selected.iter().enumerate() {
+        let receipt = transfers
+            .start(StartRequest {
+                request_id: key.clone(),
+                connection_id: message.connection_id.clone(),
+                channel_id: message.channel_id.clone(),
+                direction: Direction::Upload,
+                file_capability: capability.clone(),
+                blob_id: None,
+            })
+            .await;
+        match receipt {
+            Ok(receipt) => started.push(receipt.id),
+            Err(error) => {
+                for (_, unstarted) in &selected[index + 1..] {
+                    let _ = transfers.discard(unstarted).await;
+                }
+                for id in &started {
+                    let _ = transfers.pause(id).await;
+                }
+                return Err(transfer_refusal(error));
+            }
+        }
+    }
+    Ok((transfers, started))
+}
+
+/// Upload each of `files`, then post `message` with every one of them attached, as one post.
+/// While the uploads run past the call's wait, the answer says where they stand.
+async fn share_and_post(ctx: &Ctx, message: Message, files: Vec<Outgoing>) -> Result<Value> {
+    let (transfers, transfer_ids) = start_uploads(ctx, &message, &files).await?;
+    let progress = Progress::default();
+    progress.set("connection_id", message.connection_id.clone());
+    progress.set("channel_id", message.channel_id.clone());
+    progress.set("transfer_ids", transfer_ids.clone());
+    progress.set("stage", "uploading");
+    let watched = progress.clone();
+    let crew = ctx.crew()?;
+    let names: Vec<String> = files.into_iter().map(|file| file.name).collect();
+    ctx.follow(progress, async move {
+        let mut blob_ids = Vec::with_capacity(transfer_ids.len());
+        for id in &transfer_ids {
+            let done = finished(&transfers, id, &watched).await?;
+            blob_ids.push(done.blob_id.ok_or_else(|| said(None, super::FAILED))?);
+        }
+        watched.set("stage", "post");
+        let mut answer = message.post(&crew, &blob_ids).await?;
+        let shared: Vec<Value> = names
+            .iter()
+            .zip(&blob_ids)
+            .zip(&transfer_ids)
+            .map(|((name, blob), transfer)| {
+                json!({"name": name, "blob_id": blob, "transfer_id": transfer})
+            })
+            .collect();
+        answer["shared"] = json!(true);
+        answer["attachments"] = json!(shared);
+        answer["transfer_ids"] = json!(transfer_ids);
+        Ok(answer)
+    })
+    .await
 }
 
 /// Wait for the transfer `id` to finish, recording its state in `progress`. A transfer that
@@ -437,7 +796,7 @@ fn shareable_file(path: &std::path::Path) -> Result<(std::fs::Metadata, String)>
         return Err(said(
             None,
             format!(
-                "{} is not a file. Share one file at a time.",
+                "{} is not a file. Name each file to share, not a folder.",
                 path.display()
             ),
         ));
@@ -548,6 +907,8 @@ pub(super) fn files_share(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let progress = Progress::default();
         progress.set("job_id", receipt.id.clone());
         progress.set("transfer_id", receipt.id.clone());
+        progress.set("connection_id", place.connection.id.clone());
+        progress.set("channel_id", channel.id.clone());
         progress.set("stage", receipt.state.clone());
         let watched = progress.clone();
         let crew = ctx.crew()?;
@@ -572,7 +933,7 @@ pub(super) fn files_share(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             let result = crew
                 .human_request(&connection_id, "message.post", params, Some(post_key))
                 .await?;
-            let mut answer = posted(&result);
+            let mut answer = in_channel(posted(&result), &connection_id, &channel_id);
             answer["shared"] = json!(true);
             answer["transfer_id"] = json!(transfer_id);
             answer["job_id"] = json!(transfer_id);
@@ -763,20 +1124,7 @@ pub(super) fn files_reference(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_default();
         check_message_size(&text)?;
-        let remote = std::path::Path::new(&path);
-        if !path.starts_with('/')
-            || remote
-                .components()
-                .any(|part| matches!(part, std::path::Component::ParentDir))
-        {
-            return Err(said(
-                None,
-                "Give the file's full path on the server, like /data/lab/results.csv, without ..",
-            ));
-        }
-        let label = remote
-            .file_name()
-            .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
+        let ServerFile { path, label } = server_file(&path)?;
         let place = place(ctx).await?;
         let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
         yours(&place.snapshot, &channel, &typed)?;
@@ -818,7 +1166,7 @@ pub(super) fn files_reference(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             1,
         )
         .await?;
-        let mut answer = posted(&result);
+        let mut answer = in_channel(posted(&result), &place.connection.id, &channel.id);
         answer["reference_id"] = json!(reference_id);
         Ok(answer)
     })

@@ -1,10 +1,13 @@
 import type { ReactNode } from 'react';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { unknownKeyLookup } from '../hostKeys/hostKeyLookup';
+import { TrustHostKey, useHostKeyFingerprint } from '../hostKeys/TrustHostKey';
+import { trustHostKeyCopy } from '../hostKeys/trustHostKey.copy';
 import { sanitizeDisplayText } from '../identity';
 import { openCopy, setupCopy, trustCopy } from './copy';
 import { hostKeyFingerprints } from './joinText';
-import { setupWorkspaceKey, type SetupWorkspace } from './setup';
+import { routeJumps, setupWorkspaceKey, type SetupRoute, type SetupWorkspace } from './setup';
 
 /**
  * A found workspace as a person reads it, host named (AO-6's trust rule): "baranzini-lab, hosted
@@ -99,21 +102,38 @@ export function SetupWorkspaceList({
 }
 
 /**
- * A setup that stopped because the server's host key is unknown or changed: the fingerprint it
- * offered and how to verify it, as Join's trust pane says it (`TrustPane`). Crew never accepts a
- * host key; the person adds it, then tries again.
+ * A setup that stopped because the server's host key is unknown or changed, as Join's trust pane
+ * says it (`TrustPane`). An unknown key shows the fingerprint this computer read from the server
+ * (the one OpenSSH printed, else one the daemon reads straight from the server OpenSSH named),
+ * how to verify it, and Trust this key (the owner's D2 ruling): the person's own act, with their
+ * proof; the daemon writes the key only when no key is known for the server and the key it reads
+ * again has the fingerprint shown. Then the person chooses Try again. A changed key is never
+ * trusted: only its fingerprints, for IT.
+ *
+ * The key is read and trusted with the job's own login (`route`), whose SSH settings the daemon
+ * checks, as Join's trust pane does. Behind a jump host, or where the route can't be told, nothing
+ * is read and no Trust this key is offered: a key read from this computer could be another
+ * machine's.
  */
 export function SetupHostKeyHelp({
   code,
   detail,
   server,
+  route,
 }: {
   code: string;
   detail: string;
   server: string;
+  /** The job's login and jump hosts; `null` when they can't be told. */
+  route: SetupRoute | null;
 }) {
-  const { offered, known } = hostKeyFingerprints(detail);
-  if (code === 'crew_ssh_host_key_changed') {
+  const changed = code === 'crew_ssh_host_key_changed';
+  const { offered: printed, known } = hostKeyFingerprints(detail);
+  const lookup = changed || !route || routeJumps(route) ? null : unknownKeyLookup(detail);
+  const target = lookup && route ? { ...lookup, login: route.login } : null;
+  const read = useHostKeyFingerprint(target, changed ? null : printed);
+  const offered = changed ? printed : read.fingerprint;
+  if (changed) {
     return (
       <div className="crew-onboard-stack" data-testid="crew-setup-host-key-changed">
         <p className="text-body text-text-default">{trustCopy.changedBody}</p>
@@ -140,6 +160,19 @@ export function SetupHostKeyHelp({
           <span className="text-supporting text-text-muted">{trustCopy.offered}</span>
           <CopyField value={offered} label={trustCopy.offeredLabel} truncate="middle" />
         </div>
+      ) : read.reading ? (
+        <p className="text-supporting text-text-muted" role="status">
+          {trustHostKeyCopy.reading}
+        </p>
+      ) : read.message ? (
+        <p className="text-supporting text-text-muted">{read.message}</p>
+      ) : null}
+      {offered && target ? (
+        <TrustHostKey
+          target={target}
+          fingerprint={offered}
+          trustedNote={trustHostKeyCopy.tryAgainNote}
+        />
       ) : null}
       <Disclosure label={trustCopy.howToVerify}>
         <ol className="crew-onboard-list text-body text-text-default">

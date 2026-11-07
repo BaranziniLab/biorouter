@@ -17,6 +17,8 @@ import {
   setupRunFrom,
   startSetup,
   stopSetup,
+  routeJumps,
+  setupRouteOf,
   takeMemberSetupRequest,
   type SetupInput,
 } from './setup';
@@ -410,5 +412,33 @@ describe('a member setup Join asked for', () => {
     expect(takeMemberSetupRequest('conn-1', 1000)).toEqual({ agentAccess: 'off' });
     requestMemberSetup('conn-2', { agentAccess: null }, 1000);
     expect(takeMemberSetupRequest('conn-2', 1000)).toEqual({ agentAccess: null });
+  });
+});
+
+describe('a job’s route, for a host key it stopped on', () => {
+  const saved = [{ id: 'conn-1', ssh_target: 'bob@lab', proxy_jump: 'gate.ucsf.edu' }];
+
+  it('is the job’s own login, or the saved connection’s, and unknown for a connection not listed', () => {
+    expect(
+      setupRouteOf({ kind: 'server', ssh_target: 'you@leo.ucsf.edu', proxy_jump: null }, saved)
+    ).toEqual({ login: 'you@leo.ucsf.edu', proxyJump: null });
+    expect(
+      setupRouteOf(
+        { kind: 'pending', preparation_id: 'p-1', ssh_target: 'lab', proxy_jump: 'gate' },
+        []
+      )
+    ).toEqual({ login: 'lab', proxyJump: 'gate' });
+    expect(setupRouteOf({ kind: 'connection', connection_id: 'conn-1' }, saved)).toEqual({
+      login: 'bob@lab',
+      proxyJump: 'gate.ucsf.edu',
+    });
+    expect(setupRouteOf({ kind: 'connection', connection_id: 'conn-2' }, saved)).toBeNull();
+  });
+
+  it('goes through a jump host only when one is named', () => {
+    expect(routeJumps({ login: 'lab', proxyJump: 'gate' })).toBe(true);
+    for (const proxyJump of [null, '', '  ', 'none', 'None']) {
+      expect(routeJumps({ login: 'lab', proxyJump })).toBe(false);
+    }
   });
 });

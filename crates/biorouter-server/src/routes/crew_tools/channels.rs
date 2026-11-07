@@ -277,12 +277,12 @@ pub(super) fn teams_create(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({
+        Ok(place.answer(json!({
             "created": true,
             "team_id": result["id"],
             "name": result["name"],
             "general_channel_id": result["general_channel_id"],
-        }))
+        })))
     })
 }
 
@@ -314,11 +314,11 @@ pub(super) fn teams_rename(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({
+        Ok(place.answer(json!({
             "renamed": true,
             "team_id": team.id,
             "name": result["display_name"].as_str().or_else(|| result["name"].as_str()).unwrap_or(&name),
-        }))
+        })))
     })
 }
 
@@ -349,7 +349,7 @@ pub(super) fn teams_join(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({"joined": true, "team_id": id}))
+        Ok(place.answer(json!({"joined": true, "team_id": id})))
     })
 }
 
@@ -378,7 +378,8 @@ pub(super) fn teams_delete(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             params["expected_name"] = json!(name);
         }
         let result = send(ctx, &place.connection, "team.delete", params, 0).await?;
-        Ok(json!({"deleted": true, "team_id": team.id, "channels": result["channels"]}))
+        Ok(place
+            .answer(json!({"deleted": true, "team_id": team.id, "channels": result["channels"]})))
     })
 }
 
@@ -438,13 +439,13 @@ pub(super) fn channels_create(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({
+        Ok(place.answer(json!({
             "created": true,
             "channel_id": result["id"],
             "team_id": team.id,
             "name": result["name"],
             "classification": result["classification"],
-        }))
+        })))
     })
 }
 
@@ -477,7 +478,10 @@ pub(super) fn channels_rename(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({"renamed": true, "channel_id": channel.id, "name": result["name"]}))
+        Ok(
+            place
+                .answer(json!({"renamed": true, "channel_id": channel.id, "name": result["name"]})),
+        )
     })
 }
 
@@ -507,7 +511,7 @@ pub(super) fn channels_archive(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({"archived": true, "channel_id": channel.id}))
+        Ok(place.answer(json!({"archived": true, "channel_id": channel.id})))
     })
 }
 
@@ -545,7 +549,7 @@ pub(super) fn channels_join(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({"joined": true, "channel_id": id}))
+        Ok(place.answer(json!({"joined": true, "channel_id": id})))
     })
 }
 
@@ -597,7 +601,7 @@ pub(super) fn channels_delete(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             params["expected_name"] = json!(name);
         }
         send(ctx, &place.connection, "channel.delete", params, 0).await?;
-        Ok(json!({"deleted": true, "channel_id": channel.id}))
+        Ok(place.answer(json!({"deleted": true, "channel_id": channel.id})))
     })
 }
 
@@ -618,8 +622,8 @@ pub(super) fn channels_read(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             )
             .await?;
         let Some(cursor) = newest["cursor"].as_str().map(str::to_owned) else {
-            return Ok(json!({"read": false, "channel_id": channel.id,
-                "note": "It has no messages to mark read."}));
+            return Ok(place.answer(json!({"read": false, "channel_id": channel.id,
+                "note": "It has no messages to mark read."})));
         };
         ctx.approve(
             place
@@ -635,7 +639,7 @@ pub(super) fn channels_read(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({"read": true, "channel_id": channel.id}))
+        Ok(place.answer(json!({"read": true, "channel_id": channel.id})))
     })
 }
 
@@ -686,12 +690,12 @@ pub(super) fn members_add(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 0,
             )
             .await?;
-            return Ok(json!({
+            return Ok(place.answer(json!({
                 "added": true,
                 "principal_id": person.id,
                 "team_id": team.id,
                 "added_channels": result["added_channels"],
-            }));
+            })));
         }
         let mut added = Vec::new();
         for (step, channel) in channels.iter().enumerate() {
@@ -726,7 +730,10 @@ pub(super) fn members_add(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 Err(error) => return Err(error),
             }
         }
-        Ok(json!({"added": true, "principal_id": person.id, "added_channels": added}))
+        Ok(
+            place
+                .answer(json!({"added": true, "principal_id": person.id, "added_channels": added})),
+        )
     })
 }
 
@@ -838,13 +845,17 @@ pub(super) fn invites_send(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             params["expected_username"] = json!(username);
         }
         let result = send(ctx, &place.connection, "invitation.create", params, 0).await?;
-        Ok(json!({
+        let mut answer = json!({
             "invited": true,
             "invitation_id": result["id"],
             "kind": kind,
             "target_id": target.id,
             "principal_id": person.id,
-        }))
+        });
+        if kind == "channel" {
+            answer["channel_id"] = json!(target.id);
+        }
+        Ok(place.answer(answer))
     })
 }
 
@@ -959,7 +970,15 @@ pub(super) fn invites_accept(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({"accepted": true, "invitation_id": id, "kind": chosen["kind"]}))
+        let mut answer = json!({"accepted": true, "invitation_id": id, "kind": chosen["kind"]});
+        // The channel it lets the person into, from their own invitation: the chat's row opens
+        // Crew there (WI-16).
+        if let (Some("channel"), Some(channel)) =
+            (chosen["kind"].as_str(), chosen["target_id"].as_str())
+        {
+            answer["channel_id"] = json!(channel);
+        }
+        Ok(place.answer(answer))
     })
 }
 
@@ -990,7 +1009,9 @@ pub(super) fn ownership_offer(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             params["expected_username"] = json!(username);
         }
         send(ctx, &place.connection, "channel.transfer", params, 0).await?;
-        Ok(json!({"offered": true, "channel_id": channel.id, "successor_id": successor.id}))
+        Ok(place.answer(
+            json!({"offered": true, "channel_id": channel.id, "successor_id": successor.id}),
+        ))
     })
 }
 
@@ -1014,7 +1035,7 @@ pub(super) fn ownership_accept(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             0,
         )
         .await?;
-        Ok(json!({"owner": true, "channel_id": channel.id}))
+        Ok(place.answer(json!({"owner": true, "channel_id": channel.id})))
     })
 }
 
@@ -1051,6 +1072,7 @@ pub(super) fn remove_member(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             params["expected_username"] = json!(username);
         }
         send(ctx, &place.connection, "membership.revoke", params, 0).await?;
-        Ok(json!({"removed": true, "channel_id": channel.id, "principal_id": person.id}))
+        Ok(place
+            .answer(json!({"removed": true, "channel_id": channel.id, "principal_id": person.id})))
     })
 }

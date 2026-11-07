@@ -31,9 +31,11 @@ import {
   stopSetup,
   type PlainSetupStage,
   type SetupArtifact,
+  setupRouteOf,
   type SetupInput,
   type SetupIntent,
   type SetupRun,
+  type SetupTarget,
 } from './setup';
 
 /**
@@ -81,6 +83,8 @@ export interface SetupJob {
   askedToSignIn: boolean;
   /** Starting, or the daemon's to finish: nothing may start another. */
   busy: boolean;
+  /** What the last job was started on, for a host key it stopped on (`setupRouteOf`). */
+  target: SetupTarget | null;
   start(input: SetupInput): Promise<SetupStartResult>;
   /**
    * Start the last job again. `replaceExisting` answers `crew_install_incompatible`, and
@@ -138,6 +142,7 @@ export function useSetupJob({
   const [problem, setProblem] = useState<SetupProblem | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   const [askedToSignIn, setAskedToSignIn] = useState(false);
+  const [target, setTarget] = useState<SetupTarget | null>(null);
   /** Each answer that comes back schedules the next read. */
   const [reads, setReads] = useState(0);
   const inFlight = useRef(false);
@@ -188,6 +193,7 @@ export function useSetupJob({
       if (inFlight.current) return 'busy';
       inFlight.current = true;
       lastInput.current = input;
+      setTarget(input.target);
       signInClosedFor.current = null;
       setProblem(null);
       setRun(null);
@@ -291,6 +297,7 @@ export function useSetupJob({
     signingIn,
     askedToSignIn,
     busy: phase === 'starting' || phase === 'running',
+    target,
     start,
     retry,
     stop,
@@ -347,11 +354,17 @@ export function SetupProgress({
   testId,
   showWorkspaces = true,
   problemAction,
+  connections = [],
 }: {
   job: SetupJob;
   intent: SetupIntent;
   server: string;
   testId?: string;
+  /**
+   * The saved connections, so a job started on one reads and trusts a host key with its login
+   * and never behind its jump host (`setupRouteOf`).
+   */
+  connections?: readonly { id: string; ssh_target: string; proxy_jump?: string | null }[];
   /**
    * List the workspaces the job found on the server (AO-8), under its steps, or say why they could
    * not be listed. Off where the caller does both itself, with its own actions (Open a workspace
@@ -485,7 +498,12 @@ export function SetupProgress({
       {/* The server's host key could not be verified: how to verify it, as Join's trust pane
           says (Crew never accepts a key). */}
       {job.problem?.code && HOST_KEY_CODES.includes(job.problem.code) ? (
-        <SetupHostKeyHelp code={job.problem.code} detail={job.problem.output} server={server} />
+        <SetupHostKeyHelp
+          code={job.problem.code}
+          detail={job.problem.output}
+          server={server}
+          route={job.target ? setupRouteOf(job.target, connections) : null}
+        />
       ) : null}
       {showWorkspaces && job.run?.workspaces ? (
         <SetupWorkspaceList workspaces={job.run.workspaces} label={setupCopy.foundLabel(server)} />

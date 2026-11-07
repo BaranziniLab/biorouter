@@ -53,16 +53,16 @@ pub(crate) fn question(login: &str) -> String {
 const ANSWER_AGAIN: &str = "That opened nothing and went nowhere. Press Enter with nothing typed to open the sign-in, or type n to skip.";
 
 /// How many answers that say neither are taken before the card is skipped.
-const ASKS: usize = 3;
+pub(crate) const ASKS: usize = 3;
 
 /// The most an answer to [`question`] may be, in bytes. Large, so a whole message typed before
 /// the card arrived is read as one line that answers neither way, rather than cut short with
 /// its end left to answer the next question.
-const ANSWER_BYTES: usize = 4096;
+pub(crate) const ANSWER_BYTES: usize = 4096;
 
 /// What a line typed at [`question`] chooses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Choice {
+pub(crate) enum Choice {
     /// Enter with nothing typed.
     Open,
     /// `n` or `no`, Esc, Ctrl-C, or a terminal that could not be read.
@@ -71,7 +71,7 @@ enum Choice {
     Again,
 }
 
-fn choice(typed: Option<&str>) -> Choice {
+pub(crate) fn choice(typed: Option<&str>) -> Choice {
     match typed.map(str::trim) {
         Some("") => Choice::Open,
         Some(text) if text.eq_ignore_ascii_case("n") || text.eq_ignore_ascii_case("no") => {

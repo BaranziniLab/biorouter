@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use biorouter::conversation::message::{CrewStepRequest, CrewVaultAction};
-use biorouter::crew::CredentialStatus;
+use biorouter::crew::{CredentialStatus, VaultState};
 use biorouter::pending_user_action::user_proof_available;
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
@@ -143,7 +143,12 @@ impl Status {
 /// Crew's vault as the actions here read and lock it: the daemon's own in a chat
 /// ([`Manager`]), a stand-in in this file's tests.
 trait Store: Sync {
+    /// The vault's state with where it keeps its keys and whether that store works, which asks
+    /// the OS keyring when it is the store (on Linux, a Secret Service call). Read once per step.
     fn status(&self) -> BoxFuture<'_, Result<Status>>;
+    /// Whether the vault is set up and unlocked, read from the vault alone with no keyring
+    /// probe: what a parked card reads every [`POLL`].
+    fn open(&self) -> BoxFuture<'_, bool>;
     fn lock(&self) -> BoxFuture<'_, Result<()>>;
     /// Whether this computer keeps a saved Crew connection, whose key a new vault would shadow.
     fn holds_connections(&self) -> BoxFuture<'_, bool>;
@@ -159,6 +164,15 @@ impl Store for Manager {
                 .credential_status()
                 .await?
                 .into())
+        })
+    }
+
+    fn open(&self) -> BoxFuture<'_, bool> {
+        Box::pin(async {
+            match biorouter::crew::manager() {
+                Ok(crew) => crew.vault_state().await.is_ok_and(VaultState::open),
+                Err(_) => false,
+            }
         })
     }
 
@@ -194,9 +208,9 @@ enum Asked {
 }
 
 /// Park the vault card for `action` in this chat and wait: until the vault is open, read every
-/// [`POLL`], when the card is taken down, or until the person dismisses it, the chat stops or
-/// [`APPROVAL_TTL`] runs out. Whatever ended it, the vault is read once more, so a passphrase
-/// typed just as the card ended still counts.
+/// [`POLL`] without a keyring probe ([`Store::open`]), when the card is taken down, or until the
+/// person dismisses it, the chat stops or [`APPROVAL_TTL`] runs out. Whatever ended it, the
+/// vault's status is read once more, so a passphrase typed just as the card ended still counts.
 async fn ask(ctx: &Ctx, store: &dyn Store, action: CrewVaultAction) -> Asked {
     let Some(step) = ctx.park_step(CrewStepRequest::Vault { action }, APPROVAL_TTL) else {
         return Asked::NoCard;
@@ -208,7 +222,7 @@ async fn ask(ctx: &Ctx, store: &dyn Store, action: CrewVaultAction) -> Asked {
         tokio::select! {
             how = &mut end => break how,
             () = tokio::time::sleep(POLL) => {
-                if store.status().await.is_ok_and(Status::open) {
+                if store.open().await {
                     withdraw.cancel();
                     break (&mut end).await;
                 }
@@ -502,12 +516,15 @@ mod tests {
         ..KEYRING
     };
 
-    /// A vault whose state a test sets, counting locks and the runs of [`needs_the_vault`].
+    /// A vault whose state a test sets, counting locks, the runs of [`needs_the_vault`], the
+    /// status reads that would probe the keyring, and the reads that would not.
     struct Fake {
         status: Mutex<Status>,
         connections: bool,
         locks: AtomicUsize,
         runs: AtomicUsize,
+        probes: AtomicUsize,
+        polls: AtomicUsize,
     }
 
     impl Fake {
@@ -521,6 +538,8 @@ mod tests {
                 connections,
                 locks: AtomicUsize::new(0),
                 runs: AtomicUsize::new(0),
+                probes: AtomicUsize::new(0),
+                polls: AtomicUsize::new(0),
             })
         }
 
@@ -535,7 +554,17 @@ mod tests {
 
     impl Store for Fake {
         fn status(&self) -> BoxFuture<'_, Result<Status>> {
-            Box::pin(async { Ok(self.now()) })
+            Box::pin(async {
+                self.probes.fetch_add(1, Ordering::SeqCst);
+                Ok(self.now())
+            })
+        }
+
+        fn open(&self) -> BoxFuture<'_, bool> {
+            Box::pin(async {
+                self.polls.fetch_add(1, Ordering::SeqCst);
+                self.now().open()
+            })
         }
 
         fn lock(&self) -> BoxFuture<'_, Result<()>> {
@@ -637,6 +666,29 @@ mod tests {
         assert!(
             !ctx.call.cancel.is_cancelled(),
             "taking the card down stopped the chat"
+        );
+    }
+
+    /// While the card is up the vault is read every [`POLL`] without the keyring probe; the
+    /// status that probes is read once before the card and once after it, however long the
+    /// person takes. (Polling the status asked Linux's Secret Service twice a second for up to
+    /// ten minutes.)
+    #[tokio::test]
+    async fn a_parked_card_polls_the_vault_without_probing_the_keyring() {
+        let ctx = ctx(PersonTool::Change, "credentials_unlock").await;
+        let fake = Fake::new(LOCKED);
+        let person = async {
+            card(&ctx).await;
+            tokio::time::sleep(POLL * 4).await;
+            fake.set(OPEN);
+        };
+        let (answer, ()) = tokio::join!(open_vault(&ctx, &*fake, CrewVaultAction::Unlock), person);
+        assert_eq!(answer.unwrap()["note"], "Crew's vault is unlocked.");
+        assert!(fake.polls.load(Ordering::SeqCst) >= 3, "the card polled");
+        assert_eq!(
+            fake.probes.load(Ordering::SeqCst),
+            2,
+            "the keyring was probed while the card waited"
         );
     }
 

@@ -8,7 +8,11 @@ import { crewStepCopy } from './CrewStepCard.copy';
 import { crewSignInStepCopy } from './CrewSignInStep.copy';
 import { crewVaultStepCopy } from './CrewVaultStep.copy';
 import { crewHostKeyStepCopy } from './CrewHostKeyStep.copy';
-import { noteStreamedCrewStep, resetStreamedCrewStepsForTests } from './streamedCrewSteps';
+import {
+  noteCardEnded,
+  noteStreamedCrewStep,
+  resetStreamedCrewStepsForTests,
+} from './streamedCrewSteps';
 
 interface DialogProps {
   open: boolean;
@@ -268,12 +272,110 @@ describe('a Crew step card nothing waits on', () => {
   });
 });
 
+/** The card ID a fixture message carries. */
+function cardIdOf(message: Message): string {
+  return (message.content[0] as { data: { id: string } }).data.id;
+}
+
+const changedKey = {
+  kind: 'hostKey',
+  host: 'hpc.example.edu',
+  port: 22,
+  login: 'you',
+  offered: 'SHA256:' + 'B'.repeat(43),
+  known: 'SHA256:' + 'C'.repeat(43),
+  changed: true,
+};
+
+describe('a Crew step card the daemon ends (WI-17)', () => {
+  it('draws how it ended the moment the daemon says so, while the turn still runs', () => {
+    withSignInWindow();
+    for (const [ending, words] of Object.entries(crewStepCopy.ended)) {
+      const message = streamed(signIn);
+      const view = render(standalone(message, true));
+      expect(screen.getByRole('button', { name: /^Sign in to/ })).toBeInTheDocument();
+      act(() => noteCardEnded(SESSION, cardIdOf(message), ending));
+      const line = screen.getByTestId('crew-step-ended');
+      expect(line).toHaveTextContent(words);
+      expect(line).toHaveAttribute('data-ending', ending);
+      expect(screen.queryByTestId('crew-step-card')).toBeNull();
+      expect(screen.queryAllByRole('button')).toEqual([]);
+      expect(view.container.textContent).not.toContain('hpc.example.edu');
+      expectNoInput(view.container);
+      view.unmount();
+    }
+    expect(mocks.dismissCrewStep).not.toHaveBeenCalled();
+  });
+
+  it('draws a card ended when its end came first, and never another chat’s end', () => {
+    withSignInWindow();
+    const early = card(signIn);
+    noteCardEnded(SESSION, cardIdOf(early), 'dismissed');
+    noteStreamedCrewStep(SESSION, early);
+    const view = render(standalone(early, true));
+    expect(screen.getByTestId('crew-step-ended')).toHaveTextContent(crewStepCopy.ended.dismissed);
+    view.unmount();
+
+    const mine = streamed(signIn);
+    noteCardEnded('another-chat', cardIdOf(mine), 'withdrawn');
+    render(standalone(mine, true));
+    expect(screen.getByRole('button', { name: /^Sign in to/ })).toBeInTheDocument();
+  });
+
+  it('keeps an open Sign in window through an end, then says how it ended', () => {
+    withSignInWindow();
+    const message = streamed(signIn);
+    render(standalone(message, true));
+    fireEvent.click(screen.getByRole('button', { name: /^Sign in to/ }));
+    act(() => noteCardEnded(SESSION, cardIdOf(message), 'withdrawn'));
+    expect(screen.getByTestId('sign-in-window')).toBeInTheDocument();
+    act(() => mocks.dialogs[mocks.dialogs.length - 1].onClose());
+    expect(screen.getByTestId('crew-step-ended')).toHaveTextContent(crewStepCopy.ended.withdrawn);
+  });
+
+  it('names nothing for a stored card, even one this window saw end elsewhere', () => {
+    const stored = card(signIn);
+    noteCardEnded(SESSION, cardIdOf(stored), 'timed_out');
+    const view = render(inMessage(stored, true));
+    expectOnlyTheFixedLine(view.container);
+    expect(screen.getByTestId('crew-step-ended')).not.toHaveAttribute('data-ending');
+  });
+});
+
+describe('a changed host key, kept as a notice (WI-17)', () => {
+  it('draws its details when streamed, whatever ends or the turn does', () => {
+    const message = streamed(changedKey);
+    const view = render(standalone(message, false));
+    expect(
+      screen.getByText(crewHostKeyStepCopy.changedTitle('hpc.example.edu'))
+    ).toBeInTheDocument();
+    act(() => noteCardEnded(SESSION, cardIdOf(message), 'withdrawn'));
+    expect(
+      screen.getByText(crewHostKeyStepCopy.changedTitle('hpc.example.edu'))
+    ).toBeInTheDocument();
+    expectNoInput(view.container);
+  });
+
+  it('draws one fixed notice when read back, naming no host and no fingerprint', () => {
+    const view = render(inMessage(card(changedKey), false));
+    const line = screen.getByTestId('crew-step-ended');
+    expect(line).toHaveTextContent(crewStepCopy.changedKeyNotice);
+    expect(line).toHaveAttribute('data-crew-step', 'hostKey');
+    expect(screen.queryAllByRole('button')).toEqual([]);
+    expect(view.container.textContent).not.toContain('hpc.example.edu');
+    expect(view.container.textContent).not.toContain('SHA256:');
+    expectNoInput(view.container);
+  });
+});
+
 describe('the Crew step copy', () => {
   it('says computer, never device, and uses no dashes', () => {
     const words = [
       crewStepCopy.unknown,
       crewStepCopy.actsAsYou,
       crewStepCopy.notWaiting,
+      crewStepCopy.changedKeyNotice,
+      ...Object.values(crewStepCopy.ended),
       crewSignInStepCopy.title('x'),
       crewSignInStepCopy.fallback,
       crewSignInStepCopy.windowFallback,

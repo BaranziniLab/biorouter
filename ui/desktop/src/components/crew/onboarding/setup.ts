@@ -47,6 +47,37 @@ export type SetupTarget =
     };
 
 /**
+ * The login a job signs in by and the jump hosts it goes through, for a host key it stopped on:
+ * the daemon reads and trusts a key with the login's own SSH settings, and never behind a jump
+ * host, where a key read from this computer could be another machine's.
+ */
+export interface SetupRoute {
+  login: string;
+  proxyJump: string | null;
+}
+
+/**
+ * The route of a job's `target`: its own login and jump hosts, or for a saved connection the
+ * connection's, found in `connections`. `null` when the connection is not there to read.
+ */
+export function setupRouteOf(
+  target: SetupTarget,
+  connections: readonly { id: string; ssh_target: string; proxy_jump?: string | null }[]
+): SetupRoute | null {
+  if (target.kind !== 'connection') {
+    return { login: target.ssh_target, proxyJump: target.proxy_jump ?? null };
+  }
+  const saved = connections.find((connection) => connection.id === target.connection_id);
+  return saved ? { login: saved.ssh_target, proxyJump: saved.proxy_jump ?? null } : null;
+}
+
+/** Whether `route` goes through a jump host. */
+export function routeJumps(route: SetupRoute): boolean {
+  const jump = route.proxyJump?.trim() ?? '';
+  return jump !== '' && jump.toLowerCase() !== 'none';
+}
+
+/**
  * What a connection's agent may do on its server (OW-6): no work folder, the confined folder, or
  * commands as the person's own account. The same three levels the Join dialog and Connection
  * settings offer.

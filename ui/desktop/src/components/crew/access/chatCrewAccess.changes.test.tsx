@@ -74,6 +74,25 @@ describe('useChatCrewAccess and the change feed', () => {
     await waitFor(() => expect(result.current.state).toBe('offline'));
   });
 
+  it('follows the feed before this computer has a connection, reading only the list', async () => {
+    daemon = { connections: [], grants: [] };
+    const { result } = renderHook(() => useChatCrewAccess('chat-1'));
+    await waitFor(() => expect(result.current.state).toBe('none'));
+    const listReads = () =>
+      mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections').length;
+    const before = listReads();
+
+    // A change while there is still no connection reads the list again, and nothing else.
+    dispatchCrewChanged(changed('setup_running', null, 1));
+    await waitFor(() => expect(listReads()).toBe(before + 1));
+    expect(grantReads()).toBe(0);
+
+    // This chat's own setup saves the first connection, and the person grants it access.
+    daemon = { connections: [connection], grants: [grantRow({ session_id: 'chat-1' })] };
+    dispatchCrewChanged(changed('setup_finished', null, 2));
+    await waitFor(() => expect(result.current.state).toBe('active'));
+  });
+
   it('reads nothing for a change that names only another chat', async () => {
     const { result } = renderHook(() => useChatCrewAccess('chat-1'));
     await waitFor(() => expect(result.current.state).toBe('active'));

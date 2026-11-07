@@ -20,5 +20,5 @@ export const signInCopy = {
   sameCredentials: 'Use the same username and password you use for this server.',
   jumpHost: 'If your IT team gave you a jump host, add it in Connection settings.',
   knownHosts: 'Crew checks servers against this file:',
-  knownHostsLabel: 'known-hosts path',
+  knownHostsLabel: 'known hosts path',
 } as const;

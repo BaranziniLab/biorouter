@@ -1,7 +1,7 @@
 # Joining a workspace
 
 > **What this is.** How to join your lab's Crew workspace, open it on another computer, add a computer again, and what to do when a step stops you.
-> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
 > **Audience:** Lab members who received a Crew invitation, or who use a workspace from more than one computer. You need no SSH experience.
 
 To join, verify the lab server once, paste the invitation from your host (the person who created the workspace), choose what your agent may do on the server, and choose Join. If Crew's server program is not in your server account yet, Biorouter installs it there when you choose Join. On a server with a current Crew, the workspace opens at once. On a server with an older Crew, Crew shows a code: send it to your host, and the workspace opens when your host, or in an open workspace any member, enters it.
@@ -34,7 +34,7 @@ A server whose Crew is older still joins by code, and the steps for it are marke
 
 ### Verify the server on this computer
 
-Crew connects only to a server whose key is in your known hosts file, `~/.ssh/known_hosts`, and never adds one for you. Do this once per server on each computer.
+Crew connects only to a server whose key is in your known hosts file, `~/.ssh/known_hosts`. It adds one only when you choose **Trust this key** for a key you checked, and never a changed one. Do this once per server on each computer, in Crew ([Trust the key in Crew](#trust-the-key-in-crew)) or in a terminal, as below.
 
 1. Get the server fingerprint. It starts with `SHA256:`. Your host may have sent it with the invitation. If not, ask IT. If IT gave you a jump host (a server you pass through first), ask IT for its fingerprint too. A server fingerprint is neither the workspace fingerprint nor your code.
 2. Open a terminal. On a Mac, press Command and Space, type Terminal, and press Return. Crew's "Can’t verify" screen also offers **How do I verify it?**, then **Open a terminal here**, and so does the card a chat shows for the same problem.
@@ -59,6 +59,17 @@ Crew connects only to a server whose key is in your known hosts file, `~/.ssh/kn
 Typing `yes` is the step Crew's help calls adding "the full key". Crew may then ask for your password again.
 
 If Crew's "Can’t verify" screen names your jump host rather than the server, the jump host is the one to verify: do step 3 for it.
+
+#### Trust the key in Crew
+
+When Crew cannot verify a server, its "Can’t verify {server} yet" screen shows "Fingerprint this computer read from the server". So do the setup steps of the Join, Host and **Open a workspace on a server** dialogs, and the card a chat shows. When no fingerprint came with the failure, Crew reads one from the server first, with "Reading the server’s fingerprint…".
+
+1. Get the server fingerprint from IT, as step 1 above says.
+2. Compare it with the one Crew shows, character by character. If a value differs, stop and tell IT.
+3. If it matches, choose **Trust this key**. Beside it Crew says "Only trust it if IT or the server’s admin gave you this fingerprint."
+4. Crew reads the key from the server again and adds it to your known hosts file only when its fingerprint is the one shown. It then says "Trusted. The key is in your known hosts file." The "Can’t verify" screen connects again by itself. In a dialog, choose **Try again**. A chat goes on by itself.
+
+Crew refuses to add a key, and says why, when this computer already knows a key for that server ("This computer already knows a host key for lab.example.edu, so Crew won't add another. If the server's key changed, don't connect until your IT team confirms it."), when the server now gives another key than the one shown ("The key lab.example.edu gives now doesn't match the fingerprint you were shown, so nothing was added. Check the fingerprint with your IT team again."), or when your SSH settings reach the server through a jump host or under another name ("Your SSH settings reach lab.example.edu through another computer or under another name, so Crew can't read its key from here. Add the key in a terminal of your own."). For a connection saved with a jump host, the "Can’t verify" screen reads no fingerprint, so verify the server in a terminal, as above. Whatever Crew shows, trust a key only when its fingerprint matches the one IT gave you. A changed key never gets **Trust this key**.
 
 ### Install Crew in your server account
 
@@ -89,6 +100,8 @@ The invitation is a message with a line that starts `brcrew1:`. It holds no secr
 On a server with a current Crew, Crew joins as your account, and the workspace opens ([When you are in](#when-you-are-in)). On an older Crew, the card with your code appears ([Send your code to your host](#send-your-code-to-your-host-older-crew)), and Crew finishes the join later without asking again. If a message appears instead, see [When joining does not work](#when-joining-does-not-work). To join from a terminal instead, see [Join a workspace](command-line.md#join-a-workspace). To join from a terminal on the server that runs the workspace, see [Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server).
 
 To join from a chat instead, paste the whole invitation into an ordinary Biorouter chat and ask it to join. Its card names the workspace, the host, the workspace key fingerprint and the privacy, as the summary above does. Choose **Allow once**, then **Sign in** on the next card if the server asks for a password or a code. What you type there goes only to the server, never to the chat ([Set up Crew from a chat](agents-and-chat-access.md#set-up-crew-from-a-chat)).
+
+The chat can take what **Advanced** and **Your agent on lab.example.edu** take here. Say it in the same request, such as "Join this workspace on port 2222 through gateway.ucsf.edu, with agent access full": a server login or a short name from your SSH settings, a port, a key file, a jump host or none, a work folder's full path on the server, and **Off**, **In a folder** or **As me on the server**. The card shows each choice, with the full-access warning for **As me on the server**, and Crew saves the connection with that route before it connects. For a workspace this computer already has, the chat refuses these choices and asks you to change the saved connection's settings instead.
 
 Crew joins by itself only when you started the join, with Join or **Open**. When this computer has a workspace saved that it has not joined yet, and you did not just start it, the card reads "You can join chen-lab" and "You sign in to lab.example.edu as bob, so this computer can join without a code." Choose **Join chen-lab**. The card then reads "Joining chen-lab…".
 
@@ -266,7 +279,7 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | Main area | What to do |
 |---|---|
 | "chen-lab is offline" with "Couldn’t reach lab.example.edu" | Check your network and VPN. Crew keeps trying. |
-| "Can’t verify lab.example.edu yet" | [Verify the server](#verify-the-server-on-this-computer), then choose **Try again**. Crew has no button to accept a server. |
+| "Can’t verify lab.example.edu yet" | Compare the fingerprint with the one from IT and choose **Trust this key** ([Trust the key in Crew](#trust-the-key-in-crew)), or [verify the server](#verify-the-server-on-this-computer) in a terminal, then choose **Try again**. Crew never trusts a key you have not checked. |
 | "lab.example.edu’s identity changed" | Do not connect. Send IT the text from **Copy details for IT**, then follow [A changed server identity](connections-and-troubleshooting.md#a-changed-server-identity). |
 | "This isn’t the workspace you joined" | Send your host the text from **Copy details**, and wait. |
 | "Crew isn’t set up for your account on lab.example.edu" | Choose **Set up Crew for my account**. See [Install Crew in your server account](#install-crew-in-your-server-account). |

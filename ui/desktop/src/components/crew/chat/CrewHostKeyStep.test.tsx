@@ -1,18 +1,23 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewStepRequest } from '../../../api';
+import { trustHostKeyCopy } from '../hostKeys/trustHostKey.copy';
 import { hostCopy, trustCopy } from '../onboarding/copy';
 import CrewHostKeyStep from './CrewHostKeyStep';
 import { crewHostKeyStepCopy } from './CrewHostKeyStep.copy';
 
 const mocks = vi.hoisted(() => ({
   dismissCrewStep: vi.fn(),
+  crewHostKeysTrust: vi.fn(),
+  crewHostKeysRead: vi.fn(),
   dock: [] as Record<string, unknown>[],
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   dismissCrewStep: mocks.dismissCrewStep,
+  crewHostKeysTrust: mocks.crewHostKeysTrust,
+  crewHostKeysRead: mocks.crewHostKeysRead,
 }));
 vi.mock('../../InAppTerminalDock', () => ({
   default: (props: Record<string, unknown>) => {
@@ -42,11 +47,17 @@ function renderStep(step: HostKey) {
   return render(<CrewHostKeyStep sessionId="chat-1" id="card-1" step={step} />);
 }
 
-/** Nothing on a host-key card may accept, trust or remove a key, or take a value. */
-function expectNoAcceptOrInput(container: HTMLElement) {
+/**
+ * Nothing on a host-key card may accept or remove a key, or take a value. The one control that
+ * trusts a key is Trust this key, and only where `trust` says the card may offer it.
+ */
+function expectNoAcceptOrInput(container: HTMLElement, trust = false) {
   for (const button of screen.queryAllByRole('button')) {
-    expect(button.textContent ?? '').not.toMatch(/accept|trust|yes|continue anyway|remove|add/i);
+    const text = button.textContent ?? '';
+    if (trust && text === trustHostKeyCopy.trust) continue;
+    expect(text).not.toMatch(/accept|trust|yes|continue anyway|remove|add/i);
   }
+  if (!trust) expect(screen.queryByText(trustHostKeyCopy.warning)).toBeNull();
   expect(container.textContent).not.toMatch(/ssh-keygen|ssh-keyscan|StrictHostKeyChecking/);
   expect(container.querySelector('input, textarea, select, [contenteditable]')).toBeNull();
 }
@@ -54,6 +65,16 @@ function expectNoAcceptOrInput(container: HTMLElement) {
 beforeEach(() => {
   mocks.dock.length = 0;
   mocks.dismissCrewStep.mockReset().mockResolvedValue({ data: { status: 'dismissed' } });
+  mocks.crewHostKeysRead.mockReset();
+  mocks.crewHostKeysTrust.mockReset().mockResolvedValue({
+    data: {
+      host: 'hpc.example.edu',
+      port: 22,
+      fingerprint: OFFERED,
+      already_trusted: false,
+      known_hosts_file: '/home/you/.ssh/known_hosts',
+    },
+  });
   Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
 });
 
@@ -67,12 +88,43 @@ describe('an unknown host key in a chat', () => {
     expect(screen.getByText(trustCopy.unknownBody)).toBeInTheDocument();
     expect(card.textContent).toContain(OFFERED);
     // This computer read the fingerprint (from the refused connection or the daemon's own scan);
-    // the card never says the server offered it.
+    // the card never says the server offered it, and labels it as the Crew view does.
     expect(screen.getByText(crewHostKeyStepCopy.read)).toBeInTheDocument();
-    expect(card.textContent).not.toContain(trustCopy.offered);
+    expect(crewHostKeyStepCopy.read).toBe('Fingerprint this computer read from the server');
+    expect(card.textContent).not.toMatch(/the server offered/i);
     expect(screen.getByText(crewHostKeyStepCopy.goesOn)).toBeInTheDocument();
+    expect(screen.getByText(trustHostKeyCopy.warning)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: trustHostKeyCopy.trust })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: hostCopy.openTerminal })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: crewHostKeyStepCopy.notNow })).toBeInTheDocument();
+    expectNoAcceptOrInput(view.container, true);
+  });
+
+  it('trusts the key with the card’s own values and the person’s proof, and dismisses nothing', async () => {
+    renderStep(hostKey({ port: 2222 }));
+    fireEvent.click(screen.getByRole('button', { name: trustHostKeyCopy.trust }));
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(trustHostKeyCopy.trusted)
+    );
+    expect(mocks.crewHostKeysTrust).toHaveBeenCalledWith({
+      headers: expect.any(Object),
+      body: {
+        host: 'hpc.example.edu',
+        port: 2222,
+        login: 'you@hpc.example.edu',
+        fingerprint: OFFERED,
+      },
+    });
+    // The daemon takes the card down once it sees the key, and the chat retries the step: the
+    // card never answers itself.
+    expect(mocks.dismissCrewStep).not.toHaveBeenCalled();
+    expect(screen.getByText(crewHostKeyStepCopy.goesOn)).toBeInTheDocument();
+  });
+
+  it('offers no Trust this key where the card shows no fingerprint', () => {
+    const view = renderStep(hostKey({ offered: null }));
+    expect(screen.queryByRole('button', { name: trustHostKeyCopy.trust })).toBeNull();
+    expect(mocks.crewHostKeysRead).not.toHaveBeenCalled();
     expectNoAcceptOrInput(view.container);
   });
 
@@ -154,6 +206,9 @@ describe('a changed host key in a chat', () => {
     expect(screen.getByText(trustCopy.changedBody)).toBeInTheDocument();
     const buttons = within(card).getAllByRole('button');
     expect(buttons.map((button) => button.textContent)).toEqual([trustCopy.copyForIt]);
+    // A changed key is never trusted: no Trust this key, and no warning that would sit by one.
+    expect(screen.queryByRole('button', { name: trustHostKeyCopy.trust })).toBeNull();
+    expect(screen.queryByText(trustHostKeyCopy.warning)).toBeNull();
     expect(card.textContent).toContain(OFFERED);
     expect(card.textContent).toContain(KNOWN);
     expect(screen.queryByText(crewHostKeyStepCopy.goesOn)).toBeNull();
@@ -179,9 +234,12 @@ describe('the host-key card copy', () => {
       crewHostKeyStepCopy.notNow,
       crewHostKeyStepCopy.dismissed,
       crewHostKeyStepCopy.ended,
+      trustCopy.changedBody,
     ]) {
       expect(text).not.toMatch(/\bdevices?\b/i);
       expect(text).not.toMatch(/[–—]/);
+      // One spelling with the CLI and the docs glossary.
+      expect(text).not.toMatch(/known-hosts/);
     }
   });
 });

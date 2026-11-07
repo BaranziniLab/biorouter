@@ -88,7 +88,10 @@ where
 /// `last_error_code`, and a host-start run's `error.code`. Each route's responses say which it
 /// answers and when. A client branches on these, never on a refusal's words, so the generated
 /// client names every one; `openapi_contract_tests` fails on a code a Crew source answers that
-/// is missing here, and on one listed here that nothing answers any more.
+/// is missing here, and on one listed here that nothing answers any more. A chat's Crew tools
+/// also give the model `crew_ssh_settings_refused`, with the check's own sentence, when Crew's
+/// SSH settings check refuses the route to a server (a jump host without
+/// `StrictHostKeyChecking yes`, say); no route answers it.
 #[derive(Clone, Copy, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[allow(
@@ -115,6 +118,7 @@ pub enum CrewErrorCode {
     CrewSshHostKeyChanged,
     CrewSshUnreachable,
     CrewSshFailed,
+    CrewSshSettingsRefused,
     CrewBridgeMissing,
     CrewBrokerNotRunning,
     CrewHandoffFailed,

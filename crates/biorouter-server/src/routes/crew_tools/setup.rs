@@ -10,7 +10,7 @@
 use anyhow::Result;
 use biorouter::config::Config;
 use biorouter::crew::authentication::{
-    InvitationAdvanced, InvitationOutcome, InvitationOverrides, JoinState,
+    InvitationAdvanced, InvitationOutcome, InvitationOverrides, InvitationPreview, JoinState,
 };
 use biorouter::crew::{
     ClusterMode, Connection, CrewManager, SaveConnection, SetupArtifact, SetupInstalled,
@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use std::future::Future;
 use std::time::Duration;
 
+use super::places::local_path;
 use super::signin::{self, connect_or_sign_in, SignIn, SignInGate};
 use super::{catalog, job_answer, job_target, remember_job_target, said, Card, Ctx, Progress};
 use crate::routes::crew::connection_view;
@@ -71,6 +72,77 @@ pub(super) fn connections_show(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     })
 }
 
+/// The choices a join from an invitation takes beyond the invitation's own route (the Join
+/// screen's Advanced settings). A join from a saved connection takes none of them.
+const JOIN_ROUTE: [&str; 6] = [
+    "ssh_target",
+    "port",
+    "identity_file",
+    "proxy_jump",
+    "folder",
+    "agent_access",
+];
+
+/// The SSH port the call names: 1 to 65535.
+fn typed_port(ctx: &Ctx) -> Result<Option<u16>> {
+    ctx.number("port")
+        .map(|port| {
+            u16::try_from(port)
+                .ok()
+                .filter(|port| *port > 0)
+                .ok_or_else(|| said(None, "Choose a port between 1 and 65535."))
+        })
+        .transpose()
+}
+
+/// The Join screen's Advanced route for a join from an invitation, as the call names it: another
+/// SSH login, port, key file or jump host (empty, or `none`, for no jump host even where the
+/// invitation suggests one), this computer's name for the connection, and the agents' work
+/// folder on the server. What can be checked before the invitation is read is checked here; the
+/// daemon checks the rest as it plans the save, and `ssh_policy` checks every hop on connect.
+fn join_advanced(ctx: &Ctx) -> Result<InvitationAdvanced> {
+    let ssh_target = ctx.text("ssh_target");
+    if ssh_target
+        .as_deref()
+        .is_some_and(|login| login.contains(char::is_whitespace))
+    {
+        return Err(said(
+            None,
+            "Name the SSH login as one word, like hpc or bob@hpc.example.edu.",
+        ));
+    }
+    let identity_file = ctx
+        .text("identity_file")
+        .map(|file| {
+            local_path(&file)
+                .map(|path| path.display().to_string())
+                .map_err(|_| said(None, "Give the SSH key file's full path on this computer."))
+        })
+        .transpose()?;
+    let proxy_jump = ctx.param_given("proxy_jump").then(|| {
+        let jump = ctx.raw_text("proxy_jump").unwrap_or_default();
+        let jump = jump.trim();
+        if jump.eq_ignore_ascii_case("none") {
+            String::new()
+        } else {
+            jump.to_owned()
+        }
+    });
+    let remote_root = ctx
+        .text("folder")
+        .map(|folder| server_folder(folder, "the server"))
+        .transpose()?;
+    Ok(InvitationAdvanced {
+        ssh_target,
+        port: typed_port(ctx)?,
+        identity_file,
+        proxy_jump,
+        name: ctx.text("local_name"),
+        remote_root,
+        ..InvitationAdvanced::default()
+    })
+}
+
 fn overrides(ctx: &Ctx) -> Result<InvitationOverrides> {
     let mode = ctx
         .text("mode")
@@ -82,10 +154,7 @@ fn overrides(ctx: &Ctx) -> Result<InvitationOverrides> {
             .map(|name| name.trim_start_matches('@').to_owned()),
         mode,
         institution_id: ctx.text("institution_id"),
-        advanced: InvitationAdvanced {
-            name: ctx.text("local_name"),
-            ..InvitationAdvanced::default()
-        },
+        advanced: join_advanced(ctx)?,
         replace: None,
     })
 }
@@ -180,8 +249,30 @@ async fn start_job(ctx: &Ctx, request: Value) -> Result<Value> {
     })?;
     let target = serde_json::to_value(&request.target)?;
     let started = ctx.crew()?.start_setup(request).await?;
-    remember_job_target(&started.job_id, target);
-    Ok(ctx.wait_for_job(&started.job_id).await)
+    remember_job_target(&started.job_id, target.clone());
+    let mut answer = ctx.wait_for_job(&started.job_id).await;
+    name_the_connection(&mut answer, &target);
+    Ok(answer)
+}
+
+/// The saved connection a setup job is for, or the one it saved, at the top of its answer, so a
+/// chat row can name it: the job's outcome's, else the job's target's. Nothing when it has none.
+fn name_the_connection(answer: &mut Value, target: &Value) {
+    let id = answer["outcome"]["connection_id"]
+        .as_str()
+        .or_else(|| target["connection_id"].as_str())
+        .map(str::to_owned);
+    if let (Some(id), Some(answer)) = (id, answer.as_object_mut()) {
+        answer.entry("connection_id").or_insert(json!(id));
+    }
+}
+
+/// `answer` with `id`, the saved connection it is about, at its top.
+fn with_connection_id(mut answer: Value, id: &str) -> Value {
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("connection_id".into(), json!(id));
+    }
+    answer
 }
 
 /// `biorouter crew doctor`: check a server and the Crew program in the account there, and
@@ -646,7 +737,16 @@ pub(super) fn setup_cancel(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         )
         .await?;
         if biorouter::crew::cancel_setup(&job) {
-            Ok(json!({"cancelled": true, "job_id": job}))
+            let target = job_target(&job).unwrap_or_default();
+            let connection = status
+                .outcome
+                .and_then(|outcome| outcome.connection_id)
+                .or_else(|| target["connection_id"].as_str().map(str::to_owned));
+            let answer = json!({"cancelled": true, "job_id": job});
+            Ok(match connection {
+                Some(id) => with_connection_id(answer, &id),
+                None => answer,
+            })
         } else {
             Err(said(None, NO_JOB))
         }
@@ -877,8 +977,13 @@ async fn connect_and_join(crew: &CrewManager, id: &str, gate: &SignInGate) -> Re
 }
 
 /// Run a member's setup of `id` with `access`, and wait for it to settle. A sign-in it waits
-/// for gets the person's Sign in card ([`SignInGate::setup_job`]).
-async fn member_setup(crew: &CrewManager, id: &str, access: &str, gate: &SignInGate) -> Result<()> {
+/// for gets the person's Sign in card ([`SignInGate::setup_job`]). Answers the job's ID.
+async fn member_setup(
+    crew: &CrewManager,
+    id: &str,
+    access: &str,
+    gate: &SignInGate,
+) -> Result<String> {
     let request: SetupRequest = serde_json::from_value(json!({
         "target": {"kind": "connection", "connection_id": id},
         "intent": "member",
@@ -893,7 +998,7 @@ async fn member_setup(crew: &CrewManager, id: &str, access: &str, gate: &SignInG
             return Err(said(None, NO_JOB));
         };
         match status.state {
-            SetupState::Finished => return Ok(()),
+            SetupState::Finished => return Ok(started.job_id),
             SetupState::Failed | SetupState::Cancelled => {
                 let (code, message) = status
                     .error
@@ -1085,11 +1190,15 @@ pub(super) fn open(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 None => save_opened(&crew, &entry, &target, local_name).await?,
             };
             gate.progress().set("connection_id", id.clone());
-            if let Some(access) = access.filter(|access| access != "off") {
-                member_setup(&crew, &id, &access, &gate).await?;
-            }
+            let job = match access.filter(|access| access != "off") {
+                Some(access) => Some(member_setup(&crew, &id, &access, &gate).await?),
+                None => None,
+            };
             let mut answer = connect_and_join(&crew, &id, &gate).await?;
             answer["role"] = json!(role);
+            if let Some(job) = job {
+                answer["job_id"] = json!(job);
+            }
             Ok(answer)
         })
         .await
@@ -1128,11 +1237,156 @@ fn missing_words(preview: &biorouter::crew::authentication::InvitationPreview) -
         .collect()
 }
 
-/// `join` from an invitation the person pasted: previewed, so the card can name the server,
-/// the host, the fingerprint and the privacy; then saved (unless this computer already has
-/// it), connected and joined.
+/// What agents may do on the server through a connection joined from an invitation
+/// (`agent_access`), refusing a work folder named for no level that uses one.
+fn join_access(ctx: &Ctx) -> Result<Option<String>> {
+    let access = ctx.text("agent_access");
+    if ctx.text("folder").is_some() && !matches!(access.as_deref(), Some("folder" | "full")) {
+        return Err(said(
+            None,
+            "folder is for agent_access folder or full; add agent_access with it.",
+        ));
+    }
+    Ok(access)
+}
+
+/// What a join from an invitation signs in by, when the call chose any of it: the login, port
+/// and jump host as the daemon planned them from the invitation and the choices, and the key
+/// file. `None` when the invitation's own route is taken as it is.
+fn route_line(preview: &InvitationPreview, advanced: &InvitationAdvanced) -> Option<String> {
+    let chosen = advanced.ssh_target.is_some()
+        || advanced.port.is_some()
+        || advanced.identity_file.is_some()
+        || advanced.proxy_jump.is_some();
+    if !chosen {
+        return None;
+    }
+    let mut line = format!(
+        "It signs in as {}",
+        preview
+            .ssh_target
+            .as_deref()
+            .unwrap_or("the invited account")
+    );
+    if let Some(port) = preview.port {
+        line.push_str(&format!(" on port {port}"));
+    }
+    match preview.proxy_jump.as_deref() {
+        Some(jump) if !jump.is_empty() => line.push_str(&format!(" through {jump}")),
+        _ if advanced.proxy_jump.is_some() => line.push_str(" with no jump host"),
+        _ => {}
+    }
+    if let Some(file) = &advanced.identity_file {
+        line.push_str(&format!(", with the key file {file}"));
+    }
+    line.push('.');
+    Some(line)
+}
+
+/// Whether the account a join from an invitation signs in as is the workspace's host: the
+/// planned login's user ([`login_user`]) is the host the invitation names. A login whose user
+/// can't be read is not taken as the host's, so the card never claims the person hosts a
+/// workspace they may not, as every surface leaves the sentence out when it can't tell.
+async fn joiner_hosts(preview: &InvitationPreview) -> bool {
+    let (Some(login), Some(host)) = (
+        preview.ssh_target.as_deref(),
+        preview.host_username.as_deref(),
+    ) else {
+        return false;
+    };
+    login_user(login).await.as_deref() == Some(host)
+}
+
+/// The account `login` signs in as: the part before `@`, or for a login with none (an alias
+/// from the person's SSH settings, such as `lab`), the user `ssh -G` resolves it to, as Crew's
+/// ssh would sign in. `None` when that can't be read.
+async fn login_user(login: &str) -> Option<String> {
+    match login.rsplit_once('@') {
+        Some((user, _)) => Some(user.to_owned()),
+        None => biorouter::crew::host_keys::resolve(login, None).await?.user,
+    }
+}
+
+/// The card for joining from an invitation (AO-12: "for join and open the server, host and
+/// workspace-key fingerprint and the privacy chosen"), and every Advanced choice the call made:
+/// the route it signs in by, what agents may do there with full access said in OW-6's words, and
+/// each choice whole in the payload.
+fn join_card(
+    preview: &InvitationPreview,
+    invitation: &str,
+    advanced: &InvitationAdvanced,
+    access: Option<&str>,
+    joiner_hosts: bool,
+) -> Card {
+    let host = preview
+        .host_username
+        .as_deref()
+        .map_or_else(|| "its host".to_owned(), |host| format!("@{host}"));
+    let server = preview
+        .server_label
+        .clone()
+        .or_else(|| preview.server.clone())
+        .unwrap_or_else(|| "its server".to_owned());
+    let mut card = Card::at(&preview.workspace_label, &server, |here| {
+        format!("Join {here}, hosted by {host}, as you")
+    })
+    .line(format!(
+        "Workspace key fingerprint: {}.",
+        preview.fingerprint
+    ))
+    .line(privacy_line(
+        preview.mode,
+        preview.institution_id.as_deref(),
+    ))
+    .line(match &preview.existing_connection_id {
+        Some(_) => "It uses the connection already saved for it on this computer.".to_owned(),
+        None => format!("It saves it on this computer as {}.", preview.name),
+    });
+    if let Some(line) = route_line(preview, advanced) {
+        card = card.line(line);
+    }
+    if let Some(line) = access_line(access, &server) {
+        card = card.line(line);
+    }
+    if joiner_hosts {
+        if let Some(line) = hosting_line(access, &preview.workspace_label) {
+            card = card.line(line);
+        }
+    }
+    if matches!(access, Some("folder" | "full")) {
+        card = card.line(match &advanced.remote_root {
+            Some(folder) => format!("Their work folder is {folder}. To set this up, it installs or updates Crew in your account there first."),
+            None => "To set this up, it installs or updates Crew in your account there first, and makes their work folder.".to_owned(),
+        });
+    }
+    card = card.show("invitation", invitation.to_owned());
+    let jump = advanced
+        .proxy_jump
+        .as_deref()
+        .map(|jump| if jump.is_empty() { "none" } else { jump });
+    for (key, value) in [
+        ("ssh_target", json!(advanced.ssh_target)),
+        ("port", json!(advanced.port)),
+        ("identity_file", json!(advanced.identity_file)),
+        ("proxy_jump", json!(jump)),
+        ("folder", json!(advanced.remote_root)),
+        ("agent_access", json!(access)),
+    ] {
+        if !value.is_null() {
+            card = card.show(key, value);
+        }
+    }
+    card
+}
+
+/// `join` from an invitation the person pasted: previewed with the call's choices, so the card
+/// can name the server, the host, the fingerprint, the privacy and the route; then saved with
+/// them (unless this computer already has it), set up for agent access when asked, connected
+/// and joined. A saved connection keeps its own route and access, so choices for one are
+/// refused rather than dropped.
 async fn join_invitation(ctx: &Ctx, invitation: String) -> Result<Value> {
     let crew = ctx.crew()?;
+    let access = join_access(ctx)?;
     let overrides = overrides(ctx)?;
     let InvitationOutcome::Preview(preview) = crew
         .connection_from_invitation(&invitation, true, overrides.clone())
@@ -1149,33 +1403,25 @@ async fn join_invitation(ctx: &Ctx, invitation: String) -> Result<Value> {
             ),
         ));
     }
-    let host = preview
-        .host_username
-        .as_deref()
-        .map_or_else(|| "its host".to_owned(), |host| format!("@{host}"));
-    let server = preview
-        .server_label
-        .clone()
-        .or_else(|| preview.server.clone())
-        .unwrap_or_else(|| "its server".to_owned());
-    ctx.approve(
-        Card::at(&preview.workspace_label, &server, |here| {
-            format!("Join {here}, hosted by {host}, as you")
-        })
-        .line(format!(
-            "Workspace key fingerprint: {}.",
-            preview.fingerprint
-        ))
-        .line(privacy_line(
-            preview.mode,
-            preview.institution_id.as_deref(),
-        ))
-        .line(match &preview.existing_connection_id {
-            Some(_) => "It uses the connection already saved for it on this computer.".to_owned(),
-            None => format!("It saves it on this computer as {}.", preview.name),
-        })
-        .show("invitation", invitation.clone()),
-    )
+    if preview.existing_connection_id.is_some() && JOIN_ROUTE.iter().any(|key| ctx.param_given(key))
+    {
+        return Err(said(
+            None,
+            format!(
+                "This computer already has a connection to {}, and joining uses it as it is. Change its login or route with crew__change action connections_update and its agent access with connections_set_access, then join it with connection.",
+                preview.workspace_label
+            ),
+        ));
+    }
+    // Only full access says whether the joiner hosts, so only then is the login read.
+    let hosts = access.as_deref() == Some("full") && joiner_hosts(&preview).await;
+    ctx.approve(join_card(
+        &preview,
+        &invitation,
+        &overrides.advanced,
+        access.as_deref(),
+        hosts,
+    ))
     .await?;
     let existing = preview.existing_connection_id.clone();
     let progress = Progress::default();
@@ -1187,7 +1433,15 @@ async fn join_invitation(ctx: &Ctx, invitation: String) -> Result<Value> {
             None => save_invitation(&crew, &invitation, overrides).await?,
         };
         gate.progress().set("connection_id", id.clone());
-        connect_and_join(&crew, &id, &gate).await
+        let job = match access.filter(|access| access != "off") {
+            Some(access) => Some(member_setup(&crew, &id, &access, &gate).await?),
+            None => None,
+        };
+        let mut answer = connect_and_join(&crew, &id, &gate).await?;
+        if let Some(job) = job {
+            answer["job_id"] = json!(job);
+        }
+        Ok(answer)
     })
     .await
 }
@@ -1241,6 +1495,12 @@ pub(super) fn join(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 ));
             }
             return join_invitation(ctx, invitation).await;
+        }
+        if JOIN_ROUTE.iter().any(|key| ctx.param_given(key)) {
+            return Err(said(
+                None,
+                "Those settings are for joining from an invitation. A saved connection keeps its own: change its login or route with crew__change action connections_update and its agent access with connections_set_access, then join it.",
+            ));
         }
         let crew = ctx.crew()?;
         let connection = ctx.connection().await?;
@@ -1323,7 +1583,8 @@ pub(super) fn rejoin(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                 connect_or_sign_in(&gate, &crew, &id).await?;
             }
             gate.progress().set("stage", "rejoin");
-            Ok(serde_json::to_value(crew.rejoin(&id).await?)?)
+            let rejoined = serde_json::to_value(crew.rejoin(&id).await?)?;
+            Ok(with_connection_id(rejoined, &id))
         })
         .await
     })
@@ -1348,7 +1609,8 @@ pub(super) fn connect(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let gate = SignInGate::of(ctx, &progress);
         ctx.follow(progress, async move {
             let connected = connect_or_sign_in(&gate, &crew, &id).await?;
-            Ok(serde_json::to_value(connection_view(&connected).await?)?)
+            let view = serde_json::to_value(connection_view(&connected).await?)?;
+            Ok(with_connection_id(view, &id))
         })
         .await
     })
@@ -1490,7 +1752,10 @@ pub(crate) async fn save_over(
     let request: SaveConnection = serde_json::from_value(Value::Object(input))?;
     let saved = crew.update(&connection.id, request).await?;
     let ended = saved.policy_epoch != connection.policy_epoch;
-    let mut answer = json!({"connection": connection_view(&saved).await?});
+    let mut answer = json!({
+        "connection_id": saved.id,
+        "connection": connection_view(&saved).await?,
+    });
     if ended {
         answer["access_ended"] = json!(true);
     }
@@ -1535,9 +1800,20 @@ pub(super) fn connections_update(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     })
 }
 
-/// A work folder on the server as a connection saves it, as `biorouter crew connections
-/// set-access` reads it: a full path, or `~/…` once the account's home there is known. The
+/// A work folder on `server` as a connection saves it: a full path, not `/`, on one line. The
 /// bridge checks the folder itself; this only refuses what cannot be one.
+fn server_folder(folder: String, server: &str) -> Result<String> {
+    if !folder.starts_with('/') || folder == "/" || folder.contains(['\n', '\r', '\0']) {
+        return Err(said(
+            Some("crew_folder_required"),
+            format!("Give the work folder's full path on {server}, like /home/you/crew-work/lab."),
+        ));
+    }
+    Ok(folder)
+}
+
+/// A work folder on the server as a connection saves it, as `biorouter crew connections
+/// set-access` reads it: a full path, or `~/…` once the account's home there is known.
 fn work_folder(
     typed: Option<String>,
     view: &crate::routes::crew::wire::CrewConnectionView,
@@ -1554,16 +1830,7 @@ fn work_folder(
         (Some(rest), Some(home)) => format!("{}/{rest}", home.trim_end_matches('/')),
         _ => text,
     };
-    if !folder.starts_with('/') || folder == "/" || folder.contains(['\n', '\r', '\0']) {
-        return Err(said(
-            Some("crew_folder_required"),
-            format!(
-                "Give the work folder's full path on {}, like /home/you/crew-work/lab.",
-                view.server_label
-            ),
-        ));
-    }
-    Ok(Some(folder))
+    server_folder(folder, &view.server_label).map(Some)
 }
 
 /// `biorouter crew connections set-access off|folder|full` (OW-6).

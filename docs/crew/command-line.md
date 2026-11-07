@@ -1,7 +1,7 @@
 # Crew command line
 
 > **What this is.** A task reference for the `biorouter crew` commands: their syntax, what they print and their exit status.
-> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
 > **Audience:** IT staff, lab managers, and lab members who prefer a terminal or want to script Crew. You should know how to open a terminal and run a command.
 
 These commands and the desktop app share one background service on your computer, the Biorouter daemon (`biorouterd`), and its saved connections, so both show the same workspace.
@@ -35,6 +35,12 @@ To send the vault passphrase for `credentials init` or `credentials unlock`, add
 
 `auth` always needs a real terminal. Without one it exits with `2` (code `crew_needs_terminal`), and says that `connect` signs in without one when the server takes this computer's SSH key alone.
 
+### In an agent's shell
+
+An AI agent's own shell, such as a chat's `developer__shell`, may read Crew with these commands but not change it as you. There, every command that changes Crew exits with `2` before it reads anything or reaches the daemon, with code `crew_agent_shell_refused` and ``An agent's shell can't change Crew as you. Use crew__change in the chat, which asks the person first. The action is send.``, naming the chat action that does the same change, such as `send`, `channels_create` or `credentials_unlock`. The chat makes it with `crew__change`, and you allow its card ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). The person-only commands, which no chat offers, get ``An agent's shell can't change Crew as you. Only you can do this, in the Crew view or with biorouter crew in your own terminal.``: `daemon stop`, `workspace bootstrap`, `enroll prepare`, `enroll accept`, `connections prepare`, `connections save` and `grants grant`.
+
+Reads work as anywhere: `status`, `doctor`, `setup --check`, `connections list`, `history`, `search`, `watch`, the `list` and `show` commands, `files status`, `tasks watch`, `grants list` and the like. `daemon start` works too, since every read starts the daemon. The shell is known by `BIOROUTER_TERMINAL`, which Biorouter sets for every command an agent runs. Your own terminal never has it, so nothing changes there. This guards against an agent's mistake, not against a program set on getting around it ([Privacy and security](privacy-and-security.md)).
+
 ## Global options
 
 These work before or after the command name.
@@ -59,7 +65,7 @@ Results go to standard output, and prompts and error sentences to standard error
 |---|---|
 | `0` | Success, or you stopped one of those four with Ctrl+C. |
 | `1` | Failed, refused, or not finished, such as `grants revoke` before the workspace confirms. |
-| `2` | Wrong command line, a command that needed a terminal to ask you something ran without one, several saved connections and no `--connection`, or a message too long to send. Nothing was sent. |
+| `2` | Wrong command line, a command that needed a terminal to ask you something ran without one, several saved connections and no `--connection`, a message too long to send, or a change run in an AI agent's own shell. Nothing was sent. |
 
 In JSON, an error has `error` and `request_id`, and usually a `code`. The code is your daemon's, such as `crew_outcome_unknown` (see [Workspace refusals](#workspace-refusals)), or one the command line gives its own errors, in the table below. A refusal from the workspace adds `broker_code`, and a refused `connect` adds `detail`. A daemon refusal also keeps its other fields, such as `reason`, `actual_mode`, `expected_mode` or `institution_refusal`. Scripts should match those codes and fields, not the wording. A daemon refusal prints its own sentence; only one that has no sentence of its own starts with its HTTP status, such as `Daemon returned 409:`. When a command needs one of two options, the usage line lists both as required. Give exactly one.
 
@@ -68,6 +74,7 @@ In JSON, an error has `error` and `request_id`, and usually a `code`. The code i
 | `unknown_name`, `ambiguous_name` | A name the command could not look up. See [Name people, teams and channels](#name-people-teams-and-channels). |
 | `crew_lookup_failed` | The daemon's answer to a name lookup was not one the command could use. Run it again, or use the ID. |
 | `crew_needs_terminal` | The command needed a terminal to ask you something. Exit `2`. |
+| `crew_agent_shell_refused` | A command that changes Crew ran in an AI agent's own shell. See [In an agent's shell](#in-an-agents-shell). Exit `2`. |
 | `crew_connection_required` | Several connections are saved and none was chosen: ``Several Crew connections are saved; choose one with --connection NAME. Run biorouter crew connections list to see them.`` Exit `2`. |
 | `crew_message_too_long` | The message is over 64 KB. See [Post and read messages](#post-and-read-messages). Exit `2`. |
 | `crew_nothing_to_replace` | `connections join-invitation --replace` found no saved connection it may replace. Exit `2`. |
@@ -243,7 +250,7 @@ A failed `connect` says what went wrong and what to run, then the code below on 
 |---|---|
 | `crew_ssh_auth_required` | The server wants a password or a verification code. Run `auth`. |
 | `crew_ssh_key_refused` | The server refused this computer's SSH key and asks for nothing else, so `auth` cannot help. Check the login and key file in `connections show`, and ask IT which login and key to use. For a login on this machine, the sentence is ``Couldn't sign in as bob on this machine: add your public SSH key to your own ~/.ssh/authorized_keys, then connect again.`` Do that yourself, as step 2 of [Join from the workspace's own server](#join-from-the-workspaces-own-server) shows. |
-| `crew_ssh_host_key_unknown` | Get the key fingerprint from IT, check it, and add the key to your known hosts file. For a login on this machine, the sentence is ``localhost's host key isn't in your ~/.ssh/known_hosts yet. Add this server's own key (from /etc/ssh/ssh_host_ed25519_key.pub) to it, then connect again.`` Do that yourself, as step 3 of [Join from the workspace's own server](#join-from-the-workspaces-own-server) shows. |
+| `crew_ssh_host_key_unknown` | Get the key fingerprint from IT, check it, and add the key to your known hosts file. In the desktop app you can instead compare it on Crew's "Can’t verify" screen and choose **Trust this key** ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). For a login on this machine, the sentence is ``localhost's host key isn't in your ~/.ssh/known_hosts yet. Add this server's own key (from /etc/ssh/ssh_host_ed25519_key.pub) to it, then connect again.`` Do that yourself, as step 3 of [Join from the workspace's own server](#join-from-the-workspaces-own-server) shows. |
 | `crew_ssh_host_key_changed` | Do not connect. Ask IT to confirm the change. |
 | `crew_ssh_unreachable` | Check your network, or your VPN (the app that connects you to your institution's network). The daemon keeps trying. |
 | `crew_bridge_missing` | Crew is missing from your server account. Run `setup`, which installs it and connects. Or install `~/.local/bin/biorouter-crew` yourself, or ask IT ([Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account)). |
@@ -577,13 +584,31 @@ Some workspace changes end every grant and task in the workspace. `grants list` 
 
 `grants revoke SESSION_ID` exits with `0` only when the workspace confirms. After `Stopped on this computer ...` (exit `1`), the chat already cannot use Crew, and Biorouter confirms later by itself. `Not revoked` means the chat still has access, so retry. A revoke does not prove that a command already running on the server stopped.
 
-To use a terminal chat:
+To give a terminal chat Crew access:
 
-1. Run `biorouter session --shared-daemon --no-start --create-only --provider PROVIDER --model MODEL`, with a model the workspace accepts ([Agents and chat access](agents-and-chat-access.md#before-you-start)). A new chat needs both options. It prints the chat's session ID and a line such as `Chat 20260927_1 is ready (versa_azure/gpt-5.5).`
+1. Run `biorouter session --shared-daemon --no-start --create-only --provider PROVIDER --model MODEL`, with a model the workspace accepts ([Agents and chat access](agents-and-chat-access.md#before-you-start)). `--create-only` needs both options. It prints the chat's session ID and a line such as `Chat 20260927_1 is ready (versa_azure/gpt-5.5).`
 2. Run `grants grant SESSION_ID methods`. `grants list` then shows the chat as `Active`. The grant fixes the chat's model.
 3. Open the chat with `biorouter session --shared-daemon --no-start --resume --session-id SESSION_ID`, or send one prompt with `biorouter run` and the same options plus `--text`. The chat opens in your terminal, or `biorouter run` prints its reply.
 
-Without `--shared-daemon`, the chat cannot use a grant.
+A chat with a grant must run on the shared background service, so give `--shared-daemon` for it, as above.
+
+### Where a terminal chat runs
+
+A chat you type into, `biorouter session` or plain `biorouter`, runs on the shared background service whenever one is running for your profile. It then works as a desktop chat does: it can use Crew as you, with its cards in your terminal (below), and it shows in the desktop app's chat list. It prints ``This chat runs on the shared Biorouter daemon, so it can use Crew as you. Add --local to run a chat in this terminal only.`` A new chat starts on your configured model with your configured extensions, as a new desktop chat does. `--resume --session-id ID` reopens that chat there, and `--resume` alone the most recent one, or says ``No previous chat to resume; starting a new chat.``
+
+It runs in your terminal on its own, as before, when any of these holds:
+
+- No background service is running, its key file is missing, or it does not answer within 3 seconds. The chat never starts, stops or replaces one.
+- You gave `--local`, which keeps the chat in this terminal and never asks the background service.
+- Standard input, output or error is not a terminal, or it runs in an AI agent's own shell.
+- You gave an option only a chat on its own can use: `--name`, `--path`, `--debug`, `--max-turns`, `--max-tool-repetitions`, `--with-extension`, `--with-streamable-http-extension`, `--with-builtin`, or `--session-id` without `--resume`.
+- It has no model to start on: give both `--provider` and `--model`, or neither with both configured.
+
+`biorouter run` and the other commands that do not wait for your typing always run on their own, because no card could be answered there. `--local` is a `biorouter session` option only, and cannot be combined with `--shared-daemon`. Plain `biorouter` has no `--local`, so to keep that chat in this terminal, run `biorouter session --local` instead. An interactive `biorouter session --shared-daemon` chat that names no model now takes your configured one; only `--create-only` and `biorouter run --shared-daemon` still need both `--provider` and `--model`.
+
+If one of your configured extensions fails to start on the background service, the chat warns you, names it, and goes on without it, as a chat on its own does.
+
+A chat on its own has no Crew tools. Asked about Crew, it is told ``Crew actions as you need the desktop app or biorouter session --shared-daemon.``
 
 ### A chat that reads as you
 
@@ -591,16 +616,18 @@ A chat without a Crew grant can read a workspace as you once you allow it ([Use 
 
 ### Cards in a terminal chat
 
-A terminal chat on the shared background service, `biorouter session --shared-daemon`, can use Crew as you, as a desktop chat can ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). Its cards appear in the terminal:
+A terminal chat on the shared background service, a plain `biorouter session` as [Where a terminal chat runs](#where-a-terminal-chat-runs) says or one with `--shared-daemon`, can use Crew as you, as a desktop chat can ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). Its cards appear in the terminal:
 
-- A change prints its card with every argument that looks like a password, key or token shown as `(hidden)`, then asks ``Type allow_once or deny (Esc cancels the turn):``.
+- A change prints its card as readable lines, the whole of it, with every value whose name looks like a password, key or token shown as `[REDACTED:secret-value]`, the word the desktop's card shows for a hidden value. A private key inside a value stays on that value's line. Then it asks ``Type allow_once or deny (Esc cancels the turn):``.
 - The permission to read a workspace as you asks ``Type allow (until you revoke it with biorouter crew grants revoke SESSION_ID --reads) or deny (Esc cancels the turn):``, with the chat's ID. `allow` keeps it until you take it back, and the chat then says ``Allowed. This chat may read the workspace as you until you revoke it with biorouter crew grants revoke SESSION_ID --reads.``
-- A sign in prints ``Signing in to bob@hpc.example.edu. What you type goes to ssh, never to the chat.``, then shows the server's own prompts, as `auth` does. Type your password and verification code there. It ends with ``Signed in. The chat carries on.``, or ``Nothing was signed in, so the chat carries on without it.``
-- Crew's vault asks at a hidden prompt, ``Vault passphrase:``, after ``This chat needs Crew's vault on this computer, and it is locked. Type its passphrase at the hidden prompt below. It goes only to Crew on this computer, never to the chat. Press Enter with nothing typed to skip.`` Setting one up asks ``New vault passphrase:`` and ``Type the same vault passphrase again:``. You get three tries. Enter with nothing typed, or Ctrl+C, skips it, and the chat is told the vault is still locked.
-- A server key this computer does not trust yet prints ``Can't verify hpc.example.edu yet. Crew only connects to servers you've already verified.``, the fingerprint the server offered and how to check it. It never asks you to accept the key. Add the key in a terminal of your own, and the chat goes on by itself. A changed key prints both fingerprints and ``Give these lines to your IT team. Crew never trusts a changed key.``
+- A sign in asks first, ``Sign in to bob@hpc.example.edu now? Press Enter to open the sign-in, or type n to skip:``, so a message you were typing when the card arrived never reaches the server's password prompt. Only Enter with nothing typed opens it. Then it prints ``Signing in to bob@hpc.example.edu. What you type goes to ssh, never to the chat.`` and shows the server's own prompts, as `auth` does. Type your password and verification code there. It ends with ``Signed in. The chat carries on.``, or ``Nothing was signed in, so the chat carries on without it.`` A line that is neither Enter nor `n` gets ``That opened nothing and went nowhere. Press Enter with nothing typed to open the sign-in, or type n to skip.`` The card is skipped after `n`, Esc, Ctrl+C or three such lines.
+- Crew's vault says ``This chat needs Crew's vault on this computer, and it is locked. Its passphrase goes only to Crew on this computer, never to the chat.``, then asks ``Unlock Crew's vault now? Press Enter to open the hidden passphrase prompt, or type n to skip:``. Only Enter with nothing typed opens the hidden prompt, ``Vault passphrase:``; a line typed before it is never taken as a passphrase or sent anywhere. Setting one up asks ``Set up Crew's vault now? Press Enter to open the hidden passphrase prompt, or type n to skip:``, then ``New vault passphrase:`` and ``Type the same vault passphrase again:``. You get three tries. Enter with nothing typed at the hidden prompt, `n`, Esc or Ctrl+C skips it, and the chat is told the vault is still locked.
+- A server key this computer does not trust yet prints ``Can't verify hpc.example.edu yet. Crew only connects to servers you've already verified.``, then `Fingerprint this computer read from hpc.example.edu:` with the fingerprint, and how to check it. Then it says ``Only trust it if IT or the server's admin gave you this fingerprint.`` and asks ``Trust this key? Type trust to add it to your known hosts file, or press Enter to leave it:``. Anything you typed before the question appeared is thrown away first, so it can't answer it. Only the word `trust`, typed after the question, adds it: Crew reads the key from the server again and adds it only when its fingerprint is the one shown, then says ``Trusted. The key is in your known hosts file, and this chat goes on by itself.`` Enter, Esc or anything else leaves the key alone, with ``The key wasn't trusted. Once it is in your known hosts file, this chat goes on by itself.``, and you can still add it in a terminal of your own. A refusal is said, such as `Crew didn't trust the key:` and Crew's reason. A card with no fingerprint asks nothing. A changed key prints both fingerprints and ``Give these lines to your IT team. Crew never trusts a changed key.``, and asks nothing.
 - Without a terminal, such as a chat run by `biorouter run`, the chat stops at a card, as for every other card. A sign in without a terminal says ``Signing in needs a terminal, to show the server's password and verification-code prompts.`` and names `biorouter crew auth`.
 
-`biorouter session watch` and `biorouter session attach` print each card a chat shows as one line, such as `[approval] crew__change: Create #methods (Analysis Lab) in lab on hpc.example.edu as you` or `[crew] Sign in to bob`, and never print its arguments. In `attach`, the next line you type answers the waiting approval, `allow_once` or `deny`, or `allow` for the permission to read, and is not sent to the chat. A sign-in, vault or server key card cannot be answered in `attach`: answer it in the desktop app or in a `biorouter session --shared-daemon` chat. See [Doing all of this from the terminal](../agent-loop/workspace-control.md#as-subcommands-you-type).
+`biorouter session watch` and `biorouter session attach` print each card a chat shows as one line, such as `[approval] crew__change: Create #methods (Analysis Lab) in lab on hpc.example.edu as you` or `[crew] Sign in to bob. Answer it in the desktop app, never by typing here.`. A changed server key prints `[crew] hpc.example.edu's identity changed. Nothing connects to it until the server's IT team confirms the change.` and asks for no answer. A card the chat drew before you started watching is printed too. When a card ends anywhere, `watch` prints a line such as `[closed] A request in this chat is over: answered.`, and `attach` names the card, such as `[closed] Sign in to bob: dismissed.`
+
+In `attach`, an approval is shown whole before it asks: every line of its card and its arguments, with the same `[REDACTED:secret-value]`. Then the next line you type answers it, `allow_once` or `deny`, or `allow` for the permission to read, and is not sent to the chat. An approval answered, dismissed or timed out somewhere else stops waiting at once, such as `[approval closed] This request was answered somewhere else.` A sign-in, vault or server key card, a question and a request for keys cannot be answered in `attach`. Answer them in the desktop app, or in a terminal chat of that same chat, `biorouter session --shared-daemon --resume --session-id SESSION_ID`, which is the one terminal chat that answers its cards. For a question, `attach` names that chat, such as ``Answer it in the desktop app, or open this chat in a terminal with biorouter session --shared-daemon --resume --session-id 20261106_4``. `attach` answers no approval either when you give `--read-only`, when its input is a pipe or a file, or when it runs in an AI agent's own shell. It still shows each card whole, then says why, such as ``This attach runs in an agent's shell, so it answers no request. What it reads still goes to the chat as a message.`` See [Doing all of this from the terminal](../agent-loop/workspace-control.md#as-subcommands-you-type).
 
 ## Privacy settings
 

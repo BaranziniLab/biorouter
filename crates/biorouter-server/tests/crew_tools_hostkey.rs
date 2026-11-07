@@ -129,6 +129,22 @@ mod fake {
         if args.first().map(String::as_str) == Some("-G") {
             let mut out = std::io::stdout().lock();
             let _ = writeln!(out, "hostname {host}\nport 22");
+            // The known hosts files, as `ssh -G` lists them: the one Crew's ssh passes, then a
+            // second one of the person's configuration, which a key may be added to instead.
+            let user_file = args
+                .windows(2)
+                .find_map(|pair| {
+                    (pair[0] == "-o")
+                        .then(|| pair[1].strip_prefix("UserKnownHostsFile="))
+                        .flatten()
+                })
+                .unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "userknownhostsfile {user_file} {}\nglobalknownhostsfile {}\nhashknownhosts no",
+                root.join("second_known_hosts").display(),
+                root.join("global_known_hosts").display()
+            );
             for line in [
                 "stricthostkeychecking yes",
                 "forwardagent no",
@@ -150,8 +166,10 @@ mod fake {
             return 0;
         }
         log(root, "attempts.log", &host);
-        let known =
-            std::fs::read_to_string(root.join("profile/home/.ssh/known_hosts")).unwrap_or_default();
+        let known = ["profile/home/.ssh/known_hosts", "second_known_hosts"]
+            .iter()
+            .map(|file| std::fs::read_to_string(root.join(file)).unwrap_or_default())
+            .collect::<String>();
         let stderr = if host == CHANGED_HOST {
             [
                 "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@",
@@ -345,6 +363,10 @@ fn published_host_keys(session: &str) -> Vec<(String, CrewStepRequest)> {
 enum AtTheCard {
     /// Try a forged allow first, then add the key to the known-hosts file.
     ForgeThenAddTheKey,
+    /// Add the key to the second known hosts file `ssh -G` lists, not the profile's.
+    AddTheKeyToTheSecondFile,
+    /// Choose Trust this key: the card's own values, posted with the person's proof.
+    TrustTheKey,
     /// Choose Not now.
     Dismiss,
     /// Do nothing: a card that waited would hold the call until its time ran out.
@@ -403,7 +425,7 @@ async fn check_with(session: &str, params: Value, at_the_card: AtTheCard) -> Cal
             match data["actionType"].as_str() {
                 Some("crewStep") => {
                     called.host_keys.push(data["step"].clone());
-                    answer_host_key(session, &id, at_the_card).await;
+                    answer_host_key(session, &id, &data["step"], at_the_card).await;
                 }
                 _ => {
                     called
@@ -424,8 +446,30 @@ async fn check_with(session: &str, params: Value, at_the_card: AtTheCard) -> Cal
     called
 }
 
-async fn answer_host_key(session: &str, id: &str, at_the_card: AtTheCard) {
+async fn answer_host_key(session: &str, id: &str, step: &Value, at_the_card: AtTheCard) {
     match at_the_card {
+        AtTheCard::AddTheKeyToTheSecondFile => {
+            fs::write(
+                fixture_root().join("second_known_hosts"),
+                format!("{UNKNOWN_HOST} ssh-ed25519 {BLOB}\n"),
+            )
+            .unwrap();
+        }
+        AtTheCard::TrustTheKey => {
+            // What the desktop card's Trust this key posts: the card's own values, nothing else.
+            let (status, body) = http(
+                "/crew/host-keys/trust",
+                json!({
+                    "host": step["host"],
+                    "port": step["port"],
+                    "login": step["login"],
+                    "fingerprint": step["offered"],
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["already_trusted"], false, "{body}");
+        }
         AtTheCard::ForgeThenAddTheKey => {
             // An allow, with the person's proof, cannot answer a host-key card.
             let (status, body) = http(
@@ -505,6 +549,58 @@ fn an_unknown_key_waits_for_the_person_and_the_step_is_tried_again_once() {
         // Nothing is left waiting, and nothing else was carded.
         assert!(!PendingUserActions::global().has_pending_in_session(&session));
         assert_eq!(published_host_keys(&session).len(), 1);
+    });
+}
+
+/// Trust this key on the card (D2): the person posts the card's own values with their proof,
+/// the daemon reads the key again and writes the one line, and the call waiting on the card sees
+/// it, takes the card down and tries the step again, once, on the approval already given.
+#[test]
+#[serial]
+fn trusting_the_key_on_the_card_lets_the_step_go_on_once() {
+    run(async {
+        let _ = fs::remove_file(known_hosts());
+        let _ = fs::remove_file(fixture_root().join("second_known_hosts"));
+        let session = chat("trusted on the card").await;
+        let server = format!("you@{UNKNOWN_HOST}");
+        let before = attempts(UNKNOWN_HOST);
+        let called = check(&session, &server, AtTheCard::TrustTheKey).await;
+        assert_eq!(called.host_keys.len(), 1, "{:?}", called.host_keys);
+        assert_eq!(called.host_keys[0]["offered"], FINGERPRINT);
+        assert_eq!(
+            fs::read_to_string(known_hosts()).unwrap(),
+            format!("{UNKNOWN_HOST} ssh-ed25519 {BLOB}\n"),
+            "exactly the key the daemon read again, in the file ssh -G names first"
+        );
+        assert_eq!(called.approvals.len(), 1, "{:?}", called.approvals);
+        assert_eq!(attempts(UNKNOWN_HOST) - before, 2, "tried again once");
+        let answer = called.answer.expect("the job answers");
+        assert_eq!(answer["error"]["code"], "crew_ssh_unreachable", "{answer}");
+        assert!(!PendingUserActions::global().has_pending_in_session(&session));
+    });
+}
+
+/// The card waits on every known hosts file `ssh -G` lists for the step's login, not only the
+/// profile's: a key the person adds to another file of their configuration takes it down too.
+#[test]
+#[serial]
+fn a_key_added_to_any_file_ssh_reads_lets_the_step_go_on() {
+    run(async {
+        let _ = fs::remove_file(known_hosts());
+        let second = fixture_root().join("second_known_hosts");
+        let _ = fs::remove_file(&second);
+        let session = chat("second file").await;
+        let before = attempts(UNKNOWN_HOST);
+        let called = check(
+            &session,
+            &format!("you@{UNKNOWN_HOST}"),
+            AtTheCard::AddTheKeyToTheSecondFile,
+        )
+        .await;
+        let _ = fs::remove_file(&second);
+        assert_eq!(called.host_keys.len(), 1, "{:?}", called.host_keys);
+        assert_eq!(attempts(UNKNOWN_HOST) - before, 2, "tried again once");
+        assert!(!PendingUserActions::global().has_pending_in_session(&session));
     });
 }
 

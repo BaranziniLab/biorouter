@@ -1,14 +1,15 @@
 import { trustCopy } from '../onboarding/copy';
 
 /**
- * Fixed words for the host-key card (WI-2). The titles, the body and the first
- * two verification steps are Crew's own trust copy (`trustCopy`), so a chat
- * names a host key the way the Crew view does. Only the last step differs: the
- * Crew view's "Come back and choose Try again" names a button a chat's card
- * does not have, because the chat goes on by itself once the daemon sees the
- * key. `host` and the fingerprints are the daemon's values, sanitized by the
- * card. A chat never accepts a key: the person checks it with their IT team
- * and adds it in a terminal of their own.
+ * Fixed words for the host-key card (WI-2). The titles, the body, the
+ * fingerprint's label and the first two verification steps are Crew's own
+ * trust copy (`trustCopy`), so a chat names a host key the way the Crew view
+ * does. Only the last step differs: the Crew view's "Come back and choose Try
+ * again" names a button a chat's card does not have, because the chat goes on
+ * by itself once the daemon sees the key. `host` and the fingerprints are the
+ * daemon's values, sanitized by the card. A model never accepts a key: the
+ * person checks it with their IT team, then trusts it on the card
+ * (`trustHostKeyCopy`) or adds it in a terminal of their own.
  */
 export const crewHostKeyStepCopy = {
   unknownTitle: trustCopy.unknownTitle,
@@ -21,13 +22,13 @@ export const crewHostKeyStepCopy = {
       'Come back to this chat. It goes on by itself once the key is there.',
     ] as const,
   /**
-   * The label over an unknown key's fingerprint. Not the Crew view's "Fingerprint the server
-   * offered": the daemon may have read it with its own scan rather than from the connection
-   * that was refused, and either way it is this computer that read it.
+   * The label over an unknown key's fingerprint, as the Crew view's: the daemon may have read it
+   * with its own scan rather than from the connection that was refused, and either way it is
+   * this computer that read it.
    */
-  read: 'Fingerprint this computer read from the server',
+  read: trustCopy.offered,
   /** Under an unknown key's help: what happens once the key is added. */
-  goesOn: 'Once the key is in your known-hosts file, this chat goes on by itself.',
+  goesOn: 'Once the key is in your known hosts file, this chat goes on by itself.',
   /** The other control on an unknown key's card: stop the chat waiting for it. */
   notNow: 'Not now',
   /** Said once the person chose Not now. */

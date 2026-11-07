@@ -10,6 +10,7 @@ pub use devices::{added_via_words, NewDevice};
 #[cfg(test)]
 #[path = "freshness_tests.rs"]
 mod freshness_tests;
+pub mod host_keys;
 mod host_start;
 #[cfg(test)]
 #[path = "host_start_tests.rs"]
@@ -54,13 +55,14 @@ mod scope_binding_tests;
 #[cfg(test)]
 #[path = "server_access_tests.rs"]
 mod server_access_tests;
-pub use credentials::CredentialStatus;
+pub use credentials::{CredentialStatus, VaultState};
 pub mod refusal;
 pub mod source_line;
 pub mod tool_host;
 pub use institution::{refusal_details as institution_refusal_details, AFFILIATION_REFUSAL};
 pub use refusal::CrewRefusal;
 mod ssh_policy;
+pub use ssh_policy::SshPolicyRefused;
 mod transport;
 use crate::{
     privacy::{CallCapability, ProviderTier},
@@ -2372,6 +2374,13 @@ impl CrewManager {
         let vault = self.credential_vault.clone();
         let probe = self.credential_entry(KEYRING_PROBE);
         tokio::task::spawn_blocking(move || vault.status(|| keyring_answers(probe))).await?
+    }
+    /// [`Self::credential_status`]'s `initialized` and `locked`, without its keyring probe
+    /// (on Linux a Secret Service call): what a vault card reads while it waits for the person
+    /// to unlock or set up the vault.
+    pub async fn vault_state(&self) -> Result<VaultState> {
+        let vault = self.credential_vault.clone();
+        tokio::task::spawn_blocking(move || vault.vault_state()).await?
     }
     pub async fn init_vault(&self, passphrase: zeroize::Zeroizing<String>) -> Result<()> {
         // A registry that cannot be read is not an empty one: the identities it names may hold
@@ -13404,6 +13413,45 @@ done
             !locked.to_string().contains("keyring was reached"),
             "{locked}"
         );
+    }
+
+    /// What a vault card polls: the vault's own state, with no keyring probe (a Secret Service
+    /// call on Linux, every 500 ms for as long as the card is up). It says what the probing
+    /// status says about the vault before it is set up, open, locked and unlocked again.
+    #[test]
+    #[serial_test::serial(crew_credentials)]
+    fn the_vault_state_says_what_the_status_says_without_asking_the_keyring() {
+        let root = tempfile::tempdir().unwrap();
+        let vault = credentials::CredentialVault::new(root.path().to_path_buf());
+        let agrees = |vault: &credentials::CredentialVault, probe: fn() -> bool| {
+            let state = vault.vault_state().unwrap();
+            let status = vault.status(probe).unwrap();
+            assert_eq!(
+                (state.initialized, state.locked),
+                (status.initialized, status.locked)
+            );
+            state
+        };
+        let fresh = agrees(&vault, || true);
+        assert_eq!(
+            fresh,
+            VaultState {
+                initialized: false,
+                locked: false
+            }
+        );
+        assert!(!fresh.open());
+
+        let passphrase = || zeroize::Zeroizing::new("correct horse battery staple".to_owned());
+        vault.init(passphrase()).unwrap();
+        // A vault never asks the keyring, so a probe here would be a regression.
+        let never: fn() -> bool = || panic!("the keyring was asked about a vault");
+        assert!(agrees(&vault, never).open());
+        vault.lock().unwrap();
+        let locked = agrees(&vault, never);
+        assert!(locked.initialized && locked.locked && !locked.open());
+        vault.unlock(passphrase()).unwrap();
+        assert!(agrees(&vault, never).open());
     }
 
     #[test]

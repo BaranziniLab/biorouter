@@ -423,6 +423,8 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::crew_profile::revoke,
         super::routes::crew_profile::revoke_read,
         super::routes::crew_changes::crew_changes,
+        super::routes::crew_host_keys::read_key,
+        super::routes::crew_host_keys::trust_key,
         super::routes::status::status,
         super::routes::status::system_info,
         super::routes::status::diagnostics,
@@ -706,6 +708,11 @@ impl utoipa::Modify for ApiKeySecurity {
         // Crew's change feed (WI-15): kinds and IDs only.
         biorouter::crew::changes::CrewChangesDelta,
         biorouter::crew::changes::CrewChange,
+        // Trusting an unknown host key the person verified (D2).
+        super::routes::crew_host_keys::HostKeyReadRequest,
+        super::routes::crew_host_keys::HostKeyTrustRequest,
+        biorouter::crew::host_keys::HostKeyRead,
+        biorouter::crew::host_keys::HostKeyTrusted,
         super::routes::crew_setup::SetupSignIn,
         super::routes::crew_transfers::Resume,
         biorouter::security::computer_use::ComputerUseStatus,

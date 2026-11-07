@@ -757,19 +757,24 @@ export const checklistCopy = {
 export const trustCopy = {
   unknownTitle: (host: string) => `Can’t verify ${host} yet`,
   unknownBody: 'Crew only connects to servers you’ve already verified.',
-  offered: 'Fingerprint the server offered',
+  /**
+   * Over an unknown key's fingerprint, whether the refusal printed it or the daemon read it
+   * itself (`POST /crew/host-keys/read`, or the chat's own scan): either way this computer read
+   * it, so it is never called the one the server offered.
+   */
+  offered: 'Fingerprint this computer read from the server',
   offeredLabel: 'server fingerprint',
   howToVerify: 'How do I verify it?',
   steps: (host: string) =>
     [
       `Get ${host}’s fingerprint from your IT team or your institution’s directory. Check jump hosts too.`,
-      'Compare it using your usual SSH setup, then add the full key to your known-hosts file. A fingerprint alone isn’t enough.',
+      'Compare it using your usual SSH setup, then add the full key to your known hosts file. A fingerprint alone isn’t enough.',
       'Come back and choose Try again.',
     ] as const,
   tryAgain: 'Try again',
   changedTitle: (host: string) => `${host}’s identity changed`,
   changedBody:
-    'Don’t connect until your IT team confirms this change. Crew won’t connect while the old key is in your known-hosts file.',
+    'Don’t connect until your IT team confirms this change. Crew won’t connect while the old key is in your known hosts file.',
   previous: 'Fingerprint Crew knew',
   newKey: 'Fingerprint the server offered now',
   copyForIt: 'Copy details for IT',

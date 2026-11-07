@@ -122,7 +122,13 @@ export function NotSetUpPane() {
                 {hostWorkspace ? ` ${joinCopy.fullWarningHost(hostWorkspace)}` : null}
               </Note>
             ) : null}
-            <SetupProgress job={job} intent="member" server={server} testId="crew-member-setup" />
+            <SetupProgress
+              job={job}
+              intent="member"
+              server={server}
+              testId="crew-member-setup"
+              connections={crew.connections}
+            />
           </div>
         )}
         <Disclosure label={notSetUpCopy.askHost}>

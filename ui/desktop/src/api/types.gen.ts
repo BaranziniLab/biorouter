@@ -1321,9 +1321,12 @@ export type CrewError = {
  * `last_error_code`, and a host-start run's `error.code`. Each route's responses say which it
  * answers and when. A client branches on these, never on a refusal's words, so the generated
  * client names every one; `openapi_contract_tests` fails on a code a Crew source answers that
- * is missing here, and on one listed here that nothing answers any more.
+ * is missing here, and on one listed here that nothing answers any more. A chat's Crew tools
+ * also give the model `crew_ssh_settings_refused`, with the check's own sentence, when Crew's
+ * SSH settings check refuses the route to a server (a jump host without
+ * `StrictHostKeyChecking yes`, say); no route answers it.
  */
-export type CrewErrorCode = 'crew_user_action_required' | 'crew_human_authority_unavailable' | 'crew_request_invalid' | 'crew_request_refused' | 'crew_credential_store_unavailable' | 'crew_credential_store_refused' | 'crew_registry_unreadable' | 'crew_connection_not_found' | 'crew_connection_required' | 'crew_not_connected' | 'crew_membership_ended' | 'crew_ssh_auth_required' | 'crew_ssh_key_refused' | 'crew_ssh_host_key_unknown' | 'crew_ssh_host_key_changed' | 'crew_ssh_unreachable' | 'crew_ssh_failed' | 'crew_bridge_missing' | 'crew_broker_not_running' | 'crew_handoff_failed' | 'crew_workspace_identity_mismatch' | 'crew_workspace_deleted' | 'crew_device_key_missing' | 'crew_device_not_recognized' | 'crew_account_unsupported' | 'crew_not_sent' | 'crew_outcome_unknown' | 'crew_reconnecting' | 'crew_mode_mismatch' | 'crew_institution_mismatch' | 'crew_public_model_refused' | 'crew_channel_not_in_workspace' | 'crew_model_fixed' | 'crew_typed_run_required' | 'crew_invalid_selector' | 'unknown_name' | 'ambiguous_name' | 'crew_idempotency_conflict' | 'crew_start_outcome_unknown' | 'crew_cancel_persistence_failed' | 'crew_session_unavailable' | 'crew_revocation_unconfirmed' | 'crew_revocation_not_saved' | 'crew_grant_not_found' | 'crew_grant_other_connection' | 'crew_grant_replaced' | 'crew_grant_ended' | 'crew_read_consent_required' | 'crew_not_found' | 'crew_profile_refused' | 'crew_transfer_refused' | 'crew_file_is_credential' | 'crew_file_name_hidden' | 'crew_file_name_invisible' | 'crew_folder_shared' | 'crew_destination_is_folder' | 'crew_destination_exists' | 'crew_file_is_program' | 'observer_capacity_reached' | 'crew_invitation_invalid' | 'crew_invitation_conflict' | 'crew_connection_exists' | 'crew_join_unsupported' | 'crew_join_not_approved' | 'crew_join_code_mismatch' | 'crew_join_not_invited' | 'crew_join_expired' | 'crew_join_replaced' | 'crew_join_account_changed' | 'crew_join_device_conflict' | 'crew_join_identity_conflict' | 'crew_join_refused' | 'crew_join_removed' | 'crew_host_setup_unknown' | 'crew_host_setup_used' | 'crew_host_start_busy' | 'crew_host_start_not_found' | 'crew_host_start_timed_out' | 'crew_host_start_cancelled' | 'crew_setup_busy' | 'crew_setup_not_found' | 'crew_setup_cancelled' | 'crew_setup_timed_out' | 'crew_setup_sign_in_expired' | 'crew_setup_not_waiting_for_sign_in' | 'crew_setup_server_unreadable' | 'crew_setup_start_failed' | 'crew_setup_changed' | 'crew_host_storage_unsafe' | 'crew_host_name_in_use' | 'crew_server_probe_unsupported' | 'crew_install_artifact_unavailable' | 'crew_install_unsupported_platform' | 'crew_install_dependency_missing' | 'crew_install_incompatible' | 'crew_install_unexpected_target' | 'crew_install_checksum_tool_missing' | 'crew_install_no_space' | 'crew_install_permission_denied' | 'crew_install_busy' | 'crew_install_transfer_incomplete' | 'crew_install_checksum_mismatch' | 'crew_install_outcome_unknown';
+export type CrewErrorCode = 'crew_user_action_required' | 'crew_human_authority_unavailable' | 'crew_request_invalid' | 'crew_request_refused' | 'crew_credential_store_unavailable' | 'crew_credential_store_refused' | 'crew_registry_unreadable' | 'crew_connection_not_found' | 'crew_connection_required' | 'crew_not_connected' | 'crew_membership_ended' | 'crew_ssh_auth_required' | 'crew_ssh_key_refused' | 'crew_ssh_host_key_unknown' | 'crew_ssh_host_key_changed' | 'crew_ssh_unreachable' | 'crew_ssh_failed' | 'crew_ssh_settings_refused' | 'crew_bridge_missing' | 'crew_broker_not_running' | 'crew_handoff_failed' | 'crew_workspace_identity_mismatch' | 'crew_workspace_deleted' | 'crew_device_key_missing' | 'crew_device_not_recognized' | 'crew_account_unsupported' | 'crew_not_sent' | 'crew_outcome_unknown' | 'crew_reconnecting' | 'crew_mode_mismatch' | 'crew_institution_mismatch' | 'crew_public_model_refused' | 'crew_channel_not_in_workspace' | 'crew_model_fixed' | 'crew_typed_run_required' | 'crew_invalid_selector' | 'unknown_name' | 'ambiguous_name' | 'crew_idempotency_conflict' | 'crew_start_outcome_unknown' | 'crew_cancel_persistence_failed' | 'crew_session_unavailable' | 'crew_revocation_unconfirmed' | 'crew_revocation_not_saved' | 'crew_grant_not_found' | 'crew_grant_other_connection' | 'crew_grant_replaced' | 'crew_grant_ended' | 'crew_read_consent_required' | 'crew_not_found' | 'crew_profile_refused' | 'crew_transfer_refused' | 'crew_file_is_credential' | 'crew_file_name_hidden' | 'crew_file_name_invisible' | 'crew_folder_shared' | 'crew_destination_is_folder' | 'crew_destination_exists' | 'crew_file_is_program' | 'observer_capacity_reached' | 'crew_invitation_invalid' | 'crew_invitation_conflict' | 'crew_connection_exists' | 'crew_join_unsupported' | 'crew_join_not_approved' | 'crew_join_code_mismatch' | 'crew_join_not_invited' | 'crew_join_expired' | 'crew_join_replaced' | 'crew_join_account_changed' | 'crew_join_device_conflict' | 'crew_join_identity_conflict' | 'crew_join_refused' | 'crew_join_removed' | 'crew_host_setup_unknown' | 'crew_host_setup_used' | 'crew_host_start_busy' | 'crew_host_start_not_found' | 'crew_host_start_timed_out' | 'crew_host_start_cancelled' | 'crew_setup_busy' | 'crew_setup_not_found' | 'crew_setup_cancelled' | 'crew_setup_timed_out' | 'crew_setup_sign_in_expired' | 'crew_setup_not_waiting_for_sign_in' | 'crew_setup_server_unreadable' | 'crew_setup_start_failed' | 'crew_setup_changed' | 'crew_host_storage_unsafe' | 'crew_host_name_in_use' | 'crew_server_probe_unsupported' | 'crew_install_artifact_unavailable' | 'crew_install_unsupported_platform' | 'crew_install_dependency_missing' | 'crew_install_incompatible' | 'crew_install_unexpected_target' | 'crew_install_checksum_tool_missing' | 'crew_install_no_space' | 'crew_install_permission_denied' | 'crew_install_busy' | 'crew_install_transfer_incomplete' | 'crew_install_checksum_mismatch' | 'crew_install_outcome_unknown';
 
 /**
  * `DELETE /crew/files/{capability_id}`.
@@ -2902,6 +2905,74 @@ export type HistoryQuery = {
     limit?: number;
 };
 
+/**
+ * A key this computer read from a server.
+ */
+export type HostKeyRead = {
+    /**
+     * `SHA256:…`, as `ssh-keygen -l` prints it.
+     */
+    fingerprint: string;
+    host: string;
+    /**
+     * The key's type, as OpenSSH names it (`ssh-ed25519`).
+     */
+    key_type: string;
+    port: number;
+};
+
+/**
+ * Which server's key to read.
+ */
+export type HostKeyReadRequest = {
+    /**
+     * The host as OpenSSH looked the key up by, without brackets or port.
+     */
+    host: string;
+    /**
+     * The SSH login the refused step used (`you@lab-server`), so its own SSH settings are
+     * checked for a jump host or another name.
+     */
+    login?: string | null;
+    port: number;
+};
+
+/**
+ * Which server's key to trust, and the fingerprint the person was shown and verified.
+ */
+export type HostKeyTrustRequest = {
+    /**
+     * `SHA256:…`, as the person was shown it.
+     */
+    fingerprint: string;
+    /**
+     * The host as OpenSSH looked the key up by, without brackets or port.
+     */
+    host: string;
+    /**
+     * The SSH login the refused step used (`you@lab-server`).
+     */
+    login?: string | null;
+    port: number;
+};
+
+/**
+ * A trusted key.
+ */
+export type HostKeyTrusted = {
+    /**
+     * The known hosts file already held exactly this key, so nothing was written.
+     */
+    already_trusted: boolean;
+    fingerprint: string;
+    host: string;
+    /**
+     * The file the key is in.
+     */
+    known_hosts_file: string;
+    port: number;
+};
+
 export type HostStartError = {
     code: string;
     message: string;
@@ -4044,6 +4115,15 @@ export type MessageEvent = {
     reason: SteerWaitReason;
     tool_name?: string | null;
     type: 'SteerWaiting';
+} | {
+    /**
+     * How a card stopped waiting, on the wire ([`MessageEvent::ActionRequiredEnded`]). Mirrors
+     * [`biorouter::pending_user_action::CardEnding`]: as coarse, and on purpose, since an allowed
+     * approval and a refused one both read `answered`.
+     */
+    ending: 'answered' | 'dismissed' | 'timed_out' | 'withdrawn';
+    id: string;
+    type: 'ActionRequiredEnded';
 } | {
     conversation: Conversation;
     token_state: TokenState;
@@ -7656,6 +7736,17 @@ export type UsageTotals = {
 export type Workflow = {
     activities?: Array<string> | null;
     author?: Author | null;
+    /**
+     * What a workflow's `capabilities:` key may say.
+     *
+     * A workflow that lists its own `extensions` still keeps every capability the
+     * person turned on for all chats on this computer (Crew, Developer, Skills and
+     * the rest), beside the ones it lists: a capability is part of the app, and a
+     * list written for one task should not switch it off without saying so.
+     * `capabilities: explicit` is how a workflow says so, and its chats get
+     * exactly the list.
+     */
+    capabilities?: 'explicit' | null;
     description: string;
     extensions?: Array<ExtensionConfig> | null;
     instructions?: string | null;
@@ -10972,6 +11063,80 @@ export type CrewTransferConfirmFileResponses = {
 };
 
 export type CrewTransferConfirmFileResponse = CrewTransferConfirmFileResponses[keyof CrewTransferConfirmFileResponses];
+
+export type CrewHostKeysReadData = {
+    body: HostKeyReadRequest;
+    path?: never;
+    query?: never;
+    url: '/crew/host-keys/read';
+};
+
+export type CrewHostKeysReadErrors = {
+    /**
+     * `crew_request_invalid`: a body that is not this route's, or a host, port or login that is not a plain name
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+    /**
+     * `crew_request_refused`: the person's SSH settings reach the server through a jump host, a ProxyCommand or under a HostKeyAlias, or a saved Crew connection to it has a jump host (a key read from here could be another machine's), or the SSH settings or the saved connections could not be read
+     */
+    409: CrewError;
+    /**
+     * `crew_ssh_unreachable`: the server gave this computer no host key
+     */
+    502: CrewError;
+};
+
+export type CrewHostKeysReadError = CrewHostKeysReadErrors[keyof CrewHostKeysReadErrors];
+
+export type CrewHostKeysReadResponses = {
+    /**
+     * The key this computer read from the server, straight from here with `ssh-keyscan`, the first of the types ssh prefers. Shown to the person to compare with the fingerprint their IT team gave them; nothing is written
+     */
+    200: HostKeyRead;
+};
+
+export type CrewHostKeysReadResponse = CrewHostKeysReadResponses[keyof CrewHostKeysReadResponses];
+
+export type CrewHostKeysTrustData = {
+    body: HostKeyTrustRequest;
+    path?: never;
+    query?: never;
+    url: '/crew/host-keys/trust';
+};
+
+export type CrewHostKeysTrustErrors = {
+    /**
+     * `crew_request_invalid`: a body that is not this route's, a host, port or login that is not a plain name, or a fingerprint that is not `SHA256:` and its digest
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+    /**
+     * `crew_ssh_host_key_changed`: the known hosts files already hold a key for this server (another key, a revoked one or a certificate authority: Crew never replaces one), or the key the server gives now does not have this fingerprint. Nothing was written. `crew_request_refused`: the SSH settings reach the server another way (a saved Crew connection's jump host included), could not be read, or name no known hosts file Crew can write; or a known hosts file could not be read, so a key already on file could not be ruled out
+     */
+    409: CrewError;
+    /**
+     * `crew_ssh_unreachable`: the server gave this computer no host key
+     */
+    502: CrewError;
+};
+
+export type CrewHostKeysTrustError = CrewHostKeysTrustErrors[keyof CrewHostKeysTrustErrors];
+
+export type CrewHostKeysTrustResponses = {
+    /**
+     * Trusted: the daemon read the server's key again, found the one with this fingerprint, and added it to the first `UserKnownHostsFile` `ssh -G` names (hashed when `HashKnownHosts` is set), under the name OpenSSH looks it up by. `already_trusted` when that file already held exactly this key and nothing else, so nothing was written. A chat waiting on the host-key card sees the key and goes on
+     */
+    200: HostKeyTrusted;
+};
+
+export type CrewHostKeysTrustResponse = CrewHostKeysTrustResponses[keyof CrewHostKeysTrustResponses];
 
 export type CrewHostStartData = {
     body: HostStartRequest;

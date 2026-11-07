@@ -479,13 +479,14 @@ export function useChatCrewAccess(
 
   // Crew changed somewhere (this chat's own `crew__change`, another chat, another window, the
   // terminal): read this chat's grant and read consents again (WI-15), unless every change names
-  // another chat. Only once this computer has a connection, so a chat that never used Crew asks
-  // the feed nothing.
+  // another chat. Also before this computer has a connection, so a chat that saves the first one
+  // (`crew__change setup`) shows it at once. That costs little: the window shares one poller, and
+  // with no connection the read is the connection list alone.
   useCrewChanged(
     (delta) => {
       if (id && changeMayConcernChat(delta, id)) refetch();
     },
-    { enabled: Boolean(id) && hasConnections }
+    { enabled: Boolean(id) }
   );
 
   useEffect(() => {

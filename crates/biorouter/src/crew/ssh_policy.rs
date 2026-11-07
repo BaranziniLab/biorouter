@@ -10,6 +10,36 @@ use tokio::io::AsyncReadExt;
 
 type Settings = HashMap<String, String>;
 
+/// The policy refusing a route the person's SSH settings describe: its own sentence, which
+/// names the host and what it needs ("Crew SSH host … requires StrictHostKeyChecking yes; …").
+/// It reads exactly as the error it replaced, so every caller that shows the text shows the
+/// same words; a chat is told it with [`SshPolicyRefused::CODE`]. An SSH settings file that
+/// can't be read (`ssh -G` failing) or a check that timed out is not one.
+#[derive(Debug)]
+pub struct SshPolicyRefused(String);
+
+impl SshPolicyRefused {
+    /// The code a chat's Crew tool gives the model with the sentence.
+    pub const CODE: &'static str = "crew_ssh_settings_refused";
+
+    pub fn sentence(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SshPolicyRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SshPolicyRefused {}
+
+/// `error`, a refusal of the policy's own, as an [`SshPolicyRefused`] with its words.
+fn policy_refused(error: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(SshPolicyRefused(error.to_string()))
+}
+
 pub async fn preflight(args: &[String], target: &str) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(30), inspect_route(args, target))
         .await
@@ -29,10 +59,11 @@ async fn inspect_route(args: &[String], target: &str) -> Result<()> {
     for depth in 0..16 {
         // Crew constructs separate option arguments, never bundled flags. Older
         // clients have only -f and do not report ForkAfterAuthentication in -G.
-        ensure!(
-            !invocation.iter().any(|arg| arg == "-f"),
-            "Crew SSH cannot fork after authentication"
-        );
+        if invocation.iter().any(|arg| arg == "-f") {
+            return Err(policy_refused(anyhow::anyhow!(
+                "Crew SSH cannot fork after authentication"
+            )));
+        }
         let settings = resolve(&invocation)
             .await
             .with_context(|| format!("Cannot inspect Crew SSH host {host}"))?;
@@ -48,11 +79,11 @@ async fn inspect_route(args: &[String], target: &str) -> Result<()> {
         }
         if let Err(error) = validate(&settings, &host, depth > 0) {
             if depth > 0 && destination_here {
-                anyhow::bail!(
+                return Err(policy_refused(anyhow::anyhow!(
                     "{error} This computer is the workspace's server, so it needs no jump host: join with --ssh-target localhost, or remove the jump host in Connection settings."
-                );
+                )));
             }
-            return Err(error);
+            return Err(policy_refused(error));
         }
         let Some(jump) = settings
             .get("proxyjump")
@@ -60,21 +91,23 @@ async fn inspect_route(args: &[String], target: &str) -> Result<()> {
         else {
             return Ok(());
         };
-        ensure!(
-            seen.insert((host.clone(), jump.clone())),
-            "Crew SSH jump route contains a cycle at {host}"
-        );
-        if let Some(path) = &config {
-            ensure!(
-                shell_atom(path),
+        if !seen.insert((host.clone(), jump.clone())) {
+            return Err(policy_refused(anyhow::anyhow!(
+                "Crew SSH jump route contains a cycle at {host}"
+            )));
+        }
+        if config.as_deref().is_some_and(|path| !shell_atom(path)) {
+            return Err(policy_refused(anyhow::anyhow!(
                 "Crew SSH jump configuration path contains shell-sensitive characters; use a profile path containing only letters, digits, /, :, _, - and ."
-            );
+            )));
         }
         let (next, next_host) = jump_invocation(jump, &settings, config.as_deref())?;
         invocation = next;
         host = next_host;
     }
-    anyhow::bail!("Crew SSH jump route exceeds sixteen hosts")
+    Err(policy_refused(anyhow::anyhow!(
+        "Crew SSH jump route exceeds sixteen hosts"
+    )))
 }
 
 async fn resolve(args: &[String]) -> Result<Settings> {

@@ -1,7 +1,7 @@
 # Privacy and security
 
 > **What this is.** The Crew manual page on privacy and security: which AI models may read your work, what other people can see, your computers and how to remove one, and what full agent access and open workspaces risk.
-> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app, and workspace hosts.
 
 Privacy in Crew decides which AI models may read your lab's messages and files, never which people see them. Only people who were let in see a workspace, by the host or in an open workspace by any member, and only a channel's members see the channel. The host is the member who runs the workspace on the server. A word in braces, such as {workspace}, stands for a name Crew fills in.
@@ -132,9 +132,20 @@ A chat can open the same windows for you. When it needs the vault, it shows an *
 
 ## Server identity
 
-Crew reaches the server over SSH and connects only to a server whose key is already in your known hosts file, usually `~/.ssh/known_hosts`. It never accepts a new or changed key. See [Server identity checks](connections-and-troubleshooting.md#server-identity-checks).
+Crew reaches the server over SSH and connects only to a server whose key is already in your known hosts file, usually `~/.ssh/known_hosts`. It adds a new key only when you choose **Trust this key** after you compared its fingerprint with the one IT gave you, and it never accepts a changed key. See [Server identity checks](connections-and-troubleshooting.md#server-identity-checks).
 
-A chat follows the same rule. Its card for an unknown key shows the fingerprint Crew read from the server, and you check it and add the key yourself, in a terminal of your own. The chat is told never to add, scan or accept a key, and in **Completely Autonomous** mode a shell command of an agent's that would trust a key nobody checked, such as `ssh -o StrictHostKeyChecking=accept-new` or `ssh-keygen -R`, asks you before it runs ([Permission modes](../security/permission-modes.md#what-still-asks-whatever-your-mode)).
+**Trust this key** holds to these rules, in Crew and in a chat alike:
+
+- It is your act: it takes the proof that you are at this computer, and no tool a model calls reaches it.
+- It is only for a server this computer knows no key for. When any key is known for it, a changed, revoked or other key, Crew refuses and adds nothing.
+- Crew reads the key from the server again and writes only a key whose fingerprint is the one you were shown. The key comes from the server, never from what was typed.
+- Crew refuses to read or add a key when your SSH settings reach the server through a jump host or under another name, because a read from this computer could reach another machine. Whatever Crew shows, trust a key only when its fingerprint matches the one IT gave you.
+
+A chat follows the same rules. Its card for an unknown key shows the fingerprint this computer read from the server, and you check it, then choose **Trust this key** or add the key yourself, in a terminal of your own. The chat is told never to add, scan or accept a key, and in **Completely Autonomous** mode a shell command of an agent's that would trust a key nobody checked, such as `ssh -o StrictHostKeyChecking=accept-new`, an `sshfs` mount with that option, or `ssh-keygen -R`, asks you before it runs ([Permission modes](../security/permission-modes.md#what-still-asks-whatever-your-mode)).
+
+### An agent's own shell
+
+A chat with a shell could run `biorouter crew` there and act as you without a card. So Crew refuses every change it makes from an agent's own shell, before anything is sent, and points the agent to `crew__change`, whose card you see ([In an agent's shell](command-line.md#in-an-agents-shell)). Reads still work there. In the same way, `biorouter session attach` run from an agent's shell answers no approval. This is accident prevention, not a boundary: it stops an agent's ordinary command, and a program set on acting as you on your own computer is beyond what Crew guards against. Crew's program on the server does the same for an agent's job there, which cannot add or remove your computers.
 
 ### What a chat never sees
 
@@ -144,6 +155,7 @@ When a chat signs you in, unlocks the vault or checks a server's key, your typin
 - The **Unlock** and **Set up** cards open your computer's own passphrase window, which sends the passphrase to Crew on this computer only.
 - A step card's words are Crew's own, with the server, login and fingerprint Crew read itself. Nothing the model writes appears on one, so a message in a channel cannot put words on a card.
 - A chat with no person to answer, such as one in a `biorouter serve` browser, where Crew does not work, or one through ACP, gets no such card. It names the step for you to take in Crew or a terminal.
+- A chat on Claude Code or Codex uses the same cards. Its model is public, so it reads only what a public model may read, and every change it makes asks you first.
 
 ## Files Crew will not share
 

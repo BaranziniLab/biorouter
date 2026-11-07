@@ -4,6 +4,7 @@ import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { sanitizeDisplayText } from '../identity/displayText';
+import { TrustHostKey } from '../hostKeys/TrustHostKey';
 import { trustCopy } from '../onboarding/copy';
 import { CopyTextButton, EmbeddedTerminal, TerminalToggle } from '../onboarding/parts';
 import { crewHostKeyStepCopy } from './CrewHostKeyStep.copy';
@@ -21,23 +22,24 @@ function fingerprintOf(value: string | null | undefined): string | null {
 }
 
 /**
- * A chat's host-key card (WI-2): the server offered a key this computer does
- * not trust, so Crew refused to sign in there. Everything on it is the
- * daemon's: the host and the fingerprints it read. It never offers to accept a
- * key.
+ * A chat's host-key card (WI-2, and the owner's D2 ruling on AO-12): the
+ * server offered a key this computer does not trust, so Crew refused to sign
+ * in there. Everything on it is the daemon's: the host and the fingerprints it
+ * read. The model can never trust a key; only the person can, here.
  *
  * - **An unknown key** shows what the Crew view's own help shows
  *   (`SetupHostKeyHelp`: the fingerprint and how to verify it, in the same
  *   words, except a last step that sends the person back to this chat rather
- *   than to a Try again button the card does not have, and a fingerprint label
- *   that says this computer read it, since the daemon may have read it with its
- *   own scan rather than from the refused connection), an "Open a terminal
- *   here" button that opens the app's own terminal in the person's shell (never
- *   the model's, and never a landing zone for a transcript's Run button), and
- *   Not now. Once the daemon sees the key in the known-hosts file the chat goes
- *   on by itself.
+ *   than to a Try again button the card does not have), Trust this key when
+ *   the card shows a fingerprint (`TrustHostKey`: the person's proof, and the
+ *   daemon reads the key again and writes it only when its fingerprint is the
+ *   one shown), an "Open a terminal here" button that opens the app's own
+ *   terminal in the person's shell (never the model's, and never a landing zone
+ *   for a transcript's Run button), and Not now. Once the daemon sees the key
+ *   in the known hosts file the chat goes on by itself: it retries the step
+ *   once.
  * - **A changed key** offers exactly one thing, the details for IT, as the
- *   Crew view's trust pane does.
+ *   Crew view's trust pane does. It is never trusted.
  */
 export default function CrewHostKeyStep({
   sessionId,
@@ -61,6 +63,8 @@ export default function CrewHostKeyStep({
       sessionId={sessionId}
       id={id}
       host={host}
+      port={step.port}
+      login={sanitizeDisplayText(step.login)}
       offered={offered}
       onHolding={onHolding}
     />
@@ -71,12 +75,16 @@ function UnknownHostKey({
   sessionId,
   id,
   host,
+  port,
+  login,
   offered,
   onHolding,
 }: {
   sessionId: string;
   id: string;
   host: string;
+  port: number;
+  login: string;
   offered: string | null;
   onHolding?: (holding: boolean) => void;
 }) {
@@ -98,6 +106,11 @@ function UnknownHostKey({
             <span className="text-supporting text-text-muted">{crewHostKeyStepCopy.read}</span>
             <CopyField value={offered} label={trustCopy.offeredLabel} truncate="middle" />
           </div>
+        ) : null}
+        {/* The person's own act, with their proof: the daemon re-reads the key and the card
+            comes down once the key is in, then the chat tries the step again. */}
+        {offered && !ended ? (
+          <TrustHostKey target={{ host, port, login }} fingerprint={offered} />
         ) : null}
         <Disclosure label={trustCopy.howToVerify}>
           <ol className="crew-onboard-list text-body text-text-default">

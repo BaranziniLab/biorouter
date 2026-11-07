@@ -422,9 +422,13 @@ pub(crate) fn no_daemon_at(port: u16) -> String {
     )
 }
 
+/// Asks an event stream to say when each card ends (WI-17, the daemon's `CARD_ENDINGS_HEADER`):
+/// `watch` and `attach` read the `ActionRequiredEnded` frame it sends.
+const CARD_ENDINGS: &str = "X-Card-Endings: 1\r\n";
+
 pub(crate) fn build_get_request(path: &str, host: &str, auth: &DaemonAuth) -> String {
     format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\n{}\
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\n{}{CARD_ENDINGS}\
          Accept: text/event-stream\r\nConnection: close\r\n\r\n",
         auth.headers()
     )
@@ -455,6 +459,7 @@ fn build_protected_get_request(path: &str, host: &str, auth: &DaemonAuth) -> Zer
         auth.headers()
     ));
     push_proof(&mut request, auth);
+    request.push_str(CARD_ENDINGS);
     request.push_str("Accept: text/event-stream\r\nConnection: close\r\n\r\n");
     request
 }
@@ -720,6 +725,8 @@ pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("stop")
         )),
+        // WI-17: a card this chat showed stopped waiting.
+        "ActionRequiredEnded" => Some(cards::ended_frame_line(frame)),
         _ => None,
     }
 }
@@ -1009,6 +1016,9 @@ fn stream_frame_lines(frame: &serde_json::Value, render: Render, joined: &mut bo
             lines.push("── live from here ──".to_string());
             lines
         }
+        // `attach` names the card that ended from what it showed ([`cards::Waiting`]), so the
+        // nameless `watch` line would say it twice.
+        Render::JoinThenLines if kind == Some("ActionRequiredEnded") => Vec::new(),
         Render::Lines | Render::JoinThenLines => render_frame(frame).into_iter().collect(),
     }
 }
@@ -2992,6 +3002,12 @@ mod tests {
         assert!(get.starts_with("GET /sessions/abc/events HTTP/1.1\r\n"));
         assert!(get.contains("X-Secret-Key: s3cret\r\n"));
         assert!(get.contains("Accept: text/event-stream\r\n"));
+        // WI-17: `watch` and `attach` ask to be told when each card ends; without it the daemon
+        // never sends the frame, and a held approval waits until the turn ends.
+        assert!(get.contains("X-Card-Endings: 1\r\n"), "{get}");
+        let attach = build_protected_get_request("/sessions/abc/events", "127.0.0.1", &auth);
+        assert!(attach.contains("X-Card-Endings: 1\r\n"));
+        assert!(attach.ends_with("\r\n\r\n"));
 
         let post = build_post_request("/reply", "127.0.0.1", &auth, "{\"a\":1}");
         assert!(post.starts_with("POST /reply HTTP/1.1\r\n"));
@@ -3976,6 +3992,21 @@ mod tests {
         let mut silent = false;
         assert!(stream_frame_lines(&snapshot, Render::Silent, &mut silent).is_empty());
         assert!(!silent);
+    }
+
+    /// WI-17: `watch` prints a card's end in a line that names no card (it keeps none), and
+    /// `attach` prints nothing for the frame itself, since its card tracker names the card.
+    #[test]
+    fn a_cards_end_is_one_line_in_watch_and_left_to_the_tracker_in_attach() {
+        let end = serde_json::json!({
+            "type": "ActionRequiredEnded", "id": "card-1", "ending": "timed_out", "seq": 9
+        });
+        let mut joined = false;
+        assert_eq!(
+            stream_frame_lines(&end, Render::Lines, &mut joined),
+            vec!["[closed] A request in this chat is over: timed out.".to_string()]
+        );
+        assert!(stream_frame_lines(&end, Render::JoinThenLines, &mut joined).is_empty());
     }
 
     /// Reading a response off an in-memory pipe, so the status/termination rules

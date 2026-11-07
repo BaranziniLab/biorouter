@@ -1,7 +1,7 @@
 # Hosting a workspace
 
 > **What this is.** The host's tasks as numbered steps: setting Crew up and starting it on the lab server, creating the workspace, choosing who manages it, inviting people, managing it afterwards, keeping Crew current on the server, and deleting it.
-> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
 > **Audience:** The lab member who hosts a Crew workspace, including people who have never used SSH or a terminal.
 
 A Crew workspace runs in the host's account on a Linux server. Biorouter installs Crew's server program in your account and starts the workspace for you, so you need no terminal. Braces mark a name Crew fills in, such as {workspace}, {server}, or {first}, the first name of the person you invite.
@@ -106,6 +106,8 @@ The message says what failed, and **What the server printed** holds the server's
 | "…needs a newer Biorouter background service" | See [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service). |
 | "Biorouter read the workspace but not every detail it needs" | From the last output line, copy `socket`, `workspace_id`, `host_uid` and `workspace_public_key` into **Socket path**, **Workspace ID**, **Host user ID** and **Workspace key**. |
 | Any other message | Do what it says, or run the commands yourself. |
+
+When setting up stops because this computer does not trust the server's key yet, the steps also show "Fingerprint this computer read from the server". Compare it with the one from IT, choose **Trust this key** ([Trust the key in Crew](joining-a-workspace.md#trust-the-key-in-crew)), then choose **Try again**. A changed key gets only its details for IT.
 
 Every setup code is listed in [Setup refusals](command-line.md#setup-refusals).
 

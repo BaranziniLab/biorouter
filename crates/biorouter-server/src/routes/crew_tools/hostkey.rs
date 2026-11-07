@@ -1,10 +1,13 @@
 //! A server's host key from a chat (the owner's D1, D2 and D6 rulings on AO-12, WI-2): the step a
 //! host-key refusal names, the fingerprints the daemon read, and the host-key card a chat shows.
 //!
-//! **A chat never accepts a host key.** Crew forces `StrictHostKeyChecking yes` on every hop, so
-//! a server whose key this computer does not know is refused until the person checks the key with
-//! their server's IT team and adds it in a terminal of their own. The card is
-//! [`CrewStepRequest::HostKey`], and every field on it comes from the daemon:
+//! **A model never accepts a host key.** Crew forces `StrictHostKeyChecking yes` on every hop,
+//! so a server whose key this computer does not know is refused until the person checks the key
+//! with their server's IT team and either adds it in a terminal of their own or, for an unknown
+//! key the card shows a fingerprint for, chooses Trust this key on the card (the owner's D2
+//! ruling: `POST /crew/host-keys/trust`, with the person's proof, which no tool action reaches;
+//! the daemon reads the key again and writes it only when its fingerprint is the one shown). The
+//! card is [`CrewStepRequest::HostKey`], and every field on it comes from the daemon:
 //!
 //! * the refusal's own words: a refused action's [`SshFailure`] (`detail`, which the transport
 //!   summarizes with every fingerprint first, and `host`, the name OpenSSH looked the key up by),
@@ -25,13 +28,17 @@
 //! What happens next:
 //!
 //! * **An unknown key** parks the card and waits ([`KEY_WAIT`], Stop or a dismissal) while the
-//!   daemon reads the known-hosts file each second (`ssh-keygen -F`, [`listed_fingerprints`]) for
-//!   the key the card shows. Once the person has added it, the card is withdrawn and the step is
-//!   tried again, once ([`try_again`]): the action runs as the model called it, and the approval
-//!   the person gave earlier in this call is used once more, for the identical card only, while
-//!   an approval card would still have been answerable (`APPROVAL_TTL`). Any other card the
-//!   retry needs is asked (`retrying_after_a_host_key` and `allowed_for_this_retry` in the
-//!   parent module).
+//!   daemon reads the known hosts files each second (`ssh-keygen -F`, [`key_added`]) for the key
+//!   the card shows: the `UserKnownHostsFile` and `GlobalKnownHostsFile` lists `ssh -G` resolves
+//!   for the step's login ([`biorouter::crew::host_keys::known_hosts_files`]), the first of
+//!   which is where Trust this key writes. Once the person has added it, the card is withdrawn
+//!   and the step is tried again, once ([`try_again`]): the action runs as the model called it,
+//!   and the approval the person gave earlier in this call is used once more, for the identical
+//!   card only, while an approval card would still have been answerable (`APPROVAL_TTL`). Any
+//!   other card the retry needs is asked (`retrying_after_a_host_key` and
+//!   `allowed_for_this_retry` in the parent module). When the call was `auth` and the key
+//!   stopped the setup job it signed the person in to, the job is what is tried again
+//!   ([`restart_job`]).
 //! * **A changed key** never waits and never offers a fix. Its card (the details for IT) is
 //!   published and released at once, and the call answers with [`CHANGED_STEP`].
 //! * **No card can be shown** (`biorouter serve`, ACP, `POST /agent/call_tool`): the refusal is
@@ -43,21 +50,22 @@
 //! first.
 
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::Result;
-use base64::Engine as _;
 use biorouter::conversation::message::CrewStepRequest;
 use biorouter::crew::authentication::{HandoffFailed, InvitationRefused, JoinRefused};
+use biorouter::crew::host_keys::{self, Resolved};
 use biorouter::crew::{
-    Connection, SetupRefused, SetupState, SetupStatus, SshFailure, SshFailureKind,
+    Connection, SetupIntent, SetupRefused, SetupRequest, SetupState, SetupStatus, SshFailure,
+    SshFailureKind,
 };
+use futures::future::BoxFuture;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
 
-use super::{catalog, job_answer, job_target, said, tool_error, Ctx, Said, StepEnd};
+use super::{
+    catalog, job_answer, job_target, remember_job_target, said, tool_error, Ctx, Said, StepEnd,
+};
 
 /// The code of a refusal on a host key this computer does not know yet.
 const UNKNOWN: &str = "crew_ssh_host_key_unknown";
@@ -65,20 +73,24 @@ const UNKNOWN: &str = "crew_ssh_host_key_unknown";
 const CHANGED: &str = "crew_ssh_host_key_changed";
 /// How long an unknown key's card waits for the person to add the key (capped by `park_step`).
 const KEY_WAIT: Duration = Duration::from_secs(600);
-/// How often the known-hosts file is read while the card waits.
+/// How often the known hosts files are read while the card waits.
 const KEY_POLL: Duration = Duration::from_secs(1);
-/// How long one `ssh-keygen -F` or `ssh-keyscan` may take.
-const KEY_TOOL_LIMIT: Duration = Duration::from_secs(10);
-/// How much of their output is read.
-const KEY_TOOL_OUTPUT: u64 = 64 * 1024;
 /// The key types `ssh-keyscan -t` is asked for, as OpenSSH names them in "No ED25519 host key is
 /// known for …".
 const KEY_TYPES: &[&str] = &["ed25519", "ecdsa", "rsa", "dsa"];
 
 /// The step an unknown key's refusal names for the model.
-pub(crate) const UNKNOWN_STEP: &str = "Do not add, scan or accept the key yourself (no ssh-keyscan, no StrictHostKeyChecking=accept-new or no, no edits to known_hosts); Crew never accepts a host key for the person. They check the fingerprint with their server's IT team and add the key in a terminal of their own; then try again.";
+pub(crate) const UNKNOWN_STEP: &str = "Do not add, scan or accept the key yourself (no ssh-keyscan, no StrictHostKeyChecking=accept-new or no, no edits to known_hosts); Crew never accepts a host key for the person. They check the fingerprint with their server's IT team, then choose Trust this key on the card or add the key in a terminal of their own; then try again.";
+/// [`UNKNOWN_STEP`] where no card can open for the call (`biorouter serve`, ACP,
+/// `POST /agent/call_tool`): the person adds the key themselves.
+pub(crate) const UNKNOWN_STEP_NO_CARD: &str = "Do not add, scan or accept the key yourself (no ssh-keyscan, no StrictHostKeyChecking=accept-new or no, no edits to known_hosts); Crew never accepts a host key for the person. They check the fingerprint with their server's IT team and add the key in a terminal of their own, or trust it in Crew in the desktop app; then try again.";
 /// The step a changed key's refusal names for the model: the IT wording, with no fix.
 pub(crate) const CHANGED_STEP: &str = "Do not add, scan, remove or accept a key yourself (no ssh-keyscan, no ssh-keygen -R, no StrictHostKeyChecking=accept-new or no, no edits to known_hosts). The server's host key changed since this computer trusted it, so nothing connects until the person's server IT team confirms the change.";
+/// Said when a setup job a sign-in let go on stopped on a host key, the person added the key,
+/// and the job can't be started again from here: only a check is started again by itself, since
+/// its whole request is the server it checks; any other job's choices were the person's, on the
+/// card of the action that started it.
+pub(crate) const RESTART_STEP: &str = "The key is in the known hosts file now, but this setup can't be started again from here. Start it again with the action that started it; the person approves it again.";
 /// How a refusal's detail labels a key the daemon read itself with `ssh-keyscan`
 /// ([`KeyRefusal::detail_with_offered`]). Never the transport's "Offered host key fingerprint":
 /// no server offered it on the refused connection; this computer asked for it.
@@ -93,11 +105,26 @@ tokio::task_local! {
 /// The step a host-key refusal names for the model ([`super::next_step`]), or `None` when `code`
 /// is not a host key's.
 pub(super) fn next_step(code: &str, _connection: Option<&str>) -> Option<String> {
+    step_for(code, card_can_open())
+}
+
+/// [`next_step`], where `card` says whether a host-key card can open in this process.
+fn step_for(code: &str, card: bool) -> Option<String> {
     match code {
-        UNKNOWN => Some(UNKNOWN_STEP.to_owned()),
+        UNKNOWN if card => Some(UNKNOWN_STEP.to_owned()),
+        UNKNOWN => Some(UNKNOWN_STEP_NO_CARD.to_owned()),
         CHANGED => Some(CHANGED_STEP.to_owned()),
         _ => None,
     }
+}
+
+/// Whether a host-key card could open for the call being answered: a person's proof can be had
+/// in this process (not `biorouter serve`), and the call has a surface a person watches, as
+/// [`Ctx::park_step`] asks before it parks one. Otherwise a step would promise a card's Trust
+/// this key that nobody can see.
+fn card_can_open() -> bool {
+    biorouter::pending_user_action::user_proof_available()
+        && !biorouter::user_surface::no_human_surface()
 }
 
 /// `text`, the sentence the model is told for a refusal or a failed job's step, with the
@@ -189,7 +216,7 @@ pub(super) async fn on_status(ctx: &Ctx, status: &SetupStatus) -> Option<Value> 
         error.detail = refusal.detail_with_offered();
     }
     match wait_for_key(ctx, &refusal).await {
-        Some(StepEnd::Withdrawn) => Some(match try_again(ctx).await {
+        Some(StepEnd::Withdrawn) => Some(match try_again(ctx, Some(&seen)).await {
             Ok(answer) => answer,
             Err(error) => {
                 let refused = tool_error(error, ctx.named_connection()).await.to_string();
@@ -241,7 +268,7 @@ pub(super) async fn on_refusal(ctx: &Ctx, error: anyhow::Error) -> Result<Value>
         error
     };
     match wait_for_key(ctx, &refusal).await {
-        Some(StepEnd::Withdrawn) => try_again(ctx).await,
+        Some(StepEnd::Withdrawn) => try_again(ctx, None).await,
         _ => Err(error),
     }
 }
@@ -338,37 +365,19 @@ async fn reached_directly(route: &Route, refusal: &KeyRefusal) -> bool {
     if route.jumps() || route.login.is_empty() || route.login.starts_with('-') {
         return false;
     }
-    let mut command = tokio::process::Command::new("ssh");
-    command.arg("-G");
-    if let Some(profile) = std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT") {
-        command
-            .arg("-F")
-            .arg(PathBuf::from(profile).join("home/.ssh/config"));
-    }
-    if let Some(port) = route.port {
-        command.arg("-p").arg(port.to_string());
-    }
-    command.arg(&route.login);
-    let Some(resolved) = run_bounded(command).await else {
-        return false;
-    };
-    resolved_directly(&resolved, refusal)
+    host_keys::resolve(&route.login, route.port)
+        .await
+        .is_some_and(|resolved| resolved_directly(&resolved, refusal))
 }
 
-/// [`reached_directly`]'s reading of what `ssh -G` printed for the route.
-fn resolved_directly(resolved: &str, refusal: &KeyRefusal) -> bool {
-    let setting = |key: &str| {
-        resolved.lines().find_map(|line| {
-            let (name, value) = line.split_once(' ')?;
-            (name == key).then(|| value.trim())
-        })
-    };
-    let unset = |key: &str| setting(key).is_none_or(|value| value == "none");
-    unset("proxyjump")
-        && unset("proxycommand")
-        && unset("hostkeyalias")
-        && setting("hostname").is_some_and(|name| name.eq_ignore_ascii_case(&refusal.host))
-        && setting("port").and_then(|port| port.parse::<u16>().ok()) == Some(refusal.port)
+/// [`reached_directly`]'s reading of what `ssh -G` resolved for the route.
+fn resolved_directly(resolved: &Resolved, refusal: &KeyRefusal) -> bool {
+    resolved.direct
+        && resolved
+            .hostname
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case(&refusal.host))
+        && resolved.port == Some(refusal.port)
 }
 
 /// Whether this is the one time a step a host-key card waited for is tried again.
@@ -376,15 +385,52 @@ fn trying_again() -> bool {
     TRYING_AGAIN.try_with(|_| ()).is_ok()
 }
 
-/// Run the call's action again, once, as the model called it: after the person added the key
-/// the card waited for. The approval the person gave for the identical card in this call stands
-/// for it (`Ctx::approve`); any other card is asked. A second host-key refusal is said, not
-/// carded.
-async fn try_again(ctx: &Ctx) -> Result<Value> {
+/// Run the call's step again, once, after the person added the key the card waited for. A
+/// second host-key refusal is said, not carded.
+///
+/// The step is the call's action, as the model called it: the approval the person gave for the
+/// identical card in this call stands for it (`Ctx::approve`), and any other card is asked. But
+/// when the call is `auth` and the key stopped the setup `job` it signed the person in to, the
+/// step is that job, and running `auth` again would only find a job that waits for nothing: the
+/// job is started again instead ([`restart_job`]).
+async fn try_again(ctx: &Ctx, job: Option<&SetupStatus>) -> Result<Value> {
+    if let Some(job) = job.filter(|_| ctx.action.name == "auth") {
+        return TRYING_AGAIN.scope((), restart_job(ctx, job)).await;
+    }
     let Some(run) = ctx.action.run else {
         return Err(said(None, catalog::NOT_YET));
     };
     TRYING_AGAIN.scope((), run(ctx)).await
+}
+
+/// Start the setup job `job` again, as it was started, and wait for it as `auth` waits for a
+/// job. Only a check this host started is started again by itself ([`restart_request`]); any
+/// other job answers as it stands, with [`RESTART_STEP`]. Boxed: the wait reaches
+/// [`on_status`] again, which is how a second refusal is said rather than carded.
+fn restart_job<'a>(ctx: &'a Ctx, job: &'a SetupStatus) -> BoxFuture<'a, Result<Value>> {
+    Box::pin(async move {
+        let Some((request, target)) = restart_request(job) else {
+            let mut answer = job_answer(job, false);
+            answer["next_step"] = json!(RESTART_STEP);
+            return Ok(answer);
+        };
+        let started = ctx.crew()?.start_setup(request).await?;
+        remember_job_target(&started.job_id, target);
+        Ok(ctx.wait_for_job(&started.job_id).await)
+    })
+}
+
+/// The request that starts `job` again, and its target: a check (`intent` check) whose target
+/// this host recorded when it started it (`job_target`). A check's whole request is its target,
+/// so it is started again exactly as before. `None` for any other job, whose choices (what to
+/// restart, the agent access) only the action that started it, and its card, carried.
+fn restart_request(job: &SetupStatus) -> Option<(SetupRequest, Value)> {
+    if job.intent != SetupIntent::Check {
+        return None;
+    }
+    let target = job_target(&job.job_id)?;
+    let request = serde_json::from_value(json!({"target": target, "intent": "check"})).ok()?;
+    Some((request, target))
 }
 
 /// A changed key's card: published for the person (the details for IT) and released at once,
@@ -393,13 +439,13 @@ fn show_changed(ctx: &Ctx, refusal: &KeyRefusal) {
     drop(ctx.park_step(refusal.card(), KEY_WAIT));
 }
 
-/// Park an unknown key's card and wait for it to end: withdrawn once the known-hosts file holds
-/// the key the card shows, or dismissed, stopped or out of time. `None` when no card could be
-/// shown.
+/// Park an unknown key's card and wait for it to end: withdrawn once the known hosts files hold
+/// the key the card shows (added by the person, in a terminal of their own or with the card's
+/// Trust this key), or dismissed, stopped or out of time. `None` when no card could be shown.
 async fn wait_for_key(ctx: &Ctx, refusal: &KeyRefusal) -> Option<StepEnd> {
     let step = ctx.park_step(refusal.card(), KEY_WAIT)?;
     let withdraw = step.withdrawer();
-    let files = known_hosts_files();
+    let files = refusal.known_hosts_files().await;
     let end = step.end();
     tokio::pin!(end);
     loop {
@@ -505,11 +551,11 @@ impl KeyRefusal {
             return;
         }
         let port = self.port.to_string();
-        let mut command = tokio::process::Command::new("ssh-keyscan");
+        let mut command = host_keys::key_tool("ssh-keyscan");
         command
             .args(["-T", "5", "-t", key_type.as_str(), "-p", port.as_str()])
             .arg(&self.host);
-        let Some(output) = run_bounded(command).await else {
+        let Some((_, output)) = host_keys::run_tool(command).await else {
             return;
         };
         let offered = output
@@ -518,12 +564,25 @@ impl KeyRefusal {
             .find_map(|line| {
                 let mut words = line.split_whitespace();
                 let (_host, _type, blob) = (words.next()?, words.next()?, words.next()?);
-                fingerprint_of(blob)
+                host_keys::fingerprint_of(blob)
             });
         if offered.is_some() {
             self.offered = offered;
             self.scanned = true;
         }
+    }
+
+    /// The known hosts files the refused step's ssh reads ([`host_keys::known_hosts_files`]):
+    /// the `UserKnownHostsFile` and `GlobalKnownHostsFile` lists `ssh -G` resolves for its
+    /// login (the host, when the call named none), as Crew's ssh resolves them. A key the
+    /// card's Trust this key adds goes to the first of them.
+    async fn known_hosts_files(&self) -> Vec<PathBuf> {
+        let name = if self.login.is_empty() {
+            self.host.as_str()
+        } else {
+            self.login.as_str()
+        };
+        host_keys::known_hosts_files(name, None).await
     }
 
     /// The daemon's words with the key it read itself first, labelled as read by this computer
@@ -595,15 +654,7 @@ fn key_type(text: &str) -> Option<String> {
     })
 }
 
-/// Whether `text` is a SHA-256 host-key fingerprint and nothing else.
-fn is_fingerprint(text: &str) -> bool {
-    text.strip_prefix("SHA256:").is_some_and(|digest| {
-        (32..=64).contains(&digest.len())
-            && digest
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
-    })
-}
+use host_keys::is_fingerprint;
 
 /// Every SHA-256 fingerprint in `line`, as the transport finds them.
 fn sha256_values(line: &str) -> Vec<String> {
@@ -714,102 +765,30 @@ fn raw_fingerprints(text: &str) -> (Option<String>, Option<String>) {
     (offered.or(unlabeled), known)
 }
 
-/// `SHA256:…` for an OpenSSH public key blob (the base64 word of a known-hosts or
-/// `ssh-keyscan` line), as `ssh-keygen -l` prints it.
-fn fingerprint_of(blob: &str) -> Option<String> {
-    let key = base64::engine::general_purpose::STANDARD
-        .decode(blob)
-        .ok()?;
-    let digest = Sha256::digest(&key);
-    Some(format!(
-        "SHA256:{}",
-        base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)
-    ))
-}
-
 // ---------------------------------------------------------------------------------------------
-// The known-hosts file
+// The known hosts files
 // ---------------------------------------------------------------------------------------------
-
-/// The known-hosts files the daemon's ssh reads: the development profile's (the
-/// `UserKnownHostsFile` the transport passes), else OpenSSH's defaults in the home folder.
-fn known_hosts_files() -> Vec<PathBuf> {
-    if let Some(profile) = std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT") {
-        return vec![PathBuf::from(profile).join("home/.ssh/known_hosts")];
-    }
-    biorouter::config::paths::Paths::home_dir()
-        .map(|home| {
-            vec![
-                home.join(".ssh/known_hosts"),
-                home.join(".ssh/known_hosts2"),
-            ]
-        })
-        .unwrap_or_default()
-}
 
 /// Whether `files` now hold the key the card shows for the refusal's host: the fingerprint the
 /// card shows, or, where it shows none, any key the person added for the host. A revoked key or
 /// a certificate authority does not count.
 async fn key_added(refusal: &KeyRefusal, files: &[PathBuf]) -> bool {
-    let mut listed = Vec::new();
-    for file in files.iter().filter(|file| file.is_file()) {
-        let mut command = tokio::process::Command::new("ssh-keygen");
-        command
-            .args(["-l", "-F", refusal.lookup.as_str(), "-f"])
-            .arg(file);
-        if let Some(output) = run_bounded(command).await {
-            listed.extend(listed_fingerprints(&output));
-        }
+    // File by file: one that can't be read shows no key, and the others still count.
+    let mut listed: Vec<String> = Vec::new();
+    for file in files {
+        let entries = host_keys::listed(&refusal.lookup, std::slice::from_ref(file)).await;
+        listed.extend(
+            entries
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|entry| entry.marker == host_keys::Marker::Plain)
+                .map(|entry| entry.fingerprint),
+        );
     }
     match &refusal.offered {
         Some(offered) => listed.iter().any(|found| found == offered),
         None => !listed.is_empty(),
     }
-}
-
-/// The fingerprints of the plain entries `ssh-keygen -l -F` printed. Each entry follows a
-/// `# Host NAME found: line N` header, which ends in `REVOKED` or `CA` for a marked one.
-fn listed_fingerprints(output: &str) -> Vec<String> {
-    let mut plain = false;
-    let mut found = Vec::new();
-    for line in output.lines() {
-        if let Some(header) = line.strip_prefix("# Host ") {
-            plain = header
-                .rsplit_once(" found: line ")
-                .is_some_and(|(_, rest)| rest.split_whitespace().nth(1).is_none());
-            continue;
-        }
-        if std::mem::take(&mut plain) {
-            found.extend(sha256_values(line));
-        }
-    }
-    found
-}
-
-/// Run a key tool (`ssh-keygen`, `ssh-keyscan`) as the daemon's own child: no input, its
-/// output bounded, killed past [`KEY_TOOL_LIMIT`]. `None` when it could not run or said
-/// nothing readable.
-async fn run_bounded(mut command: tokio::process::Command) -> Option<String> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    biorouter::subprocess::prepare_agent_child_command(&mut command);
-    let mut child = command.spawn().ok()?;
-    let stdout = child.stdout.take()?;
-    let ran = async move {
-        let mut bytes = Vec::new();
-        stdout
-            .take(KEY_TOOL_OUTPUT)
-            .read_to_end(&mut bytes)
-            .await
-            .ok()?;
-        let _ = child.wait().await;
-        Some(bytes)
-    };
-    let bytes = tokio::time::timeout(KEY_TOOL_LIMIT, ran).await.ok()??;
-    String::from_utf8(bytes).ok()
 }
 
 #[cfg(test)]
@@ -852,22 +831,44 @@ mod tests {
 
     #[test]
     fn each_host_key_refusal_names_its_own_step() {
-        let unknown = next_step(UNKNOWN, None).unwrap();
+        let unknown = step_for(UNKNOWN, true).unwrap();
         assert!(
             unknown.starts_with("Do not add, scan or accept the key yourself"),
             "{unknown}"
         );
         assert!(unknown.contains("no ssh-keyscan"), "{unknown}");
         assert!(unknown.contains("never accepts a host key"), "{unknown}");
+        assert!(unknown.contains("Trust this key on the card"), "{unknown}");
         assert!(unknown.contains("then try again"), "{unknown}");
-        let changed = next_step(CHANGED, None).unwrap();
+        // Where no card can open, no step promises one.
+        let no_card = step_for(UNKNOWN, false).unwrap();
+        assert!(!no_card.contains("on the card"), "{no_card}");
+        assert!(no_card.contains("in a terminal of their own"), "{no_card}");
+        assert!(no_card.contains("then try again"), "{no_card}");
+        let changed = step_for(CHANGED, true).unwrap();
         assert!(changed.contains("IT team confirms the change"), "{changed}");
         assert!(changed.contains("no ssh-keygen -R"), "{changed}");
         assert!(!changed.contains("try again"), "{changed}");
+        assert!(
+            !changed.to_lowercase().contains("trust this key"),
+            "{changed}"
+        );
+        assert_eq!(step_for(CHANGED, false), Some(changed.clone()));
         assert!(next_step("crew_ssh_auth_required", None).is_none());
-        for text in [unknown, changed] {
+        for text in [unknown, no_card, changed, RESTART_STEP.to_owned()] {
             assert!(!text.contains(['\u{2014}', '\u{2013}']), "{text}");
         }
+    }
+
+    /// Outside any call with a person at it (a unit test is one), the step never promises a card.
+    #[test]
+    fn a_step_said_where_nobody_watches_promises_no_card() {
+        let said = next_step(UNKNOWN, None).unwrap();
+        assert_eq!(
+            said,
+            step_for(UNKNOWN, card_can_open()).unwrap(),
+            "next_step asks whether a card can open"
+        );
     }
 
     /// The transport's summary, a changed key's raw banner and an unlabelled fingerprint are
@@ -1028,9 +1029,10 @@ mod tests {
         )
         .unwrap();
         let direct = "user you\nhostname hpc.example.edu\nport 2222\nproxycommand none\n";
-        assert!(resolved_directly(direct, &refusal));
+        let parsed = |text: &str| Resolved::parse(text, None);
+        assert!(resolved_directly(&parsed(direct), &refusal));
         assert!(resolved_directly(
-            "hostname HPC.example.edu\nport 2222\nproxyjump none\n",
+            &parsed("hostname HPC.example.edu\nport 2222\nproxyjump none\n"),
             &refusal
         ));
         for indirect in [
@@ -1042,7 +1044,10 @@ mod tests {
             "port 2222\n".to_owned(),
             String::new(),
         ] {
-            assert!(!resolved_directly(&indirect, &refusal), "{indirect}");
+            assert!(
+                !resolved_directly(&parsed(&indirect), &refusal),
+                "{indirect}"
+            );
         }
         // A route with a jump host, or with no login to resolve, is not direct before `ssh -G`
         // is even asked.
@@ -1073,19 +1078,95 @@ mod tests {
 
     #[test]
     fn a_key_blob_s_fingerprint_is_the_one_ssh_keygen_prints() {
-        assert_eq!(fingerprint_of(BLOB).as_deref(), Some(BLOB_FINGERPRINT));
-        assert_eq!(fingerprint_of("not base64!"), None);
+        assert_eq!(
+            host_keys::fingerprint_of(BLOB).as_deref(),
+            Some(BLOB_FINGERPRINT)
+        );
     }
 
+    /// A setup job that stopped on an unknown key, as `auth` saw it.
+    fn stopped_job(job_id: &str, intent: SetupIntent) -> SetupStatus {
+        use biorouter::crew::{SetupError, SetupServer, SetupStageName};
+        SetupStatus {
+            job_id: job_id.into(),
+            intent,
+            state: SetupState::Failed,
+            stage: SetupStageName::Check,
+            stages: Vec::new(),
+            server: SetupServer {
+                login: "you@hpc.example.edu".into(),
+                ..SetupServer::default()
+            },
+            installed: None,
+            artifact: None,
+            workspaces: Vec::new(),
+            workspaces_scan: None,
+            workspaces_note: None,
+            workspaces_unlisted: None,
+            outcome: None,
+            error: Some(SetupError {
+                code: UNKNOWN.into(),
+                message: "Can't verify the server.".into(),
+                detail: Some("No ED25519 host key is known for hpc.example.edu and you have requested strict checking.".into()),
+                host: Some("hpc.example.edu".into()),
+            }),
+        }
+    }
+
+    /// After the key is in, `auth` on a setup job tries the job again, never `auth` itself,
+    /// which would only find a job that waits for nothing ("Nothing waits for a sign-in"). A job
+    /// whose choices only the card of the action that started it carried is not started again
+    /// by itself: it answers as it stands, with the step to start it again.
+    #[tokio::test]
+    async fn a_retry_from_auth_is_the_job_never_auth_itself() {
+        let job = format!("job-{}", uuid::Uuid::new_v4());
+        let ctx = test_ctx(PersonTool::Change, "auth", json!({"job_id": job})).await;
+        for intent in [
+            SetupIntent::Install,
+            SetupIntent::Member,
+            SetupIntent::Check,
+        ] {
+            // An install's or a member's choices are not this host's to repeat, and a check
+            // started elsewhere (Crew, a terminal) has no target this host recorded.
+            let answer = try_again(&ctx, Some(&stopped_job(&job, intent)))
+                .await
+                .expect("the job answers as it stands");
+            assert_eq!(answer["job_id"], job.as_str(), "{answer}");
+            assert_eq!(answer["state"], "failed", "{answer}");
+            assert_eq!(answer["next_step"], RESTART_STEP, "{answer}");
+            assert!(
+                !answer.to_string().contains("Nothing waits for a sign-in"),
+                "{answer}"
+            );
+        }
+        // The same call with no job tries the action, as before.
+        let ran = try_again(&ctx, None).await;
+        assert!(ran.is_err() || ran.is_ok_and(|answer| answer["next_step"] != RESTART_STEP));
+    }
+
+    /// Only a check this host started is started again by itself, from exactly the target it
+    /// recorded: its whole request is that target.
     #[test]
-    fn only_plain_known_hosts_entries_count() {
-        let output = format!(
-            "# Host hpc.example.edu found: line 1 REVOKED\nhpc.example.edu ED25519 {KNOWN}\n# Host hpc.example.edu found: line 2 CA\nhpc.example.edu ED25519 {OFFERED}\n# Host hpc.example.edu found: line 3 \nhpc.example.edu ED25519 {BLOB_FINGERPRINT}\n"
-        );
-        assert_eq!(
-            listed_fingerprints(&output),
-            vec![BLOB_FINGERPRINT.to_owned()]
-        );
+    fn only_a_check_this_host_started_is_started_again() {
+        let job = format!("job-{}", uuid::Uuid::new_v4());
+        assert!(restart_request(&stopped_job(&job, SetupIntent::Check)).is_none());
+        let target = json!({"kind": "server", "ssh_target": "you@hpc.example.edu", "port": 2222});
+        remember_job_target(&job, target.clone());
+        let (request, kept) =
+            restart_request(&stopped_job(&job, SetupIntent::Check)).expect("a check restarts");
+        assert_eq!(kept, target);
+        assert_eq!(request.intent, SetupIntent::Check);
+        let started = serde_json::to_value(&request.target).unwrap();
+        for key in ["kind", "ssh_target", "port"] {
+            assert_eq!(started[key], target[key], "{started}");
+        }
+        assert!(request.restart_workspace_ids.is_empty() && request.start_workspaces.is_empty());
+        for intent in [SetupIntent::Install, SetupIntent::Member, SetupIntent::Host] {
+            assert!(
+                restart_request(&stopped_job(&job, intent)).is_none(),
+                "{intent:?}"
+            );
+        }
     }
 
     /// The daemon's own reading of a known-hosts file: the key the card shows counts once it is

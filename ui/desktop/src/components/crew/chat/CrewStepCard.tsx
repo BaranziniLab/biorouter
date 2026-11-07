@@ -5,7 +5,7 @@ import CrewSignInStep from './CrewSignInStep';
 import CrewVaultStep from './CrewVaultStep';
 import { crewStepCopy } from './CrewStepCard.copy';
 import { CrewStepEnded, CrewStepFrame } from './CrewStepFrame';
-import { useStreamedCrewStep } from './streamedCrewSteps';
+import { useCardEnding, useStreamedCrewStep } from './streamedCrewSteps';
 
 /** The step kinds this app draws; anything else is `unknown`. */
 const KINDS = new Set(['signIn', 'vault', 'hostKey']);
@@ -21,16 +21,23 @@ const KINDS = new Set(['signIn', 'vault', 'hostKey']);
  * window, the call that parked the card reads the daemon to learn whether it
  * was done, and the only thing a card can post back is a dismissal.
  *
- * ⚠ **A card draws its buttons only while the daemon can be waiting on it**: this
- * window received it on the chat's live stream (`streamedCrewSteps.ts`) and the
- * chat's turn still runs (`turnActive`). The daemon never stores a step card, so
- * one read back from a transcript (History, an imported session file, or the rows
- * of a chat whose turn ended) draws one fixed line instead, naming nothing the
- * card carried: there its words are whatever the file says. (A shared session's
- * view draws no action card at all.) A card
- * whose window the person has open (the Sign in window, the host-key terminal, the
- * vault prompt) stays until they close it, so a turn that ends never pulls a
- * window out from under them.
+ * ⚠ **A card draws its buttons only while the daemon waits on it** (WI-17): this
+ * window received it on the chat's live stream (`streamedCrewSteps.ts`), the
+ * daemon has not said it ended, and the chat's turn still runs (`turnActive`, the
+ * floor for a stream that can carry no end, since no card outlives its turn). The
+ * end comes as the daemon's `ActionRequiredEnded` frame, so a card withdrawn,
+ * dismissed somewhere else or out of time says so at once. The daemon never
+ * stores a step card that waits, so one read back from a transcript (History, an
+ * imported session file, or the rows of a chat whose turn ended) draws one fixed
+ * line instead, naming nothing the card carried: there its words are whatever
+ * the file says. (A shared session's view draws no action card at all.) A card
+ * whose window the person has open (the Sign in window, the host-key terminal,
+ * the vault prompt) stays until they close it, so an end never pulls a window
+ * out from under them.
+ *
+ * A changed host key's card is a notice, not a step: it waits for nothing, and
+ * the daemon keeps it (user-only) so a reload still shows it. Streamed, it draws
+ * its details whatever happens next; read back, it draws one fixed line.
  */
 export default function CrewStepCard({
   sessionId,
@@ -45,13 +52,25 @@ export default function CrewStepCard({
   const data = actionRequiredContent.data;
   const id = data.actionType === 'crewStep' ? data.id : '';
   const streamed = useStreamedCrewStep(sessionId, id);
+  const ending = useCardEnding(sessionId, id);
   const [holding, setHolding] = useState(false);
   if (data.actionType !== 'crewStep') return null;
   // Typed as the daemon's union, read as unknown: a newer daemon may send a step
   // this app has never heard of, and that must fall through to the fixed words.
   const step = data.step as CrewStepRequest | undefined;
   const kind = step && KINDS.has(step.kind) ? step.kind : 'unknown';
-  if (!((turnActive && streamed) || holding)) return <CrewStepEnded kind={kind} />;
+  if (step?.kind === 'hostKey' && step.changed === true) {
+    return streamed ? (
+      <CrewHostKeyStep sessionId={sessionId} id={id} step={step} onHolding={setHolding} />
+    ) : (
+      <CrewStepEnded kind={kind} line={crewStepCopy.changedKeyNotice} />
+    );
+  }
+  const waits = streamed && ending === undefined && turnActive;
+  if (!(waits || holding)) {
+    // How it ended, only for a card this window saw the daemon end; a stored one names nothing.
+    return <CrewStepEnded kind={kind} ending={streamed ? ending : undefined} />;
+  }
   switch (step?.kind) {
     case 'signIn':
       return <CrewSignInStep sessionId={sessionId} id={id} step={step} onHolding={setHolding} />;

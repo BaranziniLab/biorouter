@@ -18,7 +18,7 @@ A word in braces is a name Crew fills in: "Connect to {workspace}" appears as "C
 |---|---|
 | The Biorouter desktop app ([Installation and setup](../getting-started/installation.md)) | You or IT |
 | An account on the lab's Linux server, with its SSH key, password or verification code | Your IT team |
-| The server's identity in your [known hosts file](#glossary-of-crew-terms) ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). Crew never accepts a new server by itself. | You, with the fingerprint from IT |
+| The server's identity in your [known hosts file](#glossary-of-crew-terms) ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). Crew never accepts a new server by itself: you compare the fingerprint, then choose **Trust this key** or add the key in a terminal. | You, with the fingerprint from IT |
 | `biorouter-crew` in your own account on the server. Biorouter installs it when you join or host ([Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account)). | Biorouter, or you or IT |
 | The host's invitation message, valid for 24 hours | The host |
 | For a Private workspace, your institution's short ID, such as `ucsf`. The invitation usually fills it in. | The host |
