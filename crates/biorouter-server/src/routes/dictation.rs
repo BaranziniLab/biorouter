@@ -580,9 +580,9 @@ impl DictationStreams {
         let stream = self.get(id)?;
         let inner = stream.inner();
         Some(StreamProgress {
-            caught_up: !inner.detecting
-                && inner.end_ms() < inner.mark_ms.saturating_add(STREAM_VAD_TRIGGER_MS),
+            caught_up: !inner.detecting && inner.due_window().is_none(),
             segments_decoded: inner.segments_decoded,
+            detector_passes: inner.detector_passes,
         })
     }
 }
@@ -593,10 +593,13 @@ impl DictationStreams {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamProgress {
     /// No detector pass runs, and none would start on the audio received so far: less
-    /// than [`STREAM_VAD_TRIGGER_MS`] of it lies past the mark.
+    /// than [`STREAM_VAD_TRIGGER_MS`] of it lies past the mark, or the last pass moved
+    /// nothing and no audio came after what it read.
     pub caught_up: bool,
     /// The segments decoded so far, the tail among them once it is.
     pub segments_decoded: u64,
+    /// The detector passes the segmenter has started.
+    pub detector_passes: u64,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -660,6 +663,12 @@ struct Inner {
     mark_ms: u64,
     /// The segmenter's detector pass is running.
     detecting: bool,
+    /// The detector passes started, for [`DictationStreams::progress`].
+    detector_passes: u64,
+    /// Where the window of the last detector pass ended, when that pass moved nothing
+    /// (open speech under 33 s past the mark): the same audio would give the same answer,
+    /// so the next pass waits for audio past it, or for the stop.
+    stalled_at_ms: Option<u64>,
     /// Speech the last detector pass found past the mark, still open then.
     open_speech_ms: u64,
     /// This stream's segments queued and not decoded yet.
@@ -780,6 +789,8 @@ impl Inner {
             acks: Vec::new(),
             mark_ms: 0,
             detecting: false,
+            detector_passes: 0,
+            stalled_at_ms: None,
             open_speech_ms: 0,
             pending: 0,
             jobs: Some(jobs),
@@ -833,6 +844,25 @@ impl Inner {
     /// The buffer's end in milliseconds of 16 kHz audio.
     fn end_ms(&self) -> u64 {
         (self.pcm.len() as u64) / SAMPLES_PER_MS
+    }
+
+    /// The window the segmenter's next detector pass reads, if one is due: once
+    /// [`STREAM_VAD_TRIGGER_MS`] lie past the mark, at most [`MAX_DETECTOR_PASS_MS`] of
+    /// them, and after a pass that moved nothing only once audio arrived past what it
+    /// read. Without that last rule a stalled pass started again at once, back to back
+    /// for as long as no audio came (25 passes a second on the test fixture, each one
+    /// queued ahead of every stream's decodes), and the idle expiry counted the passes as
+    /// work, so a stream the client left open never expired.
+    fn due_window(&self) -> Option<Range<u64>> {
+        let end_ms = self.end_ms();
+        if end_ms < self.mark_ms.saturating_add(STREAM_VAD_TRIGGER_MS) {
+            return None;
+        }
+        let window = self.mark_ms..end_ms.min(self.mark_ms.saturating_add(MAX_DETECTOR_PASS_MS));
+        if self.stalled_at_ms.is_some_and(|at| window.end <= at) {
+            return None;
+        }
+        Some(window)
     }
 
     /// The partial text to report, when it changed since the last report.
@@ -1027,28 +1057,29 @@ impl LiveStream {
     /// answered at once. Nothing is cut once the person has stopped, while a detector
     /// pass runs, for a stream at another rate (decoded whole at stop), once a decode
     /// failed (nothing would decode what it cut, and each pass would restart a worker that
-    /// crashed), or while 32 segments are already queued (the audio waits in its stream,
-    /// so a `PUT` never answers 429).
+    /// crashed), while 32 segments are already queued (the audio waits in its stream,
+    /// so a `PUT` never answers 429), or after a pass that moved nothing until more audio
+    /// arrives ([`Inner::due_window`]).
     fn segment(self: &Arc<Self>) {
         let (window, pcm) = {
             let mut inner = self.inner();
-            let end_ms = inner.end_ms();
             let Some(shared) = self.shared.upgrade() else {
                 return;
             };
-            let window_end = end_ms.min(inner.mark_ms.saturating_add(MAX_DETECTOR_PASS_MS));
             if inner.finishing
                 || inner.detecting
                 || self.rate != biorouter::dictation::audio::SAMPLE_RATE
                 || self.closed.load(Ordering::SeqCst)
                 || self.outcome.borrow().is_some()
                 || shared.queued.load(Ordering::SeqCst) >= shared.limits.max_queued_segments
-                || end_ms < inner.mark_ms.saturating_add(STREAM_VAD_TRIGGER_MS)
             {
                 return;
             }
+            let Some(window) = inner.due_window() else {
+                return;
+            };
             inner.detecting = true;
-            let window = inner.mark_ms..window_end;
+            inner.detector_passes += 1;
             let pcm = copy_ms(&inner.pcm, &window);
             (window, pcm)
         };
@@ -1077,7 +1108,8 @@ impl LiveStream {
                                 })
                                 .filter(|s| s.t0_ms < s.t1_ms)
                                 .collect();
-                            let (closed, mark) = plan_pass(&spans, inner.mark_ms, window.end);
+                            let before = inner.mark_ms;
+                            let (closed, mark) = plan_pass(&spans, before, window.end);
                             for range in biorouter::dictation::file::pack(closed) {
                                 let job = Job::Segment {
                                     pcm: copy_ms(&inner.pcm, &range),
@@ -1086,7 +1118,9 @@ impl LiveStream {
                                 };
                                 stream.queue(&mut inner, job);
                             }
-                            inner.mark_ms = inner.mark_ms.max(mark);
+                            inner.mark_ms = before.max(mark);
+                            // A pass that moved nothing waits for audio past its window.
+                            inner.stalled_at_ms = (inner.mark_ms == before).then_some(window.end);
                             let open = inner.mark_ms..window.end;
                             inner.open_speech_ms = speech_within(&spans, &open);
                             true
@@ -1101,7 +1135,8 @@ impl LiveStream {
                 }
             };
             if more {
-                // Audio may have arrived while the detector read.
+                // The mark moved, or audio arrived while the detector read; a pass that
+                // moved nothing over all the audio there is starts no other.
                 stream.segment();
             }
         });
@@ -3261,6 +3296,34 @@ mod tests {
             assert!(next > mark, "stalled at {mark}");
             mark = next;
         }
+    }
+
+    /// A pass is due once 8 s lie past the mark, reads at most 60 s, and after a pass
+    /// that moved nothing waits for audio past what that pass read.
+    #[test]
+    fn a_pass_that_moved_nothing_waits_for_new_audio() {
+        let mut inner = inner();
+        let max = 600 * 16_000;
+        let second = chunk(&vec![1; 16_000]);
+        for seq in 0..7 {
+            inner.append(seq, &second, 16_000, max);
+        }
+        assert_eq!(inner.due_window(), None, "under 8 s past the mark");
+        for seq in 7..20 {
+            inner.append(seq, &second, 16_000, max);
+        }
+        assert_eq!(inner.due_window(), Some(0..20_000));
+        inner.stalled_at_ms = Some(20_000);
+        assert_eq!(inner.due_window(), None, "the same audio again");
+        inner.append(20, &second, 16_000, max);
+        assert_eq!(inner.due_window(), Some(0..21_000), "audio past it");
+        for seq in 21..70 {
+            inner.append(seq, &second, 16_000, max);
+        }
+        assert_eq!(inner.due_window(), Some(0..60_000), "at most 60 s a pass");
+        inner.mark_ms = 25_000;
+        inner.stalled_at_ms = None;
+        assert_eq!(inner.due_window(), Some(25_000..70_000));
     }
 
     /// DD-32: a new stream answers 429 once 32 segments are queued across every stream,

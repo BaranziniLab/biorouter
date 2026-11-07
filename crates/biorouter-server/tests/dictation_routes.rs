@@ -642,6 +642,165 @@ async fn an_idle_stream_expires() {
     assert_eq!(read(&app, &id, 0).await.status, StatusCode::GONE);
 }
 
+/// The voice detector's spans in `audio` (16 kHz s16le), in milliseconds, read with the
+/// streams' own model and detector settings.
+async fn spans_of(audio: &[u8]) -> Vec<(u64, u64)> {
+    let service = biorouter::dictation::service::service();
+    let spec = service.resolve(None).await.expect("the fixture");
+    let samples: Vec<i16> = audio
+        .chunks_exact(2)
+        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    service
+        .vad_segments_with(
+            spec,
+            biorouter::dictation::audio::PcmSlice::whole(Arc::from(samples)),
+        )
+        .await
+        .expect("the detector reads")
+        .into_iter()
+        .map(|span| (span.t0_ms, span.t1_ms))
+        .collect()
+}
+
+/// About `seconds` of speech with no pause the detector closes: `jfk.wav`'s own spans of
+/// speech, end to end, repeated as needed.
+async fn unbroken_speech(seconds: f64) -> Vec<u8> {
+    let clip = jfk();
+    let voiced: Vec<u8> = spans_of(&clip)
+        .await
+        .into_iter()
+        .flat_map(|(t0, t1)| {
+            let end = ((t1 * 32) as usize).min(clip.len());
+            clip[((t0 * 32) as usize).min(end)..end].to_vec()
+        })
+        .collect();
+    let bytes = (seconds * 32_000.0) as usize & !1;
+    voiced.iter().copied().cycle().take(bytes).collect()
+}
+
+/// Whether `spans` are one stretch of speech still open at `end_ms`: what the segmenter
+/// cannot cut until a pause comes or 33 s lie past its mark.
+fn one_open_span(spans: &[(u64, u64)], end_ms: u64) -> bool {
+    matches!(spans, [(_, t1)] if t1 + biorouter::dictation::audio::OPEN_TAIL_MS > end_ms)
+}
+
+/// A detector pass that cuts nothing (open speech under 33 s past the mark) waits for new
+/// audio, and a stream left open after one expires on its idle time. Before, the pass
+/// started again at once for as long as nothing came: 20 s of unbroken speech and then
+/// silence from the client ran 127 passes in 5 s on the test fixture, each queued ahead of
+/// every stream's decodes, and the idle expiry counted them as work, so the stream was
+/// still open 3 s after a 2 s idle time. A later chunk starts a pass again, 33 s past the
+/// mark still cuts at 25 s, and `finish` carries the rest as the tail.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_pass_that_cuts_nothing_waits_for_new_audio() {
+    if !engine_runs() {
+        return;
+    }
+    let state = {
+        let _env = env_lock::lock_env([(dictation::TEST_IDLE_ENV, Some("3000"))]);
+        state().await
+    };
+    let app = app(&state);
+    let audio = unbroken_speech(34.0).await;
+    let first = &audio[..20 * 32_000];
+    let spans = spans_of(first).await;
+    assert!(one_open_span(&spans, 20_000), "{spans:?}");
+    let spans = spans_of(&audio).await;
+    assert!(one_open_span(&spans, 34_000), "{spans:?}");
+
+    async fn put_all(app: &Router, id: &str, seq: &mut u64, audio: &[u8]) {
+        for chunk in audio.chunks(dictation::MAX_CHUNK_BYTES) {
+            assert_eq!(
+                put(app, id, *seq, chunk.to_vec()).await.status,
+                StatusCode::OK
+            );
+            *seq += 1;
+        }
+    }
+
+    // Kept alive by held reads, as a client waiting on it would: the stall, new audio, the
+    // forced cut and the tail.
+    let id = open(&app, Caller::SecretOnly, request("external")).await;
+    let progress = |id: &str| state.dictation.progress(id).expect("the stream");
+    let settle = |id: String, decoded: u64| {
+        let app = app.clone();
+        let state = Arc::clone(&state);
+        async move {
+            let started = Instant::now();
+            loop {
+                let now = state.dictation.progress(&id).expect("the stream");
+                if now.caught_up && now.segments_decoded >= decoded {
+                    return now;
+                }
+                assert!(
+                    started.elapsed() < Duration::from_secs(60),
+                    "the detector did not settle: {now:?}"
+                );
+                assert_eq!(read(&app, &id, 0).await.status, StatusCode::ACCEPTED);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
+    let mut seq = 0;
+    put_all(&app, &id, &mut seq, first).await;
+    let stalled = settle(id.clone(), 0).await;
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    assert_eq!(read(&app, &id, 0).await.status, StatusCode::ACCEPTED);
+    let later = progress(&id);
+    assert_eq!(
+        later.detector_passes, stalled.detector_passes,
+        "no pass over the same audio"
+    );
+    assert!(
+        stalled.detector_passes <= 2,
+        "a pass per chunk at most: {stalled:?}"
+    );
+    assert_eq!(
+        later.segments_decoded, 0,
+        "open speech under 33 s is not cut"
+    );
+
+    put_all(&app, &id, &mut seq, &audio[first.len()..]).await;
+    let cut = settle(id.clone(), 1).await;
+    assert!(
+        cut.detector_passes > stalled.detector_passes,
+        "new audio starts a pass: {cut:?}"
+    );
+    assert_eq!(
+        cut.segments_decoded, 1,
+        "cut at 25 s once 33 s lay past the mark"
+    );
+    let done = settled(&app, &id, finish(&app, &id).await).await;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.body);
+    assert_eq!(done.body["audio_s"], 34.0);
+    assert_eq!(
+        done.body["timings"]["segments"], 2,
+        "the 25 s segment, then the tail"
+    );
+    assert_eq!(delete(&app, &id).await.status, StatusCode::NO_CONTENT);
+
+    // Left alone after the stall, the stream expires on its idle time.
+    let id = open(&app, Caller::SecretOnly, request("external")).await;
+    let mut seq = 0;
+    put_all(&app, &id, &mut seq, first).await;
+    let sent = Instant::now();
+    let mut passes = 0;
+    while let Some(now) = state.dictation.progress(&id) {
+        passes = now.detector_passes;
+        assert!(
+            sent.elapsed() < Duration::from_secs(8),
+            "a 3 s idle stream still open after {:?}: {now:?}",
+            sent.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(passes <= 2, "{passes} passes while nothing arrived");
+    let gone = put(&app, &id, seq, speech(1.0)).await;
+    assert_eq!(gone.status, StatusCode::GONE);
+}
+
 /// `finish` answers 202 after 3 s, and a held read then answers the transcript the
 /// moment it is ready, with no client sleep between polls. A worker lost while the tail
 /// decodes answers `500 engineFailed` from the read, and the next stream gets a fresh
