@@ -239,6 +239,7 @@ let kept: {
 let pendingFailure: { key: string; notice: DictationNotice } | null = null;
 let lockScreenInstalled = false;
 let busyReported = false;
+const busyListeners = new Set<() => void>();
 
 function publish(next: Partial<DictationSnapshot>): void {
   snapshot = { ...snapshot, ...next };
@@ -288,6 +289,23 @@ function reportBusy(): void {
   } catch {
     // A surface without the bridge has no restart to guard.
   }
+  for (const listener of [...busyListeners]) listener();
+}
+
+/**
+ * Whether any dictation in this window is arming, recording or transcribing, a displaced one
+ * finishing in the background included: what main's busy record holds for this window. Settings
+ * holds **Test speed** while it is true, because a bench decodes on the same worker as the
+ * dictation and would sit on its path from stop to text.
+ */
+export function isDictationRunning(): boolean {
+  return busyReported;
+}
+
+/** Called each time {@link isDictationRunning} changes; never a React render by itself. */
+export function subscribeDictationRunning(listener: () => void): () => void {
+  busyListeners.add(listener);
+  return () => busyListeners.delete(listener);
 }
 
 function installLockScreen(): void {
@@ -1051,6 +1069,7 @@ export function resetDictationSessionForTests(overrides: Partial<Deps> = {}): vo
   composers.clear();
   listeners.clear();
   levelListeners.clear();
+  busyListeners.clear();
   level = 0;
   snapshot = IDLE;
   busyReported = false;

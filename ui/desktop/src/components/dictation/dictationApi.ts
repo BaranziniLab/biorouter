@@ -3,7 +3,8 @@
  *
  * The JSON routes go through the client generated from the daemon's OpenAPI
  * document (PR-15): the status read, stream creation, the held read after a 202
- * and the delete. The two routes whose body is raw audio, `PUT …/audio` and
+ * and the delete, and the model routes Settings uses (PR-18, {@link
+ * dictationModelsApi}). The two routes whose body is raw audio, `PUT …/audio` and
  * `finish` (which carries the last chunk, so a stop costs one round trip), stay a
  * hand written `fetch`, because their body is bytes the generated client would
  * have to be talked out of serializing. Everything above this module (the stream
@@ -19,13 +20,26 @@
  * install a model; streams take the secret alone (O-17).
  */
 import {
+  benchDictationModel,
+  cancelDictationInstall,
   createDictationStream,
+  deleteDictationModel,
   deleteDictationStream,
   dictationStatus,
   getDictationStream,
+  installDictationModel,
+  rescanDictationModels,
+  selectDictationModel,
 } from '../../api';
 import type {
   DictationAudioAck as GeneratedAudioAck,
+  DictationBench as GeneratedBench,
+  DictationCancelled as GeneratedCancelled,
+  DictationInstallStarted as GeneratedInstallStarted,
+  DictationModelsRemoved as GeneratedModelsRemoved,
+  DictationRescan as GeneratedRescan,
+  DictationSelectRequest as GeneratedSelectRequest,
+  DictationSelection as GeneratedSelection,
   DictationStatus as GeneratedStatus,
   DictationStreamCreated as GeneratedStreamCreated,
   DictationStreamRequest as GeneratedStreamRequest,
@@ -162,6 +176,46 @@ export interface DictationStatus {
   models_dir: string;
 }
 
+/** `POST /dictation/models/install`: 200 when it is already installed, 202 while it installs. */
+export interface InstallStarted {
+  model: string;
+  phase: 'downloading' | 'verifying' | 'installed' | 'failed';
+}
+
+/** `POST /dictation/models/cancel`: whether a running install of that model was cancelled. */
+export interface InstallCancelled {
+  cancelled: boolean;
+}
+
+/** `POST /dictation/models/delete`: the ids removed from this account's folder. */
+export interface ModelsRemoved {
+  removed: string[];
+}
+
+/** `POST /dictation/models/select`: either half may be left out. */
+export interface SelectRequest {
+  model?: string;
+  language?: string;
+}
+
+export interface Selection {
+  active_model: string | null;
+  language: string;
+}
+
+/** `POST /dictation/models/rescan`: catalog ids placed, and file names no pin matched. */
+export interface RescanResult {
+  added: string[];
+  unrecognized: string[];
+}
+
+/** `POST /dictation/bench`: the active model's real time factor on this host. */
+export interface BenchResult {
+  model: string;
+  rtf: number;
+  elapsed_ms: number;
+}
+
 /**
  * The module's shapes against the generated ones. A generated answer must be
  * readable as the shape declared here, and a request built here must be one the
@@ -176,7 +230,14 @@ const shapesAgree: [
   Readable<GeneratedStreamCreated, StreamCreated>,
   Readable<GeneratedAudioAck, AudioAck>,
   StreamRequest extends GeneratedStreamRequest ? true : false,
-] = [true, true, true, true, true];
+  Readable<GeneratedInstallStarted, InstallStarted>,
+  Readable<GeneratedCancelled, InstallCancelled>,
+  Readable<GeneratedModelsRemoved, ModelsRemoved>,
+  Readable<GeneratedSelection, Selection>,
+  Readable<GeneratedRescan, RescanResult>,
+  Readable<GeneratedBench, BenchResult>,
+  SelectRequest extends GeneratedSelectRequest ? true : false,
+] = [true, true, true, true, true, true, true, true, true, true, true, true];
 void shapesAgree;
 
 /** Every refusal's body: `{code, message, expected_seq?}`. */
@@ -387,6 +448,48 @@ export const dictationApi: DictationApi = {
       // Best effort: the daemon drops an idle stream after 60 s anyway.
     }
   },
+};
+
+/**
+ * The model routes, for **Settings > Models > Speech models** (PR-18). A separate
+ * interface from {@link DictationApi}, so the stream client and its fakes do not
+ * grow six methods they never call.
+ *
+ * Install, cancel, delete, select and rescan change what this account has
+ * installed or uses, so each carries `userActionHeaders()`: on a daemon that holds
+ * a user action key the install, delete and select routes refuse without it
+ * (MSG-INSTALL-AGENT), and the other two are a person's act all the same. `bench`
+ * changes nothing a person chose and takes the secret alone.
+ */
+export interface DictationModelsApi {
+  install(model: string): Promise<DictationResult<InstallStarted>>;
+  cancel(model: string): Promise<DictationResult<InstallCancelled>>;
+  remove(model: string): Promise<DictationResult<ModelsRemoved>>;
+  select(body: SelectRequest): Promise<DictationResult<Selection>>;
+  rescan(): Promise<DictationResult<RescanResult>>;
+  bench(): Promise<DictationResult<BenchResult>>;
+}
+
+export const dictationModelsApi: DictationModelsApi = {
+  install: async (model) =>
+    generated<InstallStarted>(
+      installDictationModel({ body: { model }, ...(await request(true)) }),
+      [200, 202]
+    ),
+  cancel: async (model) =>
+    generated<InstallCancelled>(
+      cancelDictationInstall({ body: { model }, ...(await request(true)) }),
+      [200]
+    ),
+  remove: async (model) =>
+    generated<ModelsRemoved>(
+      deleteDictationModel({ body: { model }, ...(await request(true)) }),
+      [200]
+    ),
+  select: async (body) =>
+    generated<Selection>(selectDictationModel({ body, ...(await request(true)) }), [200]),
+  rescan: async () => generated<RescanResult>(rescanDictationModels(await request(true)), [200]),
+  bench: async () => generated<BenchResult>(benchDictationModel(await request(false)), [200]),
 };
 
 export const isTranscriptPending = (

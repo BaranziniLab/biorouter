@@ -46,8 +46,36 @@ export const DICTATION_MESSAGES = {
   'MSG-DISK': 'Installing <model> needs <x> GB free on <volume>; <y> GB is available.',
   'MSG-TURBO-CPU':
     'This model takes about <t> s to transcribe <a> s of speech on this computer. Install it anyway?',
+  'MSG-TOO-SLOW-SETTINGS':
+    '<model> may be too slow for dictation on this computer. After you install it, Test speed measures it. Install it anyway?',
+  'MSG-BELOW-MINIMUM-SETTINGS':
+    '<model> needs more memory than this computer has, so it may load slowly or not at all. Install it anyway?',
+  'MSG-REMOVE-CONFIRM': 'Remove <model> from <folder>?',
+  'MSG-REMOVE-CONFIRM-ACTIVE':
+    'Remove <model> from <folder>? It is the model in use, so dictation will switch to <next>.',
+  'MSG-REMOVE-CONFIRM-LAST':
+    'Remove <model> from <folder>? It is the model in use and no other installed model can take its place, so dictation will not work until you install one.',
+  'MSG-RESCAN-ADDED': 'Installed <models> from the model folder.',
+  'MSG-RESCAN-NONE': 'No new model file was found in <folder>.',
+  'MSG-RESCAN-UNKNOWN': 'Not Biorouter model files, so not installed: <names>.',
+  'MSG-BENCH':
+    '<model> on <backend>, <n> threads: <a> s of speech in <t> s (real time factor <r>, <suitability>).',
+  'MSG-SETTINGS-REFUSED': 'The Biorouter service refused this (<code>, HTTP <status>).',
+  'MSG-SETTINGS-UNREACHABLE': 'The Biorouter service did not answer. Try again.',
+  'MSG-SETTINGS-HELP':
+    "Models that turn your speech into text for dictation. Each one downloads once, from the Baranzini Lab's model repository on GitHub.",
+  'MSG-FOLDER-HELP':
+    "Where this account's speech models are kept. On a computer without internet access, copy the model files here and choose Rescan.",
+  'MSG-LANGUAGE-HELP':
+    'The language you dictate in. Detect automatically lets a multilingual model decide each time.',
+  'MSG-MIC-HELP':
+    'The microphone this window records from. Test microphone shows its level for 5 seconds; nothing is recorded or sent.',
+  'MSG-SPEED-HELP':
+    "Transcribes a 5.5 s sample with the model in use. A model that needs more than half the sample's length is marked slow.",
   'MSG-LANGUAGE-EN':
     '<model> understands only English. Choose a multilingual model for other languages, or set the language to English.',
+  'MSG-LANGUAGE-EN-ONLY':
+    '<model> understands only English. To dictate in another language, use a multilingual model.',
   'MSG-SERVER-MEMORY':
     'This server does not have enough free memory to load <model> (<x> GB needed, <y> GB free). Try again later, or ask the administrator to install the Light model.',
   'MSG-ENGINE-FAILED':

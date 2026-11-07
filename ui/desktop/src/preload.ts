@@ -329,12 +329,17 @@ type ElectronAPI = {
    * - `setDictationBusy`: this window arms, records or transcribes, so a restart
    *   for an update asks first.
    * - `onDictationLockScreen`: the screen locked; stop and insert.
+   * - `dictationShowModelsFolder`: open the speech model folder the daemon reports
+   *   (`status.models_dir`) in Finder, Explorer or the file manager, creating it when
+   *   missing; `false` when main refused (an external backend, or a string that does
+   *   not name the folder main derives for this account, `utils/dictationModelsFolder.ts`).
    */
   dictationMicStatus?: () => Promise<
     'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'
   >;
   dictationMicRequest?: () => Promise<boolean>;
   dictationOpenMicSettings?: () => Promise<boolean>;
+  dictationShowModelsFolder?: (folder: string) => Promise<boolean>;
   setDictationBusy?: (busy: boolean) => void;
   onDictationLockScreen?: (callback: () => void) => () => void;
   onMouseBackButtonClicked: (callback: () => void) => () => void;
@@ -806,6 +811,8 @@ const electronAPI: ElectronAPI = {
   dictationMicStatus: () => ipcRenderer.invoke('dictation:mic-status'),
   dictationMicRequest: () => ipcRenderer.invoke('dictation:mic-request'),
   dictationOpenMicSettings: () => ipcRenderer.invoke('dictation:open-mic-settings'),
+  dictationShowModelsFolder: (folder: string) =>
+    ipcRenderer.invoke('dictation:show-models-folder', folder),
   setDictationBusy: (busy: boolean) => ipcRenderer.send('dictation:busy', busy === true),
   onDictationLockScreen: (callback: () => void) => {
     const listener = () => callback();

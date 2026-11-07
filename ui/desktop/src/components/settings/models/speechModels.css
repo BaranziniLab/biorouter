@@ -1,0 +1,43 @@
+/*
+ * Settings > Models > Speech models (DD-66, PR-18). The rows reuse the Local models pattern in
+ * `models.css` (`.br-local-model-actions`, `.br-local-model-busy`, `.br-local-model-installed`);
+ * what is here is only what that section has no use for. Authored rather than new Tailwind
+ * strings, for the reason `models.css` gives: a newly written utility can silently fail to
+ * generate under BIOROUTER_NO_HMR.
+ */
+
+/* An install's bar, beside its Cancel button in the row's trailing cluster. Thin (4px), so the
+   row keeps the 56px of a name over one facts line. */
+.br-speech-model-progress {
+  inline-size: 96px;
+  flex: none;
+}
+
+/* Two controls that share one row: Show in Finder and Rescan; the microphone and its test. */
+.br-speech-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The second line's own lines (the folder and the result of a Rescan; the level meter). */
+.br-speech-row-line {
+  display: block;
+}
+
+.br-speech-path {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* "account wgu" stays on one line, after the path or under it. */
+.br-speech-account {
+  white-space: nowrap;
+}
+
+/* The microphone test's level: a thin bar under the row's label while the test listens. */
+.br-speech-meter {
+  inline-size: 160px;
+  max-inline-size: 100%;
+  margin-block: 4px 2px;
+}

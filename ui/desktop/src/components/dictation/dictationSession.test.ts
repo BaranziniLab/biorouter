@@ -9,6 +9,7 @@ import {
   cancelDictation,
   getDictationLevel,
   getDictationSnapshot,
+  isDictationRunning,
   KEEP_FAILED_MS,
   noteDictationEdit,
   resetDictationSessionForTests,
@@ -16,6 +17,7 @@ import {
   startDictation,
   stopDictation,
   subscribeDictation,
+  subscribeDictationRunning,
   type DictationComposer,
 } from './dictationSession';
 import { DictationStreamError, type DictationStream } from './transport';
@@ -740,6 +742,30 @@ describe('who owns the microphone', () => {
     await settle();
     expect(a.field.value).toBe('for A');
     expect(busy).toEqual([true, false]);
+  });
+
+  it('isDictationRunning says what main is told, and calls back each time it changes', async () => {
+    // Settings' Test speed reads it, so a displaced pane still transcribing counts, and the end
+    // of one that ends in the background (no snapshot change) still calls back.
+    const changes: boolean[] = [];
+    subscribeDictationRunning(() => changes.push(isDictationRunning()));
+    const a = composer('tab:a');
+    composer('tab:b');
+    a.field.focus();
+    expect(isDictationRunning()).toBe(false);
+    await startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+    expect(isDictationRunning()).toBe(true);
+    captures[0].speak(1);
+    await startDictation({ key: 'tab:b', target: { target_kind: 'chat' } });
+    await settle();
+    stopDictation('tab:b');
+    await settle();
+    expect(getDictationSnapshot().activity).toBe('idle');
+    expect(isDictationRunning()).toBe(true);
+    streams[0].finishDeferred.resolve(transcript('for A'));
+    await settle();
+    expect(isDictationRunning()).toBe(false);
+    expect(changes).toEqual(busy);
   });
 
   it('shows partial text and MSG-WAIT from the stream', async () => {

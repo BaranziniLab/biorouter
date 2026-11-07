@@ -10,6 +10,7 @@ import {
 import { toastError } from '../../../toasts';
 import ResetProviderSection from '../reset_provider/ResetProviderSection';
 import LocalModelInventory from './LocalModelInventory';
+import SpeechModelSection from './SpeechModelSection';
 import { Skeleton } from '../../ui/skeleton';
 import { SettingSection } from '../../ui/setting-row';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
@@ -107,6 +108,10 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
       </SettingSection>
 
       <LocalModelInventory />
+
+      {/* Local dictation's speech models (DD-66): between the local model inventory and the
+          danger zone, never a fourth tab. It renders nothing on a `serve` browser until PR-21. */}
+      <SpeechModelSection />
 
       <SettingSection id={SETTINGS_SECTION_IDS.modelsDangerZone} title={modelsDangerCopy.section}>
         <ResetProviderSection setView={setView} />

@@ -100,6 +100,7 @@ import {
 } from './dragGhostWindow';
 import { CopilotPermissionSettings } from './utils/copilotPermissionSettings';
 import { setDictationBusy } from './utils/dictationBusy';
+import { showDictationModelsFolder } from './utils/dictationModelsFolder';
 import {
   FAKE_MIC_WAV_ENV,
   fakeMicrophoneSwitches,
@@ -381,6 +382,9 @@ export function isAllowedFilePath(resolvedPath: string, sessionWorkingDir?: stri
  * received over IPC.
  */
 const windowWorkingDirs = new Map<number, string>();
+
+/** Windows whose daemon this app started itself (`biorouterdResult.managed`), not an external one. */
+const localBackendWindows = new Set<number>();
 
 /** The working directory of the window that sent `event`, if it has one. */
 export function workingDirForSender(event: { sender: Electron.WebContents }): string | undefined {
@@ -2233,6 +2237,10 @@ const createChat = async (
   });
 
   windowMap.set(windowId, mainWindow);
+  // Whether this window's daemon is the one this app started, recorded from main's own launch
+  // result: a speech model folder on an external backend is on another computer, so Settings'
+  // Show in Finder opens nothing there (`dictation:show-models-folder`).
+  if (biorouterdResult.managed) localBackendWindows.add(windowId);
   // Recorded here, from main's own `windowWorkingDir`, so the preview allowlist
   // can admit the folder the user chose for THIS chat without ever trusting a
   // renderer to name it.
@@ -2271,6 +2279,7 @@ const createChat = async (
     windowMap.delete(windowId);
     managedAppPreviewBackends.delete(windowId);
     windowWorkingDirs.delete(windowId);
+    localBackendWindows.delete(windowId);
     // A closed window stops being a merge target on the very next pointermove
     // (design §6), and cannot be left holding a caret nobody will clear.
     forgetWindowFromTabDrag(windowId, 'window closed');
@@ -3530,6 +3539,39 @@ ipcMain.handle('dictation:open-mic-settings', async (event) => {
   if (!url) return false;
   await shell.openExternal(url);
   return true;
+});
+
+// Settings > Models > Speech models: Show in Finder, or Show in Explorer (DD-66). Only for a
+// window whose daemon this app started, because an external backend's folder is on another
+// computer. The renderer's `status.models_dir` is a hint and nothing more: main derives this
+// account's folder itself, by the daemon's rule, and creates and opens that folder only when the
+// hint names it (`utils/dictationModelsFolder.ts`, whose suite runs the rule on every OS). It is
+// created when missing, since the air gapped path puts files there before any install (DD-24),
+// and opens only when its real path is a plain folder, never a bundle `open` would launch, the
+// test `open-directory-in-explorer` makes.
+ipcMain.handle('dictation:show-models-folder', async (event, folder: unknown) => {
+  if (!isDictationSender(event)) return false;
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || !localBackendWindows.has(win.id)) return false;
+  try {
+    return await showDictationModelsFolder(
+      folder,
+      { platform: process.platform, env: process.env, homedir: os.homedir() },
+      {
+        mkdir: (target) => fs.mkdir(target, { recursive: true }),
+        realpath: (target) => fs.realpath(target),
+        isPlainDirectory,
+        openPath: async (target) => {
+          const error = await shell.openPath(target);
+          if (error) console.error('Error opening the speech model folder:', error);
+          return error;
+        },
+      }
+    );
+  } catch (error) {
+    console.error('Error opening the speech model folder:', error);
+    return false;
+  }
 });
 
 // Windows that are arming, recording or transcribing; a restart for an update

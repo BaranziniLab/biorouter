@@ -142,6 +142,7 @@ describe('the main process answers dictation IPC only from a Biorouter window', 
       'dictation:mic-request',
       'dictation:mic-status',
       'dictation:open-mic-settings',
+      'dictation:show-models-folder',
     ]);
     for (const match of registrations) {
       const body = main.slice(match.index!, main.indexOf('\n});', match.index!));
@@ -157,6 +158,29 @@ describe('the main process answers dictation IPC only from a Biorouter window', 
     expect(body).toContain('windowMap.has(win.id)');
     expect(body).toContain('win.webContents === event.sender');
     expect(body).toContain('event.senderFrame === event.sender.mainFrame');
+  });
+
+  it('opens the speech model folder only for this app’s own daemon, from main’s own rule', () => {
+    const start = main.indexOf("ipcMain.handle('dictation:show-models-folder'");
+    expect(start).toBeGreaterThan(-1);
+    const body = main.slice(start, main.indexOf('\n});', start));
+    expect(body).toContain('localBackendWindows.has(win.id)');
+    expect(
+      body.indexOf('localBackendWindows.has(win.id)'),
+      'the window check must come before anything touches the file system'
+    ).toBeLessThan(body.indexOf('showDictationModelsFolder('));
+    // The folder is derived from this process's own environment; the renderer's string is only
+    // the hint `utils/dictationModelsFolder.test.ts` holds to it.
+    expect(body).toMatch(
+      /showDictationModelsFolder\(\s*folder,\s*\{ platform: process\.platform, env: process\.env, homedir: os\.homedir\(\) \}/
+    );
+    expect(body).toContain('isPlainDirectory,');
+    expect(body).toMatch(/shell\.openPath\(target\)/);
+    // No second admission rule in main.ts to drift from the tested one.
+    expect(main).not.toMatch(/function dictationModelsFolder\(/);
+    expect(body).not.toMatch(/fs\.mkdir\(folder/);
+    expect(main).toMatch(/if \(biorouterdResult\.managed\) localBackendWindows\.add\(windowId\);/);
+    expect(main).toMatch(/localBackendWindows\.delete\(windowId\);/);
   });
 
   it('the busy record lives outside main.ts, so the updater can import it without a cycle', () => {
