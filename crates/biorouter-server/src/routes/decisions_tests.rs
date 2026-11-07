@@ -3314,8 +3314,9 @@ impl CrewScoped {
         session: &DecisionSession,
         affiliation: Option<ModelAffiliation>,
     ) -> Option<String> {
-        (session.session_id == self.0 && affiliation != Some(ModelAffiliation::Local))
-            .then(|| biorouter::decision::service::CREW_SCOPED_REFUSAL.to_string())
+        (session.session_id == self.0
+            && !biorouter::privacy::affiliation::runs_on_this_computer(affiliation.as_ref()))
+        .then(|| biorouter::decision::service::CREW_SCOPED_REFUSAL.to_string())
     }
 }
 

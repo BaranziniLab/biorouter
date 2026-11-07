@@ -411,7 +411,7 @@ impl CrewUseGate {
         session: &DecisionSession,
         affiliation: Option<ModelAffiliation>,
     ) -> Option<String> {
-        if matches!(affiliation, Some(ModelAffiliation::Local)) {
+        if crate::privacy::affiliation::runs_on_this_computer(affiliation.as_ref()) {
             return None;
         }
         match crate::crew::manager() {
