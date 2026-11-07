@@ -8,9 +8,16 @@
 //!       + 1.0 * min(1, ln(1 + uses) / 3)
 //!       + 1.0 * in_active_kb                             0 in v1
 //!       - 4.0 * collides * (1 - in_context)
-//!       - 2.0 * saturated                                uses >= 5 and corrected_to == 0
 //! ties: updated_at descending, then the fold key, then the written form, then id
 //! ```
+//!
+//! There is no penalty for a term used often and never corrected. One existed (`- 2.0 *
+//! saturated`, uses of 5 or more with no correction), meant to give prompt room to terms the
+//! model gets wrong. Once `uses` moved (PR-14b) it fired on terms the model writes right only
+//! because the prompt carries them: EPAS1 went from 0 of 6 on turbo without the dictionary to
+//! 6 of 6 with it, then ranked below every term used fewer than five times after five
+//! dictations [M], so in a dictionary of more than 30 terms it would leave the prompt and be
+//! misheard again. A use cannot yet tell a prompted dictation from an unprompted one.
 //!
 //! Terms added together share a score and an `updated_at` second, so the order among
 //! them must come from the terms themselves: the fold key (`store::fold::fold_key`) and
@@ -106,10 +113,8 @@ pub fn score(entry: &RecognitionEntry, in_context: bool, now: DateTime<Utc>) -> 
     });
     let uses = ((1.0 + entry.uses as f64).ln() / 3.0).min(1.0);
     let collides = f64::from(u8::from(entry.collides));
-    let saturated = f64::from(u8::from(entry.uses >= 5 && entry.corrected_to == 0));
     5.0 * context + 3.0 * pinned + 2.0 * corrected + 1.5 * recency + 1.0 * uses
         - 4.0 * collides * (1.0 - context)
-        - 2.0 * saturated
 }
 
 /// Cuts `context` to at most [`MAX_CONTEXT_BYTES`] at a character boundary.
@@ -195,8 +200,12 @@ mod tests {
         });
         let expected = 2.0 + 1.5 * 0.5 + (5.0f64).ln() / 3.0;
         assert!((score(&used, false, now()) - expected).abs() < 1e-9);
-        let saturated = with(entry("EPAS1"), |e| e.uses = 5);
-        assert!((score(&saturated, false, now()) - ((6.0f64).ln() / 3.0 - 2.0)).abs() < 1e-9);
+        // A term used often and never corrected keeps its place: the model may be writing
+        // it right only because the prompt carries it.
+        let often = with(entry("EPAS1"), |e| e.uses = 5);
+        assert!((score(&often, false, now()) - (6.0f64).ln() / 3.0).abs() < 1e-9);
+        let rarely = with(entry("EGLN1"), |e| e.uses = 1);
+        assert!(score(&often, false, now()) > score(&rarely, false, now()));
         let spoke = entry("SPOKE");
         assert_eq!(score(&spoke, false, now()), -4.0);
         assert_eq!(

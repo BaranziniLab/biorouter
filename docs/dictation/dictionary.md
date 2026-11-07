@@ -791,13 +791,14 @@ score = 5.0 * in_context
       + 1.0 * min(1, ln(1 + uses) / 3)
       + 1.0 * in_active_kb
       - 4.0 * collides * (1 - in_context)
-      - 2.0 * saturated                                uses >= 5 and corrected_to == 0
 ties: updated_at descending, then the fold key, then the written form, then id
 ```
 
 Terms added together share a score and an `updated_at` second, so the order among them comes from the terms themselves: the fold key ([Uniqueness, fold keys and twins](#uniqueness-fold-keys-and-twins)), then the written form, which separates two spellings that fold alike (`EPAS1` before `Epas1`). Until PR-14b ties fell to the random ids, so two dictionaries holding the same terms sent their prompts in different orders, and in PR-14's live check one transcribed 3 of 8 clips differently from the other [M]. The id now decides only between twins, which the bias set has already merged.
 
-`uses`, `days_since_last_used`, `corrected_to` and `saturated` read the `public` usage map when the request uses the public rows table, and the `all` map otherwise (oracle rule 11). The weights are a starting point [I] and stay as written: the lab recordings that would have tuned them were withdrawn by the owner's decision O-23 (2026-11-05), and the public recordings of M-22 hold too few terms per utterance to tune a ranking. `in_active_kb` is 0 for every entry in v1, because no field yet records which knowledge base a term came from. Two consumers take a slice of the ranking: the prompt (top 30) and the fuzzy set (the `match = fuzzy` entries among the top 30). The decoder bonus, the alias automaton and the exact keys take the whole bias set unranked.
+There is no penalty for a term used often and never corrected. The first ranking had one (`- 2.0 * saturated` for 5 or more uses with no correction), meant to give prompt room to terms the model gets wrong. Once `uses` moved (PR-14b) it fired on terms the model writes right only because the prompt carries them: in PR-14b's live check EPAS1 went from 0 of 6 on turbo without the dictionary to 6 of 6 with it, then after five dictations ranked below every term used fewer than five times [M], so in a dictionary of more than 30 terms it would leave the prompt and be misheard again. It was removed on 2026-11-06. A use cannot yet tell a prompted dictation from an unprompted one; a penalty can return once it can.
+
+`uses`, `days_since_last_used` and `corrected_to` read the `public` usage map when the request uses the public rows table, and the `all` map otherwise (oracle rule 11). The weights are a starting point [I] and stay as written: the lab recordings that would have tuned them were withdrawn by the owner's decision O-23 (2026-11-05), and the public recordings of M-22 hold too few terms per utterance to tune a ranking. `in_active_kb` is 0 for every entry in v1, because no field yet records which knowledge base a term came from. Two consumers take a slice of the ranking: the prompt (top 30) and the fuzzy set (the `match = fuzzy` entries among the top 30). The decoder bonus, the alias automaton and the exact keys take the whole bias set unranked.
 
 ### Token prompt
 
