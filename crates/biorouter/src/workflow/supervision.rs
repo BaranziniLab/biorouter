@@ -559,12 +559,34 @@ pub enum SeedOutcome {
         monitor_ids: Vec<String>,
         phase_ids: Vec<String>,
     },
-    /// The chat was seeded before and has no messages yet (a start that was
-    /// retried); nothing was written.
+    /// This workflow seeded the chat before (the marker carries its title)
+    /// and the chat has no messages yet: a start that was retried. Nothing
+    /// was written, and the chat keeps what it was given.
     AlreadySeeded,
+    /// Another workflow seeded the chat before its first message (the marker
+    /// carries another title, or none that can be read), so nothing was
+    /// written and THIS workflow's blocks were not applied. `title` is the
+    /// marker's, when it names one. The door says so
+    /// ([`crate::workflow::runtime::supervision_notice`]).
+    SeededByAnotherWorkflow { title: Option<String> },
     /// The chat already has messages, so nothing was applied to it. A chat
     /// seeded before and since started gets this outcome too.
     ChatHasMessages,
+}
+
+/// What a seed marker already in the chat means for `workflow`: a start of
+/// the same workflow that was retried ([`SeedOutcome::AlreadySeeded`]), or a
+/// chat another workflow seeded ([`SeedOutcome::SeededByAnotherWorkflow`]).
+/// The marker's title is the workflow's identity, the comparison
+/// [`crate::workflow::runtime::supervision_notice`] makes for a chat that has
+/// messages; a marker whose title cannot be read is not this workflow's.
+fn marked_outcome(marker: &Value, title: &str) -> SeedOutcome {
+    match marker.get("title").and_then(Value::as_str) {
+        Some(theirs) if theirs == title => SeedOutcome::AlreadySeeded,
+        theirs => SeedOutcome::SeededByAnotherWorkflow {
+            title: theirs.map(str::to_string),
+        },
+    }
 }
 
 /// Why [`seed`] refused.
@@ -816,15 +838,17 @@ async fn check_plan_models(
 /// Why the one transaction did not write.
 #[derive(Debug)]
 enum Abort {
-    /// Another seed got there first.
-    AlreadySeeded,
+    /// Another seed got there first: this workflow's retried start
+    /// ([`SeedOutcome::AlreadySeeded`]) or another workflow's
+    /// ([`SeedOutcome::SeededByAnotherWorkflow`]), as [`marked_outcome`] says.
+    Marked(SeedOutcome),
     Refusal(SeedRefusal),
 }
 
 impl std::fmt::Display for Abort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Abort::AlreadySeeded => f.write_str("already seeded"),
+            Abort::Marked(_) => f.write_str("already seeded"),
             Abort::Refusal(refusal) => f.write_str(&refusal.sentence),
         }
     }
@@ -840,6 +864,8 @@ fn stored(data: &ExtensionData, extension: &str, version: &str) -> Option<Value>
 
 /// What [`seed`] writes in its one transaction.
 struct SeedWrite {
+    /// The workflow's title, to tell whose a marker found there is.
+    title: String,
     /// The chat's decision settings as the merge read them.
     read_settings: Option<Value>,
     /// The merged settings, when the workflow added anything to them.
@@ -854,8 +880,8 @@ impl SeedWrite {
     /// transaction back).
     fn apply(self, data: &mut ExtensionData) -> anyhow::Result<()> {
         let marker_key = (WORKFLOW_SUPERVISION_STATE, WORKFLOW_SUPERVISION_VERSION);
-        if stored(data, marker_key.0, marker_key.1).is_some() {
-            return Err(Abort::AlreadySeeded.into());
+        if let Some(marker) = stored(data, marker_key.0, marker_key.1) {
+            return Err(Abort::Marked(marked_outcome(&marker, &self.title)).into());
         }
         // The merge was made over the settings read before; a change since
         // would be overwritten, so nothing is written.
@@ -918,10 +944,12 @@ async fn preflight(
                 "the chat's settings could not be read ({error}), so nothing was applied to it."
             ))
         })?;
-    // Seeded before its first message (a start that was retried): it keeps
-    // what it was given.
-    if marker.is_some() {
-        return Ok(Preflight::Done(SeedOutcome::AlreadySeeded));
+    // Seeded before its first message: by this workflow (a start that was
+    // retried), and it keeps what it was given; or by another one, whose
+    // blocks it keeps while this workflow's are not applied, which the door
+    // tells the person.
+    if let Some(marker) = marker {
+        return Ok(Preflight::Done(marked_outcome(&marker, &workflow.title)));
     }
     if let (Some(_), SeedTargetKind::Subagent { name }) =
         (&workflow.orchestration_plan, &target.kind)
@@ -1047,7 +1075,7 @@ fn transaction_outcome(
         }),
         Ok(None) => Err(SeedRefusal::invalid(format!("no chat {id} exists."))),
         Err(error) => match error.downcast_ref::<Abort>() {
-            Some(Abort::AlreadySeeded) => Ok(SeedOutcome::AlreadySeeded),
+            Some(Abort::Marked(outcome)) => Ok(outcome.clone()),
             Some(Abort::Refusal(refusal)) => Err(refusal.clone()),
             None => Err(SeedRefusal::refused(format!(
                 "the workflow's monitors and phase plan could not be stored ({error}), so \
@@ -1064,8 +1092,11 @@ fn transaction_outcome(
 ///   written (and no marker).
 /// - The chat has messages: [`SeedOutcome::ChatHasMessages`], nothing
 ///   written, whether or not it was seeded before.
-/// - Seeded before its first message (the marker is there):
-///   [`SeedOutcome::AlreadySeeded`].
+/// - Seeded before its first message (the marker is there), nothing
+///   written: [`SeedOutcome::AlreadySeeded`] when the marker is this
+///   workflow's (a start that was retried), and
+///   [`SeedOutcome::SeededByAnotherWorkflow`] when it is another's, whose
+///   blocks the chat keeps while this workflow's are not applied.
 ///
 /// Otherwise the blocks are validated ([`validate`]); a plan is refused in a
 /// subagent's chat and outside the Autonomous approval mode; the workflow's
@@ -1115,6 +1146,7 @@ pub async fn seed(
     let monitor_ids = merged.added.clone();
     let (marker, settings_value) = records(workflow, &merged, &monitor_ids, &phase_ids)?;
     let write = SeedWrite {
+        title: workflow.title.clone(),
         read_settings: stored_settings,
         settings: settings_value,
         plan: plan.as_ref().map(orchestration_plan::plan_record),
@@ -2057,12 +2089,74 @@ decision_settings:
         assert_eq!(settings::load(&manager, &id).await.unwrap(), edited);
     }
 
+    /// An empty chat another workflow seeded is not seeded by this one, and
+    /// the door says this one's blocks were not applied: the marker is told
+    /// apart by whose it is, not only found (`biorouter run --workflow A -i`,
+    /// quit before the first message, then `--workflow B --resume`).
+    #[tokio::test]
+    async fn an_empty_chat_another_workflow_seeded_keeps_its_blocks_and_the_door_says_so() {
+        use crate::workflow::runtime::{
+            supervision_notice, SUPERVISION_SEEDED_BY_ANOTHER_WORKFLOW,
+        };
+        let dir = TempDir::new().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf());
+        let sent = Arc::new(AtomicUsize::new(0));
+        let service = decision_service(&sent);
+        let first = Workflow {
+            orchestration_plan: None,
+            ..workflow(SUPERVISED)
+        };
+        let second = workflow(
+            &SUPERVISED
+                .replace("\ntitle: Count\n", "\ntitle: Tally\n")
+                .replace("id: reached-ten", "id: reached-five"),
+        );
+        assert_eq!(second.title, "Tally");
+        let id = new_chat(&dir, &manager).await;
+        assert!(matches!(
+            seed(&manager, &service, &first, target(&id)).await,
+            Ok(SeedOutcome::Seeded { .. })
+        ));
+        let before = written(&manager, &id).await;
+
+        let outcome = seed(&manager, &service, &second, target(&id))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            SeedOutcome::SeededByAnotherWorkflow {
+                title: Some("Count".into())
+            }
+        );
+        assert_eq!(
+            written(&manager, &id).await,
+            before,
+            "the chat keeps the first workflow's blocks, and gets none of the second's"
+        );
+        assert_eq!(
+            supervision_notice(&manager, &id, &second, &outcome).await,
+            Some(SUPERVISION_SEEDED_BY_ANOTHER_WORKFLOW)
+        );
+
+        // The first workflow started there again is a retried start, and the
+        // door says nothing.
+        let retried = seed(&manager, &service, &first, target(&id)).await.unwrap();
+        assert_eq!(retried, SeedOutcome::AlreadySeeded);
+        assert_eq!(
+            supervision_notice(&manager, &id, &first, &retried).await,
+            None
+        );
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "a seed sends nothing");
+    }
+
     /// The one transaction checks again what the seed read before it: a seed
-    /// that got there first, and a person's save since the merge was made.
-    /// Either way it writes nothing.
+    /// that got there first (this workflow's or another's, which it tells
+    /// apart), and a person's save since the merge was made. Either way it
+    /// writes nothing.
     #[test]
     fn the_transaction_writes_nothing_over_a_marker_or_changed_settings() {
         let write = || SeedWrite {
+            title: "Count".into(),
             read_settings: None,
             settings: Some(serde_json::json!({"monitors": []})),
             plan: Some(serde_json::json!({"title": "Counting"})),
@@ -2074,6 +2168,8 @@ decision_settings:
             keys
         };
 
+        // Another workflow's seed got there first: this one's blocks were not
+        // applied, and the outcome says whose the chat's are.
         let mut data = ExtensionData::default();
         data.set_extension_state(
             WORKFLOW_SUPERVISION_STATE,
@@ -2081,15 +2177,39 @@ decision_settings:
             serde_json::json!({"title": "First"}),
         );
         let error = write().apply(&mut data).unwrap_err();
+        let another = SeedOutcome::SeededByAnotherWorkflow {
+            title: Some("First".into()),
+        };
         assert!(
-            matches!(error.downcast_ref::<Abort>(), Some(Abort::AlreadySeeded)),
-            "{error}"
+            matches!(
+                error.downcast_ref::<Abort>(),
+                Some(Abort::Marked(outcome)) if *outcome == another
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            transaction_outcome(Err(error), "chat", vec![], vec![]),
+            Ok(another)
         );
         assert_eq!(keys(&data), vec!["workflow_supervision.v1".to_string()]);
         assert_eq!(
             data.get_extension_state(WORKFLOW_SUPERVISION_STATE, WORKFLOW_SUPERVISION_VERSION),
             Some(&serde_json::json!({"title": "First"}))
         );
+
+        // This workflow's own seed got there first (a start that was retried).
+        let mut data = ExtensionData::default();
+        data.set_extension_state(
+            WORKFLOW_SUPERVISION_STATE,
+            WORKFLOW_SUPERVISION_VERSION,
+            serde_json::json!({"title": "Count"}),
+        );
+        let error = write().apply(&mut data).unwrap_err();
+        assert_eq!(
+            transaction_outcome(Err(error), "chat", vec![], vec![]),
+            Ok(SeedOutcome::AlreadySeeded)
+        );
+        assert_eq!(keys(&data), vec!["workflow_supervision.v1".to_string()]);
 
         let mut data = ExtensionData::default();
         let saved = serde_json::json!({"monitors": [], "defaultModel": null});

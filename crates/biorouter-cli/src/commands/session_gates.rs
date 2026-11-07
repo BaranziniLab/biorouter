@@ -1029,6 +1029,7 @@ mod tests {
             .into_iter()
             .collect(),
             model: None,
+            model_adapter: None,
             allow_uncalibrated: false,
             last_error: None,
             person_decision: None,

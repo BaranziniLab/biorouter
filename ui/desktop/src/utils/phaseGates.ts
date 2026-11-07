@@ -9,6 +9,7 @@ import {
   decisionModelRefToWire,
   formatProbability,
   refusalText,
+  type DecisionAdapter,
   type DecisionModelRef,
   type PhaseGateSnapshot,
 } from './sessionDecisions';
@@ -188,13 +189,36 @@ export interface PhaseGateDraft {
 
 /**
  * `provider/model`, the spelling the snapshot gives a gate's model, as a model
- * reference (`DecisionModelRef::parse`: the model part may hold `/` itself).
+ * reference (`DecisionModelRef::parse`: the model part may hold `/` itself),
+ * asked through `adapter` (the snapshot's `modelAdapter`; `null` is the model's
+ * own). The label alone does not carry the adapter, so an editor that leaves it
+ * out writes the gate back on the model's default adapter.
  */
-export function parseGateModel(label: string | null | undefined): DecisionModelRef | null {
+export function parseGateModel(
+  label: string | null | undefined,
+  adapter: DecisionAdapter | null = null
+): DecisionModelRef | null {
   const text = label?.trim() ?? '';
   const slash = text.indexOf('/');
   if (slash <= 0 || slash === text.length - 1) return null;
-  return { provider: text.slice(0, slash), model: text.slice(slash + 1), adapter: null };
+  return { provider: text.slice(0, slash), model: text.slice(slash + 1), adapter };
+}
+
+/**
+ * The model a pick in the editor's list stands for. The row of the model the
+ * gate was opened with stands for exactly that model, adapter included, so
+ * choosing it again (or going back to it) changes nothing; any other row is
+ * that model on its own adapter.
+ */
+export function gateModelPick(
+  picked: DecisionModelRef | null,
+  opened: DecisionModelRef | null
+): DecisionModelRef | null {
+  if (!picked) return null;
+  if (opened && opened.provider === picked.provider && opened.model === picked.model) {
+    return opened;
+  }
+  return picked;
 }
 
 /** The next free question name: `q1`, `q2`, ... */
@@ -230,7 +254,8 @@ export function gateDraftFrom(gate: PhaseGateSnapshot | null | undefined): Phase
         : [{ name: 'q1', question: '' }],
     threshold: gate.threshold,
     maxAttempts: Math.min(GATE_ATTEMPTS_MAX, Math.max(1, gate.maxAttempts)),
-    model: parseGateModel(gate.model),
+    // The adapter too: Save replaces the whole gate, so one left out is one changed.
+    model: parseGateModel(gate.model, gate.modelAdapter),
     allowUncalibrated: gate.allowUncalibrated,
   };
 }

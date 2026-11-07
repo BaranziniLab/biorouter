@@ -3,9 +3,10 @@
 //! A decision model is asked on a task of its own (`DecisionService`'s
 //! `decide_one`), so the request finishes, and the tokens it was billed for are
 //! counted, even when the caller's deadline passed or the caller went away (a
-//! stopped turn, a dropped HTTP request). Each such task holds an
-//! [`InFlightGuard`] for as long as it runs, so a process about to exit can
-//! wait for them with [`settle_late_answers`] instead of losing the count.
+//! stopped turn, a dropped HTTP request). Each request holds an
+//! [`InFlightGuard`] from the moment it is sent until its answer is stored,
+//! on time or late, so a process about to exit can wait for them with
+//! [`settle_late_answers`] instead of losing the count.
 //!
 //! The count is process-wide, like the decision service itself.
 

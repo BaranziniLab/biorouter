@@ -3955,14 +3955,20 @@ struct MonitorVerdict {
     stop: bool,
 }
 
-/// Why a turn is being wound down when it reaches a `turn_end` monitor
-/// point: what the point says in place of checking.
+/// Why a turn's `turn_end` monitors are not checked: the turn is being wound
+/// down when it reaches its `turn_end` point, or it ends on a limit at the
+/// loop top and never reaches that point. What is said in place of checking
+/// ([`wound_down_notice`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WrapUp {
     /// The reply's budget is spent (BR-35).
     Budget,
     /// The stall check found the agent was not making progress.
     Stall,
+    /// The turn ended at its action limit (`max_turns`).
+    ActionLimit,
+    /// The turn ended at its tool-call limit (`max_tool_calls`).
+    ToolCallLimit,
 }
 
 /// How long one monitor point's waits (the model listing, the decision
@@ -4061,14 +4067,16 @@ fn children_stopped_notice(titles: &[String]) -> String {
     )
 }
 
-/// The notice a `turn_end` point reached while the turn is wound down
-/// gives, naming the monitors it did not check (already quoted). `None` when
-/// there are none.
+/// The notice a `turn_end` point reached while the turn is wound down gives,
+/// or a turn that ended on a limit before its `turn_end` point, naming the
+/// monitors it did not check (already quoted). `None` when there are none.
 fn wound_down_notice(names: &[String], why: WrapUp) -> Option<String> {
     let (first, rest) = names.split_first()?;
-    let because = match why {
-        WrapUp::Budget => "it reached its budget",
-        WrapUp::Stall => "the agent stopped making progress",
+    let ending = match why {
+        WrapUp::Budget => "was being wound down because it reached its budget",
+        WrapUp::Stall => "was being wound down because the agent stopped making progress",
+        WrapUp::ActionLimit => "ended because it reached its action limit",
+        WrapUp::ToolCallLimit => "ended because it reached its tool-call limit",
     };
     let subject = if rest.is_empty() {
         format!("Monitor {first} was")
@@ -4076,8 +4084,7 @@ fn wound_down_notice(names: &[String], why: WrapUp) -> Option<String> {
         format!("Monitors {} were", names.join(", "))
     };
     Some(format!(
-        "{subject} not checked at the end of this turn: the turn was being wound down because \
-         {because}."
+        "{subject} not checked at the end of this turn: the turn {ending}."
     ))
 }
 
@@ -11572,6 +11579,26 @@ impl Agent {
         verdict
     }
 
+    /// A turn that ends on a limit at the loop top (its action limit, its
+    /// tool-call limit, the stall stop or the budget stop) never reaches its
+    /// `turn_end` point, so the monitors that point would have checked are
+    /// named here, as a wound-down point names them
+    /// ([`Self::wound_down_monitor_point`]), and none is skipped in silence.
+    /// Nothing is asked: the turn is ending on a limit. The settings are read
+    /// again first, as at every point. The notices (already stored), in
+    /// yield order; none when the chat has no `turn_end` monitor due. A plain
+    /// `async fn` the loop boxes, so none of this joins `reply_internal`'s
+    /// frame.
+    async fn forced_exit_monitor_notices(&self, session_id: &str, why: WrapUp) -> Vec<AgentEvent> {
+        let timing = crate::decision::settings::MonitorTiming::TurnEnd;
+        if !self.monitor_point_due(session_id, timing).await {
+            return Vec::new();
+        }
+        self.wound_down_monitor_point(session_id, timing, why)
+            .await
+            .events
+    }
+
     /// A monitor stopped this chat's turn: stop every subagent it started
     /// that still has work in flight (they run on their own cancellation
     /// tokens, so they would go on spending against a stop the person set),
@@ -11666,10 +11693,11 @@ impl Agent {
     /// (once a turn; one that names a monitor set to pause stops the turn),
     /// the stops escalated from this chat's subagents, the limits and held
     /// stops the point would have checked but for a criterion's per-turn
-    /// limit, then the checks themselves. Each step that stops the turn ends
-    /// the point there, with the model-only note that tells the next turn's
-    /// model why ([`Self::store_stop_note`]): stored after the person's
-    /// notice, before the turn's decision marker.
+    /// limit, then the checks themselves ([`Self::check_monitor_point`]).
+    /// Each step that stops the turn ends the point there, with the
+    /// model-only note that tells the next turn's model why
+    /// ([`Self::store_stop_note`]): stored after the person's notice, before
+    /// the turn's decision marker.
     ///
     /// Returns the verdict and, when it stops, the name of the monitor that
     /// stopped it (`None` when the settings could not be read).
@@ -11714,59 +11742,19 @@ impl Agent {
         if verdict.stop {
             return Ok(self.stopped_point(session_id, verdict, &stops).await);
         }
-        let custom = self.decisions.service.custom();
-        let service: &crate::decision::DecisionService = match custom.as_deref() {
-            Some(service) => service,
-            None => crate::decision::global(),
-        };
-        // Sampled once for this point and threaded (DR-15).
-        let enforced = crate::privacy::privacy_tiers_enabled();
-        let base = crate::decision::DecisionSession::load(
-            self.config.session_manager.clone(),
-            session_id,
-            enforced,
-        )
-        .await
-        .map(|base| base.with_turn(registry.turn_id(session_id)));
-        // One grace for the whole point: it starts when a typed steer is
-        // first seen, by the lookup or by the checks.
-        let grace = SteerGrace::new(registry.steer_grace());
-        let Some(windows) = self
-            .monitor_windows(service, &base, session_id, timing, cancel_token, &grace)
-            .await
-        else {
-            return Ok((verdict, None));
-        };
-        let planned = registry.plan_point(session_id, timing, conversation, iteration, |model| {
-            windows.get(&model.cloned()).copied()
-        });
-        if planned.is_empty() {
-            return Ok((verdict, None));
-        }
-        let Some(outcomes) = self
-            .ask_monitor_point(
-                service,
-                base,
-                &planned.requests,
+        let Some(events) = self
+            .check_monitor_point(
                 session_id,
+                timing,
+                conversation,
+                iteration,
+                turn_ending,
                 cancel_token,
-                &grace,
             )
             .await
         else {
             return Ok((verdict, None));
         };
-        // Sampled again: a message the person typed while the checks ran
-        // holds back any stop they make, and the stop is made at a later
-        // point once the message is answered.
-        let events = registry.apply_point(
-            session_id,
-            &planned.requests,
-            outcomes,
-            planned.unchecked,
-            self.has_pending_user_direct_steer(),
-            turn_ending,
-        );
         self.fold_monitor_events(session_id, &events, &mut verdict, &mut notes, &mut stops)
             .await;
         if verdict.stop {
@@ -11787,6 +11775,71 @@ impl Agent {
             verdict.steer = Some(Box::new(note));
         }
         Ok((verdict, None))
+    }
+
+    /// The checks themselves at one point ([`Self::evaluate_monitor_point`]):
+    /// each criterion due is planned on the newest lines that fit its
+    /// model's window, asked, and its answer applied. The events the answers
+    /// make, or `None` when nothing was asked: nothing was due, or a cancel
+    /// or an overdue steer came first (the windows are then asked again at
+    /// the next point).
+    async fn check_monitor_point(
+        &self,
+        session_id: &str,
+        timing: crate::decision::settings::MonitorTiming,
+        conversation: &Conversation,
+        iteration: u32,
+        turn_ending: bool,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Option<Vec<crate::decision::monitor::MonitorEvent>> {
+        let registry = &self.decisions.monitors;
+        let custom = self.decisions.service.custom();
+        let service: &crate::decision::DecisionService = match custom.as_deref() {
+            Some(service) => service,
+            None => crate::decision::global(),
+        };
+        // Sampled once for this point and threaded (DR-15).
+        let enforced = crate::privacy::privacy_tiers_enabled();
+        let base = crate::decision::DecisionSession::load(
+            self.config.session_manager.clone(),
+            session_id,
+            enforced,
+        )
+        .await
+        .map(|base| base.with_turn(registry.turn_id(session_id)));
+        // One grace for the whole point: it starts when a typed steer is
+        // first seen, by the lookup or by the checks.
+        let grace = SteerGrace::new(registry.steer_grace());
+        let windows = self
+            .monitor_windows(service, &base, session_id, timing, cancel_token, &grace)
+            .await?;
+        let planned = registry.plan_point(session_id, timing, conversation, iteration, |model| {
+            windows.get(&model.cloned()).copied()
+        });
+        if planned.is_empty() {
+            return None;
+        }
+        let outcomes = self
+            .ask_monitor_point(
+                service,
+                base,
+                &planned.requests,
+                session_id,
+                cancel_token,
+                &grace,
+            )
+            .await?;
+        // Sampled again: a message the person typed while the checks ran
+        // holds back any stop they make, and the stop is made at a later
+        // point once the message is answered.
+        Some(registry.apply_point(
+            session_id,
+            &planned.requests,
+            outcomes,
+            planned.unchecked,
+            self.has_pending_user_direct_steer(),
+            turn_ending,
+        ))
     }
 
     /// The chat's settings could not be read: said once a turn. One that
@@ -12630,6 +12683,16 @@ impl Agent {
                             )
                         )
                     );
+                    // The turn ends here, before its `turn_end` point: its
+                    // monitors there are named, not silently skipped.
+                    for event in Box::pin(self.forced_exit_monitor_notices(
+                        &session_config.id,
+                        WrapUp::ActionLimit,
+                    ))
+                    .await
+                    {
+                        yield event;
+                    }
                     break;
                 }
                 if max_tool_calls > 0 && tool_calls_taken > max_tool_calls && self.has_pending_user_direct_steer() {
@@ -12657,6 +12720,14 @@ impl Agent {
                             )
                         )
                     );
+                    for event in Box::pin(self.forced_exit_monitor_notices(
+                        &session_config.id,
+                        WrapUp::ToolCallLimit,
+                    ))
+                    .await
+                    {
+                        yield event;
+                    }
                     break;
                 }
                 // BR-32: the stall check already told the model to wrap up and it
@@ -12692,6 +12763,14 @@ impl Agent {
                     yield AgentEvent::Message(
                         assistant_text(crate::agents::stall::stopped_message(&reason))
                     );
+                    for event in Box::pin(self.forced_exit_monitor_notices(
+                        &session_config.id,
+                        WrapUp::Stall,
+                    ))
+                    .await
+                    {
+                        yield event;
+                    }
                     break;
                 }
                 // BR-35: the budget was spent, the model was asked to wrap up, and
@@ -12719,6 +12798,14 @@ impl Agent {
                     yield AgentEvent::Message(
                         assistant_text(crate::agents::budget::stopped_message(&snapshot))
                     );
+                    for event in Box::pin(self.forced_exit_monitor_notices(
+                        &session_config.id,
+                        WrapUp::Budget,
+                    ))
+                    .await
+                    {
+                        yield event;
+                    }
                     break;
                 }
 
@@ -21180,6 +21267,20 @@ mod tests {
             Some(
                 "Monitors 'A', 'B' were not checked at the end of this turn: the turn was being \
                  wound down because the agent stopped making progress."
+            )
+        );
+        assert_eq!(
+            wound_down_notice(&["'Task done'".to_string()], WrapUp::ActionLimit).as_deref(),
+            Some(
+                "Monitor 'Task done' was not checked at the end of this turn: the turn ended \
+                 because it reached its action limit."
+            )
+        );
+        assert_eq!(
+            wound_down_notice(&["'Task done'".to_string()], WrapUp::ToolCallLimit).as_deref(),
+            Some(
+                "Monitor 'Task done' was not checked at the end of this turn: the turn ended \
+                 because it reached its tool-call limit."
             )
         );
         assert_eq!(one_line_name("Plot\nthe\tdata"), "Plot the data");

@@ -1043,15 +1043,13 @@ fn monitors_schema() -> Value {
         "type": "array",
         "maxItems": MAX_AGENT_MONITORS,
         "items": items,
+        // Short on purpose: the item schema carries each field's rules, and a
+        // monitor on a decision model this chat may not use refuses the spawn
+        // with its own explanation. The person's, the phase's and a
+        // sub-workflow's monitors are added without the model naming them.
         "description": format!(
-            "Optional, at most {MAX_AGENT_MONITORS}: decision-model monitors this subagent \
-             starts with. Each is a yes/no question a decision model answers from the \
-             subagent's newest messages; when P(the watched answer) reaches the threshold it \
-             stops the subagent or steers it. They are checked against this chat's privacy \
-             before anything starts: a monitor on a decision model this chat may not use \
-             refuses the spawn. The person's monitors that watch this chat's subagents, the \
-             phase's monitors and a sub-workflow's monitors are added on their own. Change \
-             yours later with workspace_monitor."
+            "Optional, at most {MAX_AGENT_MONITORS}: decision-model monitors the subagent \
+             starts with. Change them later with workspace_monitor."
         )
     })
 }
@@ -1141,12 +1139,8 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          Give each subagent a short `role` label; the side panel shows it. When this \
          chat has an orchestration plan (declared with workspace_orchestrate), also \
          pass the `phase` each subagent works in.\n\n\
-         To have a decision model watch a subagent, pass `monitors` (at most 4): each \
-         is a yes/no question, a threshold, and whether to stop or steer the subagent \
-         when the answer reaches it. They are on the subagent before it starts, beside \
-         the monitors the person set to watch this chat's subagents, the phase's \
-         monitors and a sub-workflow's monitors, which you cannot remove. A monitor on a \
-         decision model this chat may not use refuses the spawn, and nothing starts.\n\n\
+         To have a decision model watch a subagent and stop or steer it, pass \
+         `monitors`.\n\n\
          A subagent starts with NO view of this conversation, so spell the task out: \
          name the actual files, paths and values rather than \"it\" or \"the other one\". \
          Resolving a referent costs you one step and costs the subagent a round trip \
@@ -2596,57 +2590,13 @@ async fn spawn_background_subagent(
         })
         .catch_unwind()
         .await;
-        // `run_was_cancelled` is settled here, with the result: a stop that
-        // trips the token from now until the result is published finds a run
-        // that already ended on its own, and must not be read as its reason.
-        let (mut result, run_was_cancelled) = match outcome {
-            Ok(SubagentRunOutcome { result, cancelled }) => (result, cancelled),
-            Err(_) => (
-                SubagentResult::from_error("the background subagent task panicked"),
-                false,
-            ),
-        };
-        let pending_inputs = completion_handle.finish_initial_run_and_take_pending();
-        if !pending_inputs.is_empty() {
-            result.human_intervened = true;
-            let persistence_errors = recover_unsettled_initial_inputs(
-                &completion_session_manager,
-                &completion_child_session_id,
-                pending_inputs,
-            )
-            .await;
-            if !persistence_errors.is_empty() {
-                let original_summary = result.summary;
-                result = SubagentResult::from_error(format!(
-                    "accepted user steering could not be stored before subagent completion: {}. Original outcome: {original_summary}",
-                    persistence_errors.join("; ")
-                ));
-                result.human_intervened = true;
-            }
-        }
-        // Why the chat that started it stopped it, when it did: before the
-        // outcome is written, so the record, the handle and the child's own
-        // chat all say the same thing.
-        note_child_stop_cause(
+        settle_background_subagent(
             &completion_session_manager,
             &completion_handle,
-            run_was_cancelled,
-            &mut result,
-        )
-        .await;
-        // The durable outcome is written BEFORE the handle publishes, so anyone
-        // woken by the completion (a `workspace_watch`, a panel poll) and then
-        // reading the child's row finds the record already there. Every exit
-        // reaches this line: a finished run, a refused or cancelled queue wait,
-        // and a panic (`catch_unwind` above), so none of them is left to read
-        // as "interrupted" after a restart.
-        record_child_outcome(
-            &completion_session_manager,
             &completion_child_session_id,
-            &result,
+            outcome,
         )
         .await;
-        completion_handle.complete(result);
     }));
 
     let mut text = background_started_message(
@@ -2674,6 +2624,57 @@ async fn spawn_background_subagent(
         is_error: Some(false),
         meta: None,
     }
+}
+
+/// Settle a background subagent once its run has ended, awaited inside the
+/// detached task that ran it: the run's outcome (or its panic) becomes the
+/// result, steering the run never claimed is stored, the child's chat says why
+/// the chat that started it stopped it, and the durable outcome is written
+/// before the handle publishes the result. Split out of
+/// [`spawn_background_subagent`] only to keep it under clippy's line budget.
+async fn settle_background_subagent(
+    session_manager: &crate::session::SessionManager,
+    handle: &BackgroundSubagent,
+    child_session_id: &str,
+    outcome: std::thread::Result<SubagentRunOutcome>,
+) {
+    // `run_was_cancelled` is settled here, with the result: a stop that
+    // trips the token from now until the result is published finds a run
+    // that already ended on its own, and must not be read as its reason.
+    let (mut result, run_was_cancelled) = match outcome {
+        Ok(SubagentRunOutcome { result, cancelled }) => (result, cancelled),
+        Err(_) => (
+            SubagentResult::from_error("the background subagent task panicked"),
+            false,
+        ),
+    };
+    let pending_inputs = handle.finish_initial_run_and_take_pending();
+    if !pending_inputs.is_empty() {
+        result.human_intervened = true;
+        let persistence_errors =
+            recover_unsettled_initial_inputs(session_manager, child_session_id, pending_inputs)
+                .await;
+        if !persistence_errors.is_empty() {
+            let original_summary = result.summary;
+            result = SubagentResult::from_error(format!(
+                "accepted user steering could not be stored before subagent completion: {}. Original outcome: {original_summary}",
+                persistence_errors.join("; ")
+            ));
+            result.human_intervened = true;
+        }
+    }
+    // Why the chat that started it stopped it, when it did: before the
+    // outcome is written, so the record, the handle and the child's own
+    // chat all say the same thing.
+    note_child_stop_cause(session_manager, handle, run_was_cancelled, &mut result).await;
+    // The durable outcome is written BEFORE the handle publishes, so anyone
+    // woken by the completion (a `workspace_watch`, a panel poll) and then
+    // reading the child's row finds the record already there. Every exit
+    // reaches this line: a finished run, a refused or cancelled queue wait,
+    // and a panic (`catch_unwind` in `spawn_background_subagent`), so none
+    // of them is left to read as "interrupted" after a restart.
+    record_child_outcome(session_manager, child_session_id, &result).await;
+    handle.complete(result);
 }
 
 /// Persist and publish accepted pre-start steering the delegated runtime never

@@ -1313,9 +1313,10 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         .await
         {
             Ok(outcome) => {
-                // Only a chat that already has messages (a resumed one) gets a
-                // line: whether this workflow seeded it when it started, or its
-                // blocks were never applied to it.
+                // Only a resumed chat whose blocks this run did not apply gets
+                // a line: one with messages (whether this workflow seeded it
+                // when it started, or its blocks were never applied to it), or
+                // an empty one another workflow seeded.
                 if let Some(notice) = supervision_notice(
                     session.agent.config.session_manager.as_ref(),
                     &session_id,

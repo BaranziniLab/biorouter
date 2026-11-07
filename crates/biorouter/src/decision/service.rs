@@ -72,8 +72,11 @@
 //! the decision log and the usage ledger, and a priced one's cost reaches the
 //! live turn's reply budget ([`super::turns::note_late_cost`]). It is never
 //! counted in the turn's tally: the timeout row already was. Exactly one of the
-//! waiter and the task hands a late answer over. A process that exits waits
-//! for such tasks with [`super::late::settle_late_answers`].
+//! waiter and the task hands a late answer over. An answer that came in time
+//! is the caller's to store, and its row is written on a task of its own too,
+//! still counted in flight, so a caller stopped during that write does not
+//! lose the row or what it bills. A process that exits waits for such tasks
+//! with [`super::late::settle_late_answers`].
 //!
 //! # Save-time checks
 //!
@@ -846,6 +849,7 @@ impl DecisionService {
                     &error,
                     Some(&attempt),
                     DecisionUsage::default(),
+                    None,
                 )
                 .await;
                 return Err(error);
@@ -1014,6 +1018,7 @@ impl DecisionService {
             &error,
             Some(&attempt),
             DecisionUsage::default(),
+            None,
         )
         .await;
     }
@@ -1242,6 +1247,7 @@ impl DecisionService {
             error,
             Some(&attempt),
             DecisionUsage::default(),
+            None,
         )
         .await;
     }
@@ -1445,9 +1451,11 @@ impl DecisionService {
             .preflight(model.as_ref(), &caps, request, &attempt)
             .await
         {
-            return Err(self.failed(model.as_ref(), request, &attempt, error).await);
+            return Err(self
+                .failed(model.as_ref(), request, &attempt, error, None)
+                .await);
         }
-        let (verdicts, latency_ms) = self
+        let (verdicts, latency_ms, in_flight) = self
             .call(model, &caps, request, &attempt, &request_id)
             .await?;
         let usage = verdicts.usage;
@@ -1460,7 +1468,9 @@ impl DecisionService {
                 // usage ledger counts it.
                 Err(error) => {
                     let error = error.with_billed_usage(usage);
-                    return Err(self.failed(model.as_ref(), request, &attempt, error).await);
+                    return Err(self
+                        .failed(model.as_ref(), request, &attempt, error, Some(in_flight))
+                        .await);
                 }
             };
         let session = attempt.session;
@@ -1486,7 +1496,8 @@ impl DecisionService {
             usage,
             privacy_enforced: session.is_some_and(|s| s.enforced),
         };
-        self.record(entry, Some(&request_id), 1).await;
+        self.record(entry, Some(&request_id), 1, Some(in_flight))
+            .await;
         Ok(decisions)
     }
 
@@ -1511,7 +1522,9 @@ impl DecisionService {
     /// ([`Self::failed`]) before it is returned. A timeout leaves the call
     /// running: its timeout row is written, and its answer, when it comes, is
     /// stored and billed as a late one under the same id. A local model that
-    /// answered counts as warm from then on.
+    /// answered counts as warm from then on. An answer comes back with its
+    /// place in the in-flight count, which goes to the write of its row
+    /// ([`Self::record`]), so it is counted until that row is stored.
     async fn call(
         &self,
         model: &Arc<dyn DecisionModel>,
@@ -1519,7 +1532,7 @@ impl DecisionService {
         request: &DecisionRequest,
         attempt: &Attempt<'_>,
         request_id: &str,
-    ) -> DecisionResult<(ModelVerdicts, u64)> {
+    ) -> DecisionResult<(ModelVerdicts, u64, super::late::InFlightGuard)> {
         let permit = self
             .semaphore(model.as_ref(), caps)
             .acquire_owned()
@@ -1534,41 +1547,49 @@ impl DecisionService {
         // The permit bounds the requests being waited for, never a call left
         // running after its deadline.
         drop(permit);
-        let error = match waited {
+        let (error, in_flight) = match waited {
             Ok(Ok(Answered {
                 answered: Ok(verdicts),
                 latency_ms,
-                ..
+                in_flight,
             })) => {
                 if caps.local {
                     if let Ok(mut warm) = self.warm.lock() {
                         warm.insert(model.model_ref().label());
                     }
                 }
-                return Ok((verdicts, latency_ms));
+                return Ok((verdicts, latency_ms, in_flight));
             }
             Ok(Ok(Answered {
                 answered: Err(error),
+                in_flight,
                 ..
-            })) => error,
+            })) => (error, Some(in_flight)),
             // The call's task ended without an answer: it panicked.
-            Ok(Err(_)) => DecisionError::Backend {
-                model: model.display_name(),
-                status: None,
-                error_type: None,
-                message: "the decision request stopped unexpectedly".to_string(),
-            },
+            Ok(Err(_)) => (
+                DecisionError::Backend {
+                    model: model.display_name(),
+                    status: None,
+                    error_type: None,
+                    message: "the decision request stopped unexpectedly".to_string(),
+                },
+                None,
+            ),
             Err(_) => {
                 let timeout = DecisionError::Timeout {
                     model: model.display_name(),
                     seconds: deadline.as_secs(),
                 };
-                let error = self.failed(model.as_ref(), request, attempt, timeout).await;
+                let error = self
+                    .failed(model.as_ref(), request, attempt, timeout, None)
+                    .await;
                 waiter.give_up();
                 return Err(error);
             }
         };
-        Err(self.failed(model.as_ref(), request, attempt, error).await)
+        Err(self
+            .failed(model.as_ref(), request, attempt, error, in_flight)
+            .await)
     }
 
     /// Everything a late or abandoned answer to this request needs to be
@@ -1608,12 +1629,15 @@ impl DecisionService {
     /// refusal is left to the batch, which logs one row for every chunk it
     /// stopped. The row keeps what the model was billed for when it answered
     /// before the request failed ([`DecisionError::billed_usage`]).
+    /// `in_flight` is that answer's place in the in-flight count, when the
+    /// model answered, held until the row is stored ([`Self::record`]).
     async fn failed(
         &self,
         model: &dyn DecisionModel,
         request: &DecisionRequest,
         attempt: &Attempt<'_>,
         error: DecisionError,
+        in_flight: Option<super::late::InFlightGuard>,
     ) -> DecisionError {
         if !(attempt.defer_refusal && matches!(error, DecisionError::Refused(_))) {
             self.record_failure(
@@ -1623,6 +1647,7 @@ impl DecisionService {
                 &error,
                 Some(attempt),
                 error.billed_usage(),
+                in_flight,
             )
             .await;
         }
@@ -1659,13 +1684,16 @@ impl DecisionService {
             error,
             Some(&attempt),
             DecisionUsage::default(),
+            None,
         )
         .await;
     }
 
     /// One failure row. `usage` is the default unless the model answered
     /// before the request failed; a billed answer keeps its usage, so the
-    /// usage ledger counts it under the row's id.
+    /// usage ledger counts it under the row's id, and `in_flight` is that
+    /// answer's place in the in-flight count ([`Self::record`]).
+    #[allow(clippy::too_many_arguments)]
     async fn record_failure(
         &self,
         session: Option<&DecisionSession>,
@@ -1674,6 +1702,7 @@ impl DecisionService {
         error: &DecisionError,
         attempt: Option<&Attempt<'_>>,
         usage: DecisionUsage,
+        in_flight: Option<super::late::InFlightGuard>,
     ) {
         let outcome = if matches!(error, DecisionError::Refused(_)) {
             DecisionOutcome::Refused
@@ -1703,26 +1732,55 @@ impl DecisionService {
             privacy_enforced: session.is_some_and(|s| s.enforced),
         };
         let chunks = attempt.map_or(1, |a| a.stopped_chunks);
-        self.record(entry, attempt.and_then(|a| a.request_id), chunks)
+        self.record(entry, attempt.and_then(|a| a.request_id), chunks, in_flight)
             .await;
     }
 
     /// Hand `entry` to the sink, under `id` when the caller chose one.
     /// `chunks` is how many chunks the row stands for: one, or every chunk of
     /// a batch the row records as stopped.
-    async fn record(&self, entry: DecisionLogEntry, id: Option<&str>, chunks: usize) {
+    ///
+    /// The write runs on a task of its own, which the caller waits for but
+    /// cannot cancel: a caller stopped while it runs (Stop or an overdue
+    /// steer around a monitor, an HTTP client that went away) leaves the row,
+    /// and the usage it bills, to land all the same. Nothing else would: an
+    /// answer the caller has read is no late answer. `in_flight` is that
+    /// answer's place in the in-flight count, when the row records one, held
+    /// until the write is done, so an exiting process waits for it
+    /// ([`super::late::settle_late_answers`]).
+    async fn record(
+        &self,
+        entry: DecisionLogEntry,
+        id: Option<&str>,
+        chunks: usize,
+        in_flight: Option<super::late::InFlightGuard>,
+    ) {
         // Counted per turn and origin in process, for the one transcript
         // marker a turn gets; never one row per call (owner rule A1).
         super::monitor::note_decision_chunks(&entry, chunks.max(1) as u64);
-        let sink = self.sink.read().ok().and_then(|sink| sink.clone());
-        if let Some(sink) = sink {
-            let written = match id {
+        let Some(sink) = self.sink.read().ok().and_then(|sink| sink.clone()) else {
+            return;
+        };
+        let id = id.map(str::to_string);
+        let write = async move {
+            let written = match &id {
                 Some(id) => sink.record_as(id, entry).await,
                 None => sink.record(entry).await,
             };
             if let Err(error) = written {
                 tracing::warn!("decision log write failed: {error:#}");
             }
+            drop(in_flight);
+        };
+        match tokio::runtime::Handle::try_current() {
+            // Dropping the handle, as a stopped caller does, leaves the task
+            // running.
+            Ok(runtime) => {
+                if let Err(error) = runtime.spawn(write).await {
+                    tracing::warn!("decision log write failed: {error}");
+                }
+            }
+            Err(_) => write.await,
         }
     }
 }
@@ -1994,8 +2052,9 @@ fn refuse_by_bound_tier(
 
 /// One call's answer, its latency in milliseconds, and the request's place in
 /// the in-flight count. The guard travels with the answer, so the request is
-/// counted in flight from the moment it is sent until its answer is read by
-/// the caller or stored as a late one, with no gap between the two.
+/// counted in flight from the moment it is sent until its answer is stored:
+/// by the caller's own row ([`DecisionService::record`]), which the caller
+/// cannot cancel, or as a late one, with no gap between the two.
 struct Answered {
     answered: DecisionResult<ModelVerdicts>,
     latency_ms: u64,
@@ -4105,6 +4164,8 @@ mod tests {
         rows: Mutex<Vec<(Option<String>, DecisionLogEntry)>>,
         late: Mutex<Vec<(String, DecisionLogEntry)>>,
         late_seen: tokio::sync::Notify,
+        /// Notified when a `record_as` write starts, before any hold.
+        row_started: tokio::sync::Notify,
         hold_rows_until: Option<Arc<tokio::sync::Notify>>,
         /// After the hold, never finish writing a row (notifying
         /// `row_stalled`), so the caller can go away mid-write.
@@ -4147,6 +4208,7 @@ mod tests {
             Ok(())
         }
         async fn record_as(&self, id: &str, entry: DecisionLogEntry) -> anyhow::Result<()> {
+            self.row_started.notify_one();
             if let Some(hold) = &self.hold_rows_until {
                 hold.notified().await;
                 // The answer's task sends on the channel right after the
@@ -4440,7 +4502,74 @@ mod tests {
             0
         );
         assert_eq!(log.late().len(), 1, "handed over once");
-        assert!(log.rows().is_empty(), "the row's write was abandoned");
+        assert!(
+            log.rows().is_empty(),
+            "the timeout row's write is still stalled in the sink"
+        );
+    }
+
+    /// A caller stopped while the row of an answer that came in time is
+    /// being written (Stop or an overdue steer right after a monitor's model
+    /// answered, an HTTP client that went away) does not take the row with
+    /// it: the row, and the usage it bills, still land, once, and the request
+    /// counts in flight until they have. Nothing else would store it: the
+    /// caller read the answer, so it is no late one. The same holds for an
+    /// answer that could not be read but was billed.
+    #[tokio::test]
+    async fn a_caller_stopped_while_its_answer_is_stored_still_bills_it() {
+        let readable = Scripted::new(
+            entry("quick", ProviderTier::Public, false),
+            Duration::ZERO,
+            usage(30, 1),
+        );
+        let mut unreadable = Scripted::new(
+            entry("odd", ProviderTier::Public, false),
+            Duration::ZERO,
+            DecisionUsage::default(),
+        );
+        unreadable.error = Some(
+            DecisionError::malformed("odd", "the answer was not JSON")
+                .with_billed_usage(usage(40, 3)),
+        );
+        for (model, billed) in [(readable, usage(30, 1)), (unreadable, usage(40, 3))] {
+            let name = model.entry.model.clone();
+            let svc = scripted_service(Arc::new(model))
+                .with_timeouts(Duration::from_secs(5), Duration::from_secs(5));
+            let release = Arc::new(tokio::sync::Notify::new());
+            let log = Arc::new(LateLog {
+                hold_rows_until: Some(release.clone()),
+                ..LateLog::default()
+            });
+            svc.set_sink(log.clone());
+            let note = request("a note", None);
+            let chat = public_chat("stopped-mid-row");
+            tokio::select! {
+                decided = svc.decide(Some(&chat), None, &note) => {
+                    panic!("{name}: the row is held, so the caller cannot finish: {decided:?}")
+                }
+                // The answer was read in time and its row's write has
+                // started: the caller is stopped here.
+                () = log.row_started.notified() => {}
+            }
+            assert!(log.rows().is_empty(), "{name}: the row is still held");
+            assert!(
+                super::super::late::in_flight() >= 1,
+                "{name}: the answer counts in flight until its row is stored"
+            );
+            release.notify_one();
+            assert_eq!(
+                super::super::late::settle_late_answers(Duration::from_secs(10)).await,
+                0
+            );
+            let rows = log.rows();
+            assert_eq!(rows.len(), 1, "{name}: the row still landed, once");
+            assert!(rows[0].0.is_some(), "{name}: under the request's id");
+            assert_eq!(rows[0].1.usage, billed, "{name}: with what it billed");
+            assert!(
+                log.late().is_empty(),
+                "{name}: an answer read in time is not a late one"
+            );
+        }
     }
 
     /// A caller that goes away (a stopped turn, a dropped HTTP request)

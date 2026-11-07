@@ -2211,6 +2211,10 @@ pub struct CancelTurnResponse {
     /// had a turn running. Each one ends `incomplete` and says the person
     /// stopped the chat that started it.
     ///
+    /// Only the subagents whose own chat this caller could reach: one that is
+    /// more private than the chat that started it, and out of this caller's
+    /// reach, keeps running and is not named.
+    ///
     /// Always empty for Stop-and-Send (`continuation_pending`), which leaves
     /// them running because the chat keeps supervising them in the turn that
     /// follows. Omitted when empty.
@@ -2377,8 +2381,9 @@ const CANCEL_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// successor untouched.
 ///
 /// A plain Stop also stops the subagents the chat started that still have
-/// work in flight, and names them in `stopped_subagents`; Stop-and-Send
-/// (`continuation_pending`) leaves them running (see `stop_the_chats_subagents`).
+/// work in flight and whose own chat the caller can reach, and names them in
+/// `stopped_subagents`; Stop-and-Send (`continuation_pending`) leaves them
+/// running (see `stop_the_chats_subagents`).
 #[utoipa::path(
     post,
     path = "/agent/cancel",
@@ -2408,7 +2413,7 @@ pub async fn cancel_turn(
     if let Some(agent) = state.peek_agent(&req.session_id).await {
         agent.extension_manager.computer_use.revoke();
     }
-    match cancel_turn_bounded(&state, &req, CANCEL_SETTLEMENT_TIMEOUT).await {
+    match cancel_turn_bounded(&state, &req, &headers, CANCEL_SETTLEMENT_TIMEOUT).await {
         Ok(response) => Json(response).into_response(),
         Err(failure) => failure.into_response(),
     }
@@ -2568,19 +2573,34 @@ fn idle_cancel_response() -> CancelTurnResponse {
 /// Asked only after the gate admitted the request ([`authorize_turn_control`]),
 /// and only when the cancel itself succeeded: a stale Stop the route refuses
 /// with 409 (its generation is not the one running) changes nothing, the
-/// successor's subagents included. On a keyless daemon this rides SD-11's
-/// admission argument: whoever may stop this chat's turn may already ask it,
-/// through `/reply`, to `workspace_close` its children. A subagent's own chat
-/// is still refused there before this is reached.
+/// successor's subagents included. A subagent's own chat is refused there
+/// before this is reached.
+///
+/// ⚠ **Each child is gated on its OWN chat, not the parent's.** The gate
+/// admitted the parent, and a child can be more private than its parent (a
+/// mid-run raise; see `routes::session_subagents`). So only the children
+/// [`reachable_subagents`] admits are stopped and named. One it refuses keeps
+/// running and is not named, because its id alone would tell the caller that a
+/// private run exists, which is what the roster omits it for. On a keyless
+/// daemon the admission argument for the parent (whoever may stop this chat's
+/// turn may already ask it, through `/reply`, to `workspace_close` its
+/// children) holds only for these: `workspace_close` runs with the caller's
+/// capability and refuses a child out of its reach.
 ///
 /// [`stop_delegated_children`]: biorouter::agents::subagent_handle::stop_delegated_children
-fn stop_the_chats_subagents(req: &CancelTurnRequest) -> Vec<String> {
+async fn stop_the_chats_subagents(
+    state: &AppState,
+    req: &CancelTurnRequest,
+    headers: &HeaderMap,
+) -> Vec<String> {
     if req.continuation_pending {
         return Vec::new();
     }
-    let stopped = biorouter::agents::subagent_handle::stop_delegated_children(
+    let reachable = reachable_subagents(state, &req.session_id, headers).await;
+    let stopped = biorouter::agents::subagent_handle::stop_delegated_children_admitted(
         &req.session_id,
         biorouter::agents::subagent_handle::ChildStopCause::ParentStopped,
+        &|child| reachable.contains(child),
     );
     if !stopped.is_empty() {
         tracing::info!(
@@ -2593,6 +2613,37 @@ fn stop_the_chats_subagents(req: &CancelTurnRequest) -> Vec<String> {
         .into_iter()
         .map(|child| child.child_session_id)
         .collect()
+}
+
+/// The subagents `parent` started that this request may stop: each one whose
+/// own chat the reach gate admits, asked exactly as `POST /agent/cancel` naming
+/// that chat would ask it (`session_reach`, so the crew exclusion and the
+/// tier). A chat this daemon cannot read is refused as a private one is.
+///
+/// Running work is the same rule reached through the work's chat, and stopping
+/// a chat's work is never easier than reaching the chat. So never the listing
+/// standing (`HttpCaller::lists_session`, which honours a `serve` operator's
+/// tier, SD-10): a stop is not a listing.
+async fn reachable_subagents(
+    state: &AppState,
+    parent: &str,
+    headers: &HeaderMap,
+) -> std::collections::HashSet<String> {
+    let mut asked = std::collections::HashSet::new();
+    let mut reachable = std::collections::HashSet::new();
+    for handle in biorouter::agents::subagent_handle::list_for_session(parent) {
+        let child = handle.child_session_id.clone();
+        if !asked.insert(child.clone()) {
+            continue;
+        }
+        if crate::routes::session_reach::session_reach(state.session_manager(), &child, headers)
+            .await
+            .is_ok()
+        {
+            reachable.insert(child);
+        }
+    }
+    reachable
 }
 
 fn turn_mismatch_failure(req: &CancelTurnRequest, active_turn_id: String) -> CancelTurnFailure {
@@ -2736,6 +2787,7 @@ async fn await_cancel_settlement(
 async fn cancel_turn_bounded(
     state: &AppState,
     req: &CancelTurnRequest,
+    headers: &HeaderMap,
     settlement_timeout: Duration,
 ) -> Result<CancelTurnResponse, CancelTurnFailure> {
     let (turn, continuation_admission) = match admit_cancel(state, req)? {
@@ -2744,7 +2796,7 @@ async fn cancel_turn_bounded(
             // No turn of this chat's was running (or it had already retired),
             // but subagents it started may still be at work: the Stop is meant
             // for them too.
-            response.stopped_subagents = stop_the_chats_subagents(req);
+            response.stopped_subagents = stop_the_chats_subagents(state, req, headers).await;
             return Ok(response);
         }
     };
@@ -2759,7 +2811,7 @@ async fn cancel_turn_bounded(
 
     // After the chat's own token has tripped, and before the settlement wait,
     // so the children stop now rather than once the chat's turn has unwound.
-    let mut stopped_subagents = stop_the_chats_subagents(req);
+    let mut stopped_subagents = stop_the_chats_subagents(state, req, headers).await;
 
     await_cancel_settlement(&turn, req, settlement_timeout).await?;
 
@@ -2770,7 +2822,7 @@ async fn cancel_turn_bounded(
         // A spawn the stopped turn was in the middle of can register its child
         // after the first sweep. Once the turn has unwound it starts no more, so
         // a second sweep stops any such child too.
-        for child in stop_the_chats_subagents(req) {
+        for child in stop_the_chats_subagents(state, req, headers).await {
             if !stopped_subagents.contains(&child) {
                 stopped_subagents.push(child);
             }
@@ -6244,9 +6296,10 @@ mod tests {
                 continuation_owner_id: Some("wedged-test-owner".to_string()),
             };
 
-            let failure = cancel_turn_bounded(&state, &req, Duration::from_millis(25))
-                .await
-                .expect_err("the held guard must reach the safety bound");
+            let failure =
+                cancel_turn_bounded(&state, &req, &HeaderMap::new(), Duration::from_millis(25))
+                    .await
+                    .expect_err("the held guard must reach the safety bound");
             assert_eq!(
                 failure.into_response().status(),
                 StatusCode::GATEWAY_TIMEOUT,
@@ -6307,9 +6360,10 @@ mod tests {
                 continuation_pending: false,
                 continuation_owner_id: None,
             };
-            let early = cancel_turn_bounded(&state, &unwaited, Duration::from_secs(5))
-                .await
-                .unwrap();
+            let early =
+                cancel_turn_bounded(&state, &unwaited, &HeaderMap::new(), Duration::from_secs(5))
+                    .await
+                    .unwrap();
             assert!(early.cancelled && !early.settled);
             assert!(
                 early.stop_messages.is_empty(),
@@ -6323,9 +6377,10 @@ mod tests {
             };
             // The turn has retired, so this second, waited request finds nothing
             // running — the idempotent answer — and is not the one that stopped it.
-            let late = cancel_turn_bounded(&state, &waited, Duration::from_secs(5))
-                .await
-                .unwrap();
+            let late =
+                cancel_turn_bounded(&state, &waited, &HeaderMap::new(), Duration::from_secs(5))
+                    .await
+                    .unwrap();
             assert!(!late.cancelled && late.stop_messages.is_empty());
 
             // The real shape: one waited request that trips the turn and settles.
@@ -6349,9 +6404,10 @@ mod tests {
                 continuation_pending: false,
                 continuation_owner_id: None,
             };
-            let response = cancel_turn_bounded(&state, &req, Duration::from_secs(5))
-                .await
-                .unwrap();
+            let response =
+                cancel_turn_bounded(&state, &req, &HeaderMap::new(), Duration::from_secs(5))
+                    .await
+                    .unwrap();
             assert!(response.cancelled && response.settled);
             assert_eq!(response.stop_messages, rows);
             let body = serde_json::to_value(&response).unwrap();

@@ -114,8 +114,9 @@ export const getCallableToolCount = <ThrowOnError extends boolean = false>(optio
  * successor untouched.
  *
  * A plain Stop also stops the subagents the chat started that still have
- * work in flight, and names them in `stopped_subagents`; Stop-and-Send
- * (`continuation_pending`) leaves them running (see `stop_the_chats_subagents`).
+ * work in flight and whose own chat the caller can reach, and names them in
+ * `stopped_subagents`; Stop-and-Send (`continuation_pending`) leaves them
+ * running (see `stop_the_chats_subagents`).
  */
 export const cancelTurn = <ThrowOnError extends boolean = false>(options: Options<CancelTurnData, ThrowOnError>) => (options.client ?? client).post<CancelTurnResponses, CancelTurnErrors, ThrowOnError>({
     url: '/agent/cancel',

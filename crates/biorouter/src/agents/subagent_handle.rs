@@ -992,6 +992,25 @@ pub fn stop_delegated_children_except(
     )
 }
 
+/// [`stop_delegated_children`] for only the children `admits` lets through,
+/// for a caller that may not stop every one of them: the HTTP Stop, whose
+/// caller may be refused a child that a mid-run raise made more private than
+/// the chat that started it (`routes::reply::stop_the_chats_subagents`).
+///
+/// A child `admits` refuses is left exactly as it was: not stopped, no cause
+/// recorded, and not in the result. `admits` is asked about every child the
+/// registry holds for the parent when the stop runs, including one registered
+/// after the caller resolved its answers, so a caller that answers from a list
+/// it built beforehand refuses such a child rather than stopping it unasked.
+pub fn stop_delegated_children_admitted(
+    parent_session_id: &str,
+    cause: ChildStopCause,
+    admits: &dyn Fn(&str) -> bool,
+) -> Vec<StoppedChild> {
+    let services = crate::workspace_services::get();
+    stop_children_matching(parent_session_id, admits, &cause, services.as_deref())
+}
+
 /// [`stop_delegated_children`] and [`stop_delegated_children_except`] with the
 /// daemon's services passed in rather than read from the installed ones: for a
 /// caller that holds its own, such as a test of the daemon's turn runner.
@@ -999,6 +1018,22 @@ pub fn stop_delegated_children_except(
 pub fn stop_children_with(
     parent_session_id: &str,
     except_child_session_id: Option<&str>,
+    cause: &ChildStopCause,
+    services: Option<&dyn WorkspaceServices>,
+) -> Vec<StoppedChild> {
+    stop_children_matching(
+        parent_session_id,
+        &|child| except_child_session_id != Some(child),
+        cause,
+        services,
+    )
+}
+
+/// The one implementation behind every stop of a parent's children: each child
+/// with work in flight that `admits` lets through.
+fn stop_children_matching(
+    parent_session_id: &str,
+    admits: &dyn Fn(&str) -> bool,
     cause: &ChildStopCause,
     services: Option<&dyn WorkspaceServices>,
 ) -> Vec<StoppedChild> {
@@ -1012,7 +1047,7 @@ pub fn stop_children_with(
     let mut stopped: Vec<StoppedChild> = Vec::new();
     for handle in handles {
         let child = handle.child_session_id.as_str();
-        if except_child_session_id == Some(child) {
+        if !admits(child) {
             continue;
         }
         let delegated_run = handle.is_running();

@@ -399,11 +399,13 @@ fn panel_moim_from_reply(reply: &serde_json::Value) -> Option<String> {
 
 const WORKSPACE_LIST_MAX_SCAN_ROWS: usize = 20_000;
 
-/// `Default` is derived so `handle_list` can fall back to it when the call
-/// carries no arguments at all. Constructing the struct field-by-field there
-/// breaks every time this struct gains a field — which it has already done
-/// twice (decisions 17 and 23 added `offset`/`limit` and
-/// `parent_session_id`/`only_subagents`).
+// `Default` is derived so `handle_list` can fall back to it when the call
+// carries no arguments at all. Constructing the struct field-by-field there
+// breaks every time this struct gains a field — which it has already done
+// twice (decisions 17 and 23 added `offset`/`limit` and
+// `parent_session_id`/`only_subagents`). Plain `//`, because a doc comment
+// here becomes the tool schema's top-level description, sent to the model on
+// every turn.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 struct WorkspaceListParams {
     /// "open" (default): sessions with a GUI tab or a live agent. "all": every
@@ -717,37 +719,36 @@ struct WorkspaceCloseParams {
     scope: String,
 }
 
-/// `workspace_monitor`'s arguments.
+// `workspace_monitor`'s arguments.
+//
+// No `///` on the struct, and terse `///` on its fields: those lines are
+// schema the model reads on every turn of every chat (this tool is not
+// stripped with the spawn tool), so they say only what a call needs. The
+// limits and ownership rules are enforced, and explained, by the handler's
+// refusals.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct WorkspaceMonitorParams {
-    /// "list": every monitor on the subagent and who set it. "add": put
-    /// `monitors` on it; naming the id of a monitor you set replaces it.
-    /// "remove": take off monitors you set, by `ids`.
+    /// "list", "add" (`monitors`) or "remove" (`ids`).
     action: String,
-    /// The subagent: a conversation THIS chat spawned.
+    /// A subagent this chat spawned.
     session_id: String,
-    /// For "add": 1 to 4 monitors. A subagent holds at most 4 monitors set by
-    /// an agent, within 8 in all.
+    /// For "add": 1 to 4 monitors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     monitors: Option<Vec<crate::decision::settings::MonitorSpec>>,
-    /// For "remove": the ids of monitors you set, as "list" shows them.
+    /// For "remove": ids of monitors you set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ids: Option<Vec<String>>,
 }
 
-/// The model-facing description of `workspace_monitor`.
+/// The model-facing description of `workspace_monitor`. Short on purpose: it
+/// is in every chat's tool list, the per-field rules live in the schema, and
+/// the caps (4 set by an agent, 8 in all) and ownership are refusals that
+/// explain themselves at call time.
 const MONITOR_DESCRIPTION: &str = concat!(
-    "Put decision-model monitors on a subagent this chat spawned, list them, or remove yours. ",
-    "A monitor is a yes/no question a decision model answers from the subagent's newest ",
-    "messages after each of its steps (timing \"each_step\") or once at the end of its turn ",
-    "(\"turn_end\"). When P(watched answer) reaches the threshold, action \"stop\" ends the ",
-    "subagent's turn and action \"steer\" tells it to change course. action \"list\" shows every ",
-    "monitor and who set it: you may change or remove only the ones you set, never the person's ",
-    "or another chat's. action \"add\" takes 1 to 4 monitors (a subagent holds at most 4 set by ",
-    "an agent, 8 in all); naming the id of one you set replaces it. A monitor's `model` must be ",
-    "a decision model the subagent may use (decision_models lists them); left out, the ",
-    "subagent's default decision model. A running subagent applies a change from its next ",
-    "check."
+    "Add, list or remove decision-model monitors on a subagent this chat spawned: yes/no ",
+    "questions about its newest messages that stop or steer it when the answer reaches a ",
+    "threshold. You may change or remove only monitors you set; a running subagent applies a ",
+    "change from its next check."
 );
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -770,9 +771,11 @@ struct WorkspaceWatchParams {
     assume_running: Option<bool>,
 }
 
-/// `workspace_orchestrate`'s arguments. One tool with an `action` rather than
-/// five tools, because the plan is one record and every action is a small edit
-/// of it; five more tool schemas would cost every turn of every delegating chat.
+// `workspace_orchestrate`'s arguments. One tool with an `action` rather than
+// five tools, because the plan is one record and every action is a small edit
+// of it; five more tool schemas would cost every turn of every delegating chat.
+// Plain `//` rather than `///`, because a doc comment here becomes the
+// schema's top-level description, which the model would read on every turn.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[schemars(extend("required" = ["action"]))]
 struct WorkspaceOrchestrateParams {
@@ -792,11 +795,7 @@ struct WorkspaceOrchestrateParams {
     goal: Option<String>,
     /// For "plan": every phase, in order (at most 12). A revision lists them
     /// all again; a phase whose id you keep keeps its subagents, status,
-    /// hand-off and gate. A phase may carry a `gate`: yes/no questions a
-    /// decision model must answer with P(yes) at or above its threshold before
-    /// "complete" can close the phase. A stored gate cannot be changed or
-    /// removed: repeat it unchanged or leave it out. A phase may also carry
-    /// `monitors` its subagents start with.
+    /// hand-off, gate and monitors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     phases: Option<Vec<crate::agents::orchestration_plan::OrchestratePhaseInput>>,
     /// The phase id, for "start", "handoff" and "complete".
@@ -853,17 +852,14 @@ const ORCHESTRATE_DESCRIPTION: &str = concat!(
     "results when you write none) carries a phase's results forward: every subagent later ",
     "spawned into a phase that depends on it receives them, which is how agents of later ",
     "phases meet earlier results. action \"read\" shows the plan with per-phase progress. ",
-    "A phase may carry a decision gate (`gate` on the phase in action \"plan\": 1 to 8 ",
-    "yes/no `questions`, a `threshold`, default 0.8, and `max_attempts`, default 3): on ",
-    "action \"complete\" a decision model reads the phase's goal, hand-off and subagent ",
-    "results, and the phase completes only when every question reaches P(yes) at or above ",
-    "the threshold. Otherwise it stays in progress and the reply lists the questions that ",
+    "A phase may carry a decision gate (`gate` on the phase in action \"plan\"): on action ",
+    "\"complete\" a decision model reads the phase's goal, hand-off and subagent results, and ",
+    "the phase completes only when every question reaches P(yes) at or above the threshold. ",
+    "Otherwise it stays in progress and the reply lists the questions that ",
     "fell short, so you can fix the work and complete again; once its attempts are used up ",
     "the phase is blocked. A gate that cannot be evaluated never passes. ",
-    "A gate binds you: once a phase has one you cannot change, remove or skip it, and every ",
-    "phase listed after it waits (no start, no spawn, no completion) until the gate passes or ",
-    "the person passes or skips the phase. A gate you declare needs a threshold of at least ",
-    "0.5. The person, or a workflow, may also set gates. Work outside the plan is not held. ",
+    "A gate binds you: you cannot change, remove or skip it, and later phases wait until it ",
+    "passes or the person passes or skips it. Your gates need a threshold of at least 0.5. ",
     "Subagents run in the background; the user sees the plan and its subagents in the chat's ",
     "side panel."
 );

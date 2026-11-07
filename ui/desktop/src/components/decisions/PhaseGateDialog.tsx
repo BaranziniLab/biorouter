@@ -27,6 +27,7 @@ import {
   decidePhaseGate,
   gateDraftFrom,
   gateDraftHasErrors,
+  gateModelPick,
   gateQuestionName,
   gateThresholdSteps,
   gateThresholdValue,
@@ -183,6 +184,7 @@ function GateEditor({
   disabled,
   replacing,
   scaleFor,
+  opened,
 }: {
   draft: PhaseGateDraft;
   onChange: (next: PhaseGateDraft) => void;
@@ -200,6 +202,12 @@ function GateEditor({
    * under the thumb.
    */
   scaleFor: number;
+  /**
+   * The model the gate had when the edit began (`null` for none, or a new gate).
+   * Its row stands for it exactly, adapter included (`gateModelPick`), so picking
+   * that row again, or going back to it, changes nothing the person did not choose.
+   */
+  opened: DecisionModelRef | null;
 }) {
   const base = useId();
   const steps = gateThresholdSteps(scaleFor);
@@ -390,7 +398,10 @@ function GateEditor({
             );
           }}
           onChange={(raw: unknown) =>
-            onChange({ ...draft, model: (raw as ModelOption | null)?.model ?? null })
+            onChange({
+              ...draft,
+              model: gateModelPick((raw as ModelOption | null)?.model ?? null, opened),
+            })
           }
         />
         {modelsFailed ? (
@@ -576,9 +587,14 @@ export function PhaseGateDialog({
   } | null>(null);
   const [editing, setEditingDraft] = useState<PhaseGateDraft | null>(null);
   const [scaleFor, setScaleFor] = useState(GATE_DEFAULT_THRESHOLD);
-  // Starting an edit fixes the threshold scale for it (`GateEditor`'s `scaleFor`).
+  const [openedModel, setOpenedModel] = useState<DecisionModelRef | null>(null);
+  // Starting an edit fixes the threshold scale for it (`GateEditor`'s `scaleFor`)
+  // and the model it began with (`opened`).
   const startEditing = (draft: PhaseGateDraft | null) => {
-    if (draft) setScaleFor(draft.threshold);
+    if (draft) {
+      setScaleFor(draft.threshold);
+      setOpenedModel(draft.model);
+    }
     setEditingDraft(draft);
   };
   const [showErrors, setShowErrors] = useState(false);
@@ -750,6 +766,7 @@ export function PhaseGateDialog({
             disabled={working}
             replacing={!!gate}
             scaleFor={scaleFor}
+            opened={openedModel}
           />
         ) : gate ? (
           <GateFacts phase={phase} gate={gate} phases={phases} />

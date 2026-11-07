@@ -475,6 +475,57 @@ describe('the editor', () => {
     ]);
   });
 
+  it('keeps the adapter the gate’s model is asked through when an edit changes only a question', async () => {
+    api.put.mockResolvedValue(answered('Phase "research" now has your gate.', true));
+    const { phase, phases } = phaseOf({
+      ...GATE,
+      owner: 'workflow',
+      model: 'ollama_decision/tev1:0.8b',
+      modelAdapter: 'logprob',
+    });
+    draw({ phase, phases });
+    fireEvent.click(screen.getByTestId('phase-gate-edit'));
+    fireEvent.change(screen.getByTestId('phase-gate-question-0'), {
+      target: { value: 'Is every claim cited?' },
+    });
+    fireEvent.click(screen.getByTestId('phase-gate-save'));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    // The write replaces the whole gate: without the adapter it would move to tev1's default.
+    expect(api.put.mock.calls[0][0].body.model).toEqual({
+      provider: 'ollama_decision',
+      model: 'tev1:0.8b',
+      adapter: 'logprob',
+    });
+  });
+
+  it('picking the gate’s own model again, even after another, keeps its adapter', async () => {
+    api.put.mockResolvedValue(answered('Phase "research" now has your gate.', true));
+    const { phase, phases } = phaseOf({
+      ...GATE,
+      model: 'ollama_decision/tev1:0.8b',
+      modelAdapter: 'logprob',
+    });
+    draw({ phase, phases });
+    fireEvent.click(screen.getByTestId('phase-gate-edit'));
+    const input = () => within(screen.getByTestId('phase-gate-model')).getByRole('combobox');
+    const pick = async (label: string) => {
+      fireEvent.keyDown(input(), { key: 'ArrowDown' });
+      const row = (await screen.findAllByText(label))
+        .map((node) => node.closest('[role="option"]'))
+        .find(Boolean);
+      fireEvent.click(row!);
+    };
+    await pick(PHASE_GATE_COPY.chatDefault);
+    await pick('tev1:0.8b · Private · this computer');
+    fireEvent.click(screen.getByTestId('phase-gate-save'));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    expect(api.put.mock.calls[0][0].body.model).toEqual({
+      provider: 'ollama_decision',
+      model: 'tev1:0.8b',
+      adapter: 'logprob',
+    });
+  });
+
   it('offers each decision model, a model this chat may not use disabled with the daemon’s reason', async () => {
     draw({ chatTier: 'private' });
     fireEvent.click(screen.getByTestId('phase-gate-edit'));

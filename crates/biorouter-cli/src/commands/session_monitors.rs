@@ -19,8 +19,10 @@
 //! * **With none** the same record is read and written in this process, through
 //!   `biorouter::decision::settings`, under the tier rule the route applies,
 //!   and stored with the same check the route makes
-//!   (`biorouter::decision::save_checked`). It does not copy a monitor set to
-//!   also watch subagents onto running ones: without a daemon none is running.
+//!   (`biorouter::decision::save_checked`), with the chat's bound model read
+//!   off its session row rather than its agent. It does not copy a monitor set
+//!   to also watch subagents onto running ones: without a daemon none is
+//!   running.
 //!
 //! Every edit reads the whole record, changes one entry and writes the whole
 //! record back, so the other entries keep who set them (`setBy`,
@@ -34,9 +36,7 @@ use biorouter::decision::settings::{
     DecisionSettings, MonitorAction, MonitorCriterion, MonitorDirection, MonitorErrorPolicy,
     MonitorOwner, MonitorTiming, MonitorWindow, MAX_MONITORS,
 };
-use biorouter::decision::{
-    DecisionKind, DecisionModelRef, DecisionService, DecisionSession, Question, Threshold,
-};
+use biorouter::decision::{DecisionKind, DecisionModelRef, DecisionService, Question, Threshold};
 use biorouter::session::{SessionManager, SessionType};
 
 use super::apps::configured_port;
@@ -703,9 +703,15 @@ async fn local_session_type(manager: &SessionManager, session_id: &str) -> Resul
 /// Store `settings` in the local store with the check the daemon's route
 /// makes before it stores them: what the save turns on must be able to run
 /// for this chat now (its model there, able to take the question, and
-/// allowed by the chat's tier, its institutions and any Crew grant). The
-/// check sends nothing of the chat. `Err` is the sentence a person reads,
-/// starting "Nothing was saved", and then nothing was stored.
+/// allowed by the chat's tier, the private model it is bound to, its
+/// institutions and any Crew grant). The check sends nothing of the chat.
+/// `Err` is the sentence a person reads, starting "Nothing was saved", and
+/// then nothing was stored.
+///
+/// The model the chat is bound to is read off its session row
+/// (`biorouter::decision::save::load_for_save`), where the route asks the
+/// chat's agent: with no daemon there is no agent to ask, and a chat bound to
+/// a private model before its first turn is still classified Public.
 ///
 /// Unlike the route it copies nothing onto running subagents: without a
 /// daemon, none is running.
@@ -716,7 +722,9 @@ pub async fn save_locally(
     enforced: bool,
     settings: DecisionSettings,
 ) -> Result<DecisionSettings> {
-    let session = DecisionSession::load(Arc::clone(&manager), session_id, enforced).await?;
+    let session =
+        biorouter::decision::save::load_for_save(Arc::clone(&manager), session_id, enforced)
+            .await?;
     biorouter::decision::save_checked(service, &manager, &session, settings).await
 }
 
@@ -1744,7 +1752,7 @@ mod tests {
     impl biorouter::decision::DecisionUseGate for Allow {
         async fn check(
             &self,
-            _: &DecisionSession,
+            _: &biorouter::decision::DecisionSession,
             _: &dyn biorouter::decision::DecisionModel,
         ) -> biorouter::decision::DecisionResult<()> {
             Ok(())
@@ -1864,6 +1872,160 @@ mod tests {
                 .await
                 .unwrap(),
             off
+        );
+    }
+
+    /// Baseten's hosted `joey-1`, as the catalog lists it: a public model
+    /// that takes yes/no questions. Nothing is ever sent to it here.
+    struct Joey;
+
+    #[async_trait::async_trait]
+    impl biorouter::decision::DecisionModel for Joey {
+        fn model_ref(&self) -> DecisionModelRef {
+            DecisionModelRef::new("baseten_decision", "joey-1")
+                .with_adapter(biorouter::decision::types::DecisionAdapter::SystemOne)
+        }
+        fn display_name(&self) -> String {
+            "joey-1".into()
+        }
+        fn tier(&self) -> biorouter::privacy::ProviderTier {
+            biorouter::privacy::ProviderTier::Public
+        }
+        fn affiliation(&self) -> Option<biorouter::privacy::affiliation::ModelAffiliation> {
+            None
+        }
+        fn caps(&self) -> biorouter::decision::DecisionCaps {
+            biorouter::decision::DecisionCaps {
+                kinds: vec![biorouter::decision::types::DecisionKindTag::Binary],
+                max_questions: 64,
+                context_tokens: 4_096,
+                max_concurrency: 1,
+                max_request_bytes: None,
+                local: false,
+            }
+        }
+        async fn decide(
+            &self,
+            _: &biorouter::decision::types::DecisionRequest,
+        ) -> biorouter::decision::DecisionResult<biorouter::decision::types::ModelVerdicts>
+        {
+            panic!("a save check sends nothing");
+        }
+    }
+
+    struct OnlyJoey;
+
+    #[async_trait::async_trait]
+    impl biorouter::decision::DecisionModelSource for OnlyJoey {
+        async fn list(&self) -> Vec<biorouter::decision::DecisionModelEntry> {
+            vec![biorouter::decision::DecisionModelEntry {
+                provider: "baseten_decision".into(),
+                model: "joey-1".into(),
+                display_name: "joey-1".into(),
+                context_tokens: 4_096,
+                kinds: vec![biorouter::decision::types::DecisionKindTag::Binary],
+                tier: biorouter::privacy::ProviderTier::Public,
+                affiliation: None,
+                adapter: biorouter::decision::types::DecisionAdapter::SystemOne,
+                local: false,
+                load_refusal: None,
+            }]
+        }
+        async fn open(
+            &self,
+            wanted: &DecisionModelRef,
+        ) -> biorouter::decision::DecisionResult<Arc<dyn biorouter::decision::DecisionModel>>
+        {
+            if wanted.model == "joey-1" {
+                Ok(Arc::new(Joey))
+            } else {
+                Err(biorouter::decision::DecisionError::NoModel(format!(
+                    "No decision model `{}` is listed.",
+                    wanted.label()
+                )))
+            }
+        }
+    }
+
+    /// Item 6, as a live run found it: with no daemon, a chat bound to a
+    /// private model that has not had its first turn (still classified
+    /// Public, its row naming `versa_azure`) is refused a public decision
+    /// model with the sentence the daemon's route answers 422 with, and
+    /// nothing is stored. The same monitor on a chat bound to nothing is
+    /// stored, so what refuses it is the bound model.
+    #[tokio::test]
+    async fn a_local_save_refuses_a_public_monitor_on_a_chat_bound_to_a_private_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let create = |name: &'static str| {
+            let manager = manager.clone();
+            let dir = dir.path().to_path_buf();
+            async move {
+                manager
+                    .create_session(dir, name.to_string(), SessionType::User)
+                    .await
+                    .unwrap()
+            }
+        };
+        let bound = create("bound").await;
+        manager
+            .update(&bound.id)
+            .provider_name("versa_azure")
+            .model_config(biorouter::model::ModelConfig::new_or_fail("gpt-5.5"))
+            .apply()
+            .await
+            .unwrap();
+        let unbound = create("unbound").await;
+        let service = DecisionService::new(Arc::new(OnlyJoey))
+            .with_use_gate(Arc::new(Allow))
+            .with_default_model(None);
+        let store = LocalStore {
+            manager: manager.clone(),
+            enforced: true,
+        };
+        let joey = [
+            "--name",
+            "Done",
+            "--ask",
+            "Is the task done?",
+            "--threshold",
+            "0.8",
+            "--model",
+            "baseten_decision/joey-1",
+        ];
+
+        let error = edit_locally(&service, &store, &bound.id, MonitorEdit::Add(add(&joey)))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().starts_with(
+                "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
+                 model, so it becomes private at its first turn, and `joey-1` is a public model \
+                 a private chat cannot use."
+            ),
+            "{error}"
+        );
+        assert!(error
+            .downcast_ref::<biorouter::decision::UnusableDecisionSettings>()
+            .is_some());
+        assert_eq!(
+            biorouter::decision::settings::load(&manager, &bound.id)
+                .await
+                .unwrap(),
+            DecisionSettings::default(),
+            "nothing was stored"
+        );
+
+        edit_locally(&service, &store, &unbound.id, MonitorEdit::Add(add(&joey)))
+            .await
+            .unwrap();
+        assert_eq!(
+            biorouter::decision::settings::load(&manager, &unbound.id)
+                .await
+                .unwrap()
+                .monitors
+                .len(),
+            1
         );
     }
 

@@ -16,11 +16,19 @@
 //!   bounds (a route answers 400);
 //! - [`UnusableDecisionSettings`]: it is valid, but what it turns on cannot
 //!   run for this chat now (a route answers 422).
+//!
+//! A door that holds no agent for the chat (the CLI with no daemon running)
+//! builds the chat it checks with [`load_for_save`], which carries the tier
+//! of the chat model the session row records it bound to, so a chat still
+//! Public but bound to a private model is checked as the daemon checks it.
+
+use std::sync::Arc;
 
 use super::service::{DecisionService, DecisionSession};
 use super::settings::{self, DecisionChatSettings, DecisionSettings, InvalidDecisionSettings};
 use super::types::DecisionModelRef;
-use crate::session::SessionManager;
+use crate::privacy::ProviderTier;
+use crate::session::{Session, SessionManager};
 
 /// Settings that are valid but turn on something that cannot run for this
 /// chat now: a monitor whose model is not there, cannot answer its question,
@@ -82,6 +90,53 @@ pub async fn save_chat_checked(
         .await
         .map_err(UnusableDecisionSettings)?;
     settings::save_chat(manager, &session.session_id, chat).await
+}
+
+/// The chat a save checks, built by a door that holds no agent for it (the
+/// CLI with no daemon running): [`DecisionSession::load`] with the tier of
+/// the chat model its session row records it bound to ([`row_bound_tier`]).
+///
+/// Without that tier, a chat bound to a private model before its first turn
+/// (still classified Public) was checked on its classification alone, and
+/// stored a public decision model the daemon refuses with "This chat runs on
+/// a private model, so it becomes private at its first turn".
+pub async fn load_for_save(
+    manager: Arc<SessionManager>,
+    session_id: &str,
+    enforced: bool,
+) -> anyhow::Result<DecisionSession> {
+    let row = manager.get_session(session_id, false).await?;
+    let bound = row_bound_tier(&row, enforced).await;
+    Ok(DecisionSession::load(manager, session_id, enforced)
+        .await?
+        .with_bound_tier(bound))
+}
+
+/// The capability tier of the chat model `session`'s row records it bound to
+/// (`provider_name`), for the save-time checks only
+/// ([`DecisionSession::bound_tier`]).
+///
+/// It matters only for a chat still classified Public with privacy tiers on,
+/// so `None` otherwise, and `None` for a row that names no provider. The tier
+/// is the one the provider registry declares
+/// ([`crate::workflow::privacy::declared_provider_tier`]), the resolution every
+/// door without a provider instance uses (the scheduler, the daemon's reach
+/// rule, the CLI's own capability): building one would need the provider's
+/// credentials. A provider name the registry does not list is Public. The
+/// residual is the one the declared tier always has: an `ollama` re-pointed
+/// off this machine, or bound to a cloud tag, declares Private while its
+/// instance is Public, so such a chat is refused a public decision model here
+/// that the daemon, holding its agent, would store.
+pub async fn row_bound_tier(session: &Session, enforced: bool) -> Option<ProviderTier> {
+    if !enforced || session.privacy_tier.is_private() {
+        return None;
+    }
+    let provider = session
+        .provider_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())?;
+    Some(crate::workflow::privacy::declared_provider_tier(provider).await)
 }
 
 /// The decision model a chat is bound to, when its provider is a decision
@@ -335,6 +390,91 @@ mod tests {
             Some(question)
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// A door holding no agent for the chat (the CLI with no daemon) reads
+    /// the chat model it is bound to off its session row: a chat still Public
+    /// but bound to a private provider is refused a public decision model
+    /// with the daemon's sentence, and nothing is stored. A row bound to a
+    /// public provider, a row bound to none, a private chat and privacy tiers
+    /// off carry no private bound tier.
+    #[tokio::test]
+    async fn a_save_with_no_agent_reads_the_bound_model_off_the_row() {
+        let dir = TempDir::new().unwrap();
+        let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let service = DecisionService::new(Arc::new(OnlyCloud(calls.clone())))
+            .with_use_gate(Arc::new(Allow))
+            .with_default_model(None);
+        let chat = |name: &'static str, provider: Option<&'static str>| {
+            let manager = manager.clone();
+            let dir = dir.path().to_path_buf();
+            async move {
+                let id = manager
+                    .create_session(dir, name.into(), SessionType::User)
+                    .await
+                    .unwrap()
+                    .id;
+                if let Some(provider) = provider {
+                    manager
+                        .update(&id)
+                        .provider_name(provider)
+                        .model_config(crate::model::ModelConfig::new_or_fail("gpt-5.5"))
+                        .apply()
+                        .await
+                        .unwrap();
+                }
+                id
+            }
+        };
+
+        let bound = chat("bound to a private model", Some("versa_azure")).await;
+        let session = load_for_save(manager.clone(), &bound, true).await.unwrap();
+        assert_eq!(session.classification, SessionClassification::Public);
+        assert_eq!(session.bound_tier, Some(ProviderTier::Private));
+        let error = save_checked(&service, &manager, &session, settings("cloud"))
+            .await
+            .unwrap_err();
+        let unusable = error
+            .downcast_ref::<UnusableDecisionSettings>()
+            .expect("an unusable save is typed");
+        assert!(
+            unusable.0.starts_with(
+                "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
+                 model, so it becomes private at its first turn, and `cloud` is a public model a \
+                 private chat cannot use."
+            ),
+            "{unusable}"
+        );
+        assert_eq!(
+            settings::load(&manager, &bound).await.unwrap(),
+            DecisionSettings::default(),
+            "nothing was saved"
+        );
+        let off = load_for_save(manager.clone(), &bound, false).await.unwrap();
+        assert_eq!(off.bound_tier, None, "privacy tiers off");
+
+        let public = chat("bound to a public model", Some("anthropic")).await;
+        let session = load_for_save(manager.clone(), &public, true).await.unwrap();
+        assert_eq!(session.bound_tier, Some(ProviderTier::Public));
+        save_checked(&service, &manager, &session, settings("cloud"))
+            .await
+            .unwrap();
+
+        let unbound = chat("bound to nothing", None).await;
+        let session = load_for_save(manager.clone(), &unbound, true)
+            .await
+            .unwrap();
+        assert_eq!(session.bound_tier, None);
+        save_checked(&service, &manager, &session, settings("cloud"))
+            .await
+            .unwrap();
+
+        // A private chat's classification already says it.
+        let mut private = manager.get_session(&bound, false).await.unwrap();
+        private.privacy_tier = SessionClassification::Private;
+        assert_eq!(row_bound_tier(&private, true).await, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "a check sends nothing");
     }
 
     #[test]

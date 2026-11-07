@@ -570,6 +570,7 @@ describe('parsing', () => {
       owner: 'agent',
       questions: [],
       model: null,
+      modelAdapter: null,
       allowUncalibrated: false,
       lastError: null,
       personDecision: null,
@@ -592,6 +593,7 @@ describe('parsing', () => {
       owner: 'person',
       questions: { tests_pass: 'Do the tests pass?', reviewed: 'Was it reviewed?' },
       model: 'ollama_decision/tev1:0.8b',
+      modelAdapter: 'logprob',
       allowUncalibrated: true,
       lastError: 'Ollama did not answer.',
       personDecision: 'skip',
@@ -606,6 +608,7 @@ describe('parsing', () => {
         { name: 'reviewed', question: 'Was it reviewed?' },
       ],
       model: 'ollama_decision/tev1:0.8b',
+      modelAdapter: 'logprob',
       allowUncalibrated: true,
       lastError: 'Ollama did not answer.',
       personDecision: 'skip',
@@ -621,6 +624,7 @@ describe('parsing', () => {
       owner: 'committee',
       questions: ['not', 'a', 'map'],
       model: 42,
+      modelAdapter: 'logprob',
       personDecision: 'retry',
       retriesGranted: -2,
       needsPerson: 'yes',
@@ -630,6 +634,8 @@ describe('parsing', () => {
       owner: 'agent',
       questions: [],
       model: null,
+      // An adapter belongs to a named model, and one this build does not know is none.
+      modelAdapter: null,
       personDecision: null,
       retriesGranted: 0,
       needsPerson: false,
@@ -640,6 +646,13 @@ describe('parsing', () => {
       parsePhaseGateSnapshot({ threshold: 0.8, questions: { a: 'A?', b: 'B?', c: 'C?' } })!
         .questionCount
     ).toBe(3);
+    expect(
+      parsePhaseGateSnapshot({
+        threshold: 0.8,
+        model: 'ollama_decision/tev1:0.8b',
+        modelAdapter: 'quantum',
+      })!.modelAdapter
+    ).toBeNull();
   });
 
   it('reads a turn marker and a decision id off message metadata', () => {

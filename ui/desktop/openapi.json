@@ -414,7 +414,7 @@
           "workspace"
         ],
         "summary": "Hard cancel: trip the cancellation token of the turn in flight for this",
-        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove. When `expected_turn_id` names an older generation and a\nsuccessor is active, the route instead fails closed with 409 and leaves that\nsuccessor untouched.\n\nA plain Stop also stops the subagents the chat started that still have\nwork in flight, and names them in `stopped_subagents`; Stop-and-Send\n(`continuation_pending`) leaves them running (see `stop_the_chats_subagents`).",
+        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove. When `expected_turn_id` names an older generation and a\nsuccessor is active, the route instead fails closed with 409 and leaves that\nsuccessor untouched.\n\nA plain Stop also stops the subagents the chat started that still have\nwork in flight and whose own chat the caller can reach, and names them in\n`stopped_subagents`; Stop-and-Send (`continuation_pending`) leaves them\nrunning (see `stop_the_chats_subagents`).",
         "operationId": "cancel_turn",
         "requestBody": {
           "content": {
@@ -11750,7 +11750,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The session ids of the subagents this chat started that this Stop also\nstopped, oldest first: every one with work in flight (its delegated run,\nrunning or still queued, or a later turn), whether or not the chat itself\nhad a turn running. Each one ends `incomplete` and says the person\nstopped the chat that started it.\n\nAlways empty for Stop-and-Send (`continuation_pending`), which leaves\nthem running because the chat keeps supervising them in the turn that\nfollows. Omitted when empty."
+            "description": "The session ids of the subagents this chat started that this Stop also\nstopped, oldest first: every one with work in flight (its delegated run,\nrunning or still queued, or a later turn), whether or not the chat itself\nhad a turn running. Each one ends `incomplete` and says the person\nstopped the chat that started it.\n\nOnly the subagents whose own chat this caller could reach: one that is\nmore private than the chat that started it, and out of this caller's\nreach, keeps running and is not named.\n\nAlways empty for Stop-and-Send (`continuation_pending`), which leaves\nthem running because the chat keeps supervising them in the turn that\nfollows. Omitted when empty."
           },
           "turn_id": {
             "type": "string",
@@ -19740,6 +19740,14 @@
           "model": {
             "type": "string",
             "description": "The decision model the gate names, as `provider/model`; none means\nthe chat's default decision model, else the configured one.",
+            "nullable": true
+          },
+          "modelAdapter": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionAdapter"
+              }
+            ],
             "nullable": true
           },
           "needsPerson": {

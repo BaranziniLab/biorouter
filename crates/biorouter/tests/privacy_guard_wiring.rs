@@ -469,15 +469,19 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/reply.rs",
-                counts: c(2, 2, 0),
+                counts: c(3, 3, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /reply`, which runs an agent turn with tools inside the named \
                        session, plus the explicit continuation takeover and group-abandon \
                        recovery mutation. `/agent/cancel` and `/agent/continuation/abandon` reach \
-                       the gate only on a keyless daemon, and through `authorize_agent_control` \
-                       in `routes/agent.rs` (SD-11), which is why they add nothing to this count; \
-                       `/interrupt` keeps the user-action proof on every daemon and reaches no \
-                       reach gate at all",
+                       the gate for the chat they name only on a keyless daemon, and through \
+                       `authorize_agent_control` in `routes/agent.rs` (SD-11); `/interrupt` keeps \
+                       the user-action proof on every daemon and reaches no reach gate at all. \
+                       The third call is `reachable_subagents`, asked of each subagent a plain \
+                       Stop on `/agent/cancel` would also stop, on its OWN chat: the gate admitted \
+                       the parent, and a child a mid-run raise made more private than its parent \
+                       was stopped and named in `stopped_subagents` for a caller that could not \
+                       open it",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",

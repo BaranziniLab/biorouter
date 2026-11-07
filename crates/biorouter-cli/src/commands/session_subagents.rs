@@ -1113,6 +1113,7 @@ mod tests {
             owner,
             questions: Default::default(),
             model: None,
+            model_adapter: None,
             allow_uncalibrated: false,
             last_error: None,
             person_decision: None,

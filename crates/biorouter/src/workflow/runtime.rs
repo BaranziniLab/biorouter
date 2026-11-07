@@ -239,26 +239,44 @@ pub const SUPERVISION_APPLIED_AT_START: &str = "This chat already has messages. 
      phase plan this workflow declares were applied when the chat started and are not applied \
      again, so the chat keeps them as they are now.";
 
+/// What a door says when a workflow's supervision was not applied because
+/// another workflow seeded the chat before its first message
+/// ([`SeedOutcome::SeededByAnotherWorkflow`]): the chat has no messages yet
+/// and keeps that workflow's monitors and phase plan.
+pub const SUPERVISION_SEEDED_BY_ANOTHER_WORKFLOW: &str = "Another workflow already gave this chat \
+     its monitors and phase plan before its first message, so the ones this workflow declares were \
+     not applied to it. Run the workflow in a new chat to get them.";
+
 /// The line a door shows about `workflow`'s supervision after
 /// [`install_prepared`] returned `outcome` for the chat `session_id`, or
 /// `None` when there is nothing to say.
 ///
-/// Only [`SeedOutcome::ChatHasMessages`] earns a line, and the seed returns it
-/// for every chat that has started, before it looks at the seed marker. So
-/// the marker is read here: a chat this workflow seeded when it started (the
+/// Two outcomes earn a line. [`SeedOutcome::SeededByAnotherWorkflow`] (an
+/// empty chat another workflow seeded) is told this workflow's blocks were
+/// not applied ([`SUPERVISION_SEEDED_BY_ANOTHER_WORKFLOW`]). And
+/// [`SeedOutcome::ChatHasMessages`], which the seed returns for every chat
+/// that has started, before it looks at the seed marker. So for it the
+/// marker is read here: a chat this workflow seeded when it started (the
 /// marker carries the workflow's title) is told the blocks are not applied
 /// AGAIN ([`SUPERVISION_APPLIED_AT_START`]), and any other chat, never seeded
 /// or seeded by another workflow, that they were not applied
 /// ([`SUPERVISION_NOT_APPLIED`]). A marker that cannot be read counts as no
-/// marker, with a warning in the log.
+/// marker, with a warning in the log. A retried start of the same workflow
+/// ([`SeedOutcome::AlreadySeeded`]) says nothing.
 pub async fn supervision_notice(
     manager: &crate::session::SessionManager,
     session_id: &str,
     workflow: &Workflow,
     outcome: &SeedOutcome,
 ) -> Option<&'static str> {
-    if *outcome != SeedOutcome::ChatHasMessages {
-        return None;
+    match outcome {
+        SeedOutcome::SeededByAnotherWorkflow { .. } => {
+            return Some(SUPERVISION_SEEDED_BY_ANOTHER_WORKFLOW);
+        }
+        SeedOutcome::ChatHasMessages => {}
+        SeedOutcome::NothingDeclared | SeedOutcome::Seeded { .. } | SeedOutcome::AlreadySeeded => {
+            return None
+        }
     }
     let marker = manager
         .get_extension_state(

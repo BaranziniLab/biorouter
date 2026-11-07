@@ -442,6 +442,18 @@ pub(crate) fn stamp_user_direct_if_subagent(
     }
 }
 
+/// Admit this turn when the chat is a subagent's
+/// ([`biorouter::agents::subagent_handle::admit_child_turn`]), and then stamp
+/// the message as the person's own input ([`stamp_user_direct_if_subagent`]).
+/// Any other chat's message comes back unchanged.
+fn admit_child_turn_message(session_id: &str, user_message: Message) -> Message {
+    if biorouter::agents::subagent_handle::admit_child_turn(session_id) {
+        stamp_user_direct_if_subagent(user_message, biorouter::session::SessionType::SubAgent)
+    } else {
+        user_message
+    }
+}
+
 /// Everything [`run_turn_body`] resolves out of the store before it can ask the
 /// provider for a single token. Produced by [`prepare_turn`].
 struct TurnSetup {
@@ -842,11 +854,7 @@ async fn run_turn_body(
     let _active_work =
         register_detached_turn_work(extras.register_active_work, &session_id, &cancel_token);
 
-    let admitted_child_turn = biorouter::agents::subagent_handle::admit_child_turn(&session_id);
-    if admitted_child_turn {
-        user_message =
-            stamp_user_direct_if_subagent(user_message, biorouter::session::SessionType::SubAgent);
-    }
+    user_message = admit_child_turn_message(&session_id, user_message);
     let setup_failure_messages =
         Conversation::new_unvalidated(std::iter::once(user_message.clone()));
 
@@ -903,30 +911,18 @@ async fn run_turn_body(
     // too. D20: `_pin` keeps this agent out of the LRU until the turn ends; an
     // agent evicted mid-turn would make `/interrupt` resolve a FRESH one whose
     // queue no loop drains.
-    let stream = match agent
-        .reply(
-            user_message,
-            session_config.clone(),
-            Some(cancel_token.clone()),
-        )
-        .await
-    {
-        Ok(stream) => stream,
-        Err(e) => {
-            // A steer accepted during the prologue is stored, marked unanswered,
-            // before the failure is reported.
-            abandon_prepared_turn(&session_id, &agent).await;
-            report_reply_start_failure(
-                &state,
-                &session_id,
-                &e,
-                &cancel_token,
-                (&all_messages, turn_message_start),
-                &outcome,
-            )
-            .await;
-            return;
-        }
+    let Some(stream) = open_reply_stream(
+        &state,
+        &session_id,
+        &agent,
+        (user_message, &session_config),
+        &cancel_token,
+        (&all_messages, turn_message_start),
+        &outcome,
+    )
+    .await
+    else {
+        return;
     };
 
     let mut stopped_rows = Vec::new();
@@ -951,19 +947,16 @@ async fn run_turn_body(
     // after the stream ends; taken once, here. For a chat that is no one's
     // subagent nothing reads it, and `record_child_turn_terminal` matches no
     // handle. Item B the same way: why the chat that started it stopped it.
-    let cancelled = cancel_token.is_cancelled();
-    record_child_turn_outcome_with(
+    record_child_turn_end(
+        &state,
         &session_id,
-        terminal_error,
-        cancelled,
+        &agent,
+        (terminal_error, cancel_token.is_cancelled()),
         (&all_messages, turn_message_start),
         &outcome,
-        ChildTurnDecisions {
-            monitor_stop: agent.take_monitor_stop(&session_id),
-            earlier_turns: earlier_decision_turns,
-            stop_cause: note_child_turn_stop_cause(&state, &session_id, cancelled).await,
-        },
-    );
+        earlier_decision_turns,
+    )
+    .await;
 
     spawn_session_rename(&agent, &session_id);
 
@@ -1110,6 +1103,66 @@ impl Drop for TurnPin {
             ),
         }
     }
+}
+
+/// Open the turn's reply stream. When it cannot open, a steer accepted during
+/// the prologue is stored, marked unanswered, before the failure is reported
+/// ([`report_reply_start_failure`]), and `None` comes back: the turn is over.
+/// Split out of [`run_turn_body`] only to keep it under clippy's line budget.
+async fn open_reply_stream<'a>(
+    state: &AppState,
+    session_id: &str,
+    agent: &'a biorouter::agents::Agent,
+    (user_message, session_config): (Message, &SessionConfig),
+    cancel_token: &CancellationToken,
+    turn_messages: (&Conversation, usize),
+    outcome: &AtomicU8,
+) -> Option<futures::stream::BoxStream<'a, anyhow::Result<AgentEvent>>> {
+    match agent
+        .reply(
+            user_message,
+            session_config.clone(),
+            Some(cancel_token.clone()),
+        )
+        .await
+    {
+        Ok(stream) => Some(stream),
+        Err(e) => {
+            abandon_prepared_turn(session_id, agent).await;
+            report_reply_start_failure(state, session_id, &e, cancel_token, turn_messages, outcome)
+                .await;
+            None
+        }
+    }
+}
+
+/// A turn whose reply stream ran has ended: record the child's outcome with the
+/// turn's first monitor stop, the decision markers the chat held before the
+/// turn (`earlier_turns`), and why the chat that started a subagent stopped it
+/// ([`note_child_turn_stop_cause`]). `cancelled` is the turn's one sample of
+/// its token. Split out of [`run_turn_body`] only to keep it under clippy's
+/// line budget.
+async fn record_child_turn_end(
+    state: &AppState,
+    session_id: &str,
+    agent: &biorouter::agents::Agent,
+    (terminal_error, cancelled): (bool, bool),
+    turn_messages: (&Conversation, usize),
+    outcome: &AtomicU8,
+    earlier_turns: std::collections::HashSet<String>,
+) {
+    record_child_turn_outcome_with(
+        session_id,
+        terminal_error,
+        cancelled,
+        turn_messages,
+        outcome,
+        ChildTurnDecisions {
+            monitor_stop: agent.take_monitor_stop(session_id),
+            earlier_turns,
+            stop_cause: note_child_turn_stop_cause(state, session_id, cancelled).await,
+        },
+    );
 }
 
 /// The reply stream never opened: publish the turn's one terminal and record the
@@ -1799,8 +1852,12 @@ mod tests {
             .find("state.take_extension_loading_task(session_id).await;")
             .expect("run_turn's setup no longer waits for the session's extensions");
         let reply = src
-            .find("let stream = match agent\n        .reply(")
-            .expect("run_turn_body no longer calls reply");
+            .find("let Some(stream) = open_reply_stream(\n")
+            .expect("run_turn_body no longer opens the reply stream");
+        assert!(
+            src.contains("    match agent\n        .reply(\n"),
+            "open_reply_stream no longer calls reply"
+        );
         assert!(
             take < open && open < wait,
             "the steer queue must be open BEFORE the extension wait (D12a)"

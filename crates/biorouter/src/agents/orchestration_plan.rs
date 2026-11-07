@@ -90,8 +90,8 @@ use crate::agents::subagent_roster::{SubagentRow, SubagentRunStatus};
 use crate::decision::settings::{MonitorSpec, MAX_AGENT_MONITORS};
 use crate::decision::types::validate_questions;
 use crate::decision::{
-    DecisionContext, DecisionKind, DecisionModelRef, DecisionRequest, DecisionService,
-    DecisionSession, Question, Threshold,
+    DecisionAdapter, DecisionContext, DecisionKind, DecisionModelRef, DecisionRequest,
+    DecisionService, DecisionSession, Question, Threshold,
 };
 use crate::privacy::SessionClassification;
 use crate::session::SessionManager;
@@ -373,6 +373,11 @@ pub struct PhaseGateSnapshot {
     /// the chat's default decision model, else the configured one.
     #[serde(default)]
     pub model: Option<String>,
+    /// The adapter the gate asks `model` through, when it names one; none
+    /// means the model's own. An editor that writes the gate back sends it
+    /// with the model, because the write replaces the whole gate.
+    #[serde(default)]
+    pub model_adapter: Option<DecisionAdapter>,
     #[serde(default)]
     pub allow_uncalibrated: bool,
     /// Why the last evaluation decided nothing, when it did not.
@@ -1005,24 +1010,58 @@ struct PhaseDecl<'a> {
     monitors: Option<&'a [MonitorSpec]>,
 }
 
-/// One declared phase, validated against the phases listed before it
-/// (`earlier`) and merged with its stored self when its id persists.
-///
-/// A stored gate binds: a revision may repeat it unchanged or leave it out
-/// (either keeps the gate, its owner and its record), and any other gate for
-/// that phase is refused. While the phase is open, its title, goal and kind
-/// stay as they were, because its gate reads them; a goal or kind left out
-/// keeps the stored one. A new gate the agent declares needs a threshold of at
-/// least [`MIN_AGENT_GATE_THRESHOLD`].
-///
-/// Monitors given replace the stored ones (`[]` clears them); left out, the
-/// stored ones stay.
-fn build_phase(
+/// One declared phase, validated on its own and against the phases listed
+/// before it, before it meets its stored self ([`build_phase`]).
+struct CheckedPhase {
+    id: String,
+    title: String,
+    goal: Option<String>,
+    /// Left out, an open gated phase keeps its stored kind, and any other
+    /// phase is [`PhaseKind::Other`].
+    kind: Option<PhaseKind>,
+    depends_on: Vec<String>,
+    /// Owned by the plan's author.
+    gate: Option<PhaseGate>,
+    /// Left out, the stored ones stay; `[]` clears them.
+    monitors: Option<Vec<MonitorSpec>>,
+}
+
+/// A phase's dependencies: each an earlier phase of this plan, never the
+/// phase itself, kept once each in the order given.
+fn checked_dependencies(
+    id: &str,
+    declared: &[String],
+    earlier: &[&str],
+) -> Result<Vec<String>, String> {
+    let mut depends_on: Vec<String> = Vec::new();
+    for dependency in declared {
+        let dependency = dependency.trim();
+        if dependency == id {
+            return Err(format!("Phase \"{id}\" cannot depend on itself."));
+        }
+        if !earlier.contains(&dependency) {
+            return Err(format!(
+                "Phase \"{id}\" depends on \"{dependency}\", which is not an earlier \
+                 phase of this plan. A phase may depend only on phases listed before it: \
+                 {}.",
+                join_ids(earlier.iter().copied())
+            ));
+        }
+        if !depends_on.iter().any(|d| d == dependency) {
+            depends_on.push(dependency.to_string());
+        }
+    }
+    Ok(depends_on)
+}
+
+/// Check one declared phase on its own and against the phases listed before
+/// it (`earlier`): its id, title, goal, dependencies, gate and monitors, in
+/// that order, so the first fault is the one named.
+fn check_phase_decl(
     author: PlanAuthor,
     decl: &PhaseDecl<'_>,
     earlier: &[&str],
-    existing: Option<&OrchestrationPlan>,
-) -> Result<PlanPhase, String> {
+) -> Result<CheckedPhase, String> {
     let input = decl.phase;
     let id = input.id.trim();
     if !is_slug(id) {
@@ -1046,24 +1085,7 @@ fn build_phase(
         MAX_GOAL_CHARS,
         &format!("Phase \"{id}\"'s goal"),
     )?;
-    let mut depends_on: Vec<String> = Vec::new();
-    for dependency in &input.depends_on {
-        let dependency = dependency.trim();
-        if dependency == id {
-            return Err(format!("Phase \"{id}\" cannot depend on itself."));
-        }
-        if !earlier.contains(&dependency) {
-            return Err(format!(
-                "Phase \"{id}\" depends on \"{dependency}\", which is not an earlier \
-                 phase of this plan. A phase may depend only on phases listed before it: \
-                 {}.",
-                join_ids(earlier.iter().copied())
-            ));
-        }
-        if !depends_on.iter().any(|d| d == dependency) {
-            depends_on.push(dependency.to_string());
-        }
-    }
+    let depends_on = checked_dependencies(id, &input.depends_on, earlier)?;
     let kind = input.kind.as_deref().map(PhaseKind::parse_lenient);
     let gate = decl
         .gate
@@ -1077,90 +1099,132 @@ fn build_phase(
     if let Some(monitors) = decl.monitors {
         validate_phase_monitors(id, monitors)?;
     }
-    let monitors = decl.monitors.map(<[MonitorSpec]>::to_vec);
-    let new_gate_floor = |gate: &PhaseGate| -> Result<(), String> {
-        if author == PlanAuthor::Agent && gate.threshold < MIN_AGENT_GATE_THRESHOLD {
-            return Err(format!(
-                "Phase \"{id}\"'s gate threshold is {:.2}; a gate you declare needs at least \
-                 {MIN_AGENT_GATE_THRESHOLD:.2}, because below that it passes a phase the \
-                 decision model thinks more likely unfinished than done.",
-                gate.threshold
-            ));
-        }
-        Ok(())
-    };
+    Ok(CheckedPhase {
+        id: id.to_string(),
+        title,
+        goal,
+        kind,
+        depends_on,
+        gate,
+        monitors: decl.monitors.map(<[MonitorSpec]>::to_vec),
+    })
+}
 
-    Ok(match existing.and_then(|plan| plan.phase(id)).cloned() {
-        Some(previous) => {
-            let (gate, gate_state) = match (&previous.gate, gate) {
-                (Some(stored), Some(declared)) => {
-                    if !same_gate_terms(stored, &declared) {
-                        return Err(format!(
-                            "Phase \"{id}\" already has a gate{}, and a revision cannot change \
-                             or remove a gate. Leave `gate` out of this phase to keep it, or ask \
-                             the person to change it in the app or with `biorouter session \
-                             gates`. Nothing was changed.",
-                            owner_phrase(stored.owner)
-                        ));
-                    }
-                    (Some(stored.clone()), previous.gate_state.clone())
-                }
-                (Some(stored), None) => (Some(stored.clone()), previous.gate_state.clone()),
-                (None, Some(declared)) => {
-                    new_gate_floor(&declared)?;
-                    (Some(declared), None)
-                }
-                (None, None) => (None, None),
-            };
-            let gated_open = previous.gate.is_some() && !previous.status.is_closed();
-            let (goal, kind) = if gated_open {
-                // The gate reads the title, goal and kind: an open gated
-                // phase keeps them. One left out is kept, not cleared.
-                let kind_changed = kind.is_some_and(|kind| kind != previous.kind);
-                let goal_changed = goal.is_some() && goal != previous.goal;
-                if title != previous.title || kind_changed || goal_changed {
+/// A new gate the agent declares needs a threshold of at least
+/// [`MIN_AGENT_GATE_THRESHOLD`]; a workflow's has no floor.
+fn check_new_gate_floor(author: PlanAuthor, id: &str, gate: &PhaseGate) -> Result<(), String> {
+    if author == PlanAuthor::Agent && gate.threshold < MIN_AGENT_GATE_THRESHOLD {
+        return Err(format!(
+            "Phase \"{id}\"'s gate threshold is {:.2}; a gate you declare needs at least \
+             {MIN_AGENT_GATE_THRESHOLD:.2}, because below that it passes a phase the \
+             decision model thinks more likely unfinished than done.",
+            gate.threshold
+        ));
+    }
+    Ok(())
+}
+
+impl CheckedPhase {
+    /// The phase as first declared: pending, with nothing spawned into it.
+    fn into_new(self, author: PlanAuthor) -> Result<PlanPhase, String> {
+        if let Some(declared) = &self.gate {
+            check_new_gate_floor(author, &self.id, declared)?;
+        }
+        Ok(PlanPhase {
+            id: self.id,
+            title: self.title,
+            goal: self.goal,
+            kind: self.kind.unwrap_or(PhaseKind::Other),
+            status: PhaseStatus::Pending,
+            depends_on: self.depends_on,
+            agents: Vec::new(),
+            handoff: None,
+            started_at: None,
+            finished_at: None,
+            gate: self.gate,
+            gate_state: None,
+            monitors: self.monitors.unwrap_or_default(),
+        })
+    }
+
+    /// The phase merged with its stored self (`previous`), which keeps its
+    /// agents, status, hand-off and timestamps. A stored gate binds, and an
+    /// open gated phase keeps its title, goal and kind ([`build_phase`]).
+    fn revise(self, author: PlanAuthor, previous: PlanPhase) -> Result<PlanPhase, String> {
+        let id = self.id;
+        let (gate, gate_state) = match (&previous.gate, self.gate) {
+            (Some(stored), Some(declared)) => {
+                if !same_gate_terms(stored, &declared) {
                     return Err(format!(
-                        "Phase \"{id}\" has a gate, so its title, goal and kind stay as they \
-                         were while it is open: its gate reads them. Nothing was changed."
+                        "Phase \"{id}\" already has a gate{}, and a revision cannot change \
+                         or remove a gate. Leave `gate` out of this phase to keep it, or ask \
+                         the person to change it in the app or with `biorouter session \
+                         gates`. Nothing was changed.",
+                        owner_phrase(stored.owner)
                     ));
                 }
-                (previous.goal.clone(), previous.kind)
-            } else {
-                (goal, kind.unwrap_or(PhaseKind::Other))
-            };
-            PlanPhase {
-                id: id.to_string(),
-                title,
-                goal,
-                kind,
-                depends_on,
-                gate,
-                gate_state,
-                monitors: monitors.unwrap_or_else(|| previous.monitors.clone()),
-                ..previous
+                (Some(stored.clone()), previous.gate_state.clone())
             }
-        }
-        None => {
-            if let Some(declared) = &gate {
-                new_gate_floor(declared)?;
+            (Some(stored), None) => (Some(stored.clone()), previous.gate_state.clone()),
+            (None, Some(declared)) => {
+                check_new_gate_floor(author, &id, &declared)?;
+                (Some(declared), None)
             }
-            PlanPhase {
-                id: id.to_string(),
-                title,
-                goal,
-                kind: kind.unwrap_or(PhaseKind::Other),
-                status: PhaseStatus::Pending,
-                depends_on,
-                agents: Vec::new(),
-                handoff: None,
-                started_at: None,
-                finished_at: None,
-                gate,
-                gate_state: None,
-                monitors: monitors.unwrap_or_default(),
+            (None, None) => (None, None),
+        };
+        let gated_open = previous.gate.is_some() && !previous.status.is_closed();
+        let (goal, kind) = if gated_open {
+            // The gate reads the title, goal and kind: an open gated
+            // phase keeps them. One left out is kept, not cleared.
+            let kind_changed = self.kind.is_some_and(|kind| kind != previous.kind);
+            let goal_changed = self.goal.is_some() && self.goal != previous.goal;
+            if self.title != previous.title || kind_changed || goal_changed {
+                return Err(format!(
+                    "Phase \"{id}\" has a gate, so its title, goal and kind stay as they \
+                     were while it is open: its gate reads them. Nothing was changed."
+                ));
             }
-        }
-    })
+            (previous.goal.clone(), previous.kind)
+        } else {
+            (self.goal, self.kind.unwrap_or(PhaseKind::Other))
+        };
+        Ok(PlanPhase {
+            id,
+            title: self.title,
+            goal,
+            kind,
+            depends_on: self.depends_on,
+            gate,
+            gate_state,
+            monitors: self.monitors.unwrap_or_else(|| previous.monitors.clone()),
+            ..previous
+        })
+    }
+}
+
+/// One declared phase, validated against the phases listed before it
+/// (`earlier`) and merged with its stored self when its id persists.
+///
+/// A stored gate binds: a revision may repeat it unchanged or leave it out
+/// (either keeps the gate, its owner and its record), and any other gate for
+/// that phase is refused. While the phase is open, its title, goal and kind
+/// stay as they were, because its gate reads them; a goal or kind left out
+/// keeps the stored one. A new gate the agent declares needs a threshold of at
+/// least [`MIN_AGENT_GATE_THRESHOLD`].
+///
+/// Monitors given replace the stored ones (`[]` clears them); left out, the
+/// stored ones stay.
+fn build_phase(
+    author: PlanAuthor,
+    decl: &PhaseDecl<'_>,
+    earlier: &[&str],
+    existing: Option<&OrchestrationPlan>,
+) -> Result<PlanPhase, String> {
+    let checked = check_phase_decl(author, decl, earlier)?;
+    match existing.and_then(|plan| plan.phase(&checked.id)).cloned() {
+        Some(previous) => checked.revise(author, previous),
+        None => checked.into_new(author),
+    }
 }
 
 /// [`apply_gated_plan`] with no gates declared, the shape the tests write.
@@ -2964,6 +3028,7 @@ fn gate_snapshot(plan: &OrchestrationPlan, index: usize) -> Option<PhaseGateSnap
             .map(|(name, question)| (name.clone(), question.instructions.clone()))
             .collect(),
         model: gate.model.as_ref().map(DecisionModelRef::label),
+        model_adapter: gate.model.as_ref().and_then(|model| model.adapter),
         allow_uncalibrated: gate.allow_uncalibrated,
         last_error: state.last_error.clone(),
         person_decision: state.closed_by_person.or(state.standing()),
@@ -6764,7 +6829,47 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(older.held_by, None);
-        assert_eq!(older.gate.unwrap().owner, GateOwner::Agent);
+        let older_gate = older.gate.unwrap();
+        assert_eq!(older_gate.owner, GateOwner::Agent);
+        assert_eq!(older_gate.model_adapter, None);
+    }
+
+    /// The desktop's editor rebuilds a gate from its snapshot and writes the
+    /// whole gate back, so the snapshot says which adapter the gate's model is
+    /// asked through. Without it an edit to one question quietly moved a
+    /// `logprob` gate onto the model's default adapter.
+    #[test]
+    fn the_snapshot_says_which_adapter_the_gates_model_is_asked_through() {
+        let gate_for = |model: Option<DecisionModelRef>| {
+            let mut spec = person_spec(&[("cited", "Is every claim cited?")], None);
+            spec.model = model;
+            let (plan, _) = apply_person_set_gate(
+                Some(gated_plan()),
+                "build",
+                validate_person_gate("build", &spec).unwrap(),
+                now(),
+            )
+            .unwrap();
+            serde_json::to_value(snapshot_of(&plan, &[])).unwrap()["phases"][1]["gate"].clone()
+        };
+
+        let named = gate_for(Some(
+            DecisionModelRef::new("ollama_decision", "tev1:0.8b")
+                .with_adapter(DecisionAdapter::Logprob),
+        ));
+        assert_eq!(named["model"], "ollama_decision/tev1:0.8b");
+        assert_eq!(named["modelAdapter"], "logprob");
+        // A client that reads the snapshot back gets the same adapter.
+        let back: PhaseGateSnapshot = serde_json::from_value(named).unwrap();
+        assert_eq!(back.model_adapter, Some(DecisionAdapter::Logprob));
+
+        // A model named without an adapter, and no model at all, say none.
+        let plain = gate_for(Some(DecisionModelRef::new("ollama_decision", "tev1:0.8b")));
+        assert_eq!(plain["model"], "ollama_decision/tev1:0.8b");
+        assert_eq!(plain["modelAdapter"], serde_json::Value::Null);
+        let unnamed = gate_for(None);
+        assert_eq!(unnamed["model"], serde_json::Value::Null);
+        assert_eq!(unnamed["modelAdapter"], serde_json::Value::Null);
     }
 
     #[test]

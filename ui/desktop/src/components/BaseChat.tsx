@@ -2488,8 +2488,9 @@ function BaseChatContent({
     turnRunning: !chatLoading && summaryActive && isRunningState(chatState),
   });
   // The chat's decision-model activity, aggregated per source (never one row
-  // per call), on the same gate as the roster: shown, or a turn running. It
-  // polls only while a turn runs in a chat with monitors or decision calls.
+  // per call), on the same gate as the roster: shown, or a turn running. While
+  // a turn runs it polls the settings (other writers change them), and the
+  // summary too in a chat with monitors or decision calls.
   const sessionDecisions = useSessionDecisions(sessionId, messages, {
     visible: !chatLoading && (reviewOpen || summaryRail.shown),
     turnRunning: !chatLoading && summaryActive && isRunningState(chatState),

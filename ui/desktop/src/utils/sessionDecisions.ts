@@ -361,6 +361,12 @@ export interface PhaseGateSnapshot {
   questions: { name: string; question: string }[];
   /** The decision model the gate names, as `provider/model`; `null` uses the chat's. */
   model: string | null;
+  /**
+   * The adapter the gate asks `model` through, when it names one; `null` is the
+   * model's own. The editor sends it back with the model, because a gate write
+   * replaces the whole gate.
+   */
+  modelAdapter: DecisionAdapter | null;
   allowUncalibrated: boolean;
   /** Why the last evaluation decided nothing, when it did not. */
   lastError: string | null;
@@ -1069,6 +1075,7 @@ export function parsePhaseGateSnapshot(value: unknown): PhaseGateSnapshot | null
     const asked = rawText(question);
     return name.trim() && asked !== null ? [{ name, question: asked }] : [];
   });
+  const model = text(body.model);
   return {
     threshold,
     // An older daemon sends only the count; a newer one sends both, and they agree.
@@ -1080,7 +1087,9 @@ export function parsePhaseGateSnapshot(value: unknown): PhaseGateSnapshot | null
     blocked: body.blocked === true,
     owner: oneOf(GATE_OWNERS, body.owner, 'agent'),
     questions,
-    model: text(body.model),
+    model,
+    // An adapter belongs to a named model; alone it names nothing.
+    modelAdapter: model ? optionalOneOf(DECISION_ADAPTERS, body.modelAdapter) : null,
     allowUncalibrated: body.allowUncalibrated === true,
     lastError: text(body.lastError),
     personDecision: optionalOneOf(PERSON_GATE_ACTIONS, body.personDecision),

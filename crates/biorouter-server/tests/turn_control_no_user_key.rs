@@ -90,12 +90,16 @@ enum Chat {
     Private,
     /// A delegated child's session.
     Subagent,
+    /// A delegated child's session that a private model's turn ratcheted while
+    /// the chat that started it stayed public: the mid-run raise that makes a
+    /// child more private than its parent.
+    PrivateSubagent,
 }
 
 async fn seed(state: &Arc<AppState>, chat: Chat) -> String {
     let manager = state.session_manager();
     let session_type = match chat {
-        Chat::Subagent => SessionType::SubAgent,
+        Chat::Subagent | Chat::PrivateSubagent => SessionType::SubAgent,
         Chat::Public | Chat::Private => SessionType::User,
     };
     let session = manager
@@ -106,7 +110,7 @@ async fn seed(state: &Arc<AppState>, chat: Chat) -> String {
         )
         .await
         .unwrap();
-    if matches!(chat, Chat::Private) {
+    if matches!(chat, Chat::Private | Chat::PrivateSubagent) {
         // Raised the way a real chat gets there — a turn on a private provider —
         // rather than by writing the column, so what is refused here is the
         // state a user's own chat reaches.
@@ -632,6 +636,99 @@ async fn a_keyless_plain_stop_stops_the_parents_subagents() {
     handle.complete(biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"));
     drop(parent_guard);
     discard(&state, &child).await;
+    discard(&state, &parent).await;
+}
+
+/// Item B, gated child by child: a plain Stop on a public chat stops only the
+/// subagents whose OWN chat the caller could reach. The gate admitted the
+/// parent, and a child a mid-run raise made private is not the parent: a
+/// caller holding only the daemon secret could not stop that child from its
+/// own tab, nor through `workspace_close`, which runs with the caller's
+/// capability. So that child keeps running, records no cause, and is not
+/// named, because its id alone would tell the caller that a private run
+/// exists (the roster omits it for the same reason). A caller whose capability
+/// covers it stops it with the rest.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_keyless_plain_stop_leaves_a_subagent_out_of_the_callers_reach_running_and_unnamed() {
+    assert_the_daemon_is_keyless();
+    let state = AppState::new().await.unwrap();
+    let parent = seed(&state, Chat::Public).await;
+    let public_child = seed(&state, Chat::Subagent).await;
+    let private_child = seed(&state, Chat::PrivateSubagent).await;
+    let (parent_guard, parent_token) = begin_turn(&state, &parent);
+    let register = |child: &str| {
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            &parent,
+            child,
+            "delegated work",
+            CancellationToken::new(),
+        );
+        assert!(handle.is_running());
+        handle
+    };
+    let public_handle = register(&public_child);
+    let private_handle = register(&private_child);
+
+    // A caller holding only the daemon secret: the parent is public, so its
+    // Stop is admitted, and it takes the public subagent with it.
+    let (status, raw) = send(reply_routes(&state), stop_request(&parent, None)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the browser's Stop was refused: {raw}"
+    );
+    let body = json_of(&raw);
+    assert_eq!(body["cancelled"], json!(true), "{body}");
+    assert!(parent_token.is_cancelled());
+    assert!(
+        public_handle.is_cancelled(),
+        "the reachable subagent ran on"
+    );
+    assert_eq!(body["stopped_subagents"], json!([public_child]), "{body}");
+    assert!(
+        !private_handle.is_cancelled(),
+        "a Stop admitted for a public chat stopped a private subagent its caller could not open"
+    );
+    assert_eq!(
+        private_handle.stop_cause(),
+        None,
+        "a subagent the Stop did not reach recorded a cause it was not stopped for"
+    );
+    assert!(
+        !raw.contains(&private_child),
+        "the Stop named a private subagent to a caller that could not open it: {raw}"
+    );
+
+    // A caller whose capability covers the private chat stops it too.
+    let (status, raw) = send(
+        reply_routes(&state),
+        stop_request(&parent, Some("versa_azure")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let body = json_of(&raw);
+    let named: Vec<&str> = body["stopped_subagents"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no stopped_subagents: {body}"))
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(named.contains(&private_child.as_str()), "{body}");
+    assert!(private_handle.is_cancelled());
+    assert_eq!(
+        private_handle.stop_cause(),
+        Some(biorouter::agents::subagent_handle::ChildStopCause::ParentStopped)
+    );
+
+    for handle in [&public_handle, &private_handle] {
+        handle.complete(
+            biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"),
+        );
+    }
+    drop(parent_guard);
+    discard(&state, &public_child).await;
+    discard(&state, &private_child).await;
     discard(&state, &parent).await;
 }
 

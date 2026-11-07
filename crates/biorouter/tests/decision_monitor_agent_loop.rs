@@ -2739,6 +2739,163 @@ async fn a_turn_end_monitor_skipped_by_a_budget_wrap_up_says_so() {
     assert_eq!(count_containing(&shown, "the turn stops here"), 0);
 }
 
+/// A `turn_end` monitor `Task done` set to pause when it cannot check, for
+/// the turns below that end on a limit before their `turn_end` point.
+fn paused_turn_end_monitor() -> MonitorCriterion {
+    let mut check = monitor("check", "Task done", MonitorAction::Stop, 0.5);
+    check.timing = MonitorTiming::TurnEnd;
+    check.on_error = MonitorErrorPolicy::Pause;
+    check
+}
+
+/// Whether `message` holds `needle` anywhere in its text.
+fn says(message: &Message, needle: &str) -> bool {
+    message.as_concat_text().contains(needle) || shows(message, needle)
+}
+
+/// [`config`] with an action limit of 4: under the 6 identical tool failures
+/// after which the repetition guard ends the turn itself, so the limit is
+/// what ends a turn of [`Reply::Tool`].
+fn four_actions(chat: &Chat) -> SessionConfig {
+    let mut limited = config(chat);
+    limited.max_turns = Some(4);
+    limited
+}
+
+/// A turn that ends on its action limit never reaches its `turn_end` point.
+/// Nothing is asked there (the turn is ending on a limit), but the monitor it
+/// would have checked is named, a `pause` one too, after the limit's own
+/// message and kept with the chat: it is not skipped in silence.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_skipped_by_the_action_limit_says_so() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![paused_turn_end_monitor()],
+    )
+    .await;
+
+    let messages = send_with(&chat, "Keep working on the notes.", four_actions(&chat)).await;
+
+    assert_eq!(llm.calls(), 4, "the action limit (4) ended the turn");
+    assert_eq!(decisions.requests(), 0, "nothing was asked at the limit");
+    const NOTICE: &str = "Monitor 'Task done' was not checked at the end of this turn: the turn \
+                          ended because it reached its action limit.";
+    let shown = notices(&messages);
+    assert_eq!(count_containing(&shown, NOTICE), 1, "{shown:?}");
+    assert_eq!(count_containing(&shown, "the turn stops here"), 0);
+    let limit = position(&messages, |m| says(m, "I've reached my action limit"));
+    assert!(limit < position(&messages, |m| shows(m, NOTICE)));
+    assert_eq!(count_containing(&notices(&stored(&chat).await), NOTICE), 1);
+}
+
+/// …and so does a turn that ends on its tool-call limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_skipped_by_the_tool_call_limit_says_so() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![paused_turn_end_monitor()],
+    )
+    .await;
+    let mut limited = config(&chat);
+    limited.max_tool_calls = Some(2);
+
+    let messages = send_with(&chat, "Keep working on the notes.", limited).await;
+
+    assert_eq!(llm.calls(), 3, "the third call went past the limit of 2");
+    assert_eq!(decisions.requests(), 0, "nothing was asked at the limit");
+    let shown = notices(&messages);
+    assert_eq!(
+        count_containing(
+            &shown,
+            "Monitor 'Task done' was not checked at the end of this turn: the turn ended \
+             because it reached its tool-call limit."
+        ),
+        1,
+        "{shown:?}"
+    );
+    assert!(messages
+        .iter()
+        .any(|m| says(m, "past my per-turn limit of 2")));
+}
+
+/// …and so does a turn the budget stops at the loop top, because the model
+/// kept working past its wrap-up and so never ended the turn itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_skipped_by_the_budget_stop_says_so() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![paused_turn_end_monitor()],
+    )
+    .await;
+    let mut budgeted = config(&chat);
+    budgeted.budget = Some(ReplyBudget {
+        max_seconds: None,
+        max_tokens: Some(10),
+        max_usd: None,
+    });
+
+    let messages = send_with(&chat, "Keep working on the notes.", budgeted).await;
+
+    assert!(
+        messages
+            .iter()
+            .any(|m| says(m, "I've reached the budget for this reply")),
+        "the budget stop ended the turn"
+    );
+    assert_eq!(decisions.requests(), 0, "nothing was asked past the budget");
+    let shown = notices(&messages);
+    assert_eq!(
+        count_containing(
+            &shown,
+            "Monitor 'Task done' was not checked at the end of this turn: the turn was being \
+             wound down because it reached its budget."
+        ),
+        1,
+        "{shown:?}"
+    );
+}
+
+/// A turn that ends on a limit says nothing of a chat with no `turn_end`
+/// monitor: a `post_iteration` one was checked at every step.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_limit_says_nothing_of_monitors_it_did_not_skip() {
+    let llm = Arc::new(Llm::new(ProviderTier::Public, vec![], Reply::Tool));
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.1));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![monitor("form", "Form reached", MonitorAction::Notify, 0.5)],
+    )
+    .await;
+
+    let messages = send_with(&chat, "Keep working on the notes.", four_actions(&chat)).await;
+
+    assert!(messages
+        .iter()
+        .any(|m| says(m, "I've reached my action limit")));
+    assert_eq!(llm.calls(), 4);
+    assert_eq!(decisions.requests(), 4, "checked after every step");
+    assert_eq!(
+        count_containing(&notices(&messages), "not checked"),
+        0,
+        "{:?}",
+        notices(&messages)
+    );
+}
+
 /// A notify monitor that fired stays quiet in the next turn while its answer
 /// holds, across a restart too: its latch is kept with the chat.
 #[tokio::test(flavor = "multi_thread")]

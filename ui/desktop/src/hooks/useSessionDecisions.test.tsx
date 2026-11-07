@@ -136,31 +136,74 @@ describe('useSessionDecisions', () => {
     await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(3));
   });
 
-  it('polls every 3s while a turn runs in a chat with a monitor, reading the settings once', async () => {
+  it('polls the summary and the settings every 3s while a turn runs in a chat with a monitor', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     mocks.settings.mockResolvedValue({ data: withMonitor, missing: false });
-    const { rerender } = renderHook(
+    const { result, rerender } = renderHook(
       ({ turnRunning }) => useSessionDecisions('a', [], { visible: false, turnRunning }),
       { initialProps: { turnRunning: true } }
     );
     await advance(100);
     expect(mocks.summary).toHaveBeenCalledTimes(1);
+    expect(mocks.settings).toHaveBeenCalledTimes(1);
+    // Someone else changes the monitor (the CLI, another window, a parent's
+    // save): nothing lands in this chat's transcript, and the next poll shows it.
+    const moved: DecisionSettings = {
+      ...withMonitor,
+      monitors: [{ ...withMonitor.monitors[0], threshold: 0.6 }],
+    };
+    mocks.settings.mockResolvedValue({ data: moved, missing: false });
     await advance(DECISION_POLL_MS * 2 + 100);
     expect(mocks.summary).toHaveBeenCalledTimes(3);
-    expect(mocks.settings).toHaveBeenCalledTimes(1);
-    // The turn ends: one read of its own, then nothing.
+    expect(mocks.settings).toHaveBeenCalledTimes(3);
+    expect(result.current.data?.settings?.monitors[0].threshold).toBe(0.6);
+    // The turn ends with the summary hidden: the polling stops.
     rerender({ turnRunning: false });
     await advance(DECISION_POLL_MS * 4);
-    expect(mocks.summary.mock.calls.length).toBeLessThanOrEqual(3);
+    expect(mocks.summary).toHaveBeenCalledTimes(3);
+    expect(mocks.settings).toHaveBeenCalledTimes(3);
   });
 
-  it('does not poll a running turn in a chat that never used decision models', async () => {
+  it('polls only the settings while a turn runs in a chat that never used decision models', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     renderHook(() => useSessionDecisions('a', [], { visible: true, turnRunning: true }));
     await advance(100);
     expect(mocks.summary).toHaveBeenCalledTimes(1);
+    expect(mocks.settings).toHaveBeenCalledTimes(1);
     await advance(DECISION_POLL_MS * 4);
     expect(mocks.summary).toHaveBeenCalledTimes(1);
+    expect(mocks.settings).toHaveBeenCalledTimes(5);
+  });
+
+  it('shows a monitor attached from elsewhere mid-turn, then polls the summary too', async () => {
+    // A subagent's tab: no monitors when it opens, then its parent's agent
+    // (`workspace_monitor`) or a parent's save puts one on it while it runs.
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    const { result } = renderHook(() =>
+      useSessionDecisions('child', [], { visible: true, turnRunning: true })
+    );
+    await advance(100);
+    expect(result.current.data?.settings?.monitors).toEqual([]);
+    mocks.settings.mockResolvedValue({ data: withMonitor, missing: false });
+    await advance(DECISION_POLL_MS);
+    expect(result.current.data?.settings).toEqual(withMonitor);
+    expect(mocks.summary).toHaveBeenCalledTimes(1);
+    // The chat now uses decision models: the summary is polled from here on.
+    mocks.summary.mockResolvedValue({ data: summary(2), missing: false });
+    await advance(DECISION_POLL_MS);
+    expect(mocks.summary).toHaveBeenCalledTimes(2);
+    expect(result.current.data?.summary?.total).toBe(2);
+  });
+
+  it('stops polling a running turn on a daemon without the routes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    mocks.summary.mockResolvedValue({ data: null, missing: true });
+    mocks.settings.mockResolvedValue({ data: null, missing: true });
+    renderHook(() => useSessionDecisions('a', [], { visible: true, turnRunning: true }));
+    await advance(100);
+    await advance(DECISION_POLL_MS * 4);
+    expect(mocks.summary).toHaveBeenCalledTimes(1);
+    expect(mocks.settings).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the last good answer when a read fails, and reads again on refresh', async () => {

@@ -421,6 +421,10 @@ export type CancelTurnResponse = {
      * had a turn running. Each one ends `incomplete` and says the person
      * stopped the chat that started it.
      *
+     * Only the subagents whose own chat this caller could reach: one that is
+     * more private than the chat that started it, and out of this caller's
+     * reach, keeps running and is not named.
+     *
      * Always empty for Stop-and-Send (`continuation_pending`), which leaves
      * them running because the chat keeps supervising them in the turn that
      * follows. Omitted when empty.
@@ -4597,6 +4601,7 @@ export type PhaseGateSnapshot = {
      * the chat's default decision model, else the configured one.
      */
     model?: string | null;
+    modelAdapter?: DecisionAdapter | null;
     /**
      * The open phase is stuck and waits for the person's attention: its gate
      * blocked it, or it was marked blocked. Only a gate that failed every

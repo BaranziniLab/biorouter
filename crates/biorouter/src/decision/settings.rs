@@ -729,26 +729,37 @@ pub async fn save_chat(
 // Monitors an agent sets on the subagents it starts.
 // ---------------------------------------------------------------------------
 
+// The four enums below are `#[schemars(inline)]` and their variants carry
+// plain `//` comments, not `///` docs, on purpose. [`MonitorSpec`]'s schema is
+// in three agent tools (the subagent spawn, `workspace_orchestrate` and
+// `workspace_monitor`, the last in every chat's tool list), so every byte here
+// is paid on every turn, three times over. A documented variant makes schemars
+// emit a `oneOf` of described constants and a referenced enum carries its own
+// description beside the field's; the field docs on `MonitorSpec` already say
+// what each value means, so either would only repeat them.
+
 /// The answer a [`MonitorSpec`] watches.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+#[schemars(inline)]
 pub enum MonitorSpecWatch {
-    /// Fire when P(yes) reaches the threshold.
+    // Fire when P(yes) reaches the threshold.
     #[default]
     Yes,
-    /// Fire when P(no) reaches the threshold.
+    // Fire when P(no) reaches the threshold.
     No,
 }
 
 /// What a [`MonitorSpec`] does when it fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(inline)]
 pub enum MonitorSpecAction {
-    /// End the subagent's turn.
+    // End the subagent's turn.
     Stop,
-    /// Tell the subagent, which keeps going.
+    // Tell the subagent, which keeps going.
     Steer,
 }
 
@@ -757,71 +768,70 @@ pub enum MonitorSpecAction {
     Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+#[schemars(inline)]
 pub enum MonitorSpecTiming {
-    /// After every step the subagent takes.
+    // After every step the subagent takes.
     #[default]
     #[serde(alias = "post_iteration")]
     EachStep,
-    /// Once, when the subagent's turn is about to end.
+    // Once, when the subagent's turn is about to end.
     TurnEnd,
 }
 
 /// What a [`MonitorSpec`] does when a check fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(inline)]
 pub enum MonitorSpecOnError {
-    /// The check is skipped; after three failures in a row the monitor is off
-    /// for the rest of the turn.
+    // The check is skipped; after three failures in a row the monitor is off
+    // for the rest of the turn.
     Notify,
-    /// The subagent's turn stops, so the rule never goes unchecked.
+    // The subagent's turn stops, so the rule never goes unchecked.
     Pause,
 }
 
-/// A monitor as an agent declares it on a subagent: a yes/no question a
-/// decision model answers from the subagent's newest messages, and what
-/// happens when the answer reaches the threshold. Taken by the subagent
-/// spawn, an orchestration phase and `workspace_monitor`; stored through
-/// [`MonitorSpec::to_criterion`] as a monitor set by the agent.
+// A monitor as an agent declares it on a subagent: a yes/no question a
+// decision model answers from the subagent's newest messages, and what happens
+// when the answer reaches the threshold. Taken by the subagent spawn, an
+// orchestration phase and `workspace_monitor`; stored through
+// [`MonitorSpec::to_criterion`] as a monitor set by the agent.
+//
+// No `///` on the type and terse `///` on the fields, because those lines are
+// the schema the three tools send the model (see the note above the enums):
+// they hold what a call needs and nothing else. The finer limits (the id's
+// characters, the name's minimum) are checked, and explained, by
+// `to_criterion`'s refusals.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MonitorSpec {
-    /// Short name, 1 to 60 characters, for example "Off task".
+    /// Short name, at most 60 characters.
     pub name: String,
-    /// Optional id: lowercase letters, digits, `-` or `_`, at most 64
-    /// characters. Left out, it is made from the name. Name the id of a
-    /// monitor you set earlier to replace it.
+    /// Optional; made from the name. Reuse one you set to replace it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// A yes/no question a decision model answers from the subagent's newest
-    /// messages, for example "Is the agent editing files outside src/?".
+    /// A yes/no question about the subagent's newest messages.
     pub question: String,
-    /// The answer whose probability is compared with the threshold: "yes"
-    /// (the default) or "no".
+    /// The answer compared with the threshold.
     #[serde(default)]
     pub watch: MonitorSpecWatch,
-    /// Fires when P(watched answer) is at or above this: above 0 and at most 1.
+    /// Fires when P(watched answer) reaches this; above 0, at most 1.
     pub threshold: f64,
-    /// "stop" ends the subagent's turn; "steer" tells the subagent, which
-    /// keeps going.
+    /// "stop" ends the subagent's turn; "steer" redirects it.
     pub action: MonitorSpecAction,
-    /// "each_step" (the default): after every step the subagent takes.
-    /// "turn_end": once, when its turn is about to end.
+    /// "each_step": after every step; "turn_end": once, as its turn ends.
     #[serde(default)]
     pub timing: MonitorSpecTiming,
-    /// Optional decision model as provider/model, from decision_models. Left
-    /// out, the subagent's default decision model, else the configured
-    /// default.
+    /// provider/model from decision_models. Default: the subagent's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Checks in a row at or above the threshold before it fires, 1 to 5.
-    /// Default 1.
+    /// Checks in a row over the threshold before it fires: 1 to 5, default 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consecutive: Option<u32>,
-    /// When a check fails: "pause" stops the subagent's turn, "notify" skips
-    /// the check. Default "pause" for a stop monitor, "notify" for a steer one.
+    /// On a failed check: "pause" stops the turn, "notify" skips the check.
+    /// Default: pause for stop, notify for steer.
     #[serde(default, alias = "onError", skip_serializing_if = "Option::is_none")]
     pub on_error: Option<MonitorSpecOnError>,
-    /// Checks per turn at most, 1 to 200. Default 50.
+    /// Checks per turn at most: 1 to 200, default 50.
     #[serde(default, alias = "maxChecks", skip_serializing_if = "Option::is_none")]
     pub max_checks: Option<u32>,
 }

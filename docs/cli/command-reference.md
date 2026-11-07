@@ -1081,7 +1081,12 @@ applied again, and one line says which case it is: "This chat already has messag
 and phase plan this workflow declares were applied when the chat started and are not applied
 again, so the chat keeps them as they are now." when this workflow seeded it, or "This chat
 already has messages, so the monitors and phase plan this workflow declares were not applied to
-it. Run the workflow in a new chat to get them." otherwise. The run then goes on.
+it. Run the workflow in a new chat to get them." otherwise. With `--resume` on a chat that has no
+messages yet but that another workflow already set up, nothing is applied either, and the line
+reads "Another workflow already gave this chat its monitors and phase plan before its first
+message, so the ones this workflow declares were not applied to it. Run the workflow in a new chat
+to get them." Resuming such a chat with the workflow that set it up says nothing. The run then goes
+on.
 
 **Usage:**
 

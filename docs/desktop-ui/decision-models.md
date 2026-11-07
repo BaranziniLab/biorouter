@@ -109,10 +109,15 @@ of at least 28px, no hairline. `SummaryDecisions.test.tsx` reads it to hold them
 `hooks/useSessionDecisions.ts` reads the summary and the settings on the same gate as the
 subagent roster: while the summary is shown or the chat's turn runs. It re-reads when a
 `decide` or `workspace_orchestrate` tool call answers, or a decision notice or a decision chat's
-reply lands (`decisionRevision`). It polls the summary every 3 seconds only while a turn runs in
-a chat with a monitor switched on or with decision calls on record, and reads the settings once
-per stretch rather than on every poll. A daemon without the routes answers 404, which reads as
-nothing to draw, not as an error.
+reply lands (`decisionRevision`). While a turn runs it polls every 3 seconds. The settings are
+read on every poll, in every chat, because other writers change them and leave nothing in this
+chat's transcript to re-read on: a parent agent's `workspace_monitor`, a parent's save copying
+its monitors into running subagents, a workflow's seed, `biorouter session monitors` and another
+window. Without that, a subagent's tab opened with no monitors kept showing none for the rest of
+the turn after its parent put one on it. The summary is polled only in a chat with a monitor
+switched on or with decision calls on record, so a monitor that arrives mid-turn starts it from
+the next poll. A daemon without the routes answers 404, which reads as nothing to draw, not as
+an error, and is not polled.
 
 `BaseChat.tsx` mounts the hook below the subagent roster and above the early return, passes the
 plan's phase gates and the monitors the newest turn marker says fired, and mounts the Monitors
