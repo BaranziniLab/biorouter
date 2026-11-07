@@ -226,6 +226,7 @@ mod tests {
             started_at: None,
             finished_at: None,
             gate: None,
+            held_by: None,
         }
     }
 
