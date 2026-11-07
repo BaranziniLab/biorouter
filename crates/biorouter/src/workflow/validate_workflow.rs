@@ -1,4 +1,5 @@
 use crate::workflow::read_workflow_file_content::WorkflowFile;
+use crate::workflow::supervision;
 use crate::workflow::template_workflow::parse_workflow_content;
 use crate::workflow::{
     Workflow, WorkflowParameter, WorkflowParameterInputType, WorkflowParameterRequirement,
@@ -44,6 +45,11 @@ pub fn validate_workflow_template_from_content(
     let (workflow, _) = parse_workflow_content(workflow_content, workflow_dir)?;
 
     validate_prompt_or_instructions(&workflow)?;
+    // The monitors and the phase plan the workflow declares, checked here so
+    // every door that validates a workflow (the CLI, the import, the HTTP
+    // routes, the agent's `manage_workflow`) refuses what a chat could not
+    // take.
+    supervision::validate(&workflow).map_err(anyhow::Error::msg)?;
     if let Some(response) = &workflow.response {
         if let Some(json_schema) = &response.json_schema {
             validate_json_schema(json_schema)?;
@@ -206,5 +212,95 @@ parameters:
         assert_eq!(workflow.description, "A test workflow for validation");
         assert!(workflow.instructions.is_some());
         println!("Workflow: {:?}", workflow.prompt);
+    }
+
+    /// A workflow's monitors and phase plan are validated with the rest of the
+    /// file, so `biorouter workflow validate`, the import and the routes refuse
+    /// what a chat could not take.
+    #[test]
+    fn supervision_blocks_are_validated_with_the_workflow() {
+        let file = |threshold: &str| {
+            format!(
+                r#"
+title: Watched
+description: Watched work
+prompt: Do the work.
+decision_settings:
+  monitors:
+    - id: off-task
+      name: Off task
+      question: {{instructions: Is the agent off task?, kind: {{binary: {{}}}}}}
+      threshold: {threshold}
+      action: stop
+      onError: pause
+orchestration_plan:
+  title: Work
+  phases:
+    - {{id: work, title: Work}}
+"#
+            )
+        };
+        let workflow = validate_workflow_template_from_content(&file("0.8"), None).unwrap();
+        assert!(workflow.decision_settings.is_some());
+        assert!(workflow.orchestration_plan.is_some());
+        let error = validate_workflow_template_from_content(&file("1.5"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(
+                "The workflow's `decision_settings`: Monitor \"Off task\": the threshold must be \
+                 a probability above 0 and at most 1"
+            ),
+            "{error}"
+        );
+    }
+
+    /// The parameter checks run first, so a `{{ topic }}` in a monitor's
+    /// question reaches the supervision refusal only once `topic` is declared
+    /// under `parameters:`. Undeclared, it is refused as a missing parameter,
+    /// as it is without these blocks.
+    #[test]
+    fn a_parameter_in_a_monitor_is_refused_after_the_parameter_checks() {
+        let file = |parameters: &str| {
+            format!(
+                r#"
+title: Watched
+description: Watched work
+prompt: Do the work.
+decision_settings:
+  monitors:
+    - id: reached-ten
+      name: Reached ten
+      question:
+        instructions: Has the agent already echoed {{{{ topic }}}}?
+        kind: {{binary: {{}}}}
+      threshold: 0.7
+      action: stop
+      onError: pause
+{parameters}"#
+            )
+        };
+        let undeclared = validate_workflow_template_from_content(&file(""), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            undeclared,
+            "Missing definitions for parameters in the workflow file: topic."
+        );
+
+        let declared = file(
+            "parameters:\n  - key: topic\n    input_type: string\n    requirement: required\n    \
+             description: what to count\n",
+        );
+        let error = validate_workflow_template_from_content(&declared, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(
+                "The workflow's `decision_settings` and `orchestration_plan` cannot use \
+                 parameters (`{{ topic }}` in monitor `reached-ten`)"
+            ),
+            "{error}"
+        );
     }
 }

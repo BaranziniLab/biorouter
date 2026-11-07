@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::agents::extension::ExtensionConfig;
 use crate::agents::Agent;
 use crate::prompt_template::render_global_file;
+use crate::workflow::supervision::{self, SeedOutcome, SeedRefusal, SeedTarget, SeedTargetKind};
 use crate::workflow::{Workflow, WorkflowKnowledgeBases};
 
 use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
@@ -156,17 +157,141 @@ pub async fn apply_prepared_to_agent(
 /// Every headless surface that starts a workflow comes here. The CLI did not,
 /// which is why `biorouter run --workflow` silently ignored `skills:` and
 /// `knowledge_bases:` while the desktop and the scheduler honoured both.
+///
+/// **The supervision the workflow declares is seeded FIRST**
+/// ([`supervision::seed`]): its `decision_settings` (default decision model,
+/// monitors) and its `orchestration_plan` (phases, gates the workflow owns),
+/// applied once to a chat that has no messages yet, before anything else is
+/// installed. The seed asks with what this agent really runs on: its approval
+/// mode (`config.biorouter_mode`), its own decision service when one was
+/// installed ([`Agent::custom_decision_service`]) or else the process's, and
+/// the capability tier of the chat model it is bound to. `enforced` is the
+/// privacy master switch as the caller sampled it.
+///
+/// A seed that cannot apply what the workflow declares writes nothing and
+/// fails the install with an error that carries the [`SeedRefusal`] (downcast
+/// it) under the context [`WORKFLOW_NOT_STARTED`], so `{:#}` reads "The
+/// workflow was not started: <sentence>". The caller must not start the run.
+/// [`SeedOutcome::ChatHasMessages`] is not an error: a resumed chat keeps what
+/// it has, and the caller says the blocks were not applied.
 pub async fn install_prepared(
     agent: &Agent,
     session_id: &str,
     workflow: &Workflow,
     include_final_output_tool: bool,
     prompt: Option<String>,
-) -> Result<()> {
+    enforced: bool,
+) -> Result<SeedOutcome> {
+    let outcome = if supervision::declares_supervision(workflow) {
+        let custom = agent.custom_decision_service();
+        let service = match custom.as_deref() {
+            Some(service) => service,
+            None => crate::decision::global(),
+        };
+        // What the chat is bound to now: a chat still Public but bound to a
+        // private model becomes private at its first turn, so a public
+        // decision model must be refused for it before that turn.
+        let bound_tier = agent.provider().await.ok().map(|provider| provider.tier());
+        let target = SeedTarget {
+            session_id: session_id.to_string(),
+            kind: SeedTargetKind::Chat,
+            mode: agent.config.biorouter_mode,
+            enforced,
+            bound_tier,
+        };
+        // Boxed, so the seed's state (its settings and plan checks) lives on
+        // the heap rather than inside every future that awaits this install.
+        // Measured in a debug build: `scheduler::execute_job`'s future pinned
+        // on a 2 MiB test thread already needed about 2000 KiB, and inlining
+        // the seed into it overflowed that stack.
+        Box::pin(supervision::seed(
+            agent.config.session_manager.as_ref(),
+            service,
+            workflow,
+            target,
+        ))
+        .await
+        .map_err(|refusal| anyhow::Error::new(refusal).context(WORKFLOW_NOT_STARTED))?
+    } else {
+        SeedOutcome::NothingDeclared
+    };
     let knowledge = biorouter_mcp::knowledge::service::KnowledgeService::new_default()?;
     apply_knowledge_selection(&knowledge, session_id, workflow)?;
     apply_prepared_to_agent(agent, workflow, include_final_output_tool, prompt).await;
-    Ok(())
+    Ok(outcome)
+}
+
+/// What every door that refuses to start a workflow says first, before the
+/// refusal's own sentence ([`SeedRefusal::sentence`]).
+pub const WORKFLOW_NOT_STARTED: &str = "The workflow was not started";
+
+/// What a door says when a workflow's supervision was not applied because
+/// the chat it runs in already has messages ([`SeedOutcome::ChatHasMessages`])
+/// and this workflow never seeded it.
+pub const SUPERVISION_NOT_APPLIED: &str = "This chat already has messages, so the monitors and \
+     phase plan this workflow declares were not applied to it. Run the workflow in a new chat to \
+     get them.";
+
+/// What a door says when the chat already has messages and this same
+/// workflow seeded it when it started: the blocks are there, as the person
+/// has left or changed them since, and are not applied a second time.
+pub const SUPERVISION_APPLIED_AT_START: &str = "This chat already has messages. The monitors and \
+     phase plan this workflow declares were applied when the chat started and are not applied \
+     again, so the chat keeps them as they are now.";
+
+/// The line a door shows about `workflow`'s supervision after
+/// [`install_prepared`] returned `outcome` for the chat `session_id`, or
+/// `None` when there is nothing to say.
+///
+/// Only [`SeedOutcome::ChatHasMessages`] earns a line, and the seed returns it
+/// for every chat that has started, before it looks at the seed marker. So
+/// the marker is read here: a chat this workflow seeded when it started (the
+/// marker carries the workflow's title) is told the blocks are not applied
+/// AGAIN ([`SUPERVISION_APPLIED_AT_START`]), and any other chat, never seeded
+/// or seeded by another workflow, that they were not applied
+/// ([`SUPERVISION_NOT_APPLIED`]). A marker that cannot be read counts as no
+/// marker, with a warning in the log.
+pub async fn supervision_notice(
+    manager: &crate::session::SessionManager,
+    session_id: &str,
+    workflow: &Workflow,
+    outcome: &SeedOutcome,
+) -> Option<&'static str> {
+    if *outcome != SeedOutcome::ChatHasMessages {
+        return None;
+    }
+    let marker = manager
+        .get_extension_state(
+            session_id,
+            supervision::WORKFLOW_SUPERVISION_STATE,
+            supervision::WORKFLOW_SUPERVISION_VERSION,
+        )
+        .await;
+    let seeded_by_this_workflow = match marker {
+        Ok(Some(value)) => serde_json::from_value::<supervision::SeedMarker>(value)
+            .is_ok_and(|marker| marker.title == workflow.title),
+        Ok(None) => false,
+        Err(error) => {
+            tracing::warn!(
+                session_id,
+                "could not read whether a workflow seeded this chat: {error:#}"
+            );
+            false
+        }
+    };
+    Some(if seeded_by_this_workflow {
+        SUPERVISION_APPLIED_AT_START
+    } else {
+        SUPERVISION_NOT_APPLIED
+    })
+}
+
+/// The sentence a door shows for `error` when it is a refused seed, or
+/// `None` for any other failure: "The workflow was not started: <sentence>".
+pub fn seed_refusal_text(error: &anyhow::Error) -> Option<String> {
+    error
+        .downcast_ref::<SeedRefusal>()
+        .map(|refusal| format!("{WORKFLOW_NOT_STARTED}: {}", refusal.sentence))
 }
 
 #[cfg(test)]

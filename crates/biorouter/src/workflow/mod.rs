@@ -6,8 +6,10 @@ use std::path::Path;
 
 use crate::agents::extension::ExtensionConfig;
 use crate::agents::types::RetryConfig;
+use crate::decision::settings::DecisionSettings;
 use crate::utils::contains_unicode_tags;
 use crate::workflow::read_workflow_file_content::read_workflow_file;
+use crate::workflow::supervision::WorkflowPlan;
 use crate::workflow::yaml_format_utils::reformat_fields_with_multiline_values;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,7 @@ pub mod privacy;
 pub mod read_workflow_file_content;
 pub mod runtime;
 pub mod service;
+pub mod supervision;
 pub mod template_workflow;
 pub mod validate_workflow;
 mod workflow_extension_adapter;
@@ -82,6 +85,29 @@ pub struct Workflow {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryConfig>,
+
+    /// The decision settings the workflow's chat starts with: a default
+    /// decision model and monitors. The same record, with the same camelCase
+    /// keys, as `PUT /sessions/{id}/decision-settings` and the Monitors dialog
+    /// take; every key it does not have is refused. Applied once, to a chat
+    /// with no messages yet, merged under the chat's own (see
+    /// [`supervision::seed`]). It may not use workflow parameters. A YAML file
+    /// may write a question's kind as `{binary: {}}` or as `!binary {}`.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "supervision::deserialize_decision_settings"
+    )]
+    pub decision_settings: Option<DecisionSettings>,
+
+    /// The phase plan the workflow's chat starts with, as
+    /// `workspace_orchestrate action:"plan"` declares one; its gates are owned
+    /// by the workflow and bind the agent. Runs only in the Autonomous
+    /// approval mode, and never in a subagent's chat. Applied once, to a chat
+    /// with no messages yet (see [`supervision::seed`]). It may not use
+    /// workflow parameters.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub orchestration_plan: Option<WorkflowPlan>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
@@ -391,6 +417,8 @@ pub struct WorkflowBuilder {
     response: Option<Response>,
     sub_workflows: Option<Vec<SubWorkflow>>,
     retry: Option<RetryConfig>,
+    decision_settings: Option<DecisionSettings>,
+    orchestration_plan: Option<WorkflowPlan>,
 }
 
 impl Workflow {
@@ -442,6 +470,9 @@ impl Workflow {
             fields.extend(author.contact.as_deref());
             fields.extend(author.metadata.as_deref());
         }
+        // A monitor's question and a gate's questions are text a decision
+        // model reads, and the plan's titles and goals reach the agent.
+        fields.extend(supervision::readable_text(self));
 
         fields.into_iter().any(contains_unicode_tags)
     }
@@ -471,6 +502,8 @@ impl Workflow {
             response: None,
             sub_workflows: None,
             retry: None,
+            decision_settings: None,
+            orchestration_plan: None,
         }
     }
 
@@ -482,10 +515,17 @@ impl Workflow {
     pub fn from_content(content: &str) -> Result<Self> {
         let workflow: Workflow = match serde_yaml::from_str::<serde_yaml::Value>(content) {
             Ok(yaml_value) => {
+                // `Workflow` keeps an unknown key out of its parse rather than
+                // refusing it, so the keys that belong inside
+                // `decision_settings` or `orchestration_plan` are refused here,
+                // where they would otherwise be dropped without a word.
                 if let Some(nested_workflow) = yaml_value.get("workflow") {
+                    supervision::refuse_misplaced_keys(nested_workflow)
+                        .map_err(anyhow::Error::msg)?;
                     serde_yaml::from_value(nested_workflow.clone())
                         .map_err(|e| anyhow::anyhow!("Failed to parse nested workflow: {}", e))?
                 } else {
+                    supervision::refuse_misplaced_keys(&yaml_value).map_err(anyhow::Error::msg)?;
                     serde_yaml::from_str(content)
                         .map_err(|e| anyhow::anyhow!("Failed to parse workflow: {}", e))?
                 }
@@ -583,6 +623,16 @@ impl WorkflowBuilder {
         self
     }
 
+    pub fn decision_settings(mut self, decision_settings: DecisionSettings) -> Self {
+        self.decision_settings = Some(decision_settings);
+        self
+    }
+
+    pub fn orchestration_plan(mut self, orchestration_plan: WorkflowPlan) -> Self {
+        self.orchestration_plan = Some(orchestration_plan);
+        self
+    }
+
     pub fn build(self) -> Result<Workflow, &'static str> {
         let title = self.title.ok_or("Title is required")?;
         let description = self.description.ok_or("Description is required")?;
@@ -607,6 +657,8 @@ impl WorkflowBuilder {
             response: self.response,
             sub_workflows: self.sub_workflows,
             retry: self.retry,
+            decision_settings: self.decision_settings,
+            orchestration_plan: self.orchestration_plan,
         })
     }
 }
@@ -950,6 +1002,8 @@ isGlobal: true"#;
             response: None,
             sub_workflows: None,
             retry: None,
+            decision_settings: None,
+            orchestration_plan: None,
         };
 
         assert!(!workflow.check_for_security_warnings());

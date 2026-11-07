@@ -11,6 +11,7 @@ use biorouter::config::{
 use biorouter::providers::{create, create_from_saved_session};
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, ExtensionState, SessionManager};
+use biorouter::workflow::runtime::{seed_refusal_text, supervision_notice};
 use biorouter::workflow::Workflow;
 use console::style;
 use rustyline::EditMode;
@@ -73,6 +74,29 @@ async fn privacy_start_refusal(
         source,
         &available_private_models().await,
     ))
+}
+
+/// When `error` is a refused supervision seed, the sentence to print ("The
+/// workflow was not started: <sentence>"), after removing the chat this run
+/// created for the workflow. A resumed chat is never removed: it is the
+/// person's, and the refused seed wrote nothing into it. `None` for any other
+/// failure, which the caller reports as it always has.
+async fn refused_workflow_start(
+    error: &anyhow::Error,
+    session_manager: &SessionManager,
+    session_id: &str,
+    resumed: bool,
+) -> Option<String> {
+    let text = seed_refusal_text(error)?;
+    if !resumed {
+        if let Err(e) = session_manager.delete_session(session_id).await {
+            tracing::warn!(
+                session_id,
+                "could not remove the chat of a workflow that was not started: {e:#}"
+            );
+        }
+    }
+    Some(text)
 }
 
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
@@ -1274,17 +1298,50 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                 process::exit(1);
             }
         };
-        if let Err(err) = biorouter::workflow::runtime::install_prepared(
+        // Item 8: the install seeds the monitors and phase plan the workflow
+        // declares into this chat first, once, before its first message. One
+        // it cannot apply is a run that does not start: the person reads why,
+        // and the chat this run made for it is removed.
+        match biorouter::workflow::runtime::install_prepared(
             &session.agent,
             &session_id,
             workflow,
             true,
             prepared,
+            biorouter::privacy::privacy_tiers_enabled(),
         )
         .await
         {
-            output::render_error(&format!("Failed to apply workflow: {err}"));
-            process::exit(1);
+            Ok(outcome) => {
+                // Only a chat that already has messages (a resumed one) gets a
+                // line: whether this workflow seeded it when it started, or its
+                // blocks were never applied to it.
+                if let Some(notice) = supervision_notice(
+                    session.agent.config.session_manager.as_ref(),
+                    &session_id,
+                    workflow,
+                    &outcome,
+                )
+                .await
+                {
+                    eprintln!("{}", style(notice).yellow());
+                }
+            }
+            Err(err) => {
+                let text = match refused_workflow_start(
+                    &err,
+                    session.agent.config.session_manager.as_ref(),
+                    &session_id,
+                    session_config.resume,
+                )
+                .await
+                {
+                    Some(text) => text,
+                    None => format!("Failed to apply workflow: {err}"),
+                };
+                output::render_error(&text);
+                process::exit(1);
+            }
         }
     }
 
@@ -1374,6 +1431,202 @@ async fn keyring_advice(provider_name: &str, detail: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A workflow declaring a phase plan, which the seed refuses outside the
+    /// Autonomous approval mode before it asks any decision model.
+    fn phased_workflow() -> Workflow {
+        Workflow::from_content(
+            "version: 1.0.0\ntitle: Phased\ndescription: probe\nprompt: test\n\
+             orchestration_plan:\n  title: Probe plan\n  phases:\n  \
+             - {id: search, title: Search, kind: research}\n",
+        )
+        .expect("a valid phased workflow")
+    }
+
+    /// Item 8, `biorouter run --workflow`: a refused seed prints "The
+    /// workflow was not started: <sentence>" and removes the chat this run
+    /// made for the workflow, so a run that never started leaves no row. A
+    /// resumed chat is the person's and stays. Any other failure is left to
+    /// the caller's own wording. Driven through the real `install_prepared`.
+    #[tokio::test]
+    async fn a_refused_workflow_start_removes_the_new_chat_and_never_a_resumed_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(SessionManager::new_ephemeral(dir.path().join("data")));
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions.clone(),
+            Arc::new(biorouter::config::permission::PermissionManager::new(
+                dir.path().join("permissions"),
+            )),
+            None,
+            biorouter::config::BioRouterMode::Approve,
+        ));
+        let workflow = phased_workflow();
+
+        for resumed in [false, true] {
+            let chat = sessions
+                .create_session(
+                    dir.path().to_path_buf(),
+                    format!("refused start, resumed: {resumed}"),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            let error = biorouter::workflow::runtime::install_prepared(
+                &agent, &chat.id, &workflow, true, None, true,
+            )
+            .await
+            .expect_err("a phased plan outside the Autonomous approval mode is refused");
+            let text = refused_workflow_start(&error, &sessions, &chat.id, resumed)
+                .await
+                .expect("a refused seed has its sentence");
+            assert!(
+                text.starts_with(
+                    "The workflow was not started: it declares a phased plan, which runs only \
+                     in the Autonomous approval mode"
+                ),
+                "{text}"
+            );
+            assert_eq!(
+                sessions.get_session(&chat.id, false).await.is_ok(),
+                resumed,
+                "resumed: {resumed}: only the chat this run made is removed"
+            );
+        }
+
+        let other = anyhow::anyhow!("no-such-skill is not installed");
+        assert_eq!(
+            refused_workflow_start(&other, &sessions, "unused", false).await,
+            None,
+            "any other failure keeps its own wording"
+        );
+    }
+
+    /// …and a resumed chat that already has messages runs on without the
+    /// workflow's blocks being applied again, with one line saying which case
+    /// it is. The commonest one: `biorouter run --workflow X` seeded the chat
+    /// at its first run, and `run --workflow X --resume` must not claim the
+    /// monitors and plan "were not applied", because they are still there. A
+    /// chat the workflow never seeded (one that had started first, or one
+    /// another workflow seeded) is told they were not applied. No other
+    /// outcome prints anything. Driven through the real `install_prepared`, in
+    /// the Autonomous approval mode a plan needs (a plan with no gate asks no
+    /// decision model).
+    #[tokio::test]
+    async fn only_a_chat_with_messages_gets_a_supervision_line_and_a_chat_seeded_before_is_told_so()
+    {
+        use biorouter::conversation::message::Message;
+        use biorouter::workflow::runtime::{
+            install_prepared, SUPERVISION_APPLIED_AT_START, SUPERVISION_NOT_APPLIED,
+        };
+        use biorouter::workflow::supervision::SeedOutcome;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(SessionManager::new_ephemeral(dir.path().join("data")));
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions.clone(),
+            Arc::new(biorouter::config::permission::PermissionManager::new(
+                dir.path().join("permissions"),
+            )),
+            None,
+            biorouter::config::BioRouterMode::Auto,
+        ));
+        let workflow = phased_workflow();
+        let start = |name: &'static str| {
+            let sessions = sessions.clone();
+            let dir = dir.path().to_path_buf();
+            async move {
+                sessions
+                    .create_session(dir, name.to_string(), SessionType::User)
+                    .await
+                    .unwrap()
+                    .id
+            }
+        };
+        let send = |id: String| {
+            let sessions = sessions.clone();
+            async move {
+                sessions
+                    .add_message(&id, &Message::user().with_text("Start."))
+                    .await
+                    .unwrap();
+            }
+        };
+
+        // The first run seeds the new chat, and says nothing about it.
+        let seeded = start("seeded at its first run").await;
+        let first = install_prepared(&agent, &seeded, &workflow, true, None, true)
+            .await
+            .unwrap();
+        assert!(matches!(first, SeedOutcome::Seeded { .. }), "{first:?}");
+        assert_eq!(
+            supervision_notice(&sessions, &seeded, &workflow, &first).await,
+            None
+        );
+        // `--resume` once it has messages: told the blocks are not applied
+        // again, never that they were not applied.
+        send(seeded.clone()).await;
+        let resumed = install_prepared(&agent, &seeded, &workflow, true, None, true)
+            .await
+            .unwrap();
+        assert_eq!(resumed, SeedOutcome::ChatHasMessages);
+        assert_eq!(
+            supervision_notice(&sessions, &seeded, &workflow, &resumed).await,
+            Some(SUPERVISION_APPLIED_AT_START)
+        );
+        assert_eq!(
+            SUPERVISION_APPLIED_AT_START,
+            "This chat already has messages. The monitors and phase plan this workflow declares \
+             were applied when the chat started and are not applied again, so the chat keeps \
+             them as they are now."
+        );
+
+        // Another workflow resumed in that chat: its own blocks were never
+        // applied.
+        let other = Workflow::from_content(
+            "version: 1.0.0\ntitle: Another phased\ndescription: probe\nprompt: test\n\
+             orchestration_plan:\n  title: Other plan\n  phases:\n  \
+             - {id: draft, title: Draft, kind: research}\n",
+        )
+        .unwrap();
+        let outcome = install_prepared(&agent, &seeded, &other, true, None, true)
+            .await
+            .unwrap();
+        assert_eq!(outcome, SeedOutcome::ChatHasMessages);
+        assert_eq!(
+            supervision_notice(&sessions, &seeded, &other, &outcome).await,
+            Some(SUPERVISION_NOT_APPLIED)
+        );
+
+        // A chat that had started before the workflow first ran in it.
+        let started = start("started before the workflow ran").await;
+        send(started.clone()).await;
+        let outcome = install_prepared(&agent, &started, &workflow, true, None, true)
+            .await
+            .unwrap();
+        assert_eq!(outcome, SeedOutcome::ChatHasMessages);
+        assert_eq!(
+            supervision_notice(&sessions, &started, &workflow, &outcome).await,
+            Some(
+                "This chat already has messages, so the monitors and phase plan this workflow \
+                 declares were not applied to it. Run the workflow in a new chat to get them."
+            )
+        );
+
+        for quiet in [
+            SeedOutcome::NothingDeclared,
+            SeedOutcome::AlreadySeeded,
+            SeedOutcome::Seeded {
+                monitor_ids: vec!["m".into()],
+                phase_ids: vec![],
+            },
+        ] {
+            assert_eq!(
+                supervision_notice(&sessions, &seeded, &workflow, &quiet).await,
+                None,
+                "{quiet:?}"
+            );
+        }
+    }
 
     /// M16. `biorouter session --resume --session-id … --provider … </dev/null`
     /// is the documented way to script a rebind, and it took the interactive

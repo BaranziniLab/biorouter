@@ -32,7 +32,32 @@ pub fn print_workflow_explanation(workflow: &Workflow) {
             }
         }
     }
+    let supervision = supervision_lines(workflow);
+    if !supervision.is_empty() {
+        println!("{}", style("🛡️  Supervision:").bold());
+        for line in supervision {
+            println!("{line}");
+        }
+    }
 }
+
+/// The Supervision section of `--explain`: what the workflow's
+/// `decision_settings` and `orchestration_plan` declare, one indented line
+/// per item ([`biorouter::workflow::supervision::summary_lines`]), then what
+/// running it does with them. Empty when it declares neither.
+fn supervision_lines(workflow: &Workflow) -> Vec<String> {
+    let summary = biorouter::workflow::supervision::summary_lines(workflow);
+    if summary.is_empty() {
+        return summary;
+    }
+    let mut lines: Vec<String> = summary.iter().map(|line| format!("   - {line}")).collect();
+    lines.push(format!("   {SUPERVISION_APPLIES}"));
+    lines
+}
+
+/// The note under the Supervision section: when the blocks apply.
+const SUPERVISION_APPLIES: &str = "These apply once, to the new chat this workflow starts, before \
+     its first message. A monitor's decision model reads the newest messages of that chat.";
 
 pub fn print_parameters_with_values(params: HashMap<String, String>) {
     for (key, value) in params {
@@ -100,4 +125,53 @@ pub fn print_workflow_info(workflow: &Workflow, params: Vec<(String, String)>) {
         }
     }
     eprintln!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Item 8: `biorouter run --workflow X --explain` lists the monitors and
+    /// phase gates a workflow declares, so a person sees what will watch the
+    /// chat before it starts. A workflow without them prints no section.
+    #[test]
+    fn explain_lists_monitors_and_gates() {
+        let workflow = Workflow::from_content(
+            "version: 1.0.0\ntitle: Count\ndescription: probe\nprompt: test\n\
+             decision_settings:\n  defaultModel: {provider: baseten_decision, model: joey-1}\n  \
+             monitors:\n  - id: reached-ten\n    name: Reached ten\n    question:\n      \
+             instructions: Has the agent already echoed 10 or a larger number?\n      \
+             kind: {binary: {}}\n    threshold: 0.7\n    action: stop\n    onError: pause\n\
+             orchestration_plan:\n  title: Count plan\n  phases:\n  \
+             - {id: count, title: Count, kind: research}\n  - id: check\n    title: Check\n    \
+             kind: verification\n    gate:\n      questions: {done: Did it stop at ten?}\n      \
+             threshold: 0.8\n      max_attempts: 2\n",
+        )
+        .expect("a valid supervised workflow");
+
+        let lines = supervision_lines(&workflow);
+        let text = lines.join("\n");
+        for expected in [
+            "   - Default decision model: baseten_decision/joey-1",
+            "   - Monitor \"Reached ten\": model chat default; checked after each step; fires \
+             at 0.70 or above; when it fires: stop; on an error: pause",
+            "   - Phase plan \"Count plan\": 2 phases",
+            "   - Phase \"check\" gate: 1 question, threshold 0.80, 2 attempts; model chat default",
+        ] {
+            assert!(
+                lines.iter().any(|line| line == expected),
+                "missing {expected:?} in:\n{text}"
+            );
+        }
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some(format!("   {SUPERVISION_APPLIES}").as_str())
+        );
+
+        let plain = Workflow::from_content(
+            "version: 1.0.0\ntitle: Plain\ndescription: probe\nprompt: test\n",
+        )
+        .unwrap();
+        assert!(supervision_lines(&plain).is_empty());
+    }
 }

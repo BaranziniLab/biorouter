@@ -86,6 +86,24 @@ fn workflow_parameter_guidance(command: &str, path: &std::path::Path, names: &[S
     )
 }
 
+/// What a slash command answers when its workflow declares monitors or a
+/// phase plan (`decision_settings`, `orchestration_plan`).
+///
+/// Those blocks are seeded once, into a NEW chat, by the doors that start a
+/// workflow in its own chat (`POST /agent/start`, `biorouter run --workflow`,
+/// a schedule). A slash command runs the workflow inside a chat that already
+/// exists, which cannot take them: merging them would land under the
+/// person's own monitors, and nothing proves a person sent the command. So it
+/// is refused before anything is sent, with the way to run it.
+fn supervised_slash_workflow_refusal(command: &str, path: &std::path::Path) -> String {
+    format!(
+        "/{command} declares monitors or a phased plan, which apply only when the workflow \
+         starts its own chat. Start it from Workflows in the app or with \
+         `biorouter run --workflow {}`; nothing was sent.",
+        path.display()
+    )
+}
+
 /// Why `/bug` cannot hand this chat to the bug reporter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BugCommandBlocker {
@@ -454,6 +472,16 @@ impl Agent {
             )
             .map_err(|e| anyhow!("Failed to parse workflow: {}", e))?;
 
+        // Item 8: a slash command never seeds a workflow's supervision; it
+        // refuses one that declares any, before a parameter is read or a
+        // message is built.
+        if crate::workflow::supervision::declares_supervision(&validation_result) {
+            return Err(anyhow!(supervised_slash_workflow_refusal(
+                command,
+                &workflow_path
+            )));
+        }
+
         let param_values: Vec<String> = if params_str.is_empty() {
             vec![]
         } else {
@@ -553,6 +581,87 @@ mod slash_command_audit_tests {
         assert!(guidance.contains(&path.display().to_string()));
         assert!(guidance.contains("--params KEY=VALUE"));
         assert!(!guidance.contains("--workflow review"));
+    }
+
+    /// Item 8: a slash command runs its workflow in a chat that already
+    /// exists, which a workflow's monitors and phase plan never reach. One
+    /// that declares either is refused with the way to run it, and nothing is
+    /// built to send; the same command bound to a workflow without them still
+    /// runs, so the refusal is the blocks' and not the binding's.
+    #[tokio::test]
+    async fn a_slash_workflow_with_supervision_is_refused_with_the_way_to_run_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let head = "version: 1.0.0\ntitle: Count\ndescription: probe\n\
+                    prompt: Echo the numbers 1 to 30, one echo per tool call.\n";
+        let monitored = dir.path().join("monitored.yaml");
+        std::fs::write(
+            &monitored,
+            format!(
+                "{head}decision_settings:\n  monitors:\n  - id: reached-ten\n    \
+                 name: Reached ten\n    question:\n      \
+                 instructions: Has the agent already echoed 10 or a larger number?\n      \
+                 kind: {{binary: {{}}}}\n    threshold: 0.7\n    action: stop\n    \
+                 onError: pause\n"
+            ),
+        )
+        .unwrap();
+        let phased = dir.path().join("phased.yaml");
+        std::fs::write(
+            &phased,
+            format!(
+                "{head}orchestration_plan:\n  title: Count plan\n  phases:\n  \
+                 - {{id: count, title: Count, kind: research}}\n"
+            ),
+        )
+        .unwrap();
+        let plain = dir.path().join("plain.yaml");
+        std::fs::write(&plain, head).unwrap();
+        let bindings = serde_json::json!([
+            {"command": "monitoredwf", "workflow_path": monitored},
+            {"command": "phasedwf", "workflow_path": phased},
+            {"command": "plainwf", "workflow_path": plain},
+        ])
+        .to_string();
+        let overrides = std::collections::HashMap::from([("SLASH_COMMANDS".to_string(), bindings)]);
+
+        let agent = Agent::new();
+        let config: SessionConfig =
+            serde_json::from_value(serde_json::json!({"id": "slash-supervised"})).unwrap();
+        let (monitored_answer, phased_answer, plain_answer) =
+            crate::config::with_config_overrides(overrides, async {
+                (
+                    agent.execute_command("/monitoredwf", &config).await,
+                    agent.execute_command("/phasedwf", &config).await,
+                    agent.execute_command("/plainwf", &config).await,
+                )
+            })
+            .await;
+
+        for (command, path, answer) in [
+            ("monitoredwf", &monitored, monitored_answer),
+            ("phasedwf", &phased, phased_answer),
+        ] {
+            let error = answer.expect_err("a supervised slash workflow is refused");
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "/{command} declares monitors or a phased plan, which apply only when the \
+                     workflow starts its own chat. Start it from Workflows in the app or with \
+                     `biorouter run --workflow {}`; nothing was sent.",
+                    path.display()
+                )
+            );
+        }
+        let message = plain_answer
+            .expect("a workflow without supervision still runs")
+            .expect("its prompt is sent");
+        assert_eq!(message.role, rmcp::model::Role::User);
+        assert!(
+            message
+                .as_concat_text()
+                .contains("Echo the numbers 1 to 30"),
+            "{message:?}"
+        );
     }
 
     #[tokio::test]

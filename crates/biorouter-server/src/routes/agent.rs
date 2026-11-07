@@ -26,6 +26,8 @@ use biorouter::providers::create;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session, SessionManager, WorkingDirUpdate};
+use biorouter::workflow::runtime::WORKFLOW_NOT_STARTED;
+use biorouter::workflow::supervision::{self, SeedTarget, SeedTargetKind};
 use biorouter::workflow::Workflow;
 #[cfg(test)]
 use biorouter::workflow::WorkflowKnowledgeBases;
@@ -1030,10 +1032,12 @@ pub struct RestartAgentResponse {
     path = "/agent/start",
     request_body = StartAgentRequest,
     responses(
-        (status = 200, description = "Agent started successfully", body = Session),
-        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 200, description = "Agent started successfully. A workflow that declares `decision_settings` or an `orchestration_plan` has had them applied to the new chat before anything was sent in it.", body = Session),
+        (status = 400, description = "Bad request. For a workflow that declares monitors or a phase plan, also: those blocks are malformed, and the message reads \"The workflow was not started: <sentence>\". No chat is left behind.", body = ErrorResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 409, description = "The configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.", body = ErrorResponse),
+        (status = 403, description = "The workflow declares monitors or a phase plan, which only the person may apply to a chat, and this daemon holds a user-action key the request did not prove (or the desktop daemon's key never arrived). No chat was created.", body = ErrorResponse),
+        (status = 422, description = "The workflow's monitors or phase gates are valid but cannot run for this chat: a decision model it may not use (its privacy tier, an institution, a Crew grant), one that is not there, or one that cannot take the question. The message reads \"The workflow was not started: <sentence>\", and the chat was discarded.", body = ErrorResponse),
+        (status = 409, description = "The workflow declares a phase plan, which runs only in the Autonomous approval mode, and Biorouter is in another (the message reads \"The workflow was not started: <sentence>\" and the chat was discarded). Or: the configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
@@ -1075,11 +1079,40 @@ async fn start_agent(
         workflow
     };
 
+    // Item 8: a workflow that declares monitors or a phase plan is seeded into
+    // the new chat below. Its blocks are checked first, so a malformed one is
+    // refused with the sentence every door that starts a workflow uses.
+    let supervised = original_workflow
+        .as_ref()
+        .is_some_and(supervision::declares_supervision);
+    if let Some(workflow) = original_workflow.as_ref().filter(|_| supervised) {
+        if let Err(sentence) = supervision::validate(workflow) {
+            return Err(ErrorResponse {
+                message: format!("{WORKFLOW_NOT_STARTED}: {sentence}"),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
+    }
+
     if let Some(ref workflow) = original_workflow {
         if let Err(err) = validate_workflow(workflow) {
             return Err(ErrorResponse {
                 message: err.message,
                 status: err.status,
+            });
+        }
+    }
+
+    // Seeding a workflow's supervision writes a chat's decision settings and
+    // phase plan, which is the person's decision exactly as the PUT routes'
+    // writes are: the same proof rule, asked before any chat exists, so a
+    // refusal leaves nothing behind.
+    if supervised {
+        if let Some(sentence) = crate::routes::decisions::decision_write_refusal_sentence(&headers)
+        {
+            return Err(ErrorResponse {
+                message: sentence.to_string(),
+                status: StatusCode::FORBIDDEN,
             });
         }
     }
@@ -1104,6 +1137,10 @@ async fn start_agent(
             }
         })?;
 
+    // The capability tier of the model the new chat is bound to, for the seed
+    // below: a chat still Public but bound to a private model becomes private
+    // at its first turn, so it must not be given a public decision model.
+    let bound_tier = prepared_provider.as_ref().map(|provider| provider.tier());
     if let Err(error) = bind_new_session_provider(&state, &session, prepared_provider).await {
         discard_failed_new_session(&state, &session.id).await;
         return Err(error);
@@ -1187,6 +1224,34 @@ async fn start_agent(
             return Err(ErrorResponse {
                 message: format!("Failed to update session with workflow: {}", err),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
+            });
+        }
+    }
+
+    // Item 8: apply the workflow's monitors and phase plan to the new chat
+    // before anything is sent in it, once (`supervision::seed` keeps a
+    // marker). The approval mode is the one the chat's agent snapshots from
+    // the configuration; the decision service is the daemon's. A seed that
+    // cannot apply what the workflow declares writes nothing, and the chat is
+    // discarded: a supervised workflow never starts unsupervised.
+    if let Some(workflow) = original_workflow.as_ref().filter(|_| supervised) {
+        let target = SeedTarget {
+            session_id: session.id.clone(),
+            kind: SeedTargetKind::Chat,
+            mode: Config::global()
+                .get_biorouter_mode()
+                .unwrap_or(BioRouterMode::Auto),
+            enforced: biorouter::privacy::privacy_tiers_enabled(),
+            bound_tier,
+        };
+        if let Err(refusal) =
+            supervision::seed(manager, state.decision_service(), workflow, target).await
+        {
+            discard_failed_new_session(&state, &session.id).await;
+            return Err(ErrorResponse {
+                message: format!("{WORKFLOW_NOT_STARTED}: {}", refusal.sentence),
+                status: StatusCode::from_u16(refusal.status())
+                    .unwrap_or(StatusCode::UNPROCESSABLE_ENTITY),
             });
         }
     }
@@ -7138,12 +7203,14 @@ mod knowledge_selection_tests {
         // assertion is "between one fallible step and the next, the error path
         // discards the chat" rather than a count that a fourth step could pass
         // without being looked at.
-        const STEPS: [&str; 6] = [
+        const STEPS: [&str; 7] = [
             "bind_new_session_provider(",
             "runtime::prepare_prompt(",
             "apply_workflow_knowledge_selection(",
             ".extension_data(extension_data.clone())",
             ".workflow(Some(workflow))",
+            // Item 8: a refused supervision seed discards the chat too.
+            "supervision::seed(",
             "get_session(&session.id, false)",
         ];
 
