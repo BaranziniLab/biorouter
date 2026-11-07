@@ -2198,7 +2198,9 @@ impl biorouter::providers::base::Provider for Tiered {
 /// A chat still Public but bound to a private model becomes private at its
 /// first turn, where a public decision model would be refused at every check,
 /// so the save refuses it now. Read off the agent this daemon holds; a chat
-/// it does not hold is checked on its classification alone.
+/// bound to no model is checked on its classification alone (a chat this
+/// daemon does not hold:
+/// [`a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds`]).
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn a_public_chat_bound_to_a_private_model_cannot_save_a_public_monitor() {
@@ -2253,6 +2255,153 @@ async fn a_public_chat_bound_to_a_private_model_cannot_save_a_public_monitor() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The public decision model a live save stored on a chat bound to a private
+/// model: `baseten_decision/joey-1`, listed by the fake (nothing reaches
+/// Baseten).
+fn joey_entry() -> DecisionModelEntry {
+    DecisionModelEntry {
+        provider: "baseten_decision".to_string(),
+        ..entry("joey-1", ProviderTier::Public, false)
+    }
+}
+
+fn joey_model() -> Value {
+    json!({ "provider": "baseten_decision", "model": "joey-1" })
+}
+
+/// A chat whose session row binds `provider` while it is still classified
+/// Public: it has had no turn, so nothing has ratcheted it.
+async fn seed_bound_row(state: &Arc<AppState>, provider: &str) -> Seeded {
+    let chat = seed(state, SessionClassification::Public).await;
+    state
+        .session_manager()
+        .update(&chat.id)
+        .provider_name(provider)
+        .model_config(ModelConfig::new("gpt-5.5").unwrap())
+        .apply()
+        .await
+        .unwrap();
+    let row = state
+        .session_manager()
+        .get_session(&chat.id, false)
+        .await
+        .unwrap();
+    assert_eq!(row.provider_name.as_deref(), Some(provider));
+    assert_eq!(row.privacy_tier, SessionClassification::Public);
+    chat
+}
+
+/// Item 6, checked saves: a daemon that does not hold the chat's agent (right
+/// after a restart, or once it was evicted) reads the chat model the session
+/// row binds, so a chat still Public but bound to `versa_azure` is refused a
+/// public decision model at the settings and the phase-gate doors with the
+/// sentence the same save gets with the agent loaded, and nothing is stored.
+/// An agent with no model bound yet reads the row too. A row on a public
+/// provider still saves, and no check makes an agent or sends anything.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds() {
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let fake = fake_listing(vec![joey_entry()]);
+    let mut joey_monitor = monitor("m1");
+    joey_monitor["model"] = joey_model();
+    let joey = json!({ "monitors": [joey_monitor] });
+    let refusal = "Nothing was saved: monitor \"Form reached\" could not run. This chat runs on \
+                   a private model, so it becomes private at its first turn, and `joey-1` is a \
+                   public model a private chat cannot use.";
+
+    let bound = seed_bound_row(&state, "versa_azure").await;
+    assert!(
+        state.peek_agent(&bound.id).await.is_none(),
+        "this daemon holds no agent for the chat"
+    );
+    let uri = format!("/sessions/{}/decision-settings", bound.id);
+    let before = stored_settings(&state, &bound.id).await;
+    let (status, body) = send(fake.app(&state), "PUT", &uri, Some(joey.clone()), &[PROOF]).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.starts_with(refusal), "{body}");
+    assert_eq!(
+        stored_settings(&state, &bound.id).await,
+        before,
+        "the read answers what it answered before"
+    );
+
+    // The phase-gate door reads the same bound tier.
+    seed_plan(&state, &bound.id).await;
+    let plan = stored_plan(&state, &bound.id).await;
+    let mut gate = person_gate(None);
+    gate["model"] = joey_model();
+    let (status, body) = send(
+        fake.app(&state),
+        "PUT",
+        &format!("/sessions/{}/phase-gates/research", bound.id),
+        Some(gate),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body.starts_with("Phase \"research\"'s gate cannot be answered in this chat: ")
+            && body.contains(
+                "This chat runs on a private model, so it becomes private at its first turn"
+            )
+            && body.ends_with(". Nothing was changed."),
+        "{body}"
+    );
+    assert_eq!(stored_plan(&state, &bound.id).await, plan, "nothing stored");
+
+    // A private decision model is what such a chat may save.
+    let (status, body) = send(
+        fake.app(&state),
+        "PUT",
+        &uri,
+        Some(json!({ "monitors": [monitor_on("m1", Some("local-checker"))] })),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        state.peek_agent(&bound.id).await.is_none(),
+        "a check makes no agent"
+    );
+
+    // An agent this daemon holds with no model bound yet: the row says.
+    let held = seed_bound_row(&state, "versa_azure").await;
+    let agent = state.get_agent(held.id.clone()).await.unwrap();
+    assert!(agent.provider().await.is_err(), "no model is bound yet");
+    let (status, body) = send(
+        fake.app(&state),
+        "PUT",
+        &format!("/sessions/{}/decision-settings", held.id),
+        Some(joey.clone()),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.starts_with(refusal), "{body}");
+
+    // A row on a public provider still saves.
+    let public = seed_bound_row(&state, "anthropic").await;
+    assert!(state.peek_agent(&public.id).await.is_none());
+    let (status, body) = send(
+        fake.app(&state),
+        "PUT",
+        &format!("/sessions/{}/decision-settings", public.id),
+        Some(joey),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (settings, _) = stored_settings(&state, &public.id).await;
+    assert_eq!(settings["monitors"][0]["model"], joey_model(), "{settings}");
+    assert_eq!(
+        fake.calls.load(Ordering::SeqCst),
+        0,
+        "a check sends nothing"
+    );
 }
 
 // ─── Monitors that also watch the subagents (item A) ───

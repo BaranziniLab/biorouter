@@ -781,19 +781,29 @@ async fn chat_session(
     )
 }
 
-/// The capability tier of the chat model `session` is bound to now, when this
-/// daemon holds the chat's agent already, for the save-time checks only
-/// ([`DecisionSession::bound_tier`]). It matters only for a chat still
-/// classified Public with privacy tiers on (a chat that will become private
-/// at its first turn), so nothing is read otherwise, and an agent is never
-/// made here to ask: a chat this daemon has not opened is checked on its
-/// classification alone.
+/// The capability tier of the chat model `session` is bound to now, for the
+/// save-time checks only ([`DecisionSession::bound_tier`]). It matters only
+/// for a chat still classified Public with privacy tiers on (a chat that will
+/// become private at its first turn), so nothing is read otherwise.
+///
+/// When this daemon holds the chat's agent with a model bound, it is that
+/// provider's own tier. Otherwise (a chat this daemon has not opened since it
+/// started or has evicted, or an agent with no model yet) it is the tier
+/// declared for the provider the session row records
+/// ([`biorouter::decision::save::row_bound_tier`], what the CLI's door with
+/// no daemon reads), so a save right after a restart is refused what the
+/// same save with the agent loaded is refused. An agent is never made here
+/// to ask.
 async fn bound_tier(state: &AppState, session: &Session, enforced: bool) -> Option<ProviderTier> {
     if !enforced || session.privacy_tier.is_private() {
         return None;
     }
-    let agent = state.peek_agent(&session.id).await?;
-    agent.provider().await.ok().map(|provider| provider.tier())
+    if let Some(agent) = state.peek_agent(&session.id).await {
+        if let Ok(provider) = agent.provider().await {
+            return Some(provider.tier());
+        }
+    }
+    biorouter::decision::save::row_bound_tier(session, enforced).await
 }
 
 /// The chat as the save-time checks see it: [`chat_session`] with the tier

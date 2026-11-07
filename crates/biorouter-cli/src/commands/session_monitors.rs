@@ -709,9 +709,10 @@ async fn local_session_type(manager: &SessionManager, session_id: &str) -> Resul
 /// then nothing was stored.
 ///
 /// The model the chat is bound to is read off its session row
-/// (`biorouter::decision::save::load_for_save`), where the route asks the
-/// chat's agent: with no daemon there is no agent to ask, and a chat bound to
-/// a private model before its first turn is still classified Public.
+/// (`biorouter::decision::save::load_for_save`). The route asks the chat's
+/// agent first and reads the same row when it holds none; with no daemon
+/// there is no agent to ask, and a chat bound to a private model before its
+/// first turn is still classified Public.
 ///
 /// Unlike the route it copies nothing onto running subagents: without a
 /// daemon, none is running.

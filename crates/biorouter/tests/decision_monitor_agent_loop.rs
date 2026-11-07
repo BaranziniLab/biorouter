@@ -2856,15 +2856,80 @@ async fn a_turn_end_monitor_skipped_by_the_budget_stop_says_so() {
     );
     assert_eq!(decisions.requests(), 0, "nothing was asked past the budget");
     let shown = notices(&messages);
-    assert_eq!(
-        count_containing(
-            &shown,
-            "Monitor 'Task done' was not checked at the end of this turn: the turn was being \
-             wound down because it reached its budget."
-        ),
-        1,
-        "{shown:?}"
+    assert_eq!(count_containing(&shown, BUDGET_NOTICE), 1, "{shown:?}");
+    let kept = notices(&stored(&chat).await);
+    assert_eq!(count_containing(&kept, BUDGET_NOTICE), 1, "{kept:?}");
+}
+
+/// What a turn wound down by its budget says of the `turn_end` monitor
+/// `Task done` it did not check.
+const BUDGET_NOTICE: &str = "Monitor 'Task done' was not checked at the end of this turn: the \
+                             turn was being wound down because it reached its budget.";
+
+/// …once a turn, when the turn reached its `turn_end` point while being wound
+/// down and then went on to the budget stop at the loop top. Here a steer the
+/// person typed while the model wrapped up carries the turn on past the point
+/// that named the monitor, the model then keeps working past its grace, and
+/// the budget stop ends the turn: the monitor is named at the point, and not
+/// again at the stop, in the stream or in the chat.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_monitor_named_at_the_wrap_up_is_not_named_again_by_the_budget_stop() {
+    let steerer: Arc<OnceLock<Arc<Agent>>> = Arc::new(OnceLock::new());
+    // The first call spends the budget; the second, made after the wrap-up
+    // instruction, ends the turn, and the person types during it.
+    let mut llm = Llm::new(
+        ProviderTier::Public,
+        vec![Reply::Tool, Reply::Text("Here is where I got to.")],
+        Reply::Tool,
     );
+    let agent = steerer.clone();
+    llm.hook_on_call = Some((
+        1,
+        Arc::new(move || {
+            agent
+                .get()
+                .expect("the chat's agent")
+                .try_queue_soft_interrupt("Also check the appendix.".to_string(), None)
+                .expect("a steer offered mid-turn is accepted");
+        }),
+    ));
+    let llm = Arc::new(llm);
+    let decisions = Decisions::new(ProviderTier::Private, Answer::Yes(0.9));
+    let chat = chat(
+        llm.clone(),
+        &decisions,
+        SessionClassification::Public,
+        vec![paused_turn_end_monitor()],
+    )
+    .await;
+    let _ = steerer.set(chat.agent.clone());
+    let mut budgeted = config(&chat);
+    budgeted.budget = Some(ReplyBudget {
+        max_seconds: None,
+        max_tokens: Some(10),
+        max_usd: None,
+    });
+
+    let messages = send_with(&chat, "Keep working on the notes.", budgeted).await;
+
+    assert!(
+        llm.texts_seen_on_call(2)
+            .iter()
+            .any(|t| t.contains("Also check the appendix.")),
+        "the steer carried the turn on past its wound-down `turn_end` point"
+    );
+    let stop = position(&messages, |m| {
+        says(m, "I've reached the budget for this reply")
+    });
+    assert_eq!(decisions.requests(), 0, "nothing was asked past the budget");
+    let shown = notices(&messages);
+    assert_eq!(count_containing(&shown, BUDGET_NOTICE), 1, "{shown:?}");
+    assert!(
+        position(&messages, |m| shows(m, BUDGET_NOTICE)) < stop,
+        "the wound-down point named it, before the budget stop"
+    );
+    let kept = notices(&stored(&chat).await);
+    assert_eq!(count_containing(&kept, BUDGET_NOTICE), 1, "{kept:?}");
 }
 
 /// A turn that ends on a limit says nothing of a chat with no `turn_end`

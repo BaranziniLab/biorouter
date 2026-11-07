@@ -3971,6 +3971,49 @@ enum WrapUp {
     ToolCallLimit,
 }
 
+/// The `turn_end` monitors each chat's running decision turn has already
+/// said it did not check ([`Agent::wound_down_monitor_point`]), so each is
+/// named at most once a turn. A turn wound down at its `turn_end` point can
+/// still be carried on (a steer, a blocked stop) and then end on a limit at
+/// the loop top, which names the same monitors again otherwise. On the Agent,
+/// never as generator locals.
+#[derive(Default)]
+pub(super) struct UncheckedMonitorsNamed {
+    /// Per chat: the decision turn the names were given in, and the ids of
+    /// the monitors named. A new turn id starts the chat's set over.
+    by_session: std::sync::Mutex<HashMap<String, (String, HashSet<String>)>>,
+}
+
+impl UncheckedMonitorsNamed {
+    /// Of `ids`, the monitors not yet named in decision turn `turn_id` of
+    /// chat `session_id`, now remembered as named. With no decision turn
+    /// running (`turn_id` is `None`) turns cannot be told apart, so nothing
+    /// is remembered and every one is named: a notice given twice is better
+    /// than a monitor skipped in silence.
+    fn first_naming<'a>(
+        &self,
+        session_id: &str,
+        turn_id: Option<&str>,
+        ids: impl IntoIterator<Item = &'a str>,
+    ) -> HashSet<String> {
+        let ids = ids.into_iter().map(str::to_string);
+        let Some(turn_id) = turn_id else {
+            return ids.collect();
+        };
+        let mut by_session = self
+            .by_session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = by_session
+            .entry(session_id.to_string())
+            .or_insert_with(|| (turn_id.to_string(), HashSet::new()));
+        if entry.0 != turn_id {
+            *entry = (turn_id.to_string(), HashSet::new());
+        }
+        ids.filter(|id| entry.1.insert(id.clone())).collect()
+    }
+}
+
 /// How long one monitor point's waits (the model listing, the decision
 /// calls) may run on once a message the person typed is waiting. Built once
 /// per point: the deadline is set when the steer is first seen, to then plus
@@ -4436,6 +4479,9 @@ pub struct Agent {
     /// service this agent asks. On the Agent, never as generator locals (see
     /// [`crate::agents::loop_phase`] on the stack cliff).
     pub(super) decisions: crate::decision::monitor::AgentDecisions,
+    /// The `turn_end` monitors this turn has already said it did not check.
+    /// See [`UncheckedMonitorsNamed`].
+    pub(super) unchecked_monitors_named: UncheckedMonitorsNamed,
 }
 
 /// What an accepted steer is waiting behind. See [`AgentEvent::SteerWaiting`].
@@ -5630,6 +5676,7 @@ impl Agent {
             announced_steer_seq: std::sync::atomic::AtomicU64::new(0),
             pending_retry_note: std::sync::Mutex::new(None),
             decisions: Default::default(),
+            unchecked_monitors_named: Default::default(),
         }
     }
 
@@ -11543,7 +11590,10 @@ impl Agent {
     /// A `turn_end` point reached while the turn is being wound down: nothing
     /// is asked (a billed check after the budget is spent would spend past
     /// it, and a stop is moot as the turn ends), and the monitors it would
-    /// have checked are named, so none is skipped in silence. It never stops
+    /// have checked are named, so none is skipped in silence. Each monitor is
+    /// named once a turn ([`UncheckedMonitorsNamed`]): one named here is not
+    /// named again when the turn is carried on and then ends on a limit at
+    /// the loop top ([`Self::forced_exit_monitor_notices`]). It never stops
     /// and never steers.
     async fn wound_down_monitor_point(
         &self,
@@ -11556,7 +11606,7 @@ impl Agent {
         let Some(settings) = registry.settings(session_id) else {
             return verdict;
         };
-        let names: Vec<String> = settings
+        let unchecked: Vec<&crate::decision::settings::MonitorCriterion> = settings
             .monitors
             .iter()
             .filter(|criterion| {
@@ -11564,6 +11614,15 @@ impl Agent {
                     && criterion.timing == timing
                     && !registry.is_off_this_turn(session_id, &criterion.id)
             })
+            .collect();
+        let first_named = self.unchecked_monitors_named.first_naming(
+            session_id,
+            registry.turn_id(session_id).as_deref(),
+            unchecked.iter().map(|criterion| criterion.id.as_str()),
+        );
+        let names: Vec<String> = unchecked
+            .iter()
+            .filter(|criterion| first_named.contains(&criterion.id))
             .map(|criterion| format!("'{}'", one_line_name(&criterion.name)))
             .collect();
         let Some(text) = wound_down_notice(&names, why) else {
@@ -11583,8 +11642,10 @@ impl Agent {
     /// tool-call limit, the stall stop or the budget stop) never reaches its
     /// `turn_end` point, so the monitors that point would have checked are
     /// named here, as a wound-down point names them
-    /// ([`Self::wound_down_monitor_point`]), and none is skipped in silence.
-    /// Nothing is asked: the turn is ending on a limit. The settings are read
+    /// ([`Self::wound_down_monitor_point`]), and none is skipped in silence;
+    /// one that point already named this turn, as the turn was wound down
+    /// before it carried on to this limit, is not named again. Nothing is
+    /// asked: the turn is ending on a limit. The settings are read
     /// again first, as at every point. The notices (already stored), in
     /// yield order; none when the chat has no `turn_end` monitor due. A plain
     /// `async fn` the loop boxes, so none of this joins `reply_internal`'s
@@ -21285,6 +21346,42 @@ mod tests {
         );
         assert_eq!(one_line_name("Plot\nthe\tdata"), "Plot the data");
         assert_eq!(one_line_name(&"x".repeat(90)).chars().count(), 80);
+    }
+
+    /// A monitor a turn has said it did not check is named once that turn,
+    /// per chat; the next turn names it again, and with no decision turn to
+    /// tell turns apart every one is named.
+    #[test]
+    fn an_unchecked_monitor_is_named_once_a_turn() {
+        let named = UncheckedMonitorsNamed::default();
+        let set = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<HashSet<_>>();
+        assert_eq!(
+            named.first_naming("chat", Some("t1"), ["a", "b"]),
+            set(&["a", "b"])
+        );
+        assert_eq!(named.first_naming("chat", Some("t1"), ["a", "b"]), set(&[]));
+        assert_eq!(
+            named.first_naming("chat", Some("t1"), ["b", "c"]),
+            set(&["c"]),
+            "a monitor added since is named"
+        );
+        assert_eq!(
+            named.first_naming("other", Some("t1"), ["a"]),
+            set(&["a"]),
+            "per chat"
+        );
+        assert_eq!(
+            named.first_naming("chat", Some("t2"), ["a"]),
+            set(&["a"]),
+            "a new turn names it again"
+        );
+        assert_eq!(named.first_naming("chat", None, ["a"]), set(&["a"]));
+        assert_eq!(named.first_naming("chat", None, ["a"]), set(&["a"]));
+        assert_eq!(
+            named.first_naming("chat", Some("t2"), ["a"]),
+            set(&[]),
+            "no turn id leaves the running turn's names alone"
+        );
     }
 
     #[test]
