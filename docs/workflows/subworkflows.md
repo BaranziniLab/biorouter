@@ -40,6 +40,12 @@ Pre-set values take precedence over context-based parameters. If both the conver
 
 > **Tip.** Use the `indent()` filter to maintain valid YAML format when passing multi-line parameter values to subworkflows, for example: `{{ content | indent(2) }}`. See [Template support](workflow-schema-reference.md#template-support) for more details.
 
+### Monitors on a subworkflow's subagent
+
+A subworkflow runs as a subagent of the main workflow's chat, so it can be watched by decision-model monitors. When the subworkflow's file declares `decision_settings` ([Supervision](workflow-schema-reference.md#supervision-decision_settings-and-orchestration_plan)), the subagent spawned from it starts with those monitors, as the person's, after the copies of the parent chat's monitors set to also watch subagents. Its default decision model becomes the subagent's when the parent chat has none. Each monitor's model is checked against the parent chat before anything starts, and a monitor the chat may not use refuses the spawn ("Monitor 'Off task' could not be put on the subagent: … Nothing was started."). The monitors follow the rules in [Monitors on subagents](../agent-loop/decision-models.md#monitors-on-subagents).
+
+A subagent cannot run phases, because every workspace tool is refused to it. So a subworkflow whose file declares an `orchestration_plan` is refused when it would be spawned: "Could not spawn subworkflow "verify": subworkflow `verify` declares an `orchestration_plan`, and a subagent cannot run phases: workspace tools are refused to subagents. Remove the block from that file. Nothing was started."
+
 ## Examples
 
 The three examples below each illustrate one pattern. They are named after their domain in the YAML, so the mapping is:
@@ -409,4 +415,5 @@ In this example:
 - [Workflows](README.md) — the workflow file format a subworkflow is written in.
 - [Workflow schema reference](workflow-schema-reference.md#subworkflows) — the full `sub_workflows` field schema and the `indent()` template filter.
 - [Subagents](../agent-loop/subagents.md) — the other way a Biorouter run delegates work to a nested agent; read alongside this page when deciding which mechanism fits.
+- [Decision models](../agent-loop/decision-models.md#monitors-on-subagents): the monitors a subworkflow's subagent starts with, and who may change them.
 - [biorouter CLI command reference](../cli/command-reference.md#run-options) — the `run --workflow` and `--params` flags the examples above use.

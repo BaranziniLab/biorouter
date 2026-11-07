@@ -215,6 +215,18 @@ and 12px for labels.
     failed). A phase with subagents is a disclosure listing them; the phase in progress (or
     blocked) is open, and in a plan of more than three phases the others start folded. A
     subagent in no phase the plan knows is listed under "Other subagents".
+  - **Phase gates**: a gated phase shows one chip under its heading ("Gate 0.91 ≥ 0.80 passed",
+    "Gate 0.62 < 0.80, attempt 2 of 3", "Gate blocked"), which opens the phase gate dialog, where
+    the person passes, skips, retries, edits or removes the gate and "Show history" opens its
+    decision history ([the phase gate dialog](decision-models.md#the-phase-gate-dialog)). A gate
+    that waits for the person reads "Gate blocked: needs you"; a phase the person closed reads
+    "Passed by you" or "Skipped by you", and one whose subagents still work "Your pass stands" or
+    "Your skip stands". A phase an earlier open gate holds adds "Waits for Build's gate" to its
+    counts line and to its accessible name. An open phase with no gate shows a quiet "Add gate" on
+    hover and on focus, which opens the dialog on its editor; it is always in the arrow-key order,
+    so the keyboard finds it the way a pointer does. In the Decisions section, a gate's row leads
+    with "passed by you" or "skipped by you" when the person decided it
+    ([Decision gates](../agent-loop/orchestration-phases.md#decision-gates)).
   - Status is told by shape, as the to-do list's is: an open circle (queued), a dashed circle
     that turns slowly (running, still under reduced motion), a square (stopping), a check
     (completed), a question mark (blocked), a triangle (incomplete), a cross (failed), a pause
@@ -401,7 +413,7 @@ or the pointer is over the summary.
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, the dot with its count (to-do steps and running subagents, alone and together), and which flips of the pressed fill snap (geometry) and which fade (a press, the popover, the first turn) |
 | `utils/sessionSubagents.test.ts` | The contract read from the Rust side (every run status, phase kind and phase status, and the quiet threshold), the parser (every field, an unknown status kept as unknown, a row without an id dropped, malformed fields degraded, a plan with an unknown kind or status), the groups and counts, the layout switch at five, phase membership and default disclosure, the labels (short model names, run time, the second line), the roster revision (which tools move it, a script's sub-calls, no move for prose, an unanswered call or a replay) and `openSubagentTab` on and off `/pair` |
 | `hooks/useSessionSubagents.test.tsx` | No read while hidden and idle, the read with the user proof once shown, a re-read when a roster tool answers and not for prose, the 2s poll while a child is active (stopping once none is), the poll outliving the hidden rail, the turn's poll only in a chat with subagents, no re-render for a hidden summary's ticking counters (and the newest answer shown at once when it is shown again), the last good data kept on a failed read, a missing route read as no roster, and a superseded read aborted and ignored |
-| `components/summary/SummarySubagents.test.tsx` | Nothing drawn for an empty roster, comfortable rows (names, setup line, quiet, the lock, a click opening the tab), dense rows grouped Running, Needs attention and Done with counts, the 12-row cap and Show all, folding a group, the phases (title, count, progress, counts line, names, default disclosure, a phase with no subagents, Other subagents, a plan with no subagents), the hover card's content and its lazy build, one tab stop with the arrows, Home and End moving between rows and opening the card, focus and the card kept on a row a poll moves to another group or a fifth spawn regroups (and left alone once moved out of the list), and a failed refresh with Retry |
+| `components/summary/SummarySubagents.test.tsx` | The gate chip's words for the person's decisions and "needs you", the chip opening the gate dialog, the held line, and "Add gate" on hover and focus and in the arrow-key order; and nothing drawn for an empty roster, comfortable rows (names, setup line, quiet, the lock, a click opening the tab), dense rows grouped Running, Needs attention and Done with counts, the 12-row cap and Show all, folding a group, the phases (title, count, progress, counts line, names, default disclosure, a phase with no subagents, Other subagents, a plan with no subagents), the hover card's content and its lazy build, one tab stop with the arrows, Home and End moving between rows and opening the card, focus and the card kept on a row a poll moves to another group or a fifth spawn regroups (and left alone once moved out of the list), and a failed refresh with Retry |
 | `components/summary/ChatSummary.subagents.test.tsx` | The subagents between the to-do list and the statistics, nothing for them without the prop or with an empty roster, and BaseChat's wiring at the source: the hook's place and gate, both surfaces fed from `summaryProps`, the tab opener, and the button's running count only while the rail is hidden |
 | `components/summary/summaryAgents.browser.test.tsx` | In Chromium, in the rail's own grid at 240px (a 228px card): 30 subagents as 28px dense rows and disclosures that scroll inside the card with the footer in view and nothing overflowing sideways (with names long enough to overflow, the instrument); three subagents as 44px two-line rows; a 30-subagent phase plan with the same rows and width |
 | `components/settings/app/OpenSubagentTabsRow.test.tsx` | "Open subagent tabs automatically": the key `BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS`, off by default, written on toggle and rolled back on a failed write, held unpainted until read, a later visit painted from the last answer (the `openSubagentTabs` key of `settings/lastKnown.ts`), and help that names "Never open tabs automatically" as the setting that wins |
@@ -425,6 +437,8 @@ or the pointer is over the summary.
   background without a tab unless asked.
 - [Orchestration phases](../agent-loop/orchestration-phases.md): the phase plan the Phases
   section draws, and how a phase hands its results forward.
+- [Decision models in the desktop app](decision-models.md): the Decisions section, the gate chip
+  and the phase gate dialog it opens.
 
 - [The preview panel in a narrow pane](preview-panel/narrow-panes.md): rung 2, which shares the
   split box and its grid.
