@@ -1,23 +1,56 @@
-//! Decision models over HTTP: the catalog, an ad hoc decision, and one chat's
-//! decision log and decision settings.
+//! Decision models over HTTP: the catalog, installing a local decision model,
+//! an ad hoc decision, one chat's decision log and decision settings, and the
+//! person's controls over a chat's phase gates.
 //!
 //! | Route | Gate |
 //! |---|---|
 //! | `GET /decisions/models` | the daemon secret; with `sessionId`, [`session_reach`] first |
+//! | `GET /decisions/models/install` | the daemon secret: it names no chat |
+//! | `POST /decisions/models/install` | the daemon secret: it names no chat, and the installer itself refuses an Ollama that is not on this computer |
 //! | `POST /decisions/decide` | with `sessionId`: [`session_reach`] first, then Gate H in the service |
 //! | `GET /sessions/{id}/decisions` | [`session_reach`] |
 //! | `GET /sessions/{id}/decisions/summary` | [`session_reach`] |
 //! | `GET /sessions/{id}/decisions/{decision_id}` | [`session_reach`] |
 //! | `GET /sessions/{id}/decision-settings` | [`session_reach`] |
-//! | `PUT /sessions/{id}/decision-settings` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one |
+//! | `PUT /sessions/{id}/decision-settings` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one, then the save check (422) |
 //! | `GET /sessions/{id}/decision-chat` | [`session_reach`] |
-//! | `PUT /sessions/{id}/decision-chat` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one |
+//! | `PUT /sessions/{id}/decision-chat` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one, then the save check (422) |
+//! | `PUT /sessions/{id}/phase-gates/{phase_id}` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one, then the gate's model check (422) |
+//! | `DELETE /sessions/{id}/phase-gates/{phase_id}` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one |
+//! | `POST /sessions/{id}/phase-gates/{phase_id}/decision` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one |
 //!
 //! Every handler that names a chat calls [`reach_chat`] before it reads or
 //! parses anything about that chat, and a refusal is the reach gate's exact
 //! text, so an unproven caller cannot tell a private chat from one that does
 //! not exist by asking for its decisions. The subagent rule reads the row
 //! `reach_chat` returns, so it too is asked only of an admitted caller.
+//!
+//! # Status codes of the writes
+//!
+//! 400 is a request that cannot be read or is out of bounds; 403 is the reach
+//! gate, the proof or the subagent rule, and nothing else, because `biorouter
+//! session monitors` reads any 403 as a missing user-action key; 404 is no
+//! such chat, plan or phase; 409 is a conflict with what is stored (a closed
+//! phase, no gate, an unreadable plan, another install running, an Ollama
+//! elsewhere); 422 is a valid request whose model cannot run for this chat now
+//! (not there, cannot take the question, will not load, or refused by the
+//! chat's privacy tier, an institution or a Crew grant); 503 is an Ollama that
+//! is not running.
+//!
+//! # The save check
+//!
+//! A settings write stores only what can run: after every refusal above it
+//! asks the decision service whether each monitor the save turns on (and a
+//! changed default model, or a decision chat's new question) could run for
+//! this chat now ([`biorouter::decision::save_checked`]), sending nothing of
+//! the chat, and answers 422 with the reason when one could not. It runs only
+//! after the proof, so an unproven caller cannot use a write to probe which
+//! models exist. A monitor that is switched off or left as it was is never
+//! asked, so a person can always switch off or remove a monitor whose model
+//! went away. A phase gate the person sets is checked the same way
+//! ([`DecisionService::check_model_use`]). After a settings save, the chat's
+//! monitors that also watch its subagents are copied onto the subagents it is
+//! running now ([`decision_settings::sync_inherited`]).
 //!
 //! # Why these routes never draw one row per call
 //!
@@ -54,10 +87,16 @@
 //! that was meant to receive a key and did not keeps the refusal, because that
 //! is a fault a restart repairs. These routes are not the only door: `biorouter
 //! session monitors` with no reachable daemon writes the same store directly,
-//! under the tier rule alone, on any daemon. A write reaches the chat's next
-//! turn, never the one in flight. Gate H is asked again before every call
-//! whatever the settings say, so no setting can carry a private chat to a
-//! public model.
+//! under the tier rule alone, on any daemon, after the same save check. A
+//! settings write applies at the chat's next monitor check, in a turn already
+//! running too. Gate H is asked again before every call whatever the settings
+//! say, so no setting can carry a private chat to a public model: the save
+//! check is a usability check, not the privacy boundary.
+//!
+//! A phase gate decides when delegated work may go on, so setting, removing,
+//! passing, skipping or retrying one takes the same proof
+//! ([`PHASE_GATES_NEED_USER`] when it is missing), and the same subagent rule.
+//! The agent's own tool has no such action.
 //!
 //! [`session_reach`]: crate::routes::session_reach::session_reach
 
@@ -69,23 +108,31 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
+use biorouter::agents::orchestration_plan::{
+    self as orchestration_plan, GateWriteError, OrchestrationSnapshot, PersonGateChoice,
+    PersonGateOutcome, PhaseGateSpec, MAX_PHASE_ID_CHARS,
+};
+use biorouter::agents::subagent_roster::SessionSubagents;
 use biorouter::decision::log::{
     self as decision_log, DecisionDetail, DecisionPage, DecisionQuery, InvalidDecisionQuery,
     SessionDecisionSummary, MAX_PAGE,
 };
 use biorouter::decision::settings::{
-    self as decision_settings, DecisionChatSettings, DecisionSettings,
+    self as decision_settings, DecisionChatSettings, DecisionSettings, InvalidDecisionSettings,
 };
 use biorouter::decision::types::{validate_questions, DecisionKindTag};
 use biorouter::decision::{
     ChunkOutcome, Decision, DecisionAdapter, DecisionChunk, DecisionContext, DecisionError,
     DecisionModelRef, DecisionOrigin, DecisionRequest, DecisionService, DecisionSession,
-    LiveClassification,
+    LiveClassification, ModelSource, UnusableDecisionSettings,
 };
 use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::providers::decision::install::{
+    DecisionInstallSnapshot, DecisionInstaller, InstallState, OllamaPlace, DEFAULT_INSTALL_MODEL,
+};
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::Session;
 use biorouter_server::auth::{user_action_proof, UserActionProof};
@@ -127,13 +174,37 @@ pub const DECISION_SETTINGS_KEY_MISSING: &str = "Biorouter cannot confirm that t
      came from you: the app that started it was meant to hand it a key for that, and none \
      arrived. Nothing was changed. Restarting Biorouter repairs this.";
 
-/// The routes' state: the app, and the decision service they ask. Production
-/// uses the process's one service; tests hand in their own over a fake source,
-/// so no route test reaches a model.
+/// The refusal of a phase-gate write that carried no proof of a person, on a
+/// daemon that holds a user-action key.
+pub const PHASE_GATES_NEED_USER: &str = "Changing a phase's gate, or passing, skipping or \
+     retrying it, is the user's decision: a gate decides when delegated work may go on, and \
+     this request carried no proof that it came from the person at the keyboard. Nothing was \
+     changed. Do not retry as you are; the same call will be refused again. If this task needs \
+     a gate changed, stop and ask the user to do it in the app.";
+
+/// The refusal of a workflow start that declares monitors or phase gates and
+/// carried no proof of a person, on a daemon that holds a user-action key
+/// (`POST /agent/start`, through [`decision_write_refusal`]).
+pub(crate) const WORKFLOW_SUPERVISION_NEED_USER: &str = "Starting a workflow that declares \
+     monitors or phase gates is the user's decision: these choose which decision model reads \
+     the chat and what may stop a running turn, and this request carried no proof that it came \
+     from the person at the keyboard. No chat was created. Ask the user to start the workflow \
+     in the app.";
+
+/// The refusal of a phase id that is not one: what `PUT`, `DELETE` and
+/// `POST …/decision` under `/phase-gates/` answer before reading anything else.
+const NOT_A_PHASE_ID: &str =
+    "That is not a phase id: it must be 1 to 40 lowercase letters, digits or hyphens.";
+
+/// The routes' state: the app, the decision service they ask, and the
+/// installer of local decision models. Production uses the process's one
+/// service and installer; tests hand in their own (a service over a fake
+/// source, an installer over a mock Ollama), so no route test reaches a model.
 #[derive(Clone)]
 pub struct DecisionRoutes {
     state: Arc<AppState>,
     service: &'static DecisionService,
+    installer: &'static DecisionInstaller,
 }
 
 // ─── Wire types ───
@@ -239,6 +310,198 @@ pub struct DecisionChatResponse {
     pub settings: Option<DecisionChatSettings>,
 }
 
+/// What a person's phase-gate write did, and the chat's plan after it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseGateResponse {
+    /// The sentence the person reads: what changed and what happens next.
+    pub message: String,
+    /// `false` when a pass or skip was recorded but cannot close the phase
+    /// yet: it stands until the phase's working subagents finish and the
+    /// agent completes the phase. Always `true` for a set, a removal or a
+    /// retry.
+    pub applied: bool,
+    /// The chat's orchestration plan after the write, exactly as `GET
+    /// /sessions/{session_id}/subagents` shows it to this caller: a subagent
+    /// the caller could not open is neither listed nor counted. `null` when
+    /// the plan could not be read back.
+    pub plan: Option<OrchestrationSnapshot>,
+}
+
+/// A person's decision about a phase's gate.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PhaseGateDecisionRequest {
+    /// `pass` or `skip` closes the phase without asking its gate, at once
+    /// when none of the phase's subagents is still working, else once they
+    /// finish and the agent completes it. `retry` gives the gate its attempts
+    /// again.
+    pub decision: PersonGateChoice,
+}
+
+/// One decision model Biorouter installs into the Ollama on this computer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallableDecisionModelInfo {
+    /// The name Ollama and the model list know it by (`tev1:0.8b`).
+    pub model: String,
+    pub display_name: String,
+    /// The download, roughly (`about 1.5 GB`).
+    pub approx_size: String,
+    /// One phrase on what it is for.
+    pub note: String,
+    /// The one installed when a request names none.
+    pub is_default: bool,
+    /// Listed already by the configured Ollama on this computer as a
+    /// decision model it loads. Never asked of an Ollama elsewhere.
+    pub installed: bool,
+}
+
+/// Where the configured Ollama (`OLLAMA_HOST`) is, as far as installing into
+/// it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OllamaPlaceState {
+    /// On this computer, and answering.
+    Running,
+    /// On this computer, and not answering.
+    NotRunning,
+    /// On another computer. Nothing was sent to it.
+    NotThisComputer,
+    /// `OLLAMA_HOST` does not resolve to a server address.
+    InvalidHost,
+}
+
+impl From<&OllamaPlace> for OllamaPlaceState {
+    fn from(place: &OllamaPlace) -> Self {
+        match place {
+            OllamaPlace::Running { .. } => Self::Running,
+            OllamaPlace::NotRunning => Self::NotRunning,
+            OllamaPlace::NotThisComputer => Self::NotThisComputer,
+            OllamaPlace::InvalidHost(_) => Self::InvalidHost,
+        }
+    }
+}
+
+/// The configured Ollama, as the install status reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OllamaPlaceInfo {
+    /// `OLLAMA_HOST` resolved, or `null` when it does not resolve.
+    pub base_url: Option<String>,
+    pub state: OllamaPlaceState,
+    /// Ollama's version while it runs here.
+    pub version: Option<String>,
+    /// Why nothing can be installed there now, as a sentence to show, or
+    /// `null` while Ollama runs on this computer.
+    pub message: Option<String>,
+}
+
+/// Where an install stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionInstallState {
+    /// Ollama is downloading the model.
+    Downloading,
+    /// The download finished; Biorouter is checking that the model answers
+    /// decisions there.
+    Verifying,
+    /// The model is listed and answers decisions.
+    Installed,
+    /// The install stopped; `error` says why.
+    Failed,
+}
+
+impl From<InstallState> for DecisionInstallState {
+    fn from(state: InstallState) -> Self {
+        match state {
+            InstallState::Downloading => Self::Downloading,
+            InstallState::Verifying => Self::Verifying,
+            InstallState::Installed => Self::Installed,
+            InstallState::Failed => Self::Failed,
+        }
+    }
+}
+
+/// The install that is running, or the last one, which is kept until the
+/// next one starts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionInstallJob {
+    pub model: String,
+    pub state: DecisionInstallState,
+    /// Bytes downloaded so far, over every layer.
+    pub completed_bytes: u64,
+    /// Bytes to download, over every layer named so far. It grows as Ollama
+    /// names more layers.
+    pub total_bytes: u64,
+    /// Ollama's last step, in its words.
+    pub status: Option<String>,
+    /// Why the install failed, once it has.
+    pub error: Option<String>,
+}
+
+/// `GET /decisions/models/install`: what can be installed, where, and how the
+/// current or last install is going.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionInstallStatus {
+    /// The models Biorouter installs, the default first.
+    pub offers: Vec<InstallableDecisionModelInfo>,
+    pub ollama: OllamaPlaceInfo,
+    /// The current or last install, or `null` when none ran since the daemon
+    /// started.
+    pub job: Option<DecisionInstallJob>,
+}
+
+impl From<DecisionInstallSnapshot> for DecisionInstallStatus {
+    fn from(snapshot: DecisionInstallSnapshot) -> Self {
+        let DecisionInstallSnapshot {
+            offers,
+            ollama,
+            job,
+        } = snapshot;
+        Self {
+            offers: offers
+                .into_iter()
+                .map(|offer| InstallableDecisionModelInfo {
+                    model: offer.model.name.to_string(),
+                    display_name: offer.model.display_name.to_string(),
+                    approx_size: offer.model.approx_size.to_string(),
+                    note: offer.model.note.to_string(),
+                    is_default: offer.model.is_default(),
+                    installed: offer.installed,
+                })
+                .collect(),
+            ollama: OllamaPlaceInfo {
+                base_url: ollama.base_url.as_ref().map(ToString::to_string),
+                state: OllamaPlaceState::from(&ollama.place),
+                version: ollama.place.version().map(str::to_string),
+                message: ollama.message,
+            },
+            job: job.map(|job| DecisionInstallJob {
+                model: job.model,
+                state: job.state.into(),
+                completed_bytes: job.completed_bytes,
+                total_bytes: job.total_bytes,
+                status: job.status,
+                error: job.error,
+            }),
+        }
+    }
+}
+
+/// `POST /decisions/models/install`'s body. An empty body installs the
+/// default model.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecisionInstallRequest {
+    /// One of the offered models (`tev1:0.8b`, `clef-flash:latest`); left out,
+    /// `tev1:0.8b`.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 // ─── Shared steps ───
 
 fn plain(status: StatusCode, message: impl Into<String>) -> Response {
@@ -297,20 +560,48 @@ async fn reach_chat(
     }
 }
 
-/// Whether a decision-settings write may go ahead for this caller; see the
-/// module doc. Pure, so every corner is tested; `expected_key` is whether the
-/// launcher declared it would hand this daemon a user-action key.
-fn settings_write_refusal(proof: UserActionProof, expected_key: bool) -> Option<Response> {
+/// The proof rule every write here shares, as the sentence it refuses with:
+/// `need_user` when a daemon that holds a user-action key was sent no proof,
+/// [`DECISION_SETTINGS_KEY_MISSING`] on a desktop daemon that was meant to get
+/// a key and did not, and nothing on a daemon that can never check a proof
+/// (`biorouter serve`), where the reach gate is the whole gate. Pure, so every
+/// corner is tested; `expected_key` is whether the launcher declared it would
+/// hand this daemon a user-action key.
+fn proof_refusal(
+    proof: UserActionProof,
+    expected_key: bool,
+    need_user: &'static str,
+) -> Option<&'static str> {
     match proof {
         UserActionProof::Proven => None,
-        UserActionProof::Unproven => {
-            Some(plain(StatusCode::FORBIDDEN, DECISION_SETTINGS_NEED_USER))
-        }
-        UserActionProof::NoKeyInstalled if expected_key => {
-            Some(plain(StatusCode::FORBIDDEN, DECISION_SETTINGS_KEY_MISSING))
-        }
+        UserActionProof::Unproven => Some(need_user),
+        UserActionProof::NoKeyInstalled if expected_key => Some(DECISION_SETTINGS_KEY_MISSING),
         UserActionProof::NoKeyInstalled => None,
     }
+}
+
+/// The proof rule of a decision-settings write without its subagent arm, for
+/// a door that writes supervision into a chat it has not created yet:
+/// `POST /agent/start` with a workflow that declares monitors or phase gates.
+/// Refused with [`WORKFLOW_SUPERVISION_NEED_USER`] when a daemon that holds a
+/// user-action key was sent no proof, and with
+/// [`DECISION_SETTINGS_KEY_MISSING`] on a desktop daemon whose key never
+/// arrived; admitted on a daemon that holds none.
+// `/agent/start` is the caller; until it is wired the binary sees no use.
+#[allow(dead_code)]
+pub(crate) fn decision_write_refusal(headers: &HeaderMap) -> Option<Response> {
+    decision_write_refusal_sentence(headers).map(|sentence| plain(StatusCode::FORBIDDEN, sentence))
+}
+
+/// [`decision_write_refusal`]'s sentence, for a door that answers in its own
+/// shape (`/agent/start` answers JSON).
+#[allow(dead_code)]
+pub(crate) fn decision_write_refusal_sentence(headers: &HeaderMap) -> Option<&'static str> {
+    proof_refusal(
+        user_action_proof(headers),
+        biorouter_server::launch::expected_a_user_action_key(),
+        WORKFLOW_SUPERVISION_NEED_USER,
+    )
 }
 
 /// The subagent rule SD-11 keeps for Stop and steering, asked of a write the
@@ -324,14 +615,26 @@ fn subagent_write_refusal(proof: UserActionProof, session_type: SessionType) -> 
         .then(|| plain(StatusCode::FORBIDDEN, DECISION_SETTINGS_SUBAGENT_NO_KEY))
 }
 
-/// Every refusal a decision write meets after the reach gate, in order: the
-/// proof, then the subagent rule.
+/// Every refusal a decision-settings write meets after the reach gate, in
+/// order: the proof, then the subagent rule.
 fn write_refusal(session: &Session, headers: &HeaderMap) -> Option<Response> {
+    write_refusal_with(session, headers, DECISION_SETTINGS_NEED_USER)
+}
+
+/// [`write_refusal`] with the sentence an unproven caller reads (a phase-gate
+/// write answers [`PHASE_GATES_NEED_USER`]).
+fn write_refusal_with(
+    session: &Session,
+    headers: &HeaderMap,
+    need_user: &'static str,
+) -> Option<Response> {
     let proof = user_action_proof(headers);
-    settings_write_refusal(
+    proof_refusal(
         proof,
         biorouter_server::launch::expected_a_user_action_key(),
+        need_user,
     )
+    .map(|sentence| plain(StatusCode::FORBIDDEN, sentence))
     .or_else(|| subagent_write_refusal(proof, session.session_type))
 }
 
@@ -476,6 +779,151 @@ async fn chat_session(
             .with_chat_default_model(chat_default_model)
             .with_live(Arc::new(StoredClassification(state.clone()))),
     )
+}
+
+/// The capability tier of the chat model `session` is bound to now, when this
+/// daemon holds the chat's agent already, for the save-time checks only
+/// ([`DecisionSession::bound_tier`]). It matters only for a chat still
+/// classified Public with privacy tiers on (a chat that will become private
+/// at its first turn), so nothing is read otherwise, and an agent is never
+/// made here to ask: a chat this daemon has not opened is checked on its
+/// classification alone.
+async fn bound_tier(state: &AppState, session: &Session, enforced: bool) -> Option<ProviderTier> {
+    if !enforced || session.privacy_tier.is_private() {
+        return None;
+    }
+    let agent = state.peek_agent(&session.id).await?;
+    agent.provider().await.ok().map(|provider| provider.tier())
+}
+
+/// The chat as the save-time checks see it: [`chat_session`] with the tier
+/// of the chat model it is bound to.
+async fn checked_session(
+    state: &Arc<AppState>,
+    session: &Session,
+    enforced: bool,
+) -> anyhow::Result<DecisionSession> {
+    let bound = bound_tier(state, session, enforced).await;
+    Ok(chat_session(state, &session.id, enforced)
+        .await?
+        .with_bound_tier(bound))
+}
+
+/// What a checked save answers when it stores nothing: 422 with the sentence
+/// for settings that are valid but cannot run for this chat now, 400 with the
+/// sentence for settings that are not valid, 500 for anything else.
+fn save_error_response(error: anyhow::Error) -> Response {
+    if let Some(unusable) = error.downcast_ref::<UnusableDecisionSettings>() {
+        return plain(StatusCode::UNPROCESSABLE_ENTITY, unusable.0.clone());
+    }
+    if let Some(invalid) = error.downcast_ref::<InvalidDecisionSettings>() {
+        return plain(StatusCode::BAD_REQUEST, invalid.0.clone());
+    }
+    tracing::warn!("a decision settings write failed: {error:#}");
+    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+}
+
+/// The subagents `parent_id` has running or queued in this daemon now, each
+/// once: the chats a save of its monitors copies the ones that also watch its
+/// subagents onto.
+fn live_children(parent_id: &str) -> Vec<String> {
+    let mut children: Vec<String> = Vec::new();
+    for handle in biorouter::agents::subagent_handle::list_for_session(parent_id) {
+        if handle.is_running() && !children.contains(&handle.child_session_id) {
+            children.push(handle.child_session_id.clone());
+        }
+    }
+    children
+}
+
+/// A phase id is a plan's slug: 1 to [`MAX_PHASE_ID_CHARS`] lowercase ASCII
+/// letters, digits or hyphens. Checked before anything is read, so a malformed
+/// id never reaches the plan.
+fn valid_phase_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.chars().count() <= MAX_PHASE_ID_CHARS
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// The status a person's gate write that changed nothing is answered with.
+/// The body is the refusal's own sentence.
+fn gate_error_status(error: &GateWriteError) -> StatusCode {
+    match error {
+        GateWriteError::NoPlan | GateWriteError::NoPhase(_) => StatusCode::NOT_FOUND,
+        GateWriteError::Closed(_) | GateWriteError::NoGate(_) | GateWriteError::Unreadable(_) => {
+            StatusCode::CONFLICT
+        }
+        GateWriteError::Invalid(_) => StatusCode::BAD_REQUEST,
+    }
+}
+
+/// The chat's orchestration plan exactly as `GET
+/// /sessions/{session_id}/subagents` answers this caller, read by asking that
+/// route: the parent's reach gate, one resolved caller, every child this
+/// caller could not open omitted (and the Crew exclusion), and the plan
+/// recomputed over the rows that survive. Asking the route keeps one
+/// implementation of that filter rather than a second one here. `None` when
+/// the route does not answer 200, or its answer cannot be read.
+async fn visible_plan(
+    state: &Arc<AppState>,
+    session_id: &str,
+    headers: &HeaderMap,
+) -> Option<OrchestrationSnapshot> {
+    let response = crate::routes::session_subagents::get_session_subagents(
+        State(state.clone()),
+        Path(session_id.to_string()),
+        headers.clone(),
+    )
+    .await;
+    if response.status() != StatusCode::OK {
+        tracing::warn!(
+            session_id,
+            status = %response.status(),
+            "the plan after a phase-gate write could not be read back"
+        );
+        return None;
+    }
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .ok()?;
+    match serde_json::from_slice::<SessionSubagents>(&bytes) {
+        Ok(roster) => roster.plan,
+        Err(error) => {
+            tracing::warn!(
+                session_id,
+                "the plan after a phase-gate write could not be read: {error}"
+            );
+            None
+        }
+    }
+}
+
+/// A person's gate write as the routes answer it: 200 with the outcome and
+/// the plan as this caller may see it, or the refusal's status and sentence.
+async fn gate_response(
+    state: &Arc<AppState>,
+    session_id: &str,
+    headers: &HeaderMap,
+    written: Result<PersonGateOutcome, GateWriteError>,
+) -> Response {
+    match written {
+        Ok(outcome) => Json(PhaseGateResponse {
+            message: outcome.message,
+            applied: outcome.applied,
+            plan: visible_plan(state, session_id, headers).await,
+        })
+        .into_response(),
+        Err(error) => plain(gate_error_status(&error), error.message()),
+    }
+}
+
+/// `text` without the full stop it ends with, so it can sit inside a
+/// sentence.
+fn without_full_stop(text: &str) -> &str {
+    let text = text.trim_end();
+    text.strip_suffix('.').unwrap_or(text)
 }
 
 /// What the log itself does not refuse: a `limit` outside 1 to [`MAX_PAGE`]
@@ -920,6 +1368,10 @@ pub async fn get_decision_settings(
                                       from the person at the keyboard, or, on a daemon that \
                                       holds none, the chat is a subagent's (body = plain text)"),
         (status = 404, description = "Session not found (body = plain text)"),
+        (status = 422, description = "What this save turns on could not run for this chat now: \
+                                      the model is not available, cannot take the question, or \
+                                      the chat's privacy tier, an institution or a Crew grant \
+                                      refuses it. Nothing was saved (body = plain text)"),
         (status = 500, description = "Internal server error")
     ),
     security(("api_key" = []))
@@ -944,10 +1396,34 @@ pub async fn put_decision_settings(
     if let Err(sentence) = decision_settings::validate(&settings) {
         return plain(StatusCode::BAD_REQUEST, sentence);
     }
-    match decision_settings::save(routes.state.session_manager(), &session_id, settings).await {
-        Ok(stored) => Json(stored).into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    // ONE sample of the master switch for this request (not a tool path).
+    // The check comes only now, after the proof: an unproven caller cannot
+    // use this write to learn which models exist.
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    let checked = match checked_session(&routes.state, &session, enforced).await {
+        Ok(checked) => checked,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let manager = routes.state.session_manager();
+    let stored = match biorouter::decision::save_checked(
+        routes.service,
+        manager,
+        &checked,
+        settings,
+    )
+    .await
+    {
+        Ok(stored) => stored,
+        Err(error) => return save_error_response(error),
+    };
+    // A monitor that also watches the subagents this chat starts reaches the
+    // ones running now as well as the next one. A child that cannot take its
+    // copies is warned about by `sync_inherited` and does not fail the save.
+    let live = live_children(&session_id);
+    if !live.is_empty() {
+        decision_settings::sync_inherited(manager, &session_id, &stored, &live).await;
     }
+    Json(stored).into_response()
 }
 
 #[utoipa::path(
@@ -1005,6 +1481,11 @@ pub async fn get_decision_chat(
                                       from the person at the keyboard, or, on a daemon that \
                                       holds none, the chat is a subagent's (body = plain text)"),
         (status = 404, description = "Session not found (body = plain text)"),
+        (status = 422, description = "The decision model this decision chat is bound to cannot \
+                                      answer this question for this chat now: it is not \
+                                      available, cannot take this kind of question, or the \
+                                      chat's privacy tier, an institution or a Crew grant \
+                                      refuses it. Nothing was saved (body = plain text)"),
         (status = 500, description = "Internal server error")
     ),
     security(("api_key" = []))
@@ -1029,26 +1510,328 @@ pub async fn put_decision_chat(
     if let Err(sentence) = decision_settings::validate_chat(&settings) {
         return plain(StatusCode::BAD_REQUEST, sentence);
     }
-    match decision_settings::save_chat(routes.state.session_manager(), &session_id, settings).await
+    // One sample of the master switch; the check only after the proof.
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    let checked = match checked_session(&routes.state, &session, enforced).await {
+        Ok(checked) => checked,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    match biorouter::decision::save_chat_checked(
+        routes.service,
+        routes.state.session_manager(),
+        &checked,
+        settings,
+    )
+    .await
     {
         Ok(stored) => Json(DecisionChatResponse {
             settings: Some(stored),
         })
         .into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(error) => save_error_response(error),
     }
 }
 
-/// The routes over the process's decision service.
-pub fn routes(state: Arc<AppState>) -> Router {
-    routes_with_service(state, biorouter::decision::global())
+// ─── The person's phase-gate controls ───
+
+#[utoipa::path(
+    put,
+    path = "/sessions/{session_id}/phase-gates/{phase_id}",
+    // Workspace control: what may stop delegated work. The CLI parity gate
+    // pairs it with `biorouter session gates set`.
+    tag = "workspace",
+    params(
+        ("session_id" = String, Path, description = "The chat whose plan holds the phase"),
+        ("phase_id" = String, Path, description = "The phase to gate")
+    ),
+    request_body = PhaseGateSpec,
+    responses(
+        (status = 200, description = "The gate is the person's now and its attempts start over; \
+                                      the plan as this caller may see it", body = PhaseGateResponse),
+        (status = 400, description = "Invalid session or phase id, or a gate that could not be \
+                                      read or is invalid; the body is the sentence that says why \
+                                      (plain text)"),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused: the named chat is out of this caller's reach (the \
+                                      same refusal, word for word, that `GET \
+                                      /sessions/{session_id}` gives), or, on a daemon that holds \
+                                      a user-action key, the request carried no proof it came \
+                                      from the person at the keyboard, or, on a daemon that \
+                                      holds none, the chat is a subagent's (body = plain text)"),
+        (status = 404, description = "No such chat, the chat has no orchestration plan, or the \
+                                      plan has no such phase (body = plain text)"),
+        (status = 409, description = "The phase is completed or skipped, or the plan could not be \
+                                      read or written. Nothing was changed (body = plain text)"),
+        (status = 422, description = "The gate's decision model cannot answer it in this chat \
+                                      now: not available, cannot take yes/no questions, will not \
+                                      load, or refused by the chat's privacy tier, an \
+                                      institution or a Crew grant. Nothing was changed (body = \
+                                      plain text)"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(("api_key" = []))
+)]
+pub async fn put_phase_gate(
+    State(routes): State<DecisionRoutes>,
+    Path((session_id, phase_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let session = match reach_chat(&routes.state, &session_id, &headers).await {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
+    if let Some(refusal) = write_refusal_with(&session, &headers, PHASE_GATES_NEED_USER) {
+        return refusal;
+    }
+    if !valid_phase_id(&phase_id) {
+        return plain(StatusCode::BAD_REQUEST, NOT_A_PHASE_ID);
+    }
+    let spec: PhaseGateSpec = match read_settings_body(&body, "phase gate") {
+        Ok(spec) => spec,
+        Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
+    };
+    let gate = match orchestration_plan::validate_person_gate(&phase_id, &spec) {
+        Ok(gate) => gate,
+        Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
+    };
+    // One sample of the master switch; the model check only after the proof,
+    // sending nothing of the chat. A phase gate reads the chat it belongs
+    // to, at that chat's tier.
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    let checked = match checked_session(&routes.state, &session, enforced).await {
+        Ok(checked) => checked,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if let Err(error) = routes
+        .service
+        .check_model_use(
+            &checked,
+            gate.model.as_ref(),
+            &gate.questions,
+            ModelSource::Setting,
+        )
+        .await
+    {
+        return plain(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "Phase \"{phase_id}\"'s gate cannot be answered in this chat: {}. Nothing was \
+                 changed.",
+                without_full_stop(&error.to_string())
+            ),
+        );
+    }
+    let written = orchestration_plan::person_set_gate(
+        routes.state.session_manager(),
+        &session_id,
+        &phase_id,
+        gate,
+    )
+    .await;
+    gate_response(&routes.state, &session_id, &headers, written).await
 }
 
-/// The routes over a given decision service (tests hand in one over a fake
-/// source).
-pub fn routes_with_service(state: Arc<AppState>, service: &'static DecisionService) -> Router {
+#[utoipa::path(
+    delete,
+    path = "/sessions/{session_id}/phase-gates/{phase_id}",
+    tag = "workspace",
+    params(
+        ("session_id" = String, Path, description = "The chat whose plan holds the phase"),
+        ("phase_id" = String, Path, description = "The phase whose gate to remove")
+    ),
+    responses(
+        (status = 200, description = "The gate is removed and the phases after it are released; \
+                                      the plan as this caller may see it", body = PhaseGateResponse),
+        (status = 400, description = "Invalid session or phase id (body = plain text)"),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused: the named chat is out of this caller's reach (the \
+                                      same refusal, word for word, that `GET \
+                                      /sessions/{session_id}` gives), or, on a daemon that holds \
+                                      a user-action key, the request carried no proof it came \
+                                      from the person at the keyboard, or, on a daemon that \
+                                      holds none, the chat is a subagent's (body = plain text)"),
+        (status = 404, description = "No such chat, the chat has no orchestration plan, or the \
+                                      plan has no such phase (body = plain text)"),
+        (status = 409, description = "The phase is completed or skipped, it has no gate, or the \
+                                      plan could not be read or written. Nothing was changed \
+                                      (body = plain text)"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(("api_key" = []))
+)]
+pub async fn delete_phase_gate(
+    State(routes): State<DecisionRoutes>,
+    Path((session_id, phase_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let session = match reach_chat(&routes.state, &session_id, &headers).await {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
+    if let Some(refusal) = write_refusal_with(&session, &headers, PHASE_GATES_NEED_USER) {
+        return refusal;
+    }
+    if !valid_phase_id(&phase_id) {
+        return plain(StatusCode::BAD_REQUEST, NOT_A_PHASE_ID);
+    }
+    let written = orchestration_plan::person_remove_gate(
+        routes.state.session_manager(),
+        &session_id,
+        &phase_id,
+    )
+    .await;
+    gate_response(&routes.state, &session_id, &headers, written).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/sessions/{session_id}/phase-gates/{phase_id}/decision",
+    tag = "workspace",
+    params(
+        ("session_id" = String, Path, description = "The chat whose plan holds the phase"),
+        ("phase_id" = String, Path, description = "The gated phase to decide")
+    ),
+    request_body = PhaseGateDecisionRequest,
+    responses(
+        (status = 200, description = "What the decision did: `applied` is false when a pass or \
+                                      skip stands until the phase's working subagents finish; \
+                                      the plan as this caller may see it", body = PhaseGateResponse),
+        (status = 400, description = "Invalid session or phase id, or a decision that could not \
+                                      be read (body = plain text)"),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused: the named chat is out of this caller's reach (the \
+                                      same refusal, word for word, that `GET \
+                                      /sessions/{session_id}` gives), or, on a daemon that holds \
+                                      a user-action key, the request carried no proof it came \
+                                      from the person at the keyboard, or, on a daemon that \
+                                      holds none, the chat is a subagent's (body = plain text)"),
+        (status = 404, description = "No such chat, the chat has no orchestration plan, or the \
+                                      plan has no such phase (body = plain text)"),
+        (status = 409, description = "The phase is completed or skipped, it has no gate, or the \
+                                      plan could not be read or written. Nothing was changed \
+                                      (body = plain text)"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(("api_key" = []))
+)]
+pub async fn decide_phase_gate(
+    State(routes): State<DecisionRoutes>,
+    Path((session_id, phase_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let session = match reach_chat(&routes.state, &session_id, &headers).await {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
+    if let Some(refusal) = write_refusal_with(&session, &headers, PHASE_GATES_NEED_USER) {
+        return refusal;
+    }
+    if !valid_phase_id(&phase_id) {
+        return plain(StatusCode::BAD_REQUEST, NOT_A_PHASE_ID);
+    }
+    let request: PhaseGateDecisionRequest = match read_settings_body(&body, "gate decision") {
+        Ok(request) => request,
+        Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
+    };
+    let written = orchestration_plan::person_gate_decision(
+        routes.state.session_manager(),
+        &session_id,
+        &phase_id,
+        request.decision,
+    )
+    .await;
+    gate_response(&routes.state, &session_id, &headers, written).await
+}
+
+// ─── Installing a local decision model ───
+
+#[utoipa::path(
+    get,
+    path = "/decisions/models/install",
+    tag = "decisions",
+    responses(
+        (status = 200, description = "The decision models Biorouter installs, whether each is \
+                                      installed, where the configured Ollama is, and the current \
+                                      or last install", body = DecisionInstallStatus),
+        (status = 401, description = "Unauthorized - Invalid or missing API key")
+    ),
+    security(("api_key" = []))
+)]
+pub async fn get_decision_install(State(routes): State<DecisionRoutes>) -> Response {
+    Json(DecisionInstallStatus::from(
+        routes.installer.snapshot().await,
+    ))
+    .into_response()
+}
+
+#[utoipa::path(
+    post,
+    path = "/decisions/models/install",
+    tag = "decisions",
+    request_body = DecisionInstallRequest,
+    responses(
+        (status = 202, description = "The install started, or the same model was installing \
+                                      already; poll `GET /decisions/models/install` for its \
+                                      progress", body = DecisionInstallStatus),
+        (status = 400, description = "The model is not one Biorouter installs, or the request \
+                                      could not be read (body = plain text)"),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 409, description = "Another model is still installing, or OLLAMA_HOST names an \
+                                      Ollama on another computer or cannot be read. Nothing was \
+                                      sent to another computer (body = plain text)"),
+        (status = 503, description = "Ollama is not running on this computer (body = plain text)")
+    ),
+    security(("api_key" = []))
+)]
+pub async fn post_decision_install(State(routes): State<DecisionRoutes>, body: Bytes) -> Response {
+    // An empty body installs the default model.
+    let request: DecisionInstallRequest = if body.iter().all(u8::is_ascii_whitespace) {
+        DecisionInstallRequest::default()
+    } else {
+        match read_settings_body(&body, "install request") {
+            Ok(request) => request,
+            Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
+        }
+    };
+    let model = request.model.as_deref().unwrap_or(DEFAULT_INSTALL_MODEL);
+    if let Err(refusal) = routes.installer.start(model).await {
+        let status = StatusCode::from_u16(refusal.kind.http_status())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return plain(status, refusal.message);
+    }
+    (
+        StatusCode::ACCEPTED,
+        Json(DecisionInstallStatus::from(
+            routes.installer.snapshot().await,
+        )),
+    )
+        .into_response()
+}
+
+/// The routes over the process's decision service and installer.
+pub fn routes(state: Arc<AppState>) -> Router {
+    routes_with_service(
+        state,
+        biorouter::decision::global(),
+        biorouter::providers::decision::install::installer(),
+    )
+}
+
+/// The routes over a given decision service and installer (tests hand in a
+/// service over a fake source and an installer over a mock Ollama).
+pub fn routes_with_service(
+    state: Arc<AppState>,
+    service: &'static DecisionService,
+    installer: &'static DecisionInstaller,
+) -> Router {
     Router::new()
         .route("/decisions/models", get(list_decision_models))
+        .route(
+            "/decisions/models/install",
+            get(get_decision_install).post(post_decision_install),
+        )
         .route("/decisions/decide", post(decide))
         .route(
             "/sessions/{session_id}/decisions",
@@ -1070,7 +1853,19 @@ pub fn routes_with_service(state: Arc<AppState>, service: &'static DecisionServi
             "/sessions/{session_id}/decision-chat",
             get(get_decision_chat).put(put_decision_chat),
         )
-        .with_state(DecisionRoutes { state, service })
+        .route(
+            "/sessions/{session_id}/phase-gates/{phase_id}",
+            put(put_phase_gate).delete(delete_phase_gate),
+        )
+        .route(
+            "/sessions/{session_id}/phase-gates/{phase_id}/decision",
+            post(decide_phase_gate),
+        )
+        .with_state(DecisionRoutes {
+            state,
+            service,
+            installer,
+        })
 }
 
 #[cfg(test)]

@@ -414,7 +414,7 @@
           "workspace"
         ],
         "summary": "Hard cancel: trip the cancellation token of the turn in flight for this",
-        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove. When `expected_turn_id` names an older generation and a\nsuccessor is active, the route instead fails closed with 409 and leaves that\nsuccessor untouched.",
+        "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove. When `expected_turn_id` names an older generation and a\nsuccessor is active, the route instead fails closed with 409 and leaves that\nsuccessor untouched.\n\nA plain Stop also stops the subagents the chat started that still have\nwork in flight, and names them in `stopped_subagents`; Stop-and-Send\n(`continuation_pending`) leaves them running (see `stop_the_chats_subagents`).",
         "operationId": "cancel_turn",
         "requestBody": {
           "content": {
@@ -928,7 +928,7 @@
         },
         "responses": {
           "200": {
-            "description": "Agent started successfully",
+            "description": "Agent started successfully. A workflow that declares `decision_settings` or an `orchestration_plan` has had them applied to the new chat before anything was sent in it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -938,7 +938,7 @@
             }
           },
           "400": {
-            "description": "Bad request",
+            "description": "Bad request. For a workflow that declares monitors or a phase plan, also: those blocks are malformed, and the message reads \"The workflow was not started: <sentence>\". No chat is left behind.",
             "content": {
               "application/json": {
                 "schema": {
@@ -950,8 +950,28 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "The workflow declares monitors or a phase plan, which only the person may apply to a chat, and this daemon holds a user-action key the request did not prove (or the desktop daemon's key never arrived). No chat was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "The configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.",
+            "description": "The workflow declares a phase plan, which runs only in the Autonomous approval mode, and Biorouter is in another (the message reads \"The workflow was not started: <sentence>\" and the chat was discarded). Or: the configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The workflow's monitors or phase gates are valid but cannot run for this chat: a decision model it may not use (its privacy tier, an institution, a Crew grant), one that is not there, or one that cannot take the question. The message reads \"The workflow was not started: <sentence>\", and the chat was discarded.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5872,6 +5892,79 @@
         ]
       }
     },
+    "/decisions/models/install": {
+      "get": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "get_decision_install",
+        "responses": {
+          "200": {
+            "description": "The decision models Biorouter installs, whether each is installed, where the configured Ollama is, and the current or last install",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionInstallStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "decisions"
+        ],
+        "operationId": "post_decision_install",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionInstallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The install started, or the same model was installing already; poll `GET /decisions/models/install` for its progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionInstallStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The model is not one Biorouter installs, or the request could not be read (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "409": {
+            "description": "Another model is still installing, or OLLAMA_HOST names an Ollama on another computer or cannot be read. Nothing was sent to another computer (body = plain text)"
+          },
+          "503": {
+            "description": "Ollama is not running on this computer (body = plain text)"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/diagnostics/{session_id}": {
       "get": {
         "tags": [
@@ -8632,6 +8725,9 @@
           "404": {
             "description": "Session not found (body = plain text)"
           },
+          "422": {
+            "description": "The decision model this decision chat is bound to cannot answer this question for this chat now: it is not available, cannot take this kind of question, or the chat's privacy tier, an institution or a Crew grant refuses it. Nothing was saved (body = plain text)"
+          },
           "500": {
             "description": "Internal server error"
           }
@@ -8741,6 +8837,9 @@
           },
           "404": {
             "description": "Session not found (body = plain text)"
+          },
+          "422": {
+            "description": "What this save turns on could not run for this chat now: the model is not available, cannot take the question, or the chat's privacy tier, an institution or a Crew grant refuses it. Nothing was saved (body = plain text)"
           },
           "500": {
             "description": "Internal server error"
@@ -9413,6 +9512,216 @@
           },
           "404": {
             "description": "Session not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/sessions/{session_id}/phase-gates/{phase_id}": {
+      "put": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "put_phase_gate",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose plan holds the phase",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "phase_id",
+            "in": "path",
+            "description": "The phase to gate",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhaseGateSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The gate is the person's now and its attempts start over; the plan as this caller may see it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhaseGateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session or phase id, or a gate that could not be read or is invalid; the body is the sentence that says why (plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)"
+          },
+          "404": {
+            "description": "No such chat, the chat has no orchestration plan, or the plan has no such phase (body = plain text)"
+          },
+          "409": {
+            "description": "The phase is completed or skipped, or the plan could not be read or written. Nothing was changed (body = plain text)"
+          },
+          "422": {
+            "description": "The gate's decision model cannot answer it in this chat now: not available, cannot take yes/no questions, will not load, or refused by the chat's privacy tier, an institution or a Crew grant. Nothing was changed (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "delete_phase_gate",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose plan holds the phase",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "phase_id",
+            "in": "path",
+            "description": "The phase whose gate to remove",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The gate is removed and the phases after it are released; the plan as this caller may see it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhaseGateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session or phase id (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)"
+          },
+          "404": {
+            "description": "No such chat, the chat has no orchestration plan, or the plan has no such phase (body = plain text)"
+          },
+          "409": {
+            "description": "The phase is completed or skipped, it has no gate, or the plan could not be read or written. Nothing was changed (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/sessions/{session_id}/phase-gates/{phase_id}/decision": {
+      "post": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "decide_phase_gate",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose plan holds the phase",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "phase_id",
+            "in": "path",
+            "description": "The gated phase to decide",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhaseGateDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the decision did: `applied` is false when a pass or skip stands until the phase's working subagents finish; the plan as this caller may see it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhaseGateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session or phase id, or a decision that could not be read (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)"
+          },
+          "404": {
+            "description": "No such chat, the chat has no orchestration plan, or the plan has no such phase (body = plain text)"
+          },
+          "409": {
+            "description": "The phase is completed or skipped, it has no gate, or the plan could not be read or written. Nothing was changed (body = plain text)"
           },
           "500": {
             "description": "Internal server error"
@@ -11436,6 +11745,13 @@
             },
             "description": "The rows the cancelled turn's Stop wrote to the transcript, in stored\norder: the prose its reply had streamed (text only), any steers it had\naccepted, and the \"Stopped.\" notice it now ends on (item 7). These are\nexactly what a reload of the chat will show, so the caller can make its\nview agree without re-reading the conversation — the notice's own frame\non the turn stream may arrive after a client has stopped listening.\n\nPresent only when this request cancelled a running turn AND waited for it\nto settle (`wait_for_idle` or `continuation_pending`); omitted otherwise."
           },
+          "stopped_subagents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The session ids of the subagents this chat started that this Stop also\nstopped, oldest first: every one with work in flight (its delegated run,\nrunning or still queued, or a later turn), whether or not the chat itself\nhad a turn running. Each one ends `incomplete` and says the person\nstopped the chat that started it.\n\nAlways empty for Stop-and-Send (`continuation_pending`), which leaves\nthem running because the chat keeps supervising them in the turn that\nfollows. Omitted when empty."
+          },
           "turn_id": {
             "type": "string",
             "description": "The id of the turn that was cancelled, when there was one.",
@@ -11900,6 +12216,14 @@
           "chunkId"
         ],
         "properties": {
+          "billedUsage": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionUsage"
+              }
+            ],
+            "nullable": true
+          },
           "chunkId": {
             "type": "string"
           },
@@ -13635,6 +13959,96 @@
           }
         }
       },
+      "DecisionInstallJob": {
+        "type": "object",
+        "description": "The install that is running, or the last one, which is kept until the\nnext one starts.",
+        "required": [
+          "model",
+          "state",
+          "completedBytes",
+          "totalBytes"
+        ],
+        "properties": {
+          "completedBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes downloaded so far, over every layer.",
+            "minimum": 0
+          },
+          "error": {
+            "type": "string",
+            "description": "Why the install failed, once it has.",
+            "nullable": true
+          },
+          "model": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/DecisionInstallState"
+          },
+          "status": {
+            "type": "string",
+            "description": "Ollama's last step, in its words.",
+            "nullable": true
+          },
+          "totalBytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes to download, over every layer named so far. It grows as Ollama\nnames more layers.",
+            "minimum": 0
+          }
+        }
+      },
+      "DecisionInstallRequest": {
+        "type": "object",
+        "description": "`POST /decisions/models/install`'s body. An empty body installs the\ndefault model.",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "One of the offered models (`tev1:0.8b`, `clef-flash:latest`); left out,\n`tev1:0.8b`.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "DecisionInstallState": {
+        "type": "string",
+        "description": "Where an install stands.",
+        "enum": [
+          "downloading",
+          "verifying",
+          "installed",
+          "failed"
+        ]
+      },
+      "DecisionInstallStatus": {
+        "type": "object",
+        "description": "`GET /decisions/models/install`: what can be installed, where, and how the\ncurrent or last install is going.",
+        "required": [
+          "offers",
+          "ollama"
+        ],
+        "properties": {
+          "job": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionInstallJob"
+              }
+            ],
+            "nullable": true
+          },
+          "offers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstallableDecisionModelInfo"
+            },
+            "description": "The models Biorouter installs, the default first."
+          },
+          "ollama": {
+            "$ref": "#/components/schemas/OllamaPlaceInfo"
+          }
+        }
+      },
       "DecisionKind": {
         "oneOf": [
           {
@@ -15334,6 +15748,15 @@
           }
         }
       },
+      "GateOwner": {
+        "type": "string",
+        "description": "Who set a phase's gate.",
+        "enum": [
+          "agent",
+          "person",
+          "workflow"
+        ]
+      },
       "GetToolsQuery": {
         "type": "object",
         "required": [
@@ -16073,6 +16496,43 @@
           "sessionId": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "InstallableDecisionModelInfo": {
+        "type": "object",
+        "description": "One decision model Biorouter installs into the Ollama on this computer.",
+        "required": [
+          "model",
+          "displayName",
+          "approxSize",
+          "note",
+          "isDefault",
+          "installed"
+        ],
+        "properties": {
+          "approxSize": {
+            "type": "string",
+            "description": "The download, roughly (`about 1.5 GB`)."
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "installed": {
+            "type": "boolean",
+            "description": "Listed already by the configured Ollama on this computer as a\ndecision model it loads. Never asked of an Ollama elsewhere."
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "The one installed when a request names none."
+          },
+          "model": {
+            "type": "string",
+            "description": "The name Ollama and the model list know it by (`tev1:0.8b`)."
+          },
+          "note": {
+            "type": "string",
+            "description": "One phrase on what it is for."
           }
         }
       },
@@ -18308,11 +18768,18 @@
           "action": {
             "$ref": "#/components/schemas/MonitorAction"
           },
+          "applyToSubagents": {
+            "type": "boolean",
+            "description": "A person's monitor that is copied onto every subagent this chat\nstarts, and onto the ones running when it is saved."
+          },
           "consecutive": {
             "type": "integer",
             "format": "int32",
-            "description": "Evaluations in a row at or above the threshold before it fires (1..5).",
+            "description": "Evaluations in a row on its firing side before it fires (1..5).",
             "minimum": 0
+          },
+          "direction": {
+            "$ref": "#/components/schemas/MonitorDirection"
           },
           "enabled": {
             "type": "boolean"
@@ -18320,6 +18787,11 @@
           "id": {
             "type": "string",
             "description": "Slug, unique within the chat."
+          },
+          "inheritedFrom": {
+            "type": "string",
+            "description": "For a copy of a person's monitor: the chat it was copied from, whose\nmonitor is set to also watch the subagents it starts. The copy follows\nthat monitor while this subagent runs.",
+            "nullable": true
           },
           "maxEvalsPerTurn": {
             "type": "integer",
@@ -18350,16 +18822,30 @@
           "question": {
             "$ref": "#/components/schemas/Question"
           },
+          "rearmAbove": {
+            "type": "number",
+            "format": "double",
+            "description": "For a `below` monitor, the counterpart of `rearmBelow`: after firing,\nre-arm only once P rises to this or above (threshold..1). A `stop`\nmonitor without it stops every turn in which its answer holds; with it\nthe monitor stops once and stays quiet until P reaches it.",
+            "nullable": true
+          },
           "rearmBelow": {
             "type": "number",
             "format": "double",
-            "description": "After firing, re-arm only once P drops below this.",
+            "description": "For a monitor that fires at or above its threshold: after firing,\nre-arm only once P drops below this (0..threshold). A `below` monitor\nsets `rearmAbove` instead.\n\nFor a `stop` monitor it also decides what later turns see. Without it\na stop monitor never latches: it stops every turn in which its answer\nholds, so the person who carries on is stopped again at the first\ncheck that still holds. With it the monitor stops once and stays\nquiet until P falls below it. A `notify` or `steer` monitor re-arms\nhere, or at its threshold when it is not set.",
+            "nullable": true
+          },
+          "setBy": {
+            "$ref": "#/components/schemas/MonitorOwner"
+          },
+          "setBySession": {
+            "type": "string",
+            "description": "For a monitor an agent set: the chat whose agent set it, which is the\nchat that started this subagent.",
             "nullable": true
           },
           "threshold": {
             "type": "number",
             "format": "double",
-            "description": "Fires when P(wanted answer) is at least this (0..1)."
+            "description": "The probability the monitor compares P(wanted answer) with: above 0\nand at most 1. It fires at or above it, or below it when `direction`\nis `below`."
           },
           "timing": {
             "$ref": "#/components/schemas/MonitorTiming"
@@ -18370,12 +18856,28 @@
         },
         "additionalProperties": false
       },
+      "MonitorDirection": {
+        "type": "string",
+        "description": "Which side of its threshold a monitor fires on.",
+        "enum": [
+          "at_or_above",
+          "below"
+        ]
+      },
       "MonitorErrorPolicy": {
         "type": "string",
         "description": "What a monitor does when its decision call fails.",
         "enum": [
           "notify",
           "pause"
+        ]
+      },
+      "MonitorOwner": {
+        "type": "string",
+        "description": "Who set a monitor.",
+        "enum": [
+          "person",
+          "agent"
         ]
       },
       "MonitorTiming": {
@@ -18686,6 +19188,43 @@
             "minimum": 0
           }
         }
+      },
+      "OllamaPlaceInfo": {
+        "type": "object",
+        "description": "The configured Ollama, as the install status reports it.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "baseUrl": {
+            "type": "string",
+            "description": "`OLLAMA_HOST` resolved, or `null` when it does not resolve.",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "description": "Why nothing can be installed there now, as a sentence to show, or\n`null` while Ollama runs on this computer.",
+            "nullable": true
+          },
+          "state": {
+            "$ref": "#/components/schemas/OllamaPlaceState"
+          },
+          "version": {
+            "type": "string",
+            "description": "Ollama's version while it runs here.",
+            "nullable": true
+          }
+        }
+      },
+      "OllamaPlaceState": {
+        "type": "string",
+        "description": "Where the configured Ollama (`OLLAMA_HOST`) is, as far as installing into\nit goes.",
+        "enum": [
+          "running",
+          "not_running",
+          "not_this_computer",
+          "invalid_host"
+        ]
       },
       "OllamaReadiness": {
         "type": "object",
@@ -19043,6 +19582,23 @@
           }
         }
       },
+      "PersonGateAction": {
+        "type": "string",
+        "description": "A person's decision on a gate that stands (or closed the phase).",
+        "enum": [
+          "pass",
+          "skip"
+        ]
+      },
+      "PersonGateChoice": {
+        "type": "string",
+        "description": "What a person may decide about a gate ([`person_gate_decision`]): pass or\nskip the phase without asking it, or give it its attempts again.",
+        "enum": [
+          "pass",
+          "skip",
+          "retry"
+        ]
+      },
       "PhaseCounts": {
         "type": "object",
         "description": "Per-phase tallies, derived from the roster at read time.",
@@ -19091,6 +19647,45 @@
           }
         }
       },
+      "PhaseGateDecisionRequest": {
+        "type": "object",
+        "description": "A person's decision about a phase's gate.",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/PersonGateChoice"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PhaseGateResponse": {
+        "type": "object",
+        "description": "What a person's phase-gate write did, and the chat's plan after it.",
+        "required": [
+          "message",
+          "applied"
+        ],
+        "properties": {
+          "applied": {
+            "type": "boolean",
+            "description": "`false` when a pass or skip was recorded but cannot close the phase\nyet: it stands until the phase's working subagents finish and the\nagent completes the phase. Always `true` for a set, a removal or a\nretry."
+          },
+          "message": {
+            "type": "string",
+            "description": "The sentence the person reads: what changed and what happens next."
+          },
+          "plan": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OrchestrationSnapshot"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
       "PhaseGateSnapshot": {
         "type": "object",
         "description": "A phase gate as surfaces draw it.",
@@ -19102,13 +19697,29 @@
           "blocked"
         ],
         "properties": {
+          "allowUncalibrated": {
+            "type": "boolean"
+          },
           "attempts": {
             "type": "integer",
             "format": "int32",
             "minimum": 0
           },
           "blocked": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "The open phase is blocked by its gate: every attempt failed, or it\ncould not be evaluated too many times in a row. Never set once the\nphase is completed or skipped."
+          },
+          "holds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of the phases this gate holds now."
+          },
+          "lastError": {
+            "type": "string",
+            "description": "Why the last evaluation decided nothing, when it did not.",
+            "nullable": true
           },
           "lastMinP": {
             "type": "number",
@@ -19126,9 +19737,42 @@
             "format": "int32",
             "minimum": 0
           },
+          "model": {
+            "type": "string",
+            "description": "The decision model the gate names, as `provider/model`; none means\nthe chat's default decision model, else the configured one.",
+            "nullable": true
+          },
+          "needsPerson": {
+            "type": "boolean",
+            "description": "The open phase is stuck and waits for the person's attention: its gate\nblocked it, or it was marked blocked. Only a gate that failed every\nattempt leaves the agent no way on; after an error block or its own\nblock the agent may still ask the gate. Never set once the phase is\ncompleted or skipped."
+          },
+          "owner": {
+            "$ref": "#/components/schemas/GateOwner"
+          },
+          "personDecision": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PersonGateAction"
+              }
+            ],
+            "nullable": true
+          },
           "questionCount": {
             "type": "integer",
             "format": "int32",
+            "minimum": 0
+          },
+          "questions": {
+            "type": "object",
+            "description": "Question name -> the question as asked.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "retriesGranted": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many times the person gave the gate its attempts again.",
             "minimum": 0
           },
           "threshold": {
@@ -19136,6 +19780,49 @@
             "format": "double"
           }
         }
+      },
+      "PhaseGateSpec": {
+        "type": "object",
+        "description": "A gate as the person sets it (`PUT /sessions/{id}/phase-gates/{phase}` and\n`biorouter session gates`). Validated by [`validate_person_gate`].",
+        "required": [
+          "questions"
+        ],
+        "properties": {
+          "allowUncalibrated": {
+            "type": "boolean",
+            "description": "Accept verbalized (uncalibrated) probabilities. Default false.",
+            "nullable": true
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Failed evaluations allowed before the phase is blocked, 1 to 5.\nDefault 3.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "model": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionModelRef"
+              }
+            ],
+            "nullable": true
+          },
+          "questions": {
+            "type": "object",
+            "description": "1 to 8 yes/no questions, name to question. Names are letters, digits,\n`_` or `-`.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "threshold": {
+            "type": "number",
+            "format": "double",
+            "description": "The P(yes) every question must reach, from 0 to 1. Default 0.8.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "PhaseKind": {
         "type": "string",
@@ -19202,6 +19889,11 @@
           "handoff": {
             "type": "string",
             "description": "The hand-off summary, truncated for display.",
+            "nullable": true
+          },
+          "heldBy": {
+            "type": "string",
+            "description": "The id of the earlier gated phase this open phase waits for, when one\nholds it.",
             "nullable": true
           },
           "id": {
@@ -23635,6 +24327,17 @@
                 }
               }
             }
+          },
+          {
+            "type": "object",
+            "required": [
+              "below"
+            ],
+            "properties": {
+              "below": {
+                "$ref": "#/components/schemas/Threshold"
+              }
+            }
           }
         ],
         "description": "What \"pass\" means for one question. It acts on the probability of the\nanswer the caller wants, never on [`Decision::confidence`], which measures\nhow concentrated the distribution is and is not the probability of\nanything."
@@ -24614,6 +25317,14 @@
             ],
             "nullable": true
           },
+          "decision_settings": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionSettings"
+              }
+            ],
+            "nullable": true
+          },
           "description": {
             "type": "string"
           },
@@ -24632,6 +25343,14 @@
             "allOf": [
               {
                 "$ref": "#/components/schemas/WorkflowKnowledgeBases"
+              }
+            ],
+            "nullable": true
+          },
+          "orchestration_plan": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowPlan"
               }
             ],
             "nullable": true
@@ -24692,6 +25411,46 @@
             "type": "string"
           }
         }
+      },
+      "WorkflowGate": {
+        "type": "object",
+        "description": "A decision gate a workflow puts on a phase: yes/no questions a decision\nmodel answers from the phase's hand-off and its subagents' results before\nthe phase may complete. Every question must reach the threshold.",
+        "required": [
+          "questions"
+        ],
+        "properties": {
+          "allow_uncalibrated": {
+            "type": "boolean",
+            "description": "Accept verbalized (uncalibrated) probabilities. Default false.",
+            "nullable": true
+          },
+          "max_attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Failed evaluations allowed before the phase is blocked, 1 to 5.\nDefault 3.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "model": {
+            "type": "string",
+            "description": "The decision model as `provider/model`. Left out, the chat's default\ndecision model, else the configured default.",
+            "nullable": true
+          },
+          "questions": {
+            "type": "object",
+            "description": "1 to 8 yes/no questions, name to question. Names are letters, digits,\n`_` or `-`.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "threshold": {
+            "type": "number",
+            "format": "double",
+            "description": "The P(yes) every question must reach, from 0 to 1. Default 0.8.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "WorkflowKnowledgeBases": {
         "type": "object",
@@ -24792,6 +25551,85 @@
           "optional",
           "user_prompt"
         ]
+      },
+      "WorkflowPhase": {
+        "type": "object",
+        "description": "One phase of a [`WorkflowPlan`]. The same fields as one phase of\n`workspace_orchestrate action:\"plan\"`.",
+        "required": [
+          "id",
+          "title"
+        ],
+        "properties": {
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of EARLIER phases whose hand-offs this phase's subagents receive.\nEmpty means every earlier phase that has completed."
+          },
+          "gate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowGate"
+              }
+            ],
+            "nullable": true
+          },
+          "goal": {
+            "type": "string",
+            "description": "What the phase must achieve (at most 500 characters).",
+            "nullable": true
+          },
+          "id": {
+            "type": "string",
+            "description": "Short slug, unique in the plan: lowercase letters, digits and hyphens,\nat most 40 characters (for example \"research\" or \"verify-api\")."
+          },
+          "kind": {
+            "type": "string",
+            "description": "plan, research, execution, implementation, verification, testing,\nauditing, review, meeting, synthesis or other.",
+            "nullable": true
+          },
+          "monitors": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Monitors (at most 4) every subagent spawned into this phase starts\nwith, as `workspace_orchestrate` takes them.",
+            "nullable": true
+          },
+          "title": {
+            "type": "string",
+            "description": "What the phase is, in a few words (at most 80 characters)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "WorkflowPlan": {
+        "type": "object",
+        "description": "A phase plan as a workflow file declares it: the chat starts with it, and\nthe agent drives it with `workspace_orchestrate`. Every gate it declares\nis owned by the workflow and binds the agent, which cannot change, skip\nor drop it; only the person passes, skips or retries it.",
+        "required": [
+          "title",
+          "phases"
+        ],
+        "properties": {
+          "goal": {
+            "type": "string",
+            "description": "What the plan must achieve (at most 500 characters).",
+            "nullable": true
+          },
+          "phases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowPhase"
+            },
+            "description": "1 to 12 phases, in order."
+          },
+          "title": {
+            "type": "string",
+            "description": "What the plan is for, in a few words (at most 80 characters)."
+          }
+        },
+        "additionalProperties": false
       },
       "WorkflowToYamlRequest": {
         "type": "object",

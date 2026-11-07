@@ -415,6 +415,18 @@ export type CancelTurnResponse = {
      */
     stop_messages?: Array<Message>;
     /**
+     * The session ids of the subagents this chat started that this Stop also
+     * stopped, oldest first: every one with work in flight (its delegated run,
+     * running or still queued, or a later turn), whether or not the chat itself
+     * had a turn running. Each one ends `incomplete` and says the person
+     * stopped the chat that started it.
+     *
+     * Always empty for Stop-and-Send (`continuation_pending`), which leaves
+     * them running because the chat keeps supervising them in the turn that
+     * follows. Omitted when empty.
+     */
+    stopped_subagents?: Array<string>;
+    /**
      * The id of the turn that was cancelled, when there was one.
      */
     turn_id?: string | null;
@@ -693,6 +705,7 @@ export type CheckProviderRequest = {
  * set; a failed chunk never fails the batch.
  */
 export type ChunkOutcome = {
+    billedUsage?: DecisionUsage | null;
     chunkId: string;
     decisions?: Array<Decision> | null;
     error?: string | null;
@@ -1610,6 +1623,62 @@ export type DecisionDetail = {
 };
 
 /**
+ * The install that is running, or the last one, which is kept until the
+ * next one starts.
+ */
+export type DecisionInstallJob = {
+    /**
+     * Bytes downloaded so far, over every layer.
+     */
+    completedBytes: number;
+    /**
+     * Why the install failed, once it has.
+     */
+    error?: string | null;
+    model: string;
+    state: DecisionInstallState;
+    /**
+     * Ollama's last step, in its words.
+     */
+    status?: string | null;
+    /**
+     * Bytes to download, over every layer named so far. It grows as Ollama
+     * names more layers.
+     */
+    totalBytes: number;
+};
+
+/**
+ * `POST /decisions/models/install`'s body. An empty body installs the
+ * default model.
+ */
+export type DecisionInstallRequest = {
+    /**
+     * One of the offered models (`tev1:0.8b`, `clef-flash:latest`); left out,
+     * `tev1:0.8b`.
+     */
+    model?: string | null;
+};
+
+/**
+ * Where an install stands.
+ */
+export type DecisionInstallState = 'downloading' | 'verifying' | 'installed' | 'failed';
+
+/**
+ * `GET /decisions/models/install`: what can be installed, where, and how the
+ * current or last install is going.
+ */
+export type DecisionInstallStatus = {
+    job?: DecisionInstallJob | null;
+    /**
+     * The models Biorouter installs, the default first.
+     */
+    offers: Array<InstallableDecisionModelInfo>;
+    ollama: OllamaPlaceInfo;
+};
+
+/**
  * What kind of answer a question takes.
  *
  * Serialized externally tagged, `{"binary":{}}`, `{"choice":{"options":{...}}}`
@@ -2381,6 +2450,11 @@ export type FrontendToolRequest = {
     };
 };
 
+/**
+ * Who set a phase's gate.
+ */
+export type GateOwner = 'agent' | 'person' | 'workflow';
+
 export type GetToolsQuery = {
     extension_name?: string | null;
     session_id: string;
@@ -2789,6 +2863,34 @@ export type InspectJobResponse = {
     processStartTime?: string | null;
     runningDurationSeconds?: number | null;
     sessionId?: string | null;
+};
+
+/**
+ * One decision model Biorouter installs into the Ollama on this computer.
+ */
+export type InstallableDecisionModelInfo = {
+    /**
+     * The download, roughly (`about 1.5 GB`).
+     */
+    approxSize: string;
+    displayName: string;
+    /**
+     * Listed already by the configured Ollama on this computer as a
+     * decision model it loads. Never asked of an Ollama elsewhere.
+     */
+    installed: boolean;
+    /**
+     * The one installed when a request names none.
+     */
+    isDefault: boolean;
+    /**
+     * The name Ollama and the model list know it by (`tev1:0.8b`).
+     */
+    model: string;
+    /**
+     * One phrase on what it is for.
+     */
+    note: string;
 };
 
 /**
@@ -3945,14 +4047,26 @@ export type MonitorAction = 'stop' | 'notify' | 'steer';
 export type MonitorCriterion = {
     action?: MonitorAction;
     /**
-     * Evaluations in a row at or above the threshold before it fires (1..5).
+     * A person's monitor that is copied onto every subagent this chat
+     * starts, and onto the ones running when it is saved.
+     */
+    applyToSubagents?: boolean;
+    /**
+     * Evaluations in a row on its firing side before it fires (1..5).
      */
     consecutive?: number;
+    direction?: MonitorDirection;
     enabled?: boolean;
     /**
      * Slug, unique within the chat.
      */
     id: string;
+    /**
+     * For a copy of a person's monitor: the chat it was copied from, whose
+     * monitor is set to also watch the subagents it starts. The copy follows
+     * that monitor while this subagent runs.
+     */
+    inheritedFrom?: string | null;
     /**
      * Evaluation cap per turn (at most 200).
      */
@@ -3971,11 +4085,35 @@ export type MonitorCriterion = {
     option?: string | null;
     question: Question;
     /**
-     * After firing, re-arm only once P drops below this.
+     * For a `below` monitor, the counterpart of `rearmBelow`: after firing,
+     * re-arm only once P rises to this or above (threshold..1). A `stop`
+     * monitor without it stops every turn in which its answer holds; with it
+     * the monitor stops once and stays quiet until P reaches it.
+     */
+    rearmAbove?: number | null;
+    /**
+     * For a monitor that fires at or above its threshold: after firing,
+     * re-arm only once P drops below this (0..threshold). A `below` monitor
+     * sets `rearmAbove` instead.
+     *
+     * For a `stop` monitor it also decides what later turns see. Without it
+     * a stop monitor never latches: it stops every turn in which its answer
+     * holds, so the person who carries on is stopped again at the first
+     * check that still holds. With it the monitor stops once and stays
+     * quiet until P falls below it. A `notify` or `steer` monitor re-arms
+     * here, or at its threshold when it is not set.
      */
     rearmBelow?: number | null;
+    setBy?: MonitorOwner;
     /**
-     * Fires when P(wanted answer) is at least this (0..1).
+     * For a monitor an agent set: the chat whose agent set it, which is the
+     * chat that started this subagent.
+     */
+    setBySession?: string | null;
+    /**
+     * The probability the monitor compares P(wanted answer) with: above 0
+     * and at most 1. It fires at or above it, or below it when `direction`
+     * is `below`.
      */
     threshold: number;
     timing?: MonitorTiming;
@@ -3983,9 +4121,19 @@ export type MonitorCriterion = {
 };
 
 /**
+ * Which side of its threshold a monitor fires on.
+ */
+export type MonitorDirection = 'at_or_above' | 'below';
+
+/**
  * What a monitor does when its decision call fails.
  */
 export type MonitorErrorPolicy = 'notify' | 'pause';
+
+/**
+ * Who set a monitor.
+ */
+export type MonitorOwner = 'person' | 'agent';
 
 /**
  * When a monitor is evaluated.
@@ -4131,6 +4279,32 @@ export type OllamaInstalledModel = {
     name: string;
     size?: number | null;
 };
+
+/**
+ * The configured Ollama, as the install status reports it.
+ */
+export type OllamaPlaceInfo = {
+    /**
+     * `OLLAMA_HOST` resolved, or `null` when it does not resolve.
+     */
+    baseUrl?: string | null;
+    /**
+     * Why nothing can be installed there now, as a sentence to show, or
+     * `null` while Ollama runs on this computer.
+     */
+    message?: string | null;
+    state: OllamaPlaceState;
+    /**
+     * Ollama's version while it runs here.
+     */
+    version?: string | null;
+};
+
+/**
+ * Where the configured Ollama (`OLLAMA_HOST`) is, as far as installing into
+ * it goes.
+ */
+export type OllamaPlaceState = 'running' | 'not_running' | 'not_this_computer' | 'invalid_host';
 
 export type OllamaReadiness = {
     base_url: string;
@@ -4329,6 +4503,17 @@ export type PersistedMessage = {
 };
 
 /**
+ * A person's decision on a gate that stands (or closed the phase).
+ */
+export type PersonGateAction = 'pass' | 'skip';
+
+/**
+ * What a person may decide about a gate ([`person_gate_decision`]): pass or
+ * skip the phase without asking it, or give it its attempts again.
+ */
+export type PersonGateChoice = 'pass' | 'skip' | 'retry';
+
+/**
  * Per-phase tallies, derived from the roster at read time.
  */
 export type PhaseCounts = {
@@ -4354,11 +4539,50 @@ export type PhaseCounts = {
 };
 
 /**
+ * A person's decision about a phase's gate.
+ */
+export type PhaseGateDecisionRequest = {
+    decision: PersonGateChoice;
+};
+
+/**
+ * What a person's phase-gate write did, and the chat's plan after it.
+ */
+export type PhaseGateResponse = {
+    /**
+     * `false` when a pass or skip was recorded but cannot close the phase
+     * yet: it stands until the phase's working subagents finish and the
+     * agent completes the phase. Always `true` for a set, a removal or a
+     * retry.
+     */
+    applied: boolean;
+    /**
+     * The sentence the person reads: what changed and what happens next.
+     */
+    message: string;
+    plan?: OrchestrationSnapshot | null;
+};
+
+/**
  * A phase gate as surfaces draw it.
  */
 export type PhaseGateSnapshot = {
+    allowUncalibrated?: boolean;
     attempts: number;
+    /**
+     * The open phase is blocked by its gate: every attempt failed, or it
+     * could not be evaluated too many times in a row. Never set once the
+     * phase is completed or skipped.
+     */
     blocked: boolean;
+    /**
+     * Ids of the phases this gate holds now.
+     */
+    holds?: Array<string>;
+    /**
+     * Why the last evaluation decided nothing, when it did not.
+     */
+    lastError?: string | null;
     /**
      * The lowest P(yes) across the gate's questions at the last evaluation.
      */
@@ -4368,8 +4592,61 @@ export type PhaseGateSnapshot = {
      */
     lastPassed?: boolean | null;
     maxAttempts: number;
+    /**
+     * The decision model the gate names, as `provider/model`; none means
+     * the chat's default decision model, else the configured one.
+     */
+    model?: string | null;
+    /**
+     * The open phase is stuck and waits for the person's attention: its gate
+     * blocked it, or it was marked blocked. Only a gate that failed every
+     * attempt leaves the agent no way on; after an error block or its own
+     * block the agent may still ask the gate. Never set once the phase is
+     * completed or skipped.
+     */
+    needsPerson?: boolean;
+    owner?: GateOwner;
+    personDecision?: PersonGateAction | null;
     questionCount: number;
+    /**
+     * Question name -> the question as asked.
+     */
+    questions?: {
+        [key: string]: string;
+    };
+    /**
+     * How many times the person gave the gate its attempts again.
+     */
+    retriesGranted?: number;
     threshold: number;
+};
+
+/**
+ * A gate as the person sets it (`PUT /sessions/{id}/phase-gates/{phase}` and
+ * `biorouter session gates`). Validated by [`validate_person_gate`].
+ */
+export type PhaseGateSpec = {
+    /**
+     * Accept verbalized (uncalibrated) probabilities. Default false.
+     */
+    allowUncalibrated?: boolean | null;
+    /**
+     * Failed evaluations allowed before the phase is blocked, 1 to 5.
+     * Default 3.
+     */
+    maxAttempts?: number | null;
+    model?: DecisionModelRef | null;
+    /**
+     * 1 to 8 yes/no questions, name to question. Names are letters, digits,
+     * `_` or `-`.
+     */
+    questions: {
+        [key: string]: string;
+    };
+    /**
+     * The P(yes) every question must reach, from 0 to 1. Default 0.8.
+     */
+    threshold?: number | null;
 };
 
 /**
@@ -4391,6 +4668,11 @@ export type PhaseSnapshot = {
      * The hand-off summary, truncated for display.
      */
     handoff?: string | null;
+    /**
+     * The id of the earlier gated phase this open phase waits for, when one
+     * holds it.
+     */
+    heldBy?: string | null;
     id: string;
     kind: PhaseKind;
     startedAt?: string | null;
@@ -6660,6 +6942,8 @@ export type Threshold = {
         level: number;
         p: number;
     };
+} | {
+    below: Threshold;
 };
 
 export type TokenState = {
@@ -7123,10 +7407,12 @@ export type UsageTotals = {
 export type Workflow = {
     activities?: Array<string> | null;
     author?: Author | null;
+    decision_settings?: DecisionSettings | null;
     description: string;
     extensions?: Array<ExtensionConfig> | null;
     instructions?: string | null;
     knowledge_bases?: WorkflowKnowledgeBases | null;
+    orchestration_plan?: WorkflowPlan | null;
     parameters?: Array<WorkflowParameter> | null;
     prompt?: string | null;
     response?: Response | null;
@@ -7136,6 +7422,39 @@ export type Workflow = {
     sub_workflows?: Array<SubWorkflow> | null;
     title: string;
     version?: string;
+};
+
+/**
+ * A decision gate a workflow puts on a phase: yes/no questions a decision
+ * model answers from the phase's hand-off and its subagents' results before
+ * the phase may complete. Every question must reach the threshold.
+ */
+export type WorkflowGate = {
+    /**
+     * Accept verbalized (uncalibrated) probabilities. Default false.
+     */
+    allow_uncalibrated?: boolean | null;
+    /**
+     * Failed evaluations allowed before the phase is blocked, 1 to 5.
+     * Default 3.
+     */
+    max_attempts?: number | null;
+    /**
+     * The decision model as `provider/model`. Left out, the chat's default
+     * decision model, else the configured default.
+     */
+    model?: string | null;
+    /**
+     * 1 to 8 yes/no questions, name to question. Names are letters, digits,
+     * `_` or `-`.
+     */
+    questions: {
+        [key: string]: string;
+    };
+    /**
+     * The P(yes) every question must reach, from 0 to 1. Default 0.8.
+     */
+    threshold?: number | null;
 };
 
 export type WorkflowKnowledgeBases = {
@@ -7168,6 +7487,65 @@ export type WorkflowParameter = {
 export type WorkflowParameterInputType = 'string' | 'number' | 'boolean' | 'date' | 'file' | 'select';
 
 export type WorkflowParameterRequirement = 'required' | 'optional' | 'user_prompt';
+
+/**
+ * One phase of a [`WorkflowPlan`]. The same fields as one phase of
+ * `workspace_orchestrate action:"plan"`.
+ */
+export type WorkflowPhase = {
+    /**
+     * Ids of EARLIER phases whose hand-offs this phase's subagents receive.
+     * Empty means every earlier phase that has completed.
+     */
+    depends_on?: Array<string>;
+    gate?: WorkflowGate | null;
+    /**
+     * What the phase must achieve (at most 500 characters).
+     */
+    goal?: string | null;
+    /**
+     * Short slug, unique in the plan: lowercase letters, digits and hyphens,
+     * at most 40 characters (for example "research" or "verify-api").
+     */
+    id: string;
+    /**
+     * plan, research, execution, implementation, verification, testing,
+     * auditing, review, meeting, synthesis or other.
+     */
+    kind?: string | null;
+    /**
+     * Monitors (at most 4) every subagent spawned into this phase starts
+     * with, as `workspace_orchestrate` takes them.
+     */
+    monitors?: Array<{
+        [key: string]: unknown;
+    }> | null;
+    /**
+     * What the phase is, in a few words (at most 80 characters).
+     */
+    title: string;
+};
+
+/**
+ * A phase plan as a workflow file declares it: the chat starts with it, and
+ * the agent drives it with `workspace_orchestrate`. Every gate it declares
+ * is owned by the workflow and binds the agent, which cannot change, skip
+ * or drop it; only the person passes, skips or retries it.
+ */
+export type WorkflowPlan = {
+    /**
+     * What the plan must achieve (at most 500 characters).
+     */
+    goal?: string | null;
+    /**
+     * 1 to 12 phases, in order.
+     */
+    phases: Array<WorkflowPhase>;
+    /**
+     * What the plan is for, in a few words (at most 80 characters).
+     */
+    title: string;
+};
 
 export type WorkflowToYamlRequest = {
     workflow: Workflow;
@@ -7875,7 +8253,7 @@ export type StartAgentData = {
 
 export type StartAgentErrors = {
     /**
-     * Bad request
+     * Bad request. For a workflow that declares monitors or a phase plan, also: those blocks are malformed, and the message reads "The workflow was not started: <sentence>". No chat is left behind.
      */
     400: ErrorResponse;
     /**
@@ -7883,9 +8261,17 @@ export type StartAgentErrors = {
      */
     401: unknown;
     /**
-     * The configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.
+     * The workflow declares monitors or a phase plan, which only the person may apply to a chat, and this daemon holds a user-action key the request did not prove (or the desktop daemon's key never arrived). No chat was created.
+     */
+    403: ErrorResponse;
+    /**
+     * The workflow declares a phase plan, which runs only in the Autonomous approval mode, and Biorouter is in another (the message reads "The workflow was not started: <sentence>" and the chat was discarded). Or: the configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.
      */
     409: ErrorResponse;
+    /**
+     * The workflow's monitors or phase gates are valid but cannot run for this chat: a decision model it may not use (its privacy tier, an institution, a Crew grant), one that is not there, or one that cannot take the question. The message reads "The workflow was not started: <sentence>", and the chat was discarded.
+     */
+    422: ErrorResponse;
     /**
      * Internal server error
      */
@@ -7896,7 +8282,7 @@ export type StartAgentError = StartAgentErrors[keyof StartAgentErrors];
 
 export type StartAgentResponses = {
     /**
-     * Agent started successfully
+     * Agent started successfully. A workflow that declares `decision_settings` or an `orchestration_plan` has had them applied to the new chat before anything was sent in it.
      */
     200: Session;
 };
@@ -10951,6 +11337,64 @@ export type ListDecisionModelsResponses = {
 
 export type ListDecisionModelsResponse = ListDecisionModelsResponses[keyof ListDecisionModelsResponses];
 
+export type GetDecisionInstallData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/decisions/models/install';
+};
+
+export type GetDecisionInstallErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+};
+
+export type GetDecisionInstallResponses = {
+    /**
+     * The decision models Biorouter installs, whether each is installed, where the configured Ollama is, and the current or last install
+     */
+    200: DecisionInstallStatus;
+};
+
+export type GetDecisionInstallResponse = GetDecisionInstallResponses[keyof GetDecisionInstallResponses];
+
+export type PostDecisionInstallData = {
+    body: DecisionInstallRequest;
+    path?: never;
+    query?: never;
+    url: '/decisions/models/install';
+};
+
+export type PostDecisionInstallErrors = {
+    /**
+     * The model is not one Biorouter installs, or the request could not be read (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Another model is still installing, or OLLAMA_HOST names an Ollama on another computer or cannot be read. Nothing was sent to another computer (body = plain text)
+     */
+    409: unknown;
+    /**
+     * Ollama is not running on this computer (body = plain text)
+     */
+    503: unknown;
+};
+
+export type PostDecisionInstallResponses = {
+    /**
+     * The install started, or the same model was installing already; poll `GET /decisions/models/install` for its progress
+     */
+    202: DecisionInstallStatus;
+};
+
+export type PostDecisionInstallResponse = PostDecisionInstallResponses[keyof PostDecisionInstallResponses];
+
 export type DiagnosticsData = {
     body?: never;
     path: {
@@ -13069,6 +13513,10 @@ export type PutDecisionChatErrors = {
      */
     404: unknown;
     /**
+     * The decision model this decision chat is bound to cannot answer this question for this chat now: it is not available, cannot take this kind of question, or the chat's privacy tier, an institution or a Crew grant refuses it. Nothing was saved (body = plain text)
+     */
+    422: unknown;
+    /**
      * Internal server error
      */
     500: unknown;
@@ -13156,6 +13604,10 @@ export type PutDecisionSettingsErrors = {
      * Session not found (body = plain text)
      */
     404: unknown;
+    /**
+     * What this save turns on could not run for this chat now: the model is not available, cannot take the question, or the chat's privacy tier, an institution or a Crew grant refuses it. Nothing was saved (body = plain text)
+     */
+    422: unknown;
     /**
      * Internal server error
      */
@@ -13653,6 +14105,166 @@ export type UpdateSessionNameResponses = {
      */
     200: unknown;
 };
+
+export type DeletePhaseGateData = {
+    body?: never;
+    path: {
+        /**
+         * The chat whose plan holds the phase
+         */
+        session_id: string;
+        /**
+         * The phase whose gate to remove
+         */
+        phase_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/phase-gates/{phase_id}';
+};
+
+export type DeletePhaseGateErrors = {
+    /**
+     * Invalid session or phase id (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)
+     */
+    403: unknown;
+    /**
+     * No such chat, the chat has no orchestration plan, or the plan has no such phase (body = plain text)
+     */
+    404: unknown;
+    /**
+     * The phase is completed or skipped, it has no gate, or the plan could not be read or written. Nothing was changed (body = plain text)
+     */
+    409: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type DeletePhaseGateResponses = {
+    /**
+     * The gate is removed and the phases after it are released; the plan as this caller may see it
+     */
+    200: PhaseGateResponse;
+};
+
+export type DeletePhaseGateResponse = DeletePhaseGateResponses[keyof DeletePhaseGateResponses];
+
+export type PutPhaseGateData = {
+    body: PhaseGateSpec;
+    path: {
+        /**
+         * The chat whose plan holds the phase
+         */
+        session_id: string;
+        /**
+         * The phase to gate
+         */
+        phase_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/phase-gates/{phase_id}';
+};
+
+export type PutPhaseGateErrors = {
+    /**
+     * Invalid session or phase id, or a gate that could not be read or is invalid; the body is the sentence that says why (plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)
+     */
+    403: unknown;
+    /**
+     * No such chat, the chat has no orchestration plan, or the plan has no such phase (body = plain text)
+     */
+    404: unknown;
+    /**
+     * The phase is completed or skipped, or the plan could not be read or written. Nothing was changed (body = plain text)
+     */
+    409: unknown;
+    /**
+     * The gate's decision model cannot answer it in this chat now: not available, cannot take yes/no questions, will not load, or refused by the chat's privacy tier, an institution or a Crew grant. Nothing was changed (body = plain text)
+     */
+    422: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type PutPhaseGateResponses = {
+    /**
+     * The gate is the person's now and its attempts start over; the plan as this caller may see it
+     */
+    200: PhaseGateResponse;
+};
+
+export type PutPhaseGateResponse = PutPhaseGateResponses[keyof PutPhaseGateResponses];
+
+export type DecidePhaseGateData = {
+    body: PhaseGateDecisionRequest;
+    path: {
+        /**
+         * The chat whose plan holds the phase
+         */
+        session_id: string;
+        /**
+         * The gated phase to decide
+         */
+        phase_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/phase-gates/{phase_id}/decision';
+};
+
+export type DecidePhaseGateErrors = {
+    /**
+     * Invalid session or phase id, or a decision that could not be read (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)
+     */
+    403: unknown;
+    /**
+     * No such chat, the chat has no orchestration plan, or the plan has no such phase (body = plain text)
+     */
+    404: unknown;
+    /**
+     * The phase is completed or skipped, it has no gate, or the plan could not be read or written. Nothing was changed (body = plain text)
+     */
+    409: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type DecidePhaseGateResponses = {
+    /**
+     * What the decision did: `applied` is false when a pass or skip stands until the phase's working subagents finish; the plan as this caller may see it
+     */
+    200: PhaseGateResponse;
+};
+
+export type DecidePhaseGateResponse = DecidePhaseGateResponses[keyof DecidePhaseGateResponses];
 
 export type GetSessionSubagentsData = {
     body?: never;

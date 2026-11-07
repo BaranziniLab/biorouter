@@ -506,6 +506,13 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::decisions::put_decision_settings,
         super::routes::decisions::get_decision_chat,
         super::routes::decisions::put_decision_chat,
+        // The person's controls over a phase's gate, and installing a local
+        // decision model.
+        super::routes::decisions::put_phase_gate,
+        super::routes::decisions::delete_phase_gate,
+        super::routes::decisions::decide_phase_gate,
+        super::routes::decisions::get_decision_install,
+        super::routes::decisions::post_decision_install,
         super::routes::usage::get_usage_report,
         super::routes::usage::get_usage_summary,
         super::routes::reset::preview_reset,
@@ -786,8 +793,17 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::agents::orchestration_plan::PhaseCounts,
         biorouter::agents::orchestration_plan::PhaseKind,
         biorouter::agents::orchestration_plan::PhaseStatus,
-        // A phase's decision gate, as `PhaseSnapshot::gate` names it.
+        // A phase's decision gate, as `PhaseSnapshot::gate` names it, and
+        // the enums its `owner` and `personDecision` fields name.
         biorouter::agents::orchestration_plan::PhaseGateSnapshot,
+        biorouter::agents::orchestration_plan::GateOwner,
+        biorouter::agents::orchestration_plan::PersonGateAction,
+        // `/sessions/{session_id}/phase-gates/{phase_id}`: the gate the
+        // person sets, their decision about it, and what the write did.
+        biorouter::agents::orchestration_plan::PhaseGateSpec,
+        biorouter::agents::orchestration_plan::PersonGateChoice,
+        super::routes::decisions::PhaseGateDecisionRequest,
+        super::routes::decisions::PhaseGateResponse,
         // Decision models (`routes::decisions`): the catalog, an ad hoc
         // decision, one chat's decision log and its decision settings. utoipa
         // 4 collects no nested schema, so every type a field names is here.
@@ -796,6 +812,15 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::decisions::DecideRequest,
         super::routes::decisions::DecideResponse,
         super::routes::decisions::DecisionChatResponse,
+        // `/decisions/models/install`: what can be installed into the Ollama
+        // on this computer, and how the current or last install is going.
+        super::routes::decisions::DecisionInstallStatus,
+        super::routes::decisions::DecisionInstallRequest,
+        super::routes::decisions::InstallableDecisionModelInfo,
+        super::routes::decisions::OllamaPlaceInfo,
+        super::routes::decisions::OllamaPlaceState,
+        super::routes::decisions::DecisionInstallJob,
+        super::routes::decisions::DecisionInstallState,
         biorouter::decision::types::DecisionKind,
         biorouter::decision::types::DecisionKindTag,
         biorouter::decision::types::Threshold,
@@ -829,6 +854,9 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::decision::settings::MonitorAction,
         biorouter::decision::settings::MonitorErrorPolicy,
         biorouter::decision::settings::MonitorWindow,
+        // `MonitorCriterion::direction` and `MonitorCriterion::set_by`.
+        biorouter::decision::settings::MonitorDirection,
+        biorouter::decision::settings::MonitorOwner,
         biorouter::decision::settings::DecisionChatSettings,
         super::routes::reset::ResetCategory,
         super::routes::reset::ResetCounts,
@@ -966,6 +994,12 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::workflow::WorkflowParameterRequirement,
         biorouter::workflow::Response,
         biorouter::workflow::SubWorkflow,
+        // `Workflow::orchestration_plan`: the phase plan a workflow's chat
+        // starts with. (`Workflow::decision_settings` names the
+        // `DecisionSettings` registered above.)
+        biorouter::workflow::supervision::WorkflowPlan,
+        biorouter::workflow::supervision::WorkflowPhase,
+        biorouter::workflow::supervision::WorkflowGate,
         // #113: the canonical skill catalog. utoipa does NOT register nested
         // types transitively, so every one of these has to be named — see the
         // `ProviderAffiliation` note above for what a missing one looks like
@@ -1139,4 +1173,218 @@ pub struct ApiDoc;
 pub fn generate_schema() -> String {
     let api_doc = ApiDoc::openapi();
     serde_json::to_string_pretty(&api_doc).unwrap()
+}
+
+/// The decision-supervision routes and shapes, asserted against the generated
+/// document, because that is what the TypeScript client is built from. utoipa
+/// 4 registers no path and no nested schema by itself: a route missing from
+/// `paths(...)` is simply absent from the client, and a schema missing from
+/// `components(...)` is a `$ref` to nothing, which the generator does not
+/// report.
+#[cfg(test)]
+mod decision_supervision_contract_tests {
+    use serde_json::Value;
+    use std::collections::BTreeSet;
+
+    fn spec() -> Value {
+        serde_json::from_str(&super::generate_schema()).expect("the spec is JSON")
+    }
+
+    /// Every `$ref` under `value`, as the schema name it points at.
+    fn references(value: &Value, found: &mut BTreeSet<String>) {
+        match value {
+            Value::Object(fields) => {
+                if let Some(reference) = fields.get("$ref").and_then(Value::as_str) {
+                    found.insert(reference.to_owned());
+                }
+                fields.values().for_each(|value| references(value, found));
+            }
+            Value::Array(items) => items.iter().for_each(|value| references(value, found)),
+            _ => {}
+        }
+    }
+
+    /// The `$ref`s reachable from `start`, followed through the schemas they
+    /// name. A reference that names no schema is returned as an error.
+    fn resolve_all(spec: &Value, start: &Value) -> Result<BTreeSet<String>, String> {
+        let schemas = &spec["components"]["schemas"];
+        let mut seen = BTreeSet::new();
+        let mut queue = BTreeSet::new();
+        references(start, &mut queue);
+        while let Some(reference) = queue.pop_first() {
+            let Some(name) = reference.strip_prefix("#/components/schemas/") else {
+                return Err(format!("{reference} is not a component reference"));
+            };
+            if !seen.insert(name.to_owned()) {
+                continue;
+            }
+            let schema = &schemas[name];
+            if schema.is_null() {
+                return Err(format!("{reference} names no schema"));
+            }
+            references(schema, &mut queue);
+        }
+        Ok(seen)
+    }
+
+    #[test]
+    fn the_phase_gate_and_install_routes_are_in_the_spec_and_resolve() {
+        let spec = spec();
+        for (path, method, tag, body, answer) in [
+            (
+                "/sessions/{session_id}/phase-gates/{phase_id}",
+                "put",
+                "workspace",
+                Some("PhaseGateSpec"),
+                ("200", "PhaseGateResponse"),
+            ),
+            (
+                "/sessions/{session_id}/phase-gates/{phase_id}",
+                "delete",
+                "workspace",
+                None,
+                ("200", "PhaseGateResponse"),
+            ),
+            (
+                "/sessions/{session_id}/phase-gates/{phase_id}/decision",
+                "post",
+                "workspace",
+                Some("PhaseGateDecisionRequest"),
+                ("200", "PhaseGateResponse"),
+            ),
+            (
+                "/decisions/models/install",
+                "get",
+                "decisions",
+                None,
+                ("200", "DecisionInstallStatus"),
+            ),
+            (
+                "/decisions/models/install",
+                "post",
+                "decisions",
+                Some("DecisionInstallRequest"),
+                ("202", "DecisionInstallStatus"),
+            ),
+        ] {
+            let operation = &spec["paths"][path][method];
+            assert!(
+                operation.is_object(),
+                "{} {path} is not in the spec",
+                method.to_uppercase()
+            );
+            assert_eq!(
+                operation["tags"],
+                serde_json::json!([tag]),
+                "{} {path} has the wrong tag",
+                method.to_uppercase()
+            );
+            if let Some(body) = body {
+                assert_eq!(
+                    operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+                    format!("#/components/schemas/{body}"),
+                    "{} {path} does not take {body}",
+                    method.to_uppercase()
+                );
+            }
+            let (status, schema) = answer;
+            assert_eq!(
+                operation["responses"][status]["content"]["application/json"]["schema"]["$ref"],
+                format!("#/components/schemas/{schema}"),
+                "{} {path} does not answer {status} with {schema}",
+                method.to_uppercase()
+            );
+            if let Err(dangling) = resolve_all(&spec, operation) {
+                panic!("{} {path}: {dangling}", method.to_uppercase());
+            }
+        }
+    }
+
+    #[test]
+    fn the_schemas_the_changed_shapes_name_are_registered() {
+        let spec = spec();
+        // Reached from a field rather than from a route body, so only the
+        // components list puts them in the document.
+        for (owner, name) in [
+            ("MonitorCriterion", "MonitorDirection"),
+            ("MonitorCriterion", "MonitorOwner"),
+            ("PhaseGateSnapshot", "GateOwner"),
+            ("PhaseGateSnapshot", "PersonGateAction"),
+            ("Workflow", "WorkflowPlan"),
+            ("Workflow", "WorkflowPhase"),
+            ("Workflow", "WorkflowGate"),
+            ("Workflow", "DecisionSettings"),
+        ] {
+            let reached = resolve_all(&spec, &spec["components"]["schemas"][owner])
+                .unwrap_or_else(|dangling| panic!("{owner}: {dangling}"));
+            assert!(reached.contains(name), "{owner} does not reach {name}");
+        }
+    }
+
+    #[test]
+    fn a_below_threshold_is_a_reference_to_threshold() {
+        let spec = spec();
+        let below = spec["components"]["schemas"]["Threshold"]["oneOf"]
+            .as_array()
+            .expect("Threshold is a oneOf")
+            .iter()
+            .find_map(|variant| variant["properties"].get("below"))
+            .expect("Threshold has a below variant");
+        assert_eq!(below["$ref"], "#/components/schemas/Threshold");
+    }
+
+    /// Fields an older record or an older daemon leaves out. Each must be in
+    /// the schema and not required, or the generated client makes every
+    /// caller supply it and rejects an answer without it.
+    #[test]
+    fn the_new_fields_are_present_and_optional() {
+        let spec = spec();
+        for (schema, fields) in [
+            ("ChunkOutcome", &["billedUsage"][..]),
+            ("CancelTurnResponse", &["stopped_subagents"][..]),
+            (
+                "MonitorCriterion",
+                &[
+                    "direction",
+                    "rearmAbove",
+                    "setBy",
+                    "setBySession",
+                    "inheritedFrom",
+                    "applyToSubagents",
+                ][..],
+            ),
+            (
+                "PhaseGateSnapshot",
+                &[
+                    "owner",
+                    "questions",
+                    "model",
+                    "allowUncalibrated",
+                    "lastError",
+                    "personDecision",
+                    "retriesGranted",
+                    "needsPerson",
+                    "holds",
+                ][..],
+            ),
+            ("PhaseSnapshot", &["heldBy"][..]),
+            ("Workflow", &["decision_settings", "orchestration_plan"][..]),
+        ] {
+            let schema_value = &spec["components"]["schemas"][schema];
+            let required: BTreeSet<&str> = schema_value["required"]
+                .as_array()
+                .map(|names| names.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            for field in fields {
+                assert!(
+                    schema_value["properties"].get(*field).is_some(),
+                    "{schema}.{field} is not in the spec"
+                );
+                assert!(
+                    !required.contains(field),
+                    "{schema}.{field} is required, so older records and daemons fail the client"
+                );
+            }
+        }
+    }
 }
