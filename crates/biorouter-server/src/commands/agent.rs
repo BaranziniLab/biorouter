@@ -715,6 +715,20 @@ async fn serve(
         }
     }
 
+    // A decision request whose caller stopped waiting (a timed-out monitor, a
+    // dropped HTTP request) still runs on its own task, and its answer is
+    // stored and billed when it comes. No new request arrives now, so give the
+    // ones in flight a few seconds to finish rather than lose their usage.
+    let unsettled =
+        biorouter::decision::settle_late_answers(std::time::Duration::from_secs(5)).await;
+    if unsettled > 0 {
+        tracing::warn!(
+            unsettled,
+            "decision requests were still running at shutdown; if their provider bills them, \
+             that usage is not counted"
+        );
+    }
+
     // Take the llama-server sidecar down with us.
     //
     // The sidecar is a child process owned by a `OnceLock` static, and statics

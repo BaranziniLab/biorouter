@@ -51,6 +51,18 @@
 //! is billed by its provider and counted nowhere here; `biorouter decide`
 //! prints its usage instead.
 //!
+//! A request the provider answered is counted even when nobody was waiting
+//! for the answer any more: its deadline had passed (the row says it timed
+//! out), or its caller went away (a stopped turn, a dropped HTTP request).
+//! The service hands such an answer to [`DecisionSink::record_late`] under
+//! the request's id. That fills the tokens and the latency into the timeout
+//! row already written, or writes the row when none was, and then bills it
+//! under the same `decision:<row id>` key, so a request is billed once
+//! however its answer arrived. A row that already holds tokens is left alone,
+//! and a chat deleted meanwhile stores and bills nothing. An answer that
+//! never arrives (a provider that bills a request it never answers, or a
+//! process that exits first) is not counted.
+//!
 //! The table schema lives with the rest of the session store
 //! (`SessionStorage::create_decisions_table`, migration 21).
 
@@ -262,18 +274,39 @@ pub fn install_global_sink(session_manager: Arc<SessionManager>) {
     super::global().set_sink(Arc::new(SqliteDecisionSink { session_manager }));
 }
 
-/// The 30 columns one row is written with, in bind order. `?2` is the session
-/// id, bound once and read twice: once as the column, once by the existence
-/// check, so a row is never stored for a chat that is gone (or not yet made).
-const INSERT_DECISION: &str = "INSERT INTO decisions (\
-        id, session_id, created_at, origin, origin_id, label, turn_id, batch_id, \
-        chunk_index, chunk_id, provider, model, served_model, tier, adapter, calibrated, \
-        questions_json, decisions_json, outcome, answer, pass_probability, \
-        context_json, context_preview, context_bytes, context_truncated, error, \
-        latency_ms, input_tokens, output_tokens, privacy_enforced) \
-     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-            ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30 \
-      WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?2)";
+/// The 30 columns one row is written with, in bind order, after `INSERT` or
+/// `INSERT OR IGNORE`. `?2` is the session id, bound once and read twice:
+/// once as the column, once by the existence check, so a row is never stored
+/// for a chat that is gone (or not yet made).
+macro_rules! insert_decision_into {
+    () => {
+        "INTO decisions (\
+            id, session_id, created_at, origin, origin_id, label, turn_id, batch_id, \
+            chunk_index, chunk_id, provider, model, served_model, tier, adapter, calibrated, \
+            questions_json, decisions_json, outcome, answer, pass_probability, \
+            context_json, context_preview, context_bytes, context_truncated, error, \
+            latency_ms, input_tokens, output_tokens, privacy_enforced) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
+                ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30 \
+          WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?2)"
+    };
+}
+
+/// One row, refused by the primary key when its id is taken.
+const INSERT_DECISION: &str = concat!("INSERT ", insert_decision_into!());
+
+/// One row for a late answer, when its request wrote none (its caller went
+/// away before the timeout row): a row that exists is left for
+/// [`FILL_LATE_USAGE`].
+const INSERT_DECISION_IF_ABSENT: &str = concat!("INSERT OR IGNORE ", insert_decision_into!());
+
+/// A late answer's tokens, latency and sentence, onto the row its request
+/// wrote without usage (the timeout row). A row that already holds tokens is
+/// left alone, so a second delivery changes nothing.
+const FILL_LATE_USAGE: &str = "UPDATE decisions \
+        SET input_tokens = ?1, output_tokens = ?2, latency_ms = ?3, error = ?4 \
+      WHERE id = ?5 AND session_id = ?6 \
+        AND input_tokens IS NULL AND output_tokens IS NULL";
 
 /// Every column a [`DecisionRecord`] is read from: all but `context_json`,
 /// which only [`get`] reads.
@@ -297,6 +330,48 @@ impl DecisionSink for SqliteDecisionSink {
         };
         self.store(id, entry).await
     }
+
+    /// A late or abandoned answer (see the module's Usage section): its row,
+    /// or its tokens on the row its request already wrote, then its usage,
+    /// billed once under the row's id. Nothing for a chat that is gone.
+    async fn record_late(&self, id: &str, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        let Some(session_id) = entry.session_id.clone() else {
+            return Ok(());
+        };
+        let id = if id.trim().is_empty() {
+            row_id(&entry)
+        } else {
+            id.to_string()
+        };
+        self.insert(INSERT_DECISION_IF_ABSENT, &id, &session_id, &entry)
+            .await?;
+        let pool = self.session_manager.storage().pool().await?;
+        sqlx::query(FILL_LATE_USAGE)
+            .bind(entry.usage.input_tokens)
+            .bind(entry.usage.output_tokens)
+            .bind(entry.latency_ms.and_then(|ms| i64::try_from(ms).ok()))
+            .bind(entry.error.as_deref())
+            .bind(&id)
+            .bind(&session_id)
+            .execute(pool)
+            .await?;
+        // The ledger's own insert is gated on the chat existing and keyed by
+        // the row, so a chat deleted meanwhile bills nothing and a request
+        // billed already (or delivered twice) is not billed again.
+        let Some(usage) = side_usage(&id, &session_id, &entry) else {
+            return Ok(());
+        };
+        self.session_manager
+            .apply_side_usage_event(usage)
+            .await
+            .map(|_| ())
+            .with_context(|| {
+                format!(
+                    "decision {id}'s late answer was logged, but its usage could not be added \
+                     to the usage ledger"
+                )
+            })
+    }
 }
 
 impl SqliteDecisionSink {
@@ -306,11 +381,48 @@ impl SqliteDecisionSink {
             tracing::debug!("an ad hoc decision with no chat is not stored in the decision log");
             return Ok(());
         };
-        let row = StoredRow::from_entry(&entry);
+        let inserted = self
+            .insert(INSERT_DECISION, &id, &session_id, &entry)
+            .await?;
+        if inserted == 0 {
+            tracing::debug!(
+                session_id,
+                "a decision for a chat that no longer exists was not stored"
+            );
+            return Ok(());
+        }
+        // A separate statement after the row, so a billing failure can never
+        // lose the record of what was sent. Its error is returned, and the
+        // service only warns: the decision itself still succeeds.
+        let Some(usage) = side_usage(&id, &session_id, &entry) else {
+            return Ok(());
+        };
+        self.session_manager
+            .apply_side_usage_event(usage)
+            .await
+            .map(|_| ())
+            .with_context(|| {
+                format!(
+                    "decision {id} was logged, but its usage could not be added to the usage \
+                     ledger"
+                )
+            })
+    }
+
+    /// Run `sql` (an insert of `insert_decision_into!`'s shape) for `entry`
+    /// as the row `id` of `session_id`; the rows it inserted.
+    async fn insert(
+        &self,
+        sql: &'static str,
+        id: &str,
+        session_id: &str,
+        entry: &DecisionLogEntry,
+    ) -> anyhow::Result<u64> {
+        let row = StoredRow::from_entry(entry);
         let pool = self.session_manager.storage().pool().await?;
-        let inserted = sqlx::query(INSERT_DECISION)
-            .bind(&id)
-            .bind(&session_id)
+        let inserted = sqlx::query(sql)
+            .bind(id)
+            .bind(session_id)
             .bind(Utc::now().timestamp_millis())
             .bind(sql_enum(&entry.origin))
             .bind(entry.origin_id.as_deref())
@@ -342,29 +454,7 @@ impl SqliteDecisionSink {
             .execute(pool)
             .await?
             .rows_affected();
-        if inserted == 0 {
-            tracing::debug!(
-                session_id,
-                "a decision for a chat that no longer exists was not stored"
-            );
-            return Ok(());
-        }
-        // A separate statement after the row, so a billing failure can never
-        // lose the record of what was sent. Its error is returned, and the
-        // service only warns: the decision itself still succeeds.
-        let Some(usage) = side_usage(&id, &session_id, &entry) else {
-            return Ok(());
-        };
-        self.session_manager
-            .apply_side_usage_event(usage)
-            .await
-            .map(|_| ())
-            .with_context(|| {
-                format!(
-                    "decision {id} was logged, but its usage could not be added to the usage \
-                     ledger"
-                )
-            })
+        Ok(inserted)
     }
 }
 
@@ -2187,6 +2277,139 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "decision:caller-chosen");
         assert_eq!(events[0].5, Some(122));
+    }
+
+    /// What the service hands `record_late`: an error row with the tokens a
+    /// late answer was billed for.
+    fn late_entry(session_id: &str, text: &str) -> DecisionLogEntry {
+        let mut entry = baseten_entry(session_id, DecisionOutcome::Error);
+        entry.usage = DecisionUsage {
+            input_tokens: Some(30),
+            output_tokens: Some(1),
+        };
+        entry.latency_ms = Some(5_000);
+        entry.error = Some(text.to_string());
+        entry
+    }
+
+    /// The decision row as stored: tokens, latency and error.
+    async fn stored_usage(
+        sm: &SessionManager,
+        id: &str,
+    ) -> Vec<(Option<i64>, Option<i64>, Option<i64>, Option<String>)> {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_as(
+            "SELECT input_tokens, output_tokens, latency_ms, error FROM decisions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// A late answer fills its tokens into the timeout row its request wrote
+    /// and bills it once under that row's key, however often it is delivered,
+    /// without touching the chat's activity, gauge or schedule.
+    #[tokio::test]
+    async fn a_late_usage_fills_a_timeout_row_and_bills_once() {
+        let (_dir, sm, id) = store().await;
+        mark_chat(&sm, &id).await;
+        let sink = SqliteDecisionSink {
+            session_manager: Arc::clone(&sm),
+        };
+        let mut timeout = baseten_entry(&id, DecisionOutcome::Error);
+        timeout.usage = DecisionUsage::default();
+        timeout.latency_ms = None;
+        timeout.error = Some("joey-1 did not answer within 2 s. Nothing was decided.".into());
+        sink.record_as("req-late", timeout).await.unwrap();
+        let before = ledger(&sm, &id).await;
+        assert!(before.events.is_empty(), "a timeout row bills nothing");
+
+        let text = "joey-1 did not answer within 2 s. Nothing was decided. It answered after \
+                    5.0 s, too late to use; its tokens are counted in Usage.";
+        sink.record_late("req-late", late_entry(&id, text))
+            .await
+            .unwrap();
+        sink.record_late("req-late", late_entry(&id, "a second delivery"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stored_usage(&sm, "req-late").await,
+            vec![(Some(30), Some(1), Some(5_000), Some(text.to_string()))],
+            "one row, filled once"
+        );
+        let after = ledger(&sm, &id).await;
+        assert_eq!(
+            after.events,
+            vec![(
+                "decision:req-late".to_string(),
+                "baseten_decision".to_string(),
+                "decision-models/baseten-joey-2b-latest".to_string(),
+                Some(30),
+                Some(1),
+                Some(31),
+                "user".to_string(),
+            )],
+            "billed once, under the row's own key"
+        );
+        assert_eq!(after.accumulated, (Some(31), Some(30), Some(1)));
+        assert_eq!(after.gauge, before.gauge);
+        assert_eq!(after.schedule_id, before.schedule_id);
+        assert_eq!(
+            after.updated_at, "2026-01-01 00:00:00",
+            "a late answer is not activity (R-30)"
+        );
+    }
+
+    /// An abandoned request wrote no row; its late answer is stored as one.
+    #[tokio::test]
+    async fn a_late_row_is_stored_when_none_was_written() {
+        let (_dir, sm, id) = store().await;
+        let sink = SqliteDecisionSink {
+            session_manager: Arc::clone(&sm),
+        };
+        let text = "The request was abandoned before joey-1 answered (the turn was stopped or \
+                    the caller went away), so its answer was not used. It answered after 4.0 \
+                    s; its tokens are counted in Usage.";
+        sink.record_late("req-abandoned", late_entry(&id, text))
+            .await
+            .unwrap();
+        let page = list(&sm, &id, &DecisionQuery::default()).await.unwrap();
+        assert_eq!(page.records.len(), 1);
+        let record = &page.records[0];
+        assert_eq!(record.id, "req-abandoned");
+        assert_eq!(record.outcome, DecisionOutcome::Error);
+        assert_eq!(record.error.as_deref(), Some(text));
+        assert_eq!(
+            (record.input_tokens, record.output_tokens),
+            (Some(30), Some(1))
+        );
+        let events = ledger(&sm, &id).await.events;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "decision:req-abandoned");
+    }
+
+    /// A chat deleted before its late answer came stores and bills nothing.
+    #[tokio::test]
+    async fn a_late_write_for_a_deleted_chat_stores_and_bills_nothing() {
+        let (_dir, sm, _id) = store().await;
+        let sink = SqliteDecisionSink {
+            session_manager: Arc::clone(&sm),
+        };
+        sink.record_late("req-gone", late_entry("19990101_1", "late"))
+            .await
+            .unwrap();
+        let pool = sm.storage().pool().await.unwrap();
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM decisions")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_events")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!((rows, events), (0, 0));
     }
 
     #[test]

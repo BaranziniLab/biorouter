@@ -20,7 +20,7 @@
 //! `OllamaProvider::tier` applies.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -530,6 +530,34 @@ pub async fn discover_ollama(base_url: &Url) -> Vec<DecisionModelEntry> {
     entries
 }
 
+/// Forget the last discovery, so the next listing asks the server about every
+/// pulled model again. A pull usually changes what `/api/tags` lists, which
+/// already misses the cache; this covers the rest: a model whose `/api/show`
+/// did not answer during the last discovery was left out, and would stay out
+/// for up to [`DISCOVERY_TTL`] while the server lists the same copies. An
+/// install calls it once its model is verified, so the model lists at once.
+pub fn forget_discovery() {
+    *DISCOVERED.lock().unwrap_or_else(PoisonError::into_inner) = None;
+}
+
+/// Why no local decision model could be listed from the Ollama server at
+/// `base_url`: it gave no listing at `/api/tags` (not running, not reachable
+/// or not answering as Ollama does), so a model installed there cannot be
+/// seen. `None` when it answers, whatever it lists. Asked afresh, with the
+/// same short timeout as a discovery.
+pub async fn ollama_unavailable_hint(base_url: &Url) -> Option<String> {
+    let answered = match ollama_client(base_url, TAGS_TIMEOUT) {
+        Ok(client) => ollama_tags(&client).await.is_some(),
+        Err(_) => false,
+    };
+    (!answered).then(|| {
+        format!(
+            "Ollama is not answering at {base_url}, so no local decision model could be \
+             listed. Start Ollama, then try again."
+        )
+    })
+}
+
 /// The production source: config, the Baseten feed and the Ollama server.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConfiguredDecisionModels;
@@ -569,6 +597,15 @@ impl DecisionModelSource for ConfiguredDecisionModels {
                  `{OLLAMA_DECISION_PROVIDER}`."
             ))),
         }
+    }
+
+    /// The configured Ollama server gave no listing, so a model installed
+    /// there was not listed and the install advice would be wrong
+    /// ([`ollama_unavailable_hint`]). An `OLLAMA_HOST` that does not resolve
+    /// gives none here: that is a configuration error, not a stopped server.
+    async fn unavailable_hint(&self) -> Option<String> {
+        let base = ollama_base_url().ok()?;
+        ollama_unavailable_hint(&base).await
     }
 }
 
@@ -881,6 +918,43 @@ mod tests {
             order,
             ["nimble:9b", "tev1:4b", "tev1:0.8b", "clef-flash:latest"]
         );
+    }
+
+    /// A stopped Ollama lists nothing, which looks the same as one with no
+    /// decision model pulled. Only the first gets the hint, which says what
+    /// to do instead of advising an install of a model that may be there.
+    #[tokio::test]
+    async fn an_unreachable_ollama_gives_a_hint() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let stopped = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let hint = ollama_unavailable_hint(&stopped)
+            .await
+            .expect("a stopped server gets a hint");
+        assert_eq!(
+            hint,
+            format!(
+                "Ollama is not answering at http://127.0.0.1:{port}/, so no local decision \
+                 model could be listed. Start Ollama, then try again."
+            )
+        );
+
+        // A server that answers, even with nothing pulled, gets none: the
+        // install advice is right there.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/tags"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({"models": []})))
+            .mount(&server)
+            .await;
+        let running = Url::parse(&server.uri()).unwrap();
+        assert_eq!(ollama_unavailable_hint(&running).await, None);
+
+        // Something that answers but is not Ollama gives no listing either.
+        let other = wiremock::MockServer::start().await;
+        let not_ollama = Url::parse(&other.uri()).unwrap();
+        assert!(ollama_unavailable_hint(&not_ollama).await.is_some());
     }
 
     #[test]

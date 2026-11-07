@@ -39,8 +39,9 @@ pub const MAX_LEVEL_CHARS: usize = 400;
 /// refused rather than renormalised.
 const SUM_TOLERANCE: f64 = 0.02;
 /// A probability this close below a threshold still counts as at it, so that
-/// renormalisation's rounding cannot flip a gate.
-const THRESHOLD_EPSILON: f64 = 1e-9;
+/// renormalisation's rounding cannot flip a gate. A [`Threshold::Below`] uses
+/// the same tolerance, so equality always belongs to the at-or-above side.
+pub(crate) const THRESHOLD_EPSILON: f64 = 1e-9;
 
 /// What kind of answer a question takes.
 ///
@@ -120,14 +121,29 @@ pub enum Threshold {
     /// `level` up, at or above `p`. The fractional expected score is not used,
     /// because it hides a bimodal distribution.
     AtLeastLevel { level: usize, p: f64 },
+    /// Passes exactly when the inner threshold does not: the probability it
+    /// compares is below the inner one's `p`. Written `{"below":{"yes":0.3}}`.
+    /// Equality belongs to the at-or-above side, under the same tolerance, so
+    /// P 0.30 against `below 0.30` does not pass and P 0.29 does. It holds a
+    /// `yes`, `no`, `option` or `at_least_level` threshold, never another
+    /// `below`.
+    Below(Box<Threshold>),
 }
 
 impl Threshold {
-    fn probability(&self) -> f64 {
+    /// The bound this threshold compares against: the inner threshold's for a
+    /// [`Self::Below`].
+    pub fn probability(&self) -> f64 {
         match self {
             Self::Yes(p) | Self::No(p) => *p,
             Self::Option { p, .. } | Self::AtLeastLevel { p, .. } => *p,
+            Self::Below(inner) => inner.probability(),
         }
+    }
+
+    /// Whether this threshold passes below its bound ([`Self::Below`]).
+    pub fn is_below(&self) -> bool {
+        matches!(self, Self::Below(_))
     }
 
     /// The probability this threshold is compared against, read from a
@@ -143,16 +159,30 @@ impl Threshold {
                 .filter(|(i, _)| i >= level)
                 .map(|(_, p)| p)
                 .sum(),
+            Self::Below(inner) => inner.pass_probability(probabilities),
         }
     }
 
     /// Whether the distribution passes. A probability equal to the threshold
-    /// counts as at or above it (PR #469's noul rule).
+    /// counts as at or above it (PR #469's noul rule), so it fails a
+    /// [`Self::Below`], which is the exact complement of its inner threshold.
     pub fn passes(&self, probabilities: &IndexMap<String, f64>) -> bool {
-        self.pass_probability(probabilities) + THRESHOLD_EPSILON >= self.probability()
+        match self {
+            Self::Below(inner) => !inner.passes(probabilities),
+            _ => self.pass_probability(probabilities) + THRESHOLD_EPSILON >= self.probability(),
+        }
     }
 
     fn validate(&self, question: &str, kind: &DecisionKind) -> Result<(), String> {
+        if let Self::Below(inner) = self {
+            if inner.is_below() {
+                return Err(format!(
+                    "Question `{question}`: a `below` threshold holds a `yes`, `no`, `option` or \
+                     `at_least_level` threshold, not another `below`."
+                ));
+            }
+            return inner.validate(question, kind);
+        }
         let p = self.probability();
         if !p.is_finite() || !(0.0..=1.0).contains(&p) {
             return Err(format!(
@@ -187,6 +217,7 @@ impl Threshold {
                     Self::No(_) => "no",
                     Self::Option { .. } => "option",
                     Self::AtLeastLevel { .. } => "at_least_level",
+                    Self::Below(_) => "below",
                 },
                 kind.tag()
             )),
@@ -770,6 +801,11 @@ pub struct ChunkOutcome {
     pub chunk_id: String,
     pub decisions: Option<Vec<Decision>>,
     pub error: Option<String>,
+    /// The tokens a failed chunk's request was billed for: set only when the
+    /// model answered before the chunk failed (an answer that could not be
+    /// read). A decided chunk's usage is on its decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billed_usage: Option<DecisionUsage>,
 }
 
 /// The ids of the chunks that passed each question in a batch, for the
@@ -1026,6 +1062,84 @@ mod tests {
         assert!(!at_least_two.passes(&bimodal));
         assert!(Threshold::AtLeastLevel { level: 1, p: 0.5 }.passes(&bimodal));
         assert!(Threshold::AtLeastLevel { level: 0, p: 1.0 }.passes(&bimodal));
+    }
+
+    /// `below` passes exactly when its inner threshold does not, under the
+    /// same tolerance, so equality stays on the at-or-above side; it is
+    /// written `{"below": {...}}`, holds no other `below`, and its inner
+    /// threshold must fit the question as any threshold must.
+    #[test]
+    fn a_below_threshold_is_the_exact_complement() {
+        let below = Threshold::Below(Box::new(Threshold::Yes(0.8)));
+        let at = dist(&[("yes", 0.8), ("no", 0.2)]);
+        let under = dist(&[("yes", 0.79), ("no", 0.21)]);
+        assert!(
+            !below.passes(&at),
+            "equality is at or above, so it fails below"
+        );
+        assert!(below.passes(&under));
+        assert!(Threshold::Yes(0.8).passes(&at) && !Threshold::Yes(0.8).passes(&under));
+        // Rounding within the tolerance stays on the at-or-above side.
+        let rounded = dist(&[("yes", 0.8 - 1e-12), ("no", 0.2 + 1e-12)]);
+        assert!(!below.passes(&rounded));
+        assert_eq!(below.pass_probability(&under), 0.79);
+        assert_eq!(below.probability(), 0.8);
+
+        // Every inner kind is complemented, not only yes.
+        let course = dist(&[("rrms", 0.55), ("spms", 0.4), ("none", 0.05)]);
+        let not_spms = Threshold::Below(Box::new(Threshold::Option {
+            name: "spms".into(),
+            p: 0.4,
+        }));
+        assert!(!not_spms.passes(&course));
+        let levels = dist(&[("0", 0.5), ("1", 0.3), ("2", 0.2)]);
+        let low = Threshold::Below(Box::new(Threshold::AtLeastLevel { level: 1, p: 0.6 }));
+        assert!(low.passes(&levels), "P(level >= 1) is 0.5, below 0.6");
+
+        // The wire form.
+        let value = serde_json::to_value(&below).unwrap();
+        assert_eq!(value, json!({"below": {"yes": 0.8}}));
+        let read: Threshold = serde_json::from_value(json!({"below": {"no": 0.3}})).unwrap();
+        assert_eq!(read, Threshold::Below(Box::new(Threshold::No(0.3))));
+        assert!(
+            serde_json::from_value::<Threshold>(json!({"below": {"yes": 0.3, "x": 1}})).is_err()
+        );
+
+        // Nested, wrong-kind and out-of-range inner thresholds are refused.
+        let nested = Threshold::Below(Box::new(below.clone()));
+        let err = request(vec![("b", binary(Some(nested)))])
+            .validate()
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "Question `b`: a `below` threshold holds a `yes`, `no`, `option` or \
+             `at_least_level` threshold, not another `below`."
+        );
+        assert!(request(vec![("b", binary(Some(below.clone())))])
+            .validate()
+            .is_ok());
+        let wrong_kind = Question {
+            instructions: "Course?".into(),
+            kind: choice(),
+            threshold: Some(below),
+        };
+        assert!(request(vec![("c", wrong_kind)]).validate().is_err());
+        let out_of_range = Threshold::Below(Box::new(Threshold::Yes(1.5)));
+        assert!(request(vec![("b", binary(Some(out_of_range)))])
+            .validate()
+            .is_err());
+    }
+
+    /// The recursive `below` renders as a reference to `Threshold` in the
+    /// OpenAPI spec, not as an endless inline copy.
+    #[test]
+    fn a_below_threshold_refers_to_threshold_in_the_schema() {
+        let (name, schema) = <Threshold as utoipa::ToSchema>::schema();
+        assert_eq!(name, "Threshold");
+        let schema = serde_json::to_value(schema).unwrap();
+        let text = schema.to_string();
+        assert!(text.contains("\"below\""), "{text}");
+        assert!(text.contains("#/components/schemas/Threshold"), "{text}");
     }
 
     #[test]

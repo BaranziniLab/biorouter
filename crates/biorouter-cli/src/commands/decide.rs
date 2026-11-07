@@ -39,6 +39,7 @@
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use biorouter::decision::types::validate_questions;
@@ -61,6 +62,10 @@ pub const MAX_BATCH_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const BATCH_GROUP: usize = biorouter::decision::service::MAX_BATCH_CHUNKS;
 /// The question's name when `--name` is not given.
 pub const DEFAULT_QUESTION_NAME: &str = "question";
+/// How long a run about a chat waits, before it exits, for decision requests
+/// that answered after its deadline or after it stopped waiting, so their
+/// usage is stored and counted.
+pub const LATE_ANSWER_GRACE: Duration = Duration::from_secs(30);
 /// Widest an outcome label is printed beside its bar.
 const LABEL_MAX: usize = 24;
 
@@ -415,25 +420,38 @@ pub fn clip(text: &str, max: usize) -> String {
     out
 }
 
-/// What the threshold compared, as a sentence: `P(yes) 0.82 ≥ 0.80, passed`.
-pub fn threshold_line(decision: &Decision, question: Option<&Question>) -> Option<String> {
-    let threshold = question?.threshold.as_ref()?;
-    let p = decision.pass_probability?;
-    let (wanted, bound) = match threshold {
+/// What a threshold compares and against what: `P(yes)` and 0.80. A `below`
+/// threshold compares what its inner threshold does.
+fn threshold_terms(threshold: &Threshold, question: &Question) -> (String, f64) {
+    match threshold {
         Threshold::Yes(t) => ("P(yes)".to_string(), *t),
         Threshold::No(t) => ("P(no)".to_string(), *t),
         Threshold::Option { name, p } => (format!("P({name})"), *p),
         Threshold::AtLeastLevel { level, p } => {
-            let label = match &question?.kind {
+            let label = match &question.kind {
                 DecisionKind::Score { levels } => levels.get(*level).cloned(),
                 _ => None,
             }
             .unwrap_or_else(|| format!("level {level}"));
             (format!("P(at least {label})"), *p)
         }
-    };
+        Threshold::Below(inner) => threshold_terms(inner, question),
+    }
+}
+
+/// What the threshold compared, as a sentence: `P(yes) 0.82 ≥ 0.80, passed`.
+/// A `below` threshold passes under its bound: `P(yes) 0.12 < 0.30, passed`.
+pub fn threshold_line(decision: &Decision, question: Option<&Question>) -> Option<String> {
+    let question = question?;
+    let threshold = question.threshold.as_ref()?;
+    let p = decision.pass_probability?;
+    let (wanted, bound) = threshold_terms(threshold, question);
     let passed = decision.passed == Some(true);
-    let sign = if passed { "≥" } else { "<" };
+    let sign = if passed ^ threshold.is_below() {
+        "≥"
+    } else {
+        "<"
+    };
     Some(format!(
         "{wanted} {} {sign} {}, {}",
         format_p(p),
@@ -487,6 +505,9 @@ pub struct BatchRow {
     pub file: String,
     pub decision: Option<Decision>,
     pub error: Option<String>,
+    /// What a failed file's request was billed for, when its model answered
+    /// before it failed (an answer that could not be read).
+    pub billed_usage: Option<DecisionUsage>,
 }
 
 impl BatchRow {
@@ -497,6 +518,7 @@ impl BatchRow {
                 .decisions
                 .and_then(|mut d| (!d.is_empty()).then(|| d.remove(0))),
             error: outcome.error,
+            billed_usage: outcome.billed_usage,
         }
     }
 }
@@ -701,10 +723,13 @@ pub fn render_model_list(entries: &[DecisionModelEntry]) -> Vec<String> {
     out
 }
 
-/// What is said when no decision model can be used.
+/// What is said when no decision model can be used. It quotes
+/// `biorouter::decision::INSTALL_ADVICE` word for word (a test holds the two
+/// together; `concat!` cannot read a constant from another crate).
 pub const NO_MODEL_HELP: &str =
-    "No decision model is available. Pull a decision model into a local Ollama (for example \
-     `ollama pull tev1:0.8b`), add a Baseten API key, or set BIOROUTER_DECISION_MODEL.";
+    "No decision model is available. Install one on this computer with `biorouter models \
+     decision pull` (tev1:0.8b, about 1.5 GB), or with Install in a chat's Monitors dialog. Or \
+     add a Baseten API key, or set BIOROUTER_DECISION_MODEL.";
 
 /// What a terminal on a public model is told when it names a private chat.
 pub const SESSION_OUT_OF_REACH: &str =
@@ -799,6 +824,53 @@ pub fn request_usage<'a>(
         )
 }
 
+/// The requests a run's rows came from and their usage: every decided
+/// request once ([`request_usage`]), and every failed one whose model
+/// answered before it failed, which was billed all the same.
+pub fn run_usage(rows: &[BatchRow]) -> (usize, DecisionUsage) {
+    let decided = request_usage(rows.iter().filter_map(|row| row.decision.as_ref()));
+    rows.iter()
+        .filter(|row| row.decision.is_none())
+        .filter_map(|row| row.billed_usage)
+        .fold(decided, |(requests, usage), billed| {
+            (requests + 1, usage + billed)
+        })
+}
+
+/// What a run about a chat says on stderr while it waits for `pending`
+/// decision requests to answer before it exits.
+pub fn late_wait_line(pending: usize) -> String {
+    format!(
+        "waiting up to {} s for {pending} decision request(s) that answered late, so their \
+         usage is counted",
+        LATE_ANSWER_GRACE.as_secs()
+    )
+}
+
+/// What a run about a chat says when `remaining` decision requests had not
+/// answered when it gave up waiting.
+pub fn late_unsettled_line(remaining: usize) -> String {
+    format!(
+        "note: {remaining} decision request(s) had not answered when this run ended; if the \
+         provider bills them, Biorouter does not count it."
+    )
+}
+
+/// Before a run about a chat exits: wait (up to [`LATE_ANSWER_GRACE`]) for
+/// requests that answered after their deadline, so the chat's decision log
+/// and usage count them, and say so.
+async fn wait_for_late_answers() {
+    let pending = biorouter::decision::late::in_flight();
+    if pending == 0 {
+        return;
+    }
+    eprintln!("{}", late_wait_line(pending));
+    let remaining = biorouter::decision::settle_late_answers(LATE_ANSWER_GRACE).await;
+    if remaining > 0 {
+        eprintln!("{}", late_unsettled_line(remaining));
+    }
+}
+
 /// `about $0.12`, or `less than $0.01` for the fractions of a cent most
 /// decision runs cost.
 fn format_usd(usd: f64) -> String {
@@ -840,11 +912,9 @@ pub fn usage_line(
     ))
 }
 
-/// Print [`usage_line`] for a run that named no chat, after its results.
-fn report_unrecorded_usage<'a>(
-    target: &Target<'_>,
-    decisions: impl IntoIterator<Item = &'a Decision>,
-) {
+/// Print [`usage_line`] for a run that named no chat, after its results:
+/// `requests` and their `usage` ([`request_usage`], [`run_usage`]).
+fn report_unrecorded_usage(target: &Target<'_>, (requests, usage): (usize, DecisionUsage)) {
     if target.session.is_some() {
         return;
     }
@@ -852,7 +922,6 @@ fn report_unrecorded_usage<'a>(
         return;
     };
     let model = &pinned.model_ref;
-    let (requests, usage) = request_usage(decisions);
     let tokens = |count: Option<i64>| u64::try_from(count.unwrap_or(0)).unwrap_or(0);
     let cost = biorouter::providers::pricing::estimate_cost_usd(
         &model.provider,
@@ -1013,10 +1082,16 @@ pub async fn handle_decide(options: DecideOptions) -> Result<()> {
         },
         question: &question,
     };
-    match options.batch.as_deref() {
+    let result = match options.batch.as_deref() {
         None => decide_text(&options, &target).await,
         Some(dir) => decide_directory(&options, &target, dir).await,
+    };
+    // A late answer is stored and billed only for a chat, so only a run
+    // about one waits for them.
+    if target.session.is_some() {
+        wait_for_late_answers().await;
     }
+    result
 }
 
 /// What every decision of one `biorouter decide` run is asked against.
@@ -1116,11 +1191,18 @@ async fn decide_text(options: &DecideOptions, target: &Target<'_>) -> Result<()>
             bail!("{error}");
         }
     };
-    let decisions = target
+    let decisions = match target
         .service
         .decide_pinned(target.session, &pinned.model_ref, pinned.source, &request)
         .await
-        .map_err(|e| anyhow!("{e}"))?;
+    {
+        Ok(decisions) => decisions,
+        Err(error) => {
+            // An answer that could not be read was billed all the same.
+            report_unrecorded_usage(target, (1, error.billed_usage()));
+            bail!("{error}");
+        }
+    };
     if options.json {
         println!(
             "{}",
@@ -1134,7 +1216,7 @@ async fn decide_text(options: &DecideOptions, target: &Target<'_>) -> Result<()>
         }
         eprintln!("{PROBABILITY_NOTE}");
     }
-    report_unrecorded_usage(target, &decisions);
+    report_unrecorded_usage(target, request_usage(&decisions));
     Ok(())
 }
 
@@ -1158,6 +1240,7 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
                     error: Some(format!("{label} {why}")),
                     file: label,
                     decision: None,
+                    billed_usage: None,
                 })
             }
         }
@@ -1220,7 +1303,7 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
         }
         eprintln!("{PROBABILITY_NOTE}");
     }
-    report_unrecorded_usage(target, rows.iter().filter_map(|row| row.decision.as_ref()));
+    report_unrecorded_usage(target, run_usage(&rows));
     Ok(())
 }
 
@@ -1584,21 +1667,25 @@ pub(crate) mod tests {
                 file: "note-0001.txt".into(),
                 decision: Some(pass(0.97)),
                 error: None,
+                billed_usage: None,
             },
             BatchRow {
                 file: "note-0002.txt".into(),
                 decision: Some(uncalibrated),
                 error: None,
+                billed_usage: None,
             },
             BatchRow {
                 file: "note-0003.txt".into(),
                 decision: Some(pass(0.95)),
                 error: None,
+                billed_usage: None,
             },
             BatchRow {
                 file: "note-0004.txt".into(),
                 decision: None,
                 error: Some("Chunk `note-0004.txt` is about 20000 tokens".into()),
+                billed_usage: None,
             },
         ];
         let summary = summarize_batch(&rows);
@@ -1797,6 +1884,114 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(line.contains("9 input and unknown output tokens"), "{line}");
+    }
+
+    /// A file whose model answered unreadably was billed, so the run's usage
+    /// line counts its request and its tokens beside the decided ones.
+    #[test]
+    fn a_failed_billed_chunk_counts_in_the_runs_usage_line() {
+        let usage = |input, output| DecisionUsage {
+            input_tokens: Some(input),
+            output_tokens: Some(output),
+        };
+        let mut decided = yes_no(0.9);
+        decided.usage = usage(100, 1);
+        let rows = vec![
+            BatchRow::from_outcome(ChunkOutcome {
+                chunk_id: "a.txt".into(),
+                decisions: Some(vec![decided]),
+                error: None,
+                billed_usage: None,
+            }),
+            BatchRow::from_outcome(ChunkOutcome {
+                chunk_id: "b.txt".into(),
+                decisions: None,
+                error: Some("joey-1 returned an answer that could not be read: x".into()),
+                billed_usage: Some(usage(40, 3)),
+            }),
+            BatchRow::from_outcome(ChunkOutcome {
+                chunk_id: "c.txt".into(),
+                decisions: None,
+                error: Some("refused".into()),
+                billed_usage: None,
+            }),
+        ];
+        let (requests, total) = run_usage(&rows);
+        assert_eq!((requests, total), (2, usage(140, 4)));
+        assert_eq!(
+            usage_line("ollama_decision/tev1:0.8b", requests, total, None).as_deref(),
+            Some(
+                "usage: 2 requests on ollama_decision/tev1:0.8b: 140 input and 4 output tokens. \
+                 Without --session this is not recorded in Biorouter's usage."
+            )
+        );
+        // A run where only a failed file was billed still reports it.
+        let (requests, total) = run_usage(&rows[1..]);
+        assert_eq!((requests, total), (1, usage(40, 3)));
+    }
+
+    #[test]
+    fn a_run_about_a_chat_says_it_waits_for_late_answers() {
+        assert_eq!(
+            late_wait_line(2),
+            "waiting up to 30 s for 2 decision request(s) that answered late, so their usage is \
+             counted"
+        );
+        assert_eq!(
+            late_unsettled_line(1),
+            "note: 1 decision request(s) had not answered when this run ended; if the provider \
+             bills them, Biorouter does not count it."
+        );
+    }
+
+    #[test]
+    fn threshold_line_for_below_in_both_outcomes() {
+        let question = Question {
+            instructions: "Is the agent stuck?".into(),
+            kind: DecisionKind::Binary {},
+            threshold: Some(Threshold::Below(Box::new(Threshold::Yes(0.3)))),
+        };
+        let mut under = yes_no(0.12);
+        under.passed = Some(true);
+        under.pass_probability = Some(0.12);
+        assert_eq!(
+            threshold_line(&under, Some(&question)).as_deref(),
+            Some("P(yes) 0.12 < 0.30, passed")
+        );
+        let mut over = yes_no(0.45);
+        over.passed = Some(false);
+        over.pass_probability = Some(0.45);
+        assert_eq!(
+            threshold_line(&over, Some(&question)).as_deref(),
+            Some("P(yes) 0.45 ≥ 0.30, failed")
+        );
+        let score = Question {
+            instructions: "How severe?".into(),
+            kind: DecisionKind::Score {
+                levels: vec!["mild".into(), "moderate".into(), "severe".into()],
+            },
+            threshold: Some(Threshold::Below(Box::new(Threshold::AtLeastLevel {
+                level: 1,
+                p: 0.5,
+            }))),
+        };
+        let mut low = yes_no(0.2);
+        low.passed = Some(true);
+        low.pass_probability = Some(0.2);
+        assert_eq!(
+            threshold_line(&low, Some(&score)).as_deref(),
+            Some("P(at least moderate) 0.20 < 0.50, passed")
+        );
+    }
+
+    #[test]
+    fn no_model_help_names_the_pull_command() {
+        assert!(
+            NO_MODEL_HELP.contains(biorouter::decision::INSTALL_ADVICE),
+            "{NO_MODEL_HELP}"
+        );
+        assert!(NO_MODEL_HELP.contains("biorouter models decision pull"));
+        assert!(!NO_MODEL_HELP.contains("ollama pull"), "{NO_MODEL_HELP}");
     }
 
     #[test]

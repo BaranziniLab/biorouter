@@ -359,8 +359,12 @@ impl LogprobAdapter {
                 )
             }
         };
-        let verdict = verbalized_verdict(name, question, &text, Some(reason))
-            .map_err(|detail| DecisionError::malformed(&self.entry.model, detail))?;
+        // The reply came back 2xx, so it was billed even when it cannot be
+        // read: the error keeps this request's usage.
+        let verdict =
+            verbalized_verdict(name, question, &text, Some(reason)).map_err(|detail| {
+                DecisionError::malformed(&self.entry.model, detail).with_billed_usage(usage)
+            })?;
         Ok((verdict, usage))
     }
 }
@@ -591,6 +595,12 @@ impl DecisionModel for LogprobAdapter {
         }
     }
 
+    /// One request per question, so a failure partway follows requests that
+    /// were already answered and billed: an answer that cannot be read
+    /// ([`DecisionError::Malformed`]) carries their usage and its own. A
+    /// backend failure ([`DecisionError::Backend`]) carries none, by design:
+    /// its body is never read, and the earlier questions' tokens are lost
+    /// with it (a local model is not metered).
     async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
         let mut verdicts = Vec::with_capacity(request.questions.len());
         let mut usage = DecisionUsage::default();
@@ -598,7 +608,10 @@ impl DecisionModel for LogprobAdapter {
             let reason = match self.known_missing() {
                 Some(reason) => reason,
                 None => {
-                    let (outcome, spent) = self.ask_logprobs(question, &request.context).await?;
+                    let (outcome, spent) = self
+                        .ask_logprobs(question, &request.context)
+                        .await
+                        .map_err(|error| error.with_billed_usage(usage))?;
                     usage = usage + spent;
                     match outcome {
                         Ok((probabilities, mass, raw)) => {
@@ -626,7 +639,8 @@ impl DecisionModel for LogprobAdapter {
             };
             let (verdict, spent) = self
                 .ask_verbalized(name, question, &request.context, reason)
-                .await?;
+                .await
+                .map_err(|error| error.with_billed_usage(usage))?;
             usage = usage + spent;
             verdicts.push(verdict);
         }
