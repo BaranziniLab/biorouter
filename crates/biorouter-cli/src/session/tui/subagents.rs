@@ -194,6 +194,9 @@ pub struct PanePhase {
     pub counts: PhaseCounts,
     pub agent_ids: Vec<String>,
     pub handoff: Option<String>,
+    /// The title (else the id) of the earlier gated phase this open phase
+    /// waits for, when one holds it.
+    pub held_by: Option<String>,
 }
 
 impl PanePhase {
@@ -208,6 +211,7 @@ impl PanePhase {
             counts: PhaseCounts::default(),
             agent_ids: Vec::new(),
             handoff: None,
+            held_by: None,
         }
     }
 
@@ -238,21 +242,35 @@ impl PaneModel {
     pub fn from_snapshot(snapshot: &SessionSubagents) -> Self {
         Self {
             rows: snapshot.subagents.iter().map(PaneRow::from_row).collect(),
-            plan: snapshot.plan.as_ref().map(|plan| PanePlan {
-                title: plan.title.clone(),
-                phases: plan
-                    .phases
-                    .iter()
-                    .map(|p| PanePhase {
-                        id: p.id.clone(),
-                        title: p.title.clone(),
-                        kind: p.kind,
-                        status: p.status,
-                        counts: p.counts.clone(),
-                        agent_ids: p.agent_ids.clone(),
-                        handoff: p.handoff.clone(),
-                    })
-                    .collect(),
+            plan: snapshot.plan.as_ref().map(|plan| {
+                // A held phase names its holder as the pane names phases: by
+                // title, else by id.
+                let label = |id: &str| {
+                    plan.phases
+                        .iter()
+                        .find(|p| p.id == id)
+                        .map(|p| p.title.trim())
+                        .filter(|title| !title.is_empty())
+                        .unwrap_or(id)
+                        .to_string()
+                };
+                PanePlan {
+                    title: plan.title.clone(),
+                    phases: plan
+                        .phases
+                        .iter()
+                        .map(|p| PanePhase {
+                            id: p.id.clone(),
+                            title: p.title.clone(),
+                            kind: p.kind,
+                            status: p.status,
+                            counts: p.counts.clone(),
+                            agent_ids: p.agent_ids.clone(),
+                            handoff: p.handoff.clone(),
+                            held_by: p.held_by.as_deref().map(label),
+                        })
+                        .collect(),
+                }
             }),
         }
     }
@@ -856,14 +874,30 @@ fn dense_tail(row: &PaneRow) -> String {
 
 fn phase_head_text(phase: &PanePhase, counts: &PhaseCounts) -> String {
     let mut s = format!("{} {}", phase_glyph(phase.status), phase.label());
+    // A phase an earlier gate holds says what it waits for, in place of "not
+    // started" or "starting", which it cannot do until that gate is through.
+    let held = phase
+        .held_by
+        .as_deref()
+        .map(crate::commands::session_gates::held_words);
     if counts.total == 0 {
-        s.push_str(match phase.status {
-            PhaseStatus::Pending => " · not started",
-            PhaseStatus::InProgress => " · starting",
-            PhaseStatus::Completed => " · done",
-            PhaseStatus::Blocked => " · blocked",
-            PhaseStatus::Skipped => " · skipped",
-        });
+        match (&held, phase.status) {
+            (Some(held), PhaseStatus::Pending | PhaseStatus::InProgress) => {
+                s.push_str(" · ");
+                s.push_str(held);
+            }
+            _ => s.push_str(match phase.status {
+                PhaseStatus::Pending => " · not started",
+                PhaseStatus::InProgress => " · starting",
+                PhaseStatus::Completed => " · done",
+                PhaseStatus::Blocked => " · blocked",
+                PhaseStatus::Skipped => " · skipped",
+            }),
+        }
+        if let (Some(held), PhaseStatus::Blocked) = (&held, phase.status) {
+            s.push_str(" · ");
+            s.push_str(held);
+        }
         return s;
     }
     s.push_str(&format!(" {}/{}", counts.done, counts.total));
@@ -878,6 +912,10 @@ fn phase_head_text(phase: &PanePhase, counts: &PhaseCounts) -> String {
     }
     if counts.blocked > 0 {
         s.push_str(&format!(" · {} blocked", counts.blocked));
+    }
+    if let Some(held) = held {
+        s.push_str(" · ");
+        s.push_str(&held);
     }
     s
 }
@@ -2048,6 +2086,71 @@ mod tests {
         assert_eq!(groups[1].rows, vec![1]);
         assert_eq!(groups[2].head, Some(GroupHead::Unphased));
         assert_eq!(groups[2].rows, vec![2, 3]);
+    }
+
+    /// A phase an earlier gate holds says what it waits for, by the holder's
+    /// title, in place of "not started"; with rows it says so after its
+    /// counts. A phase nothing holds reads as before.
+    #[test]
+    fn a_held_phase_says_which_gate_it_waits_for() {
+        use biorouter::agents::orchestration_plan::{OrchestrationSnapshot, PhaseSnapshot};
+        let phase =
+            |id: &str, title: &str, status: PhaseStatus, held_by: Option<&str>| PhaseSnapshot {
+                id: id.into(),
+                title: title.into(),
+                goal: None,
+                kind: PhaseKind::Research,
+                status,
+                depends_on: Vec::new(),
+                agent_ids: Vec::new(),
+                counts: PhaseCounts::default(),
+                handoff: None,
+                started_at: None,
+                finished_at: None,
+                gate: None,
+                held_by: held_by.map(str::to_string),
+            };
+        let model = PaneModel::from_snapshot(&SessionSubagents {
+            parent_session_id: "p".into(),
+            subagents: Vec::new(),
+            plan: Some(OrchestrationSnapshot {
+                title: "Moon".into(),
+                goal: None,
+                revision: 2,
+                phases: vec![
+                    phase("research", "Research", PhaseStatus::InProgress, None),
+                    phase("write", "Write", PhaseStatus::Pending, Some("research")),
+                    phase("review", "", PhaseStatus::Pending, Some("gone")),
+                ],
+            }),
+        });
+        let phases = &model.plan.as_ref().unwrap().phases;
+        assert_eq!(phases[1].held_by.as_deref(), Some("Research"));
+        assert_eq!(phases[2].held_by.as_deref(), Some("gone"));
+        assert_eq!(
+            phase_head_text(&phases[0], &PhaseCounts::default()),
+            "◐ Research · starting"
+        );
+        assert_eq!(
+            phase_head_text(&phases[1], &PhaseCounts::default()),
+            "○ Write · waits for Research's gate"
+        );
+        let counts = PhaseCounts {
+            total: 2,
+            done: 1,
+            running: 1,
+            ..PhaseCounts::default()
+        };
+        assert_eq!(
+            phase_head_text(&phases[1], &counts),
+            "○ Write 1/2 · 1 running · waits for Research's gate"
+        );
+        let mut blocked = phases[1].clone();
+        blocked.status = PhaseStatus::Blocked;
+        assert_eq!(
+            phase_head_text(&blocked, &PhaseCounts::default()),
+            "⏸ Write · blocked · waits for Research's gate"
+        );
     }
 
     #[test]
