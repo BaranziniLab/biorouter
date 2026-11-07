@@ -6,15 +6,24 @@
 //!
 //! A separate file, so a usage bump never changes an entry's `rev` (a spurious `412`
 //! on the person's open edit) and never rewrites the entries file per utterance
-//! (DD-33). The service batches bumps and flushes them under the store's lock with a
-//! short budget; a lost bump is acceptable.
+//! (DD-33). Bumps are flushed in batches under the store's lock with a short budget
+//! ([`USAGE_FLUSH_BUDGET`]), always after the text they count is out, and the file is
+//! replaced by a rename with no flush to disk. `biorouter transcribe` flushes its one
+//! dictation's batch before it exits, after its standard output is closed, and tries the
+//! lock once rather than waiting. A lost bump is acceptable.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::schema::EntryId;
+
+/// How long a usage flush waits for the store's lock in a process that stays up: the
+/// extractor's budget. A flush that does not get the lock in time drops its batch. A one
+/// shot `biorouter transcribe` waits not at all (`Duration::ZERO`, one try).
+pub const USAGE_FLUSH_BUDGET: Duration = Duration::from_millis(50);
 
 /// One row's counters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

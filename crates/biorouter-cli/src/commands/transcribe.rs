@@ -12,15 +12,22 @@
 //! all of it (`biorouter::dictation::file`). `--format json` reports where the time went.
 //!
 //! The personal dictionary shapes the transcript (PR-14, DD-36, DD-77): its terms bias the
-//! decoder through the token prompt and the decoder bonus, and correction rewrites what
-//! was misheard, every change listed in `changes`. Which terms may be used follows DD-77:
-//! public terms only, unless `--session` names a private chat, the run is at an
-//! interactive terminal, the configured model is private and `BIOROUTER_TERMINAL` is
-//! unset, so an agent's shell never gets a private term whatever its flags.
-//! `--context-file` ranks the terms (at most 4 KB of it is read, and it goes nowhere);
-//! `--no-dictionary` turns all of it off. The dictionary is prepared while the model loads,
-//! and its decoder bonus table is built in the worker right after the load, so none of it
-//! waits for the decode.
+//! decoder through the token prompt (the decoder bonus is built but off, M-22), and
+//! correction rewrites what was misheard, every change listed in `changes`. Which terms
+//! may be used follows DD-77: public terms only, unless `--session` names a private chat,
+//! the run is at an interactive terminal, the configured model is private and
+//! `BIOROUTER_TERMINAL` is unset, so an agent's shell never gets a private term whatever
+//! its flags. `--context-file` ranks the terms (at most 4 KB of it is read, and it goes
+//! nowhere); `--no-dictionary` turns all of it off and prepares nothing, not even the word
+//! list, and the managed `dictionary: false` key does the same. The dictionary is prepared
+//! while the model loads, so none of it waits for the decode.
+//!
+//! Once the text is written, and only then, the terms the text holds have their `uses`
+//! raised in `usage.json` ("Usage"): one batch, the store's lock tried once, the file
+//! replaced with no flush to disk. On Unix standard output is pointed at the null device
+//! first, so a pipe's reader has the whole text before that write starts; only a caller
+//! that waits for the exit waits for it. An agent's shell raises none, as it writes nothing
+//! else in the dictionary.
 //!
 //! Exit codes are those of [`crate::dictation::exit`]: 0 text, 1 a failure, 2 declined
 //! to start, 3 nothing heard, 4 cancelled with Ctrl-C.
@@ -207,13 +214,17 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
     if let Some(refusal) = service::spawn_refusal() {
         return Err(failure_of(refusal));
     }
-    let enabled = biorouter::managed::ManagedPolicy::load()
-        .dictation()
-        .enabled
-        .clone();
+    // DD-77 reads this once: it decides the bias target and whether usage is recorded.
+    let agent_shell = std::env::var_os(super::dictation::AGENT_SHELL_ENV);
+    let records_usage = !is_agent_shell(agent_shell.as_deref());
+    // The managed policy is read once: `enabled` refuses the run, and `dictionary: false`
+    // runs it as `--no-dictionary` does, so no store is read and no usage is written.
+    let policy = biorouter::managed::ManagedPolicy::load();
+    let enabled = &policy.dictation().enabled;
     if !enabled.is_allowed() {
         return Err(failure_of(DictationError::Policy(enabled.allowance())));
     }
+    let no_dictionary = without_dictionary(args.no_dictionary, &policy.dictation().dictionary);
     let language = match args.language.as_deref() {
         Some(language) => language.trim().to_ascii_lowercase(),
         None => service::configured_language(),
@@ -257,19 +268,24 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
     });
 
     // The dictionary, prepared while the model loads and the file decodes: the bias set
-    // under DD-77, its ranking against the context, the corrector, and the decoder bonus
-    // table, which the worker builds right after the model loads.
+    // under DD-77, its ranking against the context and the corrector (and the decoder
+    // bonus table, when measurement turns the bonus on, which the worker builds right after
+    // the model loads). `--no-dictionary` and the managed `dictionary: false` prepare
+    // nothing.
     let context = match &args.context_file {
         Some(path) => Some(read_context(path)?),
         None => None,
     };
     let dictionary = {
         let session = args.session.clone();
-        let no_dictionary = args.no_dictionary;
         tokio::spawn(async move {
-            let request = prepare_dictionary(no_dictionary, session, context).await;
-            let _ = svc.install_bias(&request);
-            (Arc::new(request), started.elapsed())
+            let request = prepare_dictionary(no_dictionary, session, context, agent_shell)
+                .await
+                .map(Arc::new);
+            if let Some(request) = &request {
+                let _ = svc.install_bias(request);
+            }
+            (request, started.elapsed())
         })
     };
 
@@ -312,7 +328,7 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
     let request = TranscribeRequest {
         language: language.clone(),
         cancel,
-        dictionary: Some(dictionary),
+        dictionary: dictionary.clone(),
         decode: None,
     };
     let dictated = svc
@@ -380,9 +396,69 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
     match &args.output {
         Some(path) => std::fs::write(path, rendered)
             .map_err(|_| Failure::new(Outcome::Unwritable, messages::msg_unwritable(Some(path))))?,
-        None => write_stdout(rendered.as_bytes(), &mut std::io::stdout().lock())?,
+        None => {
+            write_stdout(rendered.as_bytes(), &mut std::io::stdout().lock())?;
+            #[cfg(unix)]
+            close_stdout();
+        }
+    }
+    // The text is out, and a reader of the pipe has seen its end. Only now does the
+    // dictionary learn which of its terms it used, so the write costs nothing between stop
+    // and text.
+    if let Some(dictionary) = dictionary.filter(|_| records_usage) {
+        let text = transcript.text.clone();
+        let _ = tokio::task::spawn_blocking(move || record_uses(&dictionary, &text)).await;
     }
     Ok(())
+}
+
+/// Whether this run uses no dictionary: `--no-dictionary`, or the managed `dictionary:
+/// false` key ("Managed policy keys"), which turns off the dictionary's bias and so its
+/// usage too. `bias_set` would give such a run the empty set anyway; deciding here also
+/// skips reading the store.
+#[cfg(feature = "dictation")]
+fn without_dictionary(flag: bool, dictionary: &biorouter::managed::Rule) -> bool {
+    flag || !dictionary.is_allowed()
+}
+
+/// Points standard output at the null device once the text is written and flushed, so a
+/// reader of a pipe (`biorouter transcribe a.wav | pbcopy`) sees the end of the text now,
+/// not when the process exits after recording usage. Nothing after the text writes to
+/// standard output, and the worker's output is its own pipe. If the null device cannot be
+/// opened, standard output stays open until the exit.
+#[cfg(all(feature = "dictation", unix))]
+fn close_stdout() {
+    use std::os::fd::AsRawFd;
+    if let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
+        // SAFETY: both descriptors are open; `dup2` replaces descriptor 1 atomically, and
+        // `write_stdout` flushed what Rust's standard output had buffered.
+        unsafe {
+            libc::dup2(null.as_raw_fd(), libc::STDOUT_FILENO);
+        }
+    }
+}
+
+/// Whether `BIOROUTER_TERMINAL` marks an agent's shell: any value but an empty one, as for
+/// `dictation` and `dictionary`.
+#[cfg(feature = "dictation")]
+fn is_agent_shell(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
+}
+
+/// Raises `uses` of the terms `text` holds in `usage.json`, one batch under the store's
+/// lock ("Usage"). Called after the text is written. The lock is tried once: a one shot
+/// process would otherwise hold its exit for the lock, and a lost bump is acceptable.
+/// Returns whether a batch was written.
+#[cfg(feature = "dictation")]
+fn record_uses(dictionary: &biorouter::dictation::DictionaryRequest, text: &str) -> bool {
+    use biorouter::security::dictionary_store::{self, store};
+
+    let bumps = dictionary.usage_bumps(text, store::schema::now());
+    biorouter::dictation::record_usage(
+        &dictionary_store::open_store(),
+        &bumps,
+        std::time::Duration::ZERO,
+    )
 }
 
 /// `--context-file`, at most [`MAX_CONTEXT_BYTES`] of it, cut at a character boundary.
@@ -410,28 +486,31 @@ fn read_context(path: &std::path::Path) -> Result<String, Failure> {
     Ok(clip_context(&text).to_string())
 }
 
-/// The dictionary for this transcription (DD-36, DD-77). Public terms only, unless
-/// `--session` names a private chat, the run is at an interactive terminal, the configured
-/// model is private and `BIOROUTER_TERMINAL` is unset. The chat's row and the configured
-/// model are read only when everything else would admit private terms, and a chat that
-/// cannot be read leaves the transcription public, whatever the reason, so the answer says
-/// nothing about which chats exist. A store that cannot be read gives no terms.
+/// The dictionary for this transcription (DD-36, DD-77), or `None` for `--no-dictionary`,
+/// which reads no store, decodes no word list and builds no corrector. Public terms only,
+/// unless `--session` names a private chat, the run is at an interactive terminal, the
+/// configured model is private and `BIOROUTER_TERMINAL` (`agent_shell`) is unset. The
+/// chat's row and the configured model are read only when everything else would admit
+/// private terms, and a chat that cannot be read leaves the transcription public, whatever
+/// the reason, so the answer says nothing about which chats exist. A store that cannot be
+/// read gives no terms.
 #[cfg(feature = "dictation")]
 async fn prepare_dictionary(
     no_dictionary: bool,
     session: Option<String>,
     context: Option<String>,
-) -> biorouter::dictation::DictionaryRequest {
+    agent_shell: Option<std::ffi::OsString>,
+) -> Option<biorouter::dictation::DictionaryRequest> {
     use biorouter::dictation::recognize::EligibleEntries;
     use biorouter::dictation::{bias_set, cli_bias, BiasChannels, DictionaryRequest};
     use biorouter::security::dictionary_store;
 
     if no_dictionary {
-        return DictionaryRequest::none();
+        return None;
     }
     let terminal = sample_terminal(
         session,
-        std::env::var_os(super::dictation::AGENT_SHELL_ENV),
+        agent_shell,
         super::needs_terminal::prompt_can_run(),
         || async {
             crate::session::privacy::caller_capability()
@@ -450,15 +529,17 @@ async fn prepare_dictionary(
     let (target, standing) = cli_bias(terminal);
     let enforced = biorouter::privacy::privacy_tiers_enabled();
     let context = context.unwrap_or_default();
-    tokio::task::spawn_blocking(move || {
+    let channels = BiasChannels::for_dictation();
+    let request = tokio::task::spawn_blocking(move || {
         let eligible = match dictionary_store::open_store().view() {
             Ok(view) => bias_set(&view, &target, standing, enforced),
             Err(_) => EligibleEntries::empty(),
         };
-        DictionaryRequest::new(eligible, &context, BiasChannels::DEFAULT)
+        DictionaryRequest::new(eligible, &context, channels)
     })
     .await
-    .unwrap_or_else(|_| DictionaryRequest::none())
+    .unwrap_or_else(|_| DictionaryRequest::none());
+    Some(request)
 }
 
 /// What DD-77 reads for one transcription, each sampled once: `agent_shell` is
@@ -741,6 +822,54 @@ mod tests {
         let mut written = Vec::new();
         assert!(write_stdout(b"text\n", &mut written).is_ok());
         assert_eq!(written, b"text\n");
+    }
+
+    /// `--no-dictionary` prepares nothing: no store read, no word list, no corrector, so
+    /// the transcript carries no dictionary at all and its usage records nothing.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn no_dictionary_prepares_nothing() {
+        let prepared = futures::executor::block_on(prepare_dictionary(
+            true,
+            Some("20261106_1".into()),
+            Some("EPAS1 and HIF-2α".into()),
+            None,
+        ));
+        assert!(prepared.is_none());
+        use std::ffi::OsStr;
+        assert!(!is_agent_shell(None));
+        assert!(!is_agent_shell(Some(OsStr::new(""))));
+        for value in ["1", "0", "true"] {
+            assert!(is_agent_shell(Some(OsStr::new(value))), "{value}");
+        }
+    }
+
+    /// The managed `dictionary: false` key runs `transcribe` as `--no-dictionary` does: no
+    /// dictionary is prepared, so none biases the decode or corrects the text, and the run
+    /// has nothing to raise in `usage.json` (only a prepared dictionary records usage).
+    /// The rule comes from the policy that turns dictation off, which forbids every key.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn a_forbidden_dictionary_prepares_nothing_and_records_nothing() {
+        use biorouter::managed::{DictationPolicy, Rule};
+
+        let forbidden = DictationPolicy::off().dictionary;
+        assert!(!forbidden.is_allowed());
+        assert!(without_dictionary(false, &forbidden));
+        assert!(without_dictionary(true, &forbidden));
+        assert!(without_dictionary(true, &Rule::Allowed));
+        assert!(!without_dictionary(false, &Rule::Allowed));
+        assert!(!without_dictionary(
+            false,
+            &DictationPolicy::unmanaged().dictionary
+        ));
+        let prepared = futures::executor::block_on(prepare_dictionary(
+            without_dictionary(false, &forbidden),
+            None,
+            Some("EPAS1".into()),
+            None,
+        ));
+        assert!(prepared.is_none(), "nothing prepared, so nothing recorded");
     }
 
     /// DD-77's wiring, from the sampled inputs to the bias target and standing: with

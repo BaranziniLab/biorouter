@@ -119,6 +119,32 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Replace `path` with `bytes` by the same temporary file and rename as
+/// [`write_atomically`], with no flush to disk. A reader still sees the old file or the new
+/// one, never half of either; only a power cut can lose the write, or leave the file empty.
+/// For `usage.json` alone, whose counters are loss tolerant ("Usage"): the two flushes cost
+/// a one shot `biorouter transcribe` milliseconds between its text and its exit (on macOS
+/// each is an `F_FULLFSYNC`). The caller holds the lock.
+pub(crate) fn replace_unsynced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?
+        .to_string_lossy()
+        .into_owned();
+    let temporary = path.with_file_name(format!("{name}.tmp"));
+    {
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&temporary)?.write_all(bytes)?;
+    }
+    rename_over(&temporary, path)
+}
+
 /// `rename`, retried on Windows up to 10 times over 200 ms while another process holds
 /// the target open (an antivirus scan, a reader mid parse).
 fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
@@ -165,6 +191,12 @@ mod tests {
         write_atomically(&path, b"second, longer").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"second, longer");
         assert!(!dir.path().join("dictionary.json.tmp").exists());
+        // The usage file's replace: the same rename, no flush to disk.
+        let usage = dir.path().join("usage.json");
+        replace_unsynced(&usage, b"a longer first").unwrap();
+        replace_unsynced(&usage, b"second").unwrap();
+        assert_eq!(fs::read(&usage).unwrap(), b"second");
+        assert!(!dir.path().join("usage.json.tmp").exists());
     }
 
     #[cfg(unix)]
@@ -175,9 +207,11 @@ mod tests {
         let dir = root.path().join("config").join("dictionary");
         let _lock = StoreLock::acquire(&dir).unwrap();
         write_atomically(&dir.join("dictionary.json"), b"{}").unwrap();
+        replace_unsynced(&dir.join("usage.json"), b"{}").unwrap();
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700);
         assert_eq!(mode(&dir.join("dictionary.json")), 0o600);
+        assert_eq!(mode(&dir.join("usage.json")), 0o600);
         assert_eq!(mode(&dir.join(LOCK_FILE)), 0o600);
     }
 }

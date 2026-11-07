@@ -6,8 +6,15 @@
 //!    places go to the next entries by score: the prompt is never only the terms predicted
 //!    for this utterance, because an oracle narrow prompt cost 18 points on real speech by
 //!    deleting the start of the utterance [M].
-//! 3. Written forms only, joined with `", "`, no lead in, no tail, ascending score so the
-//!    best entry is last. Spoken forms and misrecognitions are never prompt content.
+//! 3. Written forms only, joined with `", "`, no lead in, ascending score so the best entry
+//!    is last, then a period ([`with_tail`], PR-14b). Without the period the prompt read
+//!    as an unfinished sentence and Whisper dropped the final punctuation of what it wrote
+//!    (turbo on 26 of 42 synthetic and 29 of the real clips that had it without a
+//!    dictionary); with it, the period came back on 83 of turbo's 88 such clips and all 15
+//!    of small.en's, within the rule's recall margins and with no rise in insertions
+//!    [M, 2026-11-06]. The period is for the decoder only: correction reads the prompt
+//!    without it (`DictionaryRequest::correction_prompt` in the core crate). Spoken forms
+//!    and misrecognitions are never prompt content.
 //! 4. The worker encodes the list with canonical byte level BPE over the loaded model's
 //!    own vocabulary ([`fit`] with `engine::bpe`) and cuts entries from the head until the
 //!    prompt is at most 150 tokens; Whisper's window is 223 tokens and drops its head
@@ -19,6 +26,23 @@ use crate::store::BiasPolicy;
 
 /// The separator between the prompt's terms.
 pub const SEPARATOR: &str = super::echo::SEPARATOR;
+
+/// What follows the prompt's best term (PR-14b): a period.
+pub const TAIL: &str = ".";
+
+/// `terms` (best last) as the worker is sent them: the last term followed by [`TAIL`]
+/// when it ends in a letter or a digit, so that the period is its own piece under the
+/// GPT-2 pre split and the prompt's canonical ids end with the period token. A last term
+/// that ends in other punctuation (`C++`) is sent as it is, because the period would join
+/// that punctuation's piece.
+pub fn with_tail(mut terms: Vec<String>) -> Vec<String> {
+    if let Some(last) = terms.last_mut() {
+        if last.chars().next_back().is_some_and(char::is_alphanumeric) {
+            last.push_str(TAIL);
+        }
+    }
+    terms
+}
 
 /// The prompt's written forms for one request: the top 30 eligible entries of `ranked`
 /// (best first), returned in ascending score, best last. Reached through
@@ -130,6 +154,42 @@ mod tests {
             "best last"
         );
         assert_eq!(picked.first().map(String::as_str), Some("ZQX29A"));
+    }
+
+    /// The tail: a period after the best term, only when that term ends in a letter or a
+    /// digit; never on an empty prompt.
+    #[test]
+    fn the_tail_follows_the_best_term() {
+        let terms = |list: &[&str]| -> Vec<String> { list.iter().map(|t| t.to_string()).collect() };
+        assert_eq!(
+            with_tail(terms(&["UCSF", "EPAS1"])),
+            terms(&["UCSF", "EPAS1."])
+        );
+        assert_eq!(with_tail(terms(&["HIF-2α"])), terms(&["HIF-2α."]));
+        assert_eq!(with_tail(terms(&["Advil"])), terms(&["Advil."]));
+        assert_eq!(
+            with_tail(terms(&["EPAS1", "C++"])),
+            terms(&["EPAS1", "C++"])
+        );
+        assert!(with_tail(Vec::new()).is_empty());
+        // `fit` keeps the tail with the best term: it cuts from the head.
+        let sent = with_tail(terms(&["AAAA", "BBBB", "CCCC"]));
+        let (ids, used) = fit(&sent, 11, chars);
+        assert_eq!(used, 2);
+        assert_eq!(ids.last(), Some(&('.' as i32)));
+    }
+
+    /// With the engine's pre split, the period after a term that ends in a letter or a
+    /// digit is its own piece, so its canonical ids end with the period token.
+    #[cfg(all(feature = "engine", not(br_no_native)))]
+    #[test]
+    fn the_tail_is_its_own_piece() {
+        use crate::engine::bpe::pre_split;
+        for term in ["EPAS1", "Advil", "HIF-2α", "scRNA-seq", "Biorouter"] {
+            let sent = with_tail(vec![term.to_string()]);
+            let joined = format!("UCSF{SEPARATOR}{}", sent[0]);
+            assert_eq!(pre_split(&joined).last(), Some(&"."), "{term}");
+        }
     }
 
     #[test]

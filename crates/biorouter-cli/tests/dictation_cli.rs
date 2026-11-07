@@ -33,7 +33,9 @@
 //! `BIOROUTER_DICTATION_MODELS_DIR` writes the JFK sentence and reports its timings; and
 //! (PR-14, DD-77) `transcribe --session <a private chat>` at a pseudo terminal with a
 //! private model configured reaches the private terms, while the same run in an agent's
-//! shell (`BIOROUTER_TERMINAL=1`) is public and writes none of them.
+//! shell (`BIOROUTER_TERMINAL=1`) is public and writes none of them; and (PR-14b) once its
+//! text is written, `transcribe` raises the `uses` of the terms the text holds, while
+//! `--no-dictionary` and an agent's shell raise none.
 //!
 //! The vendored detector fixture is byte identical to the production detector, so it
 //! stands in for a real catalog file. A speech model is 264 MB or more, so the cases
@@ -45,6 +47,7 @@
 #[path = "../src/test_sandbox.rs"]
 mod test_sandbox;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -1343,6 +1346,108 @@ fn an_agent_shell_never_gets_private_terms() {
             println!("{model} {audio} agent shell: {text:?}");
         }
     }
+}
+
+/// The `uses` counters in the sandbox's `usage.json`, per map, by written form.
+fn uses_of(root: &Path) -> (BTreeMap<String, u64>, BTreeMap<String, u64>) {
+    let folder = root.join("config").join("dictionary");
+    let store: Value =
+        serde_json::from_slice(&std::fs::read(folder.join("dictionary.json")).unwrap()).unwrap();
+    let written: BTreeMap<String, String> = store["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e["written"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let usage: Value = std::fs::read(folder.join("usage.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(Value::Null);
+    let map = |name: &str| -> BTreeMap<String, u64> {
+        usage[name]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(id, row)| {
+                        Some((written.get(id)?.clone(), row["uses"].as_u64().unwrap_or(0)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    (map("all"), map("public"))
+}
+
+/// "Usage" (PR-14b): once `transcribe` has written its text, the dictionary's terms that
+/// text holds have their `uses` raised by one, in both maps for a public dictation, while
+/// `dictionary.json` stays byte identical. `--no-dictionary` and an agent's shell raise
+/// nothing. PR-14's live check found `uses` still 0 after 168 transcriptions.
+#[test]
+#[ignore = "needs the real speech models"]
+fn transcribe_raises_the_uses_of_the_terms_it_wrote() {
+    let models = std::env::var("BIOROUTER_DICTATION_MODELS_DIR")
+        .expect("set BIOROUTER_DICTATION_MODELS_DIR to a folder holding the catalog models");
+    let model = std::env::var("BIOROUTER_DICTATION_ACCURACY_MODELS")
+        .ok()
+        .and_then(|list| list.split(',').next().map(|id| id.trim().to_string()))
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| SMALL_EN.to_string());
+    let root = sandbox();
+    import_rows(
+        root.path(),
+        serde_json::json!([
+            {"written": "Americans", "tier": "public"},
+            {"written": "country", "tier": "public"},
+            {"written": "EPAS1", "tier": "public"},
+        ]),
+    );
+    let store_file = root
+        .path()
+        .join("config")
+        .join("dictionary")
+        .join("dictionary.json");
+    let before = std::fs::read(&store_file).unwrap();
+    let jfk = jfk_wav();
+    let env = [("BIOROUTER_DICTATION_MODELS_DIR", models.as_str())];
+    let run = |extra: &[&str], env: &[(&str, &str)]| {
+        let mut args = vec![jfk.to_str().unwrap(), "--model", model.as_str()];
+        args.extend_from_slice(extra);
+        let output = transcribe(root.path(), &args, env, None);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        let text = if extra.contains(&"json") {
+            json(&output)["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            stdout(&output)
+        };
+        assert_eq!(words(&text), words(JFK_TEXT));
+    };
+
+    run(&[], &env);
+    let (all, public) = uses_of(root.path());
+    let want: BTreeMap<String, u64> = [("Americans".to_string(), 1), ("country".to_string(), 1)]
+        .into_iter()
+        .collect();
+    assert_eq!(all, want, "each term the text holds, once per dictation");
+    assert_eq!(public, want, "a public dictation reaches both maps");
+    assert_eq!(std::fs::read(&store_file).unwrap(), before, "no rev moved");
+
+    run(&["--no-dictionary"], &env);
+    let agent = [env[0], ("BIOROUTER_TERMINAL", "1")];
+    run(&[], &agent);
+    assert_eq!(uses_of(root.path()).0, want, "neither raised anything");
+
+    run(&["--format", "json"], &env);
+    let twice: BTreeMap<String, u64> = want.keys().map(|k| (k.clone(), 2)).collect();
+    assert_eq!(uses_of(root.path()), (twice.clone(), twice));
+    assert_eq!(std::fs::read(&store_file).unwrap(), before);
 }
 
 /// `transcribe` with each catalog model found in `BIOROUTER_DICTATION_MODELS_DIR` writes

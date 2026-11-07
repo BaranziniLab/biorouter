@@ -24,7 +24,7 @@ pub use biorouter_dictation::{audio, catalog, hardware, models, recognize};
 
 pub use file::{RecordingTimings, RecordingTranscript, TimedText};
 
-pub use bias::{bias_set, BiasChannels, BiasTarget, DictionaryRequest, Standing};
+pub use bias::{bias_set, record_usage, BiasChannels, BiasTarget, DictionaryRequest, Standing};
 pub use biorouter_dictation::audio::{PcmSlice, Span};
 pub use biorouter_dictation::protocol::{Hello, Loaded, TranscribeResult};
 pub use biorouter_dictation::supervisor::LoadSpec;

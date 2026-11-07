@@ -47,10 +47,10 @@ pub use schema::{
 };
 pub use tier_user::UserDictionaryTierChange;
 pub use transfer::{ImportFormat, ImportPlan, ImportRow, RowOutcome};
-pub use usage::{UsageDelta, UsageFile, UsageRecord, UsageScope};
+pub use usage::{UsageDelta, UsageFile, UsageRecord, UsageScope, USAGE_FLUSH_BUDGET};
 pub use validate::ValidationCode;
 
-use lock::{write_atomically, StoreLock};
+use lock::{replace_unsynced, write_atomically, StoreLock};
 use schema::{STORE_FILE, USAGE_FILE};
 
 /// MSG-NOT-FOUND.
@@ -384,7 +384,10 @@ impl DictionaryStore {
     /// `budget` for it; `false` when the budget ran out and the batch was dropped. Never
     /// touches `dictionary.json`, so no row's `rev` changes. Counters of rows that no
     /// longer exist are dropped on the way. A usage file this version cannot read is
-    /// [`StoreError::Unreadable`] and is left as it is.
+    /// [`StoreError::Unreadable`] and is left as it is; an empty one starts over. The file
+    /// is replaced by a rename with no flush to disk (`replace_unsynced` in `lock.rs`), because
+    /// its counters are loss tolerant and the flush would sit before a one shot
+    /// transcription's exit.
     pub fn flush_usage(
         &self,
         deltas: &[(EntryId, UsageScope, UsageDelta)],
@@ -395,6 +398,9 @@ impl DictionaryStore {
         };
         let usage_path = self.usage_path();
         let mut usage = match read_stamped(&usage_path)? {
+            // An empty file is what an unsynced replace can leave after a power cut, never
+            // a newer version's counters, so it starts over rather than stopping usage.
+            Some((bytes, _)) if bytes.is_empty() => UsageFile::default(),
             Some((bytes, _)) => match UsageFile::parse(&bytes) {
                 Some(usage) => usage,
                 None => return Err(StoreError::Unreadable { path: usage_path }),
@@ -409,7 +415,7 @@ impl DictionaryStore {
                 file.entries.iter().map(|e| e.id.as_str()).collect();
             usage.retain_ids(|id| ids.contains(id));
         }
-        write_atomically(&usage_path, &usage.to_bytes())?;
+        replace_unsynced(&usage_path, &usage.to_bytes())?;
         Ok(true)
     }
 }
@@ -577,6 +583,42 @@ mod tests {
         assert_eq!(view.usage(&id, UsageScope::Public).unwrap().uses, 1);
         let usage = UsageFile::parse(&fs::read(store.usage_path()).unwrap()).unwrap();
         assert_eq!(usage.all.len(), 1, "a gone row's counters are dropped");
+    }
+
+    /// The usage file is replaced with no flush to disk, so a power cut can leave it
+    /// empty: an empty file starts over, while one this version cannot parse (a newer
+    /// version's counters) is still refused and left byte identical.
+    #[test]
+    fn an_empty_usage_file_starts_over_and_an_unreadable_one_is_kept() {
+        let (_root, store) = store();
+        let id = add(&store, "EPAS1", EntryTier::Public);
+        let bump = [(
+            id.clone(),
+            UsageScope::All,
+            UsageDelta {
+                uses: 1,
+                corrected_to: 0,
+                last_used_at: Some(now()),
+            },
+        )];
+        fs::write(store.usage_path(), b"").unwrap();
+        assert!(store.flush_usage(&bump, Duration::ZERO).unwrap());
+        assert_eq!(
+            store
+                .view()
+                .unwrap()
+                .usage(&id, UsageScope::All)
+                .unwrap()
+                .uses,
+            1
+        );
+        let newer = br#"{"all":{},"public":{},"later":1}"#;
+        fs::write(store.usage_path(), newer).unwrap();
+        assert!(matches!(
+            store.flush_usage(&bump, Duration::ZERO),
+            Err(StoreError::Unreadable { .. })
+        ));
+        assert_eq!(fs::read(store.usage_path()).unwrap(), newer);
     }
 
     #[test]

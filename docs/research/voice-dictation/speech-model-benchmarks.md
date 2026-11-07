@@ -937,6 +937,66 @@ The dictionary arm of Tier 1 (`primock57_dictionary`, the shipped mechanism befo
 - Dictation into a composer, accents beyond the sets', and Biorouter's own capture path.
 - Latency of a release build: the medians include a debug build's bonus callback.
 
+## Addendum 2026-11-06: the prompt tail and the shipped default's Tier 1 floors
+
+PR-14b, on branch `feat/local-dictation` on top of `4dded4285`, with the setup of the M-22 run above (the real service and worker, a debug test binary, Metal unless a table says CPU, one Apple M4 Max shared with other work). The dictionary and the 30 prompt terms are M-22's, so the no tail arm below is M-22's prompt arm run again, and it gave the same counts. Tables T1 to T3 belong to this addendum.
+
+### The prompt tail
+
+**Question.** PR-14's live check found that the token prompt drops Whisper's final sentence punctuation (turbo's prompt arm in M-22 lost it on 26 of the 42 synthetic dictation clips) and that a text prompt ending in a period restored it in `whisper-cli`. Does a period after the prompt's best term, sent with the shipped mechanism (canonical ids, the period its own piece, so the ids end with the period token), restore it without a cost? DD-45 said "no lead in or tail".
+
+**Rule, fixed before the numbers.** On each model, a clip lost its final punctuation when the no dictionary arm's raw text ends in `.`, `?` or `!` and the no tail arm's raw text, not empty, does not. The tail is adopted only if, on both models, it restores final punctuation on at least 90 % of those clips, its strict recall pooled over the two real sets is no more than 3 points below no tail, its synthetic recall no more than 5 points below, and its insertions are no higher on the probe clips nor, taken on their own, on reversed speech (the rule as set named the probe clips; reversed speech was added as the stricter reading).
+
+**Method.** `prompt_tail` in `crates/biorouter/tests/dictation_accuracy.rs`: no dictionary, the shipped channels (the prompt alone, with correction) without the tail, and with it, on M-22's material (the PriMock57 subset, the Fareez et al. 2022 subset, the synthetic dictation, nonspeech, probe and reversed clips; 189 real term occurrences, so the 3 point margin).
+
+**Table T1. The prompt tail [measured]**
+
+| Model | Arm | Real (189) | Synthetic (81) | Probe insertions | Reversed insertions | Nonspeech outputs | Collapses | Word error rate, real and synthetic | Median ms |
+|---|---|---|---|---|---|---|---|---|---|
+| `small.en` | none | 119 (63.0 %) | 31 (38.3 %) | 0 | 0 | 0 | 0 | 14.9 %, 10.5 % | 103 |
+| `small.en` | no tail | 151 (79.9 %) | 73 (90.1 %) | 0 | 1 | 0 | 0 | 12.8 %, 3.5 % | 123 |
+| `small.en` | tail | 151 (79.9 %) | 74 (91.4 %) | 0 | 1 | 0 | 0 | 12.4 %, 2.2 % | 124 |
+| turbo | none | 151 (79.9 %) | 35 (43.2 %) | 0 | 0 | 1 | 0 | 9.9 %, 12.9 % | 286 |
+| turbo | no tail | 165 (87.3 %) | 71 (87.7 %) | 0 | 0 | 1 | 0 | 9.2 %, 3.1 % | 297 |
+| turbo | tail | 166 (87.8 %) | 70 (86.4 %) | 0 | 0 | 0 | 0 | 9.5 %, 3.1 % | 299 |
+
+Recall is on the corrected text; the word error rate ignores case, punctuation and fillers.
+
+**Table T2. Final punctuation, of the clips that ended a sentence with no dictionary [measured]**
+
+| Model | Lost without the tail (dictation, probe, real) | Restored by the tail | Lost by the tail where no tail kept it |
+|---|---|---|---|
+| `small.en` | 15 (3, 4, 8) | 15 (100 %) | 0 |
+| turbo | 88 (26, 33, 29) | 83 (94.3 %) | 0 |
+
+The five turbo clips the tail left without a period are real utterances cut mid sentence (they end in `but`, `and`, `Implanon,`), which the no dictionary arm had closed with a period.
+
+**Decision.** The tail passed every rule on both models, so it ships: `prompt::with_tail` puts the period after the best term when that term ends in a letter or a digit, and `DictionaryRequest::prompt_terms` sends it (DD-45). With the tail, echo or collapse retries also fell, from 15 to 9 on `small.en` and from 6 to 5 on turbo.
+
+### Tier 1's floors for the shipped default
+
+M-22's outcome changed the default, so Tier 1's dictionary arm (`primock57_dictionary`, the set's own 26 terms as the dictionary) ran again with the shipped mechanism, the token prompt alone ending in the period, with correction, now on the same three conditions as the baseline arm. On this Mac's CPU (`BIOROUTER_DICTATION_ACCURACY_CPU=1`) the turbo baseline arm was not run again; its figures are PR-12's.
+
+**Table T3. Tier 1 on the PriMock57 subset, 85 term occurrences per condition [measured]**
+
+| Model | Backend | Arm | Clean | SNR 10 | Reverb | Spurious insertions (clean, SNR 10, reverb, gaps) | Gaps with output | Median ms, clean |
+|---|---|---|---|---|---|---|---|---|
+| `small.en` | Metal | baseline | 41 | 21 | 28 | 0, 0, 0, 0 | 0 | 129 |
+| `small.en` | Metal | dictionary | 67 (66 before correction) | 48 | 51 | 0, 0, 3, 0 | 0 | 136 |
+| `small.en` | CPU | baseline | 40 | 21 | 28 | 0, 0, 0, 0 | 0 | 390 |
+| `small.en` | CPU | dictionary | 66 (66) | 46 | 50 | 0, 0, 3, 0 | 0 | 428 |
+| turbo | Metal | baseline | 63 | 49 | 54 | 0, 0, 0, 0 | 1 | 301 |
+| turbo | Metal | dictionary | 74 (74) | 64 | 69 | 0, 1, 0, 0 | 1 | 309 |
+| turbo | CPU | dictionary | 75 (74) | 65 | 69 | 0, 1, 0, 0 | 0 | 4,683 |
+
+No condition collapsed and no correction turned a correct reference word into another. M-22's run of the same arm with both channels had measured 65 (`small.en`) and 77 (turbo) on the clean utterances. Every spurious insertion is on a degraded copy and is the prompt turning a garbled `Paracetamol` into another listed drug: `Cetraben` and twice `Piriton` for `small.en` under reverb, `Piriton` for turbo at SNR 10, where the baseline wrote ordinary words (`seatable`, `practice`, `repair`).
+
+**The floors, written into the test with this date.** Strict recall on the clean utterances 62 for `small.en` and 70 for turbo, 4 hits (5 points) under the lower of the Metal and CPU runs; 0 collapses and 0 false corrections on every condition; spurious insertions 0 on the clean utterances and the gaps, as the baseline, and on the degraded copies no more than measured (`small.en` 0 at SNR 10 and 3 under reverb, turbo 1 at SNR 10 and 0 under reverb), because no prompt can keep the plan's "no higher than the baseline" there. No hosted x86 CPU has run them yet; the first Tier 1 run in CI is that check. Until it has, a degraded copy's insertion count above these fails only on Apple Silicon, and is a warning elsewhere.
+
+### The tail and correction (review fix, 2026-11-06)
+
+A review found that the tail also reached correction: the fuzzy matcher's prompt piece guard exempts the entry a span would become by its written form, so with `Modulite.` as the best term a truncated hearing (`Modulit`) of that same term was no longer corrected. Correction now reads the prompt without the period the tail added. The numbers above are unchanged by it. In T1 the best term is `Advil`, five characters and so matched exactly, never fuzzily, so the guard never read it for that term. In T3 it is `paracetamol`, which fuzzy matching can reach, and the dictionary arm of T3, run again on Metal after the fix, gave the same counts on every condition (`small.en` 67, 48 and 51; turbo 74, 64 and 69; the same spurious insertions, no collapse and no false correction) [M].
+
 ## What the numbers support
 
 Each conclusion names the tables that support it. Where the numbers do not settle a point, it says so. The decisions themselves are made in the [implementation plan](../../dictation/implementation-plan.md)'s decision register.

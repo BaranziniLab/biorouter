@@ -4,7 +4,16 @@
 # Runs the real speech models on the CPU of a hosted runner: the JFK sample through the
 # product's own service, worker and CLI, and the PriMock57 evaluation set
 # (`eval-primock57-subset-r1` in BaranziniLab/biorouter-models, pinned by SHA-256 in the
-# test) with no dictionary, the baseline arm. PR-14 adds the dictionary arm.
+# test) twice: with no dictionary (the baseline arm, PR-12) and with the set's 26 terms
+# through the shipped mechanism (the dictionary arm, PR-14). Since PR-14b the shipped
+# mechanism is the token prompt alone, ending in a period, with correction (M-22), and the
+# dictionary arm's floors were set again for it on 2026-11-06: strict recall on the clean
+# utterances, and on every condition no collapse, no false correction and no more
+# spurious insertions than its recorded floor (`DICTIONARY_RECALL_FLOORS`,
+# `DEGRADED_INSERTION_FLOORS` in crates/biorouter/tests/dictation_accuracy.rs). The
+# degraded copies' insertion floors were measured on Apple Silicon only and have no
+# headroom, so on this x86 runner a count above them is a `::warning::`, not a failure,
+# until the first hosted run's counts are written into the test.
 #
 # Schedule: small.en every night and on pull requests that touch the engine; turbo every
 # week; both default models on a dispatch, whose run is named `Dictation accuracy
@@ -133,13 +142,17 @@ jobs:
       - name: cargo test (model download, live)
         run: cargo test -p biorouter-dictation --features engine --test model_download_live --locked -- --ignored
 
-      # The JFK sample and PriMock57 through the real service and worker. A model missing
-      # from the cache is installed by the product's installer.
-      - name: cargo test (Tier 1 accuracy, baseline arm)
+      # The JFK sample and PriMock57 through the real service and worker, both arms, with
+      # their floors. A model missing from the cache is installed by the product's
+      # installer. M-22's arms and the prompt tail measurement need the synthetic set,
+      # which CI does not have, so they say so and return.
+      - name: cargo test (Tier 1 accuracy, baseline and dictionary arms)
         run: cargo test -p biorouter --features local-dictation --test dictation_accuracy --locked -- --ignored
 
       # `biorouter transcribe` with the real model; an MP3 encoded by ffmpeg decodes, and
-      # the M4A and Ogg files it encodes are refused with the ffmpeg line (DD-78).
+      # the M4A and Ogg files it encodes are refused with the ffmpeg line (DD-78); an
+      # agent's shell gets no private term (DD-77); the terms a transcript holds have their
+      # `uses` raised after the text is out (PR-14b).
       - name: cargo test (transcribe and file decoding)
         run: cargo test -p biorouter-cli --test dictation_cli --locked -- --ignored --test-threads=1
 
@@ -163,6 +176,21 @@ jobs:
                         f"{100 * row['word_error_rate']:.1f} % | {row['median_ms']} ms | {row['real_time_factor']:.2f} |")
               gaps = conditions.get("gaps", {})
               print(f"\n{model}: {gaps.get('outputs')} of {gaps.get('of')} gaps gave output (floor {gaps.get('floor')}); backend {conditions.get('backend')}\n")
+          dictionary = os.path.join(os.path.dirname(path), "dictionary-summary.json")
+          if os.path.exists(dictionary):
+              print("\n**With the dictionary** (the shipped mechanism)\n")
+              print("| model | condition | strict recall | floor | before correction | collapses | false corrections | spurious insertions | median per clip |")
+              print("|---|---|---|---|---|---|---|---|---|")
+              for model, conditions in json.load(open(dictionary)).items():
+                  for name, row in conditions.items():
+                      if not isinstance(row, dict) or "hits" not in row:
+                          continue
+                      floor = row.get("floor")
+                      print(f"| {model} | {name} | {row['hits']}/{row['occurrences']} | {floor if floor is not None else '-'} | "
+                            f"{row['raw_hits']} | {len(row['collapses'])} | {len(row['false_corrections'])} | "
+                            f"{row['spurious_insertions']} | {row['median_ms']} ms |")
+                  gaps = conditions.get("gaps", {})
+                  print(f"\n{model}: {gaps.get('outputs')} of {gaps.get('of')} gaps gave output (floor {gaps.get('floor')}), spurious insertions {gaps.get('spurious_insertions')}\n")
           PY
 
       - name: Upload the tables and transcripts

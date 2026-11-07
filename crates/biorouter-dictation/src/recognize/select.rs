@@ -9,8 +9,16 @@
 //!       + 1.0 * in_active_kb                             0 in v1
 //!       - 4.0 * collides * (1 - in_context)
 //!       - 2.0 * saturated                                uses >= 5 and corrected_to == 0
-//! ties: updated_at descending, then id
+//! ties: updated_at descending, then the fold key, then the written form, then id
 //! ```
+//!
+//! Terms added together share a score and an `updated_at` second, so the order among
+//! them must come from the terms themselves: the fold key (`store::fold::fold_key`) and
+//! then the written form, which tells apart two spellings that fold alike (`EPAS1`,
+//! `Epas1`). Ids are random, so before PR-14b two dictionaries holding the same terms
+//! sent their prompts in different orders and transcribed 3 of 8 clips differently [M].
+//! The id now decides only between twins of the two tiers, which `EligibleEntries` has
+//! already merged.
 //!
 //! `in_context` is 1 when a written form, a spoken form or an active misrecognition occurs
 //! as a whole word in the request's context, case folded. The context ranks only: it never
@@ -24,6 +32,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 
 use super::{prompt, EligibleEntries, RecognitionEntry};
+use crate::store::fold::fold_key;
 
 /// How many ranked entries the prompt and the fuzzy set draw from.
 pub const TOP: usize = 30;
@@ -135,12 +144,15 @@ pub(crate) fn plan_entries(
         .zip(&in_context)
         .map(|(e, c)| score(e, *c, now))
         .collect();
+    let folded: Vec<String> = entries.iter().map(|e| fold_key(&e.written)).collect();
     let mut ranked: Vec<usize> = (0..entries.len()).collect();
     ranked.sort_by(|&a, &b| {
         let (ea, eb) = (&entries[a], &entries[b]);
         scores[b]
             .total_cmp(&scores[a])
             .then(eb.updated_at.cmp(&ea.updated_at))
+            .then(folded[a].cmp(&folded[b]))
+            .then(ea.written.cmp(&eb.written))
             .then(ea.id.cmp(&eb.id))
     });
     let prompt_terms = prompt::pick(entries, &ranked, &in_context);
@@ -207,22 +219,68 @@ mod tests {
         assert_eq!(plan.in_context, [false, false, false], "whole words only");
     }
 
+    /// DD-45's tie rule: `updated_at` descending, then the fold key, then the written
+    /// form; the random id never decides between two different terms.
     #[test]
-    fn ties_break_on_updated_at_then_id() {
-        let older = with(entry("AAA1"), |e| {
+    fn ties_break_on_updated_at_then_the_term() {
+        // None of these collides with an English word, so every score is 0.
+        let older = with(entry("ZQA1"), |e| {
+            e.id = "dct_0".into();
             e.updated_at -= Duration::days(1);
         });
-        let newer = entry("BBB1");
-        let same_time_b = with(entry("CCC1"), |e| e.id = "dct_b".into());
-        let same_time_a = with(entry("DDD1"), |e| e.id = "dct_a".into());
-        let entries = vec![older, newer, same_time_b, same_time_a];
+        let entries = vec![
+            older,
+            with(entry("ZQD1"), |e| e.id = "dct_a".into()),
+            with(entry("Epas1"), |e| e.id = "dct_1".into()),
+            with(entry("ZQB1"), |e| e.id = "dct_z".into()),
+            with(entry("EPAS1"), |e| e.id = "dct_9".into()),
+        ];
+        assert!(entries.iter().all(|e| score(e, false, now()) == 0.0));
         let plan = plan_entries(&entries, "", now());
         let order: Vec<&str> = plan
             .ranked
             .iter()
             .map(|&i| entries[i].written.as_str())
             .collect();
-        assert_eq!(order, ["DDD1", "CCC1", "BBB1", "AAA1"]);
+        // `EPAS1` and `Epas1` fold alike, so their written forms decide; the older `ZQA1`
+        // comes last although its fold key and its id come first.
+        assert_eq!(order, ["EPAS1", "Epas1", "ZQB1", "ZQD1", "ZQA1"]);
+    }
+
+    /// Two dictionaries with the same terms, added in the same second with different
+    /// random ids and in a different order, give the same prompt (PR-14's live check
+    /// found 3 of 8 clips transcribed differently before).
+    #[test]
+    fn the_same_terms_give_the_same_prompt() {
+        let terms = [
+            "EPAS1",
+            "EGLN1",
+            "HIF-2α",
+            "UCSF",
+            "Baranzini",
+            "OMOP",
+            "natalizumab",
+            "ocrelizumab",
+            "scRNA-seq",
+            "Biorouter",
+            "VHL",
+        ];
+        let dictionary = |ids: &dyn Fn(usize) -> String, reversed: bool| {
+            let mut entries: Vec<RecognitionEntry> = terms
+                .iter()
+                .enumerate()
+                .map(|(i, t)| with(entry(t), |e| e.id = ids(i)))
+                .collect();
+            if reversed {
+                entries.reverse();
+            }
+            plan_entries(&entries, "", now()).prompt_terms
+        };
+        let first = dictionary(&|i| format!("dct_{:02}", i), false);
+        let second = dictionary(&|i| format!("dct_{:02}", 99 - i), true);
+        assert_eq!(first, second);
+        // Best last: the earliest fold key.
+        assert_eq!(first.last().map(String::as_str), Some("Baranzini"));
     }
 
     #[test]

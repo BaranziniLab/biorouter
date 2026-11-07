@@ -47,8 +47,12 @@ pub const MSG_DICTIONARY_AGENT: &str =
 pub const MSG_DICTIONARY_TTY: &str = "Changing the dictionary needs you at an interactive terminal. To add terms from a file or a pipe, use `biorouter dictionary import`.";
 /// `export --include-private` where DD-77 does not admit it (exit 2).
 pub const MSG_EXPORT_PRIVATE_REFUSED: &str = "Exporting private terms needs you at your own terminal and a private model configured on this computer. Run the command without --include-private to export public terms.";
-/// MSG-PUBLICIZE-WARN.
+/// MSG-PUBLICIZE-WARN, before publicizing a private row that came from a chat
+/// ([`came_from_a_chat`]).
 pub const MSG_PUBLICIZE_WARN: &str = "This term came from a private chat. Making it public lets it appear when you dictate into chats on public models.";
+/// MSG-PUBLICIZE-WARN-NO-CHAT, before publicizing a private row nothing shows came from a
+/// chat: one the person added as private, made private, or imported.
+pub const MSG_PUBLICIZE_WARN_NO_CHAT: &str = "This term is private. Making it public lets it appear when you dictate into chats on public models.";
 /// MSG-EXPORT-PRIVATE, and its two answers.
 pub const MSG_EXPORT_PRIVATE: &str =
     "This file leaves Biorouter. It will include your private terms.";
@@ -1136,6 +1140,38 @@ fn export(
     Ok(())
 }
 
+/// Whether a private row shows that it came from a chat, so MSG-PUBLICIZE-WARN may say so.
+/// A row the person made private (`privatized_by_user`) did not, whatever made it first,
+/// and neither did an imported one. A row from the agent (`dictionary__add_terms`) or the
+/// chat extractor did. A person's add or a learned correction did when it names its chat
+/// (`suggested_in`) or carries one or more institutions, which only a chat's stamp gives
+/// such a row. One that carries no institution shows no private chat: `null` is what a
+/// person's add with no chat carries, and also an add inside a chat whose model and
+/// connectors name no institution; `[]` is what an add carries when its chat could not be
+/// read or resolved, such as a shared transcript, which need not be a private chat. Such a
+/// row gets MSG-PUBLICIZE-WARN-NO-CHAT, which claims no chat.
+fn came_from_a_chat(row: &Entry) -> bool {
+    use store::schema::ProvenanceReason;
+    if row
+        .provenance
+        .as_ref()
+        .is_some_and(|p| p.reason == ProvenanceReason::PrivatizedByUser)
+    {
+        return false;
+    }
+    match row.source {
+        EntrySource::Agent | EntrySource::Auto => true,
+        EntrySource::Import => false,
+        EntrySource::User | EntrySource::Correction => {
+            row.suggested_in.is_some()
+                || row
+                    .affiliation
+                    .as_ref()
+                    .is_some_and(|a| !a.institutions.is_empty())
+        }
+    }
+}
+
 /// `publicize` and `privatize`: the person types the term exactly (O-5), and only then
 /// is the tier proof built, here and nowhere else in this crate.
 fn change_tier(
@@ -1157,7 +1193,12 @@ fn change_tier(
         return Ok(());
     };
     if tier == EntryTier::Public {
-        writeln!(io.err, "{MSG_PUBLICIZE_WARN}")?;
+        let warning = if came_from_a_chat(&row) {
+            MSG_PUBLICIZE_WARN
+        } else {
+            MSG_PUBLICIZE_WARN_NO_CHAT
+        };
+        writeln!(io.err, "{warning}")?;
     }
     let verb = if tier.is_private() {
         "private"
@@ -1663,8 +1704,9 @@ mod tests {
         );
     }
 
-    /// `publicize` shows MSG-PUBLICIZE-WARN and needs the term typed exactly; a wrong
-    /// or blank answer changes nothing.
+    /// `publicize` shows the publicize warning and needs the term typed exactly; a wrong
+    /// or blank answer changes nothing. A term the person added as private at a terminal
+    /// came from no chat, so the warning claims none.
     #[test]
     fn publicize_needs_the_typed_term() {
         let (_root, store) = fresh();
@@ -1681,7 +1723,8 @@ mod tests {
             };
             let run = run_with(&store, &terminal(), &mut script, "", publicize());
             assert_eq!(run.result.err().map(|f| f.exit), exit, "{typed:?}");
-            assert!(run.err.contains(MSG_PUBLICIZE_WARN));
+            assert!(run.err.contains(MSG_PUBLICIZE_WARN_NO_CHAT), "{}", run.err);
+            assert!(!run.err.contains(MSG_PUBLICIZE_WARN));
             assert_eq!(
                 std::fs::read(store.store_path()).unwrap(),
                 before,
@@ -1715,8 +1758,129 @@ mod tests {
         );
         assert_eq!(run.result, Ok(()));
         assert!(!run.err.contains(MSG_PUBLICIZE_WARN));
+        assert!(!run.err.contains(MSG_PUBLICIZE_WARN_NO_CHAT));
         let row = store.view().unwrap().entries()[0].clone();
         assert_eq!((row.tier, row.affiliation), (EntryTier::Private, None));
+    }
+
+    /// PR-14's live check: a term added publicly at a terminal and then privatized was
+    /// said to come "from a private chat". The warning claims a chat only when the row
+    /// shows one: the agent's and the extractor's rows, and a person's row or a learned
+    /// correction that names its chat or carries a chat's institutions. A row the person
+    /// privatized, or imported, never does.
+    #[test]
+    fn the_publicize_warning_claims_a_chat_only_when_the_row_shows_one() {
+        use store::schema::{Provenance, ProvenanceReason};
+        use store::RowAffiliation;
+
+        let (_root, store) = fresh();
+        go(&store, &terminal(), add_action("EPAS1", true));
+        let warning_for = |edit: &dyn Fn(&mut Entry)| -> String {
+            store
+                .write(|file| {
+                    edit(&mut file.entries[0]);
+                    Ok(())
+                })
+                .unwrap();
+            let mut script = Script {
+                phrases: VecDeque::from([String::new()]),
+                ..Script::default()
+            };
+            let run = run_with(
+                &store,
+                &terminal(),
+                &mut script,
+                "",
+                Action::Publicize {
+                    term: Some("EPAS1".into()),
+                    id: None,
+                },
+            );
+            assert_eq!(run.result, Ok(()), "a blank answer cancels");
+            let warnings: Vec<&str> = run
+                .err
+                .lines()
+                .filter(|l| l.contains("Making it public"))
+                .collect();
+            assert_eq!(warnings.len(), 1, "{}", run.err);
+            warnings[0].to_string()
+        };
+        let reset = |e: &mut Entry| {
+            e.source = EntrySource::User;
+            e.suggested_in = None;
+            e.affiliation = None;
+            e.provenance = None;
+        };
+        let chat = MSG_PUBLICIZE_WARN.to_string();
+        let no_chat = MSG_PUBLICIZE_WARN_NO_CHAT.to_string();
+        let institutions = || {
+            Some(RowAffiliation {
+                institutions: vec!["ucsf".into()],
+            })
+        };
+        type Edit = Box<dyn Fn(&mut Entry)>;
+        let cases: Vec<(&str, Edit, &String)> = vec![
+            (
+                "a person's add with no chat",
+                Box::new(|_: &mut Entry| {}),
+                &no_chat,
+            ),
+            (
+                "the agent's",
+                Box::new(|e: &mut Entry| e.source = EntrySource::Agent),
+                &chat,
+            ),
+            (
+                "the extractor's",
+                Box::new(|e: &mut Entry| e.source = EntrySource::Auto),
+                &chat,
+            ),
+            (
+                "a person's add inside a chat that names institutions",
+                Box::new(move |e: &mut Entry| e.affiliation = institutions()),
+                &chat,
+            ),
+            (
+                "an add whose chat could not be read",
+                Box::new(|e: &mut Entry| e.affiliation = Some(RowAffiliation::unknown())),
+                &no_chat,
+            ),
+            (
+                "a correction that names its chat",
+                Box::new(|e: &mut Entry| {
+                    e.source = EntrySource::Correction;
+                    e.suggested_in = Some("20261106_1".into());
+                }),
+                &chat,
+            ),
+            (
+                "an import",
+                Box::new(move |e: &mut Entry| {
+                    e.source = EntrySource::Import;
+                    e.affiliation = institutions();
+                }),
+                &no_chat,
+            ),
+            (
+                "the agent's row the person made private",
+                Box::new(|e: &mut Entry| {
+                    e.source = EntrySource::Agent;
+                    e.suggested_in = Some("20261106_3".into());
+                    e.provenance = Some(Provenance {
+                        reason: ProvenanceReason::PrivatizedByUser,
+                        at: store::schema::now(),
+                    });
+                }),
+                &no_chat,
+            ),
+        ];
+        for (label, edit, want) in cases {
+            let line = warning_for(&|e: &mut Entry| {
+                reset(e);
+                edit(e);
+            });
+            assert_eq!(&line, want, "{label}");
+        }
     }
 
     /// A term that names twins asks which, or takes `--id`.
@@ -2299,6 +2463,7 @@ mod tests {
             (MSG_EXPORT_PRIVATE_REFUSED.into(), "Exporting private terms needs you at your own terminal and a private model configured on this computer. Run the command without --include-private to export public terms."),
             (MSG_DICTIONARY_AGENT.into(), "Changing the dictionary needs the person. The agent's terms go through dictionary__add_terms."),
             (MSG_PUBLICIZE_WARN.into(), "This term came from a private chat. Making it public lets it appear when you dictate into chats on public models."),
+            (MSG_PUBLICIZE_WARN_NO_CHAT.into(), "This term is private. Making it public lets it appear when you dictate into chats on public models."),
             (MSG_EXPORT_PRIVATE.into(), "This file leaves Biorouter. It will include your private terms."),
             (MSG_EMPTY.into(), "No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1."),
             (MSG_SPOKEN_ONE_TERM.into(), "Use --spoken with one term at a time."),

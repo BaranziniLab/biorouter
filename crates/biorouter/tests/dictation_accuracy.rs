@@ -12,9 +12,14 @@
 //!   rates and the time per clip, writes the transcripts and per term tables, and holds
 //!   the baseline floors: no output on the gaps (turbo at most 1 of 16) and no collapse on
 //!   any condition.
-//! * `primock57_dictionary` (PR-14): the dictionary arm, the shipped mechanism with the
-//!   set's 26 terms as the person's dictionary, built through `bias_set` like every other
-//!   caller. It reports strict recall beside the baseline's and holds the same floors.
+//! * `primock57_dictionary` (PR-14, floors set again by PR-14b): the dictionary arm, the
+//!   shipped mechanism (the token prompt alone since M-22, and correction) with the set's
+//!   26 terms as the person's dictionary, built through `bias_set` like every other caller,
+//!   on the same three conditions and the gaps. It holds Tier 1's floors: strict recall on
+//!   the clean utterances, and on every condition no collapse, no false correction and no
+//!   more spurious insertions than the baseline (than the recorded counts on the degraded
+//!   copies, a warning on a machine other than the Apple Silicon they were measured on),
+//!   and the gaps' floor.
 //! * `m22_arms` (PR-14): M-22's arms (`testing-and-release.md`, "The M-22 decision and its
 //!   fallback"): no dictionary, the token prompt, the decoder bonus and both, each with
 //!   correction and without, on the real sets (PriMock57, and the Fareez et al. 2022
@@ -24,7 +29,10 @@
 //!   the term lists alone, so every arm that carries a prompt sends the same 30 terms,
 //!   which the run prints and records. It computes the DD-44 rules that were fixed before
 //!   the numbers (rule 1 for the channels, rule 2 for `temperature_inc` and timestamps)
-//!   and writes both decisions; it asserts nothing about which channel wins.
+//!   and writes both decisions; it asserts nothing about which channel wins. Its "both"
+//!   arm is `BiasChannels::BOTH`, since M-22 made the prompt alone the default.
+//! * `prompt_tail` (PR-14b): the shipped channels with and without a period after the
+//!   prompt's last term, on the same material, and the rule fixed before the numbers.
 //!
 //! Inputs, read only by this test:
 //! * `BIOROUTER_DICTATION_MODELS_DIR`: the folder holding the catalog models; a model
@@ -90,6 +98,11 @@ const TESTS: &[Test] = &[
         "m22_arms",
         Some("needs the real speech models, the evaluation set and the synthetic set"),
         |rt| rt.block_on(m22_arms()),
+    ),
+    (
+        "prompt_tail",
+        Some("needs the real speech models, the evaluation set and the synthetic set"),
+        |rt| rt.block_on(prompt_tail()),
     ),
 ];
 
@@ -681,7 +694,8 @@ const SYNTHETIC_TERMS: [&str; 14] = [
 /// it. With no context and no usage every score is equal, and ties break on `updated_at`
 /// descending, so the ranking (and with it the prompt's 30 terms and the fuzzy set) is the
 /// list's own order: the same in every run and in every arm built from this value. Equal
-/// stamps would fall through to the random ids.
+/// stamps would fall through to the terms' fold keys (DD-45's tie rule since PR-14b), never
+/// to the random ids.
 fn eligible_of(terms: &[String]) -> EligibleEntries {
     let dir = tempfile::tempdir().expect("a folder");
     let store = DictionaryStore::open(dir.path().join("dictionary"));
@@ -727,8 +741,83 @@ async fn dictate(
     (dictated, started.elapsed().as_millis() as u64)
 }
 
+/// Tier 1's floor for the dictionary arm (`testing-and-release.md`, "Tier 1", item 5):
+/// strict recall on the clean utterances, in hits of the set's 85 occurrences, with the
+/// shipped default (the token prompt alone ending in a period, with correction). Set again
+/// on 2026-11-06 by PR-14b, when M-22 made the prompt alone the default: 4 hits (5 points,
+/// what a set of 85 occurrences resolves) under the lower of the Metal and this Mac's CPU
+/// measurements (small.en 67 and 66, turbo 74 and 75), and never under the plan's starting
+/// floors of 70 % (60) and 75 % (64).
+const DICTIONARY_RECALL_FLOORS: [(&str, usize); 2] = [(SMALL_EN_ID, 62), (TURBO_ID, 70)];
+/// The baseline arm's spurious insertions of the set's terms, on every condition and the
+/// gaps: 0 for both models, on Metal and on the CPU (PR-12, 2026-11-05 and 2026-11-06). The
+/// dictionary arm may add none on the clean utterances and the gaps (item 5: "no higher
+/// than in the baseline arm").
+const BASELINE_INSERTIONS: usize = 0;
+/// The dictionary arm's spurious insertions on the degraded copies, set on 2026-11-06 by
+/// PR-14b at the most measured on Metal and on the M4 Max's CPU, with no headroom. There
+/// the prompt turns a garbled `Paracetamol` into another listed drug (`Piriton`,
+/// `Cetraben`), which the baseline, with no list, writes as ordinary words, so item 5's
+/// "no higher than the baseline" cannot hold on them with any prompt. A rise fails only
+/// where these were measured ([`DEGRADED_FLOORS_MEASURED_HERE`]); on any other machine,
+/// the hosted x86 runner included, it is a `::warning::` until a run there records floors
+/// of its own, because a count can move by one with the arithmetic of another processor
+/// and these numbers have no headroom.
+const DEGRADED_INSERTION_FLOORS: [(&str, &str, usize); 4] = [
+    (SMALL_EN_ID, "snr10", 0),
+    (SMALL_EN_ID, "reverb", 3),
+    (TURBO_ID, "snr10", 1),
+    (TURBO_ID, "reverb", 0),
+];
+
+/// Whether this machine is one [`DEGRADED_INSERTION_FLOORS`] were measured on: Apple
+/// Silicon, on Metal and on its CPU (2026-11-06).
+const DEGRADED_FLOORS_MEASURED_HERE: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+
+/// Prints a GitHub Actions warning past the test runner's output capture (which takes
+/// only `print!` and `println!`), so a passing run still shows it. It starts on a line of
+/// its own, because with one test thread the runner has already printed `test <name> ...`.
+fn warn(message: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "\n::warning::{message}");
+    let _ = out.flush();
+}
+
+/// The spurious insertions the dictionary arm may make on `condition`.
+fn insertion_floor(model: &str, condition: &str) -> usize {
+    DEGRADED_INSERTION_FLOORS
+        .iter()
+        .find(|(id, c, _)| *id == model && *c == condition)
+        .map_or(BASELINE_INSERTIONS, |(_, _, n)| *n)
+}
+
+/// Corrections that turned a correct reference word into another: the change's `from`
+/// words are in the reference and its `to` words are not (item 4's false correction, read
+/// off the words, case and punctuation ignored).
+fn false_corrections(
+    reference: &str,
+    changes: &[biorouter_dictation::recognize::correct::Change],
+) -> Vec<String> {
+    let reference = format!(" {} ", words(reference).join(" "));
+    let holds = |text: &str| {
+        let phrase = words(text).join(" ");
+        !phrase.is_empty() && reference.contains(&format!(" {phrase} "))
+    };
+    changes
+        .iter()
+        .filter(|c| holds(&c.from) && !holds(&c.to))
+        .map(|c| format!("{} to {}", c.from, c.to))
+        .collect()
+}
+
 /// The dictionary arm of Tier 1: the shipped mechanism, with the set's own 26 terms as
-/// the person's dictionary, and the baseline's floors.
+/// the person's dictionary, on the clean utterances and the seeded SNR 10 and reverb
+/// copies, and the 16 gaps. Its floors (item 5): strict recall on the clean utterances at
+/// or above [`DICTIONARY_RECALL_FLOORS`]; on every condition no collapse and no false
+/// correction; no more spurious insertions than the baseline on the clean utterances and
+/// the gaps, and than [`DEGRADED_INSERTION_FLOORS`] on the degraded copies (a warning where
+/// those were not measured); the gaps' floor.
 async fn primock57_dictionary() {
     let (clips, terms, _unpacked) = evaluation_set();
     let speech: Vec<&Clip> = clips.iter().filter(|c| c.set == "speech").collect();
@@ -736,63 +825,145 @@ async fn primock57_dictionary() {
     let dictionary = dictionary_of(&terms, BiasChannels::DEFAULT);
     let mut failures = Vec::new();
     let mut summary = serde_json::Map::new();
+    let out = out_dir();
     for entry in selected_models() {
         let spec = spec_for(entry).await;
-        service::service()
+        let loaded = service::service()
             .prepare_with(spec.clone())
             .await
             .expect("loads");
-        let (mut hits, mut raw_hits, mut occurrences) = (0, 0, 0);
-        let mut collapses = Vec::new();
-        let mut times = Vec::new();
-        for clip in &speech {
-            let (dictated, ms) = dictate(&spec, clip.pcm.clone(), &dictionary, None).await;
-            times.push(ms);
-            let text = &dictated.transcript.text;
-            let raw = &dictated.transcript.raw_text;
-            if words(text).len() * 4 <= words(&clip.text).len() {
-                collapses.push(clip.name.clone());
+        let floor = DICTIONARY_RECALL_FLOORS
+            .iter()
+            .find(|(id, _)| *id == entry.id)
+            .map_or(0, |(_, hits)| *hits);
+        let mut model_summary = serde_json::Map::new();
+        for condition in ["clean", "snr10", "reverb"] {
+            let (mut hits, mut raw_hits, mut occurrences, mut insertions) = (0, 0, 0, 0);
+            let mut collapses = Vec::new();
+            let mut false_edits = Vec::new();
+            let mut times = Vec::new();
+            let mut transcripts = Vec::new();
+            for clip in &speech {
+                let pcm = match condition {
+                    "snr10" => with_noise(&clip.pcm, &clip.name),
+                    "reverb" => with_reverb(&clip.pcm, &clip.name),
+                    _ => clip.pcm.clone(),
+                };
+                let (dictated, ms) = dictate(&spec, pcm, &dictionary, None).await;
+                times.push(ms);
+                let text = &dictated.transcript.text;
+                let raw = &dictated.transcript.raw_text;
+                if words(text).len() * 4 <= words(&clip.text).len() {
+                    collapses.push(clip.name.clone());
+                }
+                for term in &terms {
+                    let expected = clip.terms.get(term).copied().unwrap_or(0);
+                    occurrences += expected;
+                    hits += occurrences_capped(text, term, expected);
+                    raw_hits += occurrences_capped(raw, term, expected);
+                    insertions += crate::occurrences(text, term).saturating_sub(expected);
+                }
+                for edit in false_corrections(&clip.text, &dictated.changes) {
+                    false_edits.push(format!("{}: {edit}", clip.name));
+                }
+                transcripts.push(json!({
+                    "clip": clip.name, "reference": clip.text, "raw": raw, "output": text,
+                    "changes": dictated.changes.len(), "ms": ms,
+                }));
             }
-            for term in &terms {
-                let expected = clip.terms.get(term).copied().unwrap_or(0);
-                occurrences += expected;
-                hits += occurrences_capped(text, term, expected);
-                raw_hits += occurrences_capped(raw, term, expected);
+            println!(
+                "{} {condition} with the dictionary on {}: strict recall {hits}/{occurrences} ({:.1} %), before correction {raw_hits}, collapses {}, false corrections {}, spurious insertions {insertions}, per clip median {} ms p90 {} ms",
+                entry.id,
+                loaded.backend,
+                100.0 * hits as f64 / occurrences.max(1) as f64,
+                collapses.len(),
+                false_edits.len(),
+                percentile(&times, 0.5),
+                percentile(&times, 0.9),
+            );
+            if condition == "clean" && hits < floor {
+                failures.push(format!(
+                    "{}: strict recall {hits}/{occurrences} on the clean utterances, the floor is {floor}",
+                    entry.id
+                ));
             }
+            if !collapses.is_empty() {
+                failures.push(format!("{} {condition}: collapses {collapses:?}", entry.id));
+            }
+            if !false_edits.is_empty() {
+                failures.push(format!(
+                    "{} {condition}: false corrections {false_edits:?}",
+                    entry.id
+                ));
+            }
+            let allowed_insertions = insertion_floor(entry.id, condition);
+            let enforced = condition == "clean" || DEGRADED_FLOORS_MEASURED_HERE;
+            if insertions > allowed_insertions {
+                let message = format!(
+                    "{} {condition}: {insertions} spurious insertions, the floor is {allowed_insertions}",
+                    entry.id
+                );
+                if enforced {
+                    failures.push(message);
+                } else {
+                    warn(&format!(
+                        "{message} (measured on Apple Silicon only, so reported, not failed)"
+                    ));
+                }
+            }
+            model_summary.insert(
+                condition.to_string(),
+                json!({"hits": hits, "raw_hits": raw_hits, "occurrences": occurrences,
+                       "floor": if condition == "clean" { Some(floor) } else { None },
+                       "collapses": collapses, "false_corrections": false_edits,
+                       "spurious_insertions": insertions,
+                       "insertion_floor": allowed_insertions,
+                       "insertion_floor_enforced": enforced,
+                       "median_ms": percentile(&times, 0.5), "p90_ms": percentile(&times, 0.9)}),
+            );
+            std::fs::write(
+                out.join(format!("{}-dictionary-{condition}.json", entry.id)),
+                serde_json::to_vec_pretty(&transcripts).unwrap(),
+            )
+            .unwrap();
         }
         let mut gap_outputs = Vec::new();
+        let mut gap_insertions = 0;
         for gap in &gaps {
             let (dictated, _) = dictate(&spec, gap.pcm.clone(), &dictionary, None).await;
-            if !dictated.transcript.text.is_empty() {
-                gap_outputs.push(format!("{}: {}", gap.name, dictated.transcript.text));
+            let text = &dictated.transcript.text;
+            if !text.is_empty() {
+                gap_outputs.push(format!("{}: {text}", gap.name));
             }
+            gap_insertions += terms.iter().map(|t| occurrences(text, t)).sum::<usize>();
         }
         let allowed = if entry.id == TURBO_ID { 1 } else { 0 };
         println!(
-            "{} with the dictionary: strict recall {hits}/{occurrences} ({:.1} %), before correction {raw_hits}, collapses {}, gaps with output {} (floor {allowed}), per clip median {} ms p90 {} ms",
+            "{} gaps with the dictionary: {} of {} with output (floor {allowed}), spurious insertions {gap_insertions}: {gap_outputs:?}",
             entry.id,
-            100.0 * hits as f64 / occurrences.max(1) as f64,
-            collapses.len(),
             gap_outputs.len(),
-            percentile(&times, 0.5),
-            percentile(&times, 0.9),
+            gaps.len()
         );
-        if !collapses.is_empty() {
-            failures.push(format!("{}: collapses {collapses:?}", entry.id));
-        }
         if gap_outputs.len() > allowed {
             failures.push(format!("{}: gaps {gap_outputs:?}", entry.id));
         }
-        summary.insert(
-            entry.id.to_string(),
-            json!({"hits": hits, "raw_hits": raw_hits, "occurrences": occurrences,
-                   "collapses": collapses, "gap_outputs": gap_outputs.len(),
-                   "median_ms": percentile(&times, 0.5), "p90_ms": percentile(&times, 0.9)}),
+        if gap_insertions > BASELINE_INSERTIONS {
+            failures.push(format!(
+                "{}: {gap_insertions} spurious insertions on the gaps",
+                entry.id
+            ));
+        }
+        model_summary.insert(
+            "gaps".into(),
+            json!({"outputs": gap_outputs.len(), "of": gaps.len(), "floor": allowed,
+                   "spurious_insertions": gap_insertions}),
         );
+        model_summary.insert("backend".into(), json!(loaded.backend));
+        summary.insert(entry.id.to_string(), Value::Object(model_summary));
         service::service().unload().await;
     }
     std::fs::write(
-        out_dir().join("dictionary-summary.json"),
+        out.join("dictionary-summary.json"),
         serde_json::to_vec_pretty(&Value::Object(summary)).unwrap(),
     )
     .unwrap();
@@ -938,7 +1109,10 @@ struct ArmScore {
     synthetic_hits: usize,
     synthetic_occurrences: usize,
     nonspeech_outputs: usize,
+    /// Probe and reversed speech together, the M-22 rule's count.
     insertions: usize,
+    probe_insertions: usize,
+    reversed_insertions: usize,
     collapses: usize,
     /// Per (clip, term) of the real sets, the hits, for the paired sign test.
     real_pairs: Vec<usize>,
@@ -1052,15 +1226,28 @@ fn fareez_set(dir: &Path) -> Vec<ArmClip> {
         .collect()
 }
 
-/// M-22's arms and the DD-44 decision (`testing-and-release.md`). A maintainer's
-/// measurement, not a Tier 1 gate: with no synthetic set named it says so and returns, so
-/// the nightly workflow, which runs every ignored test here, is not failed by it.
-async fn m22_arms() {
+/// M-22's material (`testing-and-release.md`, "The M-22 decision and its fallback"): the
+/// real sets, the synthetic set, the dictionary's terms and the rule 1 margin.
+struct Material {
+    real: Vec<ArmClip>,
+    synthetic: Vec<ArmClip>,
+    /// The three term lists taken in turn, each term once.
+    terms: Vec<String>,
+    real_sets: Vec<String>,
+    real_occurrences: usize,
+    margin: f64,
+    _unpacked: tempfile::TempDir,
+}
+
+/// The material, or `None` (said once) when no synthetic set is named, so the nightly
+/// workflow, which runs every ignored test here, is not failed by a maintainer's
+/// measurement.
+fn m22_material(test: &str) -> Option<Material> {
     if std::env::var_os(SYNTHETIC_ENV).is_none() {
-        println!("m22_arms: {SYNTHETIC_ENV} is not set, so M-22 was not run");
-        return;
+        println!("{test}: {SYNTHETIC_ENV} is not set, so it was not run");
+        return None;
     }
-    let (primock, primock_terms, _unpacked) = evaluation_set();
+    let (primock, primock_terms, unpacked) = evaluation_set();
     let mut real: Vec<ArmClip> = primock
         .iter()
         .map(|c| ArmClip {
@@ -1121,7 +1308,90 @@ async fn m22_arms() {
         .flat_map(|c| c.expected.iter().map(|(_, n)| *n))
         .sum();
     let margin = if real_occurrences >= 160 { 0.03 } else { 0.05 };
-    println!("M-22 real sets: {real_sets:?}, {real_occurrences} occurrences, margin {margin}");
+    println!("{test} real sets: {real_sets:?}, {real_occurrences} occurrences, margin {margin}");
+    Some(Material {
+        real,
+        synthetic,
+        terms,
+        real_sets,
+        real_occurrences,
+        margin,
+        _unpacked: unpacked,
+    })
+}
+
+/// Scores one clip's `text` into `score`: recall on the real and synthetic dictation
+/// clips, output on nonspeech, insertions of any of `terms` on probes and reversed speech,
+/// and collapses (M-22's method).
+fn score_clip(score: &mut ArmScore, clip: &ArmClip, text: &str, terms: &[String]) {
+    let exact = clip.kind != "real";
+    let found = |term: &str| {
+        if exact {
+            exact_occurrences(text, term)
+        } else {
+            occurrences(text, term)
+        }
+    };
+    match clip.kind {
+        "real" => {
+            for (term, expected) in &clip.expected {
+                let hit = found(term).min(*expected);
+                score.real_hits += hit;
+                score.real_occurrences += expected;
+                if *expected > 0 {
+                    score.real_pairs.push(hit);
+                }
+            }
+        }
+        "dictation" => {
+            for (term, expected) in &clip.expected {
+                score.synthetic_hits += found(term).min(*expected);
+                score.synthetic_occurrences += expected;
+            }
+        }
+        "gap" | "nonspeech" => {
+            score.nonspeech_outputs += usize::from(!text.trim().is_empty());
+        }
+        kind => {
+            // Probe clips and reversed speech: any dictionary term the reference does
+            // not hold is an insertion.
+            let inserted: usize = terms
+                .iter()
+                .map(|term| {
+                    exact_occurrences(text, term)
+                        .saturating_sub(exact_occurrences(&clip.reference, term))
+                })
+                .sum();
+            score.insertions += inserted;
+            if kind == "reversed" {
+                score.reversed_insertions += inserted;
+            } else {
+                score.probe_insertions += inserted;
+            }
+        }
+    }
+    if matches!(clip.kind, "real" | "dictation")
+        && words(text).len() * 4 <= words(&clip.reference).len()
+    {
+        score.collapses += 1;
+    }
+}
+
+/// M-22's arms and the DD-44 decision (`testing-and-release.md`). A maintainer's
+/// measurement, not a Tier 1 gate: with no synthetic set named it says so and returns.
+async fn m22_arms() {
+    let Some(Material {
+        real,
+        synthetic,
+        terms,
+        real_sets,
+        real_occurrences,
+        margin,
+        _unpacked,
+    }) = m22_material("m22_arms")
+    else {
+        return;
+    };
     // One eligible set for the whole run: every arm that carries a prompt sends the same
     // one, and every arm corrects with the same entries.
     let eligible = eligible_of(&terms);
@@ -1150,7 +1420,7 @@ async fn m22_arms() {
                 bonus: true,
             },
         ),
-        ("both", BiasChannels::DEFAULT),
+        ("both", BiasChannels::BOTH),
     ];
     let out = out_dir();
     let mut summary = serde_json::Map::new();
@@ -1172,7 +1442,7 @@ async fn m22_arms() {
         };
         variants.push((
             "both, temperature_inc 0".into(),
-            BiasChannels::DEFAULT,
+            BiasChannels::BOTH,
             Some(both_temp0),
         ));
         if entry.id == SMALL_EN_ID {
@@ -1182,7 +1452,7 @@ async fn m22_arms() {
             };
             variants.push((
                 "both, timestamps off".into(),
-                BiasChannels::DEFAULT,
+                BiasChannels::BOTH,
                 Some(no_timestamps),
             ));
         }
@@ -1198,52 +1468,11 @@ async fn m22_arms() {
                 let (dictated, ms) =
                     dictate(&spec, clip.pcm.clone(), &dictionary, decode.clone()).await;
                 for (score, text) in [
-                    (&mut raw, dictated.transcript.raw_text.clone()),
-                    (&mut corrected, dictated.transcript.text.clone()),
+                    (&mut raw, &dictated.transcript.raw_text),
+                    (&mut corrected, &dictated.transcript.text),
                 ] {
                     score.times_ms.push(ms);
-                    let exact = clip.kind != "real";
-                    let found = |term: &str| {
-                        if exact {
-                            exact_occurrences(&text, term)
-                        } else {
-                            occurrences(&text, term)
-                        }
-                    };
-                    match clip.kind {
-                        "real" => {
-                            for (term, expected) in &clip.expected {
-                                let hit = found(term).min(*expected);
-                                score.real_hits += hit;
-                                score.real_occurrences += expected;
-                                if *expected > 0 {
-                                    score.real_pairs.push(hit);
-                                }
-                            }
-                        }
-                        "dictation" => {
-                            for (term, expected) in &clip.expected {
-                                score.synthetic_hits += found(term).min(*expected);
-                                score.synthetic_occurrences += expected;
-                            }
-                        }
-                        "gap" | "nonspeech" => {
-                            score.nonspeech_outputs += usize::from(!text.trim().is_empty());
-                        }
-                        _ => {
-                            // Probe clips and reversed speech: any dictionary term the
-                            // reference does not hold is an insertion.
-                            for term in &terms {
-                                score.insertions += exact_occurrences(&text, term)
-                                    .saturating_sub(exact_occurrences(&clip.reference, term));
-                            }
-                        }
-                    }
-                    if matches!(clip.kind, "real" | "dictation")
-                        && words(&text).len() * 4 <= words(&clip.reference).len()
-                    {
-                        score.collapses += 1;
-                    }
+                    score_clip(score, clip, text, &terms);
                 }
                 transcripts.push(json!({"clip": clip.name, "kind": clip.kind,
                     "raw": dictated.transcript.raw_text, "text": dictated.transcript.text,
@@ -1370,8 +1599,250 @@ async fn m22_arms() {
     println!("M-22 tables and transcripts: {}", out.display());
 }
 
+/// Whether `text` ends a sentence: its last character, spaces aside, is `.`, `?` or `!`.
+fn ends_a_sentence(text: &str) -> bool {
+    text.trim_end().ends_with(['.', '?', '!'])
+}
+
+/// PR-14b: a period after the token prompt's last term (the tail, `prompt::with_tail`),
+/// against none (`DictionaryRequest::prompt_tail` off), with the shipped channels (the
+/// prompt alone, with correction) on M-22's material, both models. PR-14's live check
+/// found the prompt drops Whisper's final sentence punctuation, and that a text prompt
+/// ending in a period restored it. The worker encodes the prompt's text with canonical BPE
+/// over the model's vocabulary, and the period is its own pre split piece, so the ids are
+/// the no tail prompt's ids followed by the period token.
+///
+/// Measured on 2026-11-06 before the tail shipped, the rule passed on both models and the
+/// tail became the default. The rule was fixed before the numbers (`speech-model-benchmarks.md`, "The prompt tail"):
+/// on each model, a clip lost its final punctuation when the no dictionary arm's raw text
+/// ends a sentence and the no tail arm's raw text, not empty, does not. The tail is
+/// adopted only if, on both models, it restores final punctuation on at least 90 % of the
+/// clips that lost it, its strict recall pooled over the real sets is no more than 3
+/// points below no tail, its synthetic recall no more than 5 points below, and its
+/// insertions are not higher on the probe clips nor, taken on their own, on reversed
+/// speech. A maintainer's measurement: it asserts only that the tail is sent as the period
+/// token.
+async fn prompt_tail() {
+    use biorouter_dictation::engine::bpe::pre_split;
+
+    let Some(material) = m22_material("prompt_tail") else {
+        return;
+    };
+    let eligible = eligible_of(&material.terms);
+    let mut no_tail = DictionaryRequest::new(eligible.clone(), "", BiasChannels::DEFAULT);
+    no_tail.prompt_tail = false;
+    let tail = DictionaryRequest::new(eligible, "", BiasChannels::DEFAULT);
+    let sent = tail.prompt_terms();
+    let last = sent.last().expect("a prompt");
+    assert!(last.ends_with('.') && !no_tail.prompt_terms().contains(last));
+    let pieces = pre_split(last);
+    assert_eq!(
+        pieces.last().copied(),
+        Some("."),
+        "the period must be its own piece: {pieces:?}"
+    );
+    println!(
+        "prompt_tail: the prompt's {} terms, best last, then the period: {sent:?}",
+        sent.len()
+    );
+    let arms: [(&str, Option<Arc<DictionaryRequest>>); 3] = [
+        ("none", None),
+        ("no tail", Some(Arc::new(no_tail))),
+        ("tail", Some(Arc::new(tail))),
+    ];
+    let clips: Vec<&ArmClip> = material.real.iter().chain(&material.synthetic).collect();
+    let out = out_dir();
+    let mut summary = serde_json::Map::new();
+    let mut adopted = true;
+    for entry in selected_models() {
+        let spec = spec_for(entry).await;
+        service::service()
+            .prepare_with(spec.clone())
+            .await
+            .expect("loads");
+        // Per arm, each clip's raw text, in the order of `clips`.
+        let mut rows: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        let mut scores: BTreeMap<&str, ArmScore> = BTreeMap::new();
+        let mut retried: BTreeMap<&str, usize> = BTreeMap::new();
+        for (name, dictionary) in &arms {
+            let mut score = ArmScore::default();
+            let mut arm_rows = Vec::new();
+            let mut transcripts = Vec::new();
+            for clip in &clips {
+                let mut request = TranscribeRequest::new("en");
+                request.dictionary = dictionary.clone();
+                let started = Instant::now();
+                let dictated = service::service()
+                    .transcribe_recording_with(spec.clone(), Arc::from(clip.pcm.clone()), request)
+                    .await
+                    .expect("a transcript");
+                let ms = started.elapsed().as_millis() as u64;
+                score.times_ms.push(ms);
+                score_clip(&mut score, clip, &dictated.transcript.text, &material.terms);
+                *retried.entry(name).or_default() +=
+                    usize::from(dictated.transcript.retried.is_some());
+                transcripts.push(json!({"clip": clip.name, "kind": clip.kind,
+                    "raw": dictated.transcript.raw_text, "text": dictated.transcript.text,
+                    "ms": ms}));
+                arm_rows.push(dictated.transcript.raw_text);
+            }
+            std::fs::write(
+                out.join(format!("tail-{}-{}.json", entry.id, name.replace(' ', "_"))),
+                serde_json::to_vec_pretty(&transcripts).unwrap(),
+            )
+            .unwrap();
+            rows.insert(name, arm_rows);
+            scores.insert(name, score);
+        }
+        // Final punctuation, per clip kind, on the raw text (correction never touches it).
+        let (none, no_tail, tail) = (&rows["none"], &rows["no tail"], &rows["tail"]);
+        let mut lost: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut restored: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut new_losses = 0;
+        let mut ends: BTreeMap<&str, [usize; 3]> = BTreeMap::new();
+        for (i, clip) in clips.iter().enumerate() {
+            if !matches!(clip.kind, "real" | "dictation" | "probe") {
+                continue;
+            }
+            let row = ends.entry(clip.kind).or_default();
+            for (n, arm) in [none, no_tail, tail].into_iter().enumerate() {
+                row[n] += usize::from(ends_a_sentence(&arm[i]));
+            }
+            if !ends_a_sentence(&none[i]) {
+                continue;
+            }
+            let lost_it = !no_tail[i].trim().is_empty() && !ends_a_sentence(&no_tail[i]);
+            if lost_it {
+                *lost.entry(clip.kind).or_default() += 1;
+                if ends_a_sentence(&tail[i]) {
+                    *restored.entry(clip.kind).or_default() += 1;
+                }
+            } else if !tail[i].trim().is_empty() && !ends_a_sentence(&tail[i]) {
+                new_losses += 1;
+            }
+        }
+        let lost_all: usize = lost.values().sum();
+        let restored_all: usize = restored.values().sum();
+        let (n, t) = (&scores["no tail"], &scores["tail"]);
+        let mut fails = Vec::new();
+        if lost_all > 0 && (restored_all as f64) < 0.9 * lost_all as f64 {
+            fails.push(format!("restored {restored_all} of {lost_all}, under 90 %"));
+        }
+        if t.real() < n.real() - 0.03 {
+            fails.push("real recall more than 3 points below no tail".to_string());
+        }
+        if t.synthetic() < n.synthetic() - 0.05 {
+            fails.push("synthetic recall more than 5 points below no tail".to_string());
+        }
+        if t.probe_insertions > n.probe_insertions {
+            fails.push(format!(
+                "more insertions on the probe clips ({} against {})",
+                t.probe_insertions, n.probe_insertions
+            ));
+        }
+        if t.reversed_insertions > n.reversed_insertions {
+            fails.push(format!(
+                "more insertions on reversed speech ({} against {})",
+                t.reversed_insertions, n.reversed_insertions
+            ));
+        }
+        adopted &= fails.is_empty();
+        for (name, score) in &scores {
+            println!(
+                "{} {name}: real {}/{} ({:.1} %), synthetic {}/{} ({:.1} %), probe insertions {}, reversed insertions {}, nonspeech outputs {}, collapses {}, retried {}, median {} ms",
+                entry.id,
+                score.real_hits,
+                score.real_occurrences,
+                100.0 * score.real(),
+                score.synthetic_hits,
+                score.synthetic_occurrences,
+                100.0 * score.synthetic(),
+                score.probe_insertions,
+                score.reversed_insertions,
+                score.nonspeech_outputs,
+                score.collapses,
+                retried[name],
+                percentile(&score.times_ms, 0.5),
+            );
+        }
+        println!(
+            "{}: final punctuation lost without the tail {lost:?} (of the clips that ended a sentence with no dictionary), restored by the tail {restored:?}; lost by the tail where no tail kept it {new_losses}; clips ending a sentence [none, no tail, tail] {ends:?}; the tail {}",
+            entry.id,
+            if fails.is_empty() {
+                "passes every rule".to_string()
+            } else {
+                format!("fails: {fails:?}")
+            }
+        );
+        summary.insert(
+            entry.id.to_string(),
+            json!({
+                "arms": scores.iter().map(|(name, s)| (name.to_string(), json!({
+                    "real": [s.real_hits, s.real_occurrences, s.real()],
+                    "synthetic": [s.synthetic_hits, s.synthetic_occurrences, s.synthetic()],
+                    "probe_insertions": s.probe_insertions,
+                    "reversed_insertions": s.reversed_insertions,
+                    "nonspeech_outputs": s.nonspeech_outputs,
+                    "collapses": s.collapses,
+                    "retried": retried[name],
+                    "median_ms": percentile(&s.times_ms, 0.5),
+                }))).collect::<serde_json::Map<_, _>>(),
+                "lost": lost, "restored": restored, "new_losses": new_losses,
+                "ends_a_sentence_none_no_tail_tail": ends,
+                "fails": fails,
+            }),
+        );
+        service::service().unload().await;
+    }
+    let decision = if adopted {
+        "the tail is adopted: the prompt ends with the period token"
+    } else {
+        "no tail: the prompt ends with its best term"
+    };
+    println!(
+        "prompt_tail decision: {decision}; real sets {:?}",
+        material.real_sets
+    );
+    summary.insert("decision".into(), json!(decision));
+    summary.insert("real_sets".into(), json!(material.real_sets));
+    summary.insert("real_occurrences".into(), json!(material.real_occurrences));
+    std::fs::write(
+        out.join("tail-summary.json"),
+        serde_json::to_vec_pretty(&Value::Object(summary)).unwrap(),
+    )
+    .unwrap();
+    println!("prompt_tail tables and transcripts: {}", out.display());
+}
+
 fn the_scoring_helpers() {
     assert!((sign_test(0, 0) - 1.0).abs() < 1e-12);
+    assert!(ends_a_sentence("Start metformin. "));
+    assert!(ends_a_sentence("Is it EPAS1?"));
+    assert!(!ends_a_sentence("start metformin"));
+    assert!(!ends_a_sentence(""));
+    {
+        use biorouter_dictation::recognize::correct::{Change, Stage};
+        let change = |from: &str, to: &str| Change {
+            start: 0,
+            end: 0,
+            from: from.into(),
+            to: to.into(),
+            stage: Stage::Exact,
+            entry_id: "e".into(),
+        };
+        let reference = "Take the Ventolin, then see the clinic.";
+        assert_eq!(
+            false_corrections(
+                reference,
+                &[
+                    change("ventilin", "Ventolin"),
+                    change("ventolin", "Ventolin"),
+                    change("clinic", "Clenil"),
+                ]
+            ),
+            ["clinic to Clenil"]
+        );
+    }
     assert!((sign_test(3, 3) - 1.0).abs() < 1e-12);
     // 0 wins of 6: 2 / 64.
     assert!((sign_test(0, 6) - 0.03125).abs() < 1e-12);
@@ -1422,8 +1893,12 @@ fn the_scoring_helpers() {
     let second = DictionaryRequest::new(eligible_of(&terms), "", BiasChannels::DEFAULT);
     let mut expected: Vec<String> = terms[..30].to_vec();
     expected.reverse();
-    assert_eq!(first.prompt_terms(), expected, "best last");
+    assert_eq!(first.plan.prompt_terms, expected, "best last");
+    // The worker is sent them with the period after the best term (PR-14b).
+    let expected = biorouter_dictation::recognize::prompt::with_tail(expected);
+    assert_eq!(first.prompt_terms(), expected);
     assert_eq!(second.prompt_terms(), expected);
+    assert!(expected[29].ends_with("00x."));
 
     // DD-44's rules on scores made by hand.
     let score = |real_hits: usize, insertions: usize, pairs: Vec<usize>| ArmScore {

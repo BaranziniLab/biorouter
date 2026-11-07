@@ -194,6 +194,25 @@ impl RecognitionEntry {
             && !self.collides
     }
 
+    /// Whether `text` holds this entry's written form as a whole word ("Usage"): exactly
+    /// as written, or, for a form written with a small first letter (`metformin`), with
+    /// that letter capitalized as a sentence starts it. No letter or digit may touch it on
+    /// either side, so `EPAS1` is not in `EPAS10` and `UCSF` is not in `UCSFs`.
+    pub fn occurs_in(&self, text: &str) -> bool {
+        let written = self.written.as_str();
+        if contains_whole(text, written) {
+            return true;
+        }
+        let mut chars = written.chars();
+        match chars.next() {
+            Some(first) if first.is_lowercase() => {
+                let capitalized: String = first.to_uppercase().chain(chars).collect();
+                capitalized != written && contains_whole(text, &capitalized)
+            }
+            _ => false,
+        }
+    }
+
     fn derive_flags(&mut self) {
         let has_letter = self.written.chars().any(char::is_alphabetic);
         let has_digit = self.written.chars().any(|c| c.is_ascii_digit());
@@ -227,6 +246,16 @@ pub fn collides(written: &str) -> bool {
     };
     let prefix: String = chars.iter().take(run).collect();
     digit_follows && words::is_common(&prefix)
+}
+
+/// Whether `form` occurs in `text` with no letter or digit right before or right after it.
+fn contains_whole(text: &str, form: &str) -> bool {
+    !form.is_empty()
+        && text.match_indices(form).any(|(at, _)| {
+            let before = text.get(..at).and_then(|s| s.chars().next_back());
+            let after = text.get(at + form.len()..).and_then(|s| s.chars().next());
+            !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+        })
 }
 
 /// `CRISPRi`, `CRISPRa`: capitals followed by one or two small letters at the end, whose
@@ -360,6 +389,13 @@ impl EligibleEntries {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The entries whose written form `text` holds as a whole word
+    /// ([`RecognitionEntry::occurs_in`]), each once: what a dictation whose final text is
+    /// `text` used, for its usage bumps.
+    pub fn used_in<'a>(&'a self, text: &'a str) -> impl Iterator<Item = &'a RecognitionEntry> {
+        self.entries.iter().filter(move |e| e.occurs_in(text))
     }
 
     /// The worker's `set_bias` for this set: every entry the bonus may start, unranked, or
@@ -535,6 +571,40 @@ mod tests {
         assert!(EligibleEntries::empty()
             .bias_table(BonusParams::default())
             .is_none());
+    }
+
+    /// What counts as a use ("Usage"): the written form as a whole word, exactly, or
+    /// capitalized at a sentence's start when it is written in lower case.
+    #[test]
+    fn a_use_is_the_written_form_as_a_whole_word() {
+        let text = "Metformin and EPAS1, not EPAS10; HIF-2α. UCSFs, ucsf, the scRNA-seq run.";
+        for (written, used) in [
+            ("metformin", true),
+            ("EPAS1", true),
+            ("HIF-2α", true),
+            ("scRNA-seq", true),
+            ("UCSF", false),
+            ("Metformin", true),
+            ("EPAS10", true),
+            ("PAS1", false),
+            ("run", true),
+            ("Run", false),
+            ("natalizumab", false),
+        ] {
+            assert_eq!(entry(written).occurs_in(text), used, "{written}");
+        }
+        assert!(!entry("EPAS1").occurs_in(""));
+        let set = EligibleEntries {
+            entries: vec![entry("EPAS1"), entry("UCSF"), entry("metformin")].into(),
+            table: BonusTable::PublicRows,
+            scope: BiasScope::Public,
+            revision: 1,
+        };
+        let used: Vec<&str> = set
+            .used_in("EPAS1 then EPAS1 and metformin")
+            .map(|e| e.written.as_str())
+            .collect();
+        assert_eq!(used, ["EPAS1", "metformin"], "each entry once");
     }
 
     #[test]
