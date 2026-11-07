@@ -719,6 +719,18 @@ async fn a_slow_tail_answers_202_then_a_held_read_and_a_lost_worker_answers_500(
 /// still has closed segments queued finishes within two segment times, never behind the
 /// long stream's whole queue. The long stream's segments are cut while its audio
 /// arrives, so at its own stop only its tail is left.
+///
+/// The 600 s here arrive at once, so for a while the long stream's detector reads a
+/// backlog: a pass of up to 60 s after each of its segments, and `vad_segments` jobs go
+/// before any transcription (DD-6). A tail that stopped then also waited for the pass in
+/// flight, the long segment queued before it and the next pass; a replay of this pattern
+/// on the service measured 1.1 to 2.3 segment times, with never more than one long
+/// segment ahead (2026-11-07, after a CI run waited 13.5 s against a 3.2 s segment). A
+/// live 10 minute stream's detector keeps up with its audio, so the short stream stops
+/// once this one's detector has read all of it, and only segments are ahead of its tail.
+/// The segment time is the long stream's own, timed just before the short stream starts,
+/// because one decode measured alone before the long stream starts is not what a decode
+/// costs while it runs on a shared 4 core runner.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn a_short_stream_finishes_while_a_long_one_runs() {
@@ -727,11 +739,6 @@ async fn a_short_stream_finishes_while_a_long_one_runs() {
     }
     let state = state().await;
     let app = app(&state);
-
-    // One segment's time: a 25 s decode of speech, on its own.
-    let started = Instant::now();
-    dictate(&app, Caller::SecretOnly, request("external"), speech(24.9)).await;
-    let segment_time = started.elapsed();
 
     let long = open(&app, Caller::SecretOnly, request("external")).await;
     let chunk_s = 16.384;
@@ -744,26 +751,67 @@ async fn a_short_stream_finishes_while_a_long_one_runs() {
         let answer = put(&app, &long, seq as u64, piece.to_vec()).await;
         assert_eq!(answer.status, StatusCode::OK);
     }
-    // Give the segmenter one detector pass to queue the closed segments.
-    let queued_at = Instant::now();
-    let mut queued = 0;
-    while queued_at.elapsed() < Duration::from_secs(20) {
-        queued = status(&app).await["queue"]["segments"].as_u64().unwrap();
-        if queued >= 4 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    let progress = || state.dictation.progress(&long).expect("the long stream");
+    let started = Instant::now();
+    while !progress().caught_up {
+        assert!(
+            started.elapsed() < Duration::from_secs(240),
+            "the long stream's detector did not read its 600 s: {:?}",
+            progress()
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    let caught_up_after = started.elapsed();
+
+    // One segment's time: the median of three of the long stream's own decodes, each
+    // from one answered segment to the next.
+    let mut decoded = progress().segments_decoded;
+    let mut since: Option<Instant> = None;
+    let mut segment_times = Vec::new();
+    while segment_times.len() < 3 {
+        let now = progress().segments_decoded;
+        if now != decoded {
+            if let Some(since) = since {
+                segment_times.push(since.elapsed() / (now - decoded) as u32);
+            }
+            decoded = now;
+            since = Some(Instant::now());
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(300),
+            "the long stream stopped decoding: {:?}",
+            progress()
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    segment_times.sort();
+    let segment_time = segment_times[1];
 
     let short_started = Instant::now();
-    let short = dictate(&app, Caller::SecretOnly, request("external"), speech(5.0)).await;
+    let short = open(&app, Caller::SecretOnly, request("external")).await;
+    let queued = status(&app).await["queue"]["segments"].as_u64().unwrap();
+    let before = progress().segments_decoded;
+    let answer = settled(
+        &app,
+        &short,
+        finish_with(&app, &short, 0, speech(5.0)).await,
+    )
+    .await;
     let short_time = short_started.elapsed();
+    let during = progress().segments_decoded - before;
     let left = status(&app).await["queue"]["segments"].as_u64().unwrap();
     eprintln!(
-        "one segment {segment_time:?}; long stream queued {queued}; short stream {short_time:?} \
-         ({}); long stream segments left after it: {left}",
-        short["timings"]
+        "detector read 600 s after {caught_up_after:?}; long stream segments \
+         {segment_times:?}; queued {queued}; short stream {short_time:?} ({}); long \
+         segments decoded meanwhile {during}, left after it: {left}",
+        answer.body["timings"]
     );
+    assert_eq!(answer.status, StatusCode::OK, "{:?}", answer.body);
+    assert_eq!(
+        answer.body["no_speech"], true,
+        "the fixture decodes nothing"
+    );
+    assert_eq!(delete(&app, &short).await.status, StatusCode::NO_CONTENT);
     assert!(
         queued >= 4,
         "the long stream's segments were cut while it arrived"
@@ -772,8 +820,14 @@ async fn a_short_stream_finishes_while_a_long_one_runs() {
         left > 0,
         "the short stream finished only after the long stream's whole queue"
     );
+    // Round robin: the long segment in flight at the stop, and the one after it only when
+    // the first was answered just as the tail was being queued.
+    assert!(
+        during <= 2,
+        "the long stream decoded {during} segments while the short one waited"
+    );
     // Two segment times (the long stream's segment in flight, then the short tail), and a
-    // second for a detector pass of at most 60 s and the round trips.
+    // second for the round trips.
     assert!(
         short_time <= segment_time * 2 + Duration::from_secs(1),
         "the short stream waited {short_time:?}, one segment is {segment_time:?}"

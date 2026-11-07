@@ -569,6 +569,34 @@ impl DictationStreams {
                 .collect(),
         )
     }
+
+    /// Where stream `id`'s segmenter and decoder stand; `None` for no such stream. For
+    /// the route test of how streams take turns on the worker, which starts its short
+    /// stream once the long one's detector has read everything and times the long one's
+    /// own segments; no route answers it, and the daemon's own binary never calls it.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub fn progress(&self, id: &str) -> Option<StreamProgress> {
+        let stream = self.get(id)?;
+        let inner = stream.inner();
+        Some(StreamProgress {
+            caught_up: !inner.detecting
+                && inner.end_ms() < inner.mark_ms.saturating_add(STREAM_VAD_TRIGGER_MS),
+            segments_decoded: inner.segments_decoded,
+        })
+    }
+}
+
+/// What [`DictationStreams::progress`] answers.
+#[doc(hidden)]
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamProgress {
+    /// No detector pass runs, and none would start on the audio received so far: less
+    /// than [`STREAM_VAD_TRIGGER_MS`] of it lies past the mark.
+    pub caught_up: bool,
+    /// The segments decoded so far, the tail among them once it is.
+    pub segments_decoded: u64,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
