@@ -9,7 +9,7 @@
 use biorouter::crew::tool_host::PersonTool;
 use serde_json::{json, Map, Value};
 
-use super::{channels, messages, setup, tasks, workspace, Run};
+use super::{channels, messages, more, setup, signin, tasks, vault, workspace, Run};
 
 /// What a parameter holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +128,11 @@ const USERNAME: Param = req(
     "The person's account on the server, like @bob.",
 );
 const NAME: Param = req("name", Text, "The new name.");
+const TRANSFER_ID: Param = req(
+    "transfer_id",
+    Text,
+    "The transfer's ID, from files_share, files_download or files_pending.",
+);
 
 /// Every action, reads first, in AO-12's order.
 pub(crate) static ACTIONS: &[Action] = &[
@@ -147,6 +152,14 @@ pub(crate) static ACTIONS: &[Action] = &[
         params: &[],
         example: "{}",
         run: Some(setup::status),
+    },
+    Action {
+        tool: PersonTool::Read,
+        name: "credentials_status",
+        summary: "Whether Crew's vault on this computer is set up and whether it is locked.",
+        params: &[],
+        example: "{}",
+        run: Some(vault::credentials_status),
     },
     Action {
         tool: PersonTool::Read,
@@ -171,6 +184,17 @@ pub(crate) static ACTIONS: &[Action] = &[
     },
     Action {
         tool: PersonTool::Read,
+        name: "connections_invitation",
+        summary: "The invitation message for a person to join the workspace, to send again (the host gets this).",
+        params: &[
+            CONNECTION,
+            p("invitee", Text, "The invited person's account on the server, like @bob. The message then names them."),
+        ],
+        example: r#"{"invitee":"@bob"}"#,
+        run: Some(more::connections_invitation),
+    },
+    Action {
+        tool: PersonTool::Read,
         name: "setup_check",
         summary: "Check a server and the Crew program in the person's account there, and list the workspaces it hosts or belongs to. Changes nothing on the server; a server no saved connection names needs the person's approval, because it signs in as them.",
         params: &[SERVER, CONNECTION, PORT, IDENTITY_FILE, PROXY_JUMP],
@@ -184,6 +208,14 @@ pub(crate) static ACTIONS: &[Action] = &[
         params: &[JOB_ID],
         example: r#"{"job_id":"5b1f..."}"#,
         run: Some(setup::setup_status),
+    },
+    Action {
+        tool: PersonTool::Read,
+        name: "setup_list",
+        summary: "The setup jobs on this computer, started from any chat, Crew or a terminal: each one's ID, state, stage and server.",
+        params: &[],
+        example: "{}",
+        run: Some(more::setup_list),
     },
     Action {
         tool: PersonTool::Read,
@@ -280,6 +312,14 @@ pub(crate) static ACTIONS: &[Action] = &[
         params: &[req("transfer_id", Text, "The transfer's ID, from files_share or files_download.")],
         example: r#"{"transfer_id":"..."}"#,
         run: Some(messages::files_status),
+    },
+    Action {
+        tool: PersonTool::Read,
+        name: "files_pending",
+        summary: "This computer's file transfers through a connection, finished or not, and how each stands.",
+        params: &[CONNECTION],
+        example: "{}",
+        run: Some(more::files_pending),
     },
     Action {
         tool: PersonTool::Read,
@@ -452,6 +492,41 @@ pub(crate) static ACTIONS: &[Action] = &[
     },
     Action {
         tool: PersonTool::Change,
+        name: "auth",
+        summary: "Sign the person in to a setup job's server or a saved connection. They type into a Sign in window the chat opens, never into the chat.",
+        params: &[
+            p("job_id", Text, "A setup job waiting for the person to sign in, from the action that started it or setup_list."),
+            CONNECTION,
+        ],
+        example: r#"{"job_id":"5b1f..."}"#,
+        run: Some(signin::auth),
+    },
+    Action {
+        tool: PersonTool::Change,
+        name: "credentials_unlock",
+        summary: "Unlock Crew's vault on this computer. The person types the passphrase in a secure prompt the chat opens, never into the chat.",
+        params: &[],
+        example: "{}",
+        run: Some(vault::credentials_unlock),
+    },
+    Action {
+        tool: PersonTool::Change,
+        name: "credentials_init",
+        summary: "Set up Crew's vault on this computer. The person chooses the passphrase in a secure prompt the chat opens, never in the chat.",
+        params: &[],
+        example: "{}",
+        run: Some(vault::credentials_init),
+    },
+    Action {
+        tool: PersonTool::Change,
+        name: "credentials_lock",
+        summary: "Lock Crew's vault on this computer. Crew tasks and chats that use it stop until it is unlocked.",
+        params: &[],
+        example: "{}",
+        run: Some(vault::credentials_lock),
+    },
+    Action {
+        tool: PersonTool::Change,
         name: "connections_remove",
         summary: "Remove a saved connection and its key from this computer.",
         params: &[CONNECTION],
@@ -511,6 +586,14 @@ pub(crate) static ACTIONS: &[Action] = &[
         ],
         example: r#"{"governance":"open"}"#,
         run: Some(workspace::workspace_governance),
+    },
+    Action {
+        tool: PersonTool::Change,
+        name: "context_draft",
+        summary: "Draft the workspace's context document from what the server says about itself, signing in as the person. Save it with context_set.",
+        params: &[CONNECTION],
+        example: "{}",
+        run: Some(more::context_draft),
     },
     Action {
         tool: PersonTool::Change,
@@ -739,6 +822,17 @@ pub(crate) static ACTIONS: &[Action] = &[
     },
     Action {
         tool: PersonTool::Change,
+        name: "profile_devices_acknowledge",
+        summary: "Mark the new computers added as the person as seen, so Crew stops pointing them out.",
+        params: &[
+            CONNECTION,
+            req("fingerprints", Texts, "The new computers' fingerprints, as profile_devices lists them."),
+        ],
+        example: r#"{"fingerprints":["3F2A 9C1E 77B0 D4E1"]}"#,
+        run: Some(more::profile_devices_acknowledge),
+    },
+    Action {
+        tool: PersonTool::Change,
         name: "send",
         summary: "Post a message in a channel as the person.",
         params: &[CONNECTION, CHANNEL, req("text", Text, "The message.")],
@@ -783,6 +877,33 @@ pub(crate) static ACTIONS: &[Action] = &[
         ],
         example: r##"{"channel":"#methods","path":"/data/lab/results.csv"}"##,
         run: Some(messages::files_reference),
+    },
+    Action {
+        tool: PersonTool::Change,
+        name: "files_pause",
+        summary: "Pause a file transfer.",
+        params: &[TRANSFER_ID],
+        example: r#"{"transfer_id":"..."}"#,
+        run: Some(more::files_pause),
+    },
+    Action {
+        tool: PersonTool::Change,
+        name: "files_resume",
+        summary: "Resume a paused or stopped file transfer from where it stopped.",
+        params: &[
+            TRANSFER_ID,
+            req("path", Text, "The file's path on this computer: the file being shared, or where the download goes."),
+        ],
+        example: r#"{"transfer_id":"...","path":"~/results/plot.png"}"#,
+        run: Some(more::files_resume),
+    },
+    Action {
+        tool: PersonTool::Change,
+        name: "files_forget",
+        summary: "Forget a transfer that is not under way. For an unfinished download, its partial file is deleted too.",
+        params: &[TRANSFER_ID],
+        example: r#"{"transfer_id":"..."}"#,
+        run: Some(more::files_forget),
     },
     Action {
         tool: PersonTool::Change,

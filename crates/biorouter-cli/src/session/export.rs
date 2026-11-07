@@ -402,6 +402,14 @@ pub fn message_to_markdown(message: &Message, export_all_content: bool) -> Strin
                             .join(", ")
                     ));
                 }
+                // The step's kind only: an export leaves the machine, and a Crew step card
+                // names a server and a login the person signs in as.
+                ActionRequiredData::CrewStep { step, .. } => {
+                    md.push_str(&format!(
+                        "**Action Required** (crew_step): {}\n\n",
+                        step.kind()
+                    ));
+                }
             },
             MessageContent::Text(text) => {
                 md.push_str(&text.text);
@@ -1448,5 +1456,28 @@ found 0 vulnerabilities"#;
         // Check response formatting
         assert!(response_result.contains("added 57 packages"));
         assert!(response_result.contains("found 0 vulnerabilities"));
+    }
+
+    /// An export leaves the machine: a Crew step card says its kind, never the server or the
+    /// login it names.
+    #[test]
+    fn a_crew_step_card_exports_its_kind_only() {
+        use biorouter::conversation::message::{CrewSignInTarget, CrewStepRequest};
+        let card = Message::assistant().with_content(MessageContent::action_required_crew_step(
+            "card-1",
+            CrewStepRequest::SignIn {
+                target: CrewSignInTarget::Connection {
+                    connection_id: "conn-1".into(),
+                },
+                server: "secret-server.example.edu".into(),
+                login: "canary@secret-server.example.edu".into(),
+            },
+        ));
+        let markdown = message_to_markdown(&card, true);
+        assert_eq!(
+            markdown.trim_end(),
+            "**Action Required** (crew_step): sign_in"
+        );
+        assert!(!markdown.contains("secret-server"), "{markdown}");
     }
 }

@@ -114,6 +114,10 @@ export type ActionRequiredData = {
     id: string;
     keys: Array<SecretKeyRequest>;
     prompt: string;
+} | {
+    actionType: 'crewStep';
+    id: string;
+    step: CrewStepRequest;
 };
 
 export type ActiveKbResponse = {
@@ -1051,6 +1055,61 @@ export type CrewCancelled = {
 };
 
 /**
+ * One change, as `GET /crew/changes` lists it.
+ */
+export type CrewChange = {
+    /**
+     * The channel it touched, when one is known.
+     */
+    channel_id?: string | null;
+    /**
+     * The saved connection it touched, when one is known.
+     */
+    connection_id?: string | null;
+    /**
+     * The setup job it touched.
+     */
+    job_id?: string | null;
+    /**
+     * What changed: a `crew__change` action (`channels_create`, `grants_revoke`, `rejoin`), a
+     * setup job's new state (`setup_running`, `setup_needs_sign_in`, `setup_finished`,
+     * `setup_failed`, `setup_cancelled`), or `route` for any other change a Crew route made.
+     */
+    kind: string;
+    /**
+     * The feed's revision this change raised it to.
+     */
+    revision: number;
+    /**
+     * The task it touched.
+     */
+    run_id?: string | null;
+    /**
+     * The chat it touched (a grant's or a read consent's chat, a task's own chat).
+     */
+    session_id?: string | null;
+};
+
+/**
+ * What `GET /crew/changes` answers.
+ */
+export type CrewChangesDelta = {
+    /**
+     * The changes after `since`, oldest first.
+     */
+    changes: Array<CrewChange>;
+    /**
+     * The feed's revision now. Ask again with it as `since`.
+     */
+    revision: number;
+    /**
+     * `changes` is not every change after `since`: the reader fell further behind than the
+     * feed keeps, or the daemon restarted. Re-read everything.
+     */
+    truncated: boolean;
+};
+
+/**
  * `GET /crew/connections`.
  */
 export type CrewConnectionList = {
@@ -1467,6 +1526,75 @@ export type CrewSessionGrant = {
 export type CrewSetupJobs = Array<SetupStatus>;
 
 /**
+ * What a [`CrewStepRequest::SignIn`] signs in for.
+ */
+export type CrewSignInTarget = {
+    jobId: string;
+    kind: 'setup';
+} | {
+    connectionId: string;
+    kind: 'connection';
+};
+
+/**
+ * What a person did with a Crew step card. Only dismissing it: the step itself (signing in,
+ * unlocking the vault, trusting a key) is done in the person's own window, and the call that
+ * parked the card reads the daemon to learn whether it was.
+ */
+export type CrewStepOutcome = 'dismiss';
+
+/**
+ * The step an [`ActionRequiredData::CrewStep`] card opens.
+ */
+export type CrewStepRequest = {
+    kind: 'signIn';
+    /**
+     * The SSH login the person signs in as.
+     */
+    login: string;
+    /**
+     * The server, as the job or the saved connection names it.
+     */
+    server: string;
+    target: CrewSignInTarget;
+} | {
+    action: CrewVaultAction;
+    kind: 'vault';
+} | {
+    /**
+     * The key changed since it was trusted. A changed key is never accepted from a chat.
+     */
+    changed: boolean;
+    host: string;
+    kind: 'hostKey';
+    /**
+     * The fingerprint this computer trusts for the server, when it has one.
+     */
+    known?: string | null;
+    login: string;
+    /**
+     * The fingerprint the server offered, as the daemon read it from OpenSSH.
+     */
+    offered?: string | null;
+    port: number;
+};
+
+/**
+ * Dismissing a Crew step card (`POST /action-required/crew-step`).
+ */
+export type CrewStepResponseRequest = {
+    /**
+     * The card's ID, as the `crewStep` message carries it.
+     */
+    id: string;
+    outcome: CrewStepOutcome;
+    /**
+     * The chat the card is in.
+     */
+    session_id: string;
+};
+
+/**
  * `DELETE /crew/transfers/{id}`.
  */
 export type CrewTransferForgotten = {
@@ -1486,6 +1614,11 @@ export type CrewTransferForgotten = {
 export type CrewTransferList = {
     transfers: Array<Receipt>;
 };
+
+/**
+ * What a [`CrewStepRequest::Vault`] card does with Crew's vault.
+ */
+export type CrewVaultAction = 'unlock' | 'init';
 
 /**
  * The workspace's own answer, forwarded unchanged: a protocol request's result
@@ -7582,6 +7715,35 @@ export type WritePageBody = {
     content: string;
 };
 
+export type DismissCrewStepData = {
+    body: CrewStepResponseRequest;
+    path?: never;
+    query?: never;
+    url: '/action-required/crew-step';
+};
+
+export type DismissCrewStepErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary: the named chat is private (or absent, and a caller out of reach is told the same thing for both) and the request carried neither the user-action proof nor a private caller (body = plain text)
+     */
+    403: unknown;
+    /**
+     * No Crew step card with that ID is waiting in that chat
+     */
+    404: unknown;
+};
+
+export type DismissCrewStepResponses = {
+    /**
+     * Dismissed: the call that parked the card was released
+     */
+    200: unknown;
+};
+
 export type RespondToElicitationData = {
     body: ElicitationResponseRequest;
     path?: never;
@@ -9287,6 +9449,42 @@ export type CrewAuthenticationTerminalErrors = {
 };
 
 export type CrewAuthenticationTerminalError = CrewAuthenticationTerminalErrors[keyof CrewAuthenticationTerminalErrors];
+
+export type CrewChangesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * The last revision this reader saw. Absent: answer where the feed stands now, at once and
+         * with no changes, which is how a new reader learns where to start.
+         */
+        since?: number | null;
+        /**
+         * How long to wait for a change, in milliseconds, at most 25 000 (the default). `0`
+         * answers at once.
+         */
+        timeout_ms?: number | null;
+    };
+    url: '/crew/changes';
+};
+
+export type CrewChangesErrors = {
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
+     */
+    403: CrewError;
+};
+
+export type CrewChangesError = CrewChangesErrors[keyof CrewChangesErrors];
+
+export type CrewChangesResponses = {
+    /**
+     * The changes after `since`, by kind and ID only: a `crew__change` that ran, a change a Crew route made, or a setup job's new state. With no `since`, where the feed stands now and no changes. `truncated` means the reader fell behind or the daemon restarted: read everything again. A change names no name and no content; read what changed through the route that shows it
+     */
+    200: CrewChangesDelta;
+};
+
+export type CrewChangesResponse = CrewChangesResponses[keyof CrewChangesResponses];
 
 export type CrewListConnectionsData = {
     body?: never;

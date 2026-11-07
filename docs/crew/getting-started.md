@@ -25,7 +25,7 @@ A word in braces is a name Crew fills in: "Connect to {workspace}" appears as "C
 
 ### Signing in to the server
 
-When the server asks for a password or a code, the Sign in window opens. Type it there. Nothing you type is saved. Setting Crew up in your server account uses the same window, and one sign-in covers the install and the connection after it. For help, choose **Trouble signing in?** there, or see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server). In a terminal, `biorouter crew auth` signs you in instead ([Sign in and stay connected](command-line.md#sign-in-and-stay-connected)).
+When the server asks for a password or a code, the Sign in window opens. Type it there. Nothing you type is saved. Setting Crew up in your server account uses the same window, and one sign-in covers the install and the connection after it. For help, choose **Trouble signing in?** there, or see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server). In a terminal, `biorouter crew auth` signs you in instead ([Sign in and stay connected](command-line.md#sign-in-and-stay-connected)). When a chat sets Crew up for you, it shows a **Sign in** card that opens the same window, and what you type there never reaches the chat ([Sign in, unlock and check a server's key](agents-and-chat-access.md#sign-in-unlock-and-check-a-servers-key)).
 
 ### Jump hosts
 
@@ -48,6 +48,7 @@ The first time, Crew shows "Work together in Crew" with a **Join a workspace** b
 - To join with an invitation, follow [Joining a workspace](joining-a-workspace.md).
 - To open a workspace your server account already has, such as on a new computer, follow [Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server).
 - To host, follow [Hosting a workspace](hosting-a-workspace.md).
+- To do any of these from a chat instead, ask an ordinary Biorouter chat, such as "Set up Crew on lab.example.edu as bob and host a workspace called chen-lab", or paste your invitation and ask it to join. Each step waits for you on a card in the chat ([Set up Crew from a chat](agents-and-chat-access.md#set-up-crew-from-a-chat)).
 
 Crew knows you by your account on the lab server. Every computer that signs in to the server as your account is you in Crew ([You are your server account](joining-a-workspace.md#you-are-your-server-account)).
 

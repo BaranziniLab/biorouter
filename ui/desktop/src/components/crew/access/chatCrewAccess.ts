@@ -18,6 +18,7 @@ import {
 import { accessCopy } from './copy';
 import { CREW_READ_CONSENT_EVENT } from '../../toolCallCopy';
 import { crewTurnRefusalOf, type CrewTurnRefusalKind } from './crewTurnRefusal';
+import { changeMayConcernChat, useCrewChanged } from '../state/useCrewChanges';
 import { onGrantsChanged, revocationUnconfirmed, useUnconfirmedRevokeWatch } from './useCrewGrants';
 
 /**
@@ -475,6 +476,17 @@ export function useChatCrewAccess(
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [id, hasConnections, refetch]);
+
+  // Crew changed somewhere (this chat's own `crew__change`, another chat, another window, the
+  // terminal): read this chat's grant and read consents again (WI-15), unless every change names
+  // another chat. Only once this computer has a connection, so a chat that never used Crew asks
+  // the feed nothing.
+  useCrewChanged(
+    (delta) => {
+      if (id && changeMayConcernChat(delta, id)) refetch();
+    },
+    { enabled: Boolean(id) && hasConnections }
+  );
 
   useEffect(() => {
     if (!id || !hasGrant) return;

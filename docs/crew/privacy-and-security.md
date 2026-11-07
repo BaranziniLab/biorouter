@@ -111,7 +111,7 @@ To remove a computer you do not recognize, or a lost one, on a server with a cur
 2. In **Keys and security…**, choose **Remove** on the computer's row. The row asks "Remove {fingerprint} from your account?" and repeats the warning: "A lost computer can still sign in as you while it has an SSH key or password for your account. First remove its key from ~/.ssh/authorized_keys on the server, or change your password. Then remove it here."
 3. Choose **Remove computer**, or **Keep** to leave it. **Keep** and Escape put the keyboard focus back on the row's **Remove**. Crew says "Removed {fingerprint}."
 
-From a terminal, run `biorouter crew profile revoke-device` with its fingerprint.
+From a terminal, run `biorouter crew profile revoke-device` with its fingerprint. From a chat, ask it to remove the computer: its card names the fingerprint and gives the same warning, and nothing happens until you choose **Allow once**. A chat can also mark new computers as seen, after its own card lists each one, but reading your computers never marks them seen.
 
 You can remove the computer marked **This computer** too. It is the computer you are using, not a lost one, so its question has no SSH warning: it asks "Remove this computer from your account?" and adds "This computer stops reaching the workspace until you choose Add this computer again." Its button reads **Remove this computer**. Afterwards Crew says "Removed this computer. Choose Add this computer again to use the workspace here.", and the connection bar offers **Add this computer again** ([Add this computer again](joining-a-workspace.md#add-this-computer-again)). Removing a whole person from the workspace stays the host's task.
 
@@ -126,11 +126,24 @@ A vault keeps your device keys in a file locked by a passphrase, instead of the 
 
 **Keys and security…** now reads "Stored in an encrypted vault" and offers **Lock**. When the vault is locked, the connection bar says "Your Crew vault is locked." Choose **Unlock** there or in **Keys and security…**, then type the passphrase.
 
+A chat can open the same windows for you. When it needs the vault, it shows an **Unlock** or **Set up** card, and the button opens your computer's own passphrase window. The passphrase goes from that window to Crew on this computer, never to the chat, the model or the chat's history. A chat locks the vault only after you allow its card, because a locked vault stops every chat and Crew task that uses it ([Sign in, unlock and check a server's key](agents-and-chat-access.md#sign-in-unlock-and-check-a-servers-key)).
+
 > **Warning.** Nobody can recover a lost passphrase. If the vault files go missing, restore them from a backup. See [Keep device keys in an encrypted vault](command-line.md#keep-device-keys-in-an-encrypted-vault).
 
 ## Server identity
 
 Crew reaches the server over SSH and connects only to a server whose key is already in your known hosts file, usually `~/.ssh/known_hosts`. It never accepts a new or changed key. See [Server identity checks](connections-and-troubleshooting.md#server-identity-checks).
+
+A chat follows the same rule. Its card for an unknown key shows the fingerprint Crew read from the server, and you check it and add the key yourself, in a terminal of your own. The chat is told never to add, scan or accept a key, and in **Completely Autonomous** mode a shell command of an agent's that would trust a key nobody checked, such as `ssh -o StrictHostKeyChecking=accept-new` or `ssh-keygen -R`, asks you before it runs ([Permission modes](../security/permission-modes.md#what-still-asks-whatever-your-mode)).
+
+### What a chat never sees
+
+When a chat signs you in, unlocks the vault or checks a server's key, your typing never passes through it:
+
+- The **Sign in** card opens the Sign in window. What you type there goes from the window to ssh on the server, with the proof that you are at this computer, and never to the chat, the model, the chat's history or Biorouter's logs.
+- The **Unlock** and **Set up** cards open your computer's own passphrase window, which sends the passphrase to Crew on this computer only.
+- A step card's words are Crew's own, with the server, login and fingerprint Crew read itself. Nothing the model writes appears on one, so a message in a channel cannot put words on a card.
+- A chat with no person to answer, such as one in a `biorouter serve` browser, where Crew does not work, or one through ACP, gets no such card. It names the step for you to take in Crew or a terminal.
 
 ## Files Crew will not share
 

@@ -378,13 +378,13 @@ pub struct SetupArgs {
     #[arg(long, conflicts_with = "check")]
     pub keep_older: bool,
     /// Restart the workspaces you host there on the new Crew even when other people are
-    /// connected to them. What they had running there stops; their computers reconnect by
+    /// connected to them. Their running agent commands stop; their computers reconnect by
     /// themselves.
     #[arg(long, conflicts_with_all = ["check", "no_restart"])]
     pub restart: bool,
-    /// Restart one workspace you host there on the new Crew, by its name, even when other
-    /// people are connected to it. Repeat for more. The others are left as --restart or
-    /// --no-restart says.
+    /// Restart one workspace you host there on the new Crew, by its name (or its ID, for one
+    /// with no name), even when other people are connected to it. Repeat for more. The others
+    /// are left as --restart or --no-restart says.
     #[arg(
         long = "restart-workspace",
         value_name = "NAME",

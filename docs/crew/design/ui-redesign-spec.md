@@ -777,11 +777,11 @@ not removed: save from the entry's `invitation`, connect, join), **Start** (stop
 job with `start_workspaces` and `restart_workspaces: false`) and **Update Crew** (running, hosted by the person, older
 than this app's Crew or naming no version: an install job with `restart_workspace_ids: [that ID]` and
 `restart_workspaces: false`, so it restarts that workspace alone; when others are connected it asks first, "{n}
-people are connected. Their running agent commands will stop.", and when the count is unknown, as on every Crew from
+other people are connected. Their running agent commands will stop.", and when the count is unknown, as on every Crew from
 before account ownership, "Other people may be connected. Their running agent commands will stop.", with **Update and
 restart** and **Not now**). *Amended by the 2026-11 fixes:* the list's heading keeps the server name as typed, not in capitals; rows are keyed
 by workspace ID, host UID and key fingerprint, since two hosts can list one ID; after a job, a row left running says
-why ("It wasn’t restarted, because {n} people are connected. Choose Update Crew to restart it anyway.", or for a newer
+why ("It wasn’t restarted, because {n} other people are connected. Choose Update Crew to restart it anyway.", or for a newer
 Crew or a custom state folder a reason with no **Update Crew**); and focus a finished job's disabled buttons dropped
 goes to the acted row's first button, else the first found, else **Look again**. A removed entry reads "You were removed from
 {workspace}. Ask a member to invite you again.", two hosts with one name raise "Two people host a workspace named
@@ -803,12 +803,17 @@ server: {note}" and no button.
 
 *Amended by the canonical wording pass (2026-11):* whether a row says "It wasn’t restarted, because …" is decided per
 row, from the scope of the job behind the list (`askedToRestart`): only a job that set `restart_workspaces: true`, or
-named that row's ID in `restart_workspace_ids` or `start_workspaces`, can say it. After **Update Crew** or **Start**
-for one row, every other outdated row reads "Runs Crew {running}; {installed} is available." and, when others are
-or may be connected, "Update Crew restarts it." with the question's words for who is connected. For `too_old` the
-dialog offers **Update Crew** and its "Choose Update Crew" sentence only when the install would replace the Crew in
-the account (`installReplaces`: both versions readable, and the installed one not newer than this app's); otherwise
-it shows the daemon's own sentence the way it shows `failed`.
+named that row's ID in `restart_workspace_ids` or `start_workspaces`, can say it. *Amended by the chat-parity build
+(2026-11):* every other outdated row Update Crew can still help, whatever the daemon's `reason` (a row the daemon did
+not list included), reads the Crew it runs and the one it would restart on, "Runs Crew {running}, not {installed}."
+(`running` from the job's `running_version`, else the entry's version; `installed` from the job's
+`installed_version`, else this app's Crew; "Runs Crew {running}, not the Crew installed in your account." for one
+version built from other bytes), then "Update Crew restarts it.", followed by the question's words for who is
+connected when others are or may be. The question counts the others as the command line and the chat do: "1 other
+person is connected", "{n} other people are connected". For `too_old` the dialog offers **Update Crew** and its
+"Choose Update Crew" sentence whenever this app carries a Crew: the daemon decides what is too old, so the versions
+are not compared again here (`installReplaces` is deleted). Without a Crew in this app it shows the daemon's own
+sentence the way it shows `failed`.
 
 **Add this computer again** (*added for account ownership, AO-9*) sits on the connection bar for
 `crew_device_key_missing` ("This computer no longer has its key for {workspace}. Choose Add this computer again to
@@ -992,7 +997,9 @@ view stays open.
 | Pending admission (host) | The Waiting to join section, including the different-code warning |
 | The person's devices (*added for account ownership, AO-5, AO-10*) | **Keys and security…** lists each device with how and when it was added; a device added since this computer last looked raises the new-device notice at the next connect |
 | The server's Crew version (*added for account ownership, AO-4*) | When the connection's `server_version` (the version the verified `hello` reported) is older than the Crew server program this app carries, or, for a broker that reports no version, when its `hello` does not advertise `account_identity_v1`, the connection bar says "{workspace}’s server runs an older Crew.": **Update Crew** for the host (it opens **Open a workspace on a server** for that server and looks at once), "Ask @{host} to update Crew." for others, and × to dismiss |
-| Setups started elsewhere (*added for account ownership, AO-8, AO-12*) | A setup job this window did not start, such as a chat's, shows at the top of Crew as "Crew is being set up on {server}.", or "A setup on {server} is waiting for you to sign in." with **Sign in** |
+| Setups started elsewhere (*added for account ownership, AO-8, AO-12*) | A setup job this window did not start, such as a chat's, shows at the top of Crew as "Crew is being set up on {server}.", or "A setup on {server} is waiting for you to sign in." with **Sign in**. *Amended by the chat-parity build (2026-11):* a job it showed that then fails leaves a danger `Note` (`role="status"`), "Setting up Crew on {server} stopped." with the daemon's sanitized reason, and **Dismiss** ("Dismiss the note about {server}"). |
+| A chat's changes (*added by the chat-parity build, 2026-11*) | Within about two seconds while the window is visible, with no reload: one shared poller per window asks `GET /crew/changes` every 1.5 s with `timeout_ms=0`, and dispatches `crew:changed` (debounced 250 ms per listener) to the connections list, grants, "Reads as you", transfers, the Crew task model chip, the chat's Crew bar, the setup notes and the connection bar's **Add this computer again**. It never runs on a `biorouter serve` browser. |
+| A chat's Crew step (*added by the chat-parity build, AO-12 as D1 amends it*) | In the chat, beside the credential card: "Sign in to {login}" with **Sign in** (opens `SignInDialog` for the card's target) and **Dismiss**; "Unlock Crew's vault" or "Set up Crew's vault" with **Unlock** or **Set up** (the native prompt through `crewCredentials`) and **Not now**; "Can’t verify {host} yet" with the offered fingerprint (`CopyField`), **How do I verify it?**, **Open a terminal here** and **Not now**; "{host}’s identity changed" with both fingerprints and **Copy details for IT** only. Each says "This acts as you. Only you can finish it.", renders no input, and on a browser surface says where to do it instead. |
 | A chat's read consent (*added for account ownership, AO-12*) | Under the Chat access pane, "Reads as you" lists "Reads {workspace} as you", "Since {date}" and **Revoke**, which answers "This chat no longer reads {workspace} as you." *Amended 2026-11:* the chat itself shows it too. A chat with a read consent and no grant carries a slim bar above its composer, one "Reads {workspace} as you" chip per workspace with **Revoke**, whose result note has **Dismiss**; focus goes to the next **Revoke**, else **Dismiss**, then the composer. The bar appears as soon as the consent card is allowed. The consent card's button reads **Allow**, not **Allow once**, its answered row reads "This chat may read {workspace} as you until you take it back", and a Crew person-tool card shows its summary and each line under it on separate lines, with no **Change** link. `crew__read` and `crew__change` are left out of the per-tool permission choices. *Amended after the second live run (2026-11):* the bar hides a revoked consent by that consent (connection and `granted_at`), not by its connection, and drops the mark once the daemon's list no longer names it, so a consent given again in the same open chat shows at once. The result note goes when its workspace's consent shows again, never beside the row, and if its **Dismiss** had focus, focus moves to that row's **Revoke**. |
 
 ## Every existing screen, control and string: old to new
@@ -1403,7 +1410,7 @@ the Advanced summary. **Req** means native `required`, a `type="submit"` button 
 | **Host a workspace**, Name | Workspace name (req) · Your server login (req) · Privacy (Private) · Institution (req iff Private) | Port · Identity file · Jump hosts · Connection name · Remote work folder + agent execution `Switch` (off) |
 | Host, Start | The start command `CopyField` · Paste what it printed (req) | the two help disclosures |
 | Host, Create | Summary + **Create workspace** | None |
-| **Connection settings** | Connection name (req) · Your server login (req) · Privacy radios · Institution (req iff Private, placeholder pinned) | Port · Identity file · Jump hosts · Remote work folder + agent execution `Switch` · Workspace details (read-only `CopyField`s: workspace ID, fingerprint, socket path, host user ID, device ID, cluster ID; editable only for a manually entered connection). Opens by default when any value is non-default. Danger zone: Remove {workspace} from this computer… |
+| **Connection settings** | Connection name (req) · Your server login (req) · Privacy radios · Institution (req iff Private, placeholder pinned) | Port · Identity file · Jump hosts · Remote work folder + agent execution `Switch` · Workspace details (read-only `CopyField`s: workspace ID, fingerprint, socket path, host user ID, computer ID (the device ID; its copy button reads **Copy computer ID**), cluster ID; editable only for a manually entered connection). Opens by default when any value is non-default. Danger zone: Remove {workspace} from this computer… |
 | **Invite people** (host, S3a) | Username `@` (req) | Invite someone using an older version of Biorouter (join request + user ID → token) · Add another computer for an existing member, "Add another computer for @{username}" (a `Switch`, shown only when the broker answers "already a member") |
 | **Let someone in** | Code from {person} (req) | None |
 | **Create team** | Name (req; S2 helper "Team names are unique in {workspace}.") | None |

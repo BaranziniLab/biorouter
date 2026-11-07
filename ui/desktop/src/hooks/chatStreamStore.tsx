@@ -43,6 +43,7 @@ import {
   subscribeSessionRowChanges,
 } from '../utils/sessionRowSync';
 import { isReadOnlySubagentChat } from '../components/subagent/subagentReadOnly';
+import { noteStreamedCrewStep } from '../components/crew/chat/streamedCrewSteps';
 import { mergeStopRecord } from '../components/conversation/turnStoppedNotice';
 import { isBrowserSurface } from '../utils/surface';
 import {
@@ -2725,6 +2726,10 @@ class ChatStreamController {
               isReplayFrame(event)
             );
             if (!msg) break;
+            // A Crew step card is never stored, so a streamed one is the only kind the
+            // daemon can be waiting on: only it may draw buttons (`streamedCrewSteps.ts`).
+            // Noted before the snapshot swap, so its first render already knows.
+            noteStreamedCrewStep(this.sessionId, msg);
             currentMessages = pushMessage(currentMessages, msg);
             // #22 — one snapshot swap (state + tokens + transcript + skeleton
             // cleanup) per streamed event, not three.

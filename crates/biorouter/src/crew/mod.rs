@@ -1,11 +1,12 @@
 //! Saved native SSH connections and owner-scoped Crew capabilities.
 pub mod authentication;
+pub mod changes;
 mod consent;
 mod credentials;
 mod devices;
 mod freshness;
 pub use consent::{PersonRead, PersonReadRow};
-pub use devices::NewDevice;
+pub use devices::{added_via_words, NewDevice};
 #[cfg(test)]
 #[path = "freshness_tests.rs"]
 mod freshness_tests;
@@ -3204,13 +3205,13 @@ impl CrewManager {
         let prepared = if let Some(preparation_id) = &input.preparation_id {
             ensure!(
                 id.is_none(),
-                "Prepared device identities are used only when saving a new connection"
+                "A prepared device key is used only when saving a new connection."
             );
             uuid::Uuid::parse_str(preparation_id)?;
             if let Some(expected) = r.completed_preparations.get(preparation_id) {
                 ensure!(
                     expected == &preparation_hash,
-                    "Prepared identity was already saved with different connection settings"
+                    "This prepared device key was already saved with different connection settings."
                 );
                 let connection = r
                     .connections
@@ -3219,7 +3220,7 @@ impl CrewManager {
                     .cloned()
                     .ok_or_else(|| {
                         anyhow::anyhow!(
-                            "Prepared connection was removed; prepare a new device identity"
+                            "The connection this device key was prepared for was removed. Prepare a new device key."
                         )
                     })?;
                 return Ok(connection);
@@ -3230,7 +3231,7 @@ impl CrewManager {
                     .filter(|prepared| &prepared.preparation_id == preparation_id)
                     .cloned()
                     .ok_or_else(|| {
-                        anyhow::anyhow!("Prepared identity is unavailable in this profile")
+                        anyhow::anyhow!("This prepared device key isn't available in this profile.")
                     })?,
             )
         } else {
@@ -4241,7 +4242,8 @@ impl CrewManager {
     }
     /// The device key saved for `c`, checked against the identity `c` records. A key the
     /// credential store no longer holds is `crew_device_key_missing` (AO-9), which Add this
-    /// computer again repairs; a locked vault or a refused keyring keeps its own refusal.
+    /// computer again repairs; a locked vault or a refused keyring keeps its own refusal; a key
+    /// that is not the one `c` records is [`DEVICE_KEY_MISMATCH`].
     async fn device_signer(&self, c: &Connection) -> Result<SigningKey> {
         let secret = match self.read_credential(&format!("device:{}", c.id)) {
             Ok(secret) => secret,
@@ -4274,10 +4276,7 @@ impl CrewManager {
             let workspace = self.workspace_label(&c.id).await;
             return Err(CrewRefusal::device_not_recognized(&workspace).into());
         }
-        ensure!(
-            matches,
-            "Saved Crew device identity does not match its signing credential; reconnect using a verified device identity"
-        );
+        ensure!(matches, DEVICE_KEY_MISMATCH);
         Ok(signer)
     }
     /// Note that the workspace server named `uid` as the account `id`'s bridge signs in as.
@@ -7350,6 +7349,10 @@ pub(crate) fn agent_error_text(error: &anyhow::Error) -> String {
     }
 }
 
+/// A saved device key that is not the key its connection records: said in the words every
+/// surface uses for it, a device key, never an "identity".
+const DEVICE_KEY_MISMATCH: &str = "The device key saved for this connection doesn't match the device it records. Reconnect with a verified device key.";
+
 /// The broker's technical texts that name something a person can act on, said as sentences
 /// (Q2-76), matched on the text after its code, in lowercase, without a closing full stop. The
 /// CLI keeps the same table for the refusals it reads over HTTP (`commands/crew/output.rs`).
@@ -7378,6 +7381,11 @@ const REFUSAL_SENTENCES: &[(&str, &str)] = &[
         "attachment unavailable",
         "That file isn't available to you. It may have been removed, or you may not be in its channel.",
     ),
+    // `manager()`'s check: the host's account, not one of its devices, as the CLI says it.
+    (
+        "workspace host device required",
+        "Only the workspace host can do this.",
+    ),
 ];
 
 /// The code of a refusal the workspace answered, found anywhere in `error`'s chain
@@ -7391,11 +7399,10 @@ pub fn workspace_refusal_code(error: &anyhow::Error) -> Option<String> {
     })
 }
 
-/// A refusal the workspace answered, found anywhere in `error`'s chain, as a sentence for a
-/// person (F-1): a known technical text in words, else the broker's own message without its
-/// code, with a capital and a full stop. `None` when the workspace did not answer with a
-/// refusal (the connection or the transport failed, or this device refused first).
-pub fn refusal_sentence(error: &anyhow::Error) -> Option<String> {
+/// A refusal the workspace answered, found anywhere in `error`'s chain: its code, and its
+/// message without that code, as [`plain_label`] leaves it. `None` when the workspace did not
+/// answer with a refusal.
+fn answered_refusal(error: &anyhow::Error) -> Option<(String, String)> {
     let (code, message) = error.chain().find_map(|link| {
         let text = link.to_string();
         let envelope: Value =
@@ -7413,13 +7420,41 @@ pub fn refusal_sentence(error: &anyhow::Error) -> Option<String> {
         .strip_prefix(code.as_str())
         .and_then(|rest| rest.strip_prefix(':'))
         .unwrap_or(message);
-    let reason = plain_label(reason);
+    Some((code, plain_label(reason)))
+}
+
+/// [`REFUSAL_SENTENCES`]' sentence for `reason`, a refusal's text after its code, matched in
+/// lowercase without a closing full stop.
+fn known_sentence(reason: &str) -> Option<&'static str> {
     let key = reason
         .trim_end_matches(['.', '!', '?'])
         .to_ascii_lowercase();
-    if let Some((_, sentence)) = REFUSAL_SENTENCES.iter().find(|(text, _)| *text == key) {
-        return Some((*sentence).to_owned());
+    REFUSAL_SENTENCES
+        .iter()
+        .find(|(text, _)| *text == key)
+        .map(|(_, sentence)| *sentence)
+}
+
+/// The sentence for a refusal the workspace answered with a technical text this daemon words
+/// ([`REFUSAL_SENTENCES`]), such as "Only the workspace host can do this." for
+/// `forbidden: workspace host device required`. `None` for any other refusal, and when the
+/// workspace did not answer one. Fixed text only: nothing the workspace wrote is passed on.
+pub fn known_refusal_sentence(error: &anyhow::Error) -> Option<&'static str> {
+    known_sentence(&answered_refusal(error)?.1)
+}
+
+/// A refusal the workspace answered, found anywhere in `error`'s chain, as a sentence for a
+/// person (F-1): a known technical text in words, else the broker's own message without its
+/// code, with a capital and a full stop. `None` when the workspace did not answer with a
+/// refusal (the connection or the transport failed, or this device refused first).
+pub fn refusal_sentence(error: &anyhow::Error) -> Option<String> {
+    let (code, reason) = answered_refusal(error)?;
+    if let Some(sentence) = known_sentence(&reason) {
+        return Some(sentence.to_owned());
     }
+    let key = reason
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase();
     if reason.is_empty() || key == code {
         return Some("The workspace refused this request.".to_owned());
     }
@@ -11000,6 +11035,11 @@ done
                     .context("Couldn't start the transfer"),
                 "You're not in that channel.",
             ),
+            // `manager()`'s check, in the words the CLI uses.
+            (
+                refused("forbidden", "forbidden: workspace host device required"),
+                "Only the workspace host can do this.",
+            ),
         ] {
             assert_eq!(
                 refusal_sentence(&error).as_deref(),
@@ -11007,6 +11047,23 @@ done
                 "{error:#}"
             );
         }
+        // Only a text the table words is a known sentence: the rest are the broker's own words,
+        // which a caller that passes on fixed text alone must not take.
+        assert_eq!(
+            known_refusal_sentence(&refused(
+                "forbidden",
+                "forbidden: workspace host device required."
+            )),
+            Some("Only the workspace host can do this.")
+        );
+        assert_eq!(
+            known_refusal_sentence(&refused("request_denied", "Message too long.")),
+            None
+        );
+        assert_eq!(
+            known_refusal_sentence(&anyhow::anyhow!("Crew connection is disconnected")),
+            None
+        );
         assert_eq!(
             refusal_sentence(&anyhow::anyhow!(
                 "Crew connection is disconnected; authenticate and connect in Crew"
@@ -12989,6 +13046,70 @@ done
         assert!(manager
             .read_credential(&format!("device:{}", prepared.preparation_id))
             .is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A refusal about this computer's key says "device key", the words every surface uses
+    /// for it, never "identity": a prepared key offered to a saved connection, the same
+    /// prepared key saved again with other settings, and a saved key that is not the one its
+    /// connection records.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refusal_about_a_device_key_says_device_key() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("device-key-words");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let input = |preparation_id: Option<&str>, name: &str| SaveConnection {
+            preparation_id: preparation_id.map(str::to_owned),
+            name: name.into(),
+            ssh_target: "bob@words.example.org".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/tmp/crew-device-key-words.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "55555555-5555-4555-8555-555555555555".into(),
+            workspace_public_key: "55".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            remote_access: Default::default(),
+            cluster_connection_id: None,
+            mode: ClusterMode::Public,
+            institution_id: None,
+        };
+        let prepared = manager.prepare_device().await.unwrap();
+        let id = prepared.preparation_id.as_str();
+        let saved = manager.save(input(Some(id), "words")).await.unwrap();
+        let refusals = [
+            manager
+                .update(&saved.id, input(Some(id), "words again"))
+                .await
+                .unwrap_err(),
+            manager
+                .save(input(Some(id), "other words"))
+                .await
+                .unwrap_err(),
+        ];
+        assert_eq!(
+            refusals.map(|error| error.to_string()),
+            [
+                "A prepared device key is used only when saving a new connection.",
+                "This prepared device key was already saved with different connection settings.",
+            ]
+        );
+
+        let other = SigningKey::from_bytes(&[7; 32]);
+        manager
+            .write_credential(&format!("device:{}", saved.id), &hex(&other.to_bytes()))
+            .unwrap();
+        let connection = manager.connection(&saved.id).await.unwrap();
+        let mismatch = manager.device_signer(&connection).await.unwrap_err();
+        assert_eq!(mismatch.to_string(), DEVICE_KEY_MISMATCH);
+        assert!(DEVICE_KEY_MISMATCH.contains("device key"));
+        assert!(!DEVICE_KEY_MISMATCH.to_lowercase().contains("identity"));
         let _ = fs::remove_dir_all(root);
     }
 

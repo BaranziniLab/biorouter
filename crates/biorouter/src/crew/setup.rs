@@ -2238,6 +2238,77 @@ fn decided(plan: &Plan, ours: Option<&String>) -> String {
     }
 }
 
+/// What a setup job announces on Crew's change feed ([`super::changes`]) when it moves: its
+/// state, and the connection it saved once it saved one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Milestone {
+    state: SetupState,
+    saved: Option<String>,
+}
+
+impl Milestone {
+    fn of(progress: &Progress) -> Self {
+        Self {
+            state: progress.state,
+            saved: progress
+                .outcome
+                .as_ref()
+                .and_then(|outcome| outcome.connection_id.clone()),
+        }
+    }
+}
+
+/// The change-feed kind a job in `state` is announced with.
+fn milestone_kind(state: SetupState) -> &'static str {
+    match state {
+        SetupState::Running => "setup_running",
+        SetupState::NeedsSignIn => "setup_needs_sign_in",
+        SetupState::Finished => "setup_finished",
+        SetupState::Failed => "setup_failed",
+        SetupState::Cancelled => "setup_cancelled",
+    }
+}
+
+/// Announce that the job `job_id` reached `milestone`, naming the connection it saved, else the
+/// saved connection it is for (`connection_id`).
+fn announce_milestone(job_id: &str, connection_id: Option<&str>, milestone: &Milestone) {
+    super::changes::publish(
+        milestone_kind(milestone.state),
+        super::changes::ChangeIds {
+            connection_id: milestone
+                .saved
+                .clone()
+                .or_else(|| connection_id.map(str::to_owned)),
+            job_id: Some(job_id.to_owned()),
+            ..Default::default()
+        },
+    );
+}
+
+/// Apply `change` to a job's progress, and announce it on Crew's change feed when it moved the
+/// job's state or saved its connection (WI-15): an open Crew view then shows a job that a chat,
+/// another window or the command line started, and the connection it saved, without a reload.
+/// The announcement is made after the lock is let go.
+fn update_progress(
+    progress: &Mutex<Progress>,
+    job_id: &str,
+    connection_id: Option<&str>,
+    change: impl FnOnce(&mut Progress),
+) {
+    let moved = {
+        let mut progress = progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = Milestone::of(&progress);
+        change(&mut progress);
+        let after = Milestone::of(&progress);
+        (after != before).then_some(after)
+    };
+    if let Some(milestone) = moved {
+        announce_milestone(job_id, connection_id, &milestone);
+    }
+}
+
 impl Job {
     fn progress(&self) -> Progress {
         self.progress
@@ -2246,11 +2317,11 @@ impl Job {
             .clone()
     }
     fn update(&self, change: impl FnOnce(&mut Progress)) {
-        change(
-            &mut self
-                .progress
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        update_progress(
+            &self.progress,
+            &self.job_id,
+            self.connection_id.as_deref(),
+            change,
         );
     }
     fn status(&self, job_id: &str) -> SetupStatus {
@@ -4420,6 +4491,11 @@ impl CrewManager {
         // The preflight reads the invocation every step runs, login included.
         ssh_policy::preflight(&job.args(remote(PROBE_SCRIPT)), &job.route.ssh_target).await?;
         jobs().insert(job_id.clone(), Arc::clone(&job));
+        announce_milestone(
+            &job_id,
+            job.connection_id.as_deref(),
+            &Milestone::of(&job.progress()),
+        );
         let running = Arc::clone(&job);
         let ended = job_id.clone();
         tokio::spawn(async move {
@@ -4740,3 +4816,86 @@ fn access_save(
 #[cfg(all(test, unix))]
 #[path = "setup_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod change_feed_tests {
+    use super::super::changes::{feed, CrewChange};
+    use super::*;
+
+    fn progress(state: SetupState) -> Mutex<Progress> {
+        Mutex::new(Progress {
+            state,
+            stage: SetupStageName::Check,
+            stages: stages_for(SetupIntent::Member, false),
+            server: SetupServer::default(),
+            installed: None,
+            artifact: None,
+            workspaces: Vec::new(),
+            workspaces_scan: None,
+            workspaces_note: None,
+            outcome: None,
+            error: None,
+        })
+    }
+
+    /// What the feed holds for `job_id` after revision `from`.
+    fn announced(from: u64, job_id: &str) -> Vec<CrewChange> {
+        feed()
+            .since(from)
+            .changes
+            .into_iter()
+            .filter(|change| change.job_id.as_deref() == Some(job_id))
+            .collect()
+    }
+
+    #[test]
+    fn a_job_announces_each_state_it_reaches_and_nothing_else() {
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let progress = progress(SetupState::Running);
+        let from = feed().revision();
+        // A step moving is not a change the Crew view lists.
+        update_progress(&progress, &job_id, Some("c-member"), |progress| {
+            progress.stage = SetupStageName::Install;
+        });
+        assert!(announced(from, &job_id).is_empty());
+        update_progress(&progress, &job_id, Some("c-member"), |progress| {
+            progress.state = SetupState::NeedsSignIn;
+        });
+        update_progress(&progress, &job_id, Some("c-member"), |progress| {
+            progress.state = SetupState::Failed;
+        });
+        let changes = announced(from, &job_id);
+        let kinds: Vec<&str> = changes.iter().map(|change| change.kind.as_str()).collect();
+        assert_eq!(kinds, ["setup_needs_sign_in", "setup_failed"]);
+        assert!(changes
+            .iter()
+            .all(|change| change.connection_id.as_deref() == Some("c-member")));
+    }
+
+    #[test]
+    fn a_job_that_saves_a_connection_names_it() {
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let progress = progress(SetupState::Running);
+        let from = feed().revision();
+        update_progress(&progress, &job_id, None, |progress| {
+            progress
+                .outcome
+                .get_or_insert_with(Default::default)
+                .connection_id = Some("c-saved".into());
+        });
+        update_progress(&progress, &job_id, None, |progress| {
+            progress.state = SetupState::Finished;
+        });
+        let seen: Vec<(String, Option<String>)> = announced(from, &job_id)
+            .into_iter()
+            .map(|change| (change.kind, change.connection_id))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("setup_running".to_owned(), Some("c-saved".to_owned())),
+                ("setup_finished".to_owned(), Some("c-saved".to_owned())),
+            ]
+        );
+    }
+}

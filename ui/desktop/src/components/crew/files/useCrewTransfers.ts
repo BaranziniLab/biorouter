@@ -1,6 +1,7 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { listTransfers, type CrewTransfer } from '../crewTransfers';
 import { transferStatePresentation } from '../state/crewStatus';
+import { changeTouches, onCrewChanged, type CrewChangesDelta } from '../state/useCrewChanges';
 
 /** How often the one poller asks again while a transfer is moving. */
 export const TRANSFER_POLL_MS = 2000;
@@ -53,7 +54,9 @@ interface Entry {
  * computer, which nothing here hears: so a paused transfer keeps the poller going slowly, the
  * window coming back to the front asks again (R-8), and a surface that watches every record (the
  * Files tab) keeps it going slower still (RES2-N3). Nothing else polls once every transfer has
- * finished.
+ * finished. A change on Crew's change feed that may concern a connection shown (a chat's
+ * `files_share` or `files_download`, another window: WI-15) asks again too, and a transfer that
+ * answer shows active starts the poller.
  */
 const entries = new Map<string, Entry>();
 
@@ -83,16 +86,26 @@ function refreshAllOnReturn() {
   for (const [connectionId, entry] of entries) void fetchTransfers(connectionId, entry);
 }
 
+/** Crew changed somewhere: every connection shown that the change may concern asks again. */
+function refreshOnCrewChange(delta: CrewChangesDelta) {
+  for (const [connectionId, entry] of entries)
+    if (changeTouches(delta, [connectionId])) void fetchTransfers(connectionId, entry);
+}
+
 let listeningForReturn = false;
+let stopListeningForChanges: (() => void) | null = null;
 function listenForReturn(listen: boolean) {
   if (typeof window === 'undefined' || listen === listeningForReturn) return;
   listeningForReturn = listen;
   if (listen) {
     window.addEventListener('focus', refreshAllOnReturn);
     document.addEventListener('visibilitychange', refreshAllOnReturn);
+    stopListeningForChanges = onCrewChanged(refreshOnCrewChange);
   } else {
     window.removeEventListener('focus', refreshAllOnReturn);
     document.removeEventListener('visibilitychange', refreshAllOnReturn);
+    stopListeningForChanges?.();
+    stopListeningForChanges = null;
   }
 }
 

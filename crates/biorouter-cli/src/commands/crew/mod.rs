@@ -36,8 +36,10 @@ const RESTART_FOR_JOINING: &str =
     "Restart the shared Biorouter daemon to invite or join with an invitation.";
 /// A revoke that stopped the grant on this computer but that the workspace has not confirmed. It
 /// is not a success, so the command exits non-zero (RV-D1). The daemon asks the workspace
-/// again by itself whenever the connection is back (F3), so no second command is needed.
-const STOPPED_ON_THIS_COMPUTER: &str = "Stopped on this computer. The workspace hasn't confirmed the revocation yet; Biorouter confirms it with the workspace by itself when the connection is back. biorouter crew grants list shows when it has.";
+/// again by itself whenever the connection is back (F3), so no second command is needed. The
+/// daemon's own sentence (`REVOCATION_UNCONFIRMED_MESSAGE` in `routes/crew_profile.rs`), then
+/// where this terminal sees that it has.
+const STOPPED_ON_THIS_COMPUTER: &str = "Stopped on this computer. The workspace hasn't confirmed yet; Biorouter confirms it by itself when the connection is back. biorouter crew grants list shows when it has.";
 /// The same, for setting Crew up on a server (`/crew/setup`, design OW-9).
 const RESTART_FOR_SETUP: &str = "Restart the shared Biorouter daemon to set up Crew on a server.";
 /// The same, for deleting a workspace (`…/workspace/delete`, OW-5).
@@ -3860,6 +3862,7 @@ async fn setup(
                 .unwrap_or_default()
                 .to_owned();
             let request = json!({"target": connection_target, "intent": "check"});
+            let asked = output::SetupAsked::of(&request, route_flags(&connection));
             let (status, mut lines) =
                 run_setup(api, request, &login, &Value::Null, &mut interrupt).await?;
             // The bridge's last report says what the SSH check cannot: whether the kernel
@@ -3869,6 +3872,7 @@ async fn setup(
                 &status,
                 &login,
                 connection.as_ref(),
+                &asked,
             ));
             api.stream(&status, &lines)?;
             return Ok(Reply::Streamed);
@@ -3939,6 +3943,8 @@ async fn setup_server(
     let intent = if check { "check" } else { "install" };
     let mut request = json!({"target": setup_target, "intent": intent});
     choices.apply(&mut request);
+    // The older daemon's request below asks the same of the workspaces, on the same route.
+    let asked = output::SetupAsked::of(&request, route_flags(&setup_target));
     let (status, mut lines) = match run_setup(api, request, &login, &listing, &mut interrupt).await
     {
         Err(error) if is_older_setup_daemon(&error) && !choices.newer() => {
@@ -3953,7 +3959,7 @@ async fn setup_server(
         }
         answer => answer?,
     };
-    lines.extend(output::setup_summary_lines(&status, &login, None));
+    lines.extend(output::setup_summary_lines(&status, &login, None, &asked));
     api.stream(&status, &lines)?;
     Ok(Reply::Streamed)
 }
@@ -4172,6 +4178,7 @@ async fn member_setup(
             api.print(&[notice])?;
         }
     }
+    let asked = output::SetupAsked::of(&request, route_flags(&connection));
     let (status, mut lines) = run_setup(api, request, &login, listing, interrupt).await?;
     // What agents may do is what the connection says now, not what the job could have set.
     let connection = api.connection().await.ok();
@@ -4179,6 +4186,7 @@ async fn member_setup(
         &status,
         &login,
         connection.as_ref(),
+        &asked,
     ));
     // Asked for full access where the server or its Crew can't give it: the job gave the
     // work folder instead (OW-6), and that is said.
@@ -4948,7 +4956,14 @@ async fn host(
             host_stopped(api, &hosting, &preparation, &target, &outcome, error, &done).await,
         );
     }
-    lines.extend(output::setup_summary_lines(&status, &hosting.server, None));
+    // A host's job asks nothing of the workspaces the account already hosts.
+    let asked = output::SetupAsked::of(&Value::Null, route_flags(&target));
+    lines.extend(output::setup_summary_lines(
+        &status,
+        &hosting.server,
+        None,
+        &asked,
+    ));
     api.stream(&status, &lines)?;
     let Some(connection) = hosted_connection(api, &outcome).await? else {
         return Err(host_start_problem(
@@ -5428,7 +5443,7 @@ fn restart_to_open(error: anyhow::Error, name: &str, login: &str, route: &str) -
     let said = error_text(&error);
     Worded {
         sentence: format!(
-            "{said}\nThe Crew installed in your account there is already newer. To restart {} on it now, run biorouter crew setup --server {}{route} --restart-workspace {}; what members have running there stops.",
+            "{said}\nThe Crew installed in your account there is already newer. To restart {} on it now, run biorouter crew setup --server {}{route} --restart-workspace {}; members' running agent commands stop.",
             name_text(name),
             safe_text(&shell_word(login)),
             safe_text(&shell_word(name))
@@ -5510,7 +5525,7 @@ async fn rejoin(api: &Api) -> Result<Reply> {
             return Err(host_rename_conflict(api, error).await);
         }
     };
-    let lines = output::rejoined_lines(&answer, &HumanOptions::new(api.show_ids));
+    let lines = output::rejoined_lines(&answer);
     Ok(api.say(answer, lines))
 }
 
@@ -5612,7 +5627,8 @@ fn shown_fingerprints(new_devices: &Value) -> Vec<String> {
 
 /// `profile revoke-device` (AO-5): one of the person's own computers, by its fingerprint or as
 /// this computer, removed from the workspace. Its SSH access to the server goes first, which is
-/// said before asking; revoking this computer's own says how to add it again after.
+/// said before asking; removing this computer says how to add it again after. A person reads
+/// "Remove", in the desktop's words; the command keeps its name.
 async fn revoke_device(
     api: &Api,
     fingerprint: &[String],
@@ -5632,18 +5648,17 @@ async fn revoke_device(
         .unwrap_or_default()
         .to_owned();
     let here = device["this_device"].as_bool() == Some(true);
-    let warning =
-        output::revoke_device_warning(&shown, here, &workspace, &server_label(&connection));
+    let warning = output::remove_device_warning(here);
     let consent = yes_or_ask(
         yes,
         api.interactive,
-        format!("Revoke {}?", safe_text(&shown)),
-        "Revoking a computer needs a yes. There is no terminal to ask in, so add --yes.".to_owned(),
+        output::remove_device_question(&shown, here),
+        "Removing a computer needs a yes. There is no terminal to ask in, so add --yes.".to_owned(),
     )?;
     match consent {
         Consent::Ask(question) => {
             eprintln!("{warning}");
-            ask_yes(question, "Nothing was revoked.").await?;
+            ask_yes(question, "Nothing was removed.").await?;
         }
         Consent::Given => eprintln!("{warning}"),
     }
@@ -8032,7 +8047,50 @@ async fn start_task(
         started["task_model"] = choice.to_json();
     }
     // The task is named by the channel it posts to, as `tasks list` names it.
-    Ok(api.show_with(started, api.names().await))
+    let options = api.human(api.names().await);
+    // With full access the task runs as the person, which is said after it, as the chat's task
+    // card says it.
+    let access = if api.text() {
+        task_full_access_line(api).await
+    } else {
+        None
+    };
+    Ok(match access {
+        Some(line) => {
+            let block = output::formatted(&started, OutputFormat::Text, &options)?;
+            api.say(started, vec![block, line])
+        }
+        None => Reply::Show(started, Box::new(options)),
+    })
+}
+
+/// What a task started on the selected connection may do on its server when that is full
+/// access, as the chat's task card says it (`access_lines` in `crew_tools/tasks.rs`): it runs
+/// as the person's account ([`FULL_ACCESS_IS_YOU`]), and on the host's account it can act as
+/// the host ([`full_access_warning`]). `None` for any other access, or a connection that can't
+/// be read, which says nothing rather than something untrue.
+async fn task_full_access_line(api: &Api) -> Option<String> {
+    let connection = api.connection().await.ok()?;
+    let has_folder = connection["remote_root"]
+        .as_str()
+        .is_some_and(|root| !root.trim().is_empty());
+    if !has_folder || connection["remote_access"].as_str() != Some("full") {
+        return None;
+    }
+    let hosted = api.hosted_workspace(&connection, &Value::Null).await;
+    Some(task_full_access_sentence(
+        &server_label(&connection),
+        hosted.as_deref(),
+    ))
+}
+
+/// [`task_full_access_line`]'s words for `server`, with the host's authority when the account
+/// hosts `hosted`.
+fn task_full_access_sentence(server: &str, hosted: Option<&str>) -> String {
+    format!(
+        "With a private model it can run any command as you on {server}, and read and change any file your account can. {}",
+        full_access_warning(hosted)
+    )
 }
 
 /// `defaults show|set|clear` (OW-11): the model Crew tasks start on, kept in the shared
@@ -9377,7 +9435,18 @@ mod tests {
         let error = run(&api, revoke_command())
             .await
             .expect_err("a 503 is not success");
-        assert!(message(&error).starts_with("Stopped on this computer."));
+        // The daemon's own sentence (`REVOCATION_UNCONFIRMED_MESSAGE`), word for word, then
+        // where this terminal sees that it has.
+        let profile = include_str!("../../../../biorouter-server/src/routes/crew_profile.rs");
+        let daemon = profile
+            .split("REVOCATION_UNCONFIRMED_MESSAGE: &str = \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the daemon's sentence");
+        assert_eq!(
+            message(&error),
+            format!("{daemon} biorouter crew grants list shows when it has.")
+        );
         assert_eq!(
             error_code(&error).as_deref(),
             Some("crew_revocation_unconfirmed")
@@ -14220,6 +14289,73 @@ mod tests {
             .and_then(|sent| sent.body)
     }
 
+    /// A task daemon whose saved connection gives agents `access` in a work folder, and whose
+    /// snapshot makes the person the host when `host` (the standard snapshot's host UID).
+    fn access_task_daemon(
+        access: &'static str,
+        host: bool,
+    ) -> impl Fn(&str, &str, Option<&Value>) -> Result<Value> {
+        let tasks = task_daemon(json!({"_providers": ["versa_azure"]}));
+        move |method: &str, path: &str, body: Option<&Value>| {
+            if (method, path) == ("GET", "/crew/connections") {
+                let mut listed = standard(method, path, body)?;
+                listed["connections"][0]["remote_root"] = json!("/home/bob/crew-work");
+                listed["connections"][0]["remote_access"] = json!(access);
+                return Ok(listed);
+            }
+            let snapshot_asked = body.is_some_and(|body| body["method"] == "workspace.snapshot");
+            if path.ends_with("/request") && snapshot_asked && !host {
+                let mut member = snapshot();
+                member["actor"]["uid"] = json!(1001);
+                return Ok(member);
+            }
+            tasks(method, path, body)
+        }
+    }
+
+    /// A task that gets full access says what that lets it do after it starts, as the chat's
+    /// task card says it: what full access is (W1), and on the host's account that it can act
+    /// as the host (W2). A folder, and JSON output, add nothing.
+    #[tokio::test]
+    async fn a_task_with_full_access_says_it_works_as_you() {
+        let start = || {
+            CrewCommand::Tasks(TaskCommand::Start {
+                channel: "methods".into(),
+                prompt: TextInput {
+                    text: Some("Sum the counts".into()),
+                    input: None,
+                },
+                provider: Some("versa_azure".into()),
+                model: Some("gpt-5.5".into()),
+                context_channels: Vec::new(),
+                allow_posting: true,
+            })
+        };
+        let full = "With a private model it can run any command as you on hpc, and read and change any file your account can. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.";
+        let (api, fake) = api_with(OutputFormat::Text, access_task_daemon("full", false));
+        let lines = said(run(&api, start()).await.expect("started"));
+        assert!(started_run(&fake).is_some());
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].starts_with("Task "), "{lines:?}");
+        assert_eq!(lines[1], full);
+
+        let (api, _) = api_with(OutputFormat::Text, access_task_daemon("full", true));
+        let lines = said(run(&api, start()).await.expect("started"));
+        assert_eq!(
+            lines[1],
+            format!("{full} You host UCSF HPC from this account, so your agent can also read the workspace's own files on the server, including channels you're not in. It can also act as the host of UCSF HPC.")
+        );
+
+        let (api, _) = api_with(OutputFormat::Text, access_task_daemon("folder", true));
+        let lines = said(run(&api, start()).await.expect("started"));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(!lines[0].contains("any command as you"), "{lines:?}");
+
+        let (api, _) = api_with(OutputFormat::Json, access_task_daemon("full", true));
+        let reply = run(&api, start()).await.expect("started");
+        assert!(matches!(reply, Reply::Show(..)), "{reply:?}");
+    }
+
     /// OW-11: a task with no model named starts on the model for Crew tasks, else the default
     /// model for new chats, says which, and with neither fails before anything is looked up.
     #[tokio::test]
@@ -15981,6 +16117,79 @@ mod tests {
         }
     }
 
+    /// A daemon whose setup jobs on `wanjun@leo` finish at once: a check lists `busy-lab`, a
+    /// running workspace the account hosts, and any other job leaves it on its older Crew
+    /// because 2 other people are connected to it.
+    fn busy_lab_daemon() -> impl Fn(&str, &str, Option<&Value>) -> Result<Value> {
+        const BUSY: &str = "11111111-0000-4000-8000-000000000009";
+        move |method: &str, path: &str, body: Option<&Value>| {
+            if (method, path) != ("POST", "/crew/setup") {
+                return standard(method, path, body);
+            }
+            let intent = body.expect("body")["intent"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            let mut status = setup_status(
+                &intent,
+                "finished",
+                json!({"outcome": {"installed_version": "1.94.2", "reused": true}}),
+            );
+            status["server"]["login"] = json!("wanjun@leo");
+            if intent == "check" {
+                status["workspaces"] = json!([{"workspace_id": BUSY, "name": "busy-lab",
+                    "role": "host", "host_username": "wanjun", "state": "running",
+                    "version": "1.94.1", "this_computer": "not_saved"}]);
+                status["installed"] = json!({"state": "file", "version": "1.94.2"});
+            } else {
+                status["outcome"]["outdated"] = json!([{"workspace_id": BUSY, "name": "busy-lab",
+                    "running_version": "1.94.1", "installed_version": "1.94.2",
+                    "others_connected": 2, "reason": "others_connected"}]);
+            }
+            Ok(status)
+        }
+    }
+
+    /// C3: what `setup` says about a hosted workspace it left on an older Crew follows what the
+    /// command asked. `--no-restart` only looked at it, so it says what restarting does; named
+    /// with `--restart-workspace`, it says that one wasn't restarted. Either way the command it
+    /// suggests repeats the route flags given and restarts that one workspace alone.
+    #[tokio::test]
+    async fn setup_says_a_left_workspace_only_when_it_was_asked_to_restart_it() {
+        let leo = |args: &mut SetupArgs| {
+            args.target.server = Some("wanjun@leo".into());
+            args.target.port = Some(2222);
+        };
+        let (api, _) = api_with(OutputFormat::Text, busy_lab_daemon());
+        let mut args = setup_command(None, false);
+        leo(&mut args);
+        args.no_restart = true;
+        setup(&api, args, std::future::pending())
+            .await
+            .expect("set up");
+        let said = printed(&api);
+        assert_eq!(
+            said.last().map(String::as_str),
+            Some("busy-lab runs Crew 1.94.1, not 1.94.2. To restart it on Crew 1.94.2, run biorouter crew setup --server wanjun@leo --port 2222 --restart-workspace busy-lab; 2 other people are connected, and their running agent commands stop."),
+            "{said:?}"
+        );
+        assert!(!said.iter().any(|line| line.contains("wasn't restarted")));
+
+        let (api, _) = api_with(OutputFormat::Text, busy_lab_daemon());
+        let mut args = setup_command(None, false);
+        leo(&mut args);
+        args.restart_workspace = vec!["busy-lab".into()];
+        setup(&api, args, std::future::pending())
+            .await
+            .expect("set up");
+        let said = printed(&api);
+        assert_eq!(
+            said.last().map(String::as_str),
+            Some("busy-lab still runs Crew 1.94.1, not Crew 1.94.2, and 2 other people are connected to it, so it wasn't restarted. To restart it anyway, run biorouter crew setup --server wanjun@leo --port 2222 --restart-workspace busy-lab; their running agent commands stop."),
+            "{said:?}"
+        );
+    }
+
     /// AO-8: setup for a server with nothing saved uses the server target, which makes no device
     /// key, and sends the choices made; `--start NAME` is matched to a stopped workspace the
     /// account hosts in a check job's listing first, and a name it can't match is refused before
@@ -16504,17 +16713,14 @@ mod tests {
         };
         let (api, fake) = api_with(OutputFormat::Text, handler);
         let lines = said(run(&api, CrewCommand::Rejoin).await.expect("rejoined"));
+        // The desktop's words (`rejoinCopy`), then this terminal's command.
         assert_eq!(
-            lines[0],
-            "Added this computer to lab again as \"Bob Lee\" (@bob), with a new device key."
-        );
-        assert!(
-            lines[1].starts_with("lab keeps up to 32 computers for each person, so it removed your oldest one: 3F2A 9C1E 77B0 D4E1 · added "),
-            "{lines:?}"
-        );
-        assert_eq!(
-            lines[2],
-            "Chats that had Crew access through this connection need it given again: biorouter crew grants grant SESSION CHANNEL."
+            lines,
+            [
+                "This computer is back in lab. Chats that had Crew access through it need access again.",
+                "To make room, the workspace removed your oldest computer, 3F2A 9C1E 77B0 D4E1.",
+                "Give a chat access again with biorouter crew grants grant SESSION CHANNEL.",
+            ]
         );
         let order: Vec<String> = fake
             .sent()
@@ -16707,9 +16913,10 @@ mod tests {
         })
     }
 
-    /// AO-5: a device is revoked by its fingerprint, however it was spaced, or as this
+    /// AO-5: a device is removed by its fingerprint, however it was spaced, or as this
     /// computer; it asks first, a fingerprint none of the person's computers has is refused
-    /// before anything is sent, and revoking this computer says how to add it again.
+    /// before anything is sent, and removing this computer says how to add it again. A person
+    /// reads "Remove" throughout, the warning and the question in the desktop's words.
     #[tokio::test]
     async fn a_person_revokes_their_own_computers() {
         let (api, fake) = api_with(OutputFormat::Text, devices_daemon);
@@ -16727,7 +16934,7 @@ mod tests {
         );
         assert_eq!(
             lines,
-            ["Revoked 3F2A 9C1E 77B0 D4E1. That computer can no longer use lab as you."]
+            ["Removed 3F2A 9C1E 77B0 D4E1. That computer can no longer use lab as you."]
         );
 
         let (api, fake) = api_with(OutputFormat::Text, devices_daemon);
@@ -16743,7 +16950,7 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "Revoked this computer. It can no longer use lab as you.",
+                "Removed this computer. It can no longer use lab as you.",
                 "Add this computer again with biorouter crew rejoin."
             ]
         );
@@ -16756,6 +16963,10 @@ mod tests {
         .await
         .expect_err("no terminal to ask in");
         assert!(error.downcast_ref::<NeedsTerminal>().is_some(), "{error:?}");
+        assert_eq!(
+            message(&error),
+            "Removing a computer needs a yes. There is no terminal to ask in, so add --yes."
+        );
         assert!(fake.broker_call("device.revoke").is_none());
         for (typed, said) in [
             (&["AAAA BBBB CCCC DDDD"][..], "None of your computers has the fingerprint AAAA BBBB CCCC DDDD. biorouter crew profile devices lists them."),
@@ -16769,8 +16980,20 @@ mod tests {
             assert!(fake.broker_call("device.revoke").is_none());
         }
         assert_eq!(
-            output::revoke_device_warning("3F2A 9C1E 77B0 D4E1", false, "lab", "leo"),
-            "A computer that can still sign in to leo as you can add itself to lab again. Take its SSH access away first: remove its key from ~/.ssh/authorized_keys on leo, or change your password there."
+            output::remove_device_warning(false),
+            "A lost computer can still sign in as you while it has an SSH key or password for your account. First remove its key from ~/.ssh/authorized_keys on the server, or change your password. Then remove it here."
+        );
+        assert_eq!(
+            output::remove_device_warning(true),
+            "This computer stops reaching the workspace until you add it again with biorouter crew rejoin."
+        );
+        assert_eq!(
+            output::remove_device_question("3F2A 9C1E 77B0 D4E1", false),
+            "Remove 3F2A 9C1E 77B0 D4E1 from your account?"
+        );
+        assert_eq!(
+            output::remove_device_question("70DC FFAF 1751 A59B", true),
+            "Remove this computer from your account?"
         );
     }
 
@@ -17074,7 +17297,7 @@ mod tests {
         .expect_err("older Crew still running");
         assert_eq!(
             shown_text(&error, false),
-            format!("{OLDER_FOR_HOST}\nThe Crew installed in your account there is already newer. To restart running-lab on it now, run biorouter crew setup --server wanjun@leo --port 2222 --restart-workspace running-lab; what members have running there stops.")
+            format!("{OLDER_FOR_HOST}\nThe Crew installed in your account there is already newer. To restart running-lab on it now, run biorouter crew setup --server wanjun@leo --port 2222 --restart-workspace running-lab; members' running agent commands stop.")
         );
         assert_eq!(error_code(&error).as_deref(), Some(ACCOUNT_UNSUPPORTED));
         // A member's new computer, where an older Crew says nobody invited it.

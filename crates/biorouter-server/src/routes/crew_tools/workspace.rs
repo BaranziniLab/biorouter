@@ -9,7 +9,7 @@
 //! `POST /crew/connections/{id}/request`, or the same manager method a route calls.
 
 use anyhow::Result;
-use biorouter::crew::{ClusterMode, Connection};
+use biorouter::crew::{added_via_words, ClusterMode, Connection};
 use biorouter::privacy::{ProviderTier, SessionClassification};
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
@@ -168,6 +168,7 @@ pub(super) fn profile_show(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
 
 /// `biorouter crew profile devices` (AO-10): the person's own computers, which one is this
 /// computer, and which are new. Fingerprints and dates, no workspace content, so no consent.
+/// How each was added is said as the CLI and the desktop say it ([`worded_devices`]).
 pub(super) fn profile_devices(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let connection = ctx.connection().await?;
@@ -179,10 +180,34 @@ pub(super) fn profile_devices(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             .unwrap_or_default();
         Ok(json!({
             "connection_id": connection.id,
-            "devices": snapshot["actor"]["devices"],
-            "new_devices": new_devices,
+            "devices": worded_devices(&snapshot["actor"]["devices"]),
+            "new_devices": worded_devices(&json!(new_devices)),
         }))
     })
+}
+
+/// `devices` with each one's `added_via` in words, the clause after "added" that
+/// `biorouter crew profile devices` and the desktop's Keys show ([`added_via_words`]): "by
+/// signing in to the server", never `account`. A value this build does not know is left out,
+/// never passed on as its raw code. Anything that is not a list of objects is kept as it is.
+pub(super) fn worded_devices(devices: &Value) -> Value {
+    let Some(listed) = devices.as_array() else {
+        return devices.clone();
+    };
+    let worded = listed.iter().cloned().map(|mut device| {
+        if let Some(fields) = device.as_object_mut() {
+            match fields
+                .get("added_via")
+                .and_then(Value::as_str)
+                .and_then(added_via_words)
+            {
+                Some(words) => fields.insert("added_via".to_owned(), json!(words)),
+                None => fields.remove("added_via"),
+            };
+        }
+        device
+    });
+    Value::Array(worded.collect())
 }
 
 /// `biorouter crew grants list` (AO-12): the route's own listing, keeping only the chats this
@@ -640,9 +665,20 @@ fn fingerprint_digits(text: &str) -> String {
         .collect()
 }
 
+/// AO-5's warning on removing a computer, in the words of the desktop's Keys
+/// (`deviceCopy.sshWarning` in `ui/desktop/src/components/crew/account/copy.ts`): taking the
+/// computer's SSH access away comes first.
+pub(super) const SSH_ACCESS_FIRST: &str = "A lost computer can still sign in as you while it has an SSH key or password for your account. First remove its key from ~/.ssh/authorized_keys on the server, or change your password. Then remove it here.";
+
+/// What follows removing this computer, in the desktop's words for it (`deviceCopy.thisFollows`
+/// in the same copy deck) up to its button, which a chat does not have: the way back is named
+/// both ways, as the chat's `rejoin` and as the button in Crew. The CLI names its command in
+/// the same place (`remove_device_warning` in `commands/crew/output.rs`).
+pub(super) const THIS_COMPUTER_STOPS: &str = "This computer stops reaching the workspace until you add it again: ask for rejoin in a chat, or choose Add this computer again in Crew.";
+
 /// `biorouter crew profile revoke-device` (AO-5): one of the person's own computers, by its
 /// fingerprint or as this computer. Taking the computer's SSH access away comes first, and the
-/// card says so.
+/// card says so ([`SSH_ACCESS_FIRST`]).
 pub(super) fn profile_revoke_device(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let fingerprint = ctx.text("fingerprint");
@@ -685,16 +721,10 @@ pub(super) fn profile_revoke_device(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let this_computer = device["this_device"].as_bool() == Some(true);
         let mut card = target
             .card(|here| format!("Remove your computer {shown} from {here}"))
-            .line(format!(
-                "A lost computer can still sign in as you while it holds an SSH key or password for your account on {}: remove its key from ~/.ssh/authorized_keys there, or change your password, first.",
-                target.server
-            ))
+            .line(SSH_ACCESS_FIRST)
             .show("fingerprint", shown.clone());
         if this_computer {
-            card = card.line(format!(
-                "This is this computer: it stops working in {} until you add it again with rejoin.",
-                target.workspace
-            ));
+            card = card.line(THIS_COMPUTER_STOPS);
         }
         ctx.approve(card).await?;
         send(

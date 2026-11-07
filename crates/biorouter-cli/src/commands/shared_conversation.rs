@@ -1,4 +1,5 @@
 //! Terminal presentation of the profile daemon's personal conversation services.
+use crate::commands::session_watch::cards;
 use crate::daemon_client::{CrewClient, DaemonEventStream, DaemonRefusal};
 use anyhow::{bail, ensure, Context, Result};
 use biorouter::conversation::message::{ActionRequiredData, Message, MessageContent};
@@ -627,7 +628,8 @@ impl Conversation {
         let id = match &action {
             ActionRequiredData::ToolConfirmation { id, .. }
             | ActionRequiredData::Elicitation { id, .. }
-            | ActionRequiredData::SecretRequest { id, .. } => id.clone(),
+            | ActionRequiredData::SecretRequest { id, .. }
+            | ActionRequiredData::CrewStep { id, .. } => id.clone(),
             ActionRequiredData::ElicitationResponse { .. } => return Ok(Interaction::Continue),
         };
         validate_id(&id)?;
@@ -650,6 +652,17 @@ impl Conversation {
                 requested_schema,
                 ..
             } => self.elicitation(&id, &message, &requested_schema).await?,
+            // D1: the person's own Sign in window, vault prompt or host-key help, in this
+            // terminal. Nothing typed comes back through the conversation.
+            ActionRequiredData::CrewStep { step, .. } => {
+                let surface = crate::commands::crew_step::StepSurface {
+                    client: &self.client,
+                    session_id: &self.session_id,
+                    card_id: &id,
+                };
+                crate::commands::crew_step::take(&surface, &step).await?;
+                Interaction::Continue
+            }
             ActionRequiredData::ElicitationResponse { .. } => unreachable!(),
         };
         self.answered.insert(id);
@@ -657,7 +670,8 @@ impl Conversation {
     }
 
     async fn confirm_tool(&self, action: &ActionRequiredData, id: &str) -> Result<Interaction> {
-        self.notice(&serde_json::to_string_pretty(action)?)?;
+        // The card whole, but never an argument whose name looks like a credential.
+        self.notice(&cards::shown_card_json(action))?;
         let folder_access = matches!(
             action,
             ActionRequiredData::ToolConfirmation {
@@ -667,28 +681,32 @@ impl Conversation {
                 ..
             }
         );
+        // AO-12's read consent lasts until the person revokes it, so it is never offered as
+        // "once": the choice is `allow` or `deny`, and the prompt says how to take it back.
+        let read_consent = cards::is_read_consent(action);
+        let question = approval_question(read_consent, folder_access, &self.session_id);
         loop {
-            let Some(answer) = terminal_input(
-                if folder_access {
-                    "Type allow_once, allow_session, or deny (Esc cancels the turn): "
-                } else {
-                    "Type allow_once or deny (Esc cancels the turn): "
-                },
-                false,
-                32,
-            )
-            .await?
-            else {
+            let Some(answer) = terminal_input(&question, false, 32).await? else {
                 return Ok(Interaction::Stop);
             };
-            if !(matches!(answer.trim(), "allow_once" | "deny")
-                || folder_access && answer.trim() == "allow_session")
-            {
+            let decision = if folder_access && answer.trim() == "allow_session" {
+                Some("allow_session")
+            } else {
+                cards::approval_answer(&answer, read_consent)
+            };
+            let Some(decision) = decision else {
                 continue;
-            }
-            let result = self.client.request("POST", "/action-required/tool-confirmation", Some(json!({
-                "sessionId":self.session_id,"id":id,"principalType":"Tool","action":answer.trim()
-            }))).await?;
+            };
+            let result = self
+                .client
+                .request(
+                    "POST",
+                    "/action-required/tool-confirmation",
+                    Some(json!({
+                        "sessionId":self.session_id,"id":id,"principalType":"Tool","action":decision
+                    })),
+                )
+                .await?;
             ensure!(
                 matches!(
                     result["status"].as_str(),
@@ -701,6 +719,8 @@ impl Conversation {
                 Some("unknown" | "already_resolved")
             ) {
                 self.notice("This request is no longer pending; no new tool call was approved.")?;
+            } else if read_consent && decision == "allow_once" {
+                self.notice(&cards::read_consent_allowed(&self.session_id))?;
             }
             return Ok(Interaction::Continue);
         }
@@ -1029,6 +1049,21 @@ fn safe_content(value: &str) -> String {
         })
         .collect()
 }
+/// The question an approval card is answered with in this terminal. A read consent offers
+/// `allow`, which lasts until the person revokes it, and says how; a folder grant can also be
+/// allowed for the session; any other approval is allowed once.
+fn approval_question(read_consent: bool, folder_access: bool, session_id: &str) -> String {
+    if read_consent {
+        format!(
+            "Type {} (Esc cancels the turn): ",
+            cards::read_consent_choices(session_id)
+        )
+    } else if folder_access {
+        "Type allow_once, allow_session, or deny (Esc cancels the turn): ".to_string()
+    } else {
+        "Type allow_once or deny (Esc cancels the turn): ".to_string()
+    }
+}
 fn sensitive_schema(value: &Value) -> bool {
     match value {
         Value::Object(fields) => {
@@ -1075,7 +1110,7 @@ fn erase_values(values: &mut Map<String, Value>) {
 fn terminal_control(ch: char) -> bool {
     ch.is_control() || biorouter::utils::is_invisible_formatting(ch)
 }
-fn safe_text(value: &str) -> String {
+pub(crate) fn safe_text(value: &str) -> String {
     value
         .chars()
         .flat_map(|ch| {
@@ -1116,7 +1151,9 @@ impl Drop for TerminalMode {
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
-async fn terminal_input(
+/// One line typed at this terminal after `prompt`, echoed unless `hidden`, at most `limit`
+/// bytes. `Ok(None)` when the person pressed Esc, Ctrl-C or Ctrl-D.
+pub(crate) async fn terminal_input(
     prompt: &str,
     hidden: bool,
     limit: usize,
@@ -1217,9 +1254,10 @@ fn binding_notice(format: Format, session_id: &str, session: &Value, binding: &V
 #[cfg(test)]
 mod tests {
     use super::{
-        binding_change, binding_notice, json_terminal_safe, ready_on, safe_text, sensitive_schema,
-        terminal_control, turn_error, validate_id, validate_options, validate_prompt,
-        with_session_context, Format, Ready, SharedConversationOptions, ShownBinding, StartRefused,
+        approval_question, binding_change, binding_notice, cards, json_terminal_safe, ready_on,
+        safe_text, sensitive_schema, terminal_control, turn_error, validate_id, validate_options,
+        validate_prompt, with_session_context, Format, Ready, SharedConversationOptions,
+        ShownBinding, StartRefused,
     };
 
     /// AGT2-N4: "Chat … is ready" waits for the turn that follows it to reach the provider,
@@ -1558,6 +1596,55 @@ mod tests {
             }
         }
 
+        /// D1: a Crew step card in a chat with nobody at the terminal is the same refusal every
+        /// card gets, and nothing is asked of the daemon. The client points at no daemon at all,
+        /// so any request would fail the test differently.
+        #[tokio::test]
+        async fn a_noninteractive_chat_refuses_a_crew_step_like_any_card() {
+            use biorouter::conversation::message::{
+                ActionRequiredData, CrewSignInTarget, CrewStepRequest,
+            };
+            let directory = tempfile::tempdir().expect("a directory for no daemon");
+            let client = CrewClient::for_test(
+                Descriptor {
+                    version: daemon_runtime::VERSION,
+                    profile_id: "synthetic-profile".into(),
+                    instance_id: "33333333-3333-4333-8333-333333333333".into(),
+                    pid: std::process::id(),
+                    endpoint: Endpoint::Unix {
+                        path: directory.path().join("no-daemon.sock"),
+                    },
+                    api_secret: "synthetic-daemon-secret-0123456789012345".into(),
+                    user_action_installed: true,
+                },
+                "synthetic-proof",
+            );
+            let mut conversation = conversation(client, false);
+            let Err(error) = conversation
+                .interact(ActionRequiredData::CrewStep {
+                    id: "card-1".into(),
+                    step: CrewStepRequest::SignIn {
+                        target: CrewSignInTarget::Setup {
+                            job_id: "job-1".into(),
+                        },
+                        server: "hpc.example.edu".into(),
+                        login: "you@hpc.example.edu".into(),
+                    },
+                })
+                .await
+            else {
+                panic!("nobody is at this terminal, so the card must be refused");
+            };
+            let text = error.to_string();
+            assert!(
+                text.starts_with(
+                    "Human input is pending in session synthetic-session, request card-1."
+                ),
+                "{text}"
+            );
+            assert!(!conversation.answered.contains("card-1"));
+        }
+
         #[tokio::test]
         #[serial]
         async fn noninteractive_pending_continuation_performs_no_mutation() {
@@ -1862,5 +1949,35 @@ mod tests {
         assert!(!sensitive_schema(
             &serde_json::json!({"properties":{"cohort":{"type":"string"}}})
         ));
+    }
+
+    /// WI-7: the read consent lasts until the person revokes it, so this terminal never
+    /// offers it as "once": it asks for allow or deny and names the command that takes it
+    /// back. Every other approval keeps its words.
+    #[test]
+    fn the_read_consent_is_asked_as_lasting_until_revoked() {
+        let consent = approval_question(true, false, "20261106_4");
+        assert_eq!(
+            consent,
+            "Type allow (until you revoke it with biorouter crew grants revoke 20261106_4 \
+             --reads) or deny (Esc cancels the turn): "
+        );
+        assert!(!consent.contains("once"), "{consent}");
+        assert!(!consent.contains(['\u{2014}', '\u{2013}']), "{consent}");
+        assert_eq!(
+            approval_question(false, false, "20261106_4"),
+            "Type allow_once or deny (Esc cancels the turn): "
+        );
+        assert_eq!(
+            approval_question(false, true, "20261106_4"),
+            "Type allow_once, allow_session, or deny (Esc cancels the turn): "
+        );
+        assert_eq!(cards::approval_answer("allow", true), Some("allow_once"));
+        assert_eq!(cards::approval_answer("allow_once", true), None);
+        assert_eq!(
+            cards::read_consent_allowed("20261106_4"),
+            "Allowed. This chat may read the workspace as you until you revoke it with biorouter \
+             crew grants revoke 20261106_4 --reads."
+        );
     }
 }

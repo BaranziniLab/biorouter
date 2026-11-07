@@ -41,6 +41,21 @@ pub struct NewDevice {
     pub added_at: Option<u64>,
 }
 
+/// How a computer was added (a device's `added_via`), as a clause after "added", in the words
+/// the desktop (`addedViaCopy` in `ui/desktop/src/components/crew/account/copy.ts`) and
+/// `biorouter crew profile devices` use. `None` for a value this build does not know, which is
+/// then left unsaid, never shown as its raw code.
+pub fn added_via_words(via: &str) -> Option<&'static str> {
+    Some(match via {
+        "bootstrap" => "when the workspace was created",
+        "token" => "with an invitation token",
+        "invitation_code" => "with an invitation",
+        // AO-2: a computer that signed in to the server as the account.
+        "account" => "by signing in to the server",
+        _ => return None,
+    })
+}
+
 /// What this computer last saw of the account's devices on one connection.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub(super) struct DeviceWatch {
@@ -378,6 +393,27 @@ mod tests {
         );
         assert!(revoked.new.is_empty());
         assert!(!revoked.known.contains(DESKTOP));
+    }
+
+    /// How a computer was added is said in the desktop's words, byte for byte, and a value
+    /// this build does not know has none. Reading the desktop's copy deck is the only place
+    /// both halves are visible at once.
+    #[test]
+    fn added_via_is_worded_as_the_desktop_words_it() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/crew/account/copy.ts");
+        let copy = std::fs::read_to_string(&path).expect("the desktop's account copy deck");
+        for via in ["bootstrap", "token", "invitation_code", "account"] {
+            let words = added_via_words(via).unwrap_or_else(|| panic!("no words for {via}"));
+            assert!(
+                copy.contains(&format!("{via}: '{words}',")),
+                "{via} reads {words:?}, which is not {}'s",
+                path.display()
+            );
+        }
+        for unknown in ["", "invitation", "via account", "ACCOUNT"] {
+            assert_eq!(added_via_words(unknown), None, "{unknown}");
+        }
     }
 
     /// A snapshot without `actor.devices` tells nothing; malformed entries are left out and

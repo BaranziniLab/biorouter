@@ -76,7 +76,9 @@ use uuid::Uuid;
 
 use rmcp::model::JsonObject;
 
-use crate::conversation::message::{Message, MessageContent, SecretDestination, SecretKeyRequest};
+use crate::conversation::message::{
+    CrewStepRequest, Message, MessageContent, SecretDestination, SecretKeyRequest,
+};
 use crate::conversation::tool_preview::ToolPreview;
 use crate::permission::tool_risk::ToolRisk;
 use crate::permission::Permission;
@@ -152,12 +154,22 @@ pub enum UserActionRequest {
     FolderAccess(FolderAccessRequest),
     Elicitation(ElicitationRequest),
     Secrets(SecretsRequest),
+    /// A Crew step only the person can take (the owner's D1 ruling on AO-12): the card opens
+    /// the person's own Sign in window, vault prompt or host-key help, and the parked call
+    /// learns the result from the daemon's state, never from the card.
+    ///
+    /// ⚠ **Nothing can resolve this as a success.** [`Self::accepts`] takes only Cancelled,
+    /// TimedOut and Failed, so a forged `Approved`, `Provided` or `SecretsConfigured` is
+    /// `Rejected` and `is_allowed()` is never true for it. The host that parked it decides
+    /// what happened by reading the daemon (the job left `needs_sign_in`, the vault is
+    /// unlocked, the key is in `known_hosts`) and withdraws the card itself.
+    CrewStep(CrewStepRequest),
 }
 
 impl UserActionRequest {
     fn requires_user_proof(&self) -> bool {
         match self {
-            Self::FolderAccess(_) => true,
+            Self::FolderAccess(_) | Self::CrewStep(_) => true,
             Self::ToolApproval(request) => request.requires_user_proof,
             Self::Elicitation(_) | Self::Secrets(_) => false,
         }
@@ -171,6 +183,18 @@ impl UserActionRequest {
             Self::FolderAccess(_) => "external folder access".to_string(),
             Self::Elicitation(_) => "input".to_string(),
             Self::Secrets(r) => format!("{} credential(s)", r.keys.len()),
+            // Never the server, the login or a fingerprint.
+            Self::CrewStep(step) => match step {
+                CrewStepRequest::SignIn { .. } => "a Crew sign-in",
+                CrewStepRequest::Vault {
+                    action: crate::conversation::message::CrewVaultAction::Unlock,
+                } => "unlocking Crew's vault",
+                CrewStepRequest::Vault {
+                    action: crate::conversation::message::CrewVaultAction::Init,
+                } => "setting up Crew's vault",
+                CrewStepRequest::HostKey { .. } => "a server's host key",
+            }
+            .to_string(),
         }
     }
 
@@ -183,6 +207,9 @@ impl UserActionRequest {
     /// row, replayed into the next prompt, flattened into a child agent's
     /// transcript. Refusing it here means the guarantee holds for surfaces this
     /// module has never heard of.
+    ///
+    /// [`UserActionRequest::CrewStep`] has no arm of its own on purpose: it accepts
+    /// only the three endings every request accepts, so no answer can mean "done".
     fn accepts(&self, outcome: &UserActionOutcome) -> bool {
         matches!(
             (self, outcome),
@@ -593,6 +620,25 @@ impl PendingUserActions {
         })
     }
 
+    /// Dismiss a Crew step card from a session that shows it: the one answer a
+    /// [`UserActionRequest::CrewStep`] takes from a surface, and harmless by construction,
+    /// since it releases the parked call as Cancelled and grants nothing.
+    ///
+    /// Only a Crew step this session may answer is touched. Any other id, a card of another
+    /// kind or a foreign session is [`ResolveOutcome::Unknown`], so this door can never
+    /// cancel an approval or a credential card.
+    pub fn dismiss_crew_step(&self, session_id: &str, id: &str) -> ResolveOutcome {
+        self.resolve_matching(
+            id,
+            UserActionOutcome::Cancelled,
+            DecisionAuthority::unproven(),
+            |entry| {
+                entry.answerable_in(session_id)
+                    && matches!(entry.request, UserActionRequest::CrewStep(_))
+            },
+        )
+    }
+
     fn resolve_matching(
         &self,
         id: &str,
@@ -974,6 +1020,10 @@ fn request_message(id: &str, request: &UserActionRequest) -> Message {
             r.keys.clone(),
             r.destination.clone(),
         ),
+        // The daemon's own fields only; what the person types never comes back on it.
+        UserActionRequest::CrewStep(step) => {
+            MessageContent::action_required_crew_step(id, step.clone())
+        }
     };
     // `user_only` for the same reason `handle_approval_tool_requests` marks its
     // card: a decision prompt is for the person, and a model that read one would
@@ -1009,6 +1059,9 @@ pub fn is_ephemeral_card(message: &Message) -> bool {
                     action.data,
                     ActionRequiredData::ToolConfirmation { .. }
                         | ActionRequiredData::SecretRequest { .. }
+                        // A Crew step card exists only while the step waits; a reopened
+                        // chat must never offer to sign in, unlock or trust from history.
+                        | ActionRequiredData::CrewStep { .. }
                 )
         )
     })
@@ -1296,6 +1349,124 @@ mod tests {
                 DecisionAuthority::unproven(),
             ),
             ResolveOutcome::Rejected
+        );
+    }
+
+    fn crew_sign_in() -> UserActionRequest {
+        use crate::conversation::message::CrewSignInTarget;
+        UserActionRequest::CrewStep(CrewStepRequest::SignIn {
+            target: CrewSignInTarget::Setup {
+                job_id: "job-1".to_string(),
+            },
+            server: "hpc.example.edu".to_string(),
+            login: "you@hpc.example.edu".to_string(),
+        })
+    }
+
+    /// The owner's D1 ruling: a Crew step card can never be answered as a success, from any
+    /// surface, proven or not. Its parked call learns what happened from the daemon only.
+    #[tokio::test]
+    async fn a_crew_step_refuses_every_answer_that_could_mean_done() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("sess-1"), None, crew_sign_in());
+        let id = parked.id().to_string();
+        let forged = [
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce,
+            },
+            UserActionOutcome::Denied {
+                permission: Permission::DenyOnce,
+            },
+            UserActionOutcome::Provided {
+                data: serde_json::json!({"password": "hunter2"}),
+            },
+            UserActionOutcome::SecretsConfigured {
+                configured_keys: vec!["passphrase".to_string()],
+            },
+        ];
+        for outcome in forged {
+            for authority in [
+                DecisionAuthority::unproven(),
+                DecisionAuthority::for_test_proven(),
+            ] {
+                assert_eq!(
+                    registry.resolve_in_session("sess-1", &id, outcome.clone(), authority),
+                    ResolveOutcome::Rejected,
+                    "{outcome:?}"
+                );
+                assert!(registry.is_pending(&id), "the caller must stay parked");
+            }
+        }
+        assert_eq!(
+            registry.resolve_in_session(
+                "sess-1",
+                &id,
+                UserActionOutcome::Cancelled,
+                DecisionAuthority::unproven()
+            ),
+            ResolveOutcome::Delivered
+        );
+        let outcome = parked.wait(Duration::from_secs(5), None).await;
+        assert_eq!(outcome, UserActionOutcome::Cancelled);
+        assert!(!outcome.is_allowed());
+    }
+
+    #[test]
+    fn a_crew_step_ends_only_without_an_answer() {
+        let request = crew_sign_in();
+        for ending in [
+            UserActionOutcome::Cancelled,
+            UserActionOutcome::TimedOut,
+            UserActionOutcome::Failed {
+                reason: "no surface".to_string(),
+            },
+        ] {
+            assert!(request.accepts(&ending), "{ending:?}");
+            assert!(!ending.is_allowed());
+        }
+        assert!(request.requires_user_proof());
+        assert_eq!(request.describe(), "a Crew sign-in");
+        assert!(!request.describe().contains("example.edu"));
+    }
+
+    /// The card is the person's alone: the model never reads it, and it is never stored.
+    #[test]
+    fn a_crew_step_card_is_user_only_and_ephemeral() {
+        let card = request_message("req-1", &crew_sign_in());
+        assert!(card.is_user_visible());
+        assert!(!card.is_agent_visible());
+        assert!(is_ephemeral_card(&card));
+    }
+
+    /// Dismissing is the one answer, and only for a Crew step this session shows: it cannot
+    /// reach an approval card, another kind of card, or another session's step.
+    #[tokio::test]
+    async fn only_a_crew_step_in_its_own_session_can_be_dismissed() {
+        let registry = Arc::new(PendingUserActions::default());
+        let approval_card = registry.park(Some("sess-1"), None, approval("developer__shell"));
+        assert_eq!(
+            registry.dismiss_crew_step("sess-1", approval_card.id()),
+            ResolveOutcome::Unknown
+        );
+        assert!(registry.is_pending(approval_card.id()));
+
+        let step = registry.park(Some("sess-1"), None, crew_sign_in());
+        let id = step.id().to_string();
+        assert_eq!(
+            registry.dismiss_crew_step("sess-other", &id),
+            ResolveOutcome::Unknown
+        );
+        assert_eq!(
+            registry.dismiss_crew_step("sess-1", "no-such-card"),
+            ResolveOutcome::Unknown
+        );
+        assert_eq!(
+            registry.dismiss_crew_step("sess-1", &id),
+            ResolveOutcome::Delivered
+        );
+        assert_eq!(
+            step.wait(Duration::from_secs(5), None).await,
+            UserActionOutcome::Cancelled
         );
     }
 

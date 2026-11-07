@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use std::future::Future;
 use std::time::Duration;
 
+use super::signin::{self, connect_or_sign_in, SignIn, SignInGate};
 use super::{catalog, job_answer, job_target, remember_job_target, said, Card, Ctx, Progress};
 use crate::routes::crew::connection_view;
 use crate::routes::crew_authentication::InvitationSummary;
@@ -29,7 +30,7 @@ use crate::routes::crew_authentication::InvitationSummary;
 /// and Settings write it.
 pub(crate) const CREW_TASK_MODEL: &str = "CREW_TASK_MODEL";
 /// Said for a setup job this computer no longer has.
-const NO_JOB: &str = "That setup job is not on this computer any more. Check the server again with crew__read action setup_check.";
+pub(super) const NO_JOB: &str = "That setup job is not on this computer any more. Check the server again with crew__read action setup_check.";
 
 // ------------------------------------------------------------------------------------- reads
 
@@ -457,12 +458,14 @@ fn restart_line(workspace: &SetupWorkspace, restart: bool) -> String {
         (Some(others), false) => {
             format!("It leaves {name} running the older Crew: {others} other people are connected.")
         }
+        // A Crew from before account ownership gives no count: said as the CLI and the desktop
+        // say it, never read as nobody.
         (None, true) => format!(
-            "It restarts {name}. Its server can't say who is connected, so anyone's running agent commands there will stop."
+            "It restarts {name}: other people may be connected, and their running agent commands will stop."
         ),
-        (None, false) => format!(
-            "It leaves {name} running the older Crew: its server can't say who is connected."
-        ),
+        (None, false) => {
+            format!("It leaves {name} running the older Crew: other people may be connected.")
+        }
     }
 }
 
@@ -854,11 +857,13 @@ async fn save_invitation(
 }
 
 /// Connect `id` when it is not connected, then join its workspace, as `biorouter crew join`
-/// does. Answers the join and the connection.
-async fn connect_and_join(crew: &CrewManager, id: &str, progress: &Progress) -> Result<Value> {
+/// does. A server that asks for a sign-in gets the person's Sign in card ([`connect_or_sign_in`]).
+/// Answers the join and the connection.
+async fn connect_and_join(crew: &CrewManager, id: &str, gate: &SignInGate) -> Result<Value> {
+    let progress = gate.progress();
     if crew.connection(id).await?.status != "connected" {
         progress.set("stage", "connect");
-        crew.connect(id).await?;
+        connect_or_sign_in(gate, crew, id).await?;
     }
     progress.set("stage", "join");
     let joined = crew.join(id).await?;
@@ -871,19 +876,16 @@ async fn connect_and_join(crew: &CrewManager, id: &str, progress: &Progress) -> 
     }))
 }
 
-/// Run a member's setup of `id` with `access`, and wait for it to settle.
-async fn member_setup(
-    crew: &CrewManager,
-    id: &str,
-    access: &str,
-    progress: &Progress,
-) -> Result<()> {
+/// Run a member's setup of `id` with `access`, and wait for it to settle. A sign-in it waits
+/// for gets the person's Sign in card ([`SignInGate::setup_job`]).
+async fn member_setup(crew: &CrewManager, id: &str, access: &str, gate: &SignInGate) -> Result<()> {
     let request: SetupRequest = serde_json::from_value(json!({
         "target": {"kind": "connection", "connection_id": id},
         "intent": "member",
         "agent_access": access,
     }))?;
     let started = crew.start_setup(request).await?;
+    let progress = gate.progress();
     progress.set("stage", "setup");
     progress.set("job_id", started.job_id.clone());
     loop {
@@ -904,9 +906,21 @@ async fn member_setup(
                     format!("{message} (code: {code}) The connection is saved; join it with crew__change action join once that is fixed."),
                 ));
             }
-            SetupState::NeedsSignIn | SetupState::Running => {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
+            SetupState::NeedsSignIn => match gate.setup_job(&status).await {
+                SignIn::Done => {}
+                SignIn::NoCard => tokio::time::sleep(Duration::from_millis(500)).await,
+                SignIn::Ended(how) => {
+                    return Err(said(
+                        None,
+                        format!(
+                            "{} Setting up agent access still waits for it. {} The connection is saved; join it with crew__change action join once that setup finishes.",
+                            signin::ended(how),
+                            signin::job_step(&started.job_id)
+                        ),
+                    ));
+                }
+            },
+            SetupState::Running => tokio::time::sleep(Duration::from_millis(500)).await,
         }
     }
 }
@@ -1064,17 +1078,17 @@ pub(super) fn open(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let role = role_of(&entry);
         let progress = Progress::default();
         progress.set("stage", "save");
-        let watched = progress.clone();
+        let gate = SignInGate::of(ctx, &progress);
         ctx.follow(progress, async move {
             let id = match reused {
                 Some(saved) => saved.id,
                 None => save_opened(&crew, &entry, &target, local_name).await?,
             };
-            watched.set("connection_id", id.clone());
+            gate.progress().set("connection_id", id.clone());
             if let Some(access) = access.filter(|access| access != "off") {
-                member_setup(&crew, &id, &access, &watched).await?;
+                member_setup(&crew, &id, &access, &gate).await?;
             }
-            let mut answer = connect_and_join(&crew, &id, &watched).await?;
+            let mut answer = connect_and_join(&crew, &id, &gate).await?;
             answer["role"] = json!(role);
             Ok(answer)
         })
@@ -1166,14 +1180,14 @@ async fn join_invitation(ctx: &Ctx, invitation: String) -> Result<Value> {
     let existing = preview.existing_connection_id.clone();
     let progress = Progress::default();
     progress.set("stage", "save");
-    let watched = progress.clone();
+    let gate = SignInGate::of(ctx, &progress);
     ctx.follow(progress, async move {
         let id = match existing {
             Some(id) => id,
             None => save_invitation(&crew, &invitation, overrides).await?,
         };
-        watched.set("connection_id", id.clone());
-        connect_and_join(&crew, &id, &watched).await
+        gate.progress().set("connection_id", id.clone());
+        connect_and_join(&crew, &id, &gate).await
     })
     .await
 }
@@ -1273,9 +1287,9 @@ pub(super) fn join(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let id = connection.id.clone();
         let progress = Progress::default();
         progress.set("connection_id", id.clone());
-        let watched = progress.clone();
+        let gate = SignInGate::of(ctx, &progress);
         ctx.follow(progress, async move {
-            connect_and_join(&crew, &id, &watched).await
+            connect_and_join(&crew, &id, &gate).await
         })
         .await
     })
@@ -1302,13 +1316,13 @@ pub(super) fn rejoin(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let id = connection.id.clone();
         let progress = Progress::default();
         progress.set("connection_id", id.clone());
-        let watched = progress.clone();
+        let gate = SignInGate::of(ctx, &progress);
         ctx.follow(progress, async move {
             if crew.connection(&id).await?.status != "connected" {
-                watched.set("stage", "connect");
-                crew.connect(&id).await?;
+                gate.progress().set("stage", "connect");
+                connect_or_sign_in(&gate, &crew, &id).await?;
             }
-            watched.set("stage", "rejoin");
+            gate.progress().set("stage", "rejoin");
             Ok(serde_json::to_value(crew.rejoin(&id).await?)?)
         })
         .await
@@ -1331,8 +1345,9 @@ pub(super) fn connect(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         let progress = Progress::default();
         progress.set("connection_id", id.clone());
         progress.set("stage", "connect");
+        let gate = SignInGate::of(ctx, &progress);
         ctx.follow(progress, async move {
-            let connected = crew.connect(&id).await?;
+            let connected = connect_or_sign_in(&gate, &crew, &id).await?;
             Ok(serde_json::to_value(connection_view(&connected).await?)?)
         })
         .await

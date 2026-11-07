@@ -10094,9 +10094,20 @@ impl Agent {
                 &session_config.id,
             )
         });
-        let mut replies = self
-            .reply_with_computer_use_scope(user_message, session_config, cancel_token)
-            .await?;
+        // ⚠ Boxed, and it must stay boxed: this is the stack cliff's outer edge. The prologue
+        // (Gate B, the row rebind, slash commands, the tool surface, compaction) is a 22 KiB
+        // future, and inline it is laid out in `reply`'s own future and so in every caller's.
+        // A debug frame keeps copies of each future it awaits, so a scheduled run, which holds
+        // `reply` five frames deep (`execute_job`, `without_human_surface`, `with_session_id`),
+        // spent 1.2 MB of stack above this line, and `schedule_write_reach` overflowed a 2 MiB
+        // test worker on x86_64 CI once Crew's roster check added a session read at the
+        // bottom. Boxed, those frames take 0.2 MB (`the_reply_future_stays_small_for_every_caller`).
+        let mut replies = Box::pin(self.reply_with_computer_use_scope(
+            user_message,
+            session_config,
+            cancel_token,
+        ))
+        .await?;
         Ok(Box::pin(async_stream::try_stream! {
             let _task = task;
             let _decision_turn = decision_turn;
@@ -10737,8 +10748,9 @@ impl Agent {
             crate::providers::utils::runs_on_this_machine(self.provider().await?.as_ref());
         let cold_path_tools_and_prompt = if session.total_tokens.is_none() || usage_may_be_truncated
         {
+            // Boxed, both here and below: the deepest await of the prologue (`reply`'s note).
             Some(
-                self.prepare_tools_and_prompt(&session_config.id, &session.working_dir)
+                Box::pin(self.prepare_tools_and_prompt(&session_config.id, &session.working_dir))
                     .await?,
             )
         } else {
@@ -10758,9 +10770,9 @@ impl Agent {
         )
         .await?;
         if needs_auto_compact && cold_path_tools_and_prompt.is_none() {
-            let (tools, _toolshim, system_prompt) = self
-                .prepare_tools_and_prompt(&session_config.id, &session.working_dir)
-                .await?;
+            let (tools, _toolshim, system_prompt) =
+                Box::pin(self.prepare_tools_and_prompt(&session_config.id, &session.working_dir))
+                    .await?;
             needs_auto_compact = check_if_compaction_needed(
                 self.provider().await?.as_ref(),
                 &conversation,
@@ -10911,7 +10923,8 @@ impl Agent {
                 }
             };
 
-            let mut reply_stream = self.reply_internal(final_conversation, rewrite_basis, session_config, session, cancel_token, planning_signal).await?;
+            // Boxed: this generator's frame sits under the whole agent loop (`reply`'s note).
+            let mut reply_stream = Box::pin(self.reply_internal(final_conversation, rewrite_basis, session_config, session, cancel_token, planning_signal)).await?;
             while let Some(event) = reply_stream.next().await {
                 yield event?;
             }
@@ -15128,6 +15141,34 @@ mod tests {
     use crate::permission::{Permission, PermissionConfirmation};
     use crate::workflow::Response;
     use std::sync::atomic::AtomicUsize;
+
+    /// The stack cliff's outer edge: every caller lays `reply`'s future out inside its own (a
+    /// scheduled run five frames deep), and each debug frame holds copies of it. The prologue
+    /// is boxed inside `reply`, so the future stays near 1 KiB; inline it added 22 KiB, and the
+    /// frames above `reply` in a scheduled run summed to 1.2 MB instead of 0.2 MB.
+    #[tokio::test]
+    async fn the_reply_future_stays_small_for_every_caller() {
+        let agent = Agent::new();
+        let reply = agent.reply(
+            Message::user().with_text("hello"),
+            SessionConfig {
+                id: "stack-cliff".to_string(),
+                schedule_id: None,
+                max_turns: None,
+                max_tool_calls: None,
+                budget: None,
+                retry_config: None,
+                reasoning_effort: None,
+            },
+            None,
+        );
+        // Measured on arm64 debug, 2026-11-06: 1,248 bytes boxed; 21,944 more inline.
+        let size = std::mem::size_of_val(&reply);
+        assert!(
+            size <= 8 * 1024,
+            "`Agent::reply`'s future is {size} bytes: is the prologue awaited inline again?"
+        );
+    }
 
     #[test]
     fn same_turn_catalog_refresh_covers_every_mutating_manager_tool_only() {

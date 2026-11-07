@@ -22,8 +22,9 @@ import * as timeline from './timeline/copy';
  * A person's machine is a "computer" in everything Crew's desktop says, as the command line and the
  * chat card say it ("New computer on your account: …", "Computers enrolled as you …"): the live QA
  * of account ownership found the desktop alone saying "device". "Device" stays only in code and in
- * the names of things the protocol hands around: a computer's device key, its device ID, and the
- * device code a joining computer shows.
+ * the names of things the protocol hands around: a computer's device key and the device code a
+ * joining computer shows. Its ID is a "computer ID" wherever a person reads it ("Copy computer
+ * ID"), as the command line's `--show-ids` says it.
  */
 
 const MODULES: Record<string, unknown> = {
@@ -46,7 +47,7 @@ const MODULES: Record<string, unknown> = {
 };
 
 /** The protocol's names, which keep the word. */
-const PROTOCOL_NAMES = /\bdevice (?:keys?|codes?|ID)\b/gi;
+const PROTOCOL_NAMES = /\bdevice (?:keys?|codes?)\b/gi;
 
 /** Every string a copy module can say: its constants, and each function's answers. */
 function sayings(value: unknown, path: string, out: [string, string][], depth = 0): void {
@@ -92,6 +93,9 @@ describe('a person’s machine is a computer in Crew’s desktop', () => {
     expect(dialogs.keysCopy.devices).toBe('Computers enrolled as you');
     expect(account.deviceCopy.removeLabel('AAAA')).toBe('Remove computer AAAA');
     expect(account.deviceCopy.confirmAction).toBe('Remove computer');
+    // The ID Workspace details copies, as `--show-ids` labels it.
+    expect(dialogs.connectionSettingsCopy.deviceId).toBe('Computer ID');
+    expect(dialogs.connectionSettingsCopy.copyValue('computer ID')).toBe('Copy computer ID');
   });
 
   it('says how a computer was added in the notice’s words and in Keys’, as the command line does', () => {

@@ -659,7 +659,7 @@ describe('ConnectionSettingsDialog', () => {
       'Copy workspace ID',
       'Copy fingerprint',
       'Copy socket path',
-      'Copy device ID',
+      'Copy computer ID',
       'Copy cluster ID',
     ])
       expect(screen.getByRole('button', { name })).toBeInTheDocument();

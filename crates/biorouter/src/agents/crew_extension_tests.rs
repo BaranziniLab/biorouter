@@ -50,7 +50,9 @@ fn the_instructions_say_which_half_applies_where() {
     for sentence in [
         "get its parameters with crew__read action describe, params {action}",
         "You cannot give this or any existing chat Crew access.",
-        "Never ask for a password, code, passphrase or host key",
+        "Never ask for a password, code, passphrase or host key in a message; when a step needs one, the tool shows the person a card or names the step.",
+        // D1/D2: the chat may open the person's own windows, and never trusts a key itself.
+        "Never add, scan or accept a server's host key yourself.",
     ] {
         assert!(UNSCOPED_INSTRUCTIONS.contains(sentence), "{sentence}");
     }

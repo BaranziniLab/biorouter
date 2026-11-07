@@ -980,6 +980,7 @@ async fn handoff_connection(
             if keep_master {
                 if let Ok(session) = session(id, controller) {
                     session.adopted.store(true, Ordering::Release);
+                    note_adopted(connection);
                 }
             } else {
                 let _ = manager.disconnect_locked(connection).await;
@@ -1098,6 +1099,8 @@ async fn handoff_locked(id: &str, controller: &str) -> Result<bool> {
     );
     *session.binding.lock().unwrap() = expected;
     session.adopted.store(true, Ordering::Release);
+    drop(sessions);
+    note_adopted(&session.info.connection_id);
     Ok(true)
 }
 async fn master_ready(control: &str, target: &str, pid: u32) -> Result<bool> {
@@ -1159,6 +1162,93 @@ pub async fn cancel_and_disconnect(id: &str, controller: &str) -> Result<()> {
         return Ok(());
     }
     manager.disconnect_locked(&connection).await
+}
+
+// ---------------------------------------------------------------------------------------------
+// Adoption: a sign-in a chat waits for (the owner's D1 ruling on AO-12)
+// ---------------------------------------------------------------------------------------------
+
+/// How many saved connections' sign-ins this process has adopted, raised by each one
+/// ([`note_adopted`]). A chat's sign-in card waits on it ([`wait_adopted`]) rather than on the
+/// session itself, which a cancel or a newer sign-in can remove.
+static ADOPTIONS: LazyLock<tokio::sync::watch::Sender<u64>> =
+    LazyLock::new(|| tokio::sync::watch::channel(0).0);
+/// The count of [`ADOPTIONS`] at each connection's latest adoption.
+static ADOPTED_AT: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
+/// How many connections [`ADOPTED_AT`] remembers at once: more than this computer saves.
+const ADOPTIONS_KEPT: usize = 256;
+
+/// A saved connection's sign-in was adopted: its master is up and kept, so a connect may ride
+/// it. Says nothing else: no session ID, controller or terminal output leaves here.
+fn note_adopted(connection: &str) {
+    let mut adopted = ADOPTED_AT.lock().unwrap_or_else(PoisonError::into_inner);
+    if adopted.len() >= ADOPTIONS_KEPT && !adopted.contains_key(connection) {
+        // The oldest adoption goes: a wait that began after it no longer needs it.
+        let oldest = adopted
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(id, _)| id.clone());
+        if let Some(oldest) = oldest {
+            adopted.remove(&oldest);
+        }
+    }
+    let count = *ADOPTIONS.borrow() + 1;
+    adopted.insert(connection.to_owned(), count);
+    // Raised while the map is held, so a waiter woken by it always finds its entry.
+    ADOPTIONS.send_replace(count);
+}
+
+/// The count of [`ADOPTIONS`] at `connection`'s latest adoption, if it has had one.
+fn adopted_at(connection: &str) -> Option<u64> {
+    ADOPTED_AT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(connection)
+        .copied()
+}
+
+/// How [`wait_adopted`] ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdoptionWait {
+    /// A sign-in to the connection was adopted after the wait began.
+    Adopted,
+    /// The deadline passed first.
+    Deadline,
+    /// The caller's token was cancelled first.
+    Cancelled,
+}
+
+/// Wait for a person's sign-in to the saved connection `connection_id` to be adopted, as
+/// [`handoff`] adopts one (a verified broker behind it, or a server with no Crew yet whose
+/// master is kept), until `deadline` or until `cancel`. Only an adoption after this call counts:
+/// the point it counts from is taken when it is called, not when the future is first polled, so
+/// a caller takes it before showing the person a Sign in card and misses no adoption.
+pub fn wait_adopted(
+    connection_id: &str,
+    deadline: tokio::time::Instant,
+    cancel: tokio_util::sync::CancellationToken,
+) -> impl std::future::Future<Output = AdoptionWait> + Send + 'static {
+    let connection = connection_id.to_owned();
+    let mut changes = ADOPTIONS.subscribe();
+    let since = *changes.borrow_and_update();
+    async move {
+        loop {
+            if adopted_at(&connection).is_some_and(|at| at > since) {
+                return AdoptionWait::Adopted;
+            }
+            tokio::select! {
+                changed = changes.changed() => {
+                    // The sender is a static and never drops; were it gone, nothing could be
+                    // adopted any more.
+                    if changed.is_err() {
+                        return AdoptionWait::Deadline;
+                    }
+                }
+                () = tokio::time::sleep_until(deadline) => return AdoptionWait::Deadline,
+                () = cancel.cancelled() => return AdoptionWait::Cancelled,
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -6750,7 +6840,10 @@ fi
             .unwrap();
         let error = manager.device_code(&id).await.unwrap_err();
         assert_eq!(refusal_code(&error), None);
-        assert!(error.to_string().contains("does not match"), "{error}");
+        assert!(
+            error.to_string().contains(crate::crew::DEVICE_KEY_MISMATCH),
+            "{error}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -7082,5 +7175,74 @@ mod echo_tests {
         assert_eq!(prompt.mirror(b"more"), None, "answered");
         prompt.note_output(b"\n");
         assert_eq!(prompt.mirror(b"x"), None);
+    }
+}
+
+/// [`wait_adopted`]: what a chat's sign-in card waits on before it connects again.
+#[cfg(test)]
+mod adoption_tests {
+    use super::{note_adopted, wait_adopted, AdoptionWait};
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    fn connection() -> String {
+        format!("adoption-test-{}", uuid::Uuid::new_v4())
+    }
+
+    fn in_ms(ms: u64) -> tokio::time::Instant {
+        tokio::time::Instant::now() + Duration::from_millis(ms)
+    }
+
+    /// An adoption of the connection after the wait began ends it; one of another connection,
+    /// or one from before the wait began, does not.
+    #[tokio::test]
+    async fn an_adoption_after_the_wait_began_ends_it() {
+        let (waited, other) = (connection(), connection());
+        note_adopted(&waited);
+        let wait = tokio::spawn(wait_adopted(
+            &waited,
+            in_ms(10_000),
+            CancellationToken::new(),
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        note_adopted(&other);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !wait.is_finished(),
+            "an earlier or another adoption ended it"
+        );
+        note_adopted(&waited);
+        assert_eq!(wait.await.unwrap(), AdoptionWait::Adopted);
+    }
+
+    /// The point the wait counts from is taken when it is called, so an adoption between the
+    /// call and the first poll still counts.
+    #[tokio::test]
+    async fn an_adoption_before_the_first_poll_counts() {
+        let waited = connection();
+        let wait = wait_adopted(&waited, in_ms(10_000), CancellationToken::new());
+        note_adopted(&waited);
+        assert_eq!(wait.await, AdoptionWait::Adopted);
+    }
+
+    #[tokio::test]
+    async fn the_deadline_ends_a_wait_nothing_adopted() {
+        let waited = connection();
+        note_adopted(&waited);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            wait_adopted(&waited, in_ms(80), CancellationToken::new()).await,
+            AdoptionWait::Deadline
+        );
+        assert!(started.elapsed() >= Duration::from_millis(70));
+    }
+
+    #[tokio::test]
+    async fn cancelling_ends_the_wait() {
+        let cancel = CancellationToken::new();
+        let wait = tokio::spawn(wait_adopted(&connection(), in_ms(10_000), cancel.clone()));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cancel.cancel();
+        assert_eq!(wait.await.unwrap(), AdoptionWait::Cancelled);
     }
 }

@@ -38,6 +38,7 @@ import {
   restoreFocusSoon,
 } from '../state/focusReturn';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
+import { useCrewChanged } from '../state/useCrewChanges';
 import { connectionBarCopy } from './copy';
 import { calendarDate, workspaceLabel } from './presentation';
 import { useDevicesChanged, useNewDeviceNotice } from './useNewDeviceNotice';
@@ -262,6 +263,14 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   // Add this computer again (AO-9): the person removed this computer in Keys, or the daemon said
   // its key is missing or the workspace no longer knows it while the account is a member.
   const markedForRejoin = useNeedsRejoin(connectionId);
+  // This computer was added again somewhere else (a chat's `crew__change rejoin`, another window,
+  // `biorouter crew rejoin`): the mark this window set when Keys removed it no longer holds
+  // (WI-15). Only a rejoin that succeeded is announced. One that names no connection is taken as
+  // this bar's: the mark is display only, and a refusal brings the note back.
+  useCrewChanged((delta) => {
+    for (const change of delta.changes)
+      if (change.kind === 'rejoin') clearNeedsRejoin(change.connection_id || connectionId);
+  });
   const rejoinCode =
     [
       connection?.last_error_code ?? null,

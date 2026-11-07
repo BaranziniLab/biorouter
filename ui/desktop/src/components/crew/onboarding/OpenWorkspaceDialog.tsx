@@ -109,17 +109,6 @@ function askedToRestart(scope: RestartScope, entry: SetupWorkspace): boolean {
   return entry.role === 'host' && (scope.all || scope.ids.has(entry.workspaceId));
 }
 
-/**
- * Whether installing this computer's Crew (`ours`) replaces the Crew in the account (`installed`)
- * as the daemon's install does (setup.rs `plan`): an older version, or the same version built
- * from other bytes. A newer one stays, and a version that can't be read can't be compared, so
- * Update Crew would change nothing there.
- */
-export function installReplaces(installed: string | null, ours: string | null): boolean {
-  const shaped = (version: string | null) => version !== null && /^\d+\.\d+\.\d+/.test(version);
-  return shaped(installed) && shaped(ours) && !versionOlder(ours, installed);
-}
-
 /** Two hosts have a workspace of one name here (AO-6): the dialog says so, and names each host. */
 function sharedNames(workspaces: readonly SetupWorkspace[]): string[] {
   const hosts = new Map<string, Set<string>>();
@@ -438,14 +427,12 @@ function OpenWorkspaceView({
    * account answers it: a Crew there too old to list them, or none (live QA: an older Crew in the
    * account was a dead end). The install restarts no workspace (`restart_workspaces: false`), and
    * the same job then looks for the workspaces again with the Crew it installed. Update Crew is
-   * offered only where the install replaces the Crew there (`installReplaces`); for one newer than
-   * this computer's, or one whose version can't be read, the daemon's sentence alone is said.
+   * offered exactly when the daemon says `too_old`: the daemon decides what is too old, so the
+   * versions are not compared again here. With no Crew of its own to install, the daemon's
+   * sentence alone is said.
    */
   const unlisted = found?.workspacesUnlisted ?? null;
-  const installs =
-    available !== null &&
-    ((unlisted === 'too_old' && installReplaces(found?.installedVersion ?? null, available)) ||
-      unlisted === 'not_installed');
+  const installs = available !== null && (unlisted === 'too_old' || unlisted === 'not_installed');
   const unlistedText = !found
     ? null
     : installs && unlisted === 'too_old'
@@ -556,26 +543,31 @@ function OpenWorkspaceView({
       );
     } else if (outdated(entry)) {
       // A workspace left for good is not "older" in any way Update Crew can change: its reason
-      // alone is said.
+      // alone is said. Otherwise the versions, as the job read them: what it runs, and the Crew
+      // in the account it would restart on (else the one this computer carries).
       if (updatable(entry))
         lines.push(
           <p key="outdated" className="text-supporting text-text-muted">
-            {openCopy.outdated(entry.version, available)}
+            {openCopy.outdated(
+              left?.runningVersion ?? entry.version,
+              left?.installedVersion ?? available
+            )}
           </p>
         );
-      // Why the last update left it, when a reason says more than "older" does. A row the last job
-      // was not asked to restart (a look, or Update Crew or Start for another row) says what Update
-      // Crew would do instead: nobody tried to restart it.
+      // Why the last update left it. Only a row the last job was asked to restart can say a
+      // restart was left undone; every other row Update Crew can still help (a look, or Update
+      // Crew or Start for another row, whatever the daemon's reason) says what Update Crew would
+      // do instead: nobody tried to restart it.
       const reason =
-        left?.reason === 'others_connected'
-          ? askedToRestart(foundScope, entry)
-            ? openCopy.leftRunning.others_connected(othersOf(entry))
-            : openCopy.restartsOnUpdate(othersOf(entry))
-          : left?.reason === 'running_newer'
-            ? openCopy.leftRunning.running_newer(left.runningVersion ?? entry.version)
-            : left?.reason === 'custom_state_dir'
-              ? openCopy.leftRunning.custom_state_dir(server)
-              : null;
+        left?.reason === 'running_newer'
+          ? openCopy.leftRunning.running_newer(left.runningVersion ?? entry.version)
+          : left?.reason === 'custom_state_dir'
+            ? openCopy.leftRunning.custom_state_dir(server)
+            : left?.reason === 'others_connected' && askedToRestart(foundScope, entry)
+              ? openCopy.leftRunning.others_connected(othersOf(entry))
+              : updatable(entry)
+                ? openCopy.restartsOnUpdate(othersOf(entry))
+                : null;
       if (reason)
         lines.push(
           <p key="left" className="text-supporting text-text-muted" role="status">

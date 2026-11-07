@@ -2227,6 +2227,95 @@ fn revoking_a_computer_needs_one_named() {
     });
 }
 
+/// AO-5's warning on removing a computer, word for word as the desktop's Keys says it.
+const SSH_ACCESS_FIRST: &str = "A lost computer can still sign in as you while it has an SSH key or password for your account. First remove its key from ~/.ssh/authorized_keys on the server, or change your password. Then remove it here.";
+
+/// A chat says the person's computers, and removing one, in the CLI's and the desktop's words:
+/// how each was added as a clause, never its code, and the desktop's warning to take the
+/// computer's SSH access away first. A change only the host may make is refused in the
+/// sentence the CLI uses, "Only the workspace host can do this.", never the workspace's
+/// technical text.
+#[test]
+#[serial]
+fn a_chat_words_computers_and_host_only_refusals_as_the_cli_and_desktop_do() {
+    run(async {
+        const WORKSPACE: &str = "3f2a9c1e-77b0-4d4e-8a11-0000000c00d1";
+        const HOST: &str = "computer-words.example.test";
+        let mut answer = snapshot("private", Some("ucsf"), false);
+        answer["result"]["actor"]["devices"] = json!([
+            {"fingerprint": "AAAA AAAA AAAA AAAA", "added_via": "invitation_code",
+                "added_at": 1, "this_device": true},
+            {"fingerprint": "BBBB BBBB BBBB BBBB", "added_via": "account", "added_at": 2},
+            {"fingerprint": "CCCC CCCC CCCC CCCC", "added_via": "not_a_known_way", "added_at": 3},
+        ]);
+        let connection = workspace(WORKSPACE, HOST, false, answer.clone(), true).await;
+        let session = chat("computer words").await;
+
+        let devices = call(
+            &session,
+            private_local().await,
+            PersonTool::Read,
+            "profile_devices",
+            json!({}),
+            &[],
+        )
+        .await;
+        assert!(devices.cards.is_empty());
+        let listed = &devices.ok()["devices"];
+        assert_eq!(listed[0]["added_via"], "with an invitation", "{listed}");
+        assert_eq!(listed[0]["this_device"], true, "{listed}");
+        assert_eq!(
+            listed[1]["added_via"], "by signing in to the server",
+            "{listed}"
+        );
+        assert!(listed[2].get("added_via").is_none(), "{listed}");
+        assert_eq!(listed[2]["fingerprint"], "CCCC CCCC CCCC CCCC", "{listed}");
+
+        let removing = call(
+            &session,
+            private_local().await,
+            PersonTool::Change,
+            "profile_revoke_device",
+            json!({"fingerprint": "BBBB BBBB BBBB BBBB"}),
+            &["deny"],
+        )
+        .await;
+        removing.refusal();
+        assert_eq!(removing.cards.len(), 1);
+        let prompt = &removing.cards[0].prompt;
+        assert!(
+            prompt.lines().any(|line| line == SSH_ACCESS_FIRST),
+            "{prompt}"
+        );
+        assert!(sent(HOST, "device.revoke").is_empty());
+
+        // The workspace refuses a rename from someone who is not its host.
+        stage(
+            HOST,
+            &Scenario::new(WORKSPACE, &ACCOUNT_CAPABILITIES)
+                .answer("workspace.snapshot", answer)
+                .answer(
+                    "workspace.rename",
+                    json!({"error": {"code": "forbidden",
+                        "message": "forbidden: workspace host device required"}}),
+                ),
+        );
+        let renamed = call(
+            &session,
+            private_local().await,
+            PersonTool::Change,
+            "workspace_rename",
+            json!({"name": "lab-2"}),
+            &["allow_once"],
+        )
+        .await;
+        assert_eq!(renamed.cards.len(), 1);
+        assert_eq!(renamed.refusal(), "Only the workspace host can do this.");
+        assert_eq!(sent(HOST, "workspace.rename").len(), 1);
+        remove(&connection).await;
+    });
+}
+
 /// AO-12, "Which chats": a chat's tool listing (`GET /agent/tools`, which the desktop draws a
 /// chat's tools from) shows the Crew tools that chat is offered and no other: a person's chat
 /// with no grant lists `crew__read` and `crew__change`, never the grant's worker tools it would

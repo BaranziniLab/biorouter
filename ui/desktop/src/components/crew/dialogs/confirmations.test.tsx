@@ -4,6 +4,7 @@ import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent } from '../state/types';
 import { channelAfterDeleting, CrewConfirmation } from './confirmations';
 import { confirmCopy } from './copy';
+import { HOST_ONLY_REFUSAL } from './refusals';
 import {
   alice,
   bob,
@@ -601,7 +602,9 @@ describe('deleting channels, teams and workspaces (OW-4, OW-5)', () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Delete workspace' }));
     });
-    expect(await within(dialog).findAllByText(/human host decision required/)).toHaveLength(1);
+    // The broker's program text is worded for a person on every Crew surface (`refusals.ts`).
+    expect(await within(dialog).findAllByText(HOST_ONLY_REFUSAL)).toHaveLength(1);
+    expect(dialog).not.toHaveTextContent(/human host decision required/);
     expect(onClose).not.toHaveBeenCalled();
   });
 });

@@ -591,7 +591,7 @@ fn a_setup_card_names_what_it_restarts_after_installing() {
         [
             "It leaves lab running the older Crew: 3 other people are connected.",
             "It restarts quiet, which nobody else is connected to.",
-            "It leaves old-lab running the older Crew: its server can't say who is connected.",
+            "It leaves old-lab running the older Crew: other people may be connected.",
         ],
         "{lines:?}"
     );
@@ -607,10 +607,16 @@ fn a_setup_card_names_what_it_restarts_after_installing() {
         forced[0].starts_with("It restarts lab: 3 other people are connected"),
         "{forced:?}"
     );
-    assert!(
-        forced[2].starts_with("It restarts old-lab. Its server can't say who is connected"),
+    assert_eq!(
+        forced[2],
+        "It restarts old-lab: other people may be connected, and their running agent commands will stop.",
         "{forced:?}"
     );
+    // Who is connected is said in the CLI's and the desktop's words: a count of other people,
+    // or that other people may be connected.
+    for line in lines.iter().chain(&forced) {
+        assert!(!line.contains("can't say"), "{line}");
+    }
     // Nothing installed: only what the listing found on an older program.
     assert!(planned_restarts(Some(&listing), None, &RestartsAsked::default()).is_empty());
     for line in lines.iter().chain(&forced) {
@@ -1106,4 +1112,87 @@ fn a_chat_is_named_as_the_cli_names_it() {
         chat_named(Some("crew\u{200d}_alice"), "1"),
         "chat \"crew\\u{200d}_alice\" (chat 1)"
     );
+}
+
+/// The desktop's account copy deck, where the canonical words of Keys live.
+fn account_copy_deck() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../ui/desktop/src/components/crew/account/copy.ts");
+    std::fs::read_to_string(&path).expect("the desktop's account copy deck")
+}
+
+/// The card for removing a computer warns first in the desktop's words for it (AO-5), byte for
+/// byte. Reading the desktop's copy deck is the only place both halves are visible at once.
+#[test]
+fn removing_a_computer_warns_in_the_desktop_s_words() {
+    use super::workspace::SSH_ACCESS_FIRST;
+    assert!(
+        account_copy_deck().contains(&format!("sshWarning:\n    '{SSH_ACCESS_FIRST}',")),
+        "{SSH_ACCESS_FIRST}"
+    );
+    assert!(!SSH_ACCESS_FIRST.contains(['\u{2014}', '\u{2013}']));
+}
+
+/// Removing this computer says what follows in the desktop's words (`deviceCopy.thisFollows`)
+/// up to its button, which a chat cannot press: the way back is named both as the chat's
+/// `rejoin` and as the desktop's button for it (`rejoinCopy.action`).
+#[test]
+fn removing_this_computer_says_what_follows_as_the_desktop_does() {
+    use super::workspace::THIS_COMPUTER_STOPS;
+    let deck = account_copy_deck();
+    let follows =
+        "This computer stops reaching the workspace until you choose Add this computer again.";
+    assert!(
+        deck.contains(&format!("thisFollows:\n    '{follows}',")),
+        "{follows}"
+    );
+    let (shared, button) = follows.split_once("choose ").unwrap();
+    assert!(
+        THIS_COMPUTER_STOPS.starts_with(shared),
+        "{THIS_COMPUTER_STOPS}"
+    );
+    let button = button.trim_end_matches('.');
+    assert!(deck.contains(&format!("action: '{button}',")), "{button}");
+    assert!(
+        THIS_COMPUTER_STOPS.contains(&format!("choose {button} in Crew")),
+        "{THIS_COMPUTER_STOPS}"
+    );
+    assert!(THIS_COMPUTER_STOPS.contains("rejoin"));
+    assert!(catalog::find(PersonTool::Change, "rejoin").is_some());
+    assert!(!THIS_COMPUTER_STOPS.contains(['\u{2014}', '\u{2013}']));
+}
+
+/// `profile_devices` says how each computer was added in the CLI's and the desktop's words,
+/// never the raw code: a value this build does not know is left out. Everything else about a
+/// computer is kept as the workspace listed it.
+#[test]
+fn profile_devices_words_how_each_computer_was_added() {
+    use super::workspace::worded_devices;
+    let listed = json!([
+        {"fingerprint": "AAAA AAAA AAAA AAAA", "added_via": "account", "added_at": 5, "this_device": true},
+        {"fingerprint": "BBBB BBBB BBBB BBBB", "added_via": "bootstrap", "added_at": 1},
+        {"fingerprint": "CCCC CCCC CCCC CCCC", "added_via": "token"},
+        {"fingerprint": "DDDD DDDD DDDD DDDD", "added_via": "invitation_code"},
+        {"fingerprint": "EEEE EEEE EEEE EEEE", "added_via": "something_new"},
+        {"fingerprint": "FFFF FFFF FFFF FFFF", "added_via": null, "added_at": null},
+    ]);
+    assert_eq!(
+        worded_devices(&listed),
+        json!([
+            {"fingerprint": "AAAA AAAA AAAA AAAA", "added_via": "by signing in to the server", "added_at": 5, "this_device": true},
+            {"fingerprint": "BBBB BBBB BBBB BBBB", "added_via": "when the workspace was created", "added_at": 1},
+            {"fingerprint": "CCCC CCCC CCCC CCCC", "added_via": "with an invitation token"},
+            {"fingerprint": "DDDD DDDD DDDD DDDD", "added_via": "with an invitation"},
+            {"fingerprint": "EEEE EEEE EEEE EEEE"},
+            {"fingerprint": "FFFF FFFF FFFF FFFF", "added_at": null},
+        ])
+    );
+    // What is not a list, as an older server's snapshot without devices, is kept as it is.
+    assert_eq!(worded_devices(&Value::Null), Value::Null);
+    let deck = account_copy_deck();
+    for device in worded_devices(&listed).as_array().unwrap() {
+        if let Some(words) = device["added_via"].as_str() {
+            assert!(deck.contains(&format!(": '{words}',")), "{words}");
+        }
+    }
 }

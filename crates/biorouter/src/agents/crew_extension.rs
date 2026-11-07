@@ -81,7 +81,8 @@ macro_rules! unscoped_instructions {
             "For ongoing work that posts as the person's agent or runs on the server, ask them to type /crew. ",
             "Before an action's first use, get its parameters with crew__read action describe, params {action}. ",
             "You cannot give this or any existing chat Crew access. ",
-            "Never ask for a password, code, passphrase or host key: when a step needs one, tell the person the step the tool names. ",
+            "Never ask for a password, code, passphrase or host key in a message; when a step needs one, the tool shows the person a card or names the step. ",
+            "Never add, scan or accept a server's host key yourself. ",
             "If this chat has no Crew tools, ask the person to type /crew in this chat to connect it.",
         )
     };
@@ -539,19 +540,34 @@ impl CrewClient {
         }
         let host = host.ok_or_else(|| anyhow::anyhow!(PERSON_TOOL_NO_HOST))?;
         let (action, params) = person_arguments(tool, arguments)?;
-        host.call(PersonToolCall {
-            tool,
-            action,
-            params,
-            session_id: meta.session_id,
-            tool_call_id: tool_host::current_tool_call_id(),
-            capability: meta.capability,
-            cancel,
-            approvals: std::sync::Arc::clone(
-                crate::pending_user_action::PendingUserActions::global(),
-            ),
-        })
-        .await
+        let answer = host
+            .call(PersonToolCall {
+                tool,
+                action: action.clone(),
+                params,
+                session_id: meta.session_id,
+                tool_call_id: tool_host::current_tool_call_id(),
+                capability: meta.capability,
+                cancel,
+                approvals: std::sync::Arc::clone(
+                    crate::pending_user_action::PendingUserActions::global(),
+                ),
+            })
+            .await;
+        announce_change(tool, &action, &answer);
+        answer
+    }
+}
+
+/// A `crew__change` that ran is announced on Crew's change feed with the IDs its answer names
+/// (WI-15), so a Crew view open in any window shows it without a reload. A read, a refusal and
+/// a change the person declined (an error) announce nothing. Answers the revision announced.
+fn announce_change(tool: PersonTool, action: &str, answer: &anyhow::Result<Value>) -> Option<u64> {
+    match (tool, answer) {
+        (PersonTool::Change, Ok(value)) => {
+            Some(crate::crew::changes::publish_answer(action, value))
+        }
+        _ => None,
     }
 }
 /// A worker tool needs this chat's own grant (AO-12): without one it answers the one step
@@ -646,3 +662,53 @@ impl McpClientTrait for CrewClient {
 #[cfg(test)]
 #[path = "crew_extension_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod change_feed_tests {
+    use super::*;
+    use crate::crew::changes::{feed, CrewChange};
+
+    /// What the feed holds for the channel `channel` after revision `from`.
+    fn announced(from: u64, channel: &str) -> Vec<CrewChange> {
+        feed()
+            .since(from)
+            .changes
+            .into_iter()
+            .filter(|change| change.channel_id.as_deref() == Some(channel))
+            .collect()
+    }
+
+    #[test]
+    fn a_change_that_ran_is_announced_with_the_ids_its_answer_names() {
+        let channel = format!("ch-{}", uuid::Uuid::new_v4());
+        let from = feed().revision();
+        let answer = Ok(json!({
+            "connection_id": "c-1",
+            "channel_id": channel,
+            "name": "methods",
+        }));
+        assert!(announce_change(PersonTool::Change, "channels_create", &answer).is_some());
+        let changes = announced(from, &channel);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].kind, "channels_create");
+        assert_eq!(changes[0].connection_id.as_deref(), Some("c-1"));
+    }
+
+    #[test]
+    fn a_read_or_a_change_that_did_not_run_announces_nothing() {
+        let channel = format!("ch-{}", uuid::Uuid::new_v4());
+        let from = feed().revision();
+        let answer = Ok(json!({"connection_id": "c-1", "channel_id": channel}));
+        assert_eq!(
+            announce_change(PersonTool::Read, "channels_list", &answer),
+            None
+        );
+        let declined: anyhow::Result<Value> =
+            Err(anyhow::anyhow!("The person declined. Nothing was changed."));
+        assert_eq!(
+            announce_change(PersonTool::Change, "channels_create", &declined),
+            None
+        );
+        assert!(announced(from, &channel).is_empty());
+    }
+}

@@ -32,17 +32,23 @@
 
 mod catalog;
 mod channels;
+mod hostkey;
 mod messages;
+mod more;
 mod places;
 mod setup;
+mod signin;
 mod tasks;
+mod vault;
 mod workspace;
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use biorouter::conversation::message::CrewStepRequest;
 use biorouter::conversation::tool_preview::{ToolPreview, ToolPreviewLine, ToolPreviewLineKind};
 use biorouter::crew::refusal::{self as crew_refusal};
 use biorouter::crew::tool_host::{CrewToolHost, PersonToolCall};
@@ -51,7 +57,8 @@ use biorouter::crew::{
     SetupStatus, SetupWorkspacesUnlisted,
 };
 use biorouter::pending_user_action::{
-    user_proof_available, ToolApprovalRequest, UserActionOutcome, UserActionRequest,
+    user_proof_available, PendingUserAction, PendingUserActions, ToolApprovalRequest,
+    UserActionOutcome, UserActionRequest,
 };
 use biorouter::permission::tool_risk::ToolRisk;
 use biorouter::privacy::affiliation::InstitutionId;
@@ -59,6 +66,7 @@ use biorouter::privacy::visibility::appears_in_list;
 use biorouter::privacy::{ProviderTier, SessionClassification};
 use futures::future::BoxFuture;
 use serde_json::{json, Map, Value};
+use tokio_util::sync::CancellationToken;
 
 use crate::state::AppState;
 
@@ -136,7 +144,19 @@ impl CrewToolHost for ChatCrewHost {
             state: Arc::clone(&self.state),
             action,
         };
-        match run(&ctx).await {
+        let answered = CALL_APPROVAL
+            .scope(RefCell::default(), async {
+                // A refusal by Crew's locked vault before any approval may be answered with the
+                // vault card first, and the action run once more.
+                match vault::run_unlocked(&ctx, run).await {
+                    Ok(answer) => Ok(answer),
+                    // A refusal on a server's host key may be answered with the host-key card
+                    // first, and the action tried again on the approval already given.
+                    Err(error) => retrying_after_a_host_key(hostkey::on_refusal(&ctx, error)).await,
+                }
+            })
+            .await;
+        match answered {
             Ok(answer) => Ok(answer),
             Err(error) => {
                 // A refusal that names things from a workspace returns them only as a read of
@@ -219,17 +239,17 @@ pub(crate) fn not_approved(outcome: &UserActionOutcome) -> anyhow::Error {
 }
 
 /// The step a refusal's code asks the person to take, when there is one (AO-12, "Signing in
-/// stays the person's"). `connection` is the saved connection's name, when the call named one.
+/// stays the person's", as the owner's D1 ruling amends it). `connection` is the saved
+/// connection's name, when the call named one. Signing in, a host key and the vault each word
+/// their own step ([`signin::next_step`], [`hostkey::next_step`], [`vault::next_step`]).
 pub(crate) fn next_step(code: &str, connection: Option<&str>) -> Option<String> {
+    if let Some(step) = signin::next_step(code, connection)
+        .or_else(|| hostkey::next_step(code, connection))
+        .or_else(|| vault::next_step(code, connection))
+    {
+        return Some(step);
+    }
     Some(match code {
-        "crew_ssh_auth_required" => match connection {
-            Some(name) => format!(
-                "The person signs in: in Crew, choose Sign in on {name}, or run biorouter crew auth --connection {name}. Then try again."
-            ),
-            None => "The person signs in: in Crew, choose Sign in on the connection, or run biorouter crew auth. Then try again.".to_owned(),
-        },
-        "crew_ssh_host_key_unknown" | "crew_ssh_host_key_changed" => "The person checks the server's host key and adds it in a terminal, for example by running ssh with the same login. Crew never accepts a host key for them.".to_owned(),
-        "crew_credential_store_unavailable" => "The person unlocks it in Crew, under Keys, or runs biorouter crew credentials unlock.".to_owned(),
         "crew_device_key_missing" | "crew_device_not_recognized" => "Add this computer again with crew__change action rejoin, or with Add this computer again in Crew.".to_owned(),
         "crew_not_connected" => "Connect it first with crew__change action connect.".to_owned(),
         "crew_read_consent_required" => "Ask the person to allow it on the card, then read again.".to_owned(),
@@ -263,14 +283,18 @@ pub(crate) async fn tool_error(error: anyhow::Error, connection: Option<String>)
         .chain()
         .find_map(|cause| cause.downcast_ref::<SetupRefused>())
     {
-        return anyhow::anyhow!(refusal_text(Some(refused.code), &refused.message, named));
+        let text = refusal_text(Some(refused.code), &refused.message, named);
+        return anyhow::anyhow!(hostkey::enrich(text, Some(refused.code), &[]));
     }
     // A workspace's own refusal is passed on as the broker's envelope, which the `crew`
-    // extension words for the model (`agent_error_text`), as it words `crew__request`'s.
+    // extension words for the model (`agent_error_text`), as it words `crew__request`'s. A
+    // technical text the daemon has a sentence for is said in that sentence instead, as the
+    // CLI says it ("Only the workspace host can do this."): fixed text, never the broker's.
     let broker = error
         .chain()
         .map(ToString::to_string)
         .find(|text| text.starts_with(BROKER_REFUSAL_PREFIX));
+    let known = biorouter::crew::known_refusal_sentence(&error);
     let Ok(crew) = manager() else {
         return anyhow::anyhow!(FAILED);
     };
@@ -278,11 +302,17 @@ pub(crate) async fn tool_error(error: anyhow::Error, connection: Option<String>)
     let untyped =
         refused.code == super::crew_authentication::REQUEST_REFUSED_CODE && refused.error == FAILED;
     if let (true, Some(broker)) = (untyped, broker) {
-        return anyhow::anyhow!(broker);
+        return match known {
+            Some(sentence) => anyhow::anyhow!(sentence),
+            None => anyhow::anyhow!(broker),
+        };
     }
     let code = (refused.code != super::crew_authentication::REQUEST_REFUSED_CODE)
         .then_some(refused.code.as_str());
-    anyhow::anyhow!(refusal_text(code, &refused.error, named))
+    // The daemon's own words beside the code (a host key's fingerprints among them) were
+    // dropped here before; the host-key seam now sees them.
+    let text = refusal_text(code, &refused.error, named);
+    anyhow::anyhow!(hostkey::enrich(text, code, &refused.fields))
 }
 
 /// How a workspace's refusal begins, as the daemon's transport writes it.
@@ -310,6 +340,144 @@ pub(crate) struct Card {
     pub(crate) payload: Map<String, Value>,
     /// A preview in place of the payload's, such as the context document's diff.
     pub(crate) preview: Option<ToolPreview>,
+}
+
+tokio::task_local! {
+    /// The approval the person gave in this person-tool call ([`Ctx::approve`]), for the one
+    /// time the host-key hooks try the call's step again once the person added the key
+    /// ([`retrying_after_a_host_key`]). Scoped to one call in [`ChatCrewHost::call`]; work a
+    /// call runs apart from it ([`Ctx::follow`]) does not see it, and asks as before.
+    static CALL_APPROVAL: RefCell<CallApproval>;
+}
+
+/// [`CALL_APPROVAL`]: the card the person allowed, and whether a host-key retry may take it.
+#[derive(Default)]
+struct CallApproval {
+    /// The card as it was shown (summary, payload and preview), and when it was allowed.
+    allowed: Option<(String, Instant)>,
+    /// Set while a host-key hook, which tries the step again at most once, runs.
+    retrying: bool,
+}
+
+/// Run `hook`, a host-key hook that may try the call's step again once
+/// ([`hostkey::on_refusal`], [`hostkey::on_status`]), with the call's approval open to that
+/// retry. The retry runs the very action the person allowed, as the model called it, so the
+/// identical card would ask them the question they already answered; any other card is asked.
+async fn retrying_after_a_host_key<T>(hook: impl std::future::Future<Output = T>) -> T {
+    let before =
+        CALL_APPROVAL.try_with(|memo| std::mem::replace(&mut memo.borrow_mut().retrying, true));
+    let answer = hook.await;
+    if let Ok(before) = before {
+        let _ = CALL_APPROVAL.try_with(|memo| memo.borrow_mut().retrying = before);
+    }
+    answer
+}
+
+/// Remember that the person allowed the card `shown` at `at`, in this call.
+fn remember_allowed(shown: String, at: Instant) {
+    let _ = CALL_APPROVAL.try_with(|memo| memo.borrow_mut().allowed = Some((shown, at)));
+}
+
+/// Whether the card `shown` may be taken as allowed without asking: only in a host-key retry,
+/// only the very card the person allowed earlier in this call, only once, and only while an
+/// approval card would still have been answerable ([`APPROVAL_TTL`]). The remembered approval
+/// is spent by any card a retry asks for, so a retry that asks for another card asks for it,
+/// and nothing after that can take it.
+fn allowed_for_this_retry(shown: &str, now: Instant) -> bool {
+    CALL_APPROVAL
+        .try_with(|memo| {
+            let mut memo = memo.borrow_mut();
+            if !memo.retrying {
+                return false;
+            }
+            memo.allowed.take().is_some_and(|(allowed, at)| {
+                allowed == shown && now.saturating_duration_since(at) <= APPROVAL_TTL
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Crew step card parked in a chat ([`Ctx::park_step`], [`park_step_in`]). Dropping it
+/// without [`Self::end`] takes the card down.
+pub(crate) struct PendingStep {
+    parked: PendingUserAction,
+    ttl: Duration,
+    /// A child of the call's token: cancelling it takes this card down and nothing else.
+    withdraw: CancellationToken,
+    /// The call's own token: Stop.
+    stop: CancellationToken,
+}
+
+/// Park a Crew step card in the chat `session_id`, in `approvals`, for the call whose Stop is
+/// `stop`: what [`Ctx::park_step`] does, for work that runs apart from its call (a spawned task
+/// [`Ctx::follow`] waits on, which does not inherit the call's task-local scope, so the caller
+/// asks `no_human_surface` where the call runs). `None` where no person's proof can be obtained
+/// (`biorouter serve`, SD-8) or the call was already stopped.
+pub(crate) fn park_step_in(
+    approvals: &Arc<PendingUserActions>,
+    session_id: &str,
+    stop: &CancellationToken,
+    step: CrewStepRequest,
+    ttl: Duration,
+) -> Option<PendingStep> {
+    if !user_proof_available() || stop.is_cancelled() {
+        return None;
+    }
+    let withdraw = stop.child_token();
+    let parked = approvals.park(Some(session_id), None, UserActionRequest::CrewStep(step));
+    Some(PendingStep {
+        parked,
+        ttl: ttl.min(APPROVAL_TTL),
+        withdraw,
+        stop: stop.clone(),
+    })
+}
+
+/// How a [`PendingStep`] ended. None of these means the step is done: the caller reads the
+/// daemon for that, because a card can never be answered as a success
+/// (`UserActionRequest::CrewStep` accepts no such outcome).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StepEnd {
+    /// The caller withdrew it ([`PendingStep::withdrawer`]), as it does once the daemon sees
+    /// the step done.
+    Withdrawn,
+    /// The person dismissed it.
+    Dismissed,
+    /// The chat was stopped.
+    Stopped,
+    /// Nobody acted on it before its time ran out.
+    TimedOut,
+    /// It could not be put to a person.
+    NotShown,
+}
+
+impl PendingStep {
+    /// The card's ID, as the published message carries it.
+    // Only tests read it so far: the steps watch the daemon, never the card's ID.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn id(&self) -> &str {
+        self.parked.id()
+    }
+
+    /// A handle that takes the card down when cancelled, for the task that watches the
+    /// daemon while [`Self::end`] waits.
+    pub(crate) fn withdrawer(&self) -> CancellationToken {
+        self.withdraw.clone()
+    }
+
+    /// Wait for the card to end, and say how.
+    pub(crate) async fn end(self) -> StepEnd {
+        let outcome = self.parked.wait(self.ttl, Some(&self.withdraw)).await;
+        match outcome {
+            UserActionOutcome::TimedOut => StepEnd::TimedOut,
+            UserActionOutcome::Failed { .. } => StepEnd::NotShown,
+            UserActionOutcome::Cancelled if self.stop.is_cancelled() => StepEnd::Stopped,
+            UserActionOutcome::Cancelled if self.withdraw.is_cancelled() => StepEnd::Withdrawn,
+            // A Crew step accepts no other outcome; were one ever delivered, it would still
+            // mean nothing was done.
+            _ => StepEnd::Dismissed,
+        }
+    }
 }
 
 /// Where a change goes, as every change card names it (AO-12, "Approvals"): a workspace and the
@@ -479,14 +647,45 @@ pub(crate) fn consent_prompt(workspace: &str, server: &str, session: &str) -> St
     )
 }
 
-/// A long piece of work's stage, which [`Ctx::follow`] reports while it runs.
+/// A long piece of work's stage, which [`Ctx::follow`] reports while it runs, and whether it
+/// waits for the person on a card ([`Self::awaiting_person`]), which [`Ctx::follow`] does not
+/// count against [`JOB_WAIT`].
 #[derive(Clone, Default)]
-pub(crate) struct Progress(Arc<Mutex<Value>>);
+pub(crate) struct Progress {
+    stage: Arc<Mutex<Value>>,
+    person: Arc<Mutex<PersonWait>>,
+}
+
+/// How long a piece of work has waited for the person ([`Progress::awaiting_person`]).
+#[derive(Default)]
+struct PersonWait {
+    /// How many waits are open now: a card inside a card's wait counts once.
+    open: usize,
+    /// Since when it waits, while any wait is open.
+    since: Option<Instant>,
+    /// How long the waits that closed took.
+    waited: Duration,
+}
+
+/// Held while a piece of work waits for the person ([`Progress::awaiting_person`]).
+pub(crate) struct AwaitingPerson(Progress);
+
+impl Drop for AwaitingPerson {
+    fn drop(&mut self) {
+        let mut person = self.0.person();
+        person.open = person.open.saturating_sub(1);
+        if person.open == 0 {
+            if let Some(since) = person.since.take() {
+                person.waited += since.elapsed();
+            }
+        }
+    }
+}
 
 impl Progress {
     /// Record where the work stands.
     pub(crate) fn set(&self, key: &str, value: impl Into<Value>) {
-        if let Ok(mut state) = self.0.lock() {
+        if let Ok(mut state) = self.stage.lock() {
             if !state.is_object() {
                 *state = json!({});
             }
@@ -495,7 +694,63 @@ impl Progress {
     }
 
     fn snapshot(&self) -> Value {
-        self.0.lock().map(|state| state.clone()).unwrap_or_default()
+        self.stage
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default()
+    }
+
+    fn person(&self) -> std::sync::MutexGuard<'_, PersonWait> {
+        self.person
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The work waits for the person (a sign-in card is up) until the guard drops. Meanwhile
+    /// [`Ctx::follow`] does not answer that the work is still running: that would end the turn,
+    /// whose token takes the card down while the person is signing in.
+    pub(crate) fn awaiting_person(&self) -> AwaitingPerson {
+        let mut person = self.person();
+        person.open += 1;
+        person.since.get_or_insert_with(Instant::now);
+        drop(person);
+        AwaitingPerson(self.clone())
+    }
+
+    /// Whether the work waits for the person now.
+    fn awaiting(&self) -> bool {
+        self.person().open > 0
+    }
+
+    /// How long the work has waited for the person, all told.
+    fn person_time(&self) -> Duration {
+        let person = self.person();
+        person.waited + person.since.map_or(Duration::ZERO, |since| since.elapsed())
+    }
+}
+
+/// Wait for `task` for at most `budget`, not counting the time `progress` says it waited for
+/// the person, or until `stop`. `None` when the budget ran out or the call was stopped first.
+async fn finished_within<T>(
+    task: &mut tokio::task::JoinHandle<T>,
+    progress: &Progress,
+    stop: &CancellationToken,
+    budget: Duration,
+) -> Option<Result<T, tokio::task::JoinError>> {
+    let started = Instant::now();
+    loop {
+        let awaiting = progress.awaiting();
+        let left = (budget + progress.person_time()).saturating_sub(started.elapsed());
+        if left.is_zero() && !awaiting {
+            return None;
+        }
+        // While the person is at a card the budget stands still; look again soon.
+        let nap = if awaiting { JOB_POLL } else { left };
+        tokio::select! {
+            joined = &mut *task => return Some(joined),
+            () = tokio::time::sleep(nap) => {}
+            () = stop.cancelled() => return None,
+        }
     }
 }
 
@@ -1011,6 +1266,8 @@ impl Ctx {
     /// payload shown whole. Answers only once they allowed it and the chat still has no Crew
     /// grant; every other outcome is a refusal saying nothing was changed.
     pub(crate) async fn approve(&self, card: Card) -> Result<()> {
+        // A change that needs a locked vault asks for it first, so its approval is asked once.
+        vault::before_approval(self).await?;
         if !user_proof_available() {
             return Err(said(None, NO_PROOF));
         }
@@ -1025,25 +1282,81 @@ impl Ctx {
         let preview = card
             .preview
             .unwrap_or_else(|| ToolPreview::arguments_within(&arguments, CARD_PAYLOAD_CHARS));
+        let shown =
+            json!({"prompt": prompt, "arguments": arguments, "preview": preview}).to_string();
+        // The one retry after a host-key card, of the very card the person allowed in this call:
+        // not asked twice, but every check after an approval is made again.
+        if allowed_for_this_retry(&shown, Instant::now()) {
+            if self.call.cancel.is_cancelled() {
+                return Err(not_approved(&UserActionOutcome::Cancelled));
+            }
+            return self.call.ensure_still_ungranted().await;
+        }
         let outcome = self.park(ToolRisk::High, prompt, arguments, preview).await;
         match outcome {
             UserActionOutcome::Approved { .. } if !self.call.cancel.is_cancelled() => {
-                self.call.ensure_still_ungranted().await
+                self.call.ensure_still_ungranted().await?;
+                remember_allowed(shown, Instant::now());
+                Ok(())
             }
             other => Err(not_approved(&other)),
         }
+    }
+
+    /// Park a Crew step card in this chat (the owner's D1 ruling): a sign-in, the vault or a
+    /// host key, written from the daemon's own records by the caller. Waits for nothing:
+    /// [`PendingStep::end`] waits, at most `ttl` (never more than [`APPROVAL_TTL`]), for the
+    /// person to dismiss it, the chat to stop, or the caller to withdraw it once the daemon
+    /// sees the step done.
+    ///
+    /// `None` where no card can be answered: no person's proof can be obtained in this process
+    /// (`biorouter serve`, SD-8), the call has no surface a person watches
+    /// (`POST /agent/call_tool`), or it was stopped. The caller then says the step in words, as
+    /// before.
+    pub(crate) fn park_step(&self, step: CrewStepRequest, ttl: Duration) -> Option<PendingStep> {
+        if biorouter::user_surface::no_human_surface() {
+            return None;
+        }
+        park_step_in(
+            &self.call.approvals,
+            &self.call.session_id,
+            &self.call.cancel,
+            step,
+            ttl,
+        )
     }
 
     // ------------------------------------------------------------------------------ long work
 
     /// Wait for the setup job `job_id` for at most [`JOB_WAIT`], or until Stop, then answer
     /// where it stands ([`job_answer`]). The job keeps running either way, visible in Crew.
+    ///
+    /// Each status read goes first to the sign-in and host-key hooks ([`signin::on_status`],
+    /// [`hostkey::on_status`]), which may park a card for the person and answer instead. A hook
+    /// that waited returns `None`, and the job is read again before it is judged.
     pub(crate) async fn wait_for_job(&self, job_id: &str) -> Value {
-        let deadline = Instant::now() + JOB_WAIT;
+        let mut deadline = Instant::now() + JOB_WAIT;
+        let gone = || {
+            json!({"job_id": job_id, "state": "unknown",
+                "note": "That job is not on this computer any more."})
+        };
         loop {
             let Some(status) = biorouter::crew::setup_status(job_id) else {
-                return json!({"job_id": job_id, "state": "unknown",
-                    "note": "That job is not on this computer any more."});
+                return gone();
+            };
+            let asked = Instant::now();
+            if let Some(answer) = signin::on_status(self, &status).await {
+                return answer;
+            }
+            if let Some(answer) = retrying_after_a_host_key(hostkey::on_status(self, &status)).await
+            {
+                return answer;
+            }
+            // The time the person spent on a card a hook parked is not counted against
+            // JOB_WAIT: answering "running" then would end the turn while they sign in.
+            deadline += asked.elapsed();
+            let Some(status) = biorouter::crew::setup_status(job_id) else {
+                return gone();
             };
             let settled = !matches!(status.state, SetupState::Running);
             if settled || Instant::now() >= deadline || self.call.cancel.is_cancelled() {
@@ -1058,17 +1371,14 @@ impl Ctx {
 
     /// Run `work` (a flow of several steps, such as open or join) for at most [`JOB_WAIT`], or
     /// until Stop. Done in time, its answer; otherwise it keeps running and the answer says
-    /// where it stands, from `progress`.
+    /// where it stands, from `progress`. Time `work` spends waiting for the person on a card
+    /// ([`Progress::awaiting_person`]) is not counted.
     pub(crate) async fn follow<F>(&self, progress: Progress, work: F) -> Result<Value>
     where
         F: std::future::Future<Output = Result<Value>> + Send + 'static,
     {
         let mut task = tokio::spawn(work);
-        let finished = tokio::select! {
-            joined = &mut task => Some(joined),
-            () = tokio::time::sleep(JOB_WAIT) => None,
-            () = self.call.cancel.cancelled() => None,
-        };
+        let finished = finished_within(&mut task, &progress, &self.call.cancel, JOB_WAIT).await;
         match finished {
             Some(Ok(answer)) => answer,
             Some(Err(_)) => Err(said(None, FAILED)),
@@ -1207,23 +1517,33 @@ pub(crate) fn job_answer(status: &SetupStatus, still_running: bool) -> Value {
     }
     match status.state {
         SetupState::NeedsSignIn => {
-            answer["code"] = json!("crew_ssh_auth_required");
-            answer["next_step"] = json!(format!(
-                "The person signs in: open Crew, where this job waits with a Sign in button, or run biorouter crew auth --setup-job {job}. Then follow it with crew__read action setup_status."
-            ));
+            answer["code"] = json!(signin::AUTH_REQUIRED);
+            answer["next_step"] = json!(signin::job_step(job));
         }
         SetupState::Failed => {
-            if let Some(step) = status
-                .error
-                .as_ref()
-                .and_then(|error| next_step(&error.code, None))
-            {
-                answer["next_step"] = json!(step);
+            if let Some(error) = status.error.as_ref() {
+                if let Some(step) = next_step(&error.code, None) {
+                    answer["next_step"] = json!(hostkey::enrich(
+                        step,
+                        Some(&error.code),
+                        &setup_error_fields(error)
+                    ));
+                }
             }
         }
         _ => {}
     }
     answer
+}
+
+/// A failed setup job's own words beside its code, as [`hostkey::enrich`] takes an admission
+/// refusal's fields: `detail` (OpenSSH's or the server's bounded words) and `host` (the SSH hop
+/// a connect failure concerns), each only when the job has it.
+pub(crate) fn setup_error_fields(error: &biorouter::crew::SetupError) -> Vec<(String, Value)> {
+    [("detail", &error.detail), ("host", &error.host)]
+        .into_iter()
+        .filter_map(|(key, value)| value.as_ref().map(|value| (key.to_owned(), json!(value))))
+        .collect()
 }
 
 /// What a chat does where a Crew too old to list the workspaces asks for an update: the
@@ -1346,3 +1666,220 @@ pub(crate) fn idempotency_key(ctx: &Ctx, step: usize) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// What the action files' own tests share: a call as the host makes one, without a daemon.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use biorouter::crew::tool_host::PersonTool;
+    use biorouter::pending_user_action::PendingUserActions;
+    use biorouter::privacy::CallCapability;
+
+    /// A call of `tool`'s `action` with `params`, in a chat of its own, with its own approval
+    /// registry and a fresh turn token. `params` is not checked, so a test can drive an action
+    /// past what `check_params` would refuse.
+    pub(crate) async fn test_ctx(tool: PersonTool, action: &str, params: Value) -> Ctx {
+        let action = catalog::find(tool, action).expect("a listed action");
+        Ctx {
+            call: PersonToolCall {
+                tool,
+                action: action.name.to_owned(),
+                params,
+                session_id: format!("crew-tools-test-{}", uuid::Uuid::new_v4()),
+                tool_call_id: None,
+                capability: CallCapability::public_enforced(),
+                cancel: CancellationToken::new(),
+                approvals: Arc::new(PendingUserActions::default()),
+            },
+            state: AppState::new().await.expect("the app state"),
+            action,
+        }
+    }
+}
+
+#[cfg(test)]
+mod step_tests {
+    use super::test_support::test_ctx;
+    use super::*;
+    use biorouter::conversation::message::CrewVaultAction;
+    use biorouter::crew::tool_host::PersonTool;
+    use biorouter::pending_user_action::{DecisionAuthority, ResolveOutcome};
+    use biorouter::permission::Permission;
+
+    fn unlock() -> CrewStepRequest {
+        CrewStepRequest::Vault {
+            action: CrewVaultAction::Unlock,
+        }
+    }
+
+    async fn ctx() -> Ctx {
+        test_ctx(PersonTool::Change, "credentials_unlock", json!({})).await
+    }
+
+    /// A step card is parked in the calling chat, a forged success leaves it parked, and only
+    /// the caller's withdrawal (or the person, Stop, or time) takes it down. Withdrawing it
+    /// never stops the chat.
+    #[tokio::test]
+    async fn a_parked_step_ends_only_when_withdrawn_dismissed_stopped_or_late() {
+        let ctx = ctx().await;
+        let step = ctx.park_step(unlock(), Duration::from_secs(60)).unwrap();
+        let id = step.id().to_owned();
+        assert!(ctx.call.approvals.is_pending(&id));
+        assert_eq!(
+            ctx.call.approvals.resolve_in_session(
+                &ctx.call.session_id,
+                &id,
+                UserActionOutcome::Approved {
+                    permission: Permission::AllowOnce
+                },
+                DecisionAuthority::unproven(),
+            ),
+            ResolveOutcome::Rejected
+        );
+        step.withdrawer().cancel();
+        assert_eq!(step.end().await, StepEnd::Withdrawn);
+        assert!(!ctx.call.approvals.is_pending(&id));
+        assert!(!ctx.call.cancel.is_cancelled());
+
+        let step = ctx.park_step(unlock(), Duration::from_secs(60)).unwrap();
+        let id = step.id().to_owned();
+        assert_eq!(
+            ctx.call
+                .approvals
+                .dismiss_crew_step(&ctx.call.session_id, &id),
+            ResolveOutcome::Delivered
+        );
+        assert_eq!(step.end().await, StepEnd::Dismissed);
+
+        let step = ctx.park_step(unlock(), Duration::from_millis(20)).unwrap();
+        assert_eq!(step.end().await, StepEnd::TimedOut);
+
+        let step = ctx.park_step(unlock(), Duration::from_secs(60)).unwrap();
+        ctx.call.cancel.cancel();
+        assert_eq!(step.end().await, StepEnd::Stopped);
+    }
+
+    /// Work that waits for the person on a card is not cut off when the call's wait runs out:
+    /// only the time it spends on its own counts. Without the person, the wait runs out and the
+    /// work keeps running; Stop ends the wait at once.
+    #[tokio::test]
+    async fn time_the_person_spends_on_a_card_is_not_counted() {
+        let stop = CancellationToken::new();
+        let progress = Progress::default();
+        let watched = progress.clone();
+        let mut signing_in = tokio::spawn(async move {
+            let _person = watched.awaiting_person();
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            "signed in"
+        });
+        let budget = Duration::from_millis(100);
+        let finished = finished_within(&mut signing_in, &progress, &stop, budget).await;
+        assert_eq!(finished.unwrap().unwrap(), "signed in");
+        assert!(progress.person_time() >= Duration::from_millis(400));
+        assert!(!progress.awaiting());
+
+        let mut slow = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+        });
+        let alone = Progress::default();
+        assert!(finished_within(&mut slow, &alone, &stop, budget)
+            .await
+            .is_none());
+        assert!(!slow.is_finished(), "the work keeps running");
+
+        stop.cancel();
+        let started = Instant::now();
+        assert!(
+            finished_within(&mut slow, &alone, &stop, Duration::from_secs(60))
+                .await
+                .is_none()
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        slow.abort();
+    }
+
+    /// The approval a call was given is taken again only by the one host-key retry, only for the
+    /// identical card, only once, and only within an approval card's time. Outside a call's
+    /// scope nothing is remembered.
+    #[tokio::test]
+    async fn only_a_host_key_retry_of_the_same_card_takes_the_approval_again() {
+        let now = Instant::now();
+        let in_a_call =
+            |test: fn(Instant)| CALL_APPROVAL.scope(RefCell::default(), async move { test(now) });
+
+        // Not in a retry: the card is asked again, and the approval is kept for the retry.
+        in_a_call(|now| {
+            remember_allowed("card".into(), now);
+            assert!(!allowed_for_this_retry("card", now));
+            CALL_APPROVAL.with(|memo| assert!(memo.borrow().allowed.is_some()));
+        })
+        .await;
+        // In the retry, the same card once; a second ask of it asks.
+        CALL_APPROVAL
+            .scope(RefCell::default(), async move {
+                remember_allowed("card".into(), now);
+                retrying_after_a_host_key(async {
+                    assert!(allowed_for_this_retry("card", now));
+                    assert!(!allowed_for_this_retry("card", now));
+                })
+                .await;
+                CALL_APPROVAL.with(|memo| assert!(!memo.borrow().retrying));
+            })
+            .await;
+        // Another card in the retry is asked, and spends the approval.
+        CALL_APPROVAL
+            .scope(RefCell::default(), async move {
+                remember_allowed("card".into(), now);
+                retrying_after_a_host_key(async {
+                    assert!(!allowed_for_this_retry("another card", now));
+                    assert!(!allowed_for_this_retry("card", now));
+                })
+                .await;
+            })
+            .await;
+        // An approval older than an approval card's time is asked again.
+        CALL_APPROVAL
+            .scope(RefCell::default(), async move {
+                remember_allowed("card".into(), now);
+                retrying_after_a_host_key(async {
+                    let late = now + APPROVAL_TTL + Duration::from_secs(1);
+                    assert!(!allowed_for_this_retry("card", late));
+                })
+                .await;
+            })
+            .await;
+        // Outside a call, nothing is remembered and nothing is taken.
+        remember_allowed("card".into(), now);
+        assert!(!retrying_after_a_host_key(async { allowed_for_this_retry("card", now) }).await);
+    }
+
+    /// A step parked for work apart from its call is refused once the call was stopped.
+    #[tokio::test]
+    async fn no_step_is_parked_for_a_stopped_call() {
+        let ctx = ctx().await;
+        ctx.call.cancel.cancel();
+        assert!(park_step_in(
+            &ctx.call.approvals,
+            &ctx.call.session_id,
+            &ctx.call.cancel,
+            unlock(),
+            Duration::from_secs(60)
+        )
+        .is_none());
+        assert!(!ctx
+            .call
+            .approvals
+            .has_pending_in_session(&ctx.call.session_id));
+    }
+
+    /// No card where no person could answer it: the call then says the step in words.
+    #[tokio::test]
+    async fn no_step_is_parked_where_no_person_can_answer() {
+        let ctx = ctx().await;
+        let parked = biorouter::user_surface::without_human_surface(async {
+            ctx.park_step(unlock(), Duration::from_secs(60)).is_some()
+        })
+        .await;
+        assert!(!parked);
+    }
+}

@@ -20,6 +20,8 @@ Privacy, **Private** or **Public**, controls which AI models may read the worksp
 
 You do not install anything on the server yourself. When you join or host, Biorouter installs Crew's server program in your own server account, with no administrator rights, and asks for your server password in its Sign in window if the server wants one.
 
+You can also do all of this from an ordinary Biorouter chat: ask it to set Crew up and host, or paste your invitation and ask it to join. Each step waits for you on a card, and what you type to sign in never reaches the chat ([Set up Crew from a chat](agents-and-chat-access.md#set-up-crew-from-a-chat)).
+
 ### Join a workspace
 
 1. Send your host your exact username on the lab server.
@@ -52,7 +54,7 @@ The new workspace is open: every member can manage teams and channels and invite
 | [Joining a workspace](joining-a-workspace.md) | Your server account as your identity, the invitation, what your agent may do on the server, opening a workspace on another computer, adding a computer again, the code an older server asks for, and fixing a failed join. |
 | [Teams, channels and people](teams-channels-and-people.md) | Who may do what in an open or managed workspace, teams, channels, browsing and joining channels, adding and removing people, who is online, archiving, deleting, and display names. |
 | [Messages and files](messages-and-files.md) | Messages, mentions, unread counts and notifications, drafts, files up to 1 GB, a channel's files, server paths, and what happens to a deleted channel. |
-| [Agents and chat access](agents-and-chat-access.md) | Asking your agent for tasks with **Ask my agent** or `@agent`, the model for Crew tasks, what your agent may do on the server, the workspace context, connecting a Biorouter chat with `/crew`, using Crew from any chat with your approval, and ending access. |
+| [Agents and chat access](agents-and-chat-access.md) | Asking your agent for tasks with **Ask my agent** or `@agent`, the model for Crew tasks, what your agent may do on the server, the workspace context, connecting a Biorouter chat with `/crew`, using Crew from any chat with your approval (setting it up and signing in included), and ending access. |
 | [Privacy and security](privacy-and-security.md) | **Private** and **Public**, institutions, **Restricted** and **Public-safe** channels, keys, your computers and how to remove one, fingerprints, what others, including the host and other accounts on the server, can see, and what full agent access and open workspaces risk. |
 | [Connections and troubleshooting](connections-and-troubleshooting.md) | Connection statuses, signing in, checking the server's identity, setting Crew up in your server account, a deleted workspace, and error messages. |
 | [Command line](command-line.md) | The `biorouter crew` commands for terminals and scripts. |

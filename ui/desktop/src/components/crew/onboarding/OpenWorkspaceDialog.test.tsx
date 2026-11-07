@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { CrewHttpError } from '../crewApi';
 import { openCopy, setupCopy, trustCopy, welcomeCopy } from './copy';
 import { readJoinContext, resetJoinContextForTests } from './joinContext';
-import { installReplaces, OpenWorkspaceDialog } from './OpenWorkspaceDialog';
+import { OpenWorkspaceDialog } from './OpenWorkspaceDialog';
 import type { SetupInput, SetupRun, SetupWorkspace } from './setup';
 import { fakeConnection, makeCrew, renderWithCrew } from './testCrew';
 import { Welcome } from './Welcome';
@@ -252,8 +252,9 @@ describe('Open a workspace on a server', () => {
       await within(dialog).findByRole('button', { name: openCopy.updateLabel('baranzini-lab') })
     );
     const ask = await within(dialog).findByTestId('crew-open-update-confirm');
+    // The people besides you, as the command line and the chat count them.
     expect(ask).toHaveTextContent(
-      '3 people are connected. Their running agent commands will stop.'
+      '3 other people are connected. Their running agent commands will stop.'
     );
     expect(mocks.startSetup).toHaveBeenCalledTimes(1);
     fireEvent.click(within(ask).getByRole('button', { name: openCopy.updateAnyway }));
@@ -317,7 +318,7 @@ describe('Open a workspace on a server', () => {
       await within(dialog).findByRole('button', { name: openCopy.updateLabel('lab-a') })
     );
     const ask = await within(dialog).findByTestId('crew-open-update-confirm');
-    expect(ask).toHaveTextContent('1 person is connected.');
+    expect(ask).toHaveTextContent('1 other person is connected.');
     fireEvent.click(within(ask).getByRole('button', { name: openCopy.updateAnyway }));
     await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledTimes(2));
     const sent = mocks.startSetup.mock.calls[1][0] as SetupInput;
@@ -393,8 +394,11 @@ describe('Open a workspace on a server', () => {
     expect(
       within(found).queryByRole('button', { name: openCopy.updateLabel('tmp-lab') })
     ).toBeNull();
-    // Only the reason: "older, update available" would offer what cannot help.
-    expect(within(found).getAllByText(openCopy.outdated('1.95.0', '1.95.0'))).toHaveLength(1);
+    // Only the reason for tmp-lab: "older" would offer what cannot help. busy-lab says the
+    // versions the job read: what it runs, and the Crew in the account.
+    expect(within(found).getAllByText(/^Runs /)).toHaveLength(1);
+    expect(within(found).getByText(openCopy.outdated('1.94.1', '1.95.0'))).toBeVisible();
+    expect(openCopy.outdated('1.94.1', '1.95.0')).toBe('Runs Crew 1.94.1, not 1.95.0.');
     // Nobody asked to restart busy-lab: the update was quiet-lab's. It says what Update Crew would
     // do, never that it wasn't restarted.
     expect(within(found).getByText(openCopy.restartsOnUpdate(null))).toBeVisible();
@@ -542,6 +546,82 @@ describe('Open a workspace on a server', () => {
     ).toBeVisible();
   });
 
+  it('says the versions and what Update Crew does on every row a look found older, whatever its reason', async () => {
+    // Nobody else connected: the daemon's reason is not_running_installed (a check restarts
+    // nothing). The other row is older than this computer's Crew, which the job did not list.
+    const quiet = entry({
+      role: 'host',
+      name: 'quiet-lab',
+      version: '1.94.1',
+      binaryCurrent: false,
+      othersConnected: 0,
+    });
+    const behind = entry({
+      workspaceId: '22222222-2222-4333-8444-555555555555',
+      role: 'host',
+      name: 'behind-lab',
+      version: '1.94.0',
+      binaryCurrent: true,
+      othersConnected: 1,
+    });
+    mocks.startSetup.mockResolvedValue(
+      finished([quiet, behind], {
+        outdated: [
+          {
+            workspaceId: quiet.workspaceId,
+            name: 'quiet-lab',
+            runningVersion: '1.94.1',
+            installedVersion: '1.94.2',
+            othersConnected: 0,
+            reason: 'not_running_installed',
+          },
+        ],
+      })
+    );
+    renderDialog();
+    const dialog = await look();
+    const found = await within(dialog).findByTestId('crew-open-found');
+    const row = (name: string) =>
+      Array.from(found.querySelectorAll<HTMLElement>('[data-crew-found-row]')).find((item) =>
+        item.textContent?.includes(name)
+      ) as HTMLElement;
+    // The Crew installed in the account, as the job read it.
+    expect(within(row('quiet-lab')).getByText('Runs Crew 1.94.1, not 1.94.2.')).toBeVisible();
+    expect(within(row('quiet-lab')).getByText('Update Crew restarts it.')).toBeVisible();
+    // Not listed by the job: the Crew this computer carries, and the count the server gave.
+    expect(within(row('behind-lab')).getByText('Runs Crew 1.94.0, not 1.95.0.')).toBeVisible();
+    expect(
+      within(row('behind-lab')).getByText(
+        'Update Crew restarts it. 1 other person is connected. Their running agent commands will stop.'
+      )
+    ).toBeVisible();
+    expect(within(found).queryByText(/wasn’t restarted/)).toBeNull();
+  });
+
+  it('says the people connected besides you, with "other", wherever it counts them', () => {
+    expect(openCopy.othersConnected(1)).toBe(
+      '1 other person is connected. Their running agent commands will stop.'
+    );
+    expect(openCopy.othersConnected(4)).toBe(
+      '4 other people are connected. Their running agent commands will stop.'
+    );
+    expect(openCopy.othersConnected(null)).toBe(
+      'Other people may be connected. Their running agent commands will stop.'
+    );
+    expect(openCopy.leftRunning.others_connected(1)).toBe(
+      'It wasn’t restarted, because 1 other person is connected. Choose Update Crew to restart it anyway.'
+    );
+    expect(openCopy.leftRunning.others_connected(2)).toBe(
+      'It wasn’t restarted, because 2 other people are connected. Choose Update Crew to restart it anyway.'
+    );
+    expect(openCopy.leftRunning.others_connected(null)).toBe(
+      'It wasn’t restarted, because other people may be connected. Choose Update Crew to restart it anyway.'
+    );
+    expect(openCopy.outdated('1.95.0', '1.95.0')).toBe(
+      'Runs Crew 1.95.0, not the Crew installed in your account.'
+    );
+  });
+
   it('offers Update Crew when the Crew in your account is too old to list workspaces, then lists them (live QA finding 2)', async () => {
     const said =
       'Crew 1.93.0 in your account on leo.ucsf.edu is too old to list workspaces. Update it with biorouter crew setup --server wanjun@leo.ucsf.edu.';
@@ -668,19 +748,10 @@ describe('Open a workspace on a server', () => {
     }
   });
 
-  it('offers Update Crew for a Crew too old to list workspaces only where installing replaces it', async () => {
-    // The daemon's install replaces an older Crew, or another build of the same version (setup.rs
-    // `plan`); a newer one stays, and one whose version can't be read can't be compared.
-    expect(installReplaces('1.93.0', '1.95.0')).toBe(true);
-    expect(installReplaces('1.95.0', '1.95.0')).toBe(true);
-    expect(installReplaces('1.95.0-dev', '1.95.0')).toBe(true);
-    expect(installReplaces('1.96.0', '1.95.0')).toBe(false);
-    expect(installReplaces('1.96.0-rc.1', '1.95.0')).toBe(false);
-    expect(installReplaces(null, '1.95.0')).toBe(false);
-    expect(installReplaces('crew', '1.95.0')).toBe(false);
-    expect(installReplaces('1.93.0', null)).toBe(false);
-
-    for (const installedVersion of ['1.96.0', null]) {
+  it('offers Update Crew exactly when the daemon says too_old, comparing no versions itself', async () => {
+    // The daemon decides what is too old to list workspaces. A version this dialog would read as
+    // newer than this computer's, or one it cannot read at all, changes nothing.
+    for (const installedVersion of ['1.96.0', '1.96.0-rc.1', 'crew', null]) {
       mocks.startSetup.mockReset();
       const said = `Crew ${installedVersion ?? 'x'} in your account on leo.ucsf.edu is too old to list workspaces.`;
       mocks.startSetup.mockResolvedValue({
@@ -691,13 +762,28 @@ describe('Open a workspace on a server', () => {
       });
       const { unmount } = renderDialog();
       const dialog = await look();
-      // The daemon's sentence alone: a click would change nothing there.
+      const unlisted = await within(dialog).findByTestId('crew-open-unlisted');
+      expect(unlisted).toHaveTextContent(openCopy.tooOld(installedVersion, 'leo.ucsf.edu'));
+      expect(within(unlisted).getByRole('button', { name: openCopy.update })).toBeEnabled();
+      unmount();
+    }
+    // Any other reason the job could not list them offers no install.
+    for (const workspacesUnlisted of ['failed', 'timed_out'] as const) {
+      mocks.startSetup.mockReset();
+      const said = 'Crew on leo.ucsf.edu couldn’t list its workspaces, so they aren’t shown.';
+      mocks.startSetup.mockResolvedValue({
+        ...finished([]),
+        workspacesNote: said,
+        workspacesUnlisted,
+        installedVersion: '1.93.0',
+      });
+      const { unmount } = renderDialog();
+      const dialog = await look();
       expect(await within(dialog).findByTestId('crew-setup-workspaces-note')).toHaveTextContent(
         setupCopy.workspacesNote(said)
       );
       expect(within(dialog).queryByTestId('crew-open-unlisted')).toBeNull();
       expect(within(dialog).queryByRole('button', { name: openCopy.update })).toBeNull();
-      expect(within(dialog).queryByText(/Choose Update Crew/)).toBeNull();
       unmount();
     }
   });

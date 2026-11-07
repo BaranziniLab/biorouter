@@ -759,6 +759,12 @@ export interface MemberSetupRequest {
    * connection that was already on this computer, whose access the job leaves as it is.
    */
   agentAccess: SetupAgentAccess | null;
+  /**
+   * The workspace, as Join named it, when Join found that the account that joins hosts it (the
+   * invitation's host is that account) and the person chose As me on the server: its warning then
+   * adds the host's sentence (`fullAccessHost`). Absent otherwise.
+   */
+  hostWorkspace?: string;
 }
 
 const memberSetupRequests = new Map<string, { at: number; request: MemberSetupRequest }>();

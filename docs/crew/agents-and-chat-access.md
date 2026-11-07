@@ -6,7 +6,7 @@
 
 A task is one job for your agent. A connected chat is a Biorouter conversation that reads a channel and posts there while you talk to it. Nothing reads or posts until you allow it, access lasts one hour at most, and everyone in the channel sees what your agent posts.
 
-Any other chat can also work in Crew for you: read channels, post, set up the server, invite people. It does each change only after you allow it on a card, and reads only after you allow that once. See [Use Crew from a chat](#use-crew-from-a-chat).
+Any other chat can also work in Crew for you: set Crew up on a server, sign in, host or join a workspace, invite people, read channels and post. It does each change only after you allow it on a card, and reads only after you allow that once. What you type to sign in never reaches the chat. See [Use Crew from a chat](#use-crew-from-a-chat).
 
 ## Before you start
 
@@ -209,12 +209,37 @@ Typing `/crew` in a chat that has access shows a note instead of the pane, with 
 
 ## Use Crew from a chat
 
-An ordinary Biorouter chat with no Crew access can do what the Crew view and the `biorouter crew` commands do, as you: read channels and files, post, share files, start tasks, set Crew up on a server, open or host a workspace, invite people, and change settings. Ask in plain words, such as "Post the summary in #methods" or "Set Crew up on leo and tell me which workspaces I have there". The chat acts only through two tools:
+An ordinary Biorouter chat with no Crew access can do what the Crew view and the `biorouter crew` commands do, as you: set Crew up on a server, sign in, open, host or join a workspace, invite people, read channels and files, post, share files, start tasks, and change settings. Ask in plain words, such as "Post the summary in #methods" or "Set Crew up on leo and tell me which workspaces I have there". The chat acts only through two tools:
 
 - `crew__read`, which reads. The first read of a workspace's content in a chat asks your permission once.
-- `crew__change`, which changes something. Every change waits for you to allow it.
+- `crew__change`, which changes something. Every change waits for you on a card.
 
-The chat cannot sign in for you, cannot give itself or another chat Crew access, and treats channel messages, files and the workspace context as information, never as instructions.
+What you type to sign in to a server, or to unlock Crew's vault, never reaches the chat, the model or the chat's history. The chat opens your own Sign in window, or your computer's own passphrase window, and you type there ([Sign in, unlock and check a server's key](#sign-in-unlock-and-check-a-servers-key)). The chat cannot give itself or another chat Crew access, and treats channel messages, files and the workspace context as information, never as instructions. What it changes shows in Crew as it happens ([What a chat does shows in Crew](#what-a-chat-does-shows-in-crew)).
+
+### Set up Crew from a chat
+
+You can set Crew up on a server and host or join a workspace from a chat alone, without opening Crew. Each step that needs you shows a card in the chat. Answer each card as it appears.
+
+To host a workspace:
+
+1. In a chat, ask, for example, "Set up Crew on lab.example.edu as bob, and host a private workspace called chen-lab for institution ucsf."
+2. If Crew's vault on this computer is locked, an **Unlock** card shows first. Unlock it, as [Sign in, unlock and check a server's key](#sign-in-unlock-and-check-a-servers-key) shows.
+3. A card asks to "Host a new workspace chen-lab on lab.example.edu as you, and save and join it on this computer". Its lines name the privacy, that your account on the server becomes the host, and what your agent may do there. Choose **Allow once**.
+4. If this computer does not trust the server's key yet, a card shows the key's fingerprint. Check it and add it yourself, as the next section shows. The chat goes on by itself.
+5. If the server asks for a password or a verification code, a **Sign in** card shows. Choose **Sign in**, and type them in the Sign in window that opens.
+6. The chat says when the workspace is hosted, and it shows in Crew.
+7. To invite someone, ask "Invite @alice to chen-lab." Choose **Allow once** on its card. The chat then shows the invitation message to send to Alice. Ask "Show me Alice's invitation again" to see it later.
+
+To join a workspace:
+
+1. Paste the whole invitation your host sent into a chat, and ask "Join this workspace."
+2. The chat reads the invitation first and saves nothing. Then a card asks to "Join chen-lab on lab.example.edu, hosted by @alice, as you", with the workspace key fingerprint and the privacy. Check that the host is the one you expect, and choose **Allow once**.
+3. Answer the **Unlock**, server key and **Sign in** cards, if any show.
+4. The chat says when you are in, and the workspace shows in Crew.
+
+To open a workspace your server account already has, for example on a new computer, ask "Open my workspaces on lab.example.edu." The chat checks the server first. When no saved connection names that server, a card asks to "Check bob@lab.example.edu as you: sign in, look at the Crew program in your account and list the workspaces there". Then the chat lists the workspaces, and opens the one you name after its own card.
+
+A setup can wait for you to sign in while you are away from the chat. Ask any chat "What setups are waiting?", and it lists them, then shows the **Sign in** card for one when you ask.
 
 ### Which chats can
 
@@ -224,15 +249,15 @@ A chat gets the two tools when all of these hold:
 - It has no Crew access. A chat connected with `/crew` keeps only its channel tools, and cannot act as you.
 - The **Crew** switch in **Settings** > **Chat** > **Capabilities** was on when the chat started.
 
-In a browser opened with `biorouter serve`, where Crew does not work, a chat gets `crew__read` only, and changes are not offered ([Getting started](getting-started.md)). It can still list your connections and setup jobs, but it cannot read a workspace's content, because the permission card below cannot be shown there.
+In a browser opened with `biorouter serve`, where Crew does not work, a chat gets `crew__read` only, and changes are not offered ([Getting started](getting-started.md)). The same holds for a chat in an editor that runs Biorouter through ACP (the Agent Client Protocol). Such a chat can still list your connections and setup jobs, but it cannot read a workspace's content, because the permission card below cannot be shown there.
 
-The tools run only in the chat's own turn, where their cards can be shown. A program that calls them directly through the background service, outside a chat's turn, gets "crew__read and crew__change act as you, so they run only in a chat's own turn, where their approval cards can be shown. Use the Crew view or biorouter crew instead." Code Execution's scripts in a chat may call them, and each change still waits for its card. A script sees the same Crew tools its chat is offered: `crew.read` and `crew.change` in a chat of yours with no Crew access, and only `crew.connections` and `crew.request` in a chat connected with `/crew`.
+The tools run only in the chat's own turn, where their cards can be shown. A program that calls them directly through the background service, outside a chat's turn, gets "crew__read and crew__change act as you, so they run only in a chat's own turn, where their approval cards can be shown. Use the Crew view or biorouter crew instead." With Code Execution on, as it is by default, the chat still calls `crew__read` and `crew__change` directly and never from a script. So each Crew read or change shows as its own row in the chat, each change has its own card, and a call that is sent again, for example after a dropped connection, is applied once. A script in a chat connected with `/crew` sees only `crew.connections` and `crew.request`.
 
 The tool permission settings never list `crew__read` or `crew__change`, because each of their changes asks you every time, and a chat's own list there holds only the Crew tools that chat is offered.
 
 ### Reading needs your permission once
 
-The first time a chat reads a workspace's content, it shows a card in the chat. Its first line reads "Let this chat read chen-lab as you", and the lines under it read "It can then read what you see in chen-lab on lab.example.edu (messages, files, names and the context document), and every change still asks you first. Take this back in this chat's Crew bar, or with biorouter crew grants revoke 20260924_2 --reads." Choose **Allow**. The card then reads "This chat may read chen-lab as you until you take it back".
+The first time a chat reads a workspace's content, it shows a card in the chat. Its first line reads "Let this chat read chen-lab as you", and the lines under it read "It can then read what you see in chen-lab on lab.example.edu (messages, files, names and the context document), and every change still asks you first. Take this back in this chat's Crew bar, or with biorouter crew grants revoke 20260924_2 --reads." Choose **Allow**. The card then reads "This chat may read chen-lab as you until you take it back". In a terminal chat, type `allow` at its prompt instead ([Cards in a terminal chat](command-line.md#cards-in-a-terminal-chat)).
 
 If you choose **Deny**, the chat is told "The person declined. Nothing was read." It does not show the card again until you write in the chat: a read it tries before then answers "The person declined to let this chat read chen-lab as them, so nothing was read. Biorouter asks them again only after they write in this chat." When the card runs out, or you choose **Stop** in the chat, the read answers "This chat needs your permission to read chen-lab as you." (code `crew_read_consent_required`), and the next read asks again.
 
@@ -247,6 +272,8 @@ If you choose **Deny**, the chat is told "The person declined. Nothing was read.
 
 Each `crew__change` shows one card in the chat, with **Allow once** and **Deny**, and no **Always allow**. Its first line says what will happen, such as "Post this in #methods (Analysis Lab) in chen-lab on lab.example.edu as you", and the lines under it say what else matters, each on its own line. Nothing happens until you choose **Allow once**, and then exactly what the card names happens, once. After **Deny**, the chat is told "The person declined. Nothing was changed." A card waits up to 10 minutes. If it runs out, or you choose **Stop** in the chat, nothing changes either. An answered card offers no **Change** link, because no standing permission applies to these tools: the next change asks again.
 
+Three changes show a different card, with no **Allow once**, because what you type there is the act: signing in (`auth`), unlocking Crew's vault (`credentials_unlock`) and setting one up (`credentials_init`). See [Sign in, unlock and check a server's key](#sign-in-unlock-and-check-a-servers-key).
+
 The card names its targets as Crew found them before it asked: every card names the workspace and the server it is on, such as "chen-lab on lab.example.edu", so two workspaces with a `#general` are told apart, then `#channel` with its team, a person as `Display name (@username)`, a computer's fingerprint. A card about a saved connection names it by the connection's name on this computer. It shows the whole payload: a message's full text, the workspace context as a change from the current one, a file's local path and size. Crew then acts on exactly the people, channels and computers the card named, and never looks a name up again.
 
 | Action | The card says, for example |
@@ -259,7 +286,11 @@ The card names its targets as Crew found them before it asked: every card names 
 | Opening a workspace (`open`) | "Open chen-lab on bob@lab.example.edu, hosted by @alice, and join it as you", then "Workspace key fingerprint: …", the privacy, such as "Privacy: Private, institution ucsf.", and "You join it as its member." Joining from an invitation (`join`) names the same. |
 | Setting Crew up on a server (`setup`) | Which workspaces it restarts and who is connected to them, such as "It restarts chen-lab: 2 other people are connected, and their running agent commands will stop." Without being asked, setup restarts only a workspace nobody else is connected to. The chat restarts one with others connected only when you name it, by the ID `setup_check` lists (`restart_workspace_ids`), or ask for every one (`restart_workspaces`), and the card says so. |
 | Adding this computer again (`rejoin`) | "Its old key on this computer stops working." and that chats with Crew access through the connection each need access granted again. |
-| Removing one of your computers (`profile_revoke_device`) | "A lost computer can still sign in as you while it holds an SSH key or password for your account on lab.example.edu: remove its key from ~/.ssh/authorized_keys there, or change your password, first." |
+| Removing one of your computers (`profile_revoke_device`) | The Keys dialog's own warning: "A lost computer can still sign in as you while it has an SSH key or password for your account. First remove its key from ~/.ssh/authorized_keys on the server, or change your password. Then remove it here." For this computer, the card says instead that it stops reaching the workspace until you add it again, by asking a chat for `rejoin` or with **Add this computer again** in Crew. |
+| Marking new computers as seen (`profile_devices_acknowledge`) | "Mark a new computer added to your account in chen-lab on lab.example.edu as seen", with each computer's fingerprint, the date it was added and how, then "Crew then stops pointing them out. If one isn't yours, deny this. Take its SSH access to the server away first, then remove it in Crew, under Keys." Reading your computers never marks them seen. |
+| Drafting the workspace context (`context_draft`) | "Draft the context document for chen-lab on lab.example.edu from what the server reports about itself", then "Crew runs its fixed check of the server as you. It changes nothing there." and "The draft comes back to this chat. Nothing is saved until you approve saving it." The draft is workspace content, so the chat reads it as it reads other content. Saving it is `context_set`, with its own card. |
+| Pausing, resuming or removing a transfer (`files_pause`, `files_resume`, `files_forget`) | "Pause the upload of counts.csv (640 KB) to chen-lab on lab.example.edu", then "It stops where it is, and you can resume it from there later." Resuming names the file's path on this computer, and its size for an upload. Removing reads "Remove from your list: the download of counts.csv (640 KB) from chen-lab on lab.example.edu", then "Removes the record on this computer." and, for an unfinished download, the partial file it deletes, such as "Its partial file is deleted from this computer: {path}." A transfer still under way is paused first. |
+| Locking Crew's vault (`credentials_lock`) | "Lock Crew's vault on this computer", then "Every chat and Crew task using it stops until you unlock it." |
 | Removing a workspace from this computer (`connections_remove`) | What it ends, and on a server with a current Crew, "The workspace can be opened again from any computer that signs in to the server as your account." |
 | Taking back a chat's Crew access (`grants_revoke`) | “Take back Crew access to chen-lab on lab.example.edu from chat "Plot review" (chat 20260924_2)”, then "If it is a task, the task stops." Its details say what it takes back: "Crew access". |
 | Deleting, archiving or removing for everyone | "for everyone; this cannot be undone", such as "Archive #methods (Analysis Lab) in chen-lab on lab.example.edu for everyone; this cannot be undone". |
@@ -268,20 +299,46 @@ If the chat gets Crew access while a card waits, the change does not run.
 
 ### Long work, and Stop
 
-Setting up a server, hosting, opening or joining a workspace, adding a computer again, sharing or downloading a file and starting a task can take longer than one answer. The chat waits up to 20 seconds, then tells you the work goes on, and can follow it. **Stop** in the chat ends the wait, not the work: setups, transfers and tasks keep running and show in Crew, where you can stop them.
+Setting up a server, hosting, opening or joining a workspace, adding a computer again, sharing or downloading a file and starting a task can take longer than one answer. The chat waits up to 20 seconds, then tells you the work goes on, and can follow it. Time a card spends waiting for you to sign in does not count toward those 20 seconds. **Stop** in the chat ends the wait, not the work: setups, transfers and tasks keep running and show in Crew, where you can stop them.
 
-A setup a chat started appears at the top of Crew as "Crew is being set up on {server}.", or, when the server wants you to sign in, "A setup on {server} is waiting for you to sign in." with **Sign in**.
+A setup a chat started appears at the top of Crew as "Crew is being set up on {server}.", or, when the server wants you to sign in, "A setup on {server} is waiting for you to sign in." with **Sign in**. You can sign in there or on the chat's own card.
 
-### Signing in stays with you
+### Sign in, unlock and check a server's key
 
-Never type a password, code, passphrase or host key into a chat. When a step needs one, the chat tells you where to do it:
+Never type a password, code or passphrase into a chat. When a step needs one, or needs you to check a server's key, the chat shows a card for it. These cards have no **Allow once**, and nothing on them comes from the model: their words are Crew's own, with the server, login and fingerprint Crew itself read.
 
-| The chat says | What to do |
+| Card | What to do |
 |---|---|
-| The server wants you to sign in for a setup | Open Crew, where the setup waits with a **Sign in** button, or run `biorouter crew auth --setup-job ID` with the ID the chat names. For a saved connection, choose **Sign in** in Crew, or run `biorouter crew auth --connection NAME`. |
-| The server's key is unknown, or changed | Verify the server in a terminal ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). Crew never accepts a key for you. |
-| Your Crew vault is locked | Choose **Unlock** in Crew's connection bar or in **Keys and security…**, or run `biorouter crew credentials unlock`. |
-| This computer lost its key, or the workspace no longer recognizes it | Choose **Add this computer again** in Crew, or let the chat do it with `rejoin` after you allow its card ([Add this computer again](joining-a-workspace.md#add-this-computer-again)). |
+| "Sign in to bob" | It reads "Sign in to bob on lab.example.edu. What you type goes to ssh on that server, never to this chat or the model. Type only into the Sign in window." Choose **Sign in**. The Sign in window opens, the same one Crew uses, and shows the server's own prompts. Type your password and verification code there. Once the server takes them, the card reads "Signed in. The chat carries on." and the chat goes on by itself. |
+| "Unlock Crew's vault" | Choose **Unlock**. Your computer's own passphrase window opens, "Unlock Crew encrypted vault". Type the passphrase there. The card reads "Unlocked. The chat carries on." A refused passphrase says so on the card, and you can choose **Unlock** again. |
+| "Set up Crew's vault" | The chat asks for one when this computer has no keyring Crew can use, such as a Linux computer you reach only over SSH. Choose **Set up**, type a new passphrase in "Initialize Crew encrypted vault", then type it again in "Confirm Crew vault passphrase". |
+| "Can’t verify lab.example.edu yet" | This computer does not trust the server's key yet. The card shows "Fingerprint the server offered", read by Crew from the server itself. Under **How do I verify it?**: get the server's fingerprint from your IT team, compare it, and add the full key to your known hosts file yourself ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). **Open a terminal here** opens a terminal on this computer for that. Once the key is there, the chat goes on by itself. |
+| "lab.example.edu’s identity changed" | The server's key changed since this computer trusted it. Do not connect until your IT team confirms the change. Choose **Copy details for IT** and send them. Nothing waits, and the chat does not try again. |
+
+- **Dismiss** on the Sign in card, or **Not now** on a vault card or an unknown key's card, ends the chat's wait with nothing done. The chat is told so, and you can ask again later. A card waits up to 10 minutes, and **Stop** in the chat takes it down too.
+- When the vault is locked and a change needs it, the vault card shows before the change's own card, so you never allow the same change twice. Changes that stop or take something back, such as removing a transfer or taking back a chat's access, do not wait for the vault. A read that finds the vault locked shows the vault card, then reads once you unlock it.
+- After you add a server's key, the chat tries the step once more. A change you allowed is not asked again for that one try: your **Allow once** still counts if nothing on its card changed and you chose it less than 10 minutes before. Crew makes every other check again, and a card that would read differently asks you.
+- If the server refused this computer's SSH key and your key has a passphrase, the chat can open the Sign in window for you to type that passphrase there.
+- Crew never accepts a server's key for you, and the chat is told never to add, scan or accept one either. In **Completely Autonomous** mode, a shell command of the chat's that would trust a key nobody checked, such as `ssh -o StrictHostKeyChecking=accept-new`, asks you first ([Permission modes](../security/permission-modes.md#what-still-asks-whatever-your-mode)).
+- Locking the vault is an ordinary change: its card reads "Lock Crew's vault on this computer", then "Every chat and Crew task using it stops until you unlock it."
+- Where no such card can be shown, as in a `biorouter serve` browser, where Crew does not work, or through ACP, the chat names the step instead: open Crew in the desktop app, or run `biorouter crew auth --setup-job ID`, `biorouter crew auth --connection NAME` or `biorouter crew credentials unlock`.
+- In a terminal chat on the shared background service, the same steps run in your terminal: the server's own prompts for a sign in, and a hidden prompt for the vault passphrase ([Cards in a terminal chat](command-line.md#cards-in-a-terminal-chat)).
+
+When this computer lost its key, or the workspace no longer recognizes it, choose **Add this computer again** in Crew, or let the chat do it with `rejoin` after you allow its card ([Add this computer again](joining-a-workspace.md#add-this-computer-again)).
+
+### What a chat does shows in Crew
+
+While Crew is open and its window is visible, a change made in a chat shows there within about two seconds, with no reload. So does a change made with `biorouter crew` in a terminal, or in another Biorouter window:
+
+- A workspace a chat set up, hosted, opened or joined appears in the workspace list, and Crew selects it.
+- A removed connection leaves the list.
+- **Agent access**, "Reads as you" in the Chat access pane, and a chat's own Crew bar drop a permission a chat took back.
+- The **Files** tab shows a transfer a chat paused, resumed or removed.
+- The model for Crew tasks follows a change a chat made to it.
+- **Add this computer again** leaves the connection bar once a chat added this computer again.
+- A setup a chat started stays at the top of Crew while it runs. If it stops with an error, a note reads "Setting up Crew on {server} stopped." with Crew's reason, until you choose **Dismiss**.
+
+Crew is told only which connection, channel, chat or job changed, never what changed in it, and reads the rest itself.
 
 ### Privacy for a chat that reads as you
 
@@ -321,6 +378,14 @@ A refusal the chat reads ends with its code, such as "(code: crew_read_consent_r
 | "Open a workspace from a server checked in this chat: run crew__read action setup_check with the server first." | `open` takes the workspaces that a chat's `setup_check` of a server login found, once the check finished. A check run in the Crew view or a terminal, or before the background service restarted, does not count. Ask the chat to check the server, then to open the workspace. |
 | "Reading a workspace as you needs your permission once per chat, which this Biorouter can't ask you for here. Read it in the Crew view of the desktop app or with biorouter crew in a terminal." | Code `crew_read_consent_required`. The chat runs where the permission card cannot be shown ([Which chats can](#which-chats-can)). Read it in Crew in the desktop app, or from a terminal. |
 | "This needs your approval, which this Biorouter can't ask you for here. Do it in the Crew view of the desktop app or with biorouter crew in a terminal." | The chat runs where no card can be shown ([Which chats can](#which-chats-can)). Make the change in Crew in the desktop app, or from a terminal. |
+| "The person closed the Sign in card, so nothing was signed in." | You chose **Dismiss**. A setup that waited for you still waits. Ask the chat again when you can sign in. |
+| "Nobody signed in before the Sign in card's time ran out." | The card waited 10 minutes, or as long as the setup still had. Ask again. |
+| "No Sign in window can open for this chat." | The chat runs where no card can be shown. Sign in from the Crew view of the desktop app, or with `biorouter crew auth --setup-job ID` or `biorouter crew auth --connection NAME` in a terminal. |
+| "Nothing waits for a sign-in: it is connected." | The connection needs no sign-in now. |
+| "The person closed the card without unlocking Crew's vault, so it is still locked." | You chose **Not now**, or closed the passphrase window. Ask again, or unlock it in **Keys and security…**. |
+| "This chat can't open the vault prompt here." | The chat runs where no card can be shown. Unlock the vault in **Keys and security…** in Crew, or with `biorouter crew credentials unlock`. |
+| "Crew has no vault on this computer, so there is nothing to unlock. It keeps its keys in this computer's keyring." | Nothing is locked. Crew keeps your keys in the system keychain. |
+| "{host}'s host key fingerprint is {fingerprint}." | Code `crew_ssh_host_key_unknown`: the server's key is not in your known hosts file yet. Check the fingerprint with IT and add the key yourself ([Sign in, unlock and check a server's key](#sign-in-unlock-and-check-a-servers-key)). With a changed key (code `crew_ssh_host_key_changed`), the chat names both fingerprints. Do not connect until IT confirms the change. |
 
 ### Do it in Crew, in a terminal, or in a chat
 
@@ -332,6 +397,9 @@ Each row is one task, with the Crew view's control, the command, and the chat ac
 | Read an invitation before saving it | Join dialog summary | `connections join-invitation --preview` | `connections_preview` |
 | Check a server, and list its workspaces | **Open a workspace on a server** | `setup --check`, `doctor` | `setup_check` |
 | Set up or update Crew on a server | **Set up Crew for my account**, **Update Crew** | `setup` | `setup`, `setup_status`, `setup_cancel` |
+| See the setups on this computer, from any chat, Crew or a terminal | The notes at the top of Crew | No command: `setup` follows only its own | `setup_list` |
+| Sign in to a server | **Sign in** | `auth`, `auth --setup-job ID` | `auth`, which shows a **Sign in** card |
+| Crew's vault | **Keys and security…**, **Unlock** on the connection bar | `credentials status`, `credentials init`, `credentials unlock`, `credentials lock` | `credentials_status`, `credentials_init` and `credentials_unlock` (each a card that opens your computer's passphrase window), `credentials_lock` |
 | Host a workspace | **Host a new workspace** | `host` | `host` |
 | Open a workspace your account has | **Open a workspace on a server** | `open` | `open` |
 | Join with an invitation | **Join a workspace**, **Join {workspace}** | `connections join-invitation`, `join` | `join` |
@@ -341,8 +409,9 @@ Each row is one task, with the Crew view's control, the command, and the chat ac
 | Remove a workspace from this computer | **Remove {workspace} from this computer…** | `connections remove` | `connections_remove` |
 | See the workspace and its people | "{workspace} settings", **People…** | `workspace show`, `members` | `workspace_show`, `members` |
 | Rename, delete or govern the workspace | **General** tab | `workspace rename`, `workspace delete`, `workspace governance` | `workspace_rename`, `workspace_delete`, `workspace_governance` |
-| Read or save the workspace context | **Context** tab | `workspace context show`, `workspace context set` | `context_show`, `context_set` |
+| Read, draft or save the workspace context | **Context** tab, **Draft from server** | `workspace context show`, `workspace context draft`, `workspace context set` | `context_show`, `context_draft`, `context_set` |
 | Invite, cancel, let in or remove a person | **Invite people to {workspace}…**, **Cancel invitation**, **Let in…**, **Remove from {workspace}…** | `enroll invite`, `enroll cancel`, `enroll approve`, `enroll revoke`, `enroll pending` | `enroll_invite`, `enroll_cancel`, `enroll_approve`, `enroll_revoke`, `enroll_pending` |
+| Show an invitation again (host) | **Invite people to {workspace}…** | `connections invitation --for @bob` | `connections_invitation` |
 | Add people to teams and channels | **Add people to {team}…** | `members add` | `members_add` |
 | Teams | **Create team**, **Rename…**, **Join {team}**, **Delete team…** | `teams list`, `teams create`, `teams rename`, `teams join`, `teams delete` | `teams_list`, `teams_create`, `teams_rename`, `teams_join`, `teams_delete` |
 | Channels | **Create channel**, **Rename…**, **Archive channel…**, **Browse channels…**, **Delete channel…** | `channels list`, `channels create`, `channels rename`, `channels archive`, `channels join`, `channels delete`, `channels mark-read` | `channels_list`, `channels_create`, `channels_rename`, `channels_archive`, `channels_join`, `channels_delete`, `channels_read` |
@@ -351,10 +420,11 @@ Each row is one task, with the Crew view's control, the command, and the chat ac
 | Read and search messages | The channel | `history`, `watch`, `search` | `history` (with `after` to follow), `search` |
 | Post | The message box | `send` | `send` |
 | Files | **Upload a file…**, **Share**, the **Files** tab | `files list`, `files status`, `files upload`, `files download`, `files reference` | `files_list`, `files_status`, `files_share`, `files_download`, `files_reference` |
+| Transfers under way | The **Files** tab: **Pause**, **Resume…**, **Remove from list** | `files pending`, `files pause`, `files resume`, `files forget` | `files_pending`, `files_pause`, `files_resume`, `files_forget` |
 | Tasks | **Ask my agent**, `@agent`, **Stop** | `ask`, `tasks start`, `tasks list`, `tasks watch`, `tasks cancel` | `tasks_ask`, `tasks_list`, `tasks_watch`, `tasks_cancel` |
 | Chats with access, and permissions to read | **Agent access** tab, **Revoke**, "Reads as you" in the Chat access pane, **Revoke** in the chat's own bar | `grants list`, `context SESSION_ID`, `grants revoke` | `grants_list`, `grants_revoke` |
 | Privacy | **Privacy…**, **Connection settings…** | `privacy show`, `privacy set-personal`, `privacy set-workspace` | `privacy_show`, `privacy_set_personal`, `privacy_set_workspace` |
-| Your profile and computers | **Edit profile…**, **Keys and security…** | `profile show`, `profile set`, `profile devices`, `profile revoke-device` | `profile_show`, `profile_set`, `profile_devices`, `profile_revoke_device` |
+| Your profile and computers | **Edit profile…**, **Keys and security…**, **Acknowledge** | `profile show`, `profile set`, `profile devices`, `profile devices --acknowledge`, `profile revoke-device` | `profile_show`, `profile_set`, `profile_devices`, `profile_devices_acknowledge`, `profile_revoke_device` |
 | The model for Crew tasks | **Settings** > **Models** > **Crew tasks** | `defaults show`, `defaults set`, `defaults clear` | `defaults_show`, `defaults_set`, `defaults_clear` |
 
 `setup_check` against a server login that no saved connection names with the same port, key file and jump host, `open` and `join` are changes, so they show a card too. `open` needs a finished `setup_check` of the server login from a chat first ([When the chat says it cannot](#when-the-chat-says-it-cannot)). When the Crew in your account is too old to list the workspaces and this Biorouter can update it, the chat's answer names the chat's own way to do that, such as "Crew 1.93.0 in your account on lab.example.edu is too old to list workspaces. Update it with crew__change action setup, which then lists them."
@@ -362,9 +432,6 @@ Each row is one task, with the Crew view's control, the command, and the chat ac
 A few things stay with you, on purpose, and no chat does them:
 
 - Starting and stopping the background service, which the chat itself runs in.
-- The vault's `credentials init`, `credentials unlock` and `credentials lock`: they need your passphrase, and a lock would cut off every other chat's Crew access.
-- Signing in to a server (`auth`).
-- Pausing, resuming and forgetting file transfers, which the **Files** tab keeps.
 - The steps the setup and join flows run for you: `workspace bootstrap`, `enroll prepare`, `enroll accept`, `connections prepare` and `connections save`.
 - Giving a chat Crew access: type `/crew` ([Connect a chat with /crew](#connect-a-chat-with-crew)). A chat can start a new task for you with its own access, after you allow the card that names its channel, model and server access.
 
@@ -402,7 +469,8 @@ At **As me on the server**, your agent runs commands as your own account on the 
 
 Every other way to set full access, or to start a task with it, gives the same warning:
 
-- In a terminal, `setup`, `open` and `join` print it when they give your agent full access, `host` prints it after the list of what it will do, and `connections set-access full` asks with it ([Agent access](command-line.md#agent-access)).
+- For a connection with full access, **Ask my agent** says "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark." in its footer, under the line that names what the task may read, before you start the task. The message box says the same under its access line when you start a task with `@agent`.
+- In a terminal, `setup`, `open` and `join` print it when they give your agent full access, `host` prints it after the list of what it will do, and `connections set-access full` asks with it ([Agent access](command-line.md#agent-access)). `tasks start` and `ask` print it after the task they started on a connection with full access.
 - A chat's card for setting Crew up, opening a workspace or hosting one says "Agents get full access: they can run any command as you on lab.example.edu, read and change any file your account can, and use the network. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark."
 - A chat's card for `connections_set_access` with full access says what it allows, then "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark." on a line of its own.
 - A chat's card for a task (`tasks_ask`) whose connection has full access says "With a private model it can run any command as you on lab.example.edu, and read and change any file your account can. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark."

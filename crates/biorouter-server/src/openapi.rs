@@ -25,10 +25,11 @@ use biorouter::config::declarative_providers::{
     DeclarativeProviderConfig, LoadedProvider, ProviderEngine,
 };
 use biorouter::conversation::message::{
-    ActionRequired, ActionRequiredData, FrontendToolRequest, Message, MessageContent,
-    MessageMetadata, MessageProvenance, ProvenanceKind, RedactedThinkingContent, SecretDestination,
-    SecretKeyRequest, SystemNotificationContent, SystemNotificationType, ThinkingContent,
-    TokenState, ToolConfirmationRequest, ToolRequest, ToolResponse,
+    ActionRequired, ActionRequiredData, CrewSignInTarget, CrewStepRequest, CrewVaultAction,
+    FrontendToolRequest, Message, MessageContent, MessageMetadata, MessageProvenance,
+    ProvenanceKind, RedactedThinkingContent, SecretDestination, SecretKeyRequest,
+    SystemNotificationContent, SystemNotificationType, ThinkingContent, TokenState,
+    ToolConfirmationRequest, ToolRequest, ToolResponse,
 };
 use biorouter::conversation::tool_preview::{ToolPreview, ToolPreviewLine, ToolPreviewLineKind};
 use biorouter::permission::tool_risk::ToolRisk;
@@ -421,6 +422,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::crew_profile::context,
         super::routes::crew_profile::revoke,
         super::routes::crew_profile::revoke_read,
+        super::routes::crew_changes::crew_changes,
         super::routes::status::status,
         super::routes::status::system_info,
         super::routes::status::diagnostics,
@@ -477,6 +479,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::folder_access::list_folder_access,
         super::routes::folder_access::revoke_folder_access,
         super::routes::action_required::submit_secrets,
+        super::routes::action_required::dismiss_crew_step,
         super::routes::catalog::catalog_changes,
         super::routes::session_meta::session_changes,
         super::routes::catalog::catalog_revision,
@@ -700,6 +703,9 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::crew::SetupOutcome,
         biorouter::crew::SetupError,
         biorouter::crew::ContextDraft,
+        // Crew's change feed (WI-15): kinds and IDs only.
+        biorouter::crew::changes::CrewChangesDelta,
+        biorouter::crew::changes::CrewChange,
         super::routes::crew_setup::SetupSignIn,
         super::routes::crew_transfers::Resume,
         biorouter::security::computer_use::ComputerUseStatus,
@@ -747,6 +753,8 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::folder_access::RevokeFolderAccessRequest,
         biorouter::folder_access::FolderGrantView,
         super::routes::action_required::SubmitSecretsRequest,
+        super::routes::action_required::CrewStepResponseRequest,
+        super::routes::action_required::CrewStepOutcome,
         biorouter::catalog::CatalogDelta,
         biorouter::session_meta::SessionMetaDelta,
         biorouter::session_meta::SessionMetaChanged,
@@ -886,6 +894,10 @@ impl utoipa::Modify for ApiKeySecurity {
         // type — the failure is loud, but only at `npm run generate-api`.
         SecretKeyRequest,
         SecretDestination,
+        // Referenced by `ActionRequiredData::CrewStep`, for the same reason as the two above.
+        CrewStepRequest,
+        CrewSignInTarget,
+        CrewVaultAction,
         ToolPreview,
         ToolPreviewLine,
         ToolPreviewLineKind,

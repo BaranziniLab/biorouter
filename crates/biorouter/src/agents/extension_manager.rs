@@ -2390,10 +2390,11 @@ impl ExtensionManager {
     /// which (every Code Execution handler does): its Crew tools are then the ones that chat is
     /// offered, by the rule its own tool list follows (`Agent::list_tools`: gate B-1's
     /// `authorize_session_tool`, then `CrewToolStanding::offers`). A granted chat imports exactly
-    /// `crew.connections` and `crew.request`, a person's own chat without a grant exactly
-    /// `crew.read` and `crew.change`, and any other session none, so a script is never handed a
-    /// binding its chat is refused (AO-12: "absent from the roster, never offered and then
-    /// refused"). Without a session, only what holds for every chat in this process is decided.
+    /// `crew.connections` and `crew.request`, and any other session none, so a script is never
+    /// handed a binding its chat is refused (AO-12: "absent from the roster, never offered and
+    /// then refused"). The person tools `crew.read` and `crew.change` are never importable: a
+    /// person's own chat calls them directly (`reply_parts::runs_only_from_the_agent_loop`).
+    /// Without a session, only what holds for every chat in this process is decided.
     pub async fn get_prefixed_tools_excluding_for(
         &self,
         exclude: &str,
@@ -2425,32 +2426,24 @@ impl ExtensionManager {
         // missing, GPT-5.5 wrote `import { kb_delete_base } from "knowledge"`,
         // was refused, and told the user deletion was impossible in this
         // session. It was right.
+        //
+        // Crew's person tools (`crew__read`, `crew__change`, AO-12) leave by the same door:
+        // the host keys each change on the agent loop's id for the tool call, and a script's
+        // sub-call has none, so a retried script could act as the person twice. The one
+        // predicate that strips them here keeps them on the model's roster
+        // (`reply_parts::runs_only_from_the_agent_loop`).
         tools.retain(|tool| {
-            !crate::security::knowledge_delete::is_knowledge_delete_tool(tool.name.as_ref())
+            !crate::agents::reply_parts::runs_only_from_the_agent_loop(tool.name.as_ref())
         });
-        // …and so are the Crew person tools this process can never run (AO-12, SD-8), by the
-        // rule the roster asks (`CrewToolStanding::offers`): with no host installed neither
-        // `crew__read` nor `crew__change` runs, and where no person's proof can be obtained
-        // (`biorouter serve`) no change's card can be allowed, so a script is not handed a
-        // binding that is refused the moment it is called. Told which chat the catalogue is
-        // for, that chat's own standing decides every Crew tool, as its tool list's does (a
-        // grant, an app's or a subagent's session); told none, only what holds for every chat
-        // in this process is decided, and the rest stays dispatch's to refuse.
+        // Told which chat the catalogue is for, that chat's own standing decides the Crew tools
+        // left, as its tool list's does (a grant's two worker tools; none for an app's or a
+        // subagent's session), so a script is not handed a binding that is refused the moment
+        // it is called. Told none, they stay dispatch's to refuse.
         if let Some(session_id) = session_id {
             return Ok(
                 crate::agents::crew_extension::offered_crew_tools(self, session_id, tools).await,
             );
         }
-        let person_tools = crate::agents::crew_extension::CrewToolStanding {
-            scoped: false,
-            persons_chat: true,
-            host: crate::crew::tool_host::get().is_some(),
-            proof: crate::pending_user_action::user_proof_available(),
-        };
-        tools.retain(|tool| {
-            crate::crew::tool_host::PersonTool::from_name(tool.name.as_ref()).is_none()
-                || person_tools.offers(tool.name.as_ref())
-        });
         Ok(tools)
     }
 
@@ -5589,12 +5582,13 @@ mod tests {
         }
     }
 
-    /// AO-12 and SD-8: Code Execution's import catalogue offers a script no Crew person tool
-    /// this process can never run. With no host installed neither is listed; with one, both
-    /// are while a person's proof can be obtained, as the roster lists them. A grant's worker
-    /// tools are the chat's own standing, which dispatch decides, so they stay either way.
+    /// AO-12: Code Execution's import catalogue never offers a script a Crew person tool,
+    /// installed host or not, because a script's sub-call carries no tool-call id for the
+    /// host's idempotency key; the model calls them directly instead
+    /// (`reply_parts::runs_only_from_the_agent_loop`). A grant's worker tools are the chat's own
+    /// standing, which dispatch decides, so they stay either way.
     #[tokio::test]
-    async fn the_import_catalogue_offers_no_person_tool_this_process_cannot_run() {
+    async fn the_import_catalogue_never_offers_a_person_tool() {
         struct NoHost;
         #[async_trait::async_trait]
         impl crate::crew::tool_host::CrewToolHost for NoHost {
@@ -5632,15 +5626,7 @@ mod tests {
             catalogue(&extension_manager),
         )
         .await;
-        assert_eq!(
-            with_host,
-            [
-                "crew__change",
-                "crew__connections",
-                "crew__read",
-                "crew__request"
-            ]
-        );
+        assert_eq!(with_host, ["crew__connections", "crew__request"]);
     }
 
     #[tokio::test]

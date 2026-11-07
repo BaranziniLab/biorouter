@@ -1750,7 +1750,10 @@ test("account-sentences: the first pass's words, written from the design, are re
   // A control renamed in the code, and the manual still names the old one.
   assertCaught(
     {
-      [ACCOUNT_COPY]: swap("confirmAction: 'Remove computer',", "confirmAction: 'Revoke computer',"),
+      [ACCOUNT_COPY]: swap(
+        "confirmAction: 'Remove computer',",
+        "confirmAction: 'Revoke computer',"
+      ),
     },
     'account-sentences',
     /account\/copy\.ts no longer shows "Remove computer"/
@@ -1905,6 +1908,56 @@ test('account-sentences: the desktop says "computer", and its "device" words are
     ),
     []
   );
+});
+
+test('host-key-retry: the page says the retry after a server key reuses the approval (2026-11 review)', () => {
+  const HOST = 'crates/biorouter-server/src/routes/crew_tools/mod.rs';
+  const NOW =
+    "- After you add a server's key, the chat tries the step once more. A change you allowed is not asked again for that one try:";
+  // The line the review found: it told the person to allow the same change twice.
+  assertCaught(
+    {
+      [AGENTS]: (text) =>
+        text.replace(
+          /- After you add a server's key, the chat tries the step once more\.[^\n]*/,
+          "- After you add a server's key, the chat tries the step once more. If that step's card shows again, choose **Allow once** again."
+        ),
+    },
+    'host-key-retry',
+    /must say a change you allowed is not asked again/
+  );
+  // The page stops saying the step is tried once more at all.
+  assertCaught(
+    {
+      [AGENTS]: (text) =>
+        text.replace(
+          /- After you add a server's key, the chat tries the step once more\.[^\n]*\n/,
+          ''
+        ),
+    },
+    'host-key-retry',
+    /does not say that the chat tries a step once more/
+  );
+  // The host stops taking the approval: the page's promise is then wrong.
+  assertCaught(
+    {
+      [HOST]: swap(
+        'if allowed_for_this_retry(&shown, Instant::now()) {',
+        'if false && allowed_for_this_retry(&shown, Instant::now()) {'
+      ),
+    },
+    'host-key-retry',
+    /no longer calls allowed_for_this_retry/
+  );
+  // A host whose retry approval the reader cannot find fails instead of passing.
+  assertCaught(
+    {
+      [HOST]: (text) => text.replaceAll('fn allowed_for_this_retry(', 'fn approval_for_retry('),
+    },
+    'host-key-retry',
+    /update this rule/
+  );
+  assert.ok((real.read(AGENTS) || '').includes(NOW));
 });
 
 test('the tree as committed passes every rule', () => {

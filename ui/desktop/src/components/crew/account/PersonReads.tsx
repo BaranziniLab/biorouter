@@ -5,6 +5,7 @@ import { crewErrorCode } from '../api/errors';
 import { connectionNames, identityCopy } from '../identity';
 import { calendarDate } from '../channel/presentation';
 import { useCrew } from '../state/CrewControllerContext';
+import { changeTouches, useCrewChanged } from '../state/useCrewChanges';
 import { listPersonReads, revokePersonRead, type CrewPersonRead } from './api';
 import { readsCopy } from './copy';
 
@@ -18,7 +19,9 @@ const CREW_NOT_FOUND = 'crew_not_found';
  * Nothing is shown while there is none. Lists that cannot be read are left out quietly: the
  * consent is kept on this computer, and `biorouter crew grants list` shows the same. A Revoke takes
  * its own button away, so focus goes to the next Revoke, else to the note that says what happened
- * (live QA: it fell to the page).
+ * (live QA: it fell to the page). The list is read again when Crew's change feed reports a change
+ * that may concern these workspaces, such as a chat revoking its own reading (WI-15); a note this
+ * pane said stays.
  */
 export function PersonReads({ sessionId }: { sessionId: string | null }) {
   const { connections } = useCrew();
@@ -38,8 +41,19 @@ export function PersonReads({ sessionId }: { sessionId: string | null }) {
     next?.focus();
   }, [focusNext]);
 
+  const [nonce, setNonce] = useState(0);
+  useCrewChanged(
+    (delta) => {
+      if (changeTouches(delta, ids)) setNonce((value) => value + 1);
+    },
+    { enabled: Boolean(sessionId && idsKey) }
+  );
+
   useEffect(() => {
     setSaid(null);
+  }, [sessionId, idsKey]);
+
+  useEffect(() => {
     if (!sessionId || !idsKey) {
       setReads([]);
       return;
@@ -56,7 +70,7 @@ export function PersonReads({ sessionId }: { sessionId: string | null }) {
       );
     });
     return () => controller.abort();
-  }, [sessionId, idsKey]);
+  }, [sessionId, idsKey, nonce]);
 
   if (!sessionId || (reads.length === 0 && !said)) return null;
   const workspaceOf = (read: CrewPersonRead) =>

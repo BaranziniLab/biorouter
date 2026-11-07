@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type Dispatch,
   type MutableRefObject,
@@ -10,6 +11,7 @@ import { crewHttp, type CrewConnection, type CrewWorkspaceDeleted } from '../cre
 import { classifyConnectFailure } from './connectFailure';
 import { forgetConnectionFailedTasks } from './crewRunStart';
 import { forgetConnectionDrafts, forgetLastChannel, resetBetweenTests } from './draftStash';
+import { changedConnections, useCrewChanged, type CrewChangesDelta } from './useCrewChanges';
 import { forgetViewMemory } from './viewMemory';
 import type {
   ActionKey,
@@ -82,6 +84,12 @@ export const CONNECTIONS_RELOAD_DEBOUNCE_MS = 250;
  * back into view (focus, or the page becoming visible): a connection saved or connected from the
  * terminal (`biorouter crew …`) shares the daemon but not this page, and used to stay invisible
  * until a reload (T-51). A failed background read keeps the list it has.
+ *
+ * It is read again, too, when Crew's change feed says something changed (WI-15): a chat's
+ * `crew__change`, a setup job, another window or the terminal. A connection the change names that
+ * this window had not listed is selected, so a workspace a chat set up shows where it went. A
+ * connection that leaves the list, however it was removed, has what this window remembers about it
+ * forgotten (`forgetConnectionMemory`).
  */
 export function useCrewConnections(generation: MutableRefObject<number>): CrewConnections {
   const [connections, setConnections] = useState<CrewConnection[]>([]);
@@ -89,6 +97,8 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
   const [connectionsState, setConnectionsState] = useState<'loading' | 'loaded' | 'failed'>(
     'loading'
   );
+  // The IDs of the last list applied; `null` before the first.
+  const listed = useRef<string[] | null>(null);
 
   const loadConnections = useCallback(
     async (signal?: AbortSignal, current?: number) => {
@@ -100,6 +110,10 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
       );
       if (signal?.aborted || (current !== undefined && generation.current !== current))
         return undefined;
+      const ids = result.connections.map((item) => item.id);
+      for (const gone of listed.current ?? [])
+        if (!ids.includes(gone)) forgetConnectionMemory(gone);
+      listed.current = ids;
       setConnections(result.connections);
       setConnectionsState('loaded');
       setConnectionId((old) =>
@@ -127,6 +141,19 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
       document.removeEventListener('visibilitychange', reload);
     };
   }, [loadConnections]);
+  useCrewChanged((delta: CrewChangesDelta) => {
+    const before = listed.current;
+    void loadConnections()
+      .then((list) => {
+        if (!list || before === null) return;
+        const added = changedConnections(delta).filter(
+          (id) => !before.includes(id) && list.some((item) => item.id === id)
+        );
+        const newest = added[added.length - 1];
+        if (newest) setConnectionId(newest);
+      })
+      .catch(() => undefined);
+  });
   const markConnectionsFailed = useCallback(
     () => setConnectionsState((state) => (state === 'loaded' ? state : 'failed')),
     []

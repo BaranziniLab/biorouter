@@ -43,10 +43,13 @@ use crate::privacy::CallCapability;
 pub const READ_ACTIONS: &[&str] = &[
     "describe",
     "status",
+    "credentials_status",
     "connections_show",
     "connections_preview",
+    "connections_invitation",
     "setup_check",
     "setup_status",
+    "setup_list",
     "workspace_show",
     "members",
     "enroll_pending",
@@ -57,6 +60,7 @@ pub const READ_ACTIONS: &[&str] = &[
     "search",
     "files_list",
     "files_status",
+    "files_pending",
     "context_show",
     "privacy_show",
     "profile_show",
@@ -67,11 +71,13 @@ pub const READ_ACTIONS: &[&str] = &[
     "grants_list",
 ];
 
-/// What `crew__change` can do (AO-12's table). Every one parks one proof-backed approval and
-/// runs only when a person allows it. Deliberately absent, each a person-only control: daemon
-/// start and stop, the vault's `credentials init`, `unlock` and `lock`, `auth`, transfer pause,
-/// resume and forget, `workspace bootstrap`, `enroll prepare` and `accept`,
-/// `connections prepare` and `save`, and granting a chat Crew access.
+/// What `crew__change` can do (AO-12's table, as the owner's D1 ruling amends it). Every one
+/// waits for the person: an ordinary change parks one proof-backed approval and runs only when
+/// they allow it, and `auth`, `credentials_unlock` and `credentials_init` park a card that opens
+/// the person's own Sign in window or vault prompt, so what they type never reaches the chat.
+/// Deliberately absent, each a person-only control: daemon start and stop,
+/// `workspace bootstrap`, `enroll prepare` and `accept`, `connections prepare` and `save`, and
+/// granting a chat Crew access.
 pub const CHANGE_ACTIONS: &[&str] = &[
     "setup",
     "setup_cancel",
@@ -81,12 +87,17 @@ pub const CHANGE_ACTIONS: &[&str] = &[
     "rejoin",
     "connect",
     "disconnect",
+    "auth",
+    "credentials_unlock",
+    "credentials_init",
+    "credentials_lock",
     "connections_remove",
     "connections_update",
     "connections_set_access",
     "workspace_rename",
     "workspace_delete",
     "workspace_governance",
+    "context_draft",
     "context_set",
     "enroll_invite",
     "enroll_cancel",
@@ -110,10 +121,14 @@ pub const CHANGE_ACTIONS: &[&str] = &[
     "remove_member",
     "profile_set",
     "profile_revoke_device",
+    "profile_devices_acknowledge",
     "send",
     "files_share",
     "files_download",
     "files_reference",
+    "files_pause",
+    "files_resume",
+    "files_forget",
     "tasks_ask",
     "tasks_cancel",
     "grants_revoke",
@@ -337,12 +352,13 @@ mod tests {
         }
     }
 
-    /// AO-12's table, exactly: `describe` reads, and the person-only controls are in neither
-    /// list.
+    /// AO-12's table, as the owner's D1 ruling amends it: `describe` reads, signing in and the
+    /// vault are changes the person finishes in their own window, and the person-only controls
+    /// are in neither list.
     #[test]
     fn the_actions_are_the_contract_s_table() {
-        assert_eq!(READ_ACTIONS.len(), 24);
-        assert_eq!(CHANGE_ACTIONS.len(), 48);
+        assert_eq!(READ_ACTIONS.len(), 28);
+        assert_eq!(CHANGE_ACTIONS.len(), 57);
         assert_eq!(READ_ACTIONS[0], "describe");
         for actions in [READ_ACTIONS, CHANGE_ACTIONS] {
             let unique: std::collections::BTreeSet<_> = actions.iter().collect();
@@ -352,17 +368,8 @@ mod tests {
             .iter()
             .all(|read| !CHANGE_ACTIONS.contains(read)));
         for person_only in [
-            "auth",
             "daemon_start",
             "daemon_stop",
-            "credentials_init",
-            "credentials_unlock",
-            "credentials_lock",
-            "unlock",
-            "lock",
-            "transfers_pause",
-            "transfers_resume",
-            "transfers_forget",
             "workspace_bootstrap",
             "enroll_prepare",
             "enroll_accept",
@@ -383,6 +390,28 @@ mod tests {
             .filter(|action| action.starts_with("grant"))
             .collect();
         assert_eq!(grants, [&"grants_list", &"grants_revoke"]);
+        // D1: the person's own steps a chat may now open, and the parity gaps it now has.
+        for read in [
+            "credentials_status",
+            "connections_invitation",
+            "setup_list",
+            "files_pending",
+        ] {
+            assert!(READ_ACTIONS.contains(&read), "{read}");
+        }
+        for change in [
+            "auth",
+            "credentials_unlock",
+            "credentials_init",
+            "credentials_lock",
+            "context_draft",
+            "profile_devices_acknowledge",
+            "files_pause",
+            "files_resume",
+            "files_forget",
+        ] {
+            assert!(CHANGE_ACTIONS.contains(&change), "{change}");
+        }
     }
 
     #[test]

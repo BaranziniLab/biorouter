@@ -135,6 +135,11 @@
 // said "computer" for a person's machine everywhere, as the command line does: the new-computer
 // notice and the Keys dialog's **Remove computer** are held to those words, and the old ones refused.
 //
+//   * `host-key-retry`: once the person adds a server's key, a chat tries the step once more and
+//     the chat tools' host takes the approval the person already gave for the identical card
+//     (`allowed_for_this_retry`). The agents page said to choose Allow once again; while the host
+//     takes the approval, the page says a change you allowed is not asked again.
+//
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
 // code and update the rule, never to delete the anchor check.
@@ -2394,6 +2399,48 @@ export function checkCrewManual(tree = repoTree()) {
               `${page} says a work-folder command has ${what}, but ${REMOTE_RS}'s confine() now allows it`
             );
           }
+        }
+      }
+    }
+  }
+
+  // ── host-key-retry ───────────────────────────────────────────────────────
+  // Once the person adds a server's key, a chat's host-key card is withdrawn and the step runs
+  // once more. The chat tools' host takes the approval the person gave in that call for the
+  // identical card (`allowed_for_this_retry`, called from `Ctx::approve`), so the retry does not
+  // ask again. The agents page told the person to choose Allow once again (2026-11 review).
+  const hostForRetry = need(CREW_TOOLS_HOST, 'host-key-retry');
+  if (hostForRetry !== null) {
+    const shipped = withoutLineComments(hostForRetry.split(/\n#\[cfg\(test\)\]\nmod \w+ \{/)[0]);
+    if (!/\nfn allowed_for_this_retry\(/.test(shipped)) {
+      fail(
+        'host-key-retry',
+        `${CREW_TOOLS_HOST} has no fn allowed_for_this_retry; re-read how a host-key retry is approved and update this rule`
+      );
+    } else {
+      const reused = /\bif allowed_for_this_retry\(/.test(shipped);
+      const aboutTheRetry = (block) =>
+        /\badd (?:a|the) server's key\b[\s\S]*\bonce more\b/i.test(sameApostrophes(block));
+      const blocks = markdownBlocks(tree.read(AGENTS_PAGE) || '').filter(aboutTheRetry);
+      if (blocks.length === 0) {
+        fail(
+          'host-key-retry',
+          `${AGENTS_PAGE} does not say that the chat tries a step once more after you add a server's key`
+        );
+      }
+      for (const block of blocks) {
+        const asksAgain = /\bchoose \*\*Allow once\*\* again\b/i.test(block);
+        const notAsked = /\bnot asked again\b/i.test(block);
+        if (reused && (asksAgain || !notAsked)) {
+          fail(
+            'host-key-retry',
+            `${AGENTS_PAGE} must say a change you allowed is not asked again after you add a server's key, since ${CREW_TOOLS_HOST}'s allowed_for_this_retry takes that approval: ${block.slice(0, 140)}`
+          );
+        } else if (!reused && notAsked) {
+          fail(
+            'host-key-retry',
+            `${AGENTS_PAGE} says a change is not asked again after you add a server's key, but ${CREW_TOOLS_HOST} no longer calls allowed_for_this_retry: ${block.slice(0, 140)}`
+          );
         }
       }
     }

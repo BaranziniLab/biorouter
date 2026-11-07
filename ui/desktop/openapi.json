@@ -13,6 +13,50 @@
     "version": "1.94.1"
   },
   "paths": {
+    "/action-required/crew-step": {
+      "post": {
+        "tags": [
+          "super::routes::action_required"
+        ],
+        "summary": "Dismiss a Crew step card.",
+        "description": "The call that parked the card is released as cancelled and says the step was not done. A\ndismissal grants nothing and can never mean the step was done, because a Crew step accepts\nno outcome but cancelled (`UserActionRequest::CrewStep`), so it needs no proof beyond what\nreaching the chat needs. It names a chat, so it asks `session_reach` first, as every route\nthat names one does: a private chat's card is out of reach to a caller holding only the\ndaemon secret, and an unknown chat is refused the same way, so the answer discloses nothing\nabout which chats exist. It reaches only a Crew step card in the session posted, never an\napproval or a credential card, so anything else answers 404 as an unknown ID does.",
+        "operationId": "dismiss_crew_step",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CrewStepResponseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Dismissed: the call that parked the card was released",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: the named chat is private (or absent, and a caller out of reach is told the same thing for both) and the request carried neither the user-action proof nor a private caller (body = plain text)"
+          },
+          "404": {
+            "description": "No Crew step card with that ID is waiting in that chat",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/action-required/elicitation": {
       "post": {
         "tags": [
@@ -2209,6 +2253,63 @@
           },
           "403": {
             "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/changes": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "What changed in Crew on this computer after `since`: IDs and kinds only.",
+        "operationId": "crew_changes",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "The last revision this reader saw. Absent: answer where the feed stands now, at once and\nwith no changes, which is how a new reader learns where to start.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "timeout_ms",
+            "in": "query",
+            "description": "How long to wait for a change, in milliseconds, at most 25 000 (the default). `0`\nanswers at once.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The changes after `since`, by kind and ID only: a `crew__change` that ran, a change a Crew route made, or a setup job's new state. With no `since`, where the feed stands now and no changes. `truncated` means the reader fell behind or the daemon restarted: read everything again. A change names no name and no content; read what changed through the route that shows it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewChangesDelta"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -11257,6 +11358,29 @@
                 "type": "string"
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "A Crew step only the person can take, opened from a chat (the owner's D1 ruling on\nAO-12): signing in to a server, unlocking or setting up Crew's vault, or checking a\nserver's host key.\n\n⚠ **The card is the ask, never the answer, and it carries nothing a value could sit\nin.** Every field is written by the daemon from its own records (a setup job's server,\na saved connection, OpenSSH's words about a key), never from the model. What the person\ntypes goes from the surface the card opens (the Sign in window, the OS-native vault\nprompt) straight to ssh or the daemon's vault route with the person's proof. The parked\ncall learns only whether the daemon now sees the step done, and the card can only be\ndismissed: `UserActionRequest::CrewStep` accepts no outcome but Cancelled, TimedOut or\nFailed. A test lists this variant's JSON keys; adding one that could carry a password, a\ncode, a passphrase or a typed host-key answer would undo the guarantee.",
+            "required": [
+              "id",
+              "step",
+              "actionType"
+            ],
+            "properties": {
+              "actionType": {
+                "type": "string",
+                "enum": [
+                  "crewStep"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "step": {
+                "$ref": "#/components/schemas/CrewStepRequest"
+              }
+            }
           }
         ],
         "discriminator": {
@@ -13100,6 +13224,79 @@
           }
         }
       },
+      "CrewChange": {
+        "type": "object",
+        "description": "One change, as `GET /crew/changes` lists it.",
+        "required": [
+          "revision",
+          "kind"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string",
+            "description": "The channel it touched, when one is known.",
+            "nullable": true
+          },
+          "connection_id": {
+            "type": "string",
+            "description": "The saved connection it touched, when one is known.",
+            "nullable": true
+          },
+          "job_id": {
+            "type": "string",
+            "description": "The setup job it touched.",
+            "nullable": true
+          },
+          "kind": {
+            "type": "string",
+            "description": "What changed: a `crew__change` action (`channels_create`, `grants_revoke`, `rejoin`), a\nsetup job's new state (`setup_running`, `setup_needs_sign_in`, `setup_finished`,\n`setup_failed`, `setup_cancelled`), or `route` for any other change a Crew route made."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The feed's revision this change raised it to.",
+            "minimum": 0
+          },
+          "run_id": {
+            "type": "string",
+            "description": "The task it touched.",
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The chat it touched (a grant's or a read consent's chat, a task's own chat).",
+            "nullable": true
+          }
+        }
+      },
+      "CrewChangesDelta": {
+        "type": "object",
+        "description": "What `GET /crew/changes` answers.",
+        "required": [
+          "revision",
+          "changes",
+          "truncated"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CrewChange"
+            },
+            "description": "The changes after `since`, oldest first."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The feed's revision now. Ask again with it as `since`.",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "`changes` is not every change after `since`: the reader fell further behind than the\nfeed keeps, or the daemon restarted. Re-read everything."
+          }
+        }
+      },
       "CrewConnectionList": {
         "type": "object",
         "description": "`GET /crew/connections`.",
@@ -13792,6 +13989,182 @@
         },
         "description": "`GET /crew/setup`: this computer's setup jobs, those under way and those finished in the\nlast 15 minutes, the newest first. A bare array on the wire."
       },
+      "CrewSignInTarget": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A setup job waiting for a sign-in.",
+            "required": [
+              "jobId",
+              "kind"
+            ],
+            "properties": {
+              "jobId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "setup"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A saved connection whose server asked for one.",
+            "required": [
+              "connectionId",
+              "kind"
+            ],
+            "properties": {
+              "connectionId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "connection"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What a [`CrewStepRequest::SignIn`] signs in for.",
+        "discriminator": {
+          "propertyName": "kind"
+        }
+      },
+      "CrewStepOutcome": {
+        "type": "string",
+        "description": "What a person did with a Crew step card. Only dismissing it: the step itself (signing in,\nunlocking the vault, trusting a key) is done in the person's own window, and the call that\nparked the card reads the daemon to learn whether it was.",
+        "enum": [
+          "dismiss"
+        ]
+      },
+      "CrewStepRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Sign in to a server: the Sign in window, an ssh terminal of the person's own.",
+            "required": [
+              "target",
+              "server",
+              "login",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "signIn"
+                ]
+              },
+              "login": {
+                "type": "string",
+                "description": "The SSH login the person signs in as."
+              },
+              "server": {
+                "type": "string",
+                "description": "The server, as the job or the saved connection names it."
+              },
+              "target": {
+                "$ref": "#/components/schemas/CrewSignInTarget"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Unlock or set up Crew's vault on this computer: the OS-native passphrase prompt.",
+            "required": [
+              "action",
+              "kind"
+            ],
+            "properties": {
+              "action": {
+                "$ref": "#/components/schemas/CrewVaultAction"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "vault"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A server's host key that ssh does not trust: unknown, or changed since it was trusted.",
+            "required": [
+              "host",
+              "port",
+              "login",
+              "changed",
+              "kind"
+            ],
+            "properties": {
+              "changed": {
+                "type": "boolean",
+                "description": "The key changed since it was trusted. A changed key is never accepted from a chat."
+              },
+              "host": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "hostKey"
+                ]
+              },
+              "known": {
+                "type": "string",
+                "description": "The fingerprint this computer trusts for the server, when it has one.",
+                "nullable": true
+              },
+              "login": {
+                "type": "string"
+              },
+              "offered": {
+                "type": "string",
+                "description": "The fingerprint the server offered, as the daemon read it from OpenSSH.",
+                "nullable": true
+              },
+              "port": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "The step an [`ActionRequiredData::CrewStep`] card opens.",
+        "discriminator": {
+          "propertyName": "kind"
+        }
+      },
+      "CrewStepResponseRequest": {
+        "type": "object",
+        "description": "Dismissing a Crew step card (`POST /action-required/crew-step`).",
+        "required": [
+          "id",
+          "session_id",
+          "outcome"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The card's ID, as the `crewStep` message carries it."
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/CrewStepOutcome"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The chat the card is in."
+          }
+        },
+        "additionalProperties": false
+      },
       "CrewTransferForgotten": {
         "type": "object",
         "description": "`DELETE /crew/transfers/{id}`.",
@@ -13824,6 +14197,14 @@
             }
           }
         }
+      },
+      "CrewVaultAction": {
+        "type": "string",
+        "description": "What a [`CrewStepRequest::Vault`] card does with Crew's vault.",
+        "enum": [
+          "unlock",
+          "init"
+        ]
       },
       "CrewWorkspaceAnswer": {
         "description": "The workspace's own answer, forwarded unchanged: a protocol request's result\n(`POST /crew/connections/{id}/request`) or a chat's context manifest. Its shape is the\nCrew broker protocol's, not this API's."

@@ -279,8 +279,18 @@ A transfer is one upload or download on this computer.
 - **Remove from list** deletes only this computer's record. For an unfinished download, choose the
   folder you saved into, then **Remove temporary file**. The row leaves the list. For an unfinished
   upload, the part already sent stays on the server for up to a day.
-- A transfer you pause, resume or remove with `biorouter crew` shows its new state here within a
-  few seconds, or when you bring the window back to the front.
+- A transfer you pause, resume or remove with `biorouter crew` or from a chat shows its new state
+  here within a few seconds, or when you bring the window back to the front.
+
+From a chat, ask "What transfers are running?", then "Pause the counts.csv upload", "Resume it from
+/Users/bob/results/counts.csv" or "Remove it from the list". Each change shows a card first, naming
+the transfer, its file, its size and where it goes, and runs only when you choose **Allow once**. To
+resume, the chat needs the file's path on this computer: the same file for an upload, or the same
+destination for a download. A chat removes a transfer only once it stopped, so it pauses one under
+way first. For an unfinished download, the card names the partial file it deletes from this
+computer. When the chat cannot tell where a download was saving, it says so, and you remove it in
+the **Files** tab instead. A transfer's file name is workspace content, so the chat reads it only
+as it reads other content ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)).
 
 ### Transfer states
 

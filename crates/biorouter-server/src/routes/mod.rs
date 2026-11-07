@@ -1018,6 +1018,7 @@ pub mod coding_agents;
 pub mod config_management;
 pub mod crew;
 pub mod crew_authentication;
+pub mod crew_changes;
 pub mod crew_observation;
 pub mod crew_profile;
 pub mod crew_setup;
@@ -1079,12 +1080,18 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))
         .merge(coding_agents::routes(state.clone()))
-        .merge(crew::routes(state.clone()))
-        .merge(crew_authentication::routes())
-        .merge(crew_observation::routes())
-        .merge(crew_transfers::routes())
-        .merge(crew_profile::routes(state.clone()))
-        .merge(crew_setup::routes())
+        // Every change these routes make is announced on Crew's change feed, so a Crew view open
+        // in another window sees what this one, or `biorouter crew`, changed (WI-15).
+        .merge(crew_changes::announcing(
+            Router::new()
+                .merge(crew::routes(state.clone()))
+                .merge(crew_authentication::routes())
+                .merge(crew_observation::routes())
+                .merge(crew_transfers::routes())
+                .merge(crew_profile::routes(state.clone()))
+                .merge(crew_setup::routes()),
+        ))
+        .merge(crew_changes::routes())
         .merge(biorouter_server::daemon_service::routes())
         .merge(biorouter_server::native_client::routes())
         .merge(llamacpp::routes(state.clone()))

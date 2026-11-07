@@ -651,8 +651,12 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     }
     // Otherwise it connects. If connecting finds Crew missing for the account, the Not set up pane
     // sets it up by itself: this Join was the person's consent (decision 5.7). It carries the level
-    // chosen here, so Off stays off and a folder stays the folder the person typed.
-    requestMemberSetup(saved.id, { agentAccess: level });
+    // chosen here, so Off stays off and a folder stays the folder the person typed, and, for As me
+    // on the server in a workspace this account hosts, the workspace its warning names (W2).
+    requestMemberSetup(saved.id, {
+      agentAccess: level,
+      ...(level === 'full' && hostsInvitedWorkspace ? { hostWorkspace: workspaceLabel } : {}),
+    });
     setPhase('connecting');
     setPendingConnect(saved.id);
   };

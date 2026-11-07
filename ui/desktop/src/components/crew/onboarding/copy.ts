@@ -35,15 +35,18 @@ export const welcomeCopy = {
 } as const;
 
 /**
- * AO-8: a restart ends what members had running there. `null` is a count the server did not give
- * (a Crew from before account ownership), which may hide people connected now.
+ * AO-8: a restart ends what members had running there. `count` is the people connected besides
+ * you, as the server counts them, said the way the command line and the chat say it ("1 other
+ * person is connected"). `null` is a count the server did not give (a Crew from before account
+ * ownership), which may hide people connected now. Whole sentences, so the manual's check
+ * (`scripts/check-crew-manual.mjs`) finds them as written.
  */
 function othersConnected(count: number | null): string {
   return count === null
     ? 'Other people may be connected. Their running agent commands will stop.'
     : count === 1
-      ? '1 person is connected. Their running agent commands will stop.'
-      : `${count} people are connected. Their running agent commands will stop.`;
+      ? '1 other person is connected. Their running agent commands will stop.'
+      : `${count} other people are connected. Their running agent commands will stop.`;
 }
 
 /**
@@ -105,11 +108,18 @@ export const openCopy = {
   othersConnected,
   updateAnyway: 'Update and restart',
   keepRunning: 'Not now',
-  /** Under a workspace that runs an older Crew than this computer has. */
+  /**
+   * Under a workspace that runs an older Crew than the one Update Crew restarts it on, as the
+   * command line says it ("runs Crew 1.94.1, not 1.95.0"). `installed` is the Crew installed in the
+   * account, as the job found it, else the one this computer carries. A program of the same version
+   * built from other bytes is said without repeating the version.
+   */
   outdated: (running: string | null, installed: string | null) =>
-    running && installed
-      ? `Runs Crew ${running}; ${installed} is available.`
-      : 'Runs an older Crew.',
+    running && installed && running !== installed
+      ? `Runs Crew ${running}, not ${installed}.`
+      : running
+        ? `Runs Crew ${running}, not the Crew installed in your account.`
+        : 'Runs an older Crew.',
   /**
    * Why the last update left a workspace on its older Crew (AO-8's `outdated` reasons). For
    * `running_newer` and `custom_state_dir` Update Crew cannot help, so it is not offered again.
@@ -119,8 +129,8 @@ export const openCopy = {
       count === null
         ? 'It wasn’t restarted, because other people may be connected. Choose Update Crew to restart it anyway.'
         : count === 1
-          ? 'It wasn’t restarted, because 1 person is connected. Choose Update Crew to restart it anyway.'
-          : `It wasn’t restarted, because ${count} people are connected. Choose Update Crew to restart it anyway.`,
+          ? 'It wasn’t restarted, because 1 other person is connected. Choose Update Crew to restart it anyway.'
+          : `It wasn’t restarted, because ${count} other people are connected. Choose Update Crew to restart it anyway.`,
     running_newer: (running: string | null) =>
       running
         ? `It runs Crew ${running}, newer than the Crew installed in your account, so it was left running.`
@@ -129,16 +139,16 @@ export const openCopy = {
       `It keeps its state outside ~/.local/share/biorouter-crew, so Crew can’t restart it. Restart it on ${server} yourself.`,
   },
   /**
-   * After a look, which restarts nothing (a check, or updating the Crew in your account): what
-   * Update Crew would do to a workspace that runs an older Crew, with the caution its question
-   * asks (`othersConnected`). `null` is a count the server did not give.
+   * Under `outdated`, on every row Update Crew can still help that the last job was not asked to
+   * restart (a look, or Update Crew or Start for another row): what Update Crew would do, with the
+   * caution its question asks (`othersConnected`). `null` is a count the server did not give.
    */
   restartsOnUpdate: (count: number | null) =>
     count === 0 ? 'Update Crew restarts it.' : `Update Crew restarts it. ${othersConnected(count)}`,
   /**
-   * The Crew in your account couldn’t list the workspaces (the job's `workspaces_unlisted`), as the
-   * daemon's sentence says it, with the button that installs this computer's Crew there. That
-   * restarts no workspace, and lists the workspaces again.
+   * The Crew in your account is too old to list the workspaces (the job's `workspaces_unlisted`
+   * `too_old`, which the daemon decides), with the button that installs this computer's Crew there.
+   * That restarts no workspace, and lists the workspaces again.
    */
   tooOld: (version: string | null, server: string) =>
     `${version ? `Crew ${version}` : 'The Crew'} in your account on ${server} is too old to list workspaces. Choose Update Crew to update it.`,

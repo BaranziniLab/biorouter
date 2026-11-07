@@ -2,6 +2,7 @@ pub mod apps;
 pub mod bench;
 pub mod configure;
 pub mod crew;
+pub(crate) mod crew_step;
 pub mod decide;
 pub mod doctor;
 pub mod exe_path;

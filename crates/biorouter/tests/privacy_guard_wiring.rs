@@ -407,11 +407,15 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/action_required.rs",
-                counts: c(1, 1, 0),
+                counts: c(2, 2, 0),
                 kind: SiteKind::Guard,
                 what: "the typed folder-decision branch of `POST /action-required/tool-confirmation`, \
-                       before resolving the named chat's pending request. The extra ref is \
-                       the module qualifier in `session_reach::session_reach`, not a second gate",
+                       before resolving the named chat's pending request, and `POST \
+                       /action-required/crew-step` (`dismiss_crew_step`), before the registry is \
+                       read, so a 404 for a private chat's Crew step card cannot tell a caller \
+                       out of reach that the chat exists. The count went 1 -> 2 because the \
+                       dismiss route is new, not because a guarded route grew a second gate. \
+                       Each call also names the module once, which is the second ref",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/folder_access.rs",

@@ -343,6 +343,16 @@ impl BioRouterAcpAgent {
     }
 
     pub async fn with_config(config: BioRouterAcpConfig) -> Result<Self> {
+        // ⚠ An ACP process can never prove that a person made a decision. The
+        // protocol cannot tell an editor's click from an auto-allow policy, so
+        // every card is answered with `DecisionAuthority::unproven()`
+        // (`handle_tool_permission_request`), and a proof-backed approval refuses an allow
+        // from it forever. A tool whose approval needs that proof must then not
+        // be offered at all (SD-8): crew__change, the skill and extension
+        // installers, the bug reporter. The flag is process-global and defaults
+        // to true, so it is set here, before any extension or roster is built.
+        // Only an ACP process builds this agent (`biorouter acp`, and the tests).
+        biorouter::pending_user_action::set_user_proof_available(false);
         let session_manager = Arc::new(SessionManager::new(config.data_dir));
         // The decision log follows this agent's store, as the CLI's session
         // builder and the daemon install it. Without it a decision made in an
@@ -396,6 +406,17 @@ impl BioRouterAcpAgent {
     /// diagnostics and tests.
     pub async fn list_extensions(&self) -> Vec<String> {
         self.agent.list_extensions().await
+    }
+
+    /// Names of the tools the model is offered in `session_id`, by the same rule
+    /// a turn lists them with. Exposed for diagnostics and tests.
+    pub async fn list_tool_names(&self, session_id: &str) -> Vec<String> {
+        self.agent
+            .list_tools(session_id, None)
+            .await
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
     }
 
     fn convert_acp_prompt_to_message(&self, prompt: Vec<ContentBlock>) -> Message {

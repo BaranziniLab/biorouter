@@ -22,6 +22,7 @@ use biorouter_server::crew::transfers::{
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
+use super::more::{may_name, receipt_view};
 use super::places::{
     check_message_size, crossing, item, local_path, place, post_params, posted, private_where_kept,
     private_write, public_safe, reading, resolve, send, size_words, yours, Place, Reading,
@@ -250,33 +251,12 @@ fn transfer_refusal(error: anyhow::Error) -> anyhow::Error {
     said(Some(code), sentence.to_owned())
 }
 
-/// What a transfer answers the model, as `GET /crew/transfers/{id}` records it, without the
-/// daemon's own bookkeeping. Its file's name, and why it stopped, only when `named`: once a file
-/// is shared, its name is the workspace's.
-fn transfer_view(receipt: &Receipt, named: bool) -> Value {
-    let mut view = json!({
-        "job_id": receipt.id,
-        "transfer_id": receipt.id,
-        "state": receipt.state,
-        "stage": receipt.state,
-        "direction": receipt.direction,
-        "connection_id": receipt.connection_id,
-        "channel_id": receipt.channel_id,
-        "size": receipt.size,
-        "offset": receipt.offset,
-        "blob_id": receipt.blob_id,
-        "pause_reason": receipt.pause_reason,
-    });
-    if named {
-        view["name"] = json!(receipt.name);
-        view["error"] = json!(receipt.error);
-    }
-    view
-}
-
 /// `biorouter crew files status TRANSFER`: where a transfer stands. A shared file's name is
 /// workspace content, either way it went, so it is returned only to a call that may read that
-/// workspace's channel, after the person's consent, and the chat is raised as a read raises it.
+/// workspace's channel, after the person's consent, and only where `files_pending` would name it
+/// ([`may_name`]: never a restricted download, nor an upload whose selection required Private,
+/// to a read that does not raise the chat), and the chat is raised as a read raises it. Every
+/// other answer is the transfer's ID, state, direction and size alone ([`receipt_view`]).
 pub(super) fn files_status(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
     Box::pin(async move {
         let id = ctx.required("transfer_id")?;
@@ -293,26 +273,27 @@ pub(super) fn files_status(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             })?;
         let crew = ctx.crew()?;
         let Ok(connection) = crew.connection(&receipt.connection_id).await else {
-            return Ok(transfer_view(&receipt, false));
+            return Ok(receipt_view(&receipt, false));
         };
         let Ok(snapshot) = ctx.snapshot(&connection).await else {
-            return Ok(transfer_view(&receipt, false));
+            return Ok(receipt_view(&receipt, false));
         };
         let scope = match ctx.content_scope(&connection, &snapshot).await {
             Ok(scope) if scope.channel_allowed(&receipt.channel_id) => scope,
-            _ => return Ok(transfer_view(&receipt, false)),
+            _ => return Ok(receipt_view(&receipt, false)),
         };
         let workspace = Ctx::workspace_label(&connection, Some(&snapshot));
         let scope = if ctx.read_consent(&connection, &workspace).await? {
             // The card waited for the person: judged again on the workspace as it is now.
             match ctx.rescoped(&connection.id).await {
                 Ok((_, _, scope)) if scope.channel_allowed(&receipt.channel_id) => scope,
-                _ => return Ok(transfer_view(&receipt, false)),
+                _ => return Ok(receipt_view(&receipt, false)),
             }
         } else {
             scope
         };
-        ctx.release(&scope, transfer_view(&receipt, true)).await
+        let named = may_name(ctx, &scope, &receipt).await;
+        ctx.release(&scope, receipt_view(&receipt, named)).await
     })
 }
 
@@ -760,7 +741,7 @@ pub(super) fn files_download(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
                             "The download stopped. It is kept in Crew, under Files, where it can be resumed. See why with crew__read action files_status.",
                         )
                     })?;
-                let mut answer = transfer_view(&done, true);
+                let mut answer = receipt_view(&done, true);
                 answer["downloaded"] = json!(true);
                 answer["destination"] = json!(saved.display().to_string());
                 Ok(answer)

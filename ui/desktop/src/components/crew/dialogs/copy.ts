@@ -134,7 +134,8 @@ export const connectionSettingsCopy = {
   socketPath: 'Socket path',
   /** Kept for callers; the numeric UID is never rendered (spec identity rule 6). */
   hostUserId: 'Host user ID',
-  deviceId: 'Device ID',
+  /** This computer's ID in the workspace (the protocol's device ID), named as a person says it. */
+  deviceId: 'Computer ID',
   clusterId: 'Cluster ID',
   /** The button that copies a machine value the dialog does not show (spec rule 13). */
   copyValue: (what: string) => `Copy ${what}`,
@@ -988,6 +989,20 @@ export const refusalCopy = {
     'This workspace is full. Reading still works, and you can still remove members and change its privacy. To keep posting, start a new workspace.',
   /** `rate_limited: too many live challenges`. */
   tooManyAttempts: 'Too many attempts at once. Wait a minute, then try again.',
+  /**
+   * `code_mismatch`, from any broker: an older one says "…let this device in". A person's machine
+   * is a computer in every sentence, and a workspace keeps running the broker it started with, so
+   * the words are these whatever it wrote. The current broker's text and the CLI's
+   * (`CODE_MISMATCH` in `commands/crew/output.rs`), byte for byte.
+   */
+  codeMismatch:
+    "The host hasn't let this computer in. Send the host the code shown on your screen.",
+  /**
+   * `already_member` naming the account, from any broker: an older one says "Choose Add device…",
+   * a control no Crew has now. The current broker's words (`broker/join.rs`).
+   */
+  alreadyMember: (username: string) =>
+    `@${username} is already a member. To add another computer for them, choose Add another computer.`,
 } as const;
 
 export const dialogErrorCopy = {
