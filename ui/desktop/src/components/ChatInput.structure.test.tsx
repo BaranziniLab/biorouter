@@ -146,6 +146,8 @@ describe('the composer is one card and one footer line', () => {
       within(controls).getByTestId('composer-plus'),
       within(controls).getByTestId('tools-chip-stub'),
       within(controls).getByTestId('model-chip-stub'),
+      // The microphone, immediately left of Send (DD-60).
+      within(controls).getByTestId('dictation-button'),
       within(controls).getByRole('button', { name: COMPOSER_COPY.send.label }),
     ];
     for (let i = 1; i < order.length; i++) {
@@ -153,6 +155,12 @@ describe('the composer is one card and one footer line', () => {
         order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING
       ).toBeTruthy();
     }
+    // Send stays the row's last child: the footer inset and the geometry tests
+    // are derived from its edge.
+    const send = within(controls).getByRole('button', { name: COMPOSER_COPY.send.label });
+    expect(controls.lastElementChild?.contains(send)).toBe(true);
+    const mic = within(controls).getByTestId('dictation-button');
+    expect(controls.lastElementChild?.previousElementSibling?.contains(mic)).toBe(true);
   });
 
   it('puts the footer line under the card, outside it', () => {

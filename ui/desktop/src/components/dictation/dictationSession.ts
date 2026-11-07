@@ -60,7 +60,7 @@ import {
   type InsertPath,
 } from '../../utils/dictatedText';
 import { isBrowserSurface } from '../../utils/surface';
-import { startCapture, type Capture, type CaptureOptions } from './capture';
+import { prewarmCapture, startCapture, type Capture, type CaptureOptions } from './capture';
 import {
   DICTATION_LABELS,
   dictationMessage,
@@ -81,6 +81,7 @@ import {
   type PhaseDecision,
 } from './dictationStore';
 import { micErrorNotice } from './micErrors';
+import { markPrivateDraft } from './privateDraft';
 import {
   createDictationStream,
   DictationStreamError,
@@ -161,6 +162,13 @@ export interface DictationComposer {
    * unmounts. Composers without one (the message editor, Crew's boxes) drop it.
    */
   storesDraft: boolean;
+  /**
+   * How many characters the stored draft holds before the field's own text (the
+   * chat composer's `/bug ` command chip); 0 when absent. Read while the
+   * composer is mounted, and remembered for when the text arrives after it is
+   * gone.
+   */
+  draftPrefix?(): number;
   /** After the text went in: the composer marks the box typed and records the span. */
   onInserted?(event: DictationInserted): void;
 }
@@ -195,6 +203,8 @@ export type StartOutcome =
 
 interface Deps {
   startCapture(options: CaptureOptions): Promise<Capture>;
+  /** Prepares the next press (`capture.ts`); a no-op where nothing can be prepared. */
+  prewarmCapture(): void;
   createStream(request: StreamRequest, options?: StreamOptions): DictationStream;
   statusSnapshot(): DictationStatusSnapshot;
   ensureStatus(): Promise<unknown>;
@@ -205,6 +215,7 @@ interface Deps {
 
 const DEFAULT_DEPS: Deps = {
   startCapture,
+  prewarmCapture,
   createStream: createDictationStream,
   statusSnapshot: getDictationStatusSnapshot,
   ensureStatus: ensureDictationStatus,
@@ -238,6 +249,10 @@ let kept: {
 /** A displaced dictation's failure, waiting for the card to be free. */
 let pendingFailure: { key: string; notice: DictationNotice } | null = null;
 let lockScreenInstalled = false;
+/** The composer whose field the text is going into right now (see {@link isDictationInserting}). */
+let inserting: string | null = null;
+/** Bumped by the test reset, so a preparation scheduled before it does nothing after it. */
+let sessionEra = 0;
 let busyReported = false;
 const busyListeners = new Set<() => void>();
 
@@ -250,6 +265,24 @@ function publish(next: Partial<DictationSnapshot>): void {
 
 export function getDictationSnapshot(): DictationSnapshot {
   return snapshot;
+}
+
+/**
+ * Whether dictated text is going into `key`'s field at this moment, so the
+ * composer's change handler can tell the insert from typing: a spoken "@" or
+ * "/" opens no menu (DD-63 step 5), and the edit moves no anchor.
+ */
+export function isDictationInserting(key?: string): boolean {
+  return inserting !== null && (key === undefined || inserting === key);
+}
+
+/**
+ * What one composer shows of the session, reduced to its activity, so a large
+ * composer can subscribe for its submit gates and render only when this
+ * changes, never on the timer, the partial line or a notice.
+ */
+export function dictationActivityFor(key: string): DictationActivity {
+  return snapshot.key === key ? snapshot.activity : 'idle';
 }
 
 export function subscribeDictation(listener: () => void): () => void {
@@ -354,7 +387,11 @@ export function noteDictationEdit(
   const affected = new Set<Dictation>();
   for (const dictation of running) if (dictation.key === key) affected.add(dictation);
   if (kept?.key === key) affected.add(kept.dictation);
-  for (const dictation of affected) dictation.mapAnchor(before, after, caretAfter);
+  const prefix = composers.get(key)?.draftPrefix?.();
+  for (const dictation of affected) {
+    dictation.mapAnchor(before, after, caretAfter);
+    if (prefix !== undefined) dictation.draftPrefix = prefix;
+  }
 }
 
 // ── notices ─────────────────────────────────────────────────────────────────
@@ -438,6 +475,34 @@ function dropPendingFailure(owner: Dictation): void {
 
 // ── one dictation ───────────────────────────────────────────────────────────
 
+/** A letter, a digit or a combining mark: what a word is made of. */
+const WORD_LETTER = /[\p{L}\p{N}\p{M}]/u;
+/** Joins two parts of one word ("don't", "HIF-2α", "snake_case") when letters are on both sides. */
+const WORD_JOINER = /['’_-]/u;
+
+/**
+ * A caret strictly inside a word, between two letters, moves to the nearer end
+ * of that word (its end on a tie), so the text goes in beside the word and
+ * never splits it: "Call th|e OMOP" takes the dictation after "the". A click
+ * lands between two letters far more often than a person means to put words
+ * there. A selection, and a caret at a word's edge, stay where they are.
+ */
+export function anchorOutsideWord(value: string, anchor: Anchor): Anchor {
+  const at = anchor.start;
+  if (at !== anchor.end || at <= 0 || at >= value.length) return anchor;
+  if (!WORD_LETTER.test(value[at - 1]) || !WORD_LETTER.test(value[at])) return anchor;
+  // A joiner counts only with a letter beyond it, so "a -b" is two words.
+  const inWord = (i: number, beyond: number) =>
+    WORD_LETTER.test(value[i]) ||
+    (WORD_JOINER.test(value[i]) && WORD_LETTER.test(value[beyond] ?? ''));
+  let start = at;
+  while (start > 0 && inWord(start - 1, start - 2)) start--;
+  let end = at;
+  while (end < value.length && inWord(end, end + 1)) end++;
+  const moved = at - start < end - at ? start : end;
+  return { start: moved, end: moved };
+}
+
 class Dictation {
   readonly key: string;
   private anchor: Anchor;
@@ -457,6 +522,8 @@ class Dictation {
   private loudAtS = 0;
   private quietNoticeShown = false;
   private capStopped = false;
+  /** The stop's `finish`, when it was started before the card was told (see `finish`). */
+  private finishing: Promise<Transcript> | null = null;
   private busyTimer: ReturnType<typeof setInterval> | null = null;
   private readonly unsubscribe: Array<() => void> = [];
 
@@ -466,16 +533,20 @@ class Dictation {
    * A key no composer was attached under gets no draft written.
    */
   private readonly storesDraft: boolean;
+  /** The composer's {@link DictationComposer.draftPrefix}, as last read. */
+  draftPrefix: number;
 
   constructor(private readonly options: StartDictationOptions) {
     this.key = options.key;
     this.storesDraft = composers.get(options.key)?.storesDraft ?? false;
+    this.draftPrefix = composers.get(options.key)?.draftPrefix?.() ?? 0;
     const field = composers.get(options.key)?.field() ?? null;
     const end = field?.value.length ?? 0;
-    this.anchor = options.anchor ?? {
+    const anchor = options.anchor ?? {
       start: field?.selectionStart ?? end,
       end: field?.selectionEnd ?? end,
     };
+    this.anchor = field ? anchorOutsideWord(field.value, anchor) : anchor;
   }
 
   private isCurrent(): boolean {
@@ -674,6 +745,25 @@ class Dictation {
     } else {
       reportBusy();
     }
+    this.prepareNext();
+  }
+
+  /**
+   * The person may dictate again into the same composer with nothing in
+   * between that notes interest (the field keeps its focus, the pointer stays
+   * on the microphone), so the next press is prepared once this capture's
+   * context has closed, after the text went in and the card's render, off
+   * every path.
+   */
+  private prepareNext(): void {
+    if (!composers.has(this.key)) return;
+    const { prewarmCapture: prepare } = deps;
+    const era = sessionEra;
+    void (this.capture?.closed ?? Promise.resolve()).then(() => {
+      setTimeout(() => {
+        if (era === sessionEra && composers.has(this.key)) prepare();
+      }, 0);
+    });
   }
 
   /**
@@ -689,6 +779,27 @@ class Dictation {
   }
 
   private async finish(): Promise<void> {
+    // The worklet's capture usually hands over its last audio inside `stop()`, so
+    // when the stream is open the stop's `finish` is started before the card is
+    // told: the request is on the wire (`dictationApi.ts` sends it in the first
+    // microtask) before the Transcribing render the publish below schedules.
+    // The checks are the ones the path below makes, which then gets the same
+    // `finish` back. A stop that waits for audio recorded before it, still queued
+    // behind a busy main thread, has not handed it over yet: `finish` waits for
+    // `stop()` below, or that audio would never reach the transcript.
+    if (this.captureSettled && this.capture?.mode === 'worklet') {
+      void this.capture.stop();
+      if (
+        this.capture.lastChunkDelivered &&
+        this.stream &&
+        !this.cancelled &&
+        this.heardAnything &&
+        this.samples / this.rate >= MIN_DICTATION_SECONDS
+      ) {
+        this.finishing = this.stream.finish();
+        this.finishing.catch(() => undefined);
+      }
+    }
     if (this.isCurrent()) {
       publish({
         activity: 'transcribing',
@@ -729,7 +840,9 @@ class Dictation {
     const stream = this.stream;
     if (!stream || this.cancelled) return;
     try {
-      const transcript = await stream.finish();
+      const early = this.finishing;
+      this.finishing = null;
+      const transcript = await (early ?? stream.finish());
       if (!this.cancelled) await this.deliver(transcript, stream);
     } catch (error) {
       if (!this.cancelled) this.fail(error);
@@ -766,18 +879,35 @@ class Dictation {
     const anchor = this.anchor;
     let path: InsertPath;
     if (composer && field) {
-      path = insertDictatedText(
-        field,
-        anchor,
-        transcript.text,
-        (value, caret) => composer!.setByState(value, caret),
-        { composing: composer.isComposing?.() ?? false }
-      );
+      inserting = this.key;
+      try {
+        path = insertDictatedText(
+          field,
+          anchor,
+          transcript.text,
+          (value, caret) => composer!.setByState(value, caret),
+          { composing: composer.isComposing?.() ?? false }
+        );
+      } finally {
+        inserting = null;
+      }
     } else {
       path = 'draft';
     }
     if (path === 'draft' && (composer?.storesDraft ?? this.storesDraft)) {
-      deps.insertIntoDraft(this.key, anchor, transcript.text);
+      // The anchor counts in the field's text; the stored draft also holds what
+      // the field does not show before it (a `/bug ` command chip).
+      const prefix = composer?.draftPrefix?.() ?? this.draftPrefix;
+      deps.insertIntoDraft(
+        this.key,
+        { start: anchor.start + prefix, end: anchor.end + prefix },
+        transcript.text
+      );
+      // The private draft flag (DD-71) is set here, not only by the composer's
+      // `onInserted`: a composer that unmounted while the person spoke (a tab or
+      // chat switch) is not in the map, and the draft it comes back to must still
+      // ask before it leaves for a public model.
+      if (transcript.bias_scope === 'private') markPrivateDraft(this.key);
     }
     composer?.onInserted?.({ key: this.key, path, transcript, anchor, streamId: stream.id });
     stream.release();
@@ -829,6 +959,7 @@ class Dictation {
     this.stopBusyCountdown();
     for (const off of this.unsubscribe.splice(0)) off();
     running.delete(this);
+    this.prepareNext();
     if (!this.isCurrent()) {
       if (result?.failure) noteDisplacedFailure(this.key, result);
       reportBusy();
@@ -1045,6 +1176,31 @@ export function retryDictation(key: string): Promise<void> {
   return dictation.retry(stream);
 }
 
+/**
+ * A press found no speech model: the composer named here opens its setup
+ * popover, never a download (DD-61). The chord asks this way, since it has no
+ * popover of its own.
+ */
+export function requestDictationSetup(key: string): void {
+  publish({ setupRequest: { key } });
+}
+
+/**
+ * A press, usually the chord, that cannot start, with the reason the disabled
+ * microphone's tooltip gives, so the card says why instead of nothing happening.
+ * Nothing changes while any dictation runs.
+ */
+export function noteDictationUnavailable(key: string, reason: string): void {
+  if (active) return;
+  publish({
+    ...IDLE,
+    key,
+    activity: 'error',
+    notice: { id: 'server', text: reason, action: null, failure: true },
+    announcement: reason,
+  });
+}
+
 /** Clear the notice row, for example when the person dismisses it. */
 export function dismissDictationNotice(key: string): void {
   if (snapshot.key === key && snapshot.notice && !active) {
@@ -1060,6 +1216,7 @@ export function dropKeptDictation(key?: string): void {
 // ── tests ───────────────────────────────────────────────────────────────────
 
 export function resetDictationSessionForTests(overrides: Partial<Deps> = {}): void {
+  sessionEra++;
   active?.cancel();
   active = null;
   running.clear();
@@ -1074,5 +1231,17 @@ export function resetDictationSessionForTests(overrides: Partial<Deps> = {}): vo
   snapshot = IDLE;
   busyReported = false;
   lockScreenInstalled = false;
+  inserting = null;
   deps = { ...DEFAULT_DEPS, ...overrides };
+}
+
+/** For tests that draw a phase without recording: the snapshot, as given. */
+export function setDictationSnapshotForTests(next: Partial<DictationSnapshot>): void {
+  snapshot = { ...snapshot, ...next };
+  for (const listener of [...listeners]) listener();
+}
+
+/** For tests that draw the level bars: the level, as given. */
+export function setDictationLevelForTests(next: number): void {
+  setLevel(next);
 }

@@ -87,6 +87,7 @@ import {
   LogOut as _LogOut,
   Maximize2 as _Maximize2,
   MessageSquare as _MessageSquare,
+  Mic as _Mic,
   MessageSquarePlus as _MessageSquarePlus,
   MessageSquareText as _MessageSquareText,
   MessagesSquare as _MessagesSquare,
@@ -178,6 +179,8 @@ export const ArrowLeft = light(_ArrowLeft);
  * empty graph). */
 export const ArrowRight = light(_ArrowRight);
 export const ArrowUp = light(_ArrowUp);
+/** Dictation: the composer's microphone (DD-60). */
+export const Mic = light(_Mic);
 export const BookMarked = light(_BookMarked);
 export const Bookmark = light(_Bookmark);
 export const BookmarkPlus = light(_BookmarkPlus);

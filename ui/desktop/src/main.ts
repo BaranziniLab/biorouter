@@ -100,6 +100,7 @@ import {
 } from './dragGhostWindow';
 import { CopilotPermissionSettings } from './utils/copilotPermissionSettings';
 import { setDictationBusy } from './utils/dictationBusy';
+import { ROSETTA_BEFORE_MACOS15_KEY, rosettaBeforeMacOS15 } from './components/dictation/rosetta';
 import { showDictationModelsFolder } from './utils/dictationModelsFolder';
 import {
   FAKE_MIC_WAV_ENV,
@@ -1905,6 +1906,13 @@ const createChat = async (
           ...appConfig,
           BIOROUTER_API_HOST: baseUrl,
           BIOROUTER_LOCAL_BACKEND: biorouterdResult.managed,
+          // MSG-CPU-ROSETTA: the Intel build under Rosetta on a macOS before 15
+          // (`components/dictation/rosetta.ts`), which only this process can read.
+          [ROSETTA_BEFORE_MACOS15_KEY]: rosettaBeforeMacOS15(
+            process.platform,
+            app.runningUnderARM64Translation === true,
+            process.getSystemVersion()
+          ),
           BIOROUTER_WORKING_DIR: workingDir,
           REQUEST_DIR: dir,
           BIOROUTER_BASE_URL_SHARE: baseUrlShare,

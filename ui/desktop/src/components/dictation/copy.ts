@@ -201,6 +201,8 @@ export const DICTATION_ACTIONS = {
   showButton: 'Show the microphone button',
   reduceNoise: 'Reduce background noise',
   suggestFromChats: 'Suggest dictionary words from my chats',
+  restartAnyway: 'Restart anyway',
+  dismiss: 'Dismiss',
 } as const;
 
 /**
@@ -222,6 +224,11 @@ export const DICTATION_LABELS = {
   announceRecording: 'Recording',
   announceTranscribing: 'Transcribing',
   announceInserted: 'Inserted',
+  /** The titles of the two MSG-PRIVATE-DRAFT questions; the catalog gives their sentences. */
+  privateDraftTitle: 'Send to a public model?',
+  privateDraftSwitchTitle: 'Switch to a public model?',
+  /** The muted line that previews what has been heard so far (DD-31). */
+  partialLabel: 'Heard so far',
 } as const;
 
 /**

@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   isDictationBusy,
   resetDictationBusyForTests,
+  restartAllowedWhileDictating,
   setDictationBusy,
+  type AskRestart,
   type BusyContents,
 } from './dictationBusy';
 
@@ -63,5 +65,42 @@ describe('which windows are dictating', () => {
     }
     expect(contents.count('destroyed')).toBe(1);
     expect(contents.count('render-process-gone')).toBe(1);
+  });
+});
+
+describe('Restart & update while dictating (MSG-RESTART-BUSY)', () => {
+  const asker = (response: number) => {
+    const asked: Parameters<AskRestart>[0][] = [];
+    const ask: AskRestart = async (options) => {
+      asked.push(options);
+      return { response };
+    };
+    return { ask, asked };
+  };
+
+  it('asks nothing when no window is dictating', async () => {
+    const { ask, asked } = asker(1);
+    await expect(restartAllowedWhileDictating(ask)).resolves.toBe(true);
+    expect(asked).toEqual([]);
+  });
+
+  it('asks while a window dictates, with Cancel as the default', async () => {
+    setDictationBusy(new FakeContents(7), true);
+    const { ask, asked } = asker(1);
+    await expect(restartAllowedWhileDictating(ask)).resolves.toBe(false);
+    expect(asked).toEqual([
+      {
+        type: 'question',
+        message: 'Dictation in progress. Restart anyway?',
+        buttons: ['Restart anyway', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+      },
+    ]);
+  });
+
+  it('restarts when the person chooses Restart anyway', async () => {
+    setDictationBusy(new FakeContents(8), true);
+    await expect(restartAllowedWhileDictating(asker(0).ask)).resolves.toBe(true);
   });
 });

@@ -25,3 +25,36 @@ export function getSteerShortcutText(): string {
 export function getSteerAriaKeyShortcuts(): string {
   return isMac() ? 'Meta+Enter' : 'Control+Enter';
 }
+
+/**
+ * The dictation chord (DD-62), as a glyph: `⌘⇧D` on a Mac, `Ctrl+Shift+D`
+ * elsewhere. A tap starts or stops dictation; a hold of 500 ms or more talks
+ * while it is held. Ctrl+M was not used because it minimizes the window.
+ */
+export function getDictationShortcutText(): string {
+  return isMac() ? '⌘⇧D' : 'Ctrl+Shift+D';
+}
+
+/** The same chord in `aria-keyshortcuts` syntax, for the microphone button. */
+export function getDictationAriaKeyShortcuts(): string {
+  return isMac() ? 'Meta+Shift+D' : 'Control+Shift+D';
+}
+
+/**
+ * Whether a keydown is the dictation chord: matched on `code`, so the key is D
+ * on every layout, with exactly the platform's modifier and Shift. A repeat
+ * while the key is held, and a key typed into an IME composition, are not.
+ */
+export function isDictationChord(event: {
+  code: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  repeat?: boolean;
+  isComposing?: boolean;
+}): boolean {
+  if (event.code !== 'KeyD' || !event.shiftKey || event.altKey) return false;
+  if (event.repeat || event.isComposing) return false;
+  return isMac() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+}

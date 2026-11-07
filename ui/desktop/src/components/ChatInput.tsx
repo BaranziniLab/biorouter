@@ -42,6 +42,21 @@ import type { SessionClassification } from '../api/types.gen';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getSteerShortcutText } from '../utils/keyboardShortcuts';
 import { COMPOSER_COPY } from './composer/copy';
+import {
+  DictationButton,
+  DictationHoldReason,
+  DictationNotices,
+} from './dictation/DictationButton';
+import { DICTATION_ACTIONS, DICTATION_LABELS, dictationMessage } from './dictation/copy';
+import {
+  isDictationInserting,
+  noteDictationEdit,
+  type DictationTarget,
+} from './dictation/dictationSession';
+import { clearPrivateDraft, isPrivateDraft, markPrivateDraft } from './dictation/privateDraft';
+import { dictationContext, useDictationComposer } from './dictation/useDictationComposer';
+import { readResolvedProviderTier } from './privacy/useBoundProviderTier';
+import { ConfirmationModal } from './ui/ConfirmationModal';
 import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
 import { isRunningState, type PinnedModelView } from '../hooks/chatStreamStore';
@@ -1628,6 +1643,126 @@ export default function ChatInput({
     [displayValue, setComposerText]
   );
 
+  // ---- Dictation (DD-60 to DD-63, DD-71) ------------------------------------
+  //
+  // The microphone left of Send, the chord in the field, and the three submit
+  // gates. Its key is the draft key, so text that arrives after this composer
+  // unmounts goes into the stored draft; a composer without one gets a key of
+  // its own and drops it. This component renders only when the composer's
+  // dictation activity changes, never per chunk or per second.
+  const dictationKey = draftKey ?? `composer:${anonymousReasoningDraftKey}`;
+  const composerProseRef = useRef(composerProse);
+  composerProseRef.current = composerProse;
+  const setComposerProseRef = useRef(setComposerProse);
+  setComposerProseRef.current = setComposerProse;
+  const composerCommandRef = useRef(composerCommand);
+  composerCommandRef.current = composerCommand;
+  const isComposingRef = useRef(isComposing);
+  isComposingRef.current = isComposing;
+  const dictationTarget = (): DictationTarget => {
+    const field = textAreaRef.current;
+    const prose = composerProseRef.current;
+    const at = Math.min(field?.selectionStart ?? prose.length, prose.length);
+    const context = dictationContext(prose.slice(0, at));
+    const withContext = context ? { context } : {};
+    if (sessionId) return { target_kind: 'chat', session_id: sessionId, ...withContext };
+    // Home and a new tab: the daemon judges the tier the new chat's bind would
+    // produce, from the tab's own pick when it has one (DD-30).
+    return {
+      target_kind: 'new_chat',
+      ...(effectiveModel
+        ? { new_chat_provider: effectiveModel.provider, new_chat_model: effectiveModel.model }
+        : {}),
+      ...withContext,
+    };
+  };
+  const dictation = useDictationComposer({
+    key: dictationKey,
+    textAreaRef,
+    storesDraft: !!draftKey,
+    target: dictationTarget,
+    setByState: (value, caret) => {
+      setComposerProseRef.current(value);
+      setHasUserTyped(true);
+      requestAnimationFrame(() => {
+        const field = textAreaRef.current;
+        if (field && document.activeElement === field) field.setSelectionRange(caret, caret);
+      });
+    },
+    isComposing: () => isComposingRef.current,
+    draftPrefix: () => joinLeadingCommand(composerCommandRef.current, '').length,
+    onInserted: (event) => {
+      setHasUserTyped(true);
+      if (event.transcript.bias_scope === 'private') markPrivateDraft(dictationKey);
+    },
+    isEmpty: () => !composerProseRef.current,
+  });
+  const dictationHoldsComposer = dictation.available && dictation.holdsComposer;
+  // Every change to the prose moves the anchor of a dictation that will still
+  // put text here (typing while recording, a recalled message, a give-back).
+  const lastDictatedProseRef = useRef(composerProse);
+  useLayoutEffect(() => {
+    const before = lastDictatedProseRef.current;
+    lastDictatedProseRef.current = composerProse;
+    if (before === composerProse || isDictationInserting(dictationKey)) return;
+    const field = textAreaRef.current;
+    const caret = field && document.activeElement === field ? field.selectionEnd : undefined;
+    noteDictationEdit(dictationKey, before, composerProse, caret);
+  }, [composerProse, dictationKey]);
+  // The private draft flag goes when the draft is sent or emptied: the box and
+  // the stored draft both empty. The box alone is not enough on a remount. Text
+  // dictated while no composer was mounted is written to the stored draft, and
+  // flagged there (`dictationSession.ts`); a box that has not adopted that copy
+  // yet (a write between this composer's render and its commit) shows the older,
+  // emptier seed for one render, and must not clear the flag for it. Every
+  // change the box makes is saved before this runs (the layout effects above).
+  useEffect(() => {
+    if (displayValue.trim()) return;
+    if (draftKey && readComposerDraft(draftKey)?.text.trim()) return;
+    clearPrivateDraft(dictationKey);
+  }, [displayValue, dictationKey, draftKey]);
+  // The first focus that follows the mount is a sign of interest; the mount's
+  // own autofocus is not, so mounting a composer sends no status request.
+  const dictationFocusArmedRef = useRef(false);
+  useEffect(() => {
+    dictationFocusArmedRef.current = true;
+  }, []);
+
+  // MSG-PRIVATE-DRAFT (DD-71): a draft holding text dictated with private terms
+  // eligible asks before it leaves for a chat whose model is not known to be
+  // private, judged by the bound provider's instance tier, never a declared one.
+  // The three exits that hand text to a model (send, queue, steer) all pass here.
+  const [privateDraftAsk, setPrivateDraftAsk] = useState<{
+    model: string;
+    proceed: () => void;
+  } | null>(null);
+  const privateDraftBypassRef = useRef(false);
+  const runPastPrivateDraft = (proceed: () => void) => {
+    privateDraftBypassRef.current = true;
+    try {
+      proceed();
+    } finally {
+      privateDraftBypassRef.current = false;
+    }
+  };
+  const askPrivateDraftFirst = (proceed: () => void): boolean => {
+    if (privateDraftBypassRef.current || !isPrivateDraft(dictationKey)) return false;
+    const provider = effectiveModel?.provider ?? currentProvider;
+    const model = effectiveModel?.model ?? currentModel ?? provider ?? '';
+    void (async () => {
+      let tier: 'public' | 'private' | undefined;
+      try {
+        const rows = await getProviders(false);
+        tier = readResolvedProviderTier(rows.find((row) => row.name === provider));
+      } catch {
+        tier = undefined;
+      }
+      if (tier === 'private') runPastPrivateDraft(proceed);
+      else setPrivateDraftAsk({ model, proceed });
+    })();
+    return true;
+  };
+
   const handleChange = (evt: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = evt.target.value;
     let cursorPosition = evt.target.selectionStart;
@@ -1645,6 +1780,8 @@ export default function ChatInput({
 
     setComposerProse(val);
     setHasUserTyped(true);
+    // Dictated text opens no menu: a spoken "@" is a word (DD-63 step 5).
+    if (isDictationInserting(dictationKey)) return;
     // The textarea's offsets are prose offsets, and so is everything the mention
     // popover computes from them.
     checkForMentionOrSlash(shown, cursorPosition, evt.target);
@@ -2420,6 +2557,9 @@ export default function ChatInput({
   );
 
   const handleKeyDown = (evt: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Dictation's gestures come first: Enter while recording stops and inserts
+    // and never sends, Escape cancels, and the chord toggles or holds (DD-62).
+    if (dictation.handleKeyDown(evt)) return;
     // Navigation does not submit content, start a model, or grant access.
     if (
       evt.key === 'Enter' &&
@@ -2509,33 +2649,43 @@ export default function ChatInput({
 
       evt.preventDefault();
 
-      // BR-61: Cmd/Ctrl+Enter while a turn is running steers it — the message
-      // reaches the model on its next step instead of waiting for the turn to end.
-      if (evt.metaKey || evt.ctrlKey) {
-        if (handleSteerFromComposer()) {
-          return;
-        }
-        // ...and with an EMPTY composer it steers the front of the queue: the
-        // keyboard equivalent of the queue's own "Add now" button. One meaning
-        // for one key — "send what I have into the running turn" — rather than
-        // a second meaning that would depend on invisible state.
-        if (handleSteerNextQueuedMessage()) {
-          return;
-        }
-      }
-
-      // Handle interruption and queue logic
-      if (handleInterruptionAndQueue()) {
-        return;
-      }
-
-      if (canSubmit && !submissionBlocked) {
-        performSubmit();
-      } else if (canSubmit && submissionBlocked && crewHold) {
-        toastWarning({ title: crewHold.title, msg: crewHold.message });
-      }
+      const steering = evt.metaKey || evt.ctrlKey;
+      if (askPrivateDraftFirst(() => latestEnterRef.current(steering))) return;
+      sendFromEnter(steering);
     }
   };
+
+  /** What Enter does once the private draft question, if any, has been answered. */
+  const sendFromEnter = (steering: boolean) => {
+    // BR-61: Cmd/Ctrl+Enter while a turn is running steers it — the message
+    // reaches the model on its next step instead of waiting for the turn to end.
+    if (steering) {
+      if (handleSteerFromComposer()) {
+        return;
+      }
+      // ...and with an EMPTY composer it steers the front of the queue: the
+      // keyboard equivalent of the queue's own "Add now" button. One meaning
+      // for one key — "send what I have into the running turn" — rather than
+      // a second meaning that would depend on invisible state.
+      if (handleSteerNextQueuedMessage()) {
+        return;
+      }
+    }
+
+    // Handle interruption and queue logic
+    if (handleInterruptionAndQueue()) {
+      return;
+    }
+
+    if (canSubmit && !submissionBlocked) {
+      performSubmit();
+    } else if (canSubmit && submissionBlocked && crewHold) {
+      toastWarning({ title: crewHold.title, msg: crewHold.message });
+    }
+  };
+  // The newest closures, for a send the private draft question let through later.
+  const latestEnterRef = useRef(sendFromEnter);
+  latestEnterRef.current = sendFromEnter;
 
   // THE FORM SEND SUBMITS, named for THIS composer. Send sits outside the form
   // (it is the input line's sibling, not its child) and reaches it through the
@@ -2550,10 +2700,19 @@ export default function ChatInput({
 
   const onFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // Send is disabled while dictation holds the composer; a submit that reaches
+    // the form anyway (an implicit submit, a stale click) is refused too.
+    if (dictationHoldsComposer) return;
     if (isCrewNavigationCommand) {
       openCrew();
       return;
     }
+    if (askPrivateDraftFirst(() => latestFormSubmitRef.current())) return;
+    submitFromForm();
+  };
+
+  /** What the form's submit does once the private draft question has been answered. */
+  const submitFromForm = () => {
     if (isLoading && hasSubmittableContent) {
       handleInterruptionAndQueue();
       return;
@@ -2569,6 +2728,8 @@ export default function ChatInput({
       performSubmit();
     }
   };
+  const latestFormSubmitRef = useRef(submitFromForm);
+  latestFormSubmitRef.current = submitFromForm;
 
   const handleMentionItemSelect = (itemText: string) => {
     // Prose offsets: the popover's `mentionStart` was measured in the textarea.
@@ -2655,7 +2816,8 @@ export default function ChatInput({
       isAnyDroppedFileLoading ||
       chatState === ChatState.RestartingAgent ||
       submissionBlocked ||
-      visionMismatch);
+      visionMismatch ||
+      dictationHoldsComposer);
 
   // Queue management functions - no storage persistence, only in-memory
   const handleRemoveQueuedMessage = (messageId: string) => {
@@ -2836,7 +2998,10 @@ export default function ChatInput({
   // chat that is still being created or loaded shows Send with a spinner.
   const isStarting = chatState === ChatState.LoadingConversation && !hasSubmittableContent;
   const showStop = isLoading && !hasSubmittableContent && !isStarting;
-  const sendTooltip = isStarting
+  // While dictation holds the composer, the reason is the microphone's own
+  // ("Finish dictating first" or "Transcribing…"), read by a component of its own
+  // so the stop renders nothing here.
+  const sendTooltipText = isStarting
     ? sessionId
       ? COMPOSER_COPY.send.loading
       : COMPOSER_COPY.send.starting
@@ -2847,6 +3012,14 @@ export default function ChatInput({
         : chatState === ChatState.RestartingAgent
           ? COMPOSER_COPY.send.restarting
           : COMPOSER_COPY.send.tooltip;
+  // While dictation holds the composer, the reason is the microphone's own
+  // ("Finish dictating first" or "Transcribing…"), read by a component of its own
+  // so the stop renders nothing here.
+  const sendTooltip: React.ReactNode = dictationHoldsComposer ? (
+    <DictationHoldReason dictationKey={dictationKey} />
+  ) : (
+    sendTooltipText
+  );
 
   const sendOrStop = showStop ? (
     <Tooltip>
@@ -2991,6 +3164,10 @@ export default function ChatInput({
           </div>
         )}
 
+        {/* Dictation's notice row: MSG-WAIT, the muted partial line, a result or
+            a failure with its one action; never a toast. */}
+        {dictation.available && <DictationNotices dictationKey={dictationKey} />}
+
         {/* What goes with the message, in one row above the text: the `/bug`
             command chip first, then references (issue #65), images and files. */}
         <ComposerChips
@@ -3023,6 +3200,7 @@ export default function ChatInput({
             // goes after it.
             placeholder={
               crewHold?.placeholder ??
+              (dictation.listening ? DICTATION_LABELS.listening : null) ??
               (composerCommand
                 ? CHIP_COMMANDS[composerCommand].placeholder
                 : (followUp ?? (messagesLength ?? 0) > 0)
@@ -3035,6 +3213,9 @@ export default function ChatInput({
             onChange={handleChange}
             onCompositionStart={handleCompositionStart}
             onCompositionEnd={handleCompositionEnd}
+            onFocus={() => {
+              if (dictationFocusArmedRef.current) dictation.noteInterest();
+            }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             ref={textAreaRef}
@@ -3069,8 +3250,13 @@ export default function ChatInput({
               privacyTier={sessionPrivacyTier}
               setView={setView}
               handOffKey={handOffKey}
+              dictationDraftKey={dictationKey}
             />
           </div>
+          {/* The microphone, immediately left of Send, which stays the row's last
+              child: the footer inset and the geometry tests are derived from its
+              edge (DD-60). */}
+          {dictation.available && <DictationButton control={dictation} setView={setView} />}
           {sendOrStop}
         </div>
       </div>
@@ -3099,6 +3285,23 @@ export default function ChatInput({
         outputTokens={accumulatedOutputTokens}
         sessionCosts={sessionCosts}
         modelCostRows={modelCostRows}
+      />
+
+      <ConfirmationModal
+        isOpen={privateDraftAsk !== null}
+        title={DICTATION_LABELS.privateDraftTitle}
+        message={dictationMessage('MSG-PRIVATE-DRAFT', { model: privateDraftAsk?.model ?? '' })}
+        confirmLabel={DICTATION_ACTIONS.sendAnyway}
+        cancelLabel={DICTATION_ACTIONS.cancel}
+        onConfirm={() => {
+          const ask = privateDraftAsk;
+          setPrivateDraftAsk(null);
+          if (ask) runPastPrivateDraft(ask.proceed);
+        }}
+        onCancel={() => {
+          setPrivateDraftAsk(null);
+          textAreaRef.current?.focus();
+        }}
       />
 
       <MentionPopover

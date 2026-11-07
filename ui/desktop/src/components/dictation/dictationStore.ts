@@ -30,6 +30,7 @@ import type { MicAccessStatus } from '../../utils/micPermissionSettings';
 import { captureSupported, prewarmCapture } from './capture';
 import { dictationMessage, type DictationMessageId } from './copy';
 import { dictationApi, type DictationApi, type DictationStatus } from './dictationApi';
+import { ROSETTA_BEFORE_MACOS15_KEY } from './rosetta';
 
 /** `absent`: the daemon answered 404 or 405, a backend from before dictation (S17). */
 export type StatusLoad = 'unloaded' | 'loading' | 'loaded' | 'absent' | 'failed';
@@ -171,9 +172,11 @@ export function ensureDictationStatus(): Promise<DictationStatus | null> {
  * field, the pointer entering or focus or a click on a microphone, the Settings
  * section or the Dictionary page mounting. Cheap to call on every such event.
  *
- * Besides loading the status once, it warms the browser's media device list
- * (`capture.ts` `prewarmCapture`, at most every 30 s), which takes about 200 ms
- * off the first press in a window. Nothing is opened and nothing is asked.
+ * Besides loading the status once, it prepares the press (`capture.ts`
+ * `prewarmCapture`): it warms the browser's media device list, at most every
+ * 30 s, which takes about 200 ms off the first press in a window, and makes the
+ * suspended 16 kHz capture context the press resumes. No microphone is opened
+ * and nothing is asked.
  */
 export function noteDictationInterest(): void {
   prewarmCapture();
@@ -289,6 +292,20 @@ function pageHost(): string {
   }
 }
 
+/**
+ * What `main.ts` told this window about Rosetta (`rosetta.ts`): the Intel build under
+ * translation on a macOS before 15. Read from the window's start up configuration, so it costs
+ * no request; false off the desktop and when the value is absent.
+ */
+function rosettaBeforeMacOS15FromMain(): boolean {
+  if (isBrowserSurface()) return false;
+  try {
+    return window.appConfig?.get(ROSETTA_BEFORE_MACOS15_KEY) === true;
+  } catch {
+    return false;
+  }
+}
+
 /** The host and port the renderer's API calls go to, or `''` when there is none. */
 export function dictationBackendHost(): string {
   try {
@@ -377,7 +394,8 @@ export function resolveDictationPhase(
   if (status.engine.state === 'unsupported_cpu') {
     const missing = status.engine.missing_cpu_features.join(', ');
     if (surface === 'browser') return unavailable('MSG-CPU-SERVER', { missing });
-    if (env.rosettaBeforeMacOS15) return unavailable('MSG-CPU-ROSETTA');
+    if (env.rosettaBeforeMacOS15 ?? rosettaBeforeMacOS15FromMain())
+      return unavailable('MSG-CPU-ROSETTA');
     return {
       phase: 'unavailable',
       reasonId: 'MSG-CPU',

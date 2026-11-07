@@ -25,6 +25,10 @@ import {
 } from '../../../../store/reasoningEffort';
 import { useConfig } from '../../../ConfigContext';
 import { getProviderMetadata } from '../modelInterface';
+import type Model from '../modelInterface';
+import { ConfirmationModal } from '../../../ui/ConfirmationModal';
+import { DICTATION_ACTIONS, DICTATION_LABELS, dictationMessage } from '../../../dictation/copy';
+import { isPrivateDraft, privateDraftNeedsAsking } from '../../../dictation/privateDraft';
 import { Alert } from '../../../alerts';
 import BottomMenuAlertPopover from '../../../bottom_menu/BottomMenuAlertPopover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
@@ -220,6 +224,12 @@ interface ModelsBottomBarProps {
    * chat's first send remounts the composer (`composer/composerHandOff.ts`).
    */
   handOffKey?: string;
+  /**
+   * The composer's dictation key (`ChatInput`): while its draft holds text
+   * dictated with private terms eligible (DD-71), moving this unsent chat to a
+   * model that is not known to be private asks MSG-PRIVATE-DRAFT-SWITCH first.
+   */
+  dictationDraftKey?: string;
 }
 
 export default function ModelsBottomBar({
@@ -232,6 +242,7 @@ export default function ModelsBottomBar({
   effectiveModel,
   reasoningScope,
   handOffKey,
+  dictationDraftKey,
 }: ModelsBottomBarProps) {
   const effort = useReasoningEffortValue(reasoningScope);
   const notesId = useInfoTipId();
@@ -254,6 +265,29 @@ export default function ModelsBottomBar({
    */
   const pendingChat = usePendingChatModel();
   const unsentChat = !sessionId && pendingChat !== null;
+  /**
+   * DD-71: an unsent chat's pick lands here, so a draft dictated with private
+   * terms eligible asks before it is moved to a model whose instance tier is
+   * not private. The person's say so proceeds. A chat that exists is switched
+   * inside `SwitchModelModal`, which has no hook before its switch; its send
+   * still asks MSG-PRIVATE-DRAFT before the text leaves (`ChatInput`).
+   */
+  const [switchAsk, setSwitchAsk] = useState<{ model: Model; choose: () => void } | null>(null);
+  const chooseForUnsentChat = (model: Model) => {
+    const choose = () => pendingChat?.choose(model);
+    if (!isPrivateDraft(dictationDraftKey)) return choose();
+    void (async () => {
+      let tier: ProviderTier | undefined;
+      try {
+        const rows = await getProviders(false);
+        tier = readResolvedProviderTier(rows.find((row) => row.name === model.provider));
+      } catch {
+        tier = undefined;
+      }
+      if (privateDraftNeedsAsking(dictationDraftKey, tier)) setSwitchAsk({ model, choose });
+      else choose();
+    })();
+  };
   const [displayProvider, setDisplayProvider] = useState<string | null>(null);
   const [displayModelName, setDisplayModelName] = useState<string>('Select Model');
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
@@ -849,7 +883,7 @@ export default function ModelsBottomBar({
           initialProvider={effectiveModel?.provider}
           initialModel={effectiveModel?.model}
           setView={setView}
-          onChooseForUnsentChat={unsentChat ? pendingChat?.choose : undefined}
+          onChooseForUnsentChat={unsentChat ? chooseForUnsentChat : undefined}
           unsentChatTabId={unsentChat ? pendingChat?.tabId : undefined}
           onClose={() => setIsAddModelModalOpen(false)}
         />
@@ -858,6 +892,22 @@ export default function ModelsBottomBar({
       {isLeadWorkerModalOpen ? (
         <LeadWorkerSettings isOpen={isLeadWorkerModalOpen} onClose={handleLeadWorkerModalClose} />
       ) : null}
+
+      <ConfirmationModal
+        isOpen={switchAsk !== null}
+        title={DICTATION_LABELS.privateDraftSwitchTitle}
+        message={dictationMessage('MSG-PRIVATE-DRAFT-SWITCH', {
+          model: switchAsk?.model.alias || switchAsk?.model.name || '',
+        })}
+        confirmLabel={DICTATION_ACTIONS.switchAnyway}
+        cancelLabel={DICTATION_ACTIONS.cancel}
+        onConfirm={() => {
+          const ask = switchAsk;
+          setSwitchAsk(null);
+          ask?.choose();
+        }}
+        onCancel={() => setSwitchAsk(null)}
+      />
     </div>
   );
 }

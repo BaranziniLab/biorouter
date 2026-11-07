@@ -294,19 +294,36 @@ export interface DictationApi {
  * reconnected daemon's new secret is read again.
  */
 let secretKey: Promise<string> | null = null;
+/**
+ * The same secret once it has arrived, so the stop's `finish` leaves in the same task as the
+ * stop instead of after a microtask that the card's Transcribing render would run ahead of.
+ */
+let knownSecret: string | null = null;
 function secret(): Promise<string> {
-  secretKey ??= Promise.resolve()
-    .then(() => window.electron.getSecretKey())
-    .catch((error: unknown) => {
-      secretKey = null;
-      throw error;
-    });
+  if (!secretKey) {
+    const reading: Promise<string> = Promise.resolve()
+      .then(() => window.electron.getSecretKey())
+      .then((key) => {
+        if (secretKey === reading) knownSecret = key;
+        return key;
+      })
+      .catch((error: unknown) => {
+        if (secretKey === reading) secretKey = null;
+        throw error;
+      });
+    secretKey = reading;
+  }
   return secretKey;
+}
+
+function forgetSecret(): void {
+  secretKey = null;
+  knownSecret = null;
 }
 
 /** For tests: forget the cached secret. */
 export function resetDictationApiForTests(): void {
-  secretKey = null;
+  forgetSecret();
 }
 
 function retryAfter(response: Response | undefined): number | null {
@@ -345,7 +362,7 @@ function settle<T>(
   body: unknown,
   okStatuses: readonly number[]
 ): DictationResult<T> {
-  if (response.status === 401) secretKey = null;
+  if (response.status === 401) forgetSecret();
   if (okStatuses.includes(response.status)) {
     return { ok: true, status: response.status, data: body as T };
   }
@@ -387,24 +404,32 @@ async function generated<T>(
   return settle<T>(response, data ?? error ?? null, okStatuses);
 }
 
-/** One of the two routes whose body is raw audio. */
-async function sendBytes<T>(
+/**
+ * One of the two routes whose body is raw audio. With the secret already read, the request leaves
+ * inside this call, so a `finish` started in the stop's handler is on the wire before any render
+ * the stop causes.
+ */
+function sendBytes<T>(
   path: string,
   method: 'PUT' | 'POST',
   body: Uint8Array | undefined,
   signal: AbortSignal | undefined,
   okStatuses: readonly number[]
 ): Promise<DictationResult<T>> {
-  const response = await fetch(getApiUrl(path), {
-    method,
-    signal,
-    headers: {
-      ...(await headers(false)),
-      ...(body ? { 'Content-Type': 'application/octet-stream' } : {}),
-    },
-    body: body as unknown as RequestInit['body'],
-  });
-  return settle<T>(response, await readBody(response), okStatuses);
+  const send = async (auth: Record<string, string>): Promise<DictationResult<T>> => {
+    const response = await fetch(getApiUrl(path), {
+      method,
+      signal,
+      headers: {
+        ...auth,
+        ...(body ? { 'Content-Type': 'application/octet-stream' } : {}),
+      },
+      body: body as unknown as RequestInit['body'],
+    });
+    return settle<T>(response, await readBody(response), okStatuses);
+  };
+  if (knownSecret !== null) return send({ 'X-Secret-Key': knownSecret });
+  return headers(false).then(send);
 }
 
 const streamPath = (streamId: string): string =>

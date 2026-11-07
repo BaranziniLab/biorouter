@@ -13,6 +13,8 @@
  * closes, clears the entry here, since neither will send `false` again.
  */
 
+import { DICTATION_ACTIONS, dictationMessage } from '../components/dictation/copy';
+
 /** The part of `WebContents` this module needs. */
 export interface BusyContents {
   readonly id: number;
@@ -46,6 +48,33 @@ export function setDictationBusy(contents: BusyContents, busy: boolean): void {
 /** Whether any window is dictating. */
 export function isDictationBusy(): boolean {
   return busyWindows.size > 0;
+}
+
+/** What {@link restartAllowedWhileDictating} asks with: Electron's `dialog.showMessageBox`. */
+export type AskRestart = (options: {
+  type: 'question';
+  message: string;
+  buttons: string[];
+  defaultId: number;
+  cancelId: number;
+}) => Promise<{ response: number }>;
+
+/**
+ * MSG-RESTART-BUSY: a restart for an update while any window arms, records or
+ * still waits for its text would lose what the person said, so it asks first,
+ * with Cancel as the default. True when nothing is dictating, or when the person
+ * chose **Restart anyway**.
+ */
+export async function restartAllowedWhileDictating(ask: AskRestart): Promise<boolean> {
+  if (!isDictationBusy()) return true;
+  const { response } = await ask({
+    type: 'question',
+    message: dictationMessage('MSG-RESTART-BUSY'),
+    buttons: [DICTATION_ACTIONS.restartAnyway, DICTATION_ACTIONS.cancel],
+    defaultId: 1,
+    cancelId: 1,
+  });
+  return response === 0;
 }
 
 /** For tests: forget every window. */

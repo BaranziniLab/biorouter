@@ -5,6 +5,7 @@ import type { Capture, CaptureOptions } from './capture';
 import type { DictationStatus, StreamRequest, Transcript } from './dictationApi';
 import type { DictationStatusSnapshot, PhaseDecision } from './dictationStore';
 import {
+  anchorOutsideWord,
   attachDictationComposer,
   cancelDictation,
   getDictationLevel,
@@ -20,6 +21,7 @@ import {
   subscribeDictationRunning,
   type DictationComposer,
 } from './dictationSession';
+import { isPrivateDraft, resetPrivateDraftsForTests } from './privateDraft';
 import { DictationStreamError, type DictationStream } from './transport';
 
 const RATE = 16000;
@@ -64,6 +66,12 @@ class FakeCapture implements Capture {
   readonly closed = Promise.resolve();
   /** Audio the worklet still holds when stop() is called. */
   tail: Int16Array | null = null;
+  /**
+   * Audio recorded before the stop that is still queued behind a busy main thread: the stop
+   * waits for it, and delivers it and the tail once this resolves.
+   */
+  backlog: { pcm: Int16Array; arrived: Deferred<void> } | null = null;
+  lastChunkDelivered = false;
   constructor(private readonly options: CaptureOptions) {}
   speak(seconds: number, amplitude = 8000): void {
     const chunk = RATE / 10;
@@ -75,10 +83,22 @@ class FakeCapture implements Capture {
   live(): void {
     this.options.onLive?.();
   }
-  async stop(): Promise<void> {
-    if (this.tail) this.options.onChunk(this.tail, { rms: 0.2, peak: 0.2 });
+  private stopping: Promise<void> | null = null;
+  /** Idempotent, as the real capture's stop is: the session may ask twice. */
+  stop(): Promise<void> {
+    this.stopping ??= this.stopOnce();
+    return this.stopping;
+  }
+  private async stopOnce(): Promise<void> {
     this.stopped = true;
     this.endedDeferred.resolve('stopped');
+    const backlog = this.backlog;
+    if (backlog) {
+      await backlog.arrived.promise;
+      this.options.onChunk(backlog.pcm, { rms: 0.2, peak: 0.2 });
+    }
+    if (this.tail) this.options.onChunk(this.tail, { rms: 0.2, peak: 0.2 });
+    this.lastChunkDelivered = true;
     // The MediaRecorder fallback decodes on stop, and that can fail.
     if (captureStopError) throw captureStopError;
   }
@@ -160,6 +180,7 @@ let ensureStatus: Mock<() => Promise<unknown>>;
 let insertIntoDraft: Mock<(key: string, at: Anchor, text: string) => void>;
 let lockScreen: (() => void) | null;
 let busy: boolean[];
+let prewarm: Mock<() => void>;
 
 function install() {
   resetDictationSessionForTests({
@@ -169,6 +190,7 @@ function install() {
       if (captureError) return Promise.reject(captureError);
       return (captureGate?.promise ?? Promise.resolve()).then(() => capture);
     },
+    prewarmCapture: prewarm,
     createStream: (request) => {
       const stream = new FakeStream(request);
       streams.push(stream);
@@ -225,6 +247,7 @@ beforeEach(() => {
   insertIntoDraft = vi.fn();
   lockScreen = null;
   busy = [];
+  prewarm = vi.fn();
   Object.assign(window, {
     // The desktop's own daemon, as main.ts tells a window it started.
     appConfig: {
@@ -262,6 +285,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetDictationSessionForTests();
+  resetPrivateDraftsForTests();
   document.body.innerHTML = '';
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -434,6 +458,110 @@ describe('stopping and inserting', () => {
       announcement: 'Inserted',
       notice: null,
     });
+  });
+
+  it.each([
+    // "Call th|e OMOP": the end of "the" is nearer.
+    [7, 'Call the now OMOP tables'],
+    // "Call t|he OMOP": its start is nearer.
+    [6, 'Call now the OMOP tables'],
+    // At a word's edge the caret stays where it is.
+    [8, 'Call the now OMOP tables'],
+    [4, 'Call now the OMOP tables'],
+  ])(
+    'a caret inside a word (at %i) takes the text beside the word, never splitting it',
+    async (at, expected) => {
+      const { field } = composer('tab:a', 'Call the OMOP tables');
+      field.focus();
+      field.setSelectionRange(at, at);
+      await startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+      captures[0].speak(1);
+      stopDictation('tab:a');
+      await settle();
+      streams[0].finishDeferred.resolve(transcript('now'));
+      await settle();
+      expect(field.value).toBe(expected);
+    }
+  );
+
+  it('keeps a word joined by an apostrophe or a hyphen whole', () => {
+    // "I do|n't": the word runs to the end of "don't", so its start is nearer.
+    expect(anchorOutsideWord("I don't", { start: 4, end: 4 })).toEqual({ start: 2, end: 2 });
+    expect(anchorOutsideWord('HIF-2α', { start: 5, end: 5 })).toEqual({ start: 6, end: 6 });
+    expect(anchorOutsideWord('HIF-2α', { start: 2, end: 2 })).toEqual({ start: 0, end: 0 });
+    // A selection is replaced as it is.
+    expect(anchorOutsideWord('hello', { start: 1, end: 3 })).toEqual({ start: 1, end: 3 });
+    // A hyphen with no letter beyond it ends the word.
+    expect(anchorOutsideWord('ab- x', { start: 1, end: 1 })).toEqual({ start: 2, end: 2 });
+  });
+
+  it('prepares the next press once a dictation has ended in a composer that is still there', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    composer('tab:a', '');
+    await startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+    captures[0].speak(1);
+    stopDictation('tab:a');
+    await settle();
+    expect(prewarm).not.toHaveBeenCalled();
+    streams[0].finishDeferred.resolve(transcript('the whole sentence'));
+    await settle();
+    // After the text went in, and after the card's render.
+    expect(getDictationSnapshot()).toMatchObject({ activity: 'idle', announcement: 'Inserted' });
+    expect(prewarm).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(prewarm).toHaveBeenCalledTimes(1);
+  });
+
+  it('prepares nothing for a composer that has gone', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { detach } = composer('tab:a', '');
+    await startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+    detach();
+    cancelDictation('tab:a');
+    await settle();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(prewarm).not.toHaveBeenCalled();
+  });
+
+  it('asks for finish before it tells the card Transcribing, so the request leaves first', async () => {
+    composer('tab:a', '');
+    await startDictation({ key: 'tab:a', target: { target_kind: 'chat', session_id: 's1' } });
+    captures[0].speak(1);
+    captures[0].tail = new Int16Array(400).fill(4000);
+    let atPublish: { finishCalls: number; samples: number } | null = null;
+    const off = subscribeDictation(() => {
+      if (getDictationSnapshot().activity === 'transcribing' && atPublish === null) {
+        atPublish = { finishCalls: streams[0].finishCalls, samples: streams[0].samples };
+      }
+    });
+    stopDictation('tab:a');
+    off();
+    // Synchronously inside the stop: the tail went up, finish was asked, then the card.
+    expect(atPublish).toEqual({ finishCalls: 1, samples: RATE + 400 });
+    await settle();
+    expect(streams[0].finishCalls).toBe(1);
+  });
+
+  it('a stop that waits for audio queued behind a busy main thread asks for finish only once it is up', async () => {
+    composer('tab:a', '');
+    await startDictation({ key: 'tab:a', target: { target_kind: 'chat', session_id: 's1' } });
+    captures[0].speak(1);
+    const arrived = new Deferred<void>();
+    captures[0].backlog = { pcm: new Int16Array(4800).fill(3000), arrived };
+    captures[0].tail = new Int16Array(400).fill(4000);
+    stopDictation('tab:a');
+    expect(getDictationSnapshot().activity).toBe('transcribing');
+    await settle();
+    // Nothing is asked for while the end of the utterance is still on its way.
+    expect(streams[0].finishCalls).toBe(0);
+    expect(streams[0].samples).toBe(RATE);
+    arrived.resolve();
+    await settle();
+    expect(streams[0].samples).toBe(RATE + 4800 + 400);
+    expect(streams[0].finishCalls).toBe(1);
+    streams[0].finishDeferred.resolve(transcript('the whole sentence'));
+    await settle();
+    expect(getDictationSnapshot()).toMatchObject({ activity: 'idle', announcement: 'Inserted' });
   });
 
   it('maps the anchor through edits the person makes while recording', async () => {
@@ -648,6 +776,40 @@ describe('who owns the microphone', () => {
     streams[0].finishDeferred.resolve(transcript('and more'));
     await settle();
     expect(insertIntoDraft).toHaveBeenCalledWith('tab:a', { start: 12, end: 12 }, 'and more');
+  });
+
+  it('text dictated with private terms into the stored draft of a composer that unmounted flags that draft', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const a = composer('tab:a', 'Draft so far');
+    a.field.setSelectionRange(12, 12);
+    await startDictation({ key: 'tab:a', target: { target_kind: 'chat', session_id: 's1' } });
+    captures[0].speak(1);
+    // The person switches tab while the recording is still open.
+    a.detach();
+    a.field.parentElement!.remove();
+    vi.advanceTimersByTime(0);
+    await settle();
+    streams[0].finishDeferred.resolve(transcript('EPAS1 again', { bias_scope: 'private' }));
+    await settle();
+    expect(insertIntoDraft).toHaveBeenCalledWith('tab:a', { start: 12, end: 12 }, 'EPAS1 again');
+    // No composer was there to call `onInserted`, and the draft is flagged all the same.
+    expect(a.binding.onInserted).not.toHaveBeenCalled();
+    expect(isPrivateDraft('tab:a')).toBe(true);
+  });
+
+  it('public terms into the stored draft leave it unflagged', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const a = composer('tab:a', '');
+    await startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+    captures[0].speak(1);
+    a.detach();
+    a.field.parentElement!.remove();
+    vi.advanceTimersByTime(0);
+    await settle();
+    streams[0].finishDeferred.resolve(transcript('plain words'));
+    await settle();
+    expect(insertIntoDraft).toHaveBeenCalledTimes(1);
+    expect(isPrivateDraft('tab:a')).toBe(false);
   });
 
   it('a composer without a stored draft that unmounts drops the text rather than writing a draft', async () => {

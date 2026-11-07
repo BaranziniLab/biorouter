@@ -30,6 +30,12 @@ export interface ModelEffortChipProps {
    * read to the chip that replaces it (`composer/composerHandOff.ts`).
    */
   handOffKey?: string;
+  /**
+   * The composer's dictation key, under which a draft dictated with private
+   * terms eligible is flagged (DD-71): switching an unsent chat holding one to a
+   * public model asks MSG-PRIVATE-DRAFT-SWITCH first.
+   */
+  dictationDraftKey?: string;
 }
 
 export function ModelEffortChip({
@@ -39,6 +45,7 @@ export function ModelEffortChip({
   privacyTier,
   setView,
   handOffKey,
+  dictationDraftKey,
 }: ModelEffortChipProps) {
   return (
     <div data-testid="composer-model-chip" className="flex min-w-0 items-center">
@@ -49,6 +56,7 @@ export function ModelEffortChip({
         setView={setView}
         reasoningScope={reasoningScope}
         handOffKey={handOffKey}
+        dictationDraftKey={dictationDraftKey}
         hideAlertPopover
       />
     </div>

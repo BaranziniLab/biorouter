@@ -38,6 +38,11 @@ import {
   type UpdatePhase,
   type UpdaterState,
 } from './updaterState';
+import { restartAllowedWhileDictating } from './dictationBusy';
+
+/** MSG-RESTART-BUSY before any restart that installs an update (`utils/dictationBusy.ts`). */
+const confirmRestartWhileDictating = (): Promise<boolean> =>
+  restartAllowedWhileDictating((options) => dialog.showMessageBox(options));
 
 let updateAvailable = false;
 let trayRef: Tray | null = null;
@@ -275,6 +280,9 @@ export function registerUpdateIpcHandlers() {
   });
 
   ipcMain.handle('install-update', async () => {
+    // A dictation in progress asks first. Choosing to keep dictating is not a
+    // failure, so the answer says nothing went wrong.
+    if (!(await confirmRestartWhileDictating())) return { ok: true };
     // Decided by WHO downloaded the update, not by `isUsingGitHubFallback`.
     // That flag used to stay set for the life of the process after a single
     // failed check, and then a macOS update electron-updater had downloaded
@@ -772,7 +780,11 @@ function showUpdateReadyNotification(): void {
     title: 'Update ready',
     body: `Version ${version} will be installed when you quit Biorouter. Click to install now.`,
   });
-  notification.on('click', () => macInstall.requestInstall());
+  notification.on('click', () => {
+    void confirmRestartWhileDictating().then((restart) => {
+      if (restart) macInstall.requestInstall();
+    });
+  });
   notification.show();
 }
 
