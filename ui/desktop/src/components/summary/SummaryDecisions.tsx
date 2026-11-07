@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowRight,
   Check,
   CircleIcon,
   Eye,
@@ -20,18 +21,53 @@ import {
   type DecisionSourceRow,
   type DecisionSourceState,
 } from '../../utils/sessionDecisions';
+import type { PhaseStatus } from '../../utils/sessionSubagents';
 import { summaryCopy } from './copy';
 import './summaryDecisions.css';
 
 const copy = summaryCopy.decisions;
+
+/** What a gate row says about the person's own pass or skip, or a phase that waits for them. */
+export const GATE_PERSON_COPY = {
+  passedByYou: 'passed by you',
+  skippedByYou: 'skipped by you',
+  passStands: 'your pass stands',
+  skipStands: 'your skip stands',
+  /** The open phase waits for the person, as the chip's `Gate blocked: needs you`. */
+  needsYou: 'needs you',
+};
+
+/**
+ * A phase gate as the section reads it: the plan's gate, and, when the caller
+ * knows it, the phase's status, which tells a pass or skip that closed the phase
+ * from one that stands until its subagents finish.
+ */
+export interface SummaryGateSource extends DecisionGateSource {
+  status?: PhaseStatus;
+}
+
+/**
+ * `passed by you`, `your skip stands`, `needs you` (a phase that waits for the
+ * person), or `null` when the person decided nothing and nothing waits for them.
+ */
+export function gatePersonWords(source: SummaryGateSource | undefined): string | null {
+  const decision = source?.gate.personDecision ?? null;
+  if (!decision) return source?.gate.needsPerson ? GATE_PERSON_COPY.needsYou : null;
+  // Without the phase's status the decision's effect is not known; it reads as made.
+  const closed = !source?.status || source.status === 'completed' || source.status === 'skipped';
+  if (decision === 'pass')
+    return closed ? GATE_PERSON_COPY.passedByYou : GATE_PERSON_COPY.passStands;
+  return closed ? GATE_PERSON_COPY.skippedByYou : GATE_PERSON_COPY.skipStands;
+}
 
 type Glyph = EntityIcon;
 
 /**
  * A source's state, told apart by SHAPE (never by colour alone): an eye that
  * watches, a raised flag once it fired, a struck eye when off, a warning for an
- * error; a gate's check, cross or alert; the decision mark for calls that just
- * decided. Keyed by state, so a new one fails the build here.
+ * error; a gate's check, cross or alert, and the arrow of a gate the person
+ * skipped (the phase row's chip draws the same shapes); the decision mark for
+ * calls that just decided. Keyed by state, so a new one fails the build here.
  */
 export const DECISION_STATE_ICONS: Record<DecisionSourceState, Glyph> = {
   pending: CircleIcon,
@@ -43,6 +79,7 @@ export const DECISION_STATE_ICONS: Record<DecisionSourceState, Glyph> = {
   passed: Check,
   failed: X,
   blocked: AlertCircle,
+  skipped: ArrowRight,
 };
 
 export interface SummaryDecisionsData {
@@ -59,29 +96,57 @@ export interface SummaryDecisionsData {
    * popover closes, and a dialog inside it would go with it.
    */
   onOpenMonitors: () => void;
-  /** The plan's phase gates, so a gate row says passed, failed or blocked. */
-  gates?: readonly DecisionGateSource[];
+  /**
+   * The plan's phase gates, so a gate row says passed, failed or blocked, and
+   * whether the person passed or skipped it (with each phase's status).
+   */
+  gates?: readonly SummaryGateSource[];
   /** The monitors the newest turn marker says fired. */
   fired?: ReadonlySet<string>;
 }
 
-/** The second line of a row: what it last said, and how sure. */
-function rowMeta(row: DecisionSourceRow): string {
-  if (row.origin === 'gate' && row.attempts) {
+/**
+ * The second line of a row: what it last said, and how sure. A gate the person
+ * passed or skipped, or one whose phase waits for them, says so first, then what
+ * the gate itself last said.
+ */
+function rowMeta(row: DecisionSourceRow, gates: readonly SummaryGateSource[] = []): string {
+  if (row.origin === 'gate') {
+    const person = gatePersonWords(gates.find((gate) => gate.phaseId === row.originId));
+    const verdict = gateVerdict(row);
+    if (person) return [person, verdict].filter(Boolean).join(' · ');
+    if (verdict !== null) return verdict;
+  }
+  return sourceMeta(row);
+}
+
+/**
+ * A gate row's own words (`0.62 < 0.80 · attempt 2 of 3`), or `null` to say what
+ * any row says. They follow the gate's own verdict, not the row's state: a gate
+ * the person passed after it failed still says it failed, after `passed by you`.
+ */
+function gateVerdict(row: DecisionSourceRow): string | null {
+  if (row.attempts) {
     const t = row.threshold !== null ? formatProbability(row.threshold) : null;
     const p = row.lastPassProbability !== null ? formatProbability(row.lastPassProbability) : null;
-    if (row.state === 'blocked') {
+    const verdict = row.gateVerdict ?? row.state;
+    if (verdict === 'blocked') {
       // A gate that ran out of attempts has used them all; one blocked by
       // evaluation errors in a row has not, since an error uses no attempt.
       return row.attempts.attempts >= row.attempts.maxAttempts
         ? copy.gateBlocked(row.attempts.maxAttempts)
         : copy.gateBlockedUnevaluated;
     }
-    if (row.state === 'passed' && p && t) return `${p} ≥ ${t}`;
-    if (row.state === 'failed' && p && t) {
+    if (verdict === 'passed' && p && t) return `${p} ≥ ${t}`;
+    if (verdict === 'failed' && p && t) {
       return `${p} < ${t} · ${copy.gateAttempt(Math.max(1, row.attempts.attempts), row.attempts.maxAttempts)}`;
     }
   }
+  return null;
+}
+
+/** Any row's second line: its last answer, its last pass probability and its errors. */
+function sourceMeta(row: DecisionSourceRow): string {
   if (row.count === 0) return copy.notChecked;
   const parts = [
     row.lastAnswer ? copy.last(row.lastAnswer) : null,
@@ -91,17 +156,19 @@ function rowMeta(row: DecisionSourceRow): string {
   return parts.filter(Boolean).join(' · ');
 }
 
-function rowLabel(row: DecisionSourceRow): string {
-  return [`${copy.state[row.state]}, ${row.label}`, copy.calls(row.count), rowMeta(row)]
+function rowLabel(row: DecisionSourceRow, gates: readonly SummaryGateSource[]): string {
+  return [`${copy.state[row.state]}, ${row.label}`, copy.calls(row.count), rowMeta(row, gates)]
     .filter(Boolean)
     .join(', ');
 }
 
 function SourceRow({
   row,
+  gates,
   onOpen,
 }: {
   row: DecisionSourceRow;
+  gates: readonly SummaryGateSource[];
   onOpen: (filter: DecisionHistoryFilter) => void;
 }) {
   const Icon = DECISION_STATE_ICONS[row.state];
@@ -113,7 +180,7 @@ function SourceRow({
         data-state={row.state}
         data-origin={row.origin}
         data-testid={`decision-source-${row.key}`}
-        aria-label={rowLabel(row)}
+        aria-label={rowLabel(row, gates)}
         aria-description={copy.openHint}
         onClick={() => onOpen({ origin: row.origin, originId: row.originId ?? null })}
       >
@@ -126,7 +193,7 @@ function SourceRow({
             <span className="br-decisions__count">{row.count.toLocaleString()}</span>
           </span>
           <span className="br-decisions__line br-decisions__meta">
-            <span className="br-decisions__last">{rowMeta(row)}</span>
+            <span className="br-decisions__last">{rowMeta(row, gates)}</span>
             {row.lastPassProbability !== null ? (
               <ProbabilityBar
                 p={row.lastPassProbability}
@@ -192,7 +259,7 @@ export function SummaryDecisions({
       </div>
       <ul className="br-decisions__list" aria-label={copy.listLabel}>
         {rows.map((row) => (
-          <SourceRow key={row.key} row={row} onOpen={onOpenHistory} />
+          <SourceRow key={row.key} row={row} gates={gates ?? []} onOpen={onOpenHistory} />
         ))}
       </ul>
       <button

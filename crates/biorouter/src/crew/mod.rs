@@ -1388,6 +1388,25 @@ pub(crate) async fn install_test_scope(
     manager
 }
 
+/// Make the grant [`install_test_scope`] installed for `session_id` one that
+/// stands: admitted under today's institution policy, so
+/// [`CrewManager::history_rewrite_refusal`] answers `None` for it.
+#[cfg(test)]
+pub(crate) async fn stand_test_scope(manager: &CrewManager, session_id: &str) {
+    if let Some(scope) = manager.registry.lock().await.scopes.get_mut(session_id) {
+        scope.institution_policy = true;
+    }
+}
+
+/// End the grant [`install_test_scope`] installed for `session_id`, as a
+/// revocation does: the chat stays restricted, and its grant no longer stands.
+#[cfg(test)]
+pub(crate) async fn expire_test_scope(manager: &CrewManager, session_id: &str) {
+    if let Some(scope) = manager.registry.lock().await.scopes.get_mut(session_id) {
+        scope.expired = true;
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn remove_test_scope(manager: &CrewManager, session_id: &str) {
     let mut registry = manager.registry.lock().await;
@@ -4387,6 +4406,10 @@ impl CrewManager {
     /// recorded end (`expires_at`) has passed on this device's clock is refused here, as the
     /// chat already holds it, although a turn leaves that decision to the workspace: refusing
     /// a rewrite changes nothing, so erring towards it costs nothing.
+    ///
+    /// ⚠ The decision service's Crew gate (`decision::service::CrewUseGate::session_refusal`)
+    /// asks this before every decision a Crew chat makes, so it must stay local-only: a
+    /// workspace round trip here would be one SSH request per monitor evaluation.
     pub async fn history_rewrite_refusal(&self, session: &str) -> Option<String> {
         let (scope, connection) = match self.checked_scope(session).await {
             Ok(None) => return None,

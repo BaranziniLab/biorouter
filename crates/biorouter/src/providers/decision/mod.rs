@@ -17,6 +17,10 @@
 //! the factory registers for `baseten_decision` and `ollama_decision`, and the
 //! reply a decision chat gives instead of an LLM loop.
 //!
+//! [`install`] downloads a decision model into the Ollama on this computer
+//! when a person asks (the install route and `biorouter models decision
+//! pull`), so a private chat has one it may use. Nothing installs on its own.
+//!
 //! These live under `providers/` on purpose: the destination-key scan in
 //! `providers/destination_keys.rs` reads every config key this tree reads, so
 //! a new host key cannot be added here without deciding whether changing it
@@ -24,6 +28,7 @@
 
 pub mod catalog;
 pub mod chat;
+pub mod install;
 pub mod logprob;
 pub mod system_one;
 pub mod verbalized;
@@ -32,6 +37,11 @@ pub use catalog::{ConfiguredDecisionModels, BASETEN_DECISION_PROVIDER, OLLAMA_DE
 pub use chat::{
     is_decision_chat_provider, BasetenDecisionChatProvider, DecisionChatProvider,
     OllamaDecisionChatProvider,
+};
+pub use install::{
+    installer, DecisionInstallSnapshot, DecisionInstaller, InstallJob, InstallOffer,
+    InstallRefusal, InstallRefusalKind, InstallState, InstallableDecisionModel, OllamaPlace,
+    OllamaStatus, PullProgress, PullStage, DEFAULT_INSTALL_MODEL, INSTALLABLE_DECISION_MODELS,
 };
 pub use logprob::LogprobAdapter;
 pub use system_one::SystemOneAdapter;

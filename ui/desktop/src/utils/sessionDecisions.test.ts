@@ -3,8 +3,10 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message } from '../api';
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), headers: vi.fn() }));
-vi.mock('../api/client.gen', () => ({ client: { get: mocks.get, put: mocks.put } }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn(), headers: vi.fn() }));
+vi.mock('../api/client.gen', () => ({
+  client: { get: mocks.get, put: mocks.put, post: mocks.post },
+}));
 vi.mock('./userAction', () => ({ userActionHeaders: mocks.headers }));
 /** The generated functions, watched: each still runs the real one (over the mocked client). */
 const sdk = vi.hoisted(() => ({
@@ -15,6 +17,8 @@ const sdk = vi.hoisted(() => ({
     'listSessionDecisions',
     'getSessionDecision',
     'listDecisionModels',
+    'getDecisionInstall',
+    'postDecisionInstall',
   ],
   spies: new Map<string, ReturnType<typeof vi.fn>>(),
 }));
@@ -30,10 +34,22 @@ vi.mock('../api/sdk.gen', async (original) => {
 });
 
 import {
+  DECISION_INSTALL_STATES,
   DECISION_ORIGINS,
   DECISION_OUTCOMES,
+  GATE_OWNERS,
   MONITOR_ACTIONS,
+  MONITOR_DIRECTIONS,
+  MONITOR_OWNERS,
   MONITOR_TIMINGS,
+  OLLAMA_PLACES,
+  fetchDecisionInstall,
+  monitorFiresAt,
+  monitorToWire,
+  parseDecisionInstallStatus,
+  parseThreshold,
+  startDecisionInstall,
+  thresholdToWire,
   MONITOR_WINDOW_CHARS_MAX,
   MONITOR_WINDOW_ENTRIES_MAX,
   answerProbability,
@@ -66,6 +82,7 @@ import {
   parseDecisionRecord,
   parseDecisionSettings,
   parsePhaseGateSnapshot,
+  phaseGateState,
   parseQuestion,
   parseSessionDecisionSummary,
   questionToWire,
@@ -75,6 +92,7 @@ import {
   thresholdOnOption,
   thresholdSummary,
   type DecisionSettings,
+  type PhaseGateState,
 } from './sessionDecisions';
 
 const RS = (...parts: string[]) =>
@@ -149,6 +167,7 @@ const wireRecord = (overrides: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   mocks.get.mockReset();
   mocks.put.mockReset();
+  mocks.post.mockReset();
   mocks.headers.mockReset().mockResolvedValue({ 'X-User-Action': 'synthetic-proof' });
 });
 
@@ -163,6 +182,203 @@ describe('the contract, read from the Rust side', () => {
     const settings = RS('decision', 'settings.rs');
     expect([...MONITOR_TIMINGS].sort()).toEqual(rustVariants(settings, 'MonitorTiming').sort());
     expect([...MONITOR_ACTIONS].sort()).toEqual(rustVariants(settings, 'MonitorAction').sort());
+  });
+
+  it('knows every monitor direction and owner, gate owner, and install state', () => {
+    const settings = RS('decision', 'settings.rs');
+    expect([...MONITOR_DIRECTIONS].sort()).toEqual(
+      rustVariants(settings, 'MonitorDirection').sort()
+    );
+    expect([...MONITOR_OWNERS].sort()).toEqual(rustVariants(settings, 'MonitorOwner').sort());
+    expect([...GATE_OWNERS].sort()).toEqual(
+      rustVariants(RS('agents', 'orchestration_plan.rs'), 'GateOwner').sort()
+    );
+    const routes = readFileSync(
+      join(
+        process.cwd(),
+        '..',
+        '..',
+        'crates',
+        'biorouter-server',
+        'src',
+        'routes',
+        'decisions.rs'
+      ),
+      'utf8'
+    );
+    expect([...DECISION_INSTALL_STATES].sort()).toEqual(
+      rustVariants(routes, 'DecisionInstallState').sort()
+    );
+    expect([...OLLAMA_PLACES].sort()).toEqual(rustVariants(routes, 'OllamaPlaceState').sort());
+  });
+});
+
+/**
+ * A monitor that fires below its threshold sends a `below` question
+ * (`Threshold::Below`), so its logged calls carry one; the card and the history
+ * read it as `<`, and the summary row calls it fired under its threshold.
+ */
+describe('a below rule', () => {
+  it('round-trips {below:{...}} for every kind and says <', () => {
+    const option = { below: { option: { name: 'rrms', p: 0.2 } } };
+    const parsed = parseThreshold(option)!;
+    expect(parsed).toEqual({ type: 'option', name: 'rrms', p: 0.2, below: true });
+    expect(thresholdToWire(parsed)).toEqual(option);
+    expect(thresholdSummary(parsed)).toBe('P(rrms) < 0.20');
+    // The bar's marker sits where the inner rule's would.
+    expect(thresholdOnOption(parsed, 'rrms')).toBe(0.2);
+
+    const yes = parseThreshold({ below: { yes: 0.3 } })!;
+    expect(yes).toEqual({ type: 'yes', p: 0.3, below: true });
+    expect(thresholdSummary(yes)).toBe('P(yes) < 0.30');
+    expect(thresholdToWire(yes)).toEqual({ below: { yes: 0.3 } });
+
+    const levels = parseQuestion({
+      instructions: 'How severe?',
+      kind: { score: { levels: ['mild', 'moderate', 'severe'] } },
+      threshold: { below: { at_least_level: { level: 1, p: 0.8 } } },
+    });
+    expect(thresholdSummary(levels.threshold!, levels)).toBe('P(level ≥ moderate) < 0.80');
+    expect(questionToWire(levels).threshold).toEqual({
+      below: { at_least_level: { level: 1, p: 0.8 } },
+    });
+
+    // At or above stays as it was, and a below inside a below is no rule.
+    expect(thresholdToWire({ type: 'yes', p: 0.8 })).toEqual({ yes: 0.8 });
+    expect(parseThreshold({ below: { below: { yes: 0.3 } } })).toBeNull();
+    expect(parseThreshold({ below: 'nonsense' })).toBeNull();
+  });
+
+  it('fires a below monitor under its threshold only, equality on the at-or-above side', () => {
+    const below = parseDecisionSettings({
+      defaultModel: null,
+      monitors: [
+        {
+          id: 'banana',
+          name: 'Banana',
+          question: { instructions: 'q', kind: { binary: {} } },
+          threshold: 0.3,
+          direction: 'below',
+          action: 'stop',
+        },
+      ],
+    })!.monitors[0];
+    expect(monitorThreshold(below)).toEqual({ type: 'yes', p: 0.3, below: true });
+    expect(monitorFiresAt(below, 0.29)).toBe(true);
+    expect(monitorFiresAt(below, 0.3)).toBe(false);
+    expect(monitorFiresAt({ ...below, direction: 'at_or_above' }, 0.3)).toBe(true);
+
+    const summary = parseSessionDecisionSummary({
+      total: 1,
+      aggregates: [
+        {
+          origin: 'monitor',
+          originId: 'banana',
+          label: 'Banana',
+          count: 1,
+          passed: 1,
+          failed: 0,
+          errors: 0,
+          lastAt: '2026-11-04T11:00:00Z',
+          lastAnswer: 'no',
+          lastPassProbability: 0.04,
+        },
+      ],
+      recentTurns: [],
+    })!;
+    const rows = decisionSourceRows(summary, { defaultModel: null, monitors: [below] });
+    expect(rows[0].state).toBe('fired');
+    const high = decisionSourceRows(
+      { ...summary, aggregates: [{ ...summary.aggregates[0], lastPassProbability: 0.9 }] },
+      { defaultModel: null, monitors: [below] }
+    );
+    expect(high[0].state).toBe('armed');
+  });
+});
+
+/**
+ * The parser keeps only the keys it knows and Save writes back what it parsed, so
+ * a key it dropped would be erased by one desktop Save: a CLI-made below monitor
+ * would come back at or above, and an agent's monitor would come back the person's.
+ */
+describe('a monitor’s owner and direction survive a read and a write', () => {
+  const full = {
+    id: 'banana',
+    name: 'Banana',
+    question: { instructions: 'Has the assistant written banana?', kind: { binary: {} } },
+    model: { provider: 'ollama_decision', model: 'tev1:0.8b' },
+    timing: 'post_iteration',
+    window: { entries: 24, maxChars: 6000, toolCalls: true },
+    threshold: 0.3,
+    option: null,
+    consecutive: 1,
+    rearmBelow: null,
+    action: 'stop',
+    onError: 'pause',
+    maxEvalsPerTurn: 50,
+    enabled: true,
+    direction: 'below',
+    rearmAbove: 0.6,
+    setBy: 'agent',
+    setBySession: 'parent-1',
+  };
+
+  it('reads and writes direction, rearmAbove, setBy, setBySession, inheritedFrom and applyToSubagents', () => {
+    const monitor = parseDecisionSettings({ defaultModel: null, monitors: [full] })!.monitors[0];
+    expect(monitor).toMatchObject({
+      direction: 'below',
+      rearmAbove: 0.6,
+      setBy: 'agent',
+      setBySession: 'parent-1',
+      inheritedFrom: null,
+      applyToSubagents: false,
+      onError: 'pause',
+    });
+    expect(monitorToWire(monitor)).toEqual(full);
+
+    const { setBy: _setBy, setBySession: _setBySession, ...person } = full;
+    const inherited = { ...person, inheritedFrom: 'p' };
+    const copy = parseDecisionSettings({ defaultModel: null, monitors: [inherited] })!.monitors[0];
+    expect(copy).toMatchObject({ setBy: 'person', inheritedFrom: 'p' });
+    expect(monitorToWire(copy)).toEqual(inherited);
+
+    const watching = parseDecisionSettings({
+      defaultModel: null,
+      monitors: [{ ...full, setBy: 'person', setBySession: null, applyToSubagents: true }],
+    })!.monitors[0];
+    expect(monitorToWire(watching)).toMatchObject({ applyToSubagents: true });
+  });
+
+  it('writes none of those keys for an at-or-above person’s monitor, as the daemon stores it', () => {
+    const plain = parseDecisionSettings({
+      defaultModel: null,
+      monitors: [{ id: 'm', name: 'M', question: { instructions: 'q', kind: { binary: {} } } }],
+    })!.monitors[0];
+    expect(plain).toMatchObject({
+      direction: 'at_or_above',
+      rearmAbove: null,
+      setBy: 'person',
+      setBySession: null,
+      inheritedFrom: null,
+      applyToSubagents: false,
+    });
+    const wire = monitorToWire(plain);
+    for (const key of [
+      'direction',
+      'rearmAbove',
+      'setBy',
+      'setBySession',
+      'inheritedFrom',
+      'applyToSubagents',
+    ]) {
+      expect(wire, key).not.toHaveProperty(key);
+    }
+    // A value this build does not know reads as the default, never as the other side.
+    const odd = parseDecisionSettings({
+      defaultModel: null,
+      monitors: [{ ...full, direction: 'sideways', setBy: 'robot' }],
+    })!.monitors[0];
+    expect(odd).toMatchObject({ direction: 'at_or_above', setBy: 'person' });
   });
 });
 
@@ -350,8 +566,93 @@ describe('parsing', () => {
       lastPassed: false,
       lastMinP: 0.62,
       blocked: false,
+      // An older daemon sends none of the person's gate fields: an agent's gate, nothing more.
+      owner: 'agent',
+      questions: [],
+      model: null,
+      modelAdapter: null,
+      allowUncalibrated: false,
+      lastError: null,
+      personDecision: null,
+      retriesGranted: 0,
+      needsPerson: false,
+      holds: [],
     });
     expect(parsePhaseGateSnapshot(undefined)).toBeNull();
+  });
+
+  it('reads a phase gate’s owner, questions and the person’s state, and tolerates shapes it does not know', () => {
+    const gate = parsePhaseGateSnapshot({
+      threshold: 0.8,
+      questionCount: 2,
+      attempts: 3,
+      maxAttempts: 3,
+      lastPassed: false,
+      lastMinP: 0.41,
+      blocked: true,
+      owner: 'person',
+      questions: { tests_pass: 'Do the tests pass?', reviewed: 'Was it reviewed?' },
+      model: 'ollama_decision/tev1:0.8b',
+      modelAdapter: 'logprob',
+      allowUncalibrated: true,
+      lastError: 'Ollama did not answer.',
+      personDecision: 'skip',
+      retriesGranted: 1,
+      needsPerson: true,
+      holds: ['ship', 'announce'],
+    })!;
+    expect(gate).toMatchObject({
+      owner: 'person',
+      questions: [
+        { name: 'tests_pass', question: 'Do the tests pass?' },
+        { name: 'reviewed', question: 'Was it reviewed?' },
+      ],
+      model: 'ollama_decision/tev1:0.8b',
+      modelAdapter: 'logprob',
+      allowUncalibrated: true,
+      lastError: 'Ollama did not answer.',
+      personDecision: 'skip',
+      retriesGranted: 1,
+      needsPerson: true,
+      holds: ['ship', 'announce'],
+    });
+    // Unknown or ill-typed values read as neutral ones; the gate itself is kept.
+    const odd = parsePhaseGateSnapshot({
+      threshold: 0.8,
+      attempts: 1,
+      maxAttempts: 3,
+      owner: 'committee',
+      questions: ['not', 'a', 'map'],
+      model: 42,
+      modelAdapter: 'logprob',
+      personDecision: 'retry',
+      retriesGranted: -2,
+      needsPerson: 'yes',
+      holds: 'ship',
+    })!;
+    expect(odd).toMatchObject({
+      owner: 'agent',
+      questions: [],
+      model: null,
+      // An adapter belongs to a named model, and one this build does not know is none.
+      modelAdapter: null,
+      personDecision: null,
+      retriesGranted: 0,
+      needsPerson: false,
+      holds: [],
+    });
+    // The questions say the count when only they are sent.
+    expect(
+      parsePhaseGateSnapshot({ threshold: 0.8, questions: { a: 'A?', b: 'B?', c: 'C?' } })!
+        .questionCount
+    ).toBe(3);
+    expect(
+      parsePhaseGateSnapshot({
+        threshold: 0.8,
+        model: 'ollama_decision/tev1:0.8b',
+        modelAdapter: 'quantum',
+      })!.modelAdapter
+    ).toBeNull();
   });
 
   it('reads a turn marker and a decision id off message metadata', () => {
@@ -573,6 +874,75 @@ describe('the summary rows: one per source, never one per call', () => {
     expect(rows.find((row) => row.key === 'monitor:form')!.state).toBe('fired');
     expect(rows.find((row) => row.key === 'monitor:idle')!.state).toBe('error');
   });
+
+  it('names a gate row as the phase chip names it: the person first, then a phase that waits', () => {
+    // Three calls, all failed: what the gate itself last said.
+    const summary = parseSessionDecisionSummary({
+      total: 3,
+      aggregates: [
+        {
+          origin: 'gate',
+          originId: 'verify',
+          label: 'Check',
+          count: 3,
+          passed: 0,
+          failed: 3,
+          errors: 0,
+          lastAt: '2026-11-04T11:05:00Z',
+          lastAnswer: 'no',
+          lastPassProbability: 0.62,
+        },
+      ],
+      recentTurns: [],
+    })!;
+    const gateRow = (wire: Record<string, unknown>) => {
+      const gate = parsePhaseGateSnapshot({
+        threshold: 0.8,
+        attempts: 3,
+        maxAttempts: 3,
+        lastPassed: false,
+        lastMinP: 0.62,
+        blocked: false,
+        ...wire,
+      })!;
+      const rows = decisionSourceRows(summary, null, {
+        gates: [{ phaseId: 'verify', title: 'Check the numbers', gate }],
+      });
+      return { row: rows.find((entry) => entry.key === 'gate:verify')!, gate };
+    };
+    const cases: [Record<string, unknown>, PhaseGateState][] = [
+      // The person passed or skipped a gate that had failed.
+      [{ personDecision: 'pass' }, 'passed'],
+      [{ personDecision: 'skip' }, 'skipped'],
+      // The agent marked the phase blocked; the gate itself is not.
+      [{ needsPerson: true }, 'blocked'],
+      [{ blocked: true, needsPerson: true }, 'blocked'],
+      [{ lastPassed: true, lastMinP: 0.91 }, 'passed'],
+      [{}, 'failed'],
+    ];
+    for (const [wire, state] of cases) {
+      const { row, gate } = gateRow(wire);
+      expect(row.state, JSON.stringify(wire)).toBe(state);
+      expect(row.state, JSON.stringify(wire)).toBe(phaseGateState(gate));
+    }
+    // The row's words still say what the gate itself last decided.
+    expect(gateRow({ personDecision: 'pass' }).row.gateVerdict).toBe('failed');
+    expect(gateRow({ needsPerson: true }).row.gateVerdict).toBe('failed');
+    expect(gateRow({ blocked: true, needsPerson: true }).row.gateVerdict).toBe('blocked');
+    // A gate that has decided nothing yet says what its calls say.
+    expect(phaseGateState(gateRow({ lastPassed: null, lastMinP: null }).gate)).toBe('pending');
+    expect(gateRow({ lastPassed: null, lastMinP: null }).row.state).toBe('failed');
+    // Rows that are not gates carry no verdict of a gate.
+    const tool = decisionSourceRows(
+      parseSessionDecisionSummary({
+        total: 1,
+        aggregates: [{ origin: 'tool', count: 1, passed: 1, failed: 0, errors: 0 }],
+        recentTurns: [],
+      }),
+      null
+    );
+    expect(tool[0].gateVerdict).toBeNull();
+  });
 });
 
 describe('when to refetch', () => {
@@ -727,6 +1097,90 @@ describe('requests carry the person’s proof', () => {
       'Content-Type': 'application/json',
       ...proof,
     });
+  });
+
+  it('reads and starts a decision model install through the generated functions, with the proof', async () => {
+    for (const spy of sdk.spies.values()) spy.mockClear();
+    const proof = { 'X-User-Action': 'synthetic-proof' };
+    const status = {
+      offers: [
+        {
+          model: 'tev1:0.8b',
+          displayName: 'tev1:0.8b',
+          approxSize: 'about 1.5 GB',
+          note: 'small and fast',
+          isDefault: true,
+          installed: false,
+        },
+      ],
+      ollama: {
+        baseUrl: 'http://127.0.0.1:11434/',
+        state: 'running',
+        version: '0.40.15',
+        message: null,
+      },
+      job: null,
+    };
+    mocks.get.mockResolvedValueOnce(ok(status));
+    const read = await fetchDecisionInstall();
+    expect(read.missing).toBe(false);
+    expect(read.data).toMatchObject({
+      offers: [{ model: 'tev1:0.8b', isDefault: true, installed: false }],
+      ollama: { state: 'running', version: '0.40.15' },
+      job: null,
+    });
+    expect(sdk.spies.get('getDecisionInstall')!.mock.calls[0][0]).toMatchObject({
+      headers: proof,
+    });
+
+    const job = {
+      model: 'tev1:0.8b',
+      state: 'downloading',
+      completedBytes: 412_000_000,
+      totalBytes: 1_500_000_000,
+      status: 'pulling',
+      error: null,
+    };
+    mocks.post.mockResolvedValueOnce({
+      data: { ...status, job },
+      error: undefined,
+      response: { status: 202 },
+    });
+    const started = await startDecisionInstall('tev1:0.8b');
+    expect(started.job).toEqual(job);
+    expect(sdk.spies.get('postDecisionInstall')!.mock.calls[0][0]).toMatchObject({
+      body: { model: 'tev1:0.8b' },
+      headers: proof,
+    });
+
+    // A refusal carries its status and the daemon's sentence.
+    const busy = 'tev1:0.8b is still downloading. Wait for it to finish, then try again.';
+    mocks.post.mockResolvedValueOnce({ data: undefined, error: busy, response: { status: 409 } });
+    await expect(startDecisionInstall('tev1:0.8b')).rejects.toMatchObject({
+      status: 409,
+      reason: busy,
+      message: busy,
+    });
+    // A daemon without the route installs nothing, and says so as `missing`.
+    mocks.get.mockResolvedValueOnce({ data: undefined, error: '', response: { status: 404 } });
+    await expect(fetchDecisionInstall()).resolves.toEqual({ data: null, missing: true });
+  });
+
+  it('reads an install status tolerantly: a state it does not know is never installed', () => {
+    const status = parseDecisionInstallStatus({
+      offers: [{ model: 'tev1:0.8b' }, { displayName: 'no model' }],
+      ollama: { state: 'on_the_moon', message: 'Somewhere else.' },
+      job: { model: 'tev1:0.8b', state: 'teleporting', completedBytes: -1 },
+    })!;
+    expect(status.offers).toHaveLength(1);
+    expect(status.ollama).toEqual({
+      baseUrl: null,
+      state: 'invalid_host',
+      version: null,
+      message: 'Somewhere else.',
+    });
+    expect(status.job).toMatchObject({ state: 'failed', completedBytes: 0, totalBytes: 0 });
+    expect(parseDecisionInstallStatus({ offers: [] })).toBeNull();
   });
 
   it('keeps no low-level request by URL in the decision fetchers', () => {

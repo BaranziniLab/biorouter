@@ -19,7 +19,7 @@
 //! listed a private child. The capability is the one every other CLI command
 //! states to the daemon, the configured provider's tier.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 
 use anyhow::{anyhow, bail, Result};
@@ -29,7 +29,7 @@ use anyhow::{anyhow, bail, Result};
 // and the phase line printed above it can never disagree; the TUI pane and the
 // desktop panel use the same value.
 use biorouter::agents::orchestration_plan::{
-    OrchestrationSnapshot, PhaseStatus, QUIET_AFTER_SECONDS,
+    OrchestrationSnapshot, PhaseSnapshot, PhaseStatus, QUIET_AFTER_SECONDS,
 };
 use biorouter::agents::subagent_roster::{SessionSubagents, SubagentRow, SubagentRunStatus};
 use biorouter::privacy::visibility::{appears_in_list, may_read};
@@ -294,8 +294,34 @@ fn dim(text: &str, color: bool) -> String {
     }
 }
 
-/// One line per phase: glyph, title, `done/total done`, and the counts that are
-/// not zero.
+/// What a phase row says about its gate and the gate that holds it, said to
+/// the person reading: ` · gate set by the agent, passed by you · needs you`,
+/// ` · waits for Research's gate`. Empty for an ungated phase nothing holds.
+/// A held phase names its holder by title, as the row names phases.
+pub fn gate_suffix(phase: &PhaseSnapshot, titles: &HashMap<&str, &str>) -> String {
+    use super::session_gates::{decision_words, held_words, owner_words};
+    let mut suffix = String::new();
+    if let Some(gate) = &phase.gate {
+        suffix.push_str(" · gate ");
+        suffix.push_str(owner_words(gate.owner));
+        if let Some(decision) = gate.person_decision {
+            suffix.push_str(", ");
+            suffix.push_str(decision_words(decision));
+        }
+        if gate.needs_person && !phase.status.is_closed() {
+            suffix.push_str(" · needs you");
+        }
+    }
+    if let Some(holder) = phase.held_by.as_deref() {
+        let title = titles.get(holder).copied().unwrap_or(holder);
+        suffix.push_str(" · ");
+        suffix.push_str(&held_words(title));
+    }
+    suffix
+}
+
+/// One line per phase: glyph, title, `done/total done`, the counts that are
+/// not zero, then who set its gate and what holds it.
 fn render_plan(plan: &OrchestrationSnapshot, out: &mut Vec<String>) {
     out.push(format!("Plan: {}", printable(&plan.title)));
     if let Some(goal) = plan
@@ -312,6 +338,11 @@ fn render_plan(plan: &OrchestrationSnapshot, out: &mut Vec<String>) {
         .map(|phase| printable(&phase.title).chars().count())
         .max()
         .unwrap_or(0);
+    let titles: HashMap<&str, &str> = plan
+        .phases
+        .iter()
+        .map(|phase| (phase.id.as_str(), phase.title.as_str()))
+        .collect();
     for phase in &plan.phases {
         let counts = &phase.counts;
         let mut line = format!(
@@ -334,6 +365,7 @@ fn render_plan(plan: &OrchestrationSnapshot, out: &mut Vec<String>) {
         if phase.status == PhaseStatus::Skipped {
             line.push_str(" · skipped");
         }
+        line.push_str(&gate_suffix(phase, &titles));
         out.push(line);
     }
 }
@@ -488,7 +520,7 @@ async fn from_daemon(
 
 /// The route's JSON body, read from the first `{` to the last `}` so stray
 /// framing around it is ignored.
-fn parse_roster(body: &str) -> Result<SessionSubagents> {
+pub(crate) fn parse_roster(body: &str) -> Result<SessionSubagents> {
     let slice = body
         .find('{')
         .zip(body.rfind('}'))
@@ -510,7 +542,7 @@ async fn from_local_store(session_id: &str) -> Result<SessionSubagents> {
 /// [`from_local_store`] against a given store, at a given capability: the
 /// parent must be readable at `capability`, and each child is listed only when
 /// it may appear in a listing at `capability`. `enforced` is the master switch.
-async fn from_store(
+pub(crate) async fn from_store(
     manager: &SessionManager,
     session_id: &str,
     capability: ProviderTier,
@@ -732,6 +764,7 @@ mod tests {
             started_at: None,
             finished_at: None,
             gate: None,
+            held_by: None,
         }
     }
 
@@ -1059,6 +1092,92 @@ mod tests {
             .expect("the children follow the plan");
         assert!(subagents_at > 4);
         assert!(text.contains("· phase Implementation"), "{text}");
+    }
+
+    /// A phase row says who set its gate, the person's own decision on it,
+    /// that it needs the person, and which gate holds a later phase, by
+    /// title.
+    #[test]
+    fn phase_rows_say_who_set_a_gate_and_what_waits_for_it() {
+        use biorouter::agents::orchestration_plan::{
+            GateOwner, PersonGateAction, PhaseGateSnapshot,
+        };
+        let gate = |owner: GateOwner| PhaseGateSnapshot {
+            threshold: 0.8,
+            question_count: 1,
+            attempts: 0,
+            max_attempts: 3,
+            last_passed: None,
+            last_min_p: None,
+            blocked: false,
+            owner,
+            questions: Default::default(),
+            model: None,
+            model_adapter: None,
+            allow_uncalibrated: false,
+            last_error: None,
+            person_decision: None,
+            retries_granted: 0,
+            needs_person: false,
+            holds: Vec::new(),
+        };
+        let mut research = phase(
+            "research",
+            "Research",
+            PhaseStatus::Blocked,
+            PhaseCounts::default(),
+        );
+        let mut blocked = gate(GateOwner::Agent);
+        blocked.needs_person = true;
+        research.gate = Some(blocked);
+        let mut write = phase(
+            "write",
+            "Write",
+            PhaseStatus::Pending,
+            PhaseCounts::default(),
+        );
+        write.held_by = Some("research".to_string());
+        let mut plan_phase = phase(
+            "plan",
+            "Plan",
+            PhaseStatus::Completed,
+            PhaseCounts::default(),
+        );
+        let mut passed = gate(GateOwner::Workflow);
+        passed.person_decision = Some(PersonGateAction::Pass);
+        plan_phase.gate = Some(passed);
+        let mut mine = phase(
+            "verify",
+            "Verify",
+            PhaseStatus::Pending,
+            PhaseCounts::default(),
+        );
+        mine.gate = Some(gate(GateOwner::Person));
+        mine.held_by = Some("gone".to_string());
+        let plan = OrchestrationSnapshot {
+            title: "Moon".to_string(),
+            goal: None,
+            revision: 3,
+            phases: vec![plan_phase, research, write, mine],
+        };
+        let text = render_text(&roster(Vec::new(), Some(plan)), false);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[1],
+            "  ● Plan      0/0 done · gate set by the workflow, passed by you"
+        );
+        assert_eq!(
+            lines[2],
+            "  ⏸ Research  0/0 done · gate set by the agent · needs you"
+        );
+        assert_eq!(
+            lines[3],
+            "  ○ Write     0/0 done · waits for Research's gate"
+        );
+        assert_eq!(
+            lines[4], "  ○ Verify    0/0 done · gate set by you · waits for gone's gate",
+            "a holder the plan does not list is named by its id"
+        );
     }
 
     #[test]

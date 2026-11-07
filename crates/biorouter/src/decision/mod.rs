@@ -7,7 +7,11 @@
 //!   shares (confidence, thresholds, renormalisation).
 //! - [`model`]: the [`DecisionModel`] seam the adapters implement.
 //! - [`service`]: model resolution, privacy, size, concurrency, deadlines,
-//!   and the [`DecisionSink`] seam for the decision log.
+//!   the save-time checks, and the [`DecisionSink`] seam for the decision log.
+//! - [`late`]: requests still running after their caller stopped waiting, so
+//!   a process can wait for them before it exits.
+//! - [`save`]: storing a chat's decision settings after checking that what
+//!   they turn on can run.
 //! - [`window`]: the rolling conversation window a monitor asks about.
 //! - [`monitor`]: monitors (decision models watching a chat while its agent
 //!   works) and the per-turn tally the transcript marker is drawn from.
@@ -22,17 +26,21 @@
 //! all carry over. Design: the decision-models design document, §2, §3 and §7.
 
 pub mod error;
+pub mod late;
 pub mod log;
 pub mod model;
 pub mod monitor;
+pub mod save;
 pub mod service;
 pub mod settings;
 pub mod turns;
 pub mod types;
 pub mod window;
 
-pub use error::{DecisionError, DecisionResult};
+pub use error::{DecisionError, DecisionResult, INSTALL_ADVICE};
+pub use late::settle_late_answers;
 pub use model::{DecisionCaps, DecisionModel, DecisionModelEntry, DecisionModelSource};
+pub use save::{save_chat_checked, save_checked, UnusableDecisionSettings};
 pub use service::{
     global, DecisionLogEntry, DecisionOutcome, DecisionService, DecisionSession, DecisionSink,
     DecisionUseGate, LiveClassification, ModelSource,

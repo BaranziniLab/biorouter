@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DecisionCard, DECISION_CARD_COPY } from './DecisionCard';
+import { DECISION_HISTORY_COPY } from './DecisionHistory';
 import { resetDecisionRecordCacheForTests } from './decisionChatApi';
 import { wireBinaryDetail, wireChoiceDetail, wireErrorDetail } from './decisionFixtures';
 
@@ -112,6 +113,48 @@ describe('the decision card', () => {
       DECISION_CARD_COPY.publicModel
     );
     expect(within(card).getByTestId('decision-meta')).toHaveTextContent('1.4 s');
+  });
+
+  /**
+   * A failed `below` rule means P is at or above its number, so a verdict of
+   * "Below threshold" would contradict the threshold line beside it.
+   */
+  it('words a failed below rule without contradicting its threshold line', async () => {
+    const detail = wireBinaryDetail();
+    mocks.get.mockResolvedValue(
+      ok({
+        ...detail,
+        record: {
+          ...detail.record,
+          questions: {
+            has_ms: {
+              ...detail.record.questions.has_ms,
+              threshold: { below: { yes: 0.3 } },
+            },
+          },
+          decisions: [
+            {
+              ...detail.record.decisions[0],
+              probabilities: { yes: 0.9, no: 0.1 },
+              passed: false,
+              passProbability: 0.9,
+            },
+          ],
+          outcome: 'failed',
+        },
+      })
+    );
+    show();
+    const card = await screen.findByTestId('decision-card');
+    expect(within(card).getByTestId('decision-threshold')).toHaveTextContent(
+      'Threshold: P(yes) < 0.30'
+    );
+    const verdict = within(card).getByTestId('decision-verdict');
+    expect(verdict).toHaveAttribute('data-passed', 'false');
+    // The word the decision history and phase gates use for the same state.
+    expect(verdict).toHaveTextContent(/^Failed$/);
+    expect(verdict).toHaveTextContent(DECISION_HISTORY_COPY.failed);
+    expect(card).not.toHaveTextContent(/below threshold/i);
   });
 
   it('names a Baseten model by its alias, not its slug or the id Baseten served it under', async () => {

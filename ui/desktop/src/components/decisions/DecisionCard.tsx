@@ -30,7 +30,10 @@ export const DECISION_CARD_COPY = {
   region: (question: string) => `Decision: ${question}`,
   probabilities: 'Probabilities',
   passed: 'Passed',
-  failed: 'Below threshold',
+  // Not "Below threshold": a `below` rule fails when P is at or above its
+  // number, so the verdict names no direction. The threshold line beside it
+  // says which side passes. The history and phase gates use the same word.
+  failed: 'Failed',
   threshold: (summary: string) => `Threshold: ${summary}`,
   got: (p: string) => `, got ${p}`,
   history: 'Decision history',

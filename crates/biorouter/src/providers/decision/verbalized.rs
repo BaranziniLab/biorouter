@@ -319,6 +319,10 @@ impl DecisionModel for VerbalizedAdapter {
         }
     }
 
+    /// One completion per question. A reply that cannot be read carries the
+    /// usage of every completion so far, its own included, as the logprob
+    /// adapter's does; a provider failure carries none (a
+    /// [`DecisionError::Backend`] never does).
     async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
         let model = self.provider.get_model_config().model_name;
         let mut verdicts = Vec::with_capacity(request.questions.len());
@@ -348,7 +352,9 @@ impl DecisionModel for VerbalizedAdapter {
                     output_tokens: provider_usage.usage.output_tokens.map(i64::from),
                 };
             let verdict = verbalized_verdict(name, question, &message.as_concat_text(), None)
-                .map_err(|detail| DecisionError::malformed(&model, detail))?;
+                .map_err(|detail| {
+                    DecisionError::malformed(&model, detail).with_billed_usage(usage)
+                })?;
             verdicts.push(verdict);
         }
         Ok(ModelVerdicts {
@@ -470,6 +476,72 @@ mod tests {
             verdict.source,
             ProbabilitySource::Verbalized {
                 reason: Some("no logprobs".into())
+            }
+        );
+    }
+
+    /// A chat provider that answers each completion with the next reply in
+    /// its script, billed at the tokens given beside it.
+    struct Scripted {
+        replies: std::sync::Mutex<Vec<(&'static str, i32, i32)>>,
+    }
+
+    #[async_trait]
+    impl Provider for Scripted {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "scripted"
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("scripted-model")
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (Message, crate::providers::base::ProviderUsage),
+            crate::providers::errors::ProviderError,
+        > {
+            let (text, input, output) = self.replies.lock().unwrap().remove(0);
+            Ok((
+                Message::assistant().with_text(text),
+                crate::providers::base::ProviderUsage::new(
+                    "scripted-model".into(),
+                    crate::providers::base::Usage::new(Some(input), Some(output), None),
+                ),
+            ))
+        }
+    }
+
+    /// The second question's reply cannot be read, but both completions were
+    /// billed: the error carries the first one's usage and its own.
+    #[tokio::test]
+    async fn an_unreadable_reply_partway_keeps_the_usage_of_every_completion() {
+        let adapter = VerbalizedAdapter::new(Arc::new(Scripted {
+            replies: std::sync::Mutex::new(vec![
+                (r#"{"answer": "yes", "confidence": 0.9}"#, 10, 2),
+                ("I would rather not say.", 7, 3),
+            ]),
+        }));
+        let request = DecisionRequest {
+            questions: IndexMap::from([
+                ("first".to_string(), binary()),
+                ("second".to_string(), binary()),
+            ]),
+            context: DecisionContext::Text("note".into()),
+        };
+        let err = adapter.decide(&request).await.unwrap_err();
+        assert!(matches!(err, DecisionError::Malformed { .. }), "{err:?}");
+        assert_eq!(
+            err.billed_usage(),
+            DecisionUsage {
+                input_tokens: Some(17),
+                output_tokens: Some(5)
             }
         );
     }

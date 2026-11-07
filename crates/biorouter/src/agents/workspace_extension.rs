@@ -119,6 +119,8 @@ const INSTRUCTIONS: &str = indoc! {r#"
       instead of pointing at Settings.
     - workspace_close: close its tab (tab), cancel its turn (turn), or stop its
       agent (agent).
+    - workspace_monitor: add, list or remove monitors that stop or steer a
+      subagent you spawned.
     - workspace_watch: wait until one of several conversations finishes. Use it
       after starting background work; never poll workspace_read_conversation.
       A shortened completed result is not collected; follow the exact read call
@@ -138,8 +140,7 @@ const INSTRUCTIONS: &str = indoc! {r#"
     Routing: to search past conversations by content use chatrecall, not these
     tools. Durable facts belong in Memory. To fold a conversation into a
     knowledge base use ingest_conversation; to re-read an externalized payload
-    use read_session_blob. With no GUI attached these tools still manage
-    conversations headlessly and say so.
+    use read_session_blob. Headless, these tools still work and say so.
 "#};
 
 const PANEL_MOIM_MAX_CHARS: usize = 8_000;
@@ -398,11 +399,13 @@ fn panel_moim_from_reply(reply: &serde_json::Value) -> Option<String> {
 
 const WORKSPACE_LIST_MAX_SCAN_ROWS: usize = 20_000;
 
-/// `Default` is derived so `handle_list` can fall back to it when the call
-/// carries no arguments at all. Constructing the struct field-by-field there
-/// breaks every time this struct gains a field — which it has already done
-/// twice (decisions 17 and 23 added `offset`/`limit` and
-/// `parent_session_id`/`only_subagents`).
+// `Default` is derived so `handle_list` can fall back to it when the call
+// carries no arguments at all. Constructing the struct field-by-field there
+// breaks every time this struct gains a field — which it has already done
+// twice (decisions 17 and 23 added `offset`/`limit` and
+// `parent_session_id`/`only_subagents`). Plain `//`, because a doc comment
+// here becomes the tool schema's top-level description, sent to the model on
+// every turn.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 struct WorkspaceListParams {
     /// "open" (default): sessions with a GUI tab or a live agent. "all": every
@@ -716,6 +719,38 @@ struct WorkspaceCloseParams {
     scope: String,
 }
 
+// `workspace_monitor`'s arguments.
+//
+// No `///` on the struct, and terse `///` on its fields: those lines are
+// schema the model reads on every turn of every chat (this tool is not
+// stripped with the spawn tool), so they say only what a call needs. The
+// limits and ownership rules are enforced, and explained, by the handler's
+// refusals.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct WorkspaceMonitorParams {
+    /// "list", "add" (`monitors`) or "remove" (`ids`).
+    action: String,
+    /// A subagent this chat spawned.
+    session_id: String,
+    /// For "add": 1 to 4 monitors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    monitors: Option<Vec<crate::decision::settings::MonitorSpec>>,
+    /// For "remove": ids of monitors you set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ids: Option<Vec<String>>,
+}
+
+/// The model-facing description of `workspace_monitor`. Short on purpose: it
+/// is in every chat's tool list, the per-field rules live in the schema, and
+/// the caps (4 set by an agent, 8 in all) and ownership are refusals that
+/// explain themselves at call time.
+const MONITOR_DESCRIPTION: &str = concat!(
+    "Add, list or remove decision-model monitors on a subagent this chat spawned: yes/no ",
+    "questions about its newest messages that stop or steer it when the answer reaches a ",
+    "threshold. You may change or remove only monitors you set; a running subagent applies a ",
+    "change from its next check."
+);
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct WorkspaceWatchParams {
     /// The conversations to watch (1-32). Typically the ids of subagents you
@@ -736,9 +771,11 @@ struct WorkspaceWatchParams {
     assume_running: Option<bool>,
 }
 
-/// `workspace_orchestrate`'s arguments. One tool with an `action` rather than
-/// five tools, because the plan is one record and every action is a small edit
-/// of it; five more tool schemas would cost every turn of every delegating chat.
+// `workspace_orchestrate`'s arguments. One tool with an `action` rather than
+// five tools, because the plan is one record and every action is a small edit
+// of it; five more tool schemas would cost every turn of every delegating chat.
+// Plain `//` rather than `///`, because a doc comment here becomes the
+// schema's top-level description, which the model would read on every turn.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[schemars(extend("required" = ["action"]))]
 struct WorkspaceOrchestrateParams {
@@ -758,9 +795,7 @@ struct WorkspaceOrchestrateParams {
     goal: Option<String>,
     /// For "plan": every phase, in order (at most 12). A revision lists them
     /// all again; a phase whose id you keep keeps its subagents, status,
-    /// hand-off and gate. A phase may carry a `gate`: yes/no questions a
-    /// decision model must answer with P(yes) at or above its threshold before
-    /// "complete" can close the phase.
+    /// hand-off, gate and monitors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     phases: Option<Vec<crate::agents::orchestration_plan::OrchestratePhaseInput>>,
     /// The phase id, for "start", "handoff" and "complete".
@@ -817,13 +852,14 @@ const ORCHESTRATE_DESCRIPTION: &str = concat!(
     "results when you write none) carries a phase's results forward: every subagent later ",
     "spawned into a phase that depends on it receives them, which is how agents of later ",
     "phases meet earlier results. action \"read\" shows the plan with per-phase progress. ",
-    "A phase may carry a decision gate (`gate` on the phase in action \"plan\": 1 to 8 ",
-    "yes/no `questions`, a `threshold`, default 0.8, and `max_attempts`, default 3): on ",
-    "action \"complete\" a decision model reads the phase's goal, hand-off and subagent ",
-    "results, and the phase completes only when every question reaches P(yes) at or above ",
-    "the threshold. Otherwise it stays in progress and the reply lists the questions that ",
+    "A phase may carry a decision gate (`gate` on the phase in action \"plan\"): on action ",
+    "\"complete\" a decision model reads the phase's goal, hand-off and subagent results, and ",
+    "the phase completes only when every question reaches P(yes) at or above the threshold. ",
+    "Otherwise it stays in progress and the reply lists the questions that ",
     "fell short, so you can fix the work and complete again; once its attempts are used up ",
     "the phase is blocked. A gate that cannot be evaluated never passes. ",
+    "A gate binds you: you cannot change, remove or skip it, and later phases wait until it ",
+    "passes or the person passes or skips it. Your gates need a threshold of at least 0.5. ",
     "Subagents run in the background; the user sees the plan and its subagents in the chat's ",
     "side panel."
 );
@@ -1707,7 +1743,7 @@ const PENDING_TOOLS: &[(&str, &str)] = &[];
 /// file's `tests` module) reads the `match` in `call_tool` out of this file's
 /// own source, both directions, so a future alias added there without being
 /// added here fails this crate's suite.
-pub(crate) const DISPATCHED_TOOL_NAMES: [&str; 10] = [
+pub(crate) const DISPATCHED_TOOL_NAMES: [&str; 11] = [
     "workspace_list",
     "workspace_read_conversation",
     "workspace_send_prompt",
@@ -1717,6 +1753,7 @@ pub(crate) const DISPATCHED_TOOL_NAMES: [&str; 10] = [
     "workspace_open",
     "workspace_read_panel",
     "workspace_orchestrate",
+    "workspace_monitor",
     // Retired from `get_tools()` — reading and capturing are one tool now — and
     // still accepted by the dispatcher, which is precisely why it has to be
     // here. See the warning above.
@@ -1831,7 +1868,7 @@ impl WorkspaceClient {
     /// advertised tool surface against the capability table. A hand-maintained
     /// mirror of this function is the one place either guard can rot silently.
     pub fn get_tools() -> Vec<Tool> {
-        let mut tools = [Self::panel_tools(), vec![Self::orchestrate_tool()]].concat();
+        let mut tools = [Self::panel_tools(), Self::delegation_tools()].concat();
         tools.extend([
             Self::tool(
                 "workspace_list",
@@ -1949,6 +1986,26 @@ impl WorkspaceClient {
             "workspace_orchestrate",
             ORCHESTRATE_DESCRIPTION,
             serde_json::to_value(schema_for!(WorkspaceOrchestrateParams)).unwrap(),
+            false,
+        )
+    }
+
+    /// The tools over the work this chat delegates, split out of
+    /// [`Self::get_tools`] for the per-function line baseline: its phase plan
+    /// and the monitors on its subagents.
+    fn delegation_tools() -> Vec<Tool> {
+        vec![Self::orchestrate_tool(), Self::monitor_tool()]
+    }
+
+    /// Monitors on a subagent this chat spawned. A write, so annotated as
+    /// mutating. Unlike the spawn tool and `workspace_orchestrate` it is NOT
+    /// stripped when the delegation gate closes: it reaches only children that
+    /// already exist.
+    fn monitor_tool() -> Tool {
+        Self::tool(
+            "workspace_monitor",
+            MONITOR_DESCRIPTION,
+            serde_json::to_value(schema_for!(WorkspaceMonitorParams)).unwrap(),
             false,
         )
     }
@@ -4742,42 +4799,40 @@ impl WorkspaceClient {
             // was still on screen. Same shape as `place_in_gui`'s: ask, wait,
             // and report the answer.
             "tab" => Self::handle_close_tab(&args.session_id, services.as_ref()).await,
+            // One stop step, shared with the parent's own Stop and a monitor's
+            // stop (`subagent_handle::stop_child_turn`): abandon pending
+            // continuations, cancel a running delegated run, otherwise cancel
+            // a later turn through the daemon.
             "turn" => {
-                if let Some(services) = services.as_ref() {
-                    services.abandon_pending_continuations(&args.session_id);
-                } else {
-                    crate::agents::subagent_handle::abandon_continuation(&args.session_id);
-                }
-                if let Some(handle) = background.as_ref().filter(|handle| handle.is_running()) {
-                    handle.cancel();
-                    self.notify_target(
-                        &args.session_id,
-                        format!("Turn cancelled by another agent ({caller_session_id})."),
-                    )
-                    .await;
-                    return Ok(vec![Content::text(format!(
+                use crate::agents::subagent_handle::{stop_child_turn, ChildTurnStop};
+                let reply = match stop_child_turn(
+                    background.as_deref(),
+                    &args.session_id,
+                    services.as_deref(),
+                ) {
+                    ChildTurnStop::DelegatedRun => format!(
                         "Cancellation requested for background subagent session {}.",
                         args.session_id
-                    ))]);
-                }
-                let services = services.ok_or("scope:\"turn\" requires the BioRouter daemon")?;
-                match services.cancel_turn(&args.session_id) {
-                    Some(turn_id) => {
-                        self.notify_target(
-                            &args.session_id,
-                            format!("Turn cancelled by another agent ({caller_session_id})."),
-                        )
-                        .await;
-                        Ok(vec![Content::text(format!(
-                            "Cancelled turn {turn_id} on session {}.",
+                    ),
+                    ChildTurnStop::Turn(turn_id) => {
+                        format!("Cancelled turn {turn_id} on session {}.", args.session_id)
+                    }
+                    ChildTurnStop::Idle => {
+                        return Ok(vec![Content::text(format!(
+                            "Session {} had no turn in flight (nothing to cancel).",
                             args.session_id
                         ))])
                     }
-                    None => Ok(vec![Content::text(format!(
-                        "Session {} had no turn in flight (nothing to cancel).",
-                        args.session_id
-                    ))]),
-                }
+                    ChildTurnStop::NoDaemon => {
+                        return Err("scope:\"turn\" requires the BioRouter daemon".into())
+                    }
+                };
+                self.notify_target(
+                    &args.session_id,
+                    format!("Turn cancelled by another agent ({caller_session_id})."),
+                )
+                .await;
+                Ok(vec![Content::text(reply)])
             }
             "agent" => {
                 if let Some(services) = services.as_ref() {
@@ -6070,6 +6125,16 @@ impl McpClientTrait for WorkspaceClient {
                         CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
                     }));
             }
+            // Builds its own `CallToolResult`: `list` carries the monitors as
+            // structured content.
+            "workspace_monitor" => {
+                return Ok(self
+                    .handle_monitor(caller, cap, arguments)
+                    .await
+                    .unwrap_or_else(|error| {
+                        CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
+                    }));
+            }
             "workspace_read_panel" | "workspace_capture_panel" => {
                 self.handle_panel(name, caller, cap, arguments).await
             }
@@ -6199,39 +6264,7 @@ impl WorkspaceClient {
         let now = chrono::Utc::now();
 
         match action.as_str() {
-            "plan" => {
-                let phases = params.phases.clone().ok_or_else(|| {
-                    "action \"plan\" needs `phases`: every phase, in order.".to_string()
-                })?;
-                let title = params.title.clone();
-                let goal = params.goal.clone();
-                let fresh = params.fresh.unwrap_or(false);
-                let (revising, replaced) = plan::mutate_plan(sm, caller, move |current| {
-                    let existed = current.is_some();
-                    let next = if fresh {
-                        plan::apply_fresh_gated_plan(
-                            current,
-                            title.as_deref(),
-                            goal.as_deref(),
-                            &phases,
-                        )
-                    } else {
-                        plan::apply_gated_plan(current, title.as_deref(), goal.as_deref(), &phases)
-                    };
-                    next.map(|next| (next, (existed && !fresh, existed && fresh)))
-                })
-                .await
-                .map_err(|e| e.to_string())?;
-                Ok(if revising {
-                    "Plan revised.".to_string()
-                } else if replaced {
-                    "New plan declared in place of the finished one; its phases start empty. \
-                     Spawn into a phase with subagent phase:\"<id>\"."
-                        .to_string()
-                } else {
-                    "Plan declared. Spawn into a phase with subagent phase:\"<id>\".".to_string()
-                })
-            }
+            "plan" => self.declare_plan(caller, cap, params).await,
             "start" => {
                 let phase = require_phase()?;
                 plan::mutate_plan(sm, caller, |current| {
@@ -6272,12 +6305,180 @@ impl WorkspaceClient {
         }
     }
 
+    /// `action:"plan"`: declare or revise the caller's plan.
+    ///
+    /// The transition is dry-run on the stored plan first, so a plan it would
+    /// refuse (a changed gate, a held phase moved ahead of its gate, a gate
+    /// under 0.50) is refused before any decision model is opened. Then every
+    /// gate and phase monitor the plan ADDS is checked against this chat
+    /// ([`Self::check_added_supervision`]; nothing of the chat is sent). The
+    /// write re-runs the transition in one transaction and refuses a gate or
+    /// monitor those checks did not see, so a plan changed in between cannot
+    /// store one unchecked.
+    async fn declare_plan(
+        &self,
+        caller: &str,
+        cap: crate::privacy::CallCapability,
+        params: &WorkspaceOrchestrateParams,
+    ) -> Result<String, String> {
+        use crate::agents::orchestration_plan as plan;
+
+        let sm = &self.context.session_manager;
+        let phases = params
+            .phases
+            .clone()
+            .ok_or_else(|| "action \"plan\" needs `phases`: every phase, in order.".to_string())?;
+        let title = params.title.clone();
+        let goal = params.goal.clone();
+        let fresh = params.fresh.unwrap_or(false);
+        let transition = |current: Option<plan::OrchestrationPlan>| {
+            if fresh {
+                plan::apply_fresh_gated_plan(current, title.as_deref(), goal.as_deref(), &phases)
+            } else {
+                plan::apply_gated_plan(current, title.as_deref(), goal.as_deref(), &phases)
+            }
+        };
+
+        let stored = plan::load_plan(sm, caller)
+            .await
+            .map_err(|e| e.to_string())?;
+        let dry_run = transition(stored.clone())?;
+        let checked = AddedSupervision::of(stored.as_ref(), &dry_run, fresh);
+        let notes = self
+            .check_added_supervision(caller, cap.enforced(), &checked)
+            .await?;
+
+        let (revising, replaced, monitor_note) = plan::mutate_plan(sm, caller, |current| {
+            let existed = current.is_some();
+            let monitor_note = if existed && !fresh {
+                plan::revision_monitor_note(current.as_ref(), &phases)
+            } else {
+                None
+            };
+            let before = current.clone();
+            let next = transition(current)?;
+            if !AddedSupervision::of(before.as_ref(), &next, fresh).within(&checked) {
+                return Err(PLAN_CHANGED_WHILE_CHECKED.to_string());
+            }
+            Ok((next, (existed && !fresh, existed && fresh, monitor_note)))
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let mut reply = if revising {
+            "Plan revised.".to_string()
+        } else if replaced {
+            "New plan declared in place of the finished one; its phases start empty. \
+             Spawn into a phase with subagent phase:\"<id>\"."
+                .to_string()
+        } else {
+            "Plan declared. Spawn into a phase with subagent phase:\"<id>\".".to_string()
+        };
+        for note in monitor_note.map(str::to_string).into_iter().chain(notes) {
+            reply.push(' ');
+            reply.push_str(&note);
+        }
+        Ok(reply)
+    }
+
+    /// Whether this chat can run every gate and phase monitor a plan adds,
+    /// asked through [`crate::decision::DecisionService::check_model_use`]
+    /// with the chat as it is stored and the master switch as this call
+    /// sampled it. Nothing of the chat is sent.
+    ///
+    /// A gate whose model the chat may not use, or that no model could
+    /// answer, refuses the plan. A gate whose check failed for a reason that
+    /// could pass (a timeout, a server fault) is accepted with a note: it is
+    /// asked when the phase completes, and an evaluation that cannot run
+    /// never passes. Any failure of a phase monitor refuses the plan.
+    /// Uncalibrated sources are judged at evaluation, as before.
+    async fn check_added_supervision(
+        &self,
+        caller: &str,
+        enforced: bool,
+        added: &AddedSupervision,
+    ) -> Result<Vec<String>, String> {
+        use crate::decision::{DecisionSession, ModelSource};
+
+        if added.gates.is_empty() && added.monitors.is_empty() {
+            return Ok(Vec::new());
+        }
+        let session = DecisionSession::load(self.context.session_manager.clone(), caller, enforced)
+            .await
+            .map_err(|e| {
+                format!(
+                    "This chat could not be read, so the gates and monitors this plan adds could \
+                     not be checked ({e}). Nothing was changed."
+                )
+            })?;
+        let service = self.decision_service;
+        let mut notes = Vec::new();
+        for (phase_id, gate) in &added.gates {
+            match service
+                .check_model_use(
+                    &session,
+                    gate.model.as_ref(),
+                    &gate.questions,
+                    ModelSource::Named,
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(error) if error.is_transient() => notes.push(format!(
+                    "Phase \"{phase_id}\"'s gate model could not be checked just now ({}); the \
+                     gate is asked when the phase completes.",
+                    as_clause(&error.to_string())
+                )),
+                Err(error) => {
+                    return Err(format!(
+                        "Phase \"{phase_id}\"'s gate cannot be answered in this chat: {}. Declare \
+                         it without that model, or ask the person to set a decision model this \
+                         chat may use. Nothing was changed.",
+                        as_clause(&error.to_string())
+                    ))
+                }
+            }
+        }
+        for (phase_id, spec) in &added.monitors {
+            let refusal = |reason: &str| {
+                format!(
+                    "Phase \"{phase_id}\"'s monitor '{}' cannot run in this chat: {}. Nothing was \
+                     changed.",
+                    spec.name.trim(),
+                    as_clause(reason)
+                )
+            };
+            let criterion = spec
+                .to_criterion(caller, &std::collections::BTreeSet::new())
+                .map_err(|e| refusal(&e))?;
+            let question = criterion
+                .question_with_threshold()
+                .map_err(|e| refusal(&e))?;
+            let questions = indexmap::IndexMap::from([(criterion.id.clone(), question)]);
+            service
+                .check_model_use(
+                    &session,
+                    criterion.model.as_ref(),
+                    &questions,
+                    ModelSource::Named,
+                )
+                .await
+                .map_err(|e| refusal(&e.to_string()))?;
+        }
+        Ok(notes)
+    }
+
     /// `action:"complete"`, the barrier. The phase's children are read BEFORE
     /// the write and the transition is handed exactly the ids that were looked
     /// at, so a child recorded in between is refused rather than skipped over.
     ///
-    /// A phase with a decision gate is completed through [`Self::complete_gated`]
-    /// when the requested status is completed; a skip or a block never asks it.
+    /// Completing a phase as completed first asks the stored plan which path
+    /// it takes ([`crate::agents::orchestration_plan::gate_decision_needed`]):
+    /// a phase an earlier gate holds (or whose skip the person gave) is
+    /// refused with nothing asked; a phase whose gate the person passed closes
+    /// without asking it; a gated phase is completed through
+    /// [`Self::complete_gated`]. Every path that asks no gate goes through
+    /// [`crate::agents::orchestration_plan::apply_agent_complete`], which
+    /// refuses to skip a gated phase or complete one without its gate.
     async fn complete_phase(
         &self,
         caller: &str,
@@ -6322,31 +6523,51 @@ impl WorkspaceClient {
         let states = plan::phase_agent_states(sm, caller, &agents).await;
         let summary = params.summary.clone();
         if status == plan::PhaseStatus::Completed {
-            let gated = stored.as_ref().and_then(|p| {
-                p.phases
-                    .iter()
-                    .find(|ph| ph.id == phase)
-                    .filter(|ph| ph.gate.is_some())
-                    .cloned()
-            });
-            if let Some(gated) = gated {
-                return self
-                    .complete_gated(GatedCompletion {
-                        caller,
-                        phase: &gated,
-                        stored,
-                        states,
-                        summary,
-                        spawns_before,
-                        enforced: cap.enforced(),
-                        now,
-                    })
-                    .await;
+            let path = stored
+                .as_ref()
+                .map(|stored| plan::gate_decision_needed(stored, phase));
+            match path {
+                // An earlier gate holds the phase, or the person's skip of it
+                // stands: refused, and no gate is asked.
+                Some(plan::GatePath::Held(refusal)) => return Err(refusal),
+                Some(plan::GatePath::Ask) => {
+                    let gated = stored.as_ref().and_then(|p| {
+                        p.phases
+                            .iter()
+                            .find(|ph| ph.id == phase)
+                            .filter(|ph| ph.gate.is_some())
+                            .cloned()
+                    });
+                    if let Some(gated) = gated {
+                        return self
+                            .complete_gated(GatedCompletion {
+                                caller,
+                                phase: &gated,
+                                stored,
+                                states,
+                                summary,
+                                spawns_before,
+                                enforced: cap.enforced(),
+                                now,
+                            })
+                            .await;
+                    }
+                }
+                // The person passed the gate (it closes without asking it),
+                // the phase has none, or there is no plan or phase to close,
+                // which the transition below refuses.
+                Some(plan::GatePath::StandingPass) | None => {}
             }
         }
         plan::mutate_plan(sm, caller, |current| {
-            let closed =
-                plan::apply_complete(current, phase, status, summary.as_deref(), &states, now)?;
+            let closed = plan::apply_agent_complete(
+                current,
+                phase,
+                status,
+                summary.as_deref(),
+                &states,
+                now,
+            )?;
             plan::refuse_racing_spawns(
                 phase,
                 spawns_before,
@@ -6497,6 +6718,305 @@ impl WorkspaceClient {
         })
     }
 
+    /// `workspace_monitor`: decision-model monitors on a subagent this chat
+    /// spawned.
+    ///
+    /// The gates run in order, before anything about the target is read. The
+    /// target must be the caller's DIRECT subagent, read from the durable
+    /// parent link and asked whatever `workspace_child_scope_only` says,
+    /// because a monitor stops or steers another agent's work and only the
+    /// chat that delegated it answers for that work. Then §7: `list` reads
+    /// the target, `add` and `remove` write it. One sentence answers every
+    /// refusal, so the answers say nothing about a chat out of reach.
+    ///
+    /// An `add` from a private-capability chat into a public subagent is a
+    /// first crossing: the monitors' names and questions reach the subagent's
+    /// models. `WorkspaceCrossingInspector` shows them to the person before
+    /// this runs (the payload is `workspace_inspector::crossing_payload`'s
+    /// `workspace_monitor` arm), and once the monitors are stored the pair is
+    /// recorded as crossed, as `workspace_send_prompt` does.
+    ///
+    /// `add` then asks the decision service whether the subagent may run each
+    /// monitor's model, with `cap.enforced()` as the one sample of the master
+    /// switch, and [`crate::decision::settings::apply_agent_edit`] writes all
+    /// or nothing, refusing any change to a monitor the caller did not set.
+    async fn handle_monitor(
+        &self,
+        caller: &str,
+        cap: crate::privacy::CallCapability,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        // Kept before `parse_args` consumes it: the record half of the
+        // first-crossing disclosure asks `crossing_disclosure` with the SAME
+        // raw arguments the inspector asked it with (see `handle_send_prompt`).
+        let raw_arguments = arguments.clone();
+        let args: WorkspaceMonitorParams = parse_args(arguments)?;
+        let target = args.session_id.trim();
+        let action = args.action.trim().to_ascii_lowercase();
+        self.refuse_unless_direct_subagent_child(caller, target)
+            .await?;
+        let written_tier = if action == "list" {
+            self.refuse_unless_visible(cap, target).await?;
+            None
+        } else {
+            self.refuse_unless_writable(cap, target).await?
+        };
+        let text = match action.as_str() {
+            "list" => return self.list_monitors(caller, target).await,
+            "add" => {
+                let added = self
+                    .add_monitors(
+                        caller,
+                        target,
+                        cap.enforced(),
+                        args.monitors.unwrap_or_default(),
+                    )
+                    .await?;
+                // The disclosure's other half, taken only once the monitors
+                // are stored. A monitor's name and question are text this
+                // chat's model wrote, and they reach the subagent's models
+                // (its decision model on every check, its chat model when a
+                // steer monitor quotes them), so a private chat adding one to
+                // a public subagent is a first crossing. The card showed them
+                // before this ran; a refusal above records nothing, so the
+                // next attempt asks again. `remove` writes no text and
+                // records nothing.
+                Self::record_crossing_if_disclosed(
+                    cap,
+                    written_tier,
+                    caller,
+                    target,
+                    "workspace_monitor",
+                    raw_arguments.as_ref(),
+                );
+                added
+            }
+            "remove" => {
+                self.remove_monitors(caller, target, args.ids.unwrap_or_default())
+                    .await?
+            }
+            other => {
+                return Err(format!(
+                    "Unknown action \"{other}\". Use \"list\", \"add\" or \"remove\"."
+                ))
+            }
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    /// `workspace_monitor action:"list"`: every monitor on the subagent, who
+    /// set it and what it does.
+    async fn list_monitors(&self, caller: &str, target: &str) -> Result<CallToolResult, String> {
+        let settings = crate::decision::settings::load(&self.context.session_manager, target)
+            .await
+            .map_err(|e| format!("Subagent {target}'s monitors could not be read: {e}"))?;
+        let mut lines = vec![match settings.monitors.len() {
+            0 => format!("Subagent {target} has no monitors."),
+            1 => format!("Subagent {target} has 1 monitor:"),
+            n => format!("Subagent {target} has {n} monitors:"),
+        }];
+        let mut rows = Vec::with_capacity(settings.monitors.len());
+        for monitor in &settings.monitors {
+            let (owner, phrase) = monitor_owner(monitor, caller);
+            lines.push(format!(
+                "- '{}' (`{}`), {phrase}{}: it {}.",
+                monitor.name,
+                monitor.id,
+                if monitor.enabled { "" } else { ", turned off" },
+                monitor_rule_words(monitor, None)
+            ));
+            let mut row = serde_json::to_value(monitor).unwrap_or_else(|_| json!({}));
+            if let Some(fields) = row.as_object_mut() {
+                fields.insert("owner".into(), json!(owner));
+                fields.insert("ownerPhrase".into(), json!(phrase));
+                fields.insert("yours".into(), json!(owner == "you"));
+            }
+            rows.push(row);
+        }
+        if let Some(default) = &settings.default_model {
+            lines.push(format!(
+                "Its default decision model is {}.",
+                default.label()
+            ));
+        }
+        if !settings.monitors.is_empty() {
+            lines.push(
+                "You may change or remove only the monitors set by you; tell the person if one \
+                 of theirs should change."
+                    .to_string(),
+            );
+        }
+        Ok(CallToolResult {
+            content: vec![Content::text(lines.join("\n"))],
+            structured_content: Some(json!({
+                "kind": "workspace_monitor",
+                "sessionId": target,
+                "defaultModel": settings.default_model.as_ref().map(|m| m.label()),
+                "monitors": rows,
+            })),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    /// `workspace_monitor action:"add"`. Every monitor is built and checked
+    /// before anything is written, and the write is one transaction.
+    async fn add_monitors(
+        &self,
+        caller: &str,
+        target: &str,
+        enforced: bool,
+        specs: Vec<crate::decision::settings::MonitorSpec>,
+    ) -> Result<String, String> {
+        use crate::decision::settings::{self, AgentEdit, MAX_AGENT_MONITORS};
+
+        if specs.is_empty() || specs.len() > MAX_AGENT_MONITORS {
+            return Err(format!(
+                "action \"add\" needs `monitors`: 1 to {MAX_AGENT_MONITORS} monitors, not {}. \
+                 Nothing was changed.",
+                specs.len()
+            ));
+        }
+        let sm = &self.context.session_manager;
+        let stored = settings::load(sm, target)
+            .await
+            .map_err(|e| with_nothing_changed(&e.to_string()))?;
+        let mut taken: std::collections::BTreeSet<String> =
+            stored.monitors.iter().map(|m| m.id.clone()).collect();
+        let mut criteria = Vec::with_capacity(specs.len());
+        for spec in &specs {
+            let criterion = spec
+                .to_criterion(caller, &taken)
+                .map_err(|e| with_nothing_changed(&e))?;
+            taken.insert(criterion.id.clone());
+            criteria.push(criterion);
+        }
+
+        let session = crate::decision::DecisionSession::load(sm.clone(), target, enforced)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Subagent {target} could not be read, so its monitors could not be checked \
+                     ({e}). Nothing was changed."
+                )
+            })?;
+        for criterion in &criteria {
+            self.check_monitor_model(&session, criterion)
+                .await
+                .map_err(|reason| {
+                    format!(
+                        "Monitor '{}' cannot run on subagent {target}: {}. Nothing was changed.",
+                        criterion.name,
+                        as_clause(&reason)
+                    )
+                })?;
+        }
+        // Named for the reply only: the model a monitor that names none runs
+        // on now. It follows the subagent's default if that changes.
+        let default_label = if criteria.iter().any(|c| c.model.is_none()) {
+            self.decision_service
+                .resolve_for(Some(&session), None)
+                .await
+                .ok()
+                .map(|model| format!("{} (its default decision model)", model.model_ref().label()))
+        } else {
+            None
+        };
+
+        settings::apply_agent_edit(sm, target, caller, AgentEdit::Upsert(criteria.clone())).await?;
+        let mut lines: Vec<String> = criteria
+            .iter()
+            .map(|criterion| {
+                format!(
+                    "Monitor '{}' is on subagent {target}, set by you: it {}.",
+                    criterion.name,
+                    monitor_rule_words(criterion, default_label.as_deref())
+                )
+            })
+            .collect();
+        lines.push(if criteria.len() == 1 {
+            "A running subagent applies it from its next check.".to_string()
+        } else {
+            "A running subagent applies them from its next check.".to_string()
+        });
+        Ok(lines.join(" "))
+    }
+
+    /// Whether the subagent `session` may run `criterion` on its model: a
+    /// named model must be one the listing offers, and then every check a
+    /// decision makes before it sends (`check_model_use`; nothing of the chat
+    /// is sent). `Err` is the reason.
+    async fn check_monitor_model(
+        &self,
+        session: &crate::decision::DecisionSession,
+        criterion: &crate::decision::settings::MonitorCriterion,
+    ) -> Result<(), String> {
+        if let Some(wanted) = &criterion.model {
+            let listed = self.decision_service.models_for(Some(session)).await;
+            if !listed.iter().any(|(entry, _)| entry.answers_to(wanted)) {
+                return Err(format!(
+                    "{} is not a decision model this subagent can use. Call decision_models to \
+                     list the ones it can.",
+                    wanted.label()
+                ));
+            }
+        }
+        let question = criterion.question_with_threshold()?;
+        let questions = indexmap::IndexMap::from([(criterion.id.clone(), question)]);
+        self.decision_service
+            .check_model_use(
+                session,
+                criterion.model.as_ref(),
+                &questions,
+                crate::decision::ModelSource::Named,
+            )
+            .await
+            .map_err(|error| ask_for_install(&error))
+    }
+
+    /// `workspace_monitor action:"remove"`: the caller's own monitors, by id,
+    /// all or nothing.
+    async fn remove_monitors(
+        &self,
+        caller: &str,
+        target: &str,
+        ids: Vec<String>,
+    ) -> Result<String, String> {
+        use crate::decision::settings::{self, AgentEdit};
+
+        let ids: Vec<String> = ids
+            .iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+        if ids.is_empty() {
+            return Err(
+                "action \"remove\" needs `ids`: the ids of monitors you set, as \"list\" shows \
+                 them. Nothing was changed."
+                    .to_string(),
+            );
+        }
+        settings::apply_agent_edit(
+            &self.context.session_manager,
+            target,
+            caller,
+            AgentEdit::Remove(ids.clone()),
+        )
+        .await?;
+        let named: Vec<String> = ids.iter().map(|id| format!("`{id}`")).collect();
+        Ok(format!(
+            "Removed {} {} from subagent {target}. A running subagent stops checking {} from its \
+             next check.",
+            if ids.len() == 1 {
+                "monitor"
+            } else {
+                "monitors"
+            },
+            named.join(", "),
+            if ids.len() == 1 { "it" } else { "them" }
+        ))
+    }
+
     async fn panel_moim(&self, session_id: &str) -> Option<String> {
         let services = workspace_services::get()?;
         if !services.gui_attached() {
@@ -6530,6 +7050,162 @@ impl WorkspaceClient {
 
         panel_moim_from_reply(&reply)
     }
+}
+
+/// The refusal for a plan write whose gates or phase monitors are not the
+/// ones [`WorkspaceClient::check_added_supervision`] checked: the stored plan
+/// changed between the check and the write (a person set or removed a gate).
+const PLAN_CHANGED_WHILE_CHECKED: &str = "This chat's plan changed while its gates and monitors \
+     were being checked, so they were not checked against the plan as it is now. Call \
+     action \"plan\" again. Nothing was changed.";
+
+/// What a plan write adds that a decision model will be asked to run: each
+/// gate new to its phase, and each phase monitor its phase did not hold. A
+/// stored gate the revision keeps (the agent's, the person's or a workflow's)
+/// is not new, and neither is a monitor the phase already had.
+#[derive(Debug, Default)]
+struct AddedSupervision {
+    gates: Vec<(String, crate::agents::orchestration_plan::PhaseGate)>,
+    monitors: Vec<(String, crate::decision::settings::MonitorSpec)>,
+}
+
+impl AddedSupervision {
+    /// What `after` adds to `before`. With `fresh` the new plan replaces the
+    /// old one, so everything in it is new.
+    fn of(
+        before: Option<&crate::agents::orchestration_plan::OrchestrationPlan>,
+        after: &crate::agents::orchestration_plan::OrchestrationPlan,
+        fresh: bool,
+    ) -> Self {
+        let mut added = Self::default();
+        for phase in &after.phases {
+            let previous = before
+                .filter(|_| !fresh)
+                .and_then(|plan| plan.phases.iter().find(|p| p.id == phase.id));
+            if let Some(gate) = &phase.gate {
+                if previous.and_then(|p| p.gate.as_ref()) != Some(gate) {
+                    added.gates.push((phase.id.clone(), gate.clone()));
+                }
+            }
+            for monitor in &phase.monitors {
+                if !previous.is_some_and(|p| p.monitors.contains(monitor)) {
+                    added.monitors.push((phase.id.clone(), monitor.clone()));
+                }
+            }
+        }
+        added
+    }
+
+    /// Whether everything `self` adds was among what `checked` added.
+    fn within(&self, checked: &Self) -> bool {
+        self.gates.iter().all(|gate| checked.gates.contains(gate))
+            && self
+                .monitors
+                .iter()
+                .all(|monitor| checked.monitors.contains(monitor))
+    }
+}
+
+/// `text` as a clause that a sentence goes on after: trailing spaces and
+/// one final period removed.
+fn as_clause(text: &str) -> &str {
+    let text = text.trim_end();
+    text.strip_suffix('.').unwrap_or(text)
+}
+
+/// `why` as a refusal that ends in "Nothing was changed.".
+fn with_nothing_changed(why: &str) -> String {
+    let why = why.trim_end();
+    if why.ends_with("Nothing was changed.") {
+        why.to_string()
+    } else {
+        format!("{}. Nothing was changed.", as_clause(why))
+    }
+}
+
+/// A decision error as `workspace_monitor` reports it. When no model is
+/// there to use, the install advice is for the person: a download is their
+/// choice and no tool makes it, so it is quoted as something to ask them.
+fn ask_for_install(error: &crate::decision::DecisionError) -> String {
+    let advice = crate::decision::INSTALL_ADVICE;
+    let ask = format!("Ask the user to install one: {advice}");
+    let text = error.to_string();
+    if text.contains(advice) {
+        text.replacen(advice, &ask, 1)
+    } else if matches!(error, crate::decision::DecisionError::NoModel(_)) {
+        format!("{} {ask}", text.trim_end())
+    } else {
+        text
+    }
+}
+
+/// Who set `monitor`, as the caller reads it: a short key for the
+/// structured listing and the phrase for the text.
+fn monitor_owner(
+    monitor: &crate::decision::settings::MonitorCriterion,
+    caller: &str,
+) -> (&'static str, &'static str) {
+    use crate::decision::settings::MonitorOwner;
+    match (monitor.set_by, monitor.inherited_from.as_deref()) {
+        (MonitorOwner::Agent, _) if monitor.set_by_session.as_deref() == Some(caller) => {
+            ("you", "set by you")
+        }
+        (MonitorOwner::Agent, _) => ("another_agent", "set by another chat's agent"),
+        (MonitorOwner::Person, Some(from)) if from == caller => (
+            "person_from_this_chat",
+            "set by the person through this chat's monitors that also watch subagents",
+        ),
+        (MonitorOwner::Person, Some(_)) => (
+            "person_from_another_chat",
+            "set by the person through another chat's monitors that also watch subagents",
+        ),
+        (MonitorOwner::Person, None) => ("person", "set by the person"),
+    }
+}
+
+/// What `monitor` does, as the clause after "it": "stops the subagent when
+/// P(yes) reaches 0.80, checked after each of its steps with {model}".
+/// `default_label` names the model of a monitor that names none.
+fn monitor_rule_words(
+    monitor: &crate::decision::settings::MonitorCriterion,
+    default_label: Option<&str>,
+) -> String {
+    use crate::decision::settings::{MonitorAction, MonitorDirection, MonitorTiming};
+    use crate::decision::DecisionKind;
+
+    let does = match monitor.action {
+        MonitorAction::Stop => "stops the subagent",
+        MonitorAction::Steer => "steers the subagent",
+        MonitorAction::Notify => "posts a notice",
+    };
+    let watched = match (
+        &monitor.question.kind,
+        monitor.option.as_deref().map(str::trim),
+    ) {
+        (DecisionKind::Binary {}, Some(option)) if option.eq_ignore_ascii_case("no") => {
+            "P(no)".to_string()
+        }
+        (DecisionKind::Binary {}, _) | (_, None) => "P(yes)".to_string(),
+        (DecisionKind::Score { .. }, Some(level)) => format!("P(level {level} or higher)"),
+        (_, Some(option)) => format!("P({option})"),
+    };
+    let compared = match monitor.direction {
+        MonitorDirection::AtOrAbove => "reaches",
+        MonitorDirection::Below => "falls below",
+    };
+    let when = match monitor.timing {
+        MonitorTiming::PostIteration => "checked after each of its steps",
+        MonitorTiming::TurnEnd => "checked once, when its turn is about to end",
+    };
+    let model = match (&monitor.model, default_label) {
+        (Some(model), _) => model.label(),
+        (None, Some(label)) => label.to_string(),
+        (None, None) => "its default decision model".to_string(),
+    };
+    format!(
+        "{does} when {watched} {compared} {:.2}, {when} with {model}",
+        monitor.threshold
+    )
 }
 
 /// BR-71 §8.1 / decision 7: the user's focus-etiquette preference. When on, the
@@ -7219,6 +7895,10 @@ pub(crate) mod tests {
                 "{name} is in DISPATCHED_TOOL_NAMES but no dispatcher arm accepts it"
             );
         }
+        // Eleven since `workspace_monitor` landed: a write into another
+        // conversation, so a subagent must be refused it like the rest.
+        assert_eq!(DISPATCHED_TOOL_NAMES.len(), 11);
+        assert!(DISPATCHED_TOOL_NAMES.contains(&"workspace_monitor"));
     }
 
     #[tokio::test]
@@ -7364,8 +8044,12 @@ pub(crate) mod tests {
         // decision rather than to be nudged. The decision here was that an
         // agent which cannot be told it may look at the user's screen cannot
         // use the feature at all, and that both entries earn their line —
-        // they were cut to two lines each first, not after.
-        assert!(instructions.len() <= 2800, "injection budget (§6)");
+        // they were cut to two lines each first, not after. Raised 2800 →
+        // 2850 when `workspace_monitor` landed: an agent that is not told it
+        // can put a monitor on its subagent cannot find the tool when the
+        // person asks for one. Its entry is two short lines, and the headless
+        // sentence was shortened first to pay for most of it.
+        assert!(instructions.len() <= 2850, "injection budget (§6)");
         // The "no tool that is unimplemented AT A PHASE GATE may be named"
         // assertion that used to live here named `workspace_open` specifically
         // and was true only up to Task 24, which registers it. The general form
@@ -9612,19 +10296,21 @@ pub(crate) mod tests {
         // `may_write`. Together those are read_conversation, open (existing),
         // send_prompt, set_tools, close, watch, and the panel pair (which share
         // one handler). Exact counts make a new door fail this audit until its
-        // gate is chosen deliberately.
+        // gate is chosen deliberately. `workspace_monitor` added one of each,
+        // chosen by action: `list` reads its subagent, `add` and `remove`
+        // write it, both after its direct-child check.
         assert_eq!(
             production
                 .matches("self.refuse_unless_visible(cap,")
                 .count(),
-            5,
+            6,
             "the number of direct §7 read-gate sites changed"
         );
         assert_eq!(
             production
                 .matches("self.refuse_unless_writable(cap,")
                 .count(),
-            3,
+            4,
             "the number of §7 write-gate sites changed"
         );
 
@@ -9694,6 +10380,7 @@ pub(crate) mod tests {
             "\"workspace_set_tools\" => self.handle_set_tools(caller, cap,",
             "\"workspace_close\" => { self.handle_close(caller, cap,",
             "\"workspace_watch\" => { self.handle_watch( caller, cap,",
+            "\"workspace_monitor\" => { return Ok(self .handle_monitor(caller, cap,",
         ] {
             assert!(
                 compact.contains(arm),
@@ -14570,6 +15257,8 @@ pub(crate) mod tests {
                 artifacts: Vec::new(),
                 tokens: None,
                 human_intervened: false,
+                stopped_by_monitor: None,
+                decisions: None,
             });
 
             let watched = c
@@ -15421,8 +16110,12 @@ pub(crate) mod tests {
         // decision rather than to be nudged. The decision here was that an
         // agent which cannot be told it may look at the user's screen cannot
         // use the feature at all, and that both entries earn their line —
-        // they were cut to two lines each first, not after.
-        assert!(instructions.len() <= 2800, "injection budget (§6)");
+        // they were cut to two lines each first, not after. Raised 2800 →
+        // 2850 when `workspace_monitor` landed: an agent that is not told it
+        // can put a monitor on its subagent cannot find the tool when the
+        // person asks for one. Its entry is two short lines, and the headless
+        // sentence was shortened first to pay for most of it.
+        assert!(instructions.len() <= 2850, "injection budget (§6)");
     }
 
     #[tokio::test]
@@ -16506,6 +17199,7 @@ pub(crate) mod tests {
                 "subagent".to_string(),
                 "workspace_close".to_string(),
                 "workspace_list".to_string(),
+                "workspace_monitor".to_string(),
                 "workspace_open".to_string(),
                 "workspace_orchestrate".to_string(),
                 "workspace_read_conversation".to_string(),
@@ -16548,8 +17242,12 @@ pub(crate) mod tests {
         // decision rather than to be nudged. The decision here was that an
         // agent which cannot be told it may look at the user's screen cannot
         // use the feature at all, and that both entries earn their line —
-        // they were cut to two lines each first, not after.
-        assert!(instructions.len() <= 2800, "injection budget (§6)");
+        // they were cut to two lines each first, not after. Raised 2800 →
+        // 2850 when `workspace_monitor` landed: an agent that is not told it
+        // can put a monitor on its subagent cannot find the tool when the
+        // person asks for one. Its entry is two short lines, and the headless
+        // sentence was shortened first to pay for most of it.
+        assert!(instructions.len() <= 2850, "injection budget (§6)");
     }
 
     #[test]
@@ -17521,24 +18219,23 @@ pub(crate) mod tests {
             "no third ask"
         );
 
-        // A skip never asks the gate.
+        // A gated phase closes only through its gate (or the person): a skip
+        // is refused, and asks nothing.
         let skipped = orchestrate(
             &c,
             &parent,
             json!({ "action": "complete", "phase": "build", "status": "skipped" }),
         )
         .await;
-        assert_eq!(skipped.is_error, Some(false), "{}", result_text(&skipped));
+        let text = result_text(&skipped);
+        assert_eq!(skipped.is_error, Some(true), "{text}");
+        assert!(text.contains("closes only through its gate"), "{text}");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
-    /// Gate H on the gate path: a private chat's phase results never reach a
-    /// public decision model. The refusal is an error, which uses no attempt;
-    /// two in a row block the phase. Nothing is sent.
-    #[tokio::test]
-    async fn a_private_chats_gate_never_reaches_a_public_model_and_errors_block() {
+    fn cloud_model() -> crate::agents::decisions_extension::test_support::FakeModel {
         use crate::agents::decisions_extension::test_support::{entry, model};
-        let cloud = model(
+        model(
             entry(
                 "cloud",
                 crate::privacy::ProviderTier::Public,
@@ -17546,12 +18243,13 @@ pub(crate) mod tests {
                 crate::decision::DecisionAdapter::SystemOne,
             ),
             0.99,
-        );
-        let calls = cloud.calls.clone();
-        let (c, parent) = gated_client(vec![cloud]).await;
+        )
+    }
+
+    async fn make_private(c: &WorkspaceClient, session_id: &str) {
         c.context
             .session_manager
-            .update(&parent)
+            .update(session_id)
             .raise_privacy(
                 crate::privacy::SessionClassification::Private,
                 "test:private",
@@ -17559,7 +18257,21 @@ pub(crate) mod tests {
             .apply()
             .await
             .unwrap();
-        orchestrate(&c, &parent, gated_plan_args()).await;
+    }
+
+    /// Gate H on the gate path: a private chat's phase results never reach a
+    /// public decision model. The gate is declared while the chat is public,
+    /// when the public model may answer it; the chat then becomes private, so
+    /// the evaluation is refused. The refusal is an error, which uses no
+    /// attempt; two in a row block the phase. Nothing is sent.
+    #[tokio::test]
+    async fn a_private_chats_gate_never_reaches_a_public_model_and_errors_block() {
+        let cloud = cloud_model();
+        let calls = cloud.calls.clone();
+        let (c, parent) = gated_client(vec![cloud]).await;
+        let declared = orchestrate(&c, &parent, gated_plan_args()).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        make_private(&c, &parent).await;
         let complete = json!({ "action": "complete", "phase": "build" });
         let first = orchestrate(&c, &parent, complete.clone()).await;
         let text = result_text(&first);
@@ -17574,10 +18286,445 @@ pub(crate) mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
+    /// The gate's model is checked when the gate is declared: a private chat
+    /// cannot declare a gate a public model would answer, and nothing is
+    /// stored. The same gate on a model the chat may use is accepted.
+    #[tokio::test]
+    async fn a_private_chat_cannot_declare_a_gate_on_a_model_it_may_not_use() {
+        let cloud = cloud_model();
+        let local = local_model(0.9);
+        let calls = [cloud.calls.clone(), local.calls.clone()];
+        let (c, parent) = gated_client(vec![cloud, local]).await;
+        make_private(&c, &parent).await;
+
+        let mut args = gated_plan_args();
+        args["phases"][1]["gate"]["model"] = json!("test_decision/cloud");
+        let refused = orchestrate(&c, &parent, args).await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("Phase \"build\"'s gate cannot be answered in this chat"),
+            "{text}"
+        );
+        assert!(text.contains("Nothing was changed."), "{text}");
+        let stored =
+            crate::agents::orchestration_plan::load_plan(&c.context.session_manager, &parent)
+                .await
+                .unwrap();
+        assert!(stored.is_none(), "a refused plan stored nothing");
+
+        let mut args = gated_plan_args();
+        args["phases"][1]["gate"]["model"] = json!("test_decision/tev1");
+        let accepted = orchestrate(&c, &parent, args).await;
+        assert_eq!(accepted.is_error, Some(false), "{}", result_text(&accepted));
+        assert_eq!(
+            accepted.structured_content.unwrap()["phases"][1]["gate"]["model"],
+            "test_decision/tev1"
+        );
+        for counter in calls {
+            assert_eq!(
+                counter.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "a declaration asks no question"
+            );
+        }
+    }
+
+    /// A model source whose every model times out when opened: a check that
+    /// cannot finish now but might later.
+    struct TimingOutSource;
+
+    #[async_trait::async_trait]
+    impl crate::decision::DecisionModelSource for TimingOutSource {
+        async fn list(&self) -> Vec<crate::decision::DecisionModelEntry> {
+            vec![crate::agents::decisions_extension::test_support::entry(
+                "slow",
+                crate::privacy::ProviderTier::Private,
+                true,
+                crate::decision::DecisionAdapter::SystemOne,
+            )]
+        }
+        async fn open(
+            &self,
+            wanted: &crate::decision::DecisionModelRef,
+        ) -> crate::decision::DecisionResult<std::sync::Arc<dyn crate::decision::DecisionModel>>
+        {
+            Err(crate::decision::DecisionError::Timeout {
+                model: wanted.label(),
+                seconds: 5,
+            })
+        }
+    }
+
+    struct AdmitEveryModel;
+
+    #[async_trait::async_trait]
+    impl crate::decision::DecisionUseGate for AdmitEveryModel {
+        async fn check(
+            &self,
+            _: &crate::decision::DecisionSession,
+            _: &dyn crate::decision::DecisionModel,
+        ) -> crate::decision::DecisionResult<()> {
+            Ok(())
+        }
+    }
+
+    /// A gate whose model could not be checked for a reason that may pass is
+    /// accepted with a note: it is asked when the phase completes, where an
+    /// evaluation that cannot run never passes.
+    #[tokio::test]
+    async fn a_gate_whose_model_check_times_out_is_accepted_with_a_note() {
+        let (c, parent) = orchestrate_client().await;
+        let service: &'static crate::decision::DecisionService = Box::leak(Box::new(
+            crate::decision::DecisionService::new(std::sync::Arc::new(TimingOutSource))
+                .with_use_gate(std::sync::Arc::new(AdmitEveryModel))
+                .with_default_model(None),
+        ));
+        let c = c.with_decision_service(service);
+        let declared = orchestrate(&c, &parent, gated_plan_args()).await;
+        let text = result_text(&declared);
+        assert_eq!(declared.is_error, Some(false), "{text}");
+        assert!(
+            text.contains("Phase \"build\"'s gate model could not be checked just now"),
+            "{text}"
+        );
+        assert!(
+            declared.structured_content.unwrap()["phases"][1]["gate"].is_object(),
+            "the gate was stored"
+        );
+    }
+
+    /// A phase an earlier gate holds is refused with the hold, and no gate is
+    /// asked. That holds even for a phase whose own gate is exhausted: the
+    /// hold is what the agent must act on first.
+    #[tokio::test]
+    async fn a_held_phase_completes_without_asking_any_gate() {
+        let model = local_model(0.1);
+        let calls = model.calls.clone();
+        let (c, parent) = gated_client(vec![model]).await;
+        let gate = json!({ "questions": { "done": "Is the phase done?" }, "maxAttempts": 1 });
+        let declared = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "plan", "title": "Two gates", "phases": [
+                { "id": "research", "title": "Read", "gate": gate.clone() },
+                { "id": "build", "title": "Build", "gate": gate.clone() }
+            ] }),
+        )
+        .await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let refused = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("waits for phase \"research\"'s gate"),
+            "{text}"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // A gate that used its one attempt, then held by a gate declared
+        // before it: the hold answers, not the exhausted gate.
+        let (c, parent) = gated_client(vec![local_model(0.1)]).await;
+        orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "plan", "title": "One gate", "phases": [
+                { "id": "build", "title": "Build", "gate": gate.clone() }
+            ] }),
+        )
+        .await;
+        let blocked = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        assert!(
+            result_text(&blocked).contains("is blocked"),
+            "{}",
+            result_text(&blocked)
+        );
+        let revised = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "plan", "phases": [
+                { "id": "research", "title": "Read", "gate": gate.clone() },
+                { "id": "build", "title": "Build" }
+            ] }),
+        )
+        .await;
+        assert_eq!(revised.is_error, Some(false), "{}", result_text(&revised));
+        let held = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&held);
+        assert_eq!(held.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("waits for phase \"research\"'s gate"),
+            "{text}"
+        );
+    }
+
+    /// The person passed the gate while a subagent of the phase was still
+    /// working, so their pass stood. The agent's completion then closes the
+    /// phase without asking the gate, which would have failed it.
+    #[tokio::test]
+    async fn a_standing_person_pass_completes_without_asking_the_gate() {
+        use crate::agents::orchestration_plan as plan;
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::{SubagentResult, SubagentStatus};
+
+        let model = local_model(0.1);
+        let calls = model.calls.clone();
+        let (c, parent) = gated_client(vec![model]).await;
+        orchestrate(&c, &parent, gated_plan_args()).await;
+        let sm = &c.context.session_manager;
+        let child = subagent_of(&c, &parent).await;
+        plan::record_spawn(sm, &parent, "build", &child, Some("builder"))
+            .await
+            .unwrap();
+        let running =
+            BackgroundSubagent::register(&parent, &child, "builder", CancellationToken::new());
+
+        let outcome =
+            plan::person_gate_decision(sm, &parent, "build", plan::PersonGateChoice::Pass)
+                .await
+                .unwrap();
+        assert!(!outcome.applied, "{}", outcome.message);
+        assert!(outcome.message.contains("stands"), "{}", outcome.message);
+
+        let mut result = SubagentResult::from_error("unused");
+        result.status = SubagentStatus::Completed;
+        result.summary = "Built the parser".to_string();
+        running.complete(result);
+
+        let completed = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&completed);
+        assert_eq!(completed.is_error, Some(false), "{text}");
+        assert!(
+            text.contains("The person passed this phase's gate"),
+            "{text}"
+        );
+        assert_eq!(
+            completed.structured_content.unwrap()["phases"][1]["status"],
+            "completed"
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// A gate binds the agent: the tool cannot change it, cannot add one under
+    /// 0.50, and an unchanged repeat keeps it.
+    #[tokio::test]
+    async fn the_agent_cannot_redeclare_a_gate_through_the_tool() {
+        let (c, parent) = gated_client(vec![local_model(0.9)]).await;
+        orchestrate(&c, &parent, gated_plan_args()).await;
+
+        let mut changed = gated_plan_args();
+        changed["phases"][1]["gate"]["threshold"] = json!(0.0);
+        let refused = orchestrate(&c, &parent, changed).await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(text.contains("already has a gate"), "{text}");
+
+        let mut low = gated_plan_args();
+        low["phases"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "id": "check", "title": "Check", "gate": {
+                "questions": { "ok": "Is it ok?" }, "threshold": 0.3 } }));
+        let refused = orchestrate(&c, &parent, low).await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(text.contains("needs at least 0.50"), "{text}");
+
+        let repeated = orchestrate(&c, &parent, gated_plan_args()).await;
+        assert_eq!(repeated.is_error, Some(false), "{}", result_text(&repeated));
+        let snapshot = repeated.structured_content.unwrap();
+        assert_eq!(snapshot["phases"][1]["gate"]["threshold"], 0.8);
+        assert_eq!(snapshot["phases"][1]["gate"]["owner"], "agent");
+    }
+
+    /// A workflow's gate binds the agent too, whatever its threshold: the agent
+    /// may repeat it unchanged but not change it, and the refusal says who set
+    /// it.
+    #[tokio::test]
+    async fn the_agent_cannot_change_a_workflow_gate() {
+        use crate::agents::orchestration_plan as plan;
+
+        let (c, parent) = gated_client(vec![local_model(0.9)]).await;
+        let phases: Vec<plan::OrchestratePhaseInput> = serde_json::from_value(json!([
+            { "id": "build", "title": "Build it", "gate": {
+                "questions": { "tests_pass": "Do the tests pass?" }, "threshold": 0.3 } }
+        ]))
+        .unwrap();
+        let seeded =
+            plan::apply_workflow_plan("From a workflow", None, phases, chrono::Utc::now()).unwrap();
+        c.context
+            .session_manager
+            .update_extension_state(&parent, plan::PLAN_STATE, plan::PLAN_VERSION, |_| {
+                Ok(plan::plan_record(&seeded))
+            })
+            .await
+            .unwrap();
+
+        let same = json!({ "action": "plan", "phases": [
+            { "id": "build", "title": "Build it", "gate": {
+                "questions": { "tests_pass": "Do the tests pass?" }, "threshold": 0.3 } }
+        ] });
+        let kept = orchestrate(&c, &parent, same.clone()).await;
+        assert_eq!(kept.is_error, Some(false), "{}", result_text(&kept));
+        assert_eq!(
+            kept.structured_content.unwrap()["phases"][0]["gate"]["owner"],
+            "workflow"
+        );
+
+        let mut changed = same;
+        changed["phases"][0]["gate"]["threshold"] = json!(0.9);
+        let refused = orchestrate(&c, &parent, changed).await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(text.contains("set by the workflow"), "{text}");
+    }
+
+    /// A phase's monitors are checked against the chat when the plan is
+    /// written: a private chat cannot give its phase a monitor a public model
+    /// would run, and nothing is stored.
+    #[tokio::test]
+    async fn a_phase_monitor_naming_a_model_the_chat_may_not_use_is_refused_at_plan() {
+        let (c, parent) = gated_client(vec![cloud_model(), local_model(0.9)]).await;
+        make_private(&c, &parent).await;
+        let plan_with = |model: &str| {
+            json!({ "action": "plan", "title": "Watched", "phases": [
+                { "id": "research", "title": "Read the code", "monitors": [
+                    { "name": "Off task", "question": "Is the agent off task?",
+                      "threshold": 0.8, "action": "stop", "model": model }
+                ] }
+            ] })
+        };
+        let refused = orchestrate(&c, &parent, plan_with("test_decision/cloud")).await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("Phase \"research\"'s monitor 'Off task' cannot run in this chat"),
+            "{text}"
+        );
+        assert!(text.contains("Nothing was changed."), "{text}");
+        let sm = &c.context.session_manager;
+        assert!(crate::agents::orchestration_plan::load_plan(sm, &parent)
+            .await
+            .unwrap()
+            .is_none());
+
+        let accepted = orchestrate(&c, &parent, plan_with("test_decision/tev1")).await;
+        assert_eq!(accepted.is_error, Some(false), "{}", result_text(&accepted));
+        let monitors = crate::agents::orchestration_plan::phase_monitors(sm, &parent, "research")
+            .await
+            .unwrap();
+        assert_eq!(monitors.len(), 1);
+    }
+
+    /// Phase monitors reach only later spawns, so a revision that changes the
+    /// monitors of a phase that already has subagents says so.
+    #[tokio::test]
+    async fn a_revision_changing_a_busy_phases_monitors_says_they_are_not_retroactive() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        let plan_with = |monitors: serde_json::Value| {
+            json!({ "action": "plan", "title": "Watched", "phases": [
+                { "id": "research", "title": "Read the code", "monitors": monitors }
+            ] })
+        };
+        let declared = orchestrate(&c, &parent, plan_with(json!([]))).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let child = subagent_of(&c, &parent).await;
+        crate::agents::orchestration_plan::record_spawn(
+            &c.context.session_manager,
+            &parent,
+            "research",
+            &child,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let revised = orchestrate(&c, &parent, plan_with(json!([off_task(None)]))).await;
+        let text = result_text(&revised);
+        assert_eq!(revised.is_error, Some(false), "{text}");
+        assert!(text.starts_with("Plan revised."), "{text}");
+        assert!(
+            text.contains(crate::agents::orchestration_plan::PHASE_MONITORS_NOT_RETROACTIVE),
+            "{text}"
+        );
+    }
+
+    /// What a plan write adds, which is what the decision service is asked
+    /// about: a new gate and a new phase monitor, never a stored gate the
+    /// revision keeps or a monitor the phase already holds. The write refuses
+    /// a plan that adds anything the checks did not see.
+    #[test]
+    fn added_supervision_is_what_a_revision_adds_and_nothing_else() {
+        use crate::agents::orchestration_plan as plan;
+
+        let phases = |value: serde_json::Value| -> Vec<plan::OrchestratePhaseInput> {
+            serde_json::from_value(value).unwrap()
+        };
+        let gate = json!({ "questions": { "done": "Is it done?" } });
+        let watch = json!([{ "name": "Off task", "question": "Is it off task?",
+                             "threshold": 0.8, "action": "stop" }]);
+        let first = plan::apply_gated_plan(
+            None,
+            Some("Plan"),
+            None,
+            &phases(json!([
+                { "id": "build", "title": "Build", "gate": gate.clone(), "monitors": watch.clone() }
+            ])),
+        )
+        .unwrap();
+        let declared = AddedSupervision::of(None, &first, false);
+        assert_eq!((declared.gates.len(), declared.monitors.len()), (1, 1));
+
+        // The same gate and monitors again, plus a new gated phase.
+        let revised = plan::apply_gated_plan(
+            Some(first.clone()),
+            None,
+            None,
+            &phases(json!([
+                { "id": "build", "title": "Build", "gate": gate.clone(), "monitors": watch.clone() },
+                { "id": "check", "title": "Check", "gate": gate.clone() }
+            ])),
+        )
+        .unwrap();
+        let added = AddedSupervision::of(Some(&first), &revised, false);
+        assert_eq!(added.gates.len(), 1);
+        assert_eq!(added.gates[0].0, "check");
+        assert!(added.monitors.is_empty());
+        // A fresh plan replaces the old one, so all of it is new.
+        let fresh = AddedSupervision::of(Some(&first), &revised, true);
+        assert_eq!((fresh.gates.len(), fresh.monitors.len()), (2, 1));
+
+        assert!(added.within(&fresh));
+        assert!(!fresh.within(&added), "an unchecked addition is refused");
+        assert!(AddedSupervision::default().within(&added));
+    }
+
     #[test]
     fn the_orchestrate_description_and_schema_teach_gates() {
         assert!(ORCHESTRATE_DESCRIPTION.contains("decision gate"));
         assert!(ORCHESTRATE_DESCRIPTION.contains("never passes"));
+        assert!(ORCHESTRATE_DESCRIPTION.contains("binds you"));
+        assert!(ORCHESTRATE_DESCRIPTION.contains("0.5"));
         let schema = serde_json::to_value(schema_for!(WorkspaceOrchestrateParams)).unwrap();
         let text = schema.to_string();
         for field in [
@@ -17586,8 +18733,478 @@ pub(crate) mod tests {
             "threshold",
             "max_attempts",
             "allow_uncalibrated",
+            "monitors",
         ] {
             assert!(text.contains(field), "the schema lost {field}: {text}");
+        }
+        assert!(text.contains("cannot be changed"), "{text}");
+    }
+
+    // ---------------------------------------------------------------------
+    // workspace_monitor
+    // ---------------------------------------------------------------------
+
+    /// A subagent of `parent`, as a spawn stamps it.
+    async fn subagent_of(c: &WorkspaceClient, parent: &str) -> String {
+        let sm = &c.context.session_manager;
+        let child = sm
+            .create_session(
+                std::env::temp_dir(),
+                "Subagent: worker".to_string(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        sm.update(&child.id)
+            .parent_session_id(Some(parent.to_string()))
+            .apply()
+            .await
+            .unwrap();
+        child.id
+    }
+
+    async fn monitor_tool(
+        c: &WorkspaceClient,
+        caller: &str,
+        cap: crate::privacy::CallCapability,
+        args: serde_json::Value,
+    ) -> CallToolResult {
+        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+        c.call_tool(
+            "workspace_monitor",
+            Some(args),
+            crate::agents::mcp_client::McpMeta::new(caller, cap),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn off_task(model: Option<&str>) -> serde_json::Value {
+        let mut spec = json!({
+            "name": "Off task",
+            "question": "Is the agent editing files outside src/?",
+            "threshold": 0.8,
+            "action": "stop"
+        });
+        if let Some(model) = model {
+            spec["model"] = json!(model);
+        }
+        spec
+    }
+
+    async fn stored_monitors(
+        c: &WorkspaceClient,
+        session_id: &str,
+    ) -> Vec<crate::decision::settings::MonitorCriterion> {
+        crate::decision::settings::load(&c.context.session_manager, session_id)
+            .await
+            .unwrap()
+            .monitors
+    }
+
+    /// The whole loop: add a monitor, list it, remove it. The monitor is the
+    /// caller's, and the replies say what it does and on which model.
+    #[tokio::test]
+    async fn workspace_monitor_adds_lists_and_removes_its_own_monitor() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        let child = subagent_of(&c, &parent).await;
+        let cap = crate::privacy::CallCapability::for_test_restricted();
+
+        let added = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "add", "session_id": child, "monitors": [off_task(None)] }),
+        )
+        .await;
+        let text = result_text(&added);
+        assert_eq!(added.is_error, Some(false), "{text}");
+        assert_eq!(
+            text,
+            format!(
+                "Monitor 'Off task' is on subagent {child}, set by you: it stops the subagent \
+                 when P(yes) reaches 0.80, checked after each of its steps with \
+                 test_decision/tev1 (its default decision model). A running subagent applies \
+                 it from its next check."
+            )
+        );
+        let stored = stored_monitors(&c, &child).await;
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].set_by,
+            crate::decision::settings::MonitorOwner::Agent
+        );
+        assert_eq!(stored[0].set_by_session.as_deref(), Some(parent.as_str()));
+        assert_eq!(stored[0].id, "off-task");
+
+        let listed = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "list", "session_id": child }),
+        )
+        .await;
+        let text = result_text(&listed);
+        assert!(
+            text.contains("'Off task' (`off-task`), set by you"),
+            "{text}"
+        );
+        let structured = listed.structured_content.unwrap();
+        assert_eq!(structured["kind"], "workspace_monitor");
+        assert_eq!(structured["monitors"][0]["owner"], "you");
+        assert_eq!(structured["monitors"][0]["yours"], true);
+
+        let removed = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "remove", "session_id": child, "ids": ["off-task"] }),
+        )
+        .await;
+        let text = result_text(&removed);
+        assert_eq!(removed.is_error, Some(false), "{text}");
+        assert!(text.contains("Removed monitor `off-task`"), "{text}");
+        assert!(stored_monitors(&c, &child).await.is_empty());
+    }
+
+    /// Only the chat that spawned a subagent reaches its monitors: a peer
+    /// chat, a grandchild and another chat's subagent all get the one
+    /// out-of-reach sentence, for every action.
+    #[tokio::test]
+    async fn workspace_monitor_reaches_only_direct_children() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        let sm = c.context.session_manager.clone();
+        let child = subagent_of(&c, &parent).await;
+        let grandchild = subagent_of(&c, &child).await;
+        let peer = sm
+            .create_session(
+                std::env::temp_dir(),
+                "peer".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        let other_parent = sm
+            .create_session(
+                std::env::temp_dir(),
+                "other".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        let strangers_child = subagent_of(&c, &other_parent).await;
+        let cap = crate::privacy::CallCapability::for_test_restricted();
+
+        for target in [&peer, &grandchild, &strangers_child] {
+            for args in [
+                json!({ "action": "list", "session_id": target }),
+                json!({ "action": "add", "session_id": target, "monitors": [off_task(None)] }),
+                json!({ "action": "remove", "session_id": target, "ids": ["off-task"] }),
+                json!({ "action": "dance", "session_id": target }),
+            ] {
+                let refused = monitor_tool(&c, &parent, cap, args.clone()).await;
+                let text = result_text(&refused);
+                assert_eq!(refused.is_error, Some(true), "{args}: {text}");
+                assert!(
+                    text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+                    "{args}: {text}"
+                );
+            }
+            assert!(stored_monitors(&c, target).await.is_empty());
+        }
+
+        let listed = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "list", "session_id": child }),
+        )
+        .await;
+        assert_eq!(listed.is_error, Some(false), "{}", result_text(&listed));
+    }
+
+    /// A person's monitor on the subagent is never the agent's to change:
+    /// removing it, or reusing its id, is refused and the record is unchanged.
+    #[tokio::test]
+    async fn workspace_monitor_refuses_a_persons_monitor() {
+        use crate::decision::settings::{self, DecisionSettings, MonitorOwner, MonitorSpec};
+
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        let child = subagent_of(&c, &parent).await;
+        let cap = crate::privacy::CallCapability::for_test_restricted();
+        let spec: MonitorSpec = serde_json::from_value(json!({
+            "name": "Person guard",
+            "id": "person-guard",
+            "question": "Is the agent deleting files?",
+            "threshold": 0.9,
+            "action": "stop"
+        }))
+        .unwrap();
+        let mut persons = spec
+            .to_criterion("unused", &std::collections::BTreeSet::new())
+            .unwrap();
+        persons.set_by = MonitorOwner::Person;
+        persons.set_by_session = None;
+        let before = DecisionSettings {
+            default_model: None,
+            monitors: vec![persons],
+        };
+        settings::save(&c.context.session_manager, &child, before.clone())
+            .await
+            .unwrap();
+
+        let removed = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "remove", "session_id": child, "ids": ["person-guard"] }),
+        )
+        .await;
+        let text = result_text(&removed);
+        assert_eq!(removed.is_error, Some(true), "{text}");
+        assert!(text.contains("was set by the person"), "{text}");
+
+        let mut reuse = off_task(None);
+        reuse["id"] = json!("person-guard");
+        let replaced = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "add", "session_id": child, "monitors": [reuse] }),
+        )
+        .await;
+        let text = result_text(&replaced);
+        assert_eq!(replaced.is_error, Some(true), "{text}");
+        assert!(text.contains("was set by the person"), "{text}");
+        assert_eq!(
+            settings::load(&c.context.session_manager, &child)
+                .await
+                .unwrap(),
+            before
+        );
+
+        let listed = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "list", "session_id": child }),
+        )
+        .await;
+        let text = result_text(&listed);
+        assert!(text.contains("set by the person"), "{text}");
+        let structured = listed.structured_content.unwrap();
+        assert_eq!(structured["monitors"][0]["owner"], "person");
+        assert_eq!(structured["monitors"][0]["yours"], false);
+    }
+
+    /// The monitor's model is checked against the SUBAGENT before anything is
+    /// written: a public model for a private subagent is refused, as is a
+    /// model the listing does not offer, and a private one is accepted.
+    #[tokio::test]
+    async fn workspace_monitor_refuses_a_public_model_for_a_private_child() {
+        let cloud = cloud_model();
+        let cloud_calls = cloud.calls.clone();
+        let (c, parent) = gated_client(vec![cloud, local_model(0.5)]).await;
+        let child = subagent_of(&c, &parent).await;
+        make_private(&c, &parent).await;
+        make_private(&c, &child).await;
+        let cap =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+
+        let refused = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "add", "session_id": child,
+                    "monitors": [off_task(Some("test_decision/cloud"))] }),
+        )
+        .await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(&format!(
+                "Monitor 'Off task' cannot run on subagent {child}"
+            )),
+            "{text}"
+        );
+        assert!(text.contains("Nothing was changed."), "{text}");
+        assert!(stored_monitors(&c, &child).await.is_empty());
+
+        let unknown = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "add", "session_id": child,
+                    "monitors": [off_task(Some("test_decision/nope"))] }),
+        )
+        .await;
+        let text = result_text(&unknown);
+        assert_eq!(unknown.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(
+                "test_decision/nope is not a decision model this subagent can use. Call \
+                 decision_models to list the ones it can."
+            ),
+            "{text}"
+        );
+        assert!(stored_monitors(&c, &child).await.is_empty());
+
+        let accepted = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "add", "session_id": child,
+                    "monitors": [off_task(Some("test_decision/tev1"))] }),
+        )
+        .await;
+        assert_eq!(accepted.is_error, Some(false), "{}", result_text(&accepted));
+        assert_eq!(stored_monitors(&c, &child).await.len(), 1);
+        assert_eq!(cloud_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// With no decision model at all, the refusal asks the agent to have the
+    /// person install one, rather than suggesting it could.
+    #[tokio::test]
+    async fn workspace_monitor_with_no_model_asks_the_person_to_install_one() {
+        let (c, parent) = gated_client(Vec::new()).await;
+        let child = subagent_of(&c, &parent).await;
+        let refused = monitor_tool(
+            &c,
+            &parent,
+            crate::privacy::CallCapability::for_test_restricted(),
+            json!({ "action": "add", "session_id": child, "monitors": [off_task(None)] }),
+        )
+        .await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(&format!(
+                "Ask the user to install one: {}",
+                crate::decision::INSTALL_ADVICE
+            )),
+            "{text}"
+        );
+        assert!(stored_monitors(&c, &child).await.is_empty());
+    }
+
+    /// **A private chat's monitor on a public subagent is a first crossing.**
+    ///
+    /// The monitor's name and question are prose the private chat's model
+    /// wrote, and they reach the public subagent's models. The card half
+    /// (`WorkspaceCrossingInspector`, through `crossing_payload`'s
+    /// `workspace_monitor` arm) is tested in `workspace_inspector`; this is the
+    /// record half, driven through the real handler. An add that lands is
+    /// stored and marks the pair as crossed, so the person is not asked again
+    /// for it. Nothing else does: a public caller's add (no crossing), a
+    /// `remove` (no text) and a refused add (nothing landed) all leave the
+    /// disclosure owed.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_private_chats_monitor_on_a_public_subagent_records_the_crossing_once_stored() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        let child = subagent_of(&c, &parent).await;
+        let public = crate::privacy::CallCapability::for_test_restricted();
+        let private =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        crate::privacy::crossing::reset_for_test();
+        let owed = || {
+            crate::privacy::crossing::needs_disclosure(
+                crate::privacy::ProviderTier::Private,
+                crate::privacy::SessionClassification::Public,
+                &parent,
+                &child,
+            )
+        };
+        assert!(owed(), "precondition: the pair has not crossed yet");
+
+        // While the chat was public: no crossing, nothing recorded.
+        let mut earlier = off_task(None);
+        earlier["name"] = json!("Earlier");
+        let added = monitor_tool(
+            &c,
+            &parent,
+            public,
+            json!({ "action": "add", "session_id": child, "monitors": [earlier] }),
+        )
+        .await;
+        assert_eq!(added.is_error, Some(false), "{}", result_text(&added));
+        assert!(owed(), "a public chat's add recorded a crossing");
+
+        // A remove writes no text.
+        let removed = monitor_tool(
+            &c,
+            &parent,
+            private,
+            json!({ "action": "remove", "session_id": child, "ids": ["earlier"] }),
+        )
+        .await;
+        assert_eq!(removed.is_error, Some(false), "{}", result_text(&removed));
+        assert!(owed(), "a remove recorded a crossing it never disclosed");
+
+        // A refused add stores nothing and records nothing, so the retry asks.
+        let refused = monitor_tool(
+            &c,
+            &parent,
+            private,
+            json!({ "action": "add", "session_id": child,
+                    "monitors": [off_task(Some("test_decision/nope"))] }),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true), "{}", result_text(&refused));
+        assert!(stored_monitors(&c, &child).await.is_empty());
+        assert!(owed(), "a refused add marked the pair as crossed");
+
+        // The add the person approved lands, and the pair has now crossed.
+        let landed = monitor_tool(
+            &c,
+            &parent,
+            private,
+            json!({ "action": "add", "session_id": child, "monitors": [off_task(None)] }),
+        )
+        .await;
+        assert_eq!(landed.is_error, Some(false), "{}", result_text(&landed));
+        assert!(
+            !owed(),
+            "an approved monitor landed without recording the crossing, so the person \
+             would be asked again for a pair they already approved"
+        );
+        let stored = stored_monitors(&c, &child).await;
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].id, "off-task");
+        crate::privacy::crossing::reset_for_test();
+    }
+
+    /// A subagent may not set monitors on anyone: `workspace_monitor` is in
+    /// the list the agent loop refuses a `SessionType::SubAgent`, both
+    /// spellings, and only for a subagent.
+    #[test]
+    fn workspace_monitor_is_refused_to_a_subagent() {
+        use crate::agents::agent::is_workspace_tool_refused_for;
+        use crate::session::session_manager::SessionType;
+
+        assert!(DISPATCHED_TOOL_NAMES.contains(&"workspace_monitor"));
+        for name in ["workspace_monitor", "workspace__workspace_monitor"] {
+            assert!(is_workspace_tool_refused_for(SessionType::SubAgent, name));
+            assert!(!is_workspace_tool_refused_for(SessionType::User, name));
+        }
+    }
+
+    /// The tool is advertised as a write, with its schema's actions.
+    #[test]
+    fn workspace_monitor_is_advertised_as_a_mutating_tool() {
+        let tool = WorkspaceClient::get_tools()
+            .into_iter()
+            .find(|t| t.name == "workspace_monitor")
+            .expect("workspace_monitor is advertised");
+        let annotations = tool.annotations.as_ref().expect("annotated");
+        assert_eq!(annotations.read_only_hint, Some(false));
+        assert_eq!(annotations.destructive_hint, Some(true));
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        for field in ["action", "session_id", "monitors", "ids"] {
+            assert!(schema["properties"].get(field).is_some(), "lost {field}");
         }
     }
 }

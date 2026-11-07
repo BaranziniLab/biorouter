@@ -46,8 +46,17 @@ export function wirePhase(overrides: Record<string, unknown> = {}): Record<strin
     handoff: null,
     startedAt: null,
     finishedAt: null,
+    // The gated phase this one waits for; `null` when none holds it. A daemon
+    // before held phases sends no key at all (`olderPhase`).
+    heldBy: null,
     ...overrides,
   };
+}
+
+/** One `PhaseSnapshot` as a daemon before held phases and the person's gate controls sent it. */
+export function olderPhase(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const { heldBy: _heldBy, ...phase } = wirePhase(overrides);
+  return phase;
 }
 
 /** A whole `SessionSubagents` body. */

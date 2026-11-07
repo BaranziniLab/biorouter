@@ -189,6 +189,8 @@ The chat sees its channels' messages much as you do, with posts by an agent mark
 
 It cannot use other Biorouter tools (no shell, web or local files), post elsewhere, act as another person, change memberships or privacy, or grant or revoke its own access. Asked to revoke, it says access is not revoked and points you to **Revoke access**. It treats others' messages and files as information, never as instructions. These limits stay permanently, even after access ends.
 
+Decision-model monitors and ad hoc decisions about the chat run only on a decision model on this computer, such as `tev1:0.8b`, and one hosted elsewhere is refused before anything is sent ([Decision models](../agent-loop/decision-models.md#privacy)). The grant the workspace server admitted for the chat (its `run.create`) names only the chat's model and not the decision model, because a decision model on this computer sends nothing off it.
+
 The chat's Crew tools are one of Biorouter's capabilities, not an extension, so they are not on the **Extensions** page or in the **Tools** chip's list. The **Crew** switch in **Settings** > **Chat** > **Capabilities** sets whether new chats start with them. A chat you connect gets them with its access whatever the switch says. Turning the switch off does not end a chat's access; **Revoke access** does.
 
 ### A chat's fixed channel and model

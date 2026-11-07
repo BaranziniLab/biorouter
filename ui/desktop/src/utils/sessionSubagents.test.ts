@@ -11,7 +11,9 @@ import {
   SETUP_COUNT_KINDS,
   formatElapsed,
   hasActiveSubagent,
+  heldByTitle,
   inSpawnOrder,
+  isClosedPhase,
   isQuiet,
   openSubagentTab,
   parseSessionSubagents,
@@ -28,7 +30,7 @@ import {
   type PhaseSnapshot,
   type SubagentRow,
 } from './sessionSubagents';
-import { wireRow } from './sessionSubagents.fixture';
+import { olderPhase, wirePhase, wireRow } from './sessionSubagents.fixture';
 
 function row(overrides: Record<string, unknown> = {}): SubagentRow {
   return parseSessionSubagents({ parentSessionId: 'p', subagents: [wireRow(overrides)] })!
@@ -198,6 +200,51 @@ describe('parseSessionSubagents', () => {
       failed: 0,
       quiet: 0,
     });
+  });
+
+  it('reads which gated phase holds a phase, tolerantly, and says it by that phase’s title', () => {
+    const data = parseSessionSubagents({
+      parentSessionId: 'p',
+      subagents: [],
+      plan: {
+        title: 'Moon facts',
+        revision: 1,
+        phases: [
+          wirePhase({ id: 'research', title: 'Research', status: 'in_progress' }),
+          wirePhase({ id: 'write', title: 'Write', heldBy: 'research' }),
+          wirePhase({ id: 'review', title: 'Review', heldBy: 'gone-phase' }),
+          wirePhase({ id: 'ship', title: 'Ship', heldBy: 7 }),
+          olderPhase({ id: 'old', title: 'Old' }),
+          wirePhase({ id: 'closed', title: 'Closed', status: 'completed', heldBy: 'research' }),
+        ],
+      },
+    })!;
+    const phases = data.plan!.phases;
+    expect(phases.map((phase) => phase.heldBy)).toEqual([
+      null,
+      'research',
+      'gone-phase',
+      null,
+      null,
+      'research',
+    ]);
+    expect(phases.map((phase) => heldByTitle(data.plan, phase))).toEqual([
+      null,
+      'Research',
+      // A holder the plan no longer lists is named by its id.
+      'gone-phase',
+      null,
+      null,
+      // A closed phase waits for nothing.
+      null,
+    ]);
+    expect(isClosedPhase(phases[5])).toBe(true);
+    expect(isClosedPhase(phases[1])).toBe(false);
+  });
+
+  it('knows the snapshot field that names a held phase’s holder, read from the Rust side', () => {
+    // `PhaseSnapshot.held_by`, camelCased on the wire.
+    expect(PLAN_RS).toMatch(/pub held_by: Option<String>,/);
   });
 
   it('answers null for a body that is not an object', () => {

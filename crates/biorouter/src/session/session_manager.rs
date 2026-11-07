@@ -2262,6 +2262,27 @@ impl SessionManager {
             .await
     }
 
+    /// [`Self::get_extension_state`] as stored JSON text, cut out of the row
+    /// by SQLite, so the rest of `extension_data` (orchestration plans, to-do
+    /// lists) is never parsed. For a reader that polls one key and only
+    /// needs to parse it when its text changed (the decision monitors read
+    /// their settings at every step of a turn).
+    ///
+    /// The text is SQLite's minified rendering of the value, which is stable
+    /// for as long as the stored value is. `Ok(None)` when the session does
+    /// not exist, has no such key, or holds JSON `null` under it (a cleared
+    /// key, as in [`Self::get_extension_state`]).
+    pub async fn get_extension_state_json(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+    ) -> Result<Option<String>> {
+        self.storage
+            .get_extension_state_json(session_id, extension, version)
+            .await
+    }
+
     /// Atomically read-modify-write ONE key of a session's `extension_data`.
     ///
     /// `extension_data` is a single JSON column shared by every per-session
@@ -6824,6 +6845,38 @@ impl SessionStorage {
             .cloned())
     }
 
+    /// See [`SessionManager::get_extension_state_json`].
+    async fn get_extension_state_json(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+    ) -> Result<Option<String>> {
+        let key = format!("{extension}.{version}");
+        if key.contains(['"', '\\']) {
+            // A JSON path label cannot carry these, so such a key is read the
+            // long way: parse the whole object and render the one value.
+            return Ok(self
+                .get_extension_state(session_id, extension, version)
+                .await?
+                .map(|value| value.to_string()));
+        }
+        let pool = self.pool().await?;
+        // `->` is `json_extract` that answers with JSON text for every kind of
+        // value (`json_extract` returns a string unquoted and a boolean as 1
+        // or 0), and NULL when the key is missing. Text that is not JSON
+        // raises, as `parse_extension_data` refuses it.
+        let text = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT extension_data -> ? FROM sessions WHERE id = ?",
+        )
+        .bind(format!("$.\"{key}\""))
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        Ok(text.filter(|text| text != "null"))
+    }
+
     /// See [`SessionManager::update_extension_state`] — including why the first
     /// statement of the transaction must be a write.
     async fn update_extension_state<F>(
@@ -10999,6 +11052,91 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none());
+        }
+
+        /// The narrow read: one key's stored JSON text, exactly the value
+        /// `get_extension_state` parses, with every kind of value rendered as
+        /// JSON and a missing or cleared key read as absent.
+        #[tokio::test]
+        async fn get_extension_state_json_reads_one_key() {
+            let store = TempDir::new().unwrap();
+            let sm = SessionManager::new(store.path().to_path_buf());
+            let id = sm
+                .create_session(store.path().into(), "s".into(), SessionType::User)
+                .await
+                .unwrap()
+                .id;
+            assert_eq!(
+                sm.get_extension_state_json(&id, KEY, VER).await.unwrap(),
+                None
+            );
+
+            let write = |extension: &'static str, value: serde_json::Value| {
+                let sm = &sm;
+                let id = id.clone();
+                async move {
+                    sm.update_extension_state(&id, extension, VER, move |_| Ok(value))
+                        .await
+                        .unwrap();
+                }
+            };
+            write(
+                KEY,
+                serde_json::json!({"add": ["proteomics"], "remove": []}),
+            )
+            .await;
+            write("goal", serde_json::json!({"text": "other key"})).await;
+            let text = sm
+                .get_extension_state_json(&id, KEY, VER)
+                .await
+                .unwrap()
+                .expect("the key was written");
+            assert_eq!(text, r#"{"add":["proteomics"],"remove":[]}"#);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+                sm.get_extension_state(&id, KEY, VER)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            );
+
+            // Scalars come back as JSON, not as SQLite's unquoted text or 0/1.
+            write("flag", serde_json::json!(true)).await;
+            write("word", serde_json::json!("pause")).await;
+            for (extension, expected) in [("flag", "true"), ("word", r#""pause""#)] {
+                assert_eq!(
+                    sm.get_extension_state_json(&id, extension, VER)
+                        .await
+                        .unwrap()
+                        .as_deref(),
+                    Some(expected)
+                );
+            }
+            // A cleared key, a missing key and a missing chat read as absent.
+            write("goal", serde_json::Value::Null).await;
+            assert_eq!(
+                sm.get_extension_state_json(&id, "goal", VER).await.unwrap(),
+                None
+            );
+            assert_eq!(
+                sm.get_extension_state_json(&id, "todo", VER).await.unwrap(),
+                None
+            );
+            assert_eq!(
+                sm.get_extension_state_json("no-such-session", KEY, VER)
+                    .await
+                    .unwrap(),
+                None
+            );
+            // A key a JSON path cannot spell is still read.
+            write("we\"ird", serde_json::json!({"n": 1})).await;
+            assert_eq!(
+                sm.get_extension_state_json(&id, "we\"ird", VER)
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(r#"{"n":1}"#)
+            );
         }
     }
 

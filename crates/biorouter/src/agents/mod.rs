@@ -135,9 +135,9 @@ pub mod workspace_inspector;
 pub mod workspace_summary;
 
 pub use agent::{
-    Agent, AgentConfig, AgentEvent, ConfirmationOutcome, Drained, ExtensionLoadResult,
-    InterruptRefused, InterruptedTurnRows, PersistedMessage, SteerAdmission, SteerWaitReason,
-    TurnId, DEFAULT_MAX_TURNS, STEER_CONTINUATION_NOTE,
+    boxed_off_frame, Agent, AgentConfig, AgentEvent, ConfirmationOutcome, Drained,
+    ExtensionLoadResult, InterruptRefused, InterruptedTurnRows, PersistedMessage, SteerAdmission,
+    SteerWaitReason, TurnId, DEFAULT_MAX_TURNS, STEER_CONTINUATION_NOTE,
 };
 pub use budget::ReplyBudget;
 pub use effort::ReasoningEffort;

@@ -3,6 +3,20 @@ use biorouter::workflow::{SubWorkflow, Workflow};
 use std::collections::HashMap;
 use tempfile::TempDir;
 
+/// Every test here runs against a throwaway config root, so a spawn that
+/// reads config never reaches the person's own.
+#[ctor::ctor]
+fn sandbox() {
+    if biorouter::config::paths::Paths::path_root_override().is_some() {
+        return;
+    }
+    let root = TempDir::new().expect("a sandbox");
+    std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
+    std::env::set_var("BIOROUTER_DISABLE_KEYRING", "true");
+    static ROOT: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    let _ = ROOT.set(root);
+}
+
 const WORKFLOW_TWO_PARAMS: &str = r#"
 version: "1.0.0"
 title: "Test Task"
@@ -149,4 +163,142 @@ fn the_provider_override_says_a_decision_model_is_refused() {
             "the provider override must name `{provider}`: {description}"
         );
     }
+}
+
+/// The spawn schema an out-of-crate consumer sees offers `monitors`.
+#[test]
+fn the_spawn_schema_offers_monitors() {
+    let tool = create_subagent_tool(&[]);
+    let monitors = &tool.input_schema["properties"]["monitors"];
+    assert_eq!(monitors["type"], "array", "{monitors}");
+    assert_eq!(monitors["maxItems"], 4, "{monitors}");
+    assert!(
+        monitors["items"]["properties"].get("question").is_some(),
+        "{monitors}"
+    );
+}
+
+/// A parent whose only interesting property is that it never answers: every
+/// spawn below is refused before a child could reach it.
+struct NeverCalled;
+
+#[async_trait::async_trait]
+impl biorouter::providers::base::Provider for NeverCalled {
+    fn metadata() -> biorouter::providers::base::ProviderMetadata {
+        biorouter::providers::base::ProviderMetadata::new(
+            "never-called",
+            "Never called",
+            "",
+            "never-called-model",
+            vec![],
+            "",
+            vec![],
+        )
+    }
+
+    fn get_name(&self) -> &str {
+        "never-called"
+    }
+
+    fn get_model_config(&self) -> biorouter::model::ModelConfig {
+        biorouter::model::ModelConfig::new_or_fail("never-called-model")
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &biorouter::model::ModelConfig,
+        _system: &str,
+        _messages: &[biorouter::conversation::message::Message],
+        _tools: &[rmcp::model::Tool],
+    ) -> Result<
+        (
+            biorouter::conversation::message::Message,
+            biorouter::providers::base::ProviderUsage,
+        ),
+        biorouter::providers::errors::ProviderError,
+    > {
+        panic!("a refused spawn never reaches a model");
+    }
+}
+
+const CHECKER_WITH_A_PLAN: &str = r#"
+version: "1.0.0"
+title: "Checker"
+description: "Checks the work in phases"
+instructions: "Check the work in this folder."
+orchestration_plan:
+  title: Checking
+  phases:
+    - {id: read, title: Read the work}
+    - {id: judge, title: Judge it, depends_on: [read]}
+"#;
+
+/// A sub-workflow that declares an `orchestration_plan` is refused at spawn,
+/// with the sentence that says why and what to change, and no child row is
+/// left behind: a subagent cannot run phases, because every workspace tool is
+/// refused to it, so the plan would never be followed.
+#[tokio::test]
+async fn a_subworkflow_declaring_a_plan_is_refused_and_leaves_no_child() {
+    use biorouter::session::session_manager::SessionType;
+    use std::sync::Arc;
+
+    let dir = TempDir::new().unwrap();
+    let path = write_workflow(&dir, "checker", CHECKER_WITH_A_PLAN);
+    let sm = Arc::new(biorouter::session::SessionManager::new(
+        dir.path().to_path_buf(),
+    ));
+    let parent = sm
+        .create_session(
+            dir.path().to_path_buf(),
+            "orchestrator".to_string(),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+    let config = biorouter::agents::AgentConfig::new(
+        sm.clone(),
+        Arc::new(biorouter::config::permission::PermissionManager::new(
+            dir.path().to_path_buf(),
+        )),
+        None,
+        biorouter::config::BioRouterMode::Auto,
+    );
+    let task_config =
+        biorouter::agents::TaskConfig::new(Arc::new(NeverCalled), &parent.id, dir.path(), vec![]);
+    let sub_workflows = HashMap::from([(
+        "checker".to_string(),
+        make_subworkflow(path, "checker", None),
+    )]);
+
+    let refused = biorouter::agents::subagent_tool::handle_subagent_tool(
+        &config,
+        serde_json::json!({ "subworkflow": "checker", "visible": false }),
+        task_config,
+        sub_workflows,
+        dir.path().to_path_buf(),
+        None,
+    )
+    .result
+    .await
+    .expect_err("a sub-workflow that declares a plan is refused");
+
+    assert_eq!(refused.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(
+        refused.message,
+        "Could not spawn subworkflow \"checker\": subworkflow `checker` declares an \
+         `orchestration_plan`, and a subagent cannot run phases: workspace tools are refused \
+         to subagents. Remove the block from that file. Nothing was started."
+    );
+    assert!(
+        sm.list_subagent_children(&parent.id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "no SubAgent row"
+    );
+    assert_eq!(
+        sm.count_all_sessions().await.unwrap(),
+        1,
+        "only the parent exists"
+    );
 }

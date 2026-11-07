@@ -1,10 +1,12 @@
 import type { Message } from '../api';
 import {
+  getDecisionInstall,
   getDecisionSettings,
   getSessionDecision,
   getSessionDecisionSummary,
   listDecisionModels,
   listSessionDecisions,
+  postDecisionInstall,
   putDecisionSettings,
 } from '../api/sdk.gen';
 import type { ListSessionDecisionsData, PutDecisionSettingsData } from '../api/types.gen';
@@ -68,11 +70,17 @@ export type DecisionKind =
   | { type: 'choice'; options: DecisionOption[] }
   | { type: 'score'; levels: string[] };
 
+/**
+ * A question's pass rule. `below` is the daemon's `Threshold::Below` wrap
+ * (`{"below":{"yes":0.3}}`): the rule holds when the probability falls below `p`,
+ * the exact complement of the same rule without it. A below monitor's logged
+ * question carries one, so a card or the history reads `P(yes) < 0.30`.
+ */
 export type Threshold =
-  | { type: 'yes'; p: number }
-  | { type: 'no'; p: number }
-  | { type: 'option'; name: string; p: number }
-  | { type: 'at_least_level'; level: number; p: number };
+  | { type: 'yes'; p: number; below?: true }
+  | { type: 'no'; p: number; below?: true }
+  | { type: 'option'; name: string; p: number; below?: true }
+  | { type: 'at_least_level'; level: number; p: number; below?: true };
 
 export interface Question {
   instructions: string;
@@ -243,6 +251,14 @@ export type MonitorAction = (typeof MONITOR_ACTIONS)[number];
 export const MONITOR_ERROR_POLICIES = ['notify', 'pause'] as const;
 export type MonitorErrorPolicy = (typeof MONITOR_ERROR_POLICIES)[number];
 
+/** `MonitorDirection` in `settings.rs`: which side of its threshold a monitor fires on. */
+export const MONITOR_DIRECTIONS = ['at_or_above', 'below'] as const;
+export type MonitorDirection = (typeof MONITOR_DIRECTIONS)[number];
+
+/** `MonitorOwner` in `settings.rs`: who set a monitor. */
+export const MONITOR_OWNERS = ['person', 'agent'] as const;
+export type MonitorOwner = (typeof MONITOR_OWNERS)[number];
+
 export interface MonitorWindow {
   entries: number;
   maxChars: number;
@@ -256,7 +272,10 @@ export interface MonitorCriterion {
   model: DecisionModelRef | null;
   timing: MonitorTiming;
   window: MonitorWindow;
-  /** Fires when P(wanted answer) is at least this. */
+  /**
+   * The probability P(wanted answer) is compared with: it fires at or above it,
+   * or below it when `direction` is `below`.
+   */
   threshold: number;
   /**
    * The answer whose probability is compared ({@link monitorThreshold}): `yes` (or
@@ -265,11 +284,34 @@ export interface MonitorCriterion {
    */
   option: string | null;
   consecutive: number;
+  /** For an at-or-above monitor: after firing, re-arm only once P drops below this. */
   rearmBelow: number | null;
   action: MonitorAction;
   onError: MonitorErrorPolicy;
   maxEvalsPerTurn: number;
   enabled: boolean;
+  /*
+   * The fields below were added with the daemon's monitor owners and directions.
+   * The parser always sets them; they are optional so a monitor written before
+   * them still type-checks, and absent means the default the daemon reads.
+   *
+   * ⚠ Load-bearing: the parser keeps only the keys it knows, and Save writes back
+   * what it parsed. A key missing here would be erased by one desktop Save, so a
+   * CLI-made below monitor would come back at-or-above and an agent's monitor
+   * would come back the person's.
+   */
+  /** Which side of `threshold` fires it. Absent: `at_or_above`. */
+  direction?: MonitorDirection;
+  /** For a `below` monitor: after firing, re-arm only once P rises to this or above. */
+  rearmAbove?: number | null;
+  /** Who set it. Absent: the person. */
+  setBy?: MonitorOwner;
+  /** For an agent's monitor: the chat whose agent set it (the subagent's parent). */
+  setBySession?: string | null;
+  /** For a copy of a parent chat's monitor that also watches its subagents: that chat. */
+  inheritedFrom?: string | null;
+  /** A person's monitor copied onto every subagent this chat starts. Absent: `false`. */
+  applyToSubagents?: boolean;
 }
 
 export interface DecisionSettings {
@@ -290,7 +332,21 @@ export interface DecisionModelEntry {
   unavailableReason: string | null;
 }
 
-/** A phase gate as the side panel draws it (`PhaseGateSnapshot` in `orchestration_plan.rs`). */
+/** `GateOwner` in `orchestration_plan.rs`: who set a phase gate. */
+export const GATE_OWNERS = ['agent', 'person', 'workflow'] as const;
+export type GateOwner = (typeof GATE_OWNERS)[number];
+
+/** `PersonGateAction`: the pass or skip a person gave a gate. */
+export const PERSON_GATE_ACTIONS = ['pass', 'skip'] as const;
+export type PersonGateAction = (typeof PERSON_GATE_ACTIONS)[number];
+
+/**
+ * A phase gate as the side panel draws it (`PhaseGateSnapshot` in `orchestration_plan.rs`).
+ *
+ * Every field after `blocked` came with the person's gate controls. An older
+ * daemon sends none of them, and they then read as an agent's gate with nothing
+ * more to say: no questions listed, nothing held, no decision of the person's.
+ */
 export interface PhaseGateSnapshot {
   threshold: number;
   questionCount: number;
@@ -299,6 +355,100 @@ export interface PhaseGateSnapshot {
   lastPassed: boolean | null;
   lastMinP: number | null;
   blocked: boolean;
+  /** Who set the gate. Absent on the wire: the agent. */
+  owner: GateOwner;
+  /** The questions, by name, in the order the gate asks them. */
+  questions: { name: string; question: string }[];
+  /** The decision model the gate names, as `provider/model`; `null` uses the chat's. */
+  model: string | null;
+  /**
+   * The adapter the gate asks `model` through, when it names one; `null` is the
+   * model's own. The editor sends it back with the model, because a gate write
+   * replaces the whole gate.
+   */
+  modelAdapter: DecisionAdapter | null;
+  allowUncalibrated: boolean;
+  /** Why the last evaluation decided nothing, when it did not. */
+  lastError: string | null;
+  /** The person's pass or skip: one that stands, or the one that closed the phase. */
+  personDecision: PersonGateAction | null;
+  /** How many times the person gave the gate its attempts again. */
+  retriesGranted: number;
+  /** The open phase is stuck and waits for the person. */
+  needsPerson: boolean;
+  /** Ids of the phases this gate holds now. */
+  holds: string[];
+}
+
+/** A phase gate's state, as every surface that draws one names it. */
+export type PhaseGateState = 'blocked' | 'passed' | 'failed' | 'pending' | 'skipped';
+
+/**
+ * The ONE rule for a gate's state: the phase row's chip and the Decisions
+ * section's gate row both read it, so the two never name one gate differently.
+ * The person's pass or skip is the gate's state from then on, standing or not;
+ * then a phase that waits for the person (out of attempts, or marked blocked)
+ * reads as blocked; then the gate's own last verdict.
+ */
+export function phaseGateState(gate: PhaseGateSnapshot): PhaseGateState {
+  if (gate.personDecision === 'pass') return 'passed';
+  if (gate.personDecision === 'skip') return 'skipped';
+  if (gate.blocked || gate.needsPerson) return 'blocked';
+  if (gate.lastPassed === true) return 'passed';
+  if (gate.lastPassed === false) return 'failed';
+  return 'pending';
+}
+
+/** Where an install stands (`DecisionInstallState` in `routes/decisions.rs`). */
+export const DECISION_INSTALL_STATES = ['downloading', 'verifying', 'installed', 'failed'] as const;
+export type DecisionInstallState = (typeof DECISION_INSTALL_STATES)[number];
+
+/** Where the configured Ollama is, as far as installing into it goes (`OllamaPlaceState`). */
+export const OLLAMA_PLACES = [
+  'running',
+  'not_running',
+  'not_this_computer',
+  'invalid_host',
+] as const;
+export type OllamaPlace = (typeof OLLAMA_PLACES)[number];
+
+/** One decision model Biorouter installs into the Ollama on this computer. */
+export interface InstallableDecisionModel {
+  /** The name Ollama knows it by (`tev1:0.8b`). */
+  model: string;
+  displayName: string;
+  /** The download, roughly (`about 1.5 GB`). */
+  approxSize: string;
+  note: string;
+  isDefault: boolean;
+  /** Listed already by the Ollama on this computer as a decision model it loads. */
+  installed: boolean;
+}
+
+/** The install that is running, or the last one (kept until the next one starts). */
+export interface DecisionInstallJob {
+  model: string;
+  state: DecisionInstallState;
+  completedBytes: number;
+  totalBytes: number;
+  /** Ollama's last step, in its words. */
+  status: string | null;
+  /** Why the install failed, once it has. */
+  error: string | null;
+}
+
+/** `GET /decisions/models/install`: what can be installed, where, and how it is going. */
+export interface DecisionInstallStatus {
+  /** The default first. */
+  offers: InstallableDecisionModel[];
+  ollama: {
+    baseUrl: string | null;
+    state: OllamaPlace;
+    version: string | null;
+    /** Why nothing can be installed there now, as a sentence; `null` while it runs here. */
+    message: string | null;
+  };
+  job: DecisionInstallJob | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +569,11 @@ export function parseThreshold(value: unknown): Threshold | null {
   const entry = tagged(value);
   if (!entry) return null;
   const [key, inner] = entry;
+  if (key === 'below') {
+    // One wrap only: the daemon refuses a `below` inside a `below`.
+    const wrapped = parseThreshold(inner);
+    return wrapped && !wrapped.below ? { ...wrapped, below: true } : null;
+  }
   if (key === 'yes' || key === 'no') {
     const p = probability(inner);
     return p === null ? null : { type: key, p };
@@ -468,6 +623,10 @@ export function decisionKindToWire(kind: DecisionKind): Record<string, unknown> 
 }
 
 export function thresholdToWire(threshold: Threshold): Record<string, unknown> {
+  if (threshold.below) {
+    const { below: _below, ...inner } = threshold;
+    return { below: thresholdToWire(inner as Threshold) };
+  }
   switch (threshold.type) {
     case 'yes':
       return { yes: threshold.p };
@@ -781,6 +940,12 @@ export function parseMonitorCriterion(value: unknown): MonitorCriterion | null {
     onError: oneOf(MONITOR_ERROR_POLICIES, body.onError, 'notify'),
     maxEvalsPerTurn: clampInt(body.maxEvalsPerTurn, 1, MONITOR_MAX_EVALS_MAX, 50),
     enabled: body.enabled !== false,
+    direction: oneOf(MONITOR_DIRECTIONS, body.direction, 'at_or_above'),
+    rearmAbove: probability(body.rearmAbove),
+    setBy: oneOf(MONITOR_OWNERS, body.setBy, 'person'),
+    setBySession: text(body.setBySession),
+    inheritedFrom: text(body.inheritedFrom),
+    applyToSubagents: body.applyToSubagents === true,
   };
 }
 
@@ -801,6 +966,12 @@ export function parseDecisionSettings(value: unknown): DecisionSettings | null {
   return { defaultModel: parseDecisionModelRef(body.defaultModel), monitors };
 }
 
+/**
+ * A monitor as `PUT /sessions/{id}/decision-settings` takes it. The owner and
+ * direction keys are written only when they differ from the daemon's default,
+ * as the daemon stores them, so an at-or-above person's monitor is sent exactly
+ * as an older daemon (which refuses keys it does not know) takes it.
+ */
 export function monitorToWire(monitor: MonitorCriterion): Record<string, unknown> {
   return {
     id: monitor.id,
@@ -817,6 +988,12 @@ export function monitorToWire(monitor: MonitorCriterion): Record<string, unknown
     onError: monitor.onError,
     maxEvalsPerTurn: monitor.maxEvalsPerTurn,
     enabled: monitor.enabled,
+    ...(monitor.direction === 'below' ? { direction: 'below' } : {}),
+    ...(typeof monitor.rearmAbove === 'number' ? { rearmAbove: monitor.rearmAbove } : {}),
+    ...(monitor.setBy === 'agent' ? { setBy: 'agent' } : {}),
+    ...(monitor.setBySession ? { setBySession: monitor.setBySession } : {}),
+    ...(monitor.inheritedFrom ? { inheritedFrom: monitor.inheritedFrom } : {}),
+    ...(monitor.applyToSubagents ? { applyToSubagents: true } : {}),
   };
 }
 
@@ -883,20 +1060,105 @@ export function parseDecisionCatalog(value: unknown): DecisionCatalog | null {
   };
 }
 
+/**
+ * A phase's gate, read tolerantly: every field the person's gate controls added
+ * (owner, questions, model, ...) may be missing (an older daemon) or of a shape
+ * this build does not know, and then reads as its neutral value rather than
+ * dropping the gate. Only a gate without a threshold is no gate.
+ */
 export function parsePhaseGateSnapshot(value: unknown): PhaseGateSnapshot | null {
   const body = record(value);
   if (!body) return null;
   const threshold = probability(body.threshold);
   if (threshold === null) return null;
+  const questions = Object.entries(record(body.questions) ?? {}).flatMap(([name, question]) => {
+    const asked = rawText(question);
+    return name.trim() && asked !== null ? [{ name, question: asked }] : [];
+  });
+  const model = text(body.model);
   return {
     threshold,
-    questionCount: count(body.questionCount),
+    // An older daemon sends only the count; a newer one sends both, and they agree.
+    questionCount: Math.max(count(body.questionCount), questions.length),
     attempts: count(body.attempts),
     maxAttempts: Math.max(1, count(body.maxAttempts) || 3),
     lastPassed: optionalBool(body.lastPassed),
     lastMinP: probability(body.lastMinP),
     blocked: body.blocked === true,
+    owner: oneOf(GATE_OWNERS, body.owner, 'agent'),
+    questions,
+    model,
+    // An adapter belongs to a named model; alone it names nothing.
+    modelAdapter: model ? optionalOneOf(DECISION_ADAPTERS, body.modelAdapter) : null,
+    allowUncalibrated: body.allowUncalibrated === true,
+    lastError: text(body.lastError),
+    personDecision: optionalOneOf(PERSON_GATE_ACTIONS, body.personDecision),
+    retriesGranted: count(body.retriesGranted),
+    needsPerson: body.needsPerson === true,
+    holds: Array.isArray(body.holds)
+      ? body.holds.flatMap((id) => {
+          const phase = text(id);
+          return phase ? [phase] : [];
+        })
+      : [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Installing a local decision model (`GET`/`POST /decisions/models/install`)
+// ---------------------------------------------------------------------------
+
+function parseInstallableModel(value: unknown): InstallableDecisionModel | null {
+  const body = record(value);
+  const model = text(body?.model);
+  if (!body || !model) return null;
+  return {
+    model,
+    displayName: text(body.displayName) ?? model,
+    approxSize: text(body.approxSize) ?? '',
+    note: text(body.note) ?? '',
+    isDefault: body.isDefault === true,
+    installed: body.installed === true,
+  };
+}
+
+function parseInstallJob(value: unknown): DecisionInstallJob | null {
+  const body = record(value);
+  const model = text(body?.model);
+  if (!body || !model) return null;
+  return {
+    model,
+    // A state this build does not know is drawn as failed, never as installed.
+    state: oneOf(DECISION_INSTALL_STATES, body.state, 'failed'),
+    completedBytes: count(body.completedBytes),
+    totalBytes: count(body.totalBytes),
+    status: text(body.status),
+    error: text(body.error),
+  };
+}
+
+export function parseDecisionInstallStatus(value: unknown): DecisionInstallStatus | null {
+  const body = record(value);
+  const ollama = record(body?.ollama);
+  if (!body || !ollama) return null;
+  return {
+    offers: (Array.isArray(body.offers) ? body.offers : [])
+      .map(parseInstallableModel)
+      .filter((entry): entry is InstallableDecisionModel => entry !== null),
+    ollama: {
+      baseUrl: text(ollama.baseUrl),
+      // A place this build does not know offers no install: its sentence is shown.
+      state: oneOf(OLLAMA_PLACES, ollama.state, 'invalid_host'),
+      version: text(ollama.version),
+      message: text(ollama.message),
+    },
+    job: parseInstallJob(body.job),
+  };
+}
+
+/** `true` while an install is downloading or checking the model it pulled. */
+export function installRunning(job: DecisionInstallJob | null | undefined): boolean {
+  return job?.state === 'downloading' || job?.state === 'verifying';
 }
 
 // ---------------------------------------------------------------------------
@@ -944,6 +1206,7 @@ export function answerProbability(decision: Decision): number | null {
  * threshold is on that option: P(yes) for `yes`, P(no) for `no`, P(option).
  * A score's at-least-level threshold acts on a SUM of levels, so it names no
  * single bar and returns `null` here (`thresholdSummary` says it in words).
+ * A `below` rule marks the same place: only the side that passes differs.
  */
 export function thresholdOnOption(threshold: Threshold | null, key: string): number | null {
   if (!threshold) return null;
@@ -953,18 +1216,21 @@ export function thresholdOnOption(threshold: Threshold | null, key: string): num
   return null;
 }
 
-/** `P(yes) ≥ 0.80`, `P(rrms) ≥ 0.90`, `P(level ≥ Moderate) ≥ 0.80`. */
+/**
+ * `P(yes) ≥ 0.80`, `P(rrms) ≥ 0.90`, `P(level ≥ Moderate) ≥ 0.80`; a `below` rule
+ * says `<`: `P(yes) < 0.30`, `P(level ≥ Moderate) < 0.80`.
+ */
 export function thresholdSummary(threshold: Threshold, question?: Question | null): string {
-  const p = formatProbability(threshold.p);
+  const p = `${threshold.below ? '<' : '≥'} ${formatProbability(threshold.p)}`;
   switch (threshold.type) {
     case 'yes':
-      return `P(yes) ≥ ${p}`;
+      return `P(yes) ${p}`;
     case 'no':
-      return `P(no) ≥ ${p}`;
+      return `P(no) ${p}`;
     case 'option':
-      return `P(${threshold.name}) ≥ ${p}`;
+      return `P(${threshold.name}) ${p}`;
     case 'at_least_level':
-      return `P(level ≥ ${outcomeLabel(question ?? null, String(threshold.level))}) ≥ ${p}`;
+      return `P(level ≥ ${outcomeLabel(question ?? null, String(threshold.level))}) ${p}`;
   }
 }
 
@@ -986,10 +1252,16 @@ export function scoreLevelIndex(levels: readonly string[], option: string | null
 /**
  * A monitor's firing rule as the daemon applies it (`MonitorCriterion::pass_threshold`
  * in `settings.rs`): P(yes), or P(no) when a yes/no monitor watches `no`; P(option)
- * for a choice; P(level at or above `option`) for a score. `null` when the option
- * fits no answer of its question, which the daemon refuses to save.
+ * for a choice; P(level at or above `option`) for a score. A `below` monitor's
+ * rule is wrapped (`below: true`), as the question it sends is. `null` when the
+ * option fits no answer of its question, which the daemon refuses to save.
  */
 export function monitorThreshold(monitor: MonitorCriterion): Threshold | null {
+  const rule = monitorRule(monitor);
+  return rule && monitor.direction === 'below' ? { ...rule, below: true } : rule;
+}
+
+function monitorRule(monitor: MonitorCriterion): Threshold | null {
   const p = monitor.threshold;
   const option = monitor.option;
   const kind = monitor.question.kind;
@@ -1009,6 +1281,18 @@ export function monitorThreshold(monitor: MonitorCriterion): Threshold | null {
       return level === null ? null : { type: 'at_least_level', level, p };
     }
   }
+}
+
+/** `THRESHOLD_EPSILON` in `decision/types.rs`: equality belongs to the at-or-above side. */
+const THRESHOLD_EPSILON = 1e-9;
+
+/**
+ * Whether a monitor fires at probability `p` (`MonitorCriterion::fires_at`): at or
+ * above its threshold, or, for a `below` monitor, the exact complement.
+ */
+export function monitorFiresAt(monitor: MonitorCriterion, p: number): boolean {
+  const atOrAbove = p + THRESHOLD_EPSILON >= monitor.threshold;
+  return monitor.direction === 'below' ? !atOrAbove : atOrAbove;
 }
 
 /** Two decimals: `0.93`. A probability that rounds to 1 or 0 but is not says so: `>0.99`. */
@@ -1104,7 +1388,8 @@ export type DecisionSourceState =
   | 'done'
   | 'passed'
   | 'failed'
-  | 'blocked';
+  | 'blocked'
+  | 'skipped';
 
 export interface DecisionSourceRow {
   /** `monitor:<id>`, `tool`, `gate:<phase id>`, `chat`, `adhoc`. */
@@ -1121,6 +1406,13 @@ export interface DecisionSourceRow {
   lastAnswer: string | null;
   lastPassProbability: number | null;
   state: DecisionSourceState;
+  /**
+   * A gate row's state from the gate's own evaluations alone, before the
+   * person's pass or skip and a phase that waits for them: what the row's words
+   * (`0.62 < 0.80 · attempt 3 of 3`) say after the person's. `null` on any other
+   * row.
+   */
+  gateVerdict: DecisionSourceState | null;
   /** A monitor's or gate's threshold, for the bar's marker. */
   threshold: number | null;
   /** A gate's attempt line: `attempt 2 of 3`. */
@@ -1195,6 +1487,7 @@ export function decisionSourceRows(
         lastAnswer: null,
         lastPassProbability: null,
         state: 'done',
+        gateVerdict: null,
         threshold: null,
         attempts: null,
         rank: SOURCE_ORDER.indexOf(origin) * 100_000 + within,
@@ -1234,9 +1527,11 @@ export function decisionSourceRows(
       else if (lastFailed) row.state = 'error';
       else if (
         fired.has(row.originId ?? '') ||
-        (row.threshold !== null &&
-          row.lastPassProbability !== null &&
-          row.lastPassProbability >= row.threshold)
+        (row.lastPassProbability !== null &&
+          // A `below` monitor fires under its threshold: its own rule, not `≥`.
+          (monitor
+            ? monitorFiresAt(monitor, row.lastPassProbability)
+            : row.threshold !== null && row.lastPassProbability >= row.threshold))
       )
         row.state = 'fired';
       else row.state = 'armed';
@@ -1247,12 +1542,19 @@ export function decisionSourceRows(
         row.attempts = { attempts: gate.attempts, maxAttempts: gate.maxAttempts };
         if (row.lastPassProbability === null) row.lastPassProbability = gate.lastMinP;
       }
-      if (gate?.blocked) row.state = 'blocked';
-      else if (gate?.lastPassed === true) row.state = 'passed';
-      else if (gate?.lastPassed === false) row.state = 'failed';
-      else if (lastFailed) row.state = 'error';
-      else if (row.count === 0) row.state = 'pending';
-      else row.state = row.failed > 0 ? 'failed' : 'passed';
+      let verdict: DecisionSourceState;
+      if (gate?.blocked) verdict = 'blocked';
+      else if (gate?.lastPassed === true) verdict = 'passed';
+      else if (gate?.lastPassed === false) verdict = 'failed';
+      else if (lastFailed) verdict = 'error';
+      else if (row.count === 0) verdict = 'pending';
+      else verdict = row.failed > 0 ? 'failed' : 'passed';
+      row.gateVerdict = verdict;
+      // The state is the chip's (`phaseGateState`): a person's pass or skip, and
+      // a phase that waits for them, come before the gate's own verdict. Only a
+      // gate that has decided nothing yet falls back to what its calls say.
+      const shared = gate ? phaseGateState(gate) : 'pending';
+      row.state = shared === 'pending' ? verdict : shared;
     } else {
       row.state = lastFailed ? 'error' : 'done';
     }
@@ -1578,4 +1880,49 @@ export async function fetchDecisionCatalog(
     ...(parseDecisionCatalog(data) ?? { models: [], sessionUnavailableReason: null }),
     missing,
   };
+}
+
+/**
+ * `GET /decisions/models/install`: the models Biorouter installs, whether each is
+ * installed, where the configured Ollama is, and the current or last install.
+ * `missing` is a daemon that predates the route (404), which installs nothing.
+ */
+export async function fetchDecisionInstall(
+  signal?: AbortSignal
+): Promise<{ data: DecisionInstallStatus | null; missing: boolean }> {
+  const headers = await userActionHeaders();
+  const result = (await getDecisionInstall({ headers, signal })) as ClientResult;
+  const { data, missing } = settle(result, 'Decision model install');
+  if (missing) return { data: null, missing };
+  const parsed = parseDecisionInstallStatus(data);
+  if (!parsed) throw new DecisionRequestError('Decision model install unavailable', null);
+  return { data: parsed, missing };
+}
+
+/**
+ * `POST /decisions/models/install`: start installing `model` (the daemon's
+ * default, `tev1:0.8b`, when none is named) into the Ollama on this computer.
+ * The answer is the install status to poll from. A refusal is thrown as a
+ * {@link DecisionRequestError} carrying the status and the daemon's sentence:
+ * 400 for a model Biorouter does not install, 409 while another model installs
+ * or when Ollama is on another computer, 503 when Ollama is not running.
+ */
+export async function startDecisionInstall(model?: string): Promise<DecisionInstallStatus> {
+  const headers = await userActionHeaders();
+  const result = (await postDecisionInstall({
+    body: model ? { model } : {},
+    headers,
+  })) as ClientResult;
+  const status = result.response?.status ?? null;
+  if (result.error !== undefined || result.data === undefined) {
+    const reason = refusalText(result.error);
+    throw new DecisionRequestError(
+      reason ?? `Could not start the install (${status ?? 'no answer'})`,
+      status,
+      reason
+    );
+  }
+  const parsed = parseDecisionInstallStatus(result.data);
+  if (!parsed) throw new DecisionRequestError('Decision model install unavailable', status);
+  return parsed;
 }

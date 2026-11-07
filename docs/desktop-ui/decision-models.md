@@ -2,7 +2,8 @@
 
 > **What this is.** How the desktop app shows a chat's decision-model activity: the Decisions
 > section of the Chat summary, the decision history view (a tab of the artifact side panel), the
-> Monitors dialog, the gate chip on a phase row, the `decide` card in the transcript, a decision
+> Monitors dialog and its install panel, the gate chip on a phase row and the phase gate dialog it
+> opens, the Supervision panel of a workflow, the `decide` card in the transcript, a decision
 > chat's composer, the Decision models line of the Usage panel, and the per-chat count in History.
 > Covers what each one reads, the owner rule that keeps thousands of calls out of the chat, and the
 > tests that hold each part.
@@ -36,7 +37,7 @@ The decision history view is the only place individual calls are listed.
 
 ## What the panel reads
 
-Everything comes from the daemon's decision routes, through `utils/sessionDecisions.ts`:
+Everything comes from the daemon's decision routes, through `utils/sessionDecisions.ts`, except the phase gate dialog's writes, which go through `utils/phaseGates.ts`:
 
 | Route | Read by | Shape (`crates/biorouter/src/decision/`) |
 |---|---|---|
@@ -45,6 +46,8 @@ Everything comes from the daemon's decision routes, through `utils/sessionDecisi
 | `GET /sessions/{id}/decisions/{decision_id}` | the history view's detail pane | `DecisionDetail`, with the context |
 | `GET` and `PUT /sessions/{id}/decision-settings` | the summary (monitors), the Monitors dialog | `DecisionSettings` (`settings.rs`) |
 | `GET /decisions/models` | the Monitors dialog's model list | `DecisionModelsResponse` of `DecisionModelInfo` (`crates/biorouter-server/src/routes/decisions.rs`, not this folder; it carries `unavailableReason`, the daemon's reason this chat may not use a model, and `sessionUnavailableReason`, its reason this chat may use none) |
+| `GET` and `POST /decisions/models/install` | the install panel | `DecisionInstallStatus` (`crates/biorouter-server/src/routes/decisions.rs`): the offered models, whether each is installed, where Ollama is, and the current or last install |
+| `PUT`, `DELETE /sessions/{id}/phase-gates/{phase_id}` and `POST …/decision` | the phase gate dialog, through `utils/phaseGates.ts` | `PhaseGateResponse`: the daemon's sentence, whether it applied at once, and the plan |
 
 Every request carries `userActionHeaders()`. The routes ask `session_reach`, so without the
 person's proof a private chat's decisions would be refused. The module calls each route through
@@ -106,10 +109,15 @@ of at least 28px, no hairline. `SummaryDecisions.test.tsx` reads it to hold them
 `hooks/useSessionDecisions.ts` reads the summary and the settings on the same gate as the
 subagent roster: while the summary is shown or the chat's turn runs. It re-reads when a
 `decide` or `workspace_orchestrate` tool call answers, or a decision notice or a decision chat's
-reply lands (`decisionRevision`). It polls the summary every 3 seconds only while a turn runs in
-a chat with a monitor switched on or with decision calls on record, and reads the settings once
-per stretch rather than on every poll. A daemon without the routes answers 404, which reads as
-nothing to draw, not as an error.
+reply lands (`decisionRevision`). While a turn runs it polls every 3 seconds. The settings are
+read on every poll, in every chat, because other writers change them and leave nothing in this
+chat's transcript to re-read on: a parent agent's `workspace_monitor`, a parent's save copying
+its monitors into running subagents, a workflow's seed, `biorouter session monitors` and another
+window. Without that, a subagent's tab opened with no monitors kept showing none for the rest of
+the turn after its parent put one on it. The summary is polled only in a chat with a monitor
+switched on or with decision calls on record, so a monitor that arrives mid-turn starts it from
+the next poll. A daemon without the routes answers 404, which reads as nothing to draw, not as
+an error, and is not polled.
 
 `BaseChat.tsx` mounts the hook below the subagent roster and above the early return, passes the
 plan's phase gates and the monitors the newest turn marker says fired, and mounts the Monitors
@@ -151,7 +159,9 @@ and every `decisions__*` tool row (`utils/toolGlyph.ts`, whose test reads the to
   marked on the option it is about, the answer, its probability and the distribution's
   concentration (explained as not the probability of the answer), whether the probabilities are
   calibrated (always said in words when they are not), the model and its tier, latency, tokens,
-  the chunk, batch and turn, and the raw JSON.
+  the chunk, batch and turn, and the raw JSON. An error row can carry tokens: an answer the
+  service could not read, and a late or abandoned answer, were answered and billed, so their
+  tokens are shown and counted ([Usage and billing](../agent-loop/decision-models.md#usage-and-billing)).
 - **Model tier, not Tier.** The detail pane labels the decision model's tier "Model tier"
   (`DECISION_HISTORY_COPY.tier`). It is the model's tier, not the chat's: a public chat that used a
   local decision model reads "Model tier: Private", and its content is still public. The decision
@@ -165,9 +175,34 @@ The list sits over the detail in a narrow panel and beside it from 720px (a cont
 
 `components/decisions/MonitorsDialog.tsx` lists the chat's monitors and adds, edits or removes
 them. A monitor has a name, a question, yes or no or one of several options (with the answer
-that fires it: Yes or No, or one option), a model, a threshold (a slider from 0.50 to 0.99), an
-action (notify, tell the agent, stop the turn), when it checks (after each step, or when the turn
-ends) and an on switch. Save writes the whole list with `PUT /sessions/{id}/decision-settings`.
+that fires it: Yes or No, or one option), a model, an action (notify, tell the agent, stop the
+turn), when it checks (after each step, or when the turn ends), an on switch, and:
+
+- **Fires when**: At or above, or Below. It sits after the answer the monitor watches and before
+  Model. Switching it clears any re-arm level the monitor had.
+- **Threshold**: a slider of 21 stops (0.01, then 0.05 to 0.95 by 0.05, then 0.99), so a monitor
+  can fire below 0.50. A stored value that is not a stop (0.33, set from the CLI) keeps its own
+  stop for the whole edit and saves unchanged. The line under it says what the direction means:
+  "Fires when the probability of the answer it watches is at or above this." or "… falls below
+  this."
+- **If a check fails**: Notify me (the default for a new monitor) or Pause the turn, with the
+  help "Pause stops the turn whenever the decision model cannot answer, so a safety rule never
+  goes unchecked."
+- **Also watch the subagents this chat starts**: copies the monitor onto every subagent this chat
+  starts, and onto the ones running when it is saved. It is hidden on a subagent's own chat.
+
+The line under a monitor's name reads `P(yes) < 0.30` for a below monitor and ends "· pauses if
+a check fails" for a pause monitor. A stop monitor with a re-arm level (set from the CLI or over
+HTTP) says "Stops once, then stays quiet until P falls below 0.40" ("… until P rises to 0.60" for
+a below monitor); without one, a stop monitor stops every turn while its answer holds
+([latching](../agent-loop/decision-models.md#monitors-a-decision-model-watching-the-chat)). Rows
+show who set a monitor: "Set by the agent" for one the parent agent put on this subagent, and
+"From the chat that started this subagent" for a copy. A change you make to an agent's monitor (an
+edit, or its On switch) makes it yours, and the agent can no longer change it. The parser and
+writer keep `direction`, `rearmAbove`, `setBy`, `setBySession`, `inheritedFrom` and
+`applyToSubagents`, written only when they differ from the default, so a Save from the dialog
+never drops a field set elsewhere. Save writes the whole list with
+`PUT /sessions/{id}/decision-settings`.
 
 - **Each row says what the daemon compares.** The line under a monitor's name reads its
   `option` as `MonitorCriterion::pass_threshold` does (`monitorThreshold` in
@@ -198,17 +233,28 @@ ends) and an on switch. Save writes the whole list with `PUT /sessions/{id}/deci
 
 - **Validation is said by the field** before Save is pressed: a missing name or question, too
   few or duplicate options, no option chosen to fire on, and a public model on a private chat.
-  A refusal the daemon sends anyway is shown above the footer, and the dialog stays open.
+  A refusal the daemon sends anyway is shown above the footer, and the dialog stays open. That
+  includes the save check's 422 ("Nothing was saved: monitor "Done" could not run. …"), which
+  the daemon gives when what the save turns on cannot run for this chat now
+  ([What a save checks](../agent-loop/decision-models.md#what-a-save-checks)). A monitor that is
+  off is never held back for its model, so it can always be switched off and saved.
 - **Privacy.** The dialog asks for the catalog naming the chat (`GET /decisions/models?sessionId=`),
   so each model carries the daemon's own reason the chat may not use it (its tier, an
   institution the model does not cover, a Crew grant on the chat, or a local copy Ollama cannot
   load, whose reason names the `ollama pull` or `ollama rm` that fixes it). The list shows each
   model's tier, and a model with a reason is offered disabled, with the reason, because Gate H or
   the Crew rule refuses it before anything is sent, or Ollama would refuse to load it. In a
-  Crew-scoped chat every model carries the Crew sentence, and so does "The chat's decision
-  model", which the catalog's `sessionUnavailableReason` gives because no row stands for it, so
-  the dialog saves no monitor there that every check would refuse. Where the daemon gave no reason, a public model is
-  still refused for a private chat.
+  Crew-scoped chat a model hosted elsewhere carries the Crew sentence ("This chat works under a
+  Crew grant, which lets its content reach only the model it was granted with and decision models
+  that run on this computer, …"), and a model on this computer and the chat's default are
+  offered. Once the chat's grant no longer stands, every model and "The chat's decision model"
+  carry the catalog's `sessionUnavailableReason`, so the dialog saves no monitor there that every
+  check would refuse. Where the daemon gave no reason, a public model is still refused for a
+  private chat.
+- **No usable model.** While the list was read and no listed model may read the chat, Model shows
+  a note, not an error: "No decision model this chat may use is installed, so this monitor cannot
+  run until one is." Save is never blocked on the client for it; the daemon's save check decides,
+  and the install panel sits at the top of the dialog.
 - **A model list that cannot be read is said under the picker.** The picker would otherwise offer
   only "The chat's decision model" with nothing to say why. A daemon without the route (404, an
   older Biorouter service, which answers a bare 404) is told apart from an empty list
@@ -224,16 +270,84 @@ ends) and an on switch. Save writes the whole list with `PUT /sessions/{id}/deci
   the same in a browser, steer monitors included. On a daemon with no key the one write refused is
   to a subagent's chat, with the sentence that tab's other controls give there
   (`DECISION_SETTINGS_SUBAGENT_NO_KEY`). A desktop daemon that was meant to receive a key and did
-  not refuses the write, and the dialog shows that sentence. A saved change reaches the chat's
-  next turn, never the one running.
+  not refuses the write, and the dialog shows that sentence. A saved change applies at the chat's
+  next check, in the running turn too.
+
+### The install panel
+
+`components/decisions/DecisionModelInstall.tsx` offers to install a decision model on this
+computer ([Installing a local decision model](../agent-loop/decision-models.md#installing-a-local-decision-model)).
+It is mounted at the top of the Monitors dialog when the model list was read and no listed model
+may read the chat, unless the chat's Crew grant no longer stands (installing cannot help there).
+In the model picker it is mounted in a quiet form when "Ollama decision models" is chosen, and
+shows something only when `tev1:0.8b` is not installed or Ollama is not running.
+
+- **Its first sentence** says why: "This chat is private, so only a decision model on this
+  computer may read it, and none is installed.", the same for a Crew chat ("This chat works under
+  a Crew grant, so …"), or "No decision model is installed and no Baseten key is set." Then
+  "tev1:0.8b is a small decision model (about 1.5 GB) that runs in Ollama on this computer." In a
+  `biorouter serve` browser "this computer" reads "the computer Biorouter runs on".
+- **Its states** follow `GET /decisions/models/install`: an Install button; "Downloading
+  tev1:0.8b… 412 MB of 1.5 GB"; "Checking that Ollama answers decisions with it…"; "tev1:0.8b is
+  installed."; a failure in the daemon's words with Retry; Ollama not running, with Get Ollama
+  and Check again; and an Ollama on another computer, with the daemon's sentence alone. An install
+  already running is joined. After an install the dialog reads the model list again.
+- **An old failure is not shown over an installed model.** A failure is shown only when this panel
+  watched that install, or while the model is still not installed, so a model installed meanwhile
+  with `ollama pull` or `biorouter models decision pull` reads "tev1:0.8b is installed."
+
+The panel's strings are `DECISION_INSTALL_COPY`, which `MONITORS_COPY.install` re-exports.
 
 ## The gate chip on a phase row
 
-A phase with a decision gate (`PhaseSnapshot.gate`, parsed in `utils/sessionSubagents.ts`)
-shows one chip under its heading in the summary's Phases section: "Gate 0.91 ≥ 0.80 passed",
-"Gate 0.62 < 0.80, attempt 2 of 3", "Gate blocked", or "Gate at 0.80" before it has run. Its
-state is a glyph and words. Pressing it opens the decision history filtered to that gate. A
-phase from a daemon before gates has no `gate` and draws no chip.
+A phase with a decision gate (`PhaseSnapshot.gate`, parsed tolerantly in
+`utils/sessionSubagents.ts`, so an older daemon's snapshot still parses) shows one chip under its
+heading in the summary's Phases section: "Gate 0.91 ≥ 0.80 passed", "Gate 0.62 < 0.80, attempt 2
+of 3", "Gate blocked", or "Gate at 0.80" before it has run. With the person's controls it also
+reads "Gate blocked: needs you" (`needsPerson`), "Passed by you" or "Skipped by you" on a phase the
+person closed, and "Your pass stands" or "Your skip stands" while the phase's subagents still
+work. Its state is a glyph and words. Pressing it opens the phase gate dialog. A phase from a
+daemon before gates has no `gate` and draws no chip. The chip, the held line and "Add gate" are
+described with the rest of the rail in [the Chat summary rail](chat-summary-rail.md).
+
+## The phase gate dialog
+
+`components/decisions/PhaseGateDialog.tsx`, mounted by `BaseChat`, is where the person controls a
+gate ([Decision gates](../agent-loop/orchestration-phases.md#decision-gates)).
+
+- **Viewing a gate**, it shows who set it ("Set by the agent", "Set by you", "Set by the
+  workflow"), its status and attempts ("2 of 3 attempts used"), its questions, the lowest P(yes)
+  at the last check and the threshold, the last error, the decision model, the phases it holds
+  ("Holds Verify until it passes or you pass or skip it."), and a sentence for where it stands:
+  "Only you can move this phase on now: …" after every attempt failed, or what the agent can still
+  do after an error block or its own block. "Show history" opens the decision history filtered
+  to the gate.
+- **The buttons** are Pass this phase, Skip this phase, Try again (retry), Edit gate and Remove
+  gate, each through the person's routes (`putPhaseGate`, `deletePhaseGate`, `decidePhaseGate` in
+  `utils/phaseGates.ts`) with the person's proof. A result that applied and one that stands until
+  the subagents finish read differently, in the daemon's words, and a refusal is shown in the
+  daemon's words too.
+- **The editor** ("Add gate" on a phase without one, or Edit gate) takes 1 to 8 questions, a
+  threshold from 0.05 to 0.99 by 0.01 (default 0.80; below 0.50 it says "Below 0.50 the gate passes
+  answers the decision model leans against. That is your call to make."), attempts from 1 to 5
+  (default 3), a model from the chat's decision model list (a model the chat may not use is
+  offered disabled, with the daemon's reason) and "Accept uncalibrated probabilities". "Saving
+  makes this gate yours and starts its attempts over."
+
+It works the same in a `biorouter serve` browser, where only the reach gate applies.
+
+## A workflow's supervision
+
+When a workflow declares `decision_settings` or `orchestration_plan`
+([the workflow schema reference](../workflows/workflow-schema-reference.md#supervision-decision_settings-and-orchestration_plan)),
+the warning shown before it starts (`components/ui/WorkflowWarningModal.tsx`) has a Supervision
+panel: the default decision model, each monitor (its name, its model or "chat default", Public or
+Private from the decision model list, and what it does), the plan and its gates ("2 questions at
+P(yes) ≥ 0.80, 3 attempts"), "The agent cannot change, skip or remove these gates; only you can
+pass, skip or retry one.", and "A monitor's decision model reads the newest messages of this
+chat." The workflow editor (`components/workflows/CreateEditWorkflowModal.tsx`) shows the same
+summary read only, with "Monitors and phase gates are edited in the workflow file; saving here
+keeps them."
 
 ## The `decide` card in the transcript
 
@@ -328,6 +442,11 @@ never shows one, and the calls are never rows of their own.
 | The Monitors dialog's validation, save, privacy reasons, the browser, its read on every open (a caller's older copy is not what it saves) and its filled rows | `components/decisions/MonitorsDialog.test.tsx` |
 | The Monitors list naming P(no), a choice and a score level; a score monitor kept through an edit; Fires on Yes or No; the model list's missing route, refusal and failure with Retry | `components/decisions/MonitorsDialog.test.tsx`, `utils/sessionDecisions.test.ts` |
 | The composer's `+` row that opens the dialog, only in a chat that exists | `components/ChatInput.decisionMonitors.test.tsx` |
+| Fires when, the 21-stop threshold and a stored value kept through an edit, If a check fails, the subagents checkbox (hidden on a subagent's chat), owner badges and the transfer to the person, the new fields kept on save, an off monitor never held back, the daemon's 422 shown, the Crew rows and the no-usable-model note | `components/decisions/MonitorsDialog.test.tsx`, `utils/sessionDecisions.test.ts` |
+| The install panel's sentences and states, a busy install joined, an old failure hidden once installed, and the model picker's quiet form | `components/decisions/DecisionModelInstall.test.tsx`, `components/settings/models/subcomponents/SwitchModelModal.decisionModels.test.tsx` |
+| The phase gate dialog: its view, buttons and editor, the person's routes and their results | `components/decisions/PhaseGateDialog.test.tsx` |
+| The chip's person states, the held line and "Add gate" | `components/summary/SummarySubagents.test.tsx`, `components/summary/SummaryDecisions.test.tsx`, `utils/sessionSubagents.test.ts` |
+| The workflow warning's Supervision panel and the editor's read-only summary | `components/ui/WorkflowWarningModal.test.tsx`, `components/workflows/CreateEditWorkflowModal.test.tsx` |
 | The History count on top-level rows only | `components/sessions/SessionListView.decisionCount.test.tsx` |
 | The `decide` card's per-question line, the to-review count on a choice with a threshold, the review fields read under their own names, the questions read as the tool reads them (`question`, inferred and synonym types), and the model named by its alias in the head | `components/decisions/DecideToolSummary.test.tsx`, `components/decisions/decisionWire.test.ts` |
 | No context ring and no window lookup in a decision chat, the ring still drawn for a chat model, and the footer without its ring | `components/ChatInput.decisionChatGauge.test.tsx`, `components/bottom_menu/ComposerFooter.test.tsx` |
@@ -335,7 +454,7 @@ never shows one, and the calls are never rows of their own.
 | A local decision model leaves a chat's cost exact and reads "Not metered" in its breakdown; an unpriced Baseten one leaves it partial | `components/bottom_menu/CostTracker.test.ts`, `components/bottom_menu/CostTracker.render.test.tsx`, `components/bottom_menu/ModelBreakdownTable.test.tsx` |
 
 Run them with
-`cd ui/desktop && npx vitest run src/utils/sessionDecisions.test.ts src/hooks/useSessionDecisions.test.tsx src/components/decisions src/components/summary src/components/sessions src/components/ChatInput.decisionChatGauge.test.tsx src/components/bottom_menu/ComposerFooter.test.tsx src/components/settings/usage src/utils/usageStats.test.ts`.
+`cd ui/desktop && npx vitest run src/utils/sessionDecisions.test.ts src/hooks/useSessionDecisions.test.tsx src/components/decisions src/components/summary src/components/sessions src/components/ChatInput.decisionChatGauge.test.tsx src/components/bottom_menu/ComposerFooter.test.tsx src/components/settings/usage src/utils/usageStats.test.ts src/utils/sessionSubagents.test.ts src/components/ui/WorkflowWarningModal.test.tsx src/components/workflows/CreateEditWorkflowModal.test.tsx src/components/settings/models/subcomponents/SwitchModelModal.decisionModels.test.tsx`.
 Set `DECISIONS_SCREENSHOT_DIR` to a folder to have the two browser tests save a picture of the
 section and the view.
 

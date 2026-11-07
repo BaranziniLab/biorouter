@@ -70,10 +70,15 @@ function same(a: SessionDecisions | null, b: SessionDecisions | null): boolean {
  * the summary is shown (`visible`) or the chat's turn runs (`turnRunning`). It
  * re-reads when a decision-making tool call answers (a `decide` batch, a
  * `workspace_orchestrate` call that may have run a phase gate) or a decision
- * notice lands (`decisionRevision`), and it polls the summary every 3s only
- * while a turn runs in a chat that has monitors switched on or has made decision
- * calls. The settings are read once per enabled stretch, on a revision and on
- * `refresh`, not on every poll: they change only when someone saves them.
+ * notice lands (`decisionRevision`).
+ *
+ * While a turn runs it polls every 3s. The settings are read on every poll, in
+ * every chat: writers other than this window change them and leave nothing in
+ * this chat's transcript to re-read on (a parent agent's `workspace_monitor`, a
+ * parent's save copying its monitors into running subagents, a workflow's seed,
+ * `biorouter session monitors`, another window). The summary is polled only in
+ * a chat that has a monitor switched on or has made decision calls; a monitor
+ * that arrives mid-turn starts that from the next poll.
  *
  * One read at a time; an answer that draws the same as the last sets no state;
  * a stale read is aborted; a failed read keeps the last good data. The
@@ -101,30 +106,38 @@ export function useSessionDecisions(
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let last = lastData.current;
-    let readSettings = true;
+    // The first read of each run reads both; a poll reads the summary only in
+    // a chat that uses decision models. A route the daemon answered 404 (it
+    // predates the route) is not asked again in this run.
+    let first = true;
+    let summaryMissing = false;
+    let settingsMissing = false;
     setSnapshot((previous) =>
       previous.sessionId === sessionId
         ? previous
         : { sessionId, data: null, loading: true, error: false }
     );
 
-    const keepPolling = () => {
-      const inputs = pollInputs.current;
-      return (
-        inputs.turnRunning && (usesDecisions(last) || decisionRevisionHasActivity(inputs.revision))
-      );
-    };
+    const watched = () =>
+      usesDecisions(last) || decisionRevisionHasActivity(pollInputs.current.revision);
+    const keepPolling = () =>
+      pollInputs.current.turnRunning && ((watched() && !summaryMissing) || !settingsMissing);
 
     const read = async () => {
       try {
+        const readSummary = first || (watched() && !summaryMissing);
         const [summary, settings] = await Promise.all([
-          fetchDecisionSummary(sessionId, controller.signal),
-          readSettings
+          readSummary
+            ? fetchDecisionSummary(sessionId, controller.signal)
+            : Promise.resolve({ data: last?.summary ?? null, missing: summaryMissing }),
+          !settingsMissing
             ? fetchDecisionSettings(sessionId, controller.signal)
-            : Promise.resolve({ data: last?.settings ?? null, missing: false }),
+            : Promise.resolve({ data: last?.settings ?? null, missing: settingsMissing }),
         ]);
         if (controller.signal.aborted) return;
-        readSettings = false;
+        first = false;
+        summaryMissing = summary.missing;
+        settingsMissing = settings.missing;
         const next: SessionDecisions | null =
           summary.missing && settings.missing
             ? null

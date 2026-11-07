@@ -176,6 +176,92 @@ describe('the decision composer', () => {
   });
 });
 
+/**
+ * A threshold set over HTTP or the CLI can pass below its value, or sit on P(no):
+ * neither has a field here. Saving the question after an edit must not turn
+ * P(yes) < 0.30 into P(yes) ≥ 0.30, or P(no) into P(yes).
+ */
+describe('a stored rule the fields do not edit', () => {
+  const putQuestion = () =>
+    (mocks.put.mock.calls[0][0] as { body: { question: Record<string, unknown> } }).body.question;
+
+  async function editAndSave() {
+    await ready();
+    const field = screen.getByTestId('decision-composer-question');
+    fireEvent.change(field, { target: { value: 'Has the form been signed today?' } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(mocks.put).toHaveBeenCalledTimes(1));
+  }
+
+  it('keeps a below threshold through an edit, and says it', async () => {
+    mocks.get.mockResolvedValue(
+      stored({
+        instructions: 'Has the form been signed?',
+        kind: { binary: {} },
+        threshold: { below: { yes: 0.3 } },
+      })
+    );
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    // Read back as it is stored: nothing to save, and the rule is said.
+    expect(screen.getByTestId('decision-composer-status')).toHaveTextContent(
+      DECISION_COMPOSER_COPY.saved
+    );
+    expect(screen.getByTestId('decision-composer-kept-rule')).toHaveTextContent(
+      DECISION_COMPOSER_COPY.keptRule('P(yes) < 0.30')
+    );
+    await editAndSave();
+    expect(putQuestion().threshold).toEqual({ below: { yes: 0.3 } });
+  });
+
+  it('keeps a yes/no threshold on P(no) through an edit', async () => {
+    mocks.get.mockResolvedValue(
+      stored({
+        instructions: 'Has the form been signed?',
+        kind: { binary: {} },
+        threshold: { no: 0.4 },
+      })
+    );
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    expect(screen.getByTestId('decision-composer-kept-rule')).toHaveTextContent('P(no) ≥ 0.40');
+    await editAndSave();
+    expect(putQuestion().threshold).toEqual({ no: 0.4 });
+  });
+
+  it('keeps a below threshold on a choice option', async () => {
+    mocks.get.mockResolvedValue(
+      stored({
+        instructions: 'Which course?',
+        kind: { choice: { options: { rrms: null, spms: null } } },
+        threshold: { below: { option: { name: 'spms', p: 0.2 } } },
+      })
+    );
+    render(<DecisionComposer sessionId="chat-1" />);
+    await editAndSave();
+    expect(putQuestion().threshold).toEqual({ below: { option: { name: 'spms', p: 0.2 } } });
+  });
+
+  it('drops the stored rule when the threshold is cleared, so a new one is P(yes) at or above', async () => {
+    mocks.get.mockResolvedValue(
+      stored({
+        instructions: 'Has the form been signed?',
+        kind: { binary: {} },
+        threshold: { below: { no: 0.3 } },
+      })
+    );
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    const threshold = screen.getByTestId('decision-composer-threshold');
+    fireEvent.change(threshold, { target: { value: '' } });
+    fireEvent.change(threshold, { target: { value: '0.8' } });
+    expect(screen.queryByTestId('decision-composer-kept-rule')).toBeNull();
+    fireEvent.blur(threshold);
+    await waitFor(() => expect(mocks.put).toHaveBeenCalledTimes(1));
+    expect(putQuestion().threshold).toEqual({ yes: 0.8 });
+  });
+});
+
 describe('a draft as the question the route stores', () => {
   it('builds a score with an at-least-level threshold, lowest level first', () => {
     const draft = emptyDraft();

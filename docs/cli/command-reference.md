@@ -121,6 +121,10 @@ biorouter models local rm gemma4-31b
 # The decision models this machine can use, local first
 biorouter models decision list
 biorouter models decision list --format json
+
+# Install a decision model into the Ollama on this computer (tev1:0.8b by default)
+biorouter models decision pull
+biorouter models decision pull clef-flash:latest
 ```
 
 `models local` works on the shared model store directly, so it needs no running app or daemon.
@@ -148,6 +152,21 @@ before Baseten's, marked `cannot be loaded`, with a line under it naming the fix
 Baseten entry keeps Baseten's slug in `model` (`decision-models/baseten-joey-2b-latest`) with
 the alias in `displayName`. See [`decide`](#decide-options) and
 [Decision models](../agent-loop/decision-models.md).
+
+`models decision pull [MODEL]` installs a decision model into the Ollama that `OLLAMA_HOST` names,
+which must run on this computer, and checks that Ollama answers decisions with it: a decision
+model on this computer is the only kind that may read a private chat. It offers `tev1:0.8b` (the
+default, about 1.5 GB) and `clef-flash:latest` (about 12 GB; `clef-flash` is accepted). No daemon
+is needed, and the next model listing sees the model. Before anything is printed it refuses what
+`POST /decisions/models/install` refuses: a model it does not offer, an `OLLAMA_HOST` that does not
+resolve, an Ollama on another computer (nothing is sent to it) and an Ollama that is not running.
+On a terminal it shows a spinner with "Downloading tev1:0.8b… 412 MB of 1.5 GB". Off one it prints
+to stderr "Downloading tev1:0.8b from Ollama's library…", each of Ollama's steps once, then
+"Downloaded 1.5 GB. Checking that Ollama answers decisions with tev1:0.8b…", and on stdout
+"Installed tev1:0.8b: Private, runs on this computer. Private chats can now use it for monitors
+and decisions." A failure exits non-zero and quotes Ollama's own words. Two minutes with no bytes
+from Ollama stops the download, and running the command again resumes it. See
+[Installing a local decision model](../agent-loop/decision-models.md#installing-a-local-decision-model).
 
 ### version
 
@@ -342,7 +361,7 @@ agent delegates to a subagent is filtered out, so a fan-out of five children is
 invisible from the terminal. `--subagents` includes those runs and nests each one
 under the session that spawned it:
 
-```
+```text
 20260731_1 - Migration review - 2026-07-31 15:04:11 UTC
   └─ audit the migration for data loss [◐ running]  20260731_2  gpt-5.5  14 msgs  2026-07-31 15:09
   └─ benchmark the covering index [● completed]  20260731_3  gpt-5.5  8 msgs  2026-07-31 15:07
@@ -593,6 +612,14 @@ Stop the turn a session is currently running. This is the same action as the Sto
 
 Cancelling is idempotent: a session with no turn in flight is not an error, it reports `nothing to cancel: this session had no turn in flight`.
 
+**Subagents.** A cancel also stops every subagent the chat started that still has work in flight
+(a delegated run, running or queued; a later turn in its tab; a continuation waiting to start),
+even when the chat itself was idle, and prints a second line, "Also stopped 2 subagents this chat
+started." ("1 subagent" for one). Each stopped subagent ends `incomplete`, and its result opens
+"Stopped because the person stopped the chat that started this subagent." Ctrl-C during a turn in
+`biorouter session` (the terminal UI and the classic REPL) and in `biorouter run` does the same and
+prints the same line. Cancelling a tool approval ends the turn and leaves the subagents running.
+
 **Usage:**
 
 ```bash
@@ -616,7 +643,7 @@ List the subagents a session started, oldest first, with what each one is doing 
 
 **What it prints.** When the chat's agent declared a phase plan, the plan comes first: its title, then one line per phase with the phase's status, title and progress (`done/total`, plus how many are running, blocked, failed or quiet). Then one numbered entry per subagent:
 
-```
+```text
 Plan: Migrate the auth layer
   ● Research        3/3 done
   ◐ Implementation  1/4 done · 2 running · 1 quiet
@@ -631,6 +658,12 @@ Subagents of session 20261104_1 (2):
 
 Follow a running one: biorouter session attach <session id>. Read a finished one: biorouter session export --session-id <session id>.
 ```
+
+A gated phase's line adds who set its gate and your decision, as in "· gate set by the agent,
+passed by you", and " · needs you" when the gate waits for you; a phase an earlier gate holds adds
+" · waits for Build's gate". A subagent a monitor stopped shows the monitor's sentence as its last
+line ("Stopped by monitor 'Off task' (set by this chat's agent): …"). To see or change the gates
+themselves, use [`session gates`](#session-gates).
 
 The status glyphs are `○` queued, `◐` running (or stopping), `●` completed, `⏸` blocked (it stopped to ask its parent a question), `✗` failed or incomplete, `⊘` interrupted (its process went away mid-run) and `·` unknown. "Quiet" means a running subagent has recorded no activity for 3 minutes or more, the same threshold the phase line counts with and the desktop panel and the TUI pane use. It is a hint, not a verdict that the run is stuck. The last line of an entry is the first line of the subagent's result, its error, or the question it is blocked on.
 
@@ -686,7 +719,7 @@ criterion (and the chunk), the answers, the probability, the outcome, the model 
 A model is named by its short name: an Ollama tag as it is (`tev1:0.8b`), and a Baseten model by
 its alias (`joey-1`), never by the slug the log records; `--json` keeps the slug.
 
-```
+```text
 Decisions in session 20261104_1: 618 calls
 
 By source:
@@ -724,10 +757,11 @@ biorouter session decisions 20261104_1 --turn <turn id> --limit 50 --json
 
 List, add or remove the decision-model monitors that watch a chat. A monitor asks a decision
 model one question about the chat's recent messages after each agent iteration, or once as a turn
-ends. When the probability of the wanted answer reaches its threshold, it stops the turn, shows a
-notice, or tells the model. A turn that ran monitors shows one summary line per monitor, never
-one line per check. A chat takes at most 8 monitors. They are the same monitors the desktop's
-Monitors dialog edits.
+ends. When the probability of the wanted answer reaches its threshold (or falls below it, for a
+`--below` monitor), it stops the turn, shows a notice, or tells the model. A turn that ran
+monitors shows one summary line per monitor, never one line per check. A chat takes at most 8
+monitors. They are the same monitors the desktop's Monitors dialog edits, and a change applies at
+the chat's next check, in a running turn too.
 
 **Arguments:**
 
@@ -741,28 +775,62 @@ Monitors dialog edits.
 - **`--name <NAME>`** (required): A short name, at most 60 characters. The id is made from it
 - **`--ask <QUESTION>`** (required): The question about the chat's recent messages
 - **`--threshold <P>`** (required): Fire when the probability of the wanted answer is at least `P`
+  (above 0, at most 1), or falls below it with `--below`
+- **`--below`**: Fire when the probability falls below `--threshold` instead of reaching it
 - **`--action <ACTION>`**: `notify` (the default) shows a notice, `stop` ends the turn and hands
   control back to you, `steer` tells the model what the monitor found
 - **`--timing <TIMING>`**: `post-iteration` (the default) asks after every iteration of the agent
   loop, `turn-end` once as a turn ends
 - **`--model <PROVIDER/MODEL>`**: The decision model; without it the chat's default
-- **`--choice <NAME[=DESCRIPTION]>`** and **`--option <OPTION>`**: Make the question a choice, and
-  name the option whose probability is compared
-- **`--consecutive <N>`**: Checks in a row at or above the threshold before it fires (1 to 5)
-- **`--rearm-below <P>`**: After firing, fire again only once the probability has dropped below `P`
-- **`--on-error <POLICY>`**: `notify` (the default) or `pause`, which stops the turn when a check
-  fails
+- **`--option <OPTION>`**: The answer whose probability is compared: `yes` (the default) or `no`
+  on a yes/no question, or one of the `--choice` options
+- **`--choice <NAME[=DESCRIPTION]>`**: Make the question a choice; repeat it once per option
+- **`--consecutive <N>`**: Checks in a row on the firing side of the threshold before it fires (1
+  to 5)
+- **`--rearm-below <P>`**: After firing, fire again only once the probability has dropped below
+  `P`, which must be under `--threshold`. For a stop monitor it is also what keeps later turns
+  going: without it a stop monitor stops every turn in which its answer holds
+- **`--rearm-above <P>`**: For a `--below` monitor, the same the other way: re-arm only once the
+  probability rises to `P` or above, which must be over `--threshold`
+- **`--on-error <POLICY>`**: `notify` (the default) shows a notice, and after three failures in a
+  row the monitor is off for the rest of the turn; `pause` stops the turn whenever a check fails
 - **`--max-checks <N>`**: At most this many checks per turn (default 50, at most 200)
+- **`--subagents`**: Also watch the subagents this chat starts: the monitor is copied onto each of
+  them, and onto the ones running when it is saved. Refused on a subagent's own chat with "Only a
+  chat that starts subagents can share its monitors with them."
 - **`--id <ID>`**, **`--disabled`**: Choose the id, or add the monitor switched off
+
+A direction mixed up is refused before anything is sent: "--rearm-below is for a monitor that
+fires at or above its threshold; a --below monitor re-arms with --rearm-above", "--rearm-above is
+for a --below monitor; …", "--rearm-above must be over --threshold: …", and "--option on a yes/no
+question is `yes` or `no`".
+
+**What `list` prints.** One entry per monitor, its rule first (`P(yes) ≥ 0.85`, or `P(yes) < 0.30`
+for a below monitor), then what it does and when, and then what else is set: "re-arms below 0.40"
+or "re-arms above 0.60", "stops again while it holds" for a stop monitor with no re-arm level, "an
+error pauses the turn", "also watches the subagents this chat starts". A monitor on a subagent's
+chat names who set it: "set by the agent of chat 20261106_1", or "from the chat that started this
+subagent (20261106_1)" for a copy.
+
+**Removing.** You may remove any monitor, an agent's included, and the message says who set it
+("It was set by the agent of chat 20261106_1."). A copy you remove comes back when the parent's
+monitors are saved again while this subagent runs, and the message says so.
+
+**What a save checks.** Before anything is stored, the command checks that what the change turns
+on can run for this chat: the model is there, takes the question and will load, and the chat's
+privacy tier, an institution or a Crew grant does not refuse it. Nothing of the chat is sent
+([What a save checks](../agent-loop/decision-models.md#what-a-save-checks)). With a daemon, a 400
+or 422 prints the daemon's sentence as it is and never asks for a key. Without one the same check
+runs locally, prints "Error: Nothing was saved: …" and exits 1.
 
 **With and without a daemon.** With a reachable daemon the monitors are read and written through
 it. A change names where the chat's content goes, so a daemon started with a user-action key
-wants the key: when it refuses a change, the command shows its reason and asks for the key once,
-without echo, and pressing Enter stops. `--user-action-key-stdin` supplies it without a prompt.
-Without a daemon the monitors are read and written in the local session store, under the same
-privacy rule as `session decisions` and with no key, whatever kind of daemon the store belongs to.
-A daemon with no user-action key (`biorouter serve`) takes a change without the key too, except to
-a subagent's chat. Either way a change reaches the chat's next turn, never the one running.
+wants the key: when it refuses a change with 403, the command shows its reason and asks for the
+key once, without echo, and pressing Enter stops. `--user-action-key-stdin` supplies it without a
+prompt. Without a daemon the monitors are read and written in the local session store, under the
+same privacy rule as `session decisions` and with no key, whatever kind of daemon the store
+belongs to. A daemon with no user-action key (`biorouter serve`) takes a change without the key
+too, except to a subagent's chat. Copies onto running subagents are made only with a daemon.
 
 **What a `steer` monitor tells the model.** The note quotes the monitor's name and question as
 JSON strings inside a `<decision-monitor>` frame and says they come from the chat's monitor
@@ -780,12 +848,84 @@ Monitor 'Form reached' fired (P 0.93, threshold 0.50) and told the agent. Its qu
 # The chat's monitors
 biorouter session monitors 20261104_1 list
 
-# Stop the turn once the agent has reached the consent form
+# Stop the turn once the agent has reached the consent form, and stay quiet after that
 biorouter session monitors 20261104_1 add --name "Form reached" \
-  --ask "Has the agent reached the consent form page?" --threshold 0.85 --action stop
+  --ask "Has the agent reached the consent form page?" --threshold 0.85 --action stop \
+  --rearm-below 0.40
+
+# Stop the turn while the chance that tests pass falls below 0.30, on this chat and its subagents
+biorouter session monitors 20261104_1 add --name "Tests failing" \
+  --ask "Do the latest results show the tests passing?" --threshold 0.30 --below \
+  --action stop --on-error pause --subagents
 
 # Remove it again
 biorouter session monitors 20261104_1 remove form-reached
+```
+
+### session gates
+
+List a chat's phase gates, or set, remove, pass, skip or retry one. A phase gate asks a decision
+model yes/no questions about a phase's hand-off before the phase may complete, and holds every
+phase listed after it until it passes. Whoever set a gate (the agent, you, or the workflow the
+chat was started from), the agent cannot change, remove or skip it; only you can, here or in the
+app. See [Decision gates](../agent-loop/orchestration-phases.md#decision-gates).
+
+**Arguments and subcommands:**
+
+- **`<SESSION_ID>`** (required): The chat whose plan holds the phases
+- **`list`** (the default, also with no subcommand): Every phase and its gate
+- **`set <PHASE> --ask NAME=QUESTION ...`**: Set or replace a phase's gate. The gate is yours, its
+  attempts start over, and a phase its old gate blocked goes back in progress
+- **`remove <PHASE>`**: Remove a phase's gate, which releases the phases after it
+- **`pass <PHASE>`**, **`skip <PHASE>`**: Pass or skip a gated phase without asking its gate: at
+  once, or, while its subagents still work, once they finish and the agent completes it
+- **`retry <PHASE>`**: Give a gate its attempts again, so the agent can complete the phase once
+  more to ask it
+
+**`set` options:**
+
+- **`--ask <NAME=QUESTION>`** (required, up to 8): One yes/no question the decision model answers
+  from the phase's hand-off; every question must pass. The text splits at the first `=`, and the
+  name is made into lowercase letters, digits, `_` and `-`
+- **`--threshold <P>`**: The P(yes) every question must reach, from 0 to 1 (default 0.80). The
+  0.50 floor the agent's gates have does not apply to yours
+- **`--attempts <N>`**: Failed evaluations allowed before the phase is blocked, 1 to 5 (default 3)
+- **`--model <PROVIDER/MODEL>`**: The decision model; without it the chat's default
+- **`--allow-uncalibrated`**: Accept probabilities a model states in words
+
+**Options for every subcommand:**
+
+- **`--format <FORMAT>`**: `text` (the default) or `json`. For `list`, JSON is the plan as
+  `GET /sessions/{session_id}/subagents` returns it; for a write, `{message, applied, plan}`
+- **`--user-action-key-stdin`**: As for [`session monitors`](#session-monitors)
+
+**What `list` prints.** One entry per phase: its id, title and status, then its gate (the
+questions, the threshold, the attempts used, the last result, whether it is blocked, who set it
+and your decision), the model it asks, how many times its attempts were given again, the last
+error, what it holds, a "needs you" line when it waits for you, and "your pass stands" or "your
+skip stands" on an open phase. A held phase reads "waits for build's gate", naming the holder by
+its id, which is what the subcommands take.
+
+**With and without a daemon.** With a daemon, `list` reads `GET /sessions/{session_id}/subagents`
+and the writes go through the phase-gate routes. A 400, 404, 409 or 422 prints the daemon's
+sentence alone; a 403 adds the advice about the key and, on a terminal, asks for it once. Without
+a daemon the gates are read and written in the local session store, under the privacy rule of
+`session monitors`, and a gate's model is checked as the route checks it: "Phase "build"'s gate
+cannot be answered in this chat: …. Nothing was changed."
+
+**Usage:**
+
+```bash
+# A chat's gates
+biorouter session gates 20261106_1
+
+# Your own gate on the research phase, at a threshold of 0.30
+biorouter session gates 20261106_1 set research \
+  --ask facts="Does the hand-off list two facts about the moon?" --threshold 0.3
+
+# Let a blocked phase through, or give its gate another three tries
+biorouter session gates 20261106_1 pass build
+biorouter session gates 20261106_1 retry build
 ```
 
 ### session diagnostics [options]
@@ -924,12 +1064,29 @@ Execute commands from an instruction file or stdin.
 - **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths
 - **`--max-tool-repetitions <NUMBER>`**: Maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops
 - **`--max-turns <NUMBER>`**: Maximum number of turns allowed without user input (`0` means Unlimited, the default)
-- **`--explain`**: Show a workflow's title, description, and parameters
+- **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan: the default decision model, one line per monitor, the plan and each gate, and a note that these apply once to the new chat and that a monitor's decision model reads that chat's newest messages
 - **`--render-workflow`**: Print the rendered workflow instead of running it
 - **`-q, --quiet`**: Quiet mode. Suppress non-response output, printing only the model response to stdout
 - **`--output-format <FORMAT>`**: Output format (`text`, `json`, or `stream-json`). Default is `text`. Use JSON structured output for automation and scripting: `json` for results after completion, `stream-json` for events as they occur
 - **`--provider`**: Specify the provider to use for this session (overrides environment variable)
 - **`--model`**: Specify the model to use for this session (overrides environment variable)
+
+**A workflow's monitors and phase plan.** A workflow that declares `decision_settings` or an
+`orchestration_plan` ([the workflow schema reference](../workflows/workflow-schema-reference.md#supervision-decision_settings-and-orchestration_plan))
+applies them once, to the new chat the run makes, before its first message. When they cannot be
+applied (a decision model the chat may not use, a plan outside the Autonomous approval mode, a
+block that is malformed), the run prints "The workflow was not started: " and the reason, removes
+the chat it made, and exits 1. With `--resume` on a chat that already has messages, nothing is
+applied again, and one line says which case it is: "This chat already has messages. The monitors
+and phase plan this workflow declares were applied when the chat started and are not applied
+again, so the chat keeps them as they are now." when this workflow seeded it, or "This chat
+already has messages, so the monitors and phase plan this workflow declares were not applied to
+it. Run the workflow in a new chat to get them." otherwise. With `--resume` on a chat that has no
+messages yet but that another workflow already set up, nothing is applied either, and the line
+reads "Another workflow already gave this chat its monitors and phase plan before its first
+message, so the ones this workflow declares were not applied to it. Run the workflow in a new chat
+to get them." Resuming such a chat with the workflow that set it up says nothing. The run then goes
+on.
 
 **Usage:**
 
@@ -996,7 +1153,7 @@ and the latency.
 
 **What it prints.** For one text:
 
-```
+```text
 Does this note state the patient has multiple sclerosis?
 ▸ yes  ███████████████████▋░░░░  0.82
   no   ████▍░░░░░░░░░░░░░░░░░░░  0.18
@@ -1032,6 +1189,13 @@ usage: 2 requests on baseten_decision/mammoth-1: 1,200,000 input and 3 output to
 - `usage:` comes after a run without `--session`, because nothing in Biorouter records that run.
   A local model has no price, so its line gives tokens only, and a run whose model reported no
   usage prints none. A run with `--session` is counted in [`usage`](#usage-options) instead.
+- With `--session`, a run whose decision requests are still in flight when it ends waits up to
+  30 seconds for them, so their rows are stored and their usage counted, and says so: "waiting up
+  to 30 s for 2 decision request(s) that answered late, so their usage is counted". One still out
+  after that is named: "note: 1 decision request(s) had not answered when this run ended; if the
+  provider bills them, Biorouter does not count it." Nothing is printed when none is in flight.
+  `biorouter session` and `biorouter run` wait the same way when they end, before the SessionEnd
+  hooks, and Ctrl-C stops their wait.
 
 **Privacy.** With `--session`, the chat's privacy tier decides which decision models may read the
 text, exactly as it does for the agent: a private chat never reaches a model hosted outside your

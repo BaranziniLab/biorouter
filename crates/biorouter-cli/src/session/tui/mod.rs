@@ -905,6 +905,8 @@ async fn drive_response(
     // re-reads the roster, throttled to the pane's refresh interval.
     let session_manager = session.agent.config.session_manager.clone();
     let parent_id = session.session_id.clone();
+    // Subagents the person's Stop stopped this turn, said once the turn ends.
+    let mut stopped_subagents: Vec<String> = Vec::new();
     let mut last_roster_read = std::time::Instant::now()
         .checked_sub(subagents::REFRESH_INTERVAL)
         .unwrap_or_else(std::time::Instant::now);
@@ -932,7 +934,7 @@ async fn drive_response(
                         match action {
                             StreamAction::Cancel => {
                                 session.agent.extension_manager.computer_use.revoke();
-                                cancel.cancel();
+                                stop_turn(&cancel, &parent_id, &mut stopped_subagents);
                             }
                             // Park it to run after the current turn. We do NOT
                             // push to the scrollback here: the live stream preview
@@ -1075,6 +1077,13 @@ async fn drive_response(
     drop(stream);
     // Commit whatever streamed (including a partial reply if the user cancelled).
     commit_stream_to_session(app, &mut session.messages);
+    // After the partial reply, not when Stop was pressed: a note pushed under
+    // the live preview is wiped when the preview re-renders.
+    if let Some(line) =
+        crate::commands::session_watch::stopped_subagents_sentence(stopped_subagents.len())
+    {
+        app.push_note(&line);
+    }
     app.thinking = None;
     app.set_catalog(build_catalog(session).await);
     refresh_context(session, app).await;
@@ -1083,6 +1092,22 @@ async fn drive_response(
     refresh_subagents(&session_manager, &parent_id, app).await;
     tui.draw(app)?;
     Ok(())
+}
+
+/// The person's Stop while a turn runs (Ctrl-C, from the input or any pane).
+/// It ends the turn and, as the classic REPL's Ctrl-C, `biorouter session
+/// cancel` and the desktop's Stop do, stops the subagents this chat started
+/// (item B): they run on tokens of their own, so ending the turn alone left
+/// them running, and spending. Adds the children it stopped to `stopped`, once
+/// each: Stop pressed again while the turn unwinds names the ones still
+/// unwinding again, and they must not be counted twice.
+fn stop_turn(cancel: &CancellationToken, parent_id: &str, stopped: &mut Vec<String>) {
+    cancel.cancel();
+    for child in super::stop_chat_subagents(parent_id) {
+        if !stopped.contains(&child) {
+            stopped.push(child);
+        }
+    }
 }
 
 /// A message that is a streamable assistant-text delta (text only, no tool
@@ -3572,6 +3597,61 @@ mod tests {
             on_key_streaming(&mut app, ctrl('c')),
             StreamAction::Cancel
         ));
+    }
+
+    /// Item B in the full-screen TUI, which is what `biorouter session` opens
+    /// on a terminal: the person's Stop (^C while a turn runs) ends the turn
+    /// AND stops the subagents the chat started, as the classic REPL's ^C and
+    /// the desktop's Stop do. ^C pressed again while they unwind counts each
+    /// child once.
+    #[test]
+    fn stop_while_a_turn_runs_also_stops_the_chats_subagents() {
+        use biorouter::agents::subagent_handle::{BackgroundSubagent, ChildStopCause};
+        let parent = "p10-tui-stop-parent";
+        let register = |parent: &str, child: &str| {
+            let handle = BackgroundSubagent::register(
+                parent,
+                child,
+                "delegated work",
+                CancellationToken::new(),
+            );
+            assert!(handle.is_running());
+            handle
+        };
+        let first = register(parent, "p10-tui-stop-child-1");
+        let second = register(parent, "p10-tui-stop-child-2");
+        let other = register("p10-tui-stop-other-parent", "p10-tui-stop-other");
+
+        let mut app = App::new(StatusInfo::default());
+        let turn = CancellationToken::new();
+        let mut stopped = Vec::new();
+        assert!(matches!(
+            on_key_streaming(&mut app, ctrl('c')),
+            StreamAction::Cancel
+        ));
+        stop_turn(&turn, parent, &mut stopped);
+
+        assert!(turn.is_cancelled(), "Stop no longer ends the turn");
+        assert!(
+            first.is_cancelled() && second.is_cancelled(),
+            "the TUI's Stop left the chat's subagents running"
+        );
+        assert_eq!(first.stop_cause(), Some(ChildStopCause::ParentStopped));
+        assert!(!other.is_cancelled(), "another chat's subagent was stopped");
+
+        // Pressed again while both are still unwinding.
+        stop_turn(&turn, parent, &mut stopped);
+        assert_eq!(stopped, ["p10-tui-stop-child-1", "p10-tui-stop-child-2"]);
+        assert_eq!(
+            crate::commands::session_watch::stopped_subagents_sentence(stopped.len()).as_deref(),
+            Some("Also stopped 2 subagents this chat started.")
+        );
+
+        for handle in [&first, &second, &other] {
+            handle.complete(
+                biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"),
+            );
+        }
     }
 
     fn open_research_child(app: &mut App) {

@@ -81,6 +81,29 @@ If you typed into the tab, the parent is told. Its tool result carries `human_in
 
 The flag tracks **messages you sent**, so it is Steer that sets it, not Stop. Pressing Stop without typing cancels the run without marking the result as intervened.
 
+### Monitors on a subagent
+
+A subagent can be watched by decision-model monitors like any chat, and they can come from the chat that started it as well as from its own tab:
+
+- **Yours, on the parent.** Tick "Also watch the subagents this chat starts" on a monitor of the parent chat (`--subagents` with `biorouter session monitors`), and every subagent it starts gets a copy. Saving the parent's monitors again updates the copies on the subagents still running.
+- **The agent's.** The parent agent can give a subagent monitors when it spawns it (the `subagent` tool's `monitors` field), through a phase of its plan, or later with `workspace_monitor`. They are yes/no questions that stop or steer the subagent, at most 4 per subagent within the chat's 8. The agent may change or remove only the monitors it set, never yours.
+- **Yours, on the subagent.** Open its tab and use its Monitors dialog, or `biorouter session monitors <subagent id>`. You may change or remove any of its monitors, the agent's included; in the app, editing one of the agent's makes it yours.
+- **A sub-workflow's.** A subagent spawned from a sub-workflow that declares `decision_settings` starts with its monitors, as yours.
+
+A subagent's chat runs its `turn_end` monitors at the end of each of its turns, and a `turn_end` steer sends it back to work. Every monitor is checked against the parent chat's privacy tier when the subagent is spawned, so a private chat's subagent is never started with a hosted decision model. The full rules are in [Monitors on subagents](decision-models.md#monitors-on-subagents).
+
+**When a monitor stops a subagent,** its result reads `incomplete` and opens with which monitor stopped it and why, as in "Stopped by monitor 'Off task' (set by this chat's agent): P 0.93 reached its threshold 0.80. Its question: "Is the agent editing files outside src/?". The run did not finish." That sentence is the first line the side panel, `biorouter session subagents` and the terminal pane show for it. The parent agent is told it was stopped and did not finish. After its own monitor's stop it may read the subagent, continue it or change the monitor; after yours it is told to tell you and wait, not to work around it. A copy of one of your "also watch" monitors that stops one subagent also stops its siblings and the chat that started them.
+
+### When the chat that started it stops
+
+Stopping a chat stops its subagents. A plain Stop in the chat that started them (the Stop button, `biorouter session cancel`, Ctrl-C in the terminal) and a decision-model monitor's stop of that chat both stop every subagent it started that still has work in flight: a delegated run that is running or queued, a later turn in its tab, or a Stop-and-Send continuation waiting to start. Finished subagents are left alone. Each stopped subagent ends `incomplete`, keeps what it had done, and its result and its own tab say why:
+
+- "Stopped because the person stopped the chat that started this subagent."
+- "Stopped because monitor 'Form reached' stopped the chat that started this subagent."
+- "Stopped because monitor 'Form reached', set by the person to watch every subagent of that chat, stopped subagent 'Fetch the data'."
+
+Stop-and-Send in the parent (sending a correction while its turn runs) leaves the subagents running, because the next turn keeps supervising them, and so does cancelling a tool approval. After a monitor's stop, the parent's turn waits up to 30 seconds (`BIOROUTER_MONITOR_STOP_SETTLE_SECS`) for the subagents to stop, so it can collect what each had done, and names any that had not stopped by then. See [A stop stops the chat's subagents](decision-models.md#a-stop-stops-the-chats-subagents).
+
 ### When the child needs your permission
 
 Even in Completely Autonomous mode some operations always ask — a recursive delete of a directory the session did not create, a write into a credential store, anything the security floor stops. A subagent running one of those has to reach **you**, and a card that lives only in a conversation you are not looking at is the same thing as no card at all.
@@ -107,7 +130,7 @@ When you ask the agent to organise a larger piece of work into stages (plan, res
 - **`phase`** names the phase the subagent works in. A spawn into a phase the plan does not have, or one already completed or skipped, is refused before anything is created. Results handed off from earlier phases are added to the subagent's instructions, so a later phase starts from what an earlier one found.
 - **`role`** is a short label for what the subagent does ("reviewer", "data loader"), at most 40 characters, shown beside it in the side panel.
 
-The side panel, `biorouter session subagents` and the terminal pane then show the plan with each phase's progress: how many of its subagents are done, running, quiet or failed. See [Orchestration phases](orchestration-phases.md) for how phases are declared, completed and handed off.
+The side panel, `biorouter session subagents` and the terminal pane then show the plan with each phase's progress: how many of its subagents are done, running, quiet or failed. A phase may carry a decision gate, which holds every phase after it until a decision model is confident the phase met its goal, or until you pass or skip it; the agent cannot change, remove or skip a gate. A phase may also carry monitors that every subagent spawned into it starts with. See [Orchestration phases](orchestration-phases.md) for how phases are declared, gated, completed and handed off.
 
 ### Finding subagent runs later
 
@@ -484,5 +507,5 @@ re-enabling the feature never revisits an existing row.
 - [Workflow schema reference](../workflows/workflow-schema-reference.md) — every field available in a workflow file, including where workflows are discovered.
 - [Permission modes](../security/permission-modes.md) — which modes allow autonomous subagent dispatch and which disable it.
 - [Privacy tiers](../security/privacy-tiers.md) — why a spawn cannot change a chat's privacy tier in either direction, and what a public child loses from its inherited extension set.
-- [Decision models](decision-models.md): the yes/no, choice and score models a subagent cannot run on, and the `decide` tool that screens items with them.
+- [Decision models](decision-models.md): the yes/no, choice and score models a subagent cannot run on, the `decide` tool that screens items with them, and the monitors that watch and stop a subagent.
 - [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_SUBAGENT_MAX_TURNS` and the other session-management settings.

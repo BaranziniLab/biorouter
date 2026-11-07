@@ -8,21 +8,23 @@
 //! Ollama `nimble` / `tev1` library pages show. PR #469's
 //! `tests/baseten_decisions.rs` is where these tests started.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use biorouter::decision::{
-    Answer, DecisionContext, DecisionError, DecisionKind, DecisionModel, DecisionModelEntry,
-    DecisionModelRef, DecisionModelSource, DecisionRequest, DecisionResult, DecisionService,
-    DecisionSession, DecisionUseGate, ProbabilitySource, Question, Threshold,
+    Answer, DecisionContext, DecisionError, DecisionKind, DecisionLogEntry, DecisionModel,
+    DecisionModelEntry, DecisionModelRef, DecisionModelSource, DecisionOutcome, DecisionRequest,
+    DecisionResult, DecisionService, DecisionSession, DecisionSink, DecisionUsage, DecisionUseGate,
+    ProbabilitySource, Question, Threshold,
 };
 use biorouter::privacy::{ProviderTier, SessionClassification};
 use biorouter::providers::decision::catalog::{
-    baseten_entry, discover_ollama, ollama_entry, ollama_facts, ollama_load_refusal,
-    OllamaDecisionFacts,
+    baseten_entry, discover_ollama, forget_discovery, ollama_entry, ollama_facts,
+    ollama_load_refusal, OllamaDecisionFacts,
 };
 use biorouter::providers::decision::system_one::ollama_load_refusal_sentence;
-use biorouter::providers::decision::SystemOneAdapter;
+use biorouter::providers::decision::{ConfiguredDecisionModels, SystemOneAdapter};
 use indexmap::IndexMap;
 use serde_json::{json, Value};
 use url::Url;
@@ -38,9 +40,18 @@ fn sandbox() {
     std::fs::write(root.path().join("config/config.yaml"), "{}\n").expect("a config file");
     std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
     std::env::set_var("BIOROUTER_DISABLE_KEYRING", "true");
+    // The configured Ollama is one that never answers (nothing listens on
+    // port 1, and no test server is given a port that low), so nothing here
+    // reaches a real Ollama through the configuration, and a test can read
+    // what a stopped one looks like. Set before any thread starts.
+    std::env::set_var("OLLAMA_HOST", STOPPED_OLLAMA);
+    std::env::remove_var("BASETEN_API_KEY");
     static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     let _ = ROOT.set(root);
 }
+
+/// The `OLLAMA_HOST` this binary configures: an address nothing answers on.
+const STOPPED_OLLAMA: &str = "http://127.0.0.1:1";
 
 const JOEY: &str = "decision-models/baseten-joey-2b-latest";
 
@@ -366,6 +377,192 @@ async fn an_answer_of_the_wrong_type_is_refused_not_guessed() {
         .unwrap_err();
     assert!(matches!(err, DecisionError::Malformed { .. }), "{err:?}");
     assert!(err.to_string().contains("`noul`"), "{err}");
+    // The model answered, so the request was billed: what it reported rides
+    // the error, and the sentence a person reads does not change.
+    assert_eq!(
+        err.billed_usage(),
+        DecisionUsage {
+            input_tokens: Some(42),
+            output_tokens: Some(1)
+        }
+    );
+    assert!(!err.to_string().contains("42"), "{err}");
+}
+
+#[tokio::test]
+async fn a_missing_answers_object_still_reports_its_usage() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "joey-2b-0.3",
+            "usage": {"input_tokens": 42, "output_tokens": 1}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = baseten(&server)
+        .decide(&one_question(NOTE))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, DecisionError::Malformed { detail, .. } if detail.contains("`answers`")),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.billed_usage(),
+        DecisionUsage {
+            input_tokens: Some(42),
+            output_tokens: Some(1)
+        }
+    );
+}
+
+/// A 2xx body that is not JSON was billed too, but says for how much in no
+/// form that can be read: nothing is counted, and nothing is estimated.
+#[tokio::test]
+async fn a_body_that_is_not_json_bills_nothing_it_cannot_read() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"usage: {"input_tokens": 42, "output_tokens": 1}"#),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = baseten(&server)
+        .decide(&one_question(NOTE))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, DecisionError::Malformed { detail, .. } if detail == "the body was not JSON"),
+        "{err:?}"
+    );
+    assert_eq!(err.billed_usage(), DecisionUsage::default());
+}
+
+/// What a sink was handed: each row with the id it was stored under (empty
+/// for an unnamed one), and each late answer, which also wakes `arrived`.
+#[derive(Default)]
+struct Captured {
+    rows: Mutex<Vec<(String, DecisionLogEntry)>>,
+    late: Mutex<Vec<(String, DecisionLogEntry)>>,
+    arrived: tokio::sync::Notify,
+}
+
+struct Capturing(Arc<Captured>);
+
+#[async_trait]
+impl DecisionSink for Capturing {
+    async fn record(&self, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        self.0.rows.lock().unwrap().push((String::new(), entry));
+        Ok(())
+    }
+    async fn record_as(&self, id: &str, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        self.0.rows.lock().unwrap().push((id.to_string(), entry));
+        Ok(())
+    }
+    async fn record_late(&self, id: &str, entry: DecisionLogEntry) -> anyhow::Result<()> {
+        self.0.late.lock().unwrap().push((id.to_string(), entry));
+        self.0.arrived.notify_one();
+        Ok(())
+    }
+}
+
+/// Ask Baseten with a 50 ms deadline for an answer that takes 400 ms, in a
+/// chat with a sink, and wait (up to a generous cap) for the late answer to
+/// reach it. Returns the caller's error and the late row, after checking the
+/// late row names the timeout row.
+async fn ask_too_late(body: Value) -> (DecisionError, DecisionLogEntry) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(body)
+                .set_delay(Duration::from_millis(400)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let captured = Arc::new(Captured::default());
+    let svc = service(baseten(&server))
+        .with_timeouts(Duration::from_millis(50), Duration::from_millis(50))
+        .with_sink(Arc::new(Capturing(Arc::clone(&captured))));
+    let chat = DecisionSession::new("late-chat", SessionClassification::Public, true);
+    let err = svc
+        .decide(
+            Some(&chat),
+            Some(&DecisionModelRef::new("baseten_decision", JOEY)),
+            &one_question(NOTE),
+        )
+        .await
+        .unwrap_err();
+    tokio::time::timeout(Duration::from_secs(20), captured.arrived.notified())
+        .await
+        .expect("the late answer reaches the sink");
+
+    let rows = captured.rows.lock().unwrap().clone();
+    assert_eq!(rows.len(), 1, "only the timeout row is written in time");
+    let (timeout_id, timeout_row) = &rows[0];
+    assert!(!timeout_id.is_empty());
+    assert_eq!(timeout_row.outcome, DecisionOutcome::Error);
+    assert_eq!(timeout_row.usage, DecisionUsage::default());
+    let late = captured.late.lock().unwrap().clone();
+    assert_eq!(late.len(), 1, "settled once");
+    let (late_id, late_row) = late.into_iter().next().unwrap();
+    assert_eq!(&late_id, timeout_id, "billed beside the row it belongs to");
+    assert_eq!(late_row.outcome, DecisionOutcome::Error);
+    assert!(late_row.decisions.is_empty(), "a late answer is never used");
+    assert!(
+        late_row
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("too late to use")),
+        "{:?}",
+        late_row.error
+    );
+    (err, late_row)
+}
+
+#[tokio::test]
+async fn a_late_baseten_answer_reaches_the_sink() {
+    let (err, late) = ask_too_late(json!({
+        "model": "joey-2b-0.3",
+        "answers": {"has_ms": {"type": "noul", "noul": 0.97}},
+        "usage": {"input_tokens": 180, "output_tokens": 3}
+    }))
+    .await;
+    assert!(matches!(err, DecisionError::Timeout { .. }), "{err:?}");
+    assert_eq!(
+        late.usage,
+        DecisionUsage {
+            input_tokens: Some(180),
+            output_tokens: Some(3)
+        }
+    );
+    assert_eq!(late.served_model.as_deref(), Some("joey-2b-0.3"));
+}
+
+/// A late answer that cannot be read was billed all the same, and only the
+/// adapter can read what it cost: without that, nothing reaches the sink.
+#[tokio::test]
+async fn a_late_answer_that_cannot_be_read_still_reaches_the_sink() {
+    let (err, late) = ask_too_late(json!({
+        "answers": {"has_ms": {"type": "choice", "choice": "continue"}},
+        "usage": {"input_tokens": 42, "output_tokens": 1}
+    }))
+    .await;
+    assert!(matches!(err, DecisionError::Timeout { .. }), "{err:?}");
+    assert_eq!(
+        late.usage,
+        DecisionUsage {
+            input_tokens: Some(42),
+            output_tokens: Some(1)
+        }
+    );
 }
 
 #[tokio::test]
@@ -487,6 +684,7 @@ async fn an_oversized_chunk_is_named_and_nothing_is_sent_for_it() {
 /// mock server on a port a finished test had, which is how CI caught it) used
 /// to be handed the first one's models for a minute.
 #[tokio::test]
+#[serial_test::serial(ollama_discovery)]
 async fn a_server_listing_other_copies_at_the_same_address_is_asked_again() {
     let server = MockServer::start().await;
     let decision_show = |context: u64| {
@@ -549,7 +747,85 @@ async fn a_server_listing_other_copies_at_the_same_address_is_asked_again() {
     assert_eq!(second[0].context_tokens, 8192);
 }
 
+/// Discovery keeps one answer for the whole process, so the tests that read
+/// or clear it take turns (`serial(ollama_discovery)`): a discovery another
+/// test runs in between would replace the answer one of them is checking.
 #[tokio::test]
+#[serial_test::serial(ollama_discovery)]
+async fn a_model_left_out_of_a_discovery_lists_once_discovery_is_forgotten() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/tags"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"name": "slow-show:1b", "model": "slow-show:1b", "digest": "slow-show-1"}
+        ]})))
+        .mount(&server)
+        .await;
+    // The first `/api/show` fails, so the first discovery leaves it out.
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"capabilities": ["decision"]})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(empty_questions_refusal())
+        .mount(&server)
+        .await;
+    let base = Url::parse(&server.uri()).unwrap();
+    assert!(discover_ollama(&base).await.is_empty(), "its show failed");
+    // The server lists the same copies, so the omission is answered from the
+    // cache within its minute.
+    assert!(discover_ollama(&base).await.is_empty(), "cached");
+
+    // An install that verified the model forgets the discovery: it lists at
+    // once.
+    forget_discovery();
+    let listed = discover_ollama(&base).await;
+    assert_eq!(
+        listed.iter().map(|e| e.model.as_str()).collect::<Vec<_>>(),
+        ["slow-show:1b"]
+    );
+}
+
+/// With the configured Ollama stopped, nothing local is listed, and a private
+/// chat may use nothing else. The refusal says the server is not answering,
+/// where advising an install would be wrong for a model already pulled.
+#[tokio::test]
+async fn a_private_chat_is_told_when_ollama_is_not_answering() {
+    let svc = DecisionService::new(Arc::new(ConfiguredDecisionModels))
+        .with_use_gate(Arc::new(Allow))
+        .with_default_model(None);
+    let chat = DecisionSession::new("stopped-ollama-chat", SessionClassification::Private, true);
+    let err = svc
+        .decide(Some(&chat), None, &one_question(NOTE))
+        .await
+        .unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains(&format!(
+            "Ollama is not answering at {STOPPED_OLLAMA}/, so no local decision model could be \
+             listed. Start Ollama, then try again."
+        )),
+        "{text}"
+    );
+    assert!(
+        !text.contains(biorouter::decision::INSTALL_ADVICE),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(ollama_discovery)]
 async fn ollama_discovery_lists_only_decision_models() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -694,6 +970,7 @@ async fn an_ollama_model_in_an_old_format_is_reported_as_such() {
 }
 
 #[tokio::test]
+#[serial_test::serial(ollama_discovery)]
 async fn a_copy_ollama_cannot_load_is_listed_last_with_the_fix() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
