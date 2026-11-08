@@ -2,6 +2,8 @@ use super::completion::BioRouterCompleter;
 use anyhow::Result;
 use biorouter::config::Config;
 use rustyline::Editor;
+#[cfg(feature = "dictation")]
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 pub enum InputResult {
@@ -26,6 +28,21 @@ pub enum InputResult {
     /// Rename the current session.
     Rename(String),
     FolderAccess(String),
+    #[cfg(feature = "dictation")]
+    Dictate {
+        left: String,
+        right: String,
+    },
+    #[cfg(feature = "dictation")]
+    DictateRetry,
+    #[cfg(feature = "dictation")]
+    DictateStatus,
+    #[cfg(feature = "dictation")]
+    DictateInstall(Option<String>),
+    #[cfg(feature = "dictation")]
+    DictionaryAdd(String),
+    #[cfg(feature = "dictation")]
+    DictionaryReview,
 }
 
 #[derive(Debug)]
@@ -34,6 +51,31 @@ pub struct PlanCommandOptions {
 }
 
 struct CtrlCHandler;
+
+#[cfg(feature = "dictation")]
+struct DictateHandler(Arc<Mutex<Option<(String, String)>>>);
+
+#[cfg(feature = "dictation")]
+impl rustyline::ConditionalEventHandler for DictateHandler {
+    fn handle(
+        &self,
+        _event: &rustyline::Event,
+        _n: usize,
+        _positive: bool,
+        ctx: &rustyline::EventContext,
+    ) -> Option<rustyline::Cmd> {
+        let line = ctx.line();
+        let pos = ctx.pos().min(line.len());
+        let pos = (0..=pos)
+            .rev()
+            .find(|&n| line.is_char_boundary(n))
+            .unwrap_or(0);
+        let (left, right) = line.split_at(pos);
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((left.to_string(), right.to_string()));
+        Some(rustyline::Cmd::Interrupt)
+    }
+}
 
 impl rustyline::ConditionalEventHandler for CtrlCHandler {
     /// Handle Ctrl+C to clear the line if text is entered, otherwise exit the session.
@@ -61,8 +103,23 @@ pub fn get_newline_key() -> char {
         .unwrap_or('j')
 }
 
+#[cfg(feature = "dictation")]
+pub fn dictation_key() -> Option<char> {
+    let key = std::env::var("BIOROUTER_CLI_DICTATION_KEY").unwrap_or_else(|_| "t".into());
+    let key = key.chars().next()?.to_ascii_lowercase();
+    key.is_ascii_alphabetic().then_some(key)
+}
+
+#[cfg(not(feature = "dictation"))]
 pub fn get_input(
     editor: &mut Editor<BioRouterCompleter, rustyline::history::DefaultHistory>,
+) -> Result<InputResult> {
+    get_input_with_initial(editor, None)
+}
+
+pub fn get_input_with_initial(
+    editor: &mut Editor<BioRouterCompleter, rustyline::history::DefaultHistory>,
+    initial: Option<(&str, &str)>,
 ) -> Result<InputResult> {
     let newline_key = get_newline_key();
     editor.bind_sequence(
@@ -73,6 +130,20 @@ pub fn get_input(
         rustyline::EventHandler::Simple(rustyline::Cmd::Newline),
     );
 
+    #[cfg(feature = "dictation")]
+    let dictated = Arc::new(Mutex::new(None));
+    #[cfg(feature = "dictation")]
+    if let Some(key) = dictation_key() {
+        if key != newline_key {
+            editor.bind_sequence(
+                rustyline::KeyEvent(rustyline::KeyCode::Char(key), rustyline::Modifiers::CTRL),
+                rustyline::EventHandler::Conditional(Box::new(DictateHandler(Arc::clone(
+                    &dictated,
+                )))),
+            );
+        }
+    }
+
     editor.bind_sequence(
         rustyline::KeyEvent(rustyline::KeyCode::Char('c'), rustyline::Modifiers::CTRL),
         rustyline::EventHandler::Conditional(Box::new(CtrlCHandler)),
@@ -80,10 +151,18 @@ pub fn get_input(
 
     let prompt = get_input_prompt_string();
 
-    let input = match editor.readline(&prompt) {
+    let input = match editor.readline_with_initial(&prompt, initial.unwrap_or(("", ""))) {
         Ok(text) => text,
         Err(e) => match e {
-            rustyline::error::ReadlineError::Interrupted => return Ok(InputResult::Exit),
+            rustyline::error::ReadlineError::Interrupted => {
+                #[cfg(feature = "dictation")]
+                if let Some((left, right)) =
+                    dictated.lock().unwrap_or_else(|e| e.into_inner()).take()
+                {
+                    return Ok(InputResult::Dictate { left, right });
+                }
+                return Ok(InputResult::Exit);
+            }
             rustyline::error::ReadlineError::Eof => return Ok(InputResult::Exit),
             _ => return Err(e.into()),
         },
@@ -132,6 +211,34 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
     const CMD_SUMMARIZE_DEPRECATED: &str = "/summarize";
 
     match input {
+        #[cfg(feature = "dictation")]
+        "/dictate" => Some(InputResult::Dictate {
+            left: String::new(),
+            right: String::new(),
+        }),
+        #[cfg(feature = "dictation")]
+        "/dictate status" => Some(InputResult::DictateStatus),
+        #[cfg(feature = "dictation")]
+        "/dictate retry" => Some(InputResult::DictateRetry),
+        #[cfg(feature = "dictation")]
+        s if s == "/dictate install" || s.starts_with("/dictate install ") => {
+            let model = s
+                .strip_prefix("/dictate install")
+                .unwrap_or_default()
+                .trim();
+            Some(InputResult::DictateInstall(
+                (!model.is_empty()).then(|| model.to_string()),
+            ))
+        }
+        #[cfg(feature = "dictation")]
+        s if s.starts_with("/dictionary add ") => Some(InputResult::DictionaryAdd(
+            s.strip_prefix("/dictionary add ")
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        )),
+        #[cfg(feature = "dictation")]
+        "/dictionary review" => Some(InputResult::DictionaryReview),
         s if s == "/folder-access" || s.starts_with("/folder-access ") => {
             Some(InputResult::FolderAccess(
                 s.strip_prefix("/folder-access")
@@ -255,6 +362,25 @@ fn get_input_prompt_string() -> String {
 /// columns. Hand-written rather than generated from `list_commands()` because
 /// most rows are classic-CLI-only, so a test pins the agent commands into it.
 const HELP_ROWS: &[(&str, &str)] = &[
+    #[cfg(feature = "dictation")]
+    (
+        "/dictate",
+        "Record into this message; Enter sends only after insertion",
+    ),
+    #[cfg(feature = "dictation")]
+    (
+        "/dictate status, /dictate retry",
+        "Show dictation state or retry a failed recording",
+    ),
+    #[cfg(feature = "dictation")]
+    (
+        "/dictate install [MODEL]",
+        "Install a speech model after confirmation",
+    ),
+    #[cfg(feature = "dictation")]
+    ("/dictionary add <term>", "Add a term from this chat"),
+    #[cfg(feature = "dictation")]
+    ("/dictionary review", "Review suggested dictionary terms"),
     (
         "/folder-access [revoke <id>]",
         "List or revoke this chat's additional folder grants",
@@ -613,5 +739,17 @@ mod tests {
     fn command_prefixes_do_not_capture_other_slash_names() {
         assert!(handle_slash_command("/planet").is_none());
         assert!(handle_slash_command("/workflow-analysis.yaml").is_none());
+    }
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn terminal_dictation_retry_and_session_add_are_local_commands() {
+        assert!(matches!(
+            handle_slash_command("/dictate retry"),
+            Some(InputResult::DictateRetry)
+        ));
+        assert!(
+            matches!(handle_slash_command("/dictionary add EPAS1"), Some(InputResult::DictionaryAdd(term)) if term == "EPAS1")
+        );
     }
 }

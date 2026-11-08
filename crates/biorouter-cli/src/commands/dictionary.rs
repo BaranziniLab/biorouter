@@ -390,6 +390,22 @@ fn in_agent_shell() -> bool {
     std::env::var_os(AGENT_SHELL_ENV).is_some_and(|value| !value.is_empty())
 }
 
+pub(crate) fn session_facts() -> Facts {
+    let policy = ManagedPolicy::load();
+    Facts {
+        interactive: needs_terminal::prompt_can_run(),
+        agent_shell: in_agent_shell(),
+        private_capability: false,
+        dictionary: policy.dictation().dictionary.clone(),
+        agent_writes: policy.dictation().dictionary_agent_writes.clone(),
+        account: biorouter::dictation::service::account(),
+    }
+}
+
+pub(crate) fn authorize_session_action(action: &Action) -> std::result::Result<(), String> {
+    authorize(action, &session_facts()).map_err(|failure| failure.message)
+}
+
 /// The core's secret scan, which the store cannot call (`validate.rs`).
 fn is_secret(text: &str) -> bool {
     biorouter::guardrails::secret_output::redact_text(text).is_some()
@@ -1533,6 +1549,45 @@ mod tests {
         );
         assert_eq!(removed.result, Ok(()));
         assert!(store.view().unwrap().entries().is_empty());
+    }
+
+    #[test]
+    fn session_add_review_and_observation_share_managed_and_agent_shell_authority() {
+        let add = Action::Add {
+            terms: vec!["EPAS1".into()],
+            spoken: Vec::new(),
+            private: true,
+        };
+        let review = Action::Review;
+        let accept = Action::Accept { ids: Vec::new() };
+        let dismiss = Action::Dismiss { ids: Vec::new() };
+        let denied = Facts {
+            dictionary: Rule::Forbidden("Managed dictionary is off.".into()),
+            ..terminal()
+        };
+        for action in [&add, &review, &accept] {
+            assert_eq!(
+                authorize(action, &denied),
+                Err(Failure::refused("Managed dictionary is off."))
+            );
+            assert_eq!(
+                authorize(action, &agent()),
+                Err(Failure::refused(MSG_DICTIONARY_AGENT))
+            );
+        }
+        assert_eq!(
+            authorize(&dismiss, &denied),
+            Ok(()),
+            "deleting a suggestion remains allowed"
+        );
+        assert_eq!(
+            authorize(&dismiss, &agent()),
+            Err(Failure::refused(MSG_DICTIONARY_AGENT))
+        );
+        assert_eq!(
+            authorize(&add, &piped()),
+            Err(Failure::refused(MSG_DICTIONARY_TTY))
+        );
     }
 
     /// `add --private` writes a private row with `affiliation: null` (O-36); a piped

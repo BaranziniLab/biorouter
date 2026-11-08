@@ -60,7 +60,14 @@ struct Conversation {
     /// "Chat … is ready", held until the turn that follows it reaches the provider (AGT2-N4):
     /// a start the daemon refuses must not be preceded by it.
     pending_ready: Option<String>,
+    dictation_state: SharedDictationState,
 }
+
+#[cfg(feature = "dictation")]
+type SharedDictationState = crate::dictation::frontend::FrontendSession;
+#[cfg(not(feature = "dictation"))]
+#[derive(Default)]
+struct SharedDictationState;
 
 /// The provider, model and privacy a chat was shown with.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -188,6 +195,7 @@ pub async fn run(options: SharedConversationOptions) -> Result<()> {
         continuation_lease: None,
         binding: ShownBinding::default(),
         pending_ready: None,
+        dictation_state: Default::default(),
     };
     conversation.event(&json!({"type":"Session","session_id":conversation.session_id}))?;
     let result = conversation.execute(&options).await;
@@ -336,6 +344,9 @@ impl Conversation {
                 "Take over / abandon / leave unchanged [takeover/abandon/leave]: ",
                 false,
                 32,
+                None,
+                None,
+                None,
             )
             .await?;
             match answer.as_deref().map(|value| value.trim()) {
@@ -464,8 +475,15 @@ impl Conversation {
             let message = match next.take() {
                 Some(message) => message,
                 None if self.interactive => {
-                    let Some(text) =
-                        terminal_input("You (/quit to detach): ", false, 32_768).await?
+                    let Some(text) = terminal_input(
+                        "You (/quit to detach): ",
+                        false,
+                        32_768,
+                        None,
+                        Some(self.session_id.as_str()),
+                        Some(&self.dictation_state),
+                    )
+                    .await?
                     else {
                         break;
                     };
@@ -676,6 +694,9 @@ impl Conversation {
                 },
                 false,
                 32,
+                None,
+                None,
+                None,
             )
             .await?
             else {
@@ -739,7 +760,7 @@ impl Conversation {
                     " (optional)"
                 }
             );
-            let Some(secret) = terminal_input(&label, true, 4096).await? else {
+            let Some(secret) = terminal_input(&label, true, 4096, None, None, None).await? else {
                 erase_values(values);
                 self.client
                     .request(
@@ -784,8 +805,15 @@ impl Conversation {
     async fn elicitation(&self, id: &str, prompt: &str, schema: &Value) -> Result<Interaction> {
         ensure!(!sensitive_schema(schema), "Elicitation {} requests credential-like input; use a trusted secret request instead. No answer was collected", safe_text(id));
         self.notice(&format!("{prompt}\nRequested JSON schema: {}\nOnly ordinary non-secret data belongs in this response.", serde_json::to_string_pretty(schema)?))?;
-        let answer =
-            terminal_input("JSON object (Esc cancels this request): ", false, 16_384).await?;
+        let answer = terminal_input(
+            "JSON object (Esc cancels this request): ",
+            false,
+            16_384,
+            None,
+            None,
+            None,
+        )
+        .await?;
         let body = match answer {
             Some(answer) => {
                 let data: Value = serde_json::from_str(&answer)
@@ -1120,18 +1148,40 @@ async fn terminal_input(
     prompt: &str,
     hidden: bool,
     limit: usize,
+    initial: Option<&str>,
+    dictation_session: Option<&str>,
+    dictation_state: Option<&SharedDictationState>,
 ) -> Result<Option<Zeroizing<String>>> {
     ensure!(
         std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
         "Human input requires an interactive terminal"
     );
+    ensure!(
+        !hidden || initial.is_none(),
+        "Credential input cannot use an initial seed"
+    );
+    #[cfg(feature = "dictation")]
+    if dictation_session.is_some() {
+        if let Some(key) =
+            crate::session::dictation_key().filter(|key| *key == crate::session::get_newline_key())
+        {
+            eprintln!("{}", crate::dictation::messages::msg_key_clash(key));
+        }
+    }
     eprint!("{}", safe_text(prompt));
     std::io::stderr().flush()?;
     crossterm::terminal::enable_raw_mode()?;
     let _mode = TerminalMode;
     crossterm::execute!(std::io::stderr(), EnableBracketedPaste)?;
     let mut events = EventStream::new();
-    let mut value = Zeroizing::new(String::new());
+    let mut value = Zeroizing::new(initial.unwrap_or("").to_string());
+    ensure!(
+        value.len() <= limit,
+        "Input exceeds the permitted byte limit; nothing was submitted"
+    );
+    if !hidden && !value.is_empty() {
+        eprint!("{}", safe_text(value.as_str()));
+    }
     while let Some(event) = events.next().await {
         let event = event?;
         if let Event::Paste(paste) = event {
@@ -1156,6 +1206,48 @@ async fn terminal_input(
             continue;
         }
         match key.code {
+            #[cfg(feature = "dictation")]
+            KeyCode::Char(c)
+                if dictation_session.is_some()
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                    && Some(c.to_ascii_lowercase()) == crate::session::dictation_key()
+                    && Some(c.to_ascii_lowercase()) != Some(crate::session::get_newline_key()) =>
+            {
+                drop(events);
+                crossterm::terminal::disable_raw_mode()?;
+                let transcript = crate::dictation::frontend::capture_in_terminal(
+                    dictation_session.map(str::to_string),
+                    None,
+                    dictation_state.cloned().unwrap_or_default(),
+                )
+                .await;
+                crossterm::terminal::enable_raw_mode()?;
+                events = EventStream::new();
+                match transcript {
+                    Ok(Some(text)) => {
+                        let separator = if value
+                            .chars()
+                            .next_back()
+                            .is_some_and(|c| !c.is_whitespace())
+                        {
+                            " "
+                        } else {
+                            ""
+                        };
+                        if value.len() + separator.len() + text.trim().len() <= limit {
+                            value.push_str(separator);
+                            value.push_str(text.trim());
+                            eprint!("{separator}{}", safe_text(text.trim()));
+                        } else {
+                            eprintln!(
+                                "Input exceeds the permitted byte limit; nothing was inserted"
+                            );
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(reason) => eprintln!("{reason}"),
+                }
+            }
             KeyCode::Esc => {
                 eprint!("\r\n");
                 return Ok(None);
@@ -1165,6 +1257,109 @@ async fn terminal_input(
                 return Ok(None);
             }
             KeyCode::Enter => {
+                #[cfg(feature = "dictation")]
+                if value.trim() == "/dictate" && dictation_session.is_some() {
+                    value.clear();
+                    drop(events);
+                    crossterm::terminal::disable_raw_mode()?;
+                    let transcript = crate::dictation::frontend::capture_in_terminal(
+                        dictation_session.map(str::to_string),
+                        None,
+                        dictation_state.cloned().unwrap_or_default(),
+                    )
+                    .await;
+                    crossterm::terminal::enable_raw_mode()?;
+                    events = EventStream::new();
+                    eprint!("\r{}", safe_text(prompt));
+                    match transcript {
+                        Ok(Some(text)) => {
+                            if text.trim().len() <= limit {
+                                value.push_str(text.trim());
+                                eprint!("{}", safe_text(text.trim()));
+                            } else {
+                                eprintln!(
+                                    "Input exceeds the permitted byte limit; nothing was inserted"
+                                );
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(reason) => eprintln!("{reason}"),
+                    }
+                    continue;
+                }
+                #[cfg(feature = "dictation")]
+                if value.trim() == "/dictate status" && dictation_session.is_some() {
+                    let paused = dictation_state.is_some_and(|state| state.paused());
+                    eprintln!(
+                        "\r\n{}",
+                        if paused {
+                            crate::dictation::messages::MSG_PAUSED
+                        } else {
+                            "Dictation is ready."
+                        }
+                    );
+                    value.clear();
+                    eprint!("{}", safe_text(prompt));
+                    continue;
+                }
+                #[cfg(feature = "dictation")]
+                if value.trim() == "/dictate retry" && dictation_session.is_some() {
+                    value.clear();
+                    drop(events);
+                    crossterm::terminal::disable_raw_mode()?;
+                    let transcript = crate::dictation::frontend::retry_in_terminal(
+                        dictation_session.map(str::to_string),
+                        None,
+                        dictation_state.cloned().unwrap_or_default(),
+                    )
+                    .await;
+                    crossterm::terminal::enable_raw_mode()?;
+                    events = EventStream::new();
+                    eprint!("\r{}", safe_text(prompt));
+                    match transcript {
+                        Ok(Some(text)) if text.trim().len() <= limit => {
+                            value.push_str(text.trim());
+                            eprint!("{}", safe_text(text.trim()));
+                        }
+                        Ok(Some(_)) => eprintln!(
+                            "Input exceeds the permitted byte limit; nothing was inserted"
+                        ),
+                        Ok(None) => {}
+                        Err(reason) => eprintln!("{reason}"),
+                    }
+                    continue;
+                }
+                #[cfg(feature = "dictation")]
+                if dictation_session.is_some()
+                    && (value.trim() == "/dictate install"
+                        || value.trim().starts_with("/dictate install "))
+                {
+                    let model = value
+                        .trim()
+                        .strip_prefix("/dictate install")
+                        .unwrap_or_default()
+                        .trim();
+                    let model = (!model.is_empty()).then(|| model.to_string());
+                    value.clear();
+                    drop(events);
+                    crossterm::terminal::disable_raw_mode()?;
+                    let result = crate::commands::dictation::handle_install(
+                        crate::commands::dictation::InstallArgs {
+                            model,
+                            from: None,
+                            system: false,
+                            yes: false,
+                        },
+                    )
+                    .await;
+                    crossterm::terminal::enable_raw_mode()?;
+                    events = EventStream::new();
+                    if let Err(error) = result {
+                        eprintln!("{error}");
+                    }
+                    eprint!("\r{}", safe_text(prompt));
+                    continue;
+                }
                 eprint!("\r\n");
                 return Ok(Some(value));
             }
@@ -1391,6 +1586,7 @@ mod tests {
                 continuation_lease: None,
                 binding: Default::default(),
                 pending_ready: None,
+                dictation_state: Default::default(),
             }
         }
 

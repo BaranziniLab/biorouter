@@ -40,6 +40,10 @@ pub const MSG_CAP_STOPPED: &str =
     "Dictation stopped at the 10 minute limit and inserted what you said.";
 /// MSG-PAUSED: three failures within 10 s.
 pub const MSG_PAUSED: &str = "Dictation failed three times in a row, so it is paused for this session. Type /dictate status to see why.";
+pub const MSG_KEY_CLASH: &str = "Ctrl+<key> dictation is off because BIOROUTER_CLI_NEWLINE_KEY uses the same key. Set BIOROUTER_CLI_DICTATION_KEY to another letter.";
+pub fn msg_key_clash(key: char) -> String {
+    MSG_KEY_CLASH.replace("<key>", &key.to_ascii_uppercase().to_string())
+}
 /// MSG-NO-DEVICE: step 7 elsewhere, and step 9 when the device is gone.
 pub const MSG_NO_DEVICE: &str =
     "No microphone found. Connect one or make it the system default, then try again.";

@@ -552,7 +552,7 @@ agent delegates to a subagent is filtered out, so a fan-out of five children is
 invisible from the terminal. `--subagents` includes those runs and nests each one
 under the session that spawned it:
 
-```
+```text
 20260731_1 - Migration review - 2026-07-31 15:04:11 UTC
   └─ Subagent: audit the migration for data loss [● live]  20260731_2  14 msgs  2026-07-31 15:09
   └─ Subagent: benchmark the covering index [○ done]  20260731_3  8 msgs  2026-07-31 15:07
@@ -762,6 +762,8 @@ Join a session that is running *right now*. `attach` prints the conversation so 
 Give **exactly one** target: a session ID, `--name`, or `--of`. Passing none, or more than one, is an error. `biorouter session list --subagents` lists the sessions and subagent runs you can address.
 
 `Ctrl+C` detaches and leaves the session running. If a turn *you* started from here is still streaming, the first `Ctrl+C` warns that leaving would cancel it; press it again to leave anyway.
+
+Type `/dictate` on its own line to record locally while the session keeps running. The transcript is shown with `Send? [y/N]`; only `y` or `yes` sends it. Enter alone defaults to No. Ctrl+C during recording cancels the recording and leaves the attached turn running. A read-only attachment does not accept input.
 
 **Usage:**
 
@@ -1426,6 +1428,14 @@ start it with `BIOROUTER_CLI_CLASSIC=1 biorouter session`:
 - `/workflow [file.yaml]` — export the current conversation as a workflow.
 - `/t [light|dark|ansi]` — cycle or set the terminal theme.
 - `/r` — toggle full, untruncated tool output.
+
+### Dictation in terminal chats
+
+At your own interactive terminal, press Ctrl+T or type `/dictate` to record into the TUI, classic CLI, or shared daemon chat prompt. Press Enter or Ctrl+T to stop. Escape or Ctrl+C cancels only the recording. The transcript appears in the input at the cursor; press Enter again to send it. A recording made while the TUI streams a reply does not stop that reply. Nothing is sent automatically.
+
+`BIOROUTER_CLI_DICTATION_KEY` changes the Ctrl key letter; an empty value turns off the chord while `/dictate` remains available. When it matches `BIOROUTER_CLI_NEWLINE_KEY`, the newline chord wins and the TUI reports the clash. `/dictate status` shows the terminal state, and `/dictate retry` retries a failed transcription while its recording remains in memory for up to five minutes. After three failures within ten seconds, dictation pauses for that chat.
+
+`/dictionary add <term>` adds a term from the current TUI or classic chat. A term added in a private chat stays private and carries that chat's institution scope. `/dictionary review` opens the suggested terms for local review. A correction to a dictated term before sending can teach the personal dictionary after the message is accepted.
 
 ### Themes
 

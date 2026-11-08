@@ -25,6 +25,8 @@ pub mod controller;
 pub mod decode;
 #[cfg(feature = "dictation")]
 pub mod environment;
+#[cfg(feature = "dictation")]
+pub mod frontend;
 pub mod messages;
 
 use serde::Serialize;

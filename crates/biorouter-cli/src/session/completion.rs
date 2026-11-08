@@ -25,6 +25,18 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/folder-access",
     "/clear",
     "/compact",
+    #[cfg(feature = "dictation")]
+    "/dictate",
+    #[cfg(feature = "dictation")]
+    "/dictate status",
+    #[cfg(feature = "dictation")]
+    "/dictate retry",
+    #[cfg(feature = "dictation")]
+    "/dictate install",
+    #[cfg(feature = "dictation")]
+    "/dictionary add",
+    #[cfg(feature = "dictation")]
+    "/dictionary review",
     "/diverge",
     "/rename",
     "/goal",

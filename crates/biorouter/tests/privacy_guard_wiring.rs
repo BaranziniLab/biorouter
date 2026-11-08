@@ -1375,6 +1375,12 @@ const REGISTRY: &[Guard] = &[
         status: Status::Wired,
         sites: &[
             Site {
+                file: "crates/biorouter-cli/src/dictation/frontend.rs",
+                counts: c(2, 0, 1),
+                kind: SiteKind::Guard,
+                what: "terminal front ends use the shared bias set for a session recording and to admit an observed row",
+            },
+            Site {
                 file: "crates/biorouter-cli/src/commands/dictate.rs",
                 counts: c(1, 0, 1),
                 kind: SiteKind::Guard,
@@ -1435,6 +1441,12 @@ const REGISTRY: &[Guard] = &[
                   `Unknown` as public and a stamp as private",
         status: Status::Wired,
         sites: &[
+            Site {
+                file: "crates/biorouter-cli/src/dictation/frontend.rs",
+                counts: c(2, 0, 2),
+                kind: SiteKind::Guard,
+                what: "terminal adds and observations use the session's stored tier and live model to stamp a row",
+            },
             Site {
                 file: "crates/biorouter-server/src/routes/dictation.rs",
                 counts: c(1, 0, 0),
