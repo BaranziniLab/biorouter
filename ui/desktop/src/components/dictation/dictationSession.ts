@@ -60,6 +60,7 @@ import {
   type InsertPath,
 } from '../../utils/dictatedText';
 import { isBrowserSurface } from '../../utils/surface';
+import { needsSharedOriginNotice } from './sharedOriginGate';
 import { prewarmCapture, startCapture, type Capture, type CaptureOptions } from './capture';
 import {
   DICTATION_LABELS,
@@ -198,6 +199,7 @@ export type StartOutcome =
   | { kind: 'recording' }
   | { kind: 'stopping' }
   | { kind: 'setup' }
+  | { kind: 'origin-notice' }
   | { kind: 'unavailable'; reason: string }
   | { kind: 'removed' }
   | { kind: 'failed'; notice: DictationNotice }
@@ -1082,6 +1084,8 @@ function outcomeFor(decision: PhaseDecision): StartOutcome {
  * recording.
  */
 export function startDictation(options: StartDictationOptions): Promise<StartOutcome> {
+  if (active?.key !== options.key && needsSharedOriginNotice())
+    return Promise.resolve({ kind: 'origin-notice' });
   installLockScreen();
   if (active && active.key === options.key) {
     if (snapshot.key === options.key && snapshot.activity === 'arming') {

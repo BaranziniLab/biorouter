@@ -1861,6 +1861,13 @@ struct ServeOptions {
     )]
     no_token: bool,
 
+    /// Keep model installation on the host, not in a served browser
+    #[arg(
+        long,
+        help = "Disable speech model installation from this browser session"
+    )]
+    no_dictation_install: bool,
+
     /// Directory holding the built interface
     #[arg(
         long,
@@ -1906,6 +1913,7 @@ impl ServeOptions {
             self.port,
             self.token,
             self.no_token,
+            self.no_dictation_install,
             self.web_dir,
             self.public_url,
             self.open,
@@ -4373,6 +4381,7 @@ mod cli_tests {
         assert!(options.token.is_none());
         assert!(options.web_dir.is_none());
         assert!(!options.no_token);
+        assert!(!options.no_dictation_install);
         assert!(!options.computer_use_approval);
         assert!(!options.folder_access_approval);
         assert!(!options.open);
@@ -4416,6 +4425,7 @@ mod cli_tests {
             Some(std::path::Path::new("/tmp/web"))
         );
         assert!(!options.no_token);
+        assert!(!options.no_dictation_install);
         assert!(options.computer_use_approval);
         assert!(options.open);
 
@@ -4431,6 +4441,12 @@ mod cli_tests {
             panic!("serve command expected");
         };
         assert!(options.no_token && options.computer_use_approval && options.open);
+
+        let parsed = Cli::try_parse_from(["biorouter", "serve", "--no-dictation-install"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(options.no_dictation_install);
 
         let conflict =
             Cli::try_parse_from(["biorouter", "serve", "--token", "test-token", "--no-token"])

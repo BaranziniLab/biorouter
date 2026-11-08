@@ -1107,6 +1107,19 @@ jobs:
           # mounts there.
           grep -q 'src="./assets/' src/web/index.html
           ! grep -q 'src="/assets/' src/web/index.html
+          worklet=$(find src/web/assets -maxdepth 1 -type f -name '*pcmCapture*.js' -print -quit)
+          [ -n "$worklet" ] || { echo 'the PCM capture worklet was inlined or omitted'; exit 1; }
+          worklet_ref=0
+          for chunk in src/web/assets/*.js; do
+            [ "$chunk" = "$worklet" ] && continue
+            if grep -qF "$(basename "$worklet")" "$chunk"; then worklet_ref=1; break; fi
+          done
+          [ "$worklet_ref" = 1 ] \
+            || { echo 'the web bundle does not reference the PCM capture worklet file'; exit 1; }
+
+      - name: Install Playwright browsers for served dictation
+        working-directory: ui/desktop
+        run: npx playwright install --with-deps chromium firefox
 
       - name: Build the command and the daemon
         run: cargo build -p biorouter-cli -p biorouter-server
@@ -1213,6 +1226,12 @@ jobs:
           ! curl -s -o /dev/null --max-time 5 http://127.0.0.1:18777/status \
             || fail 'the daemon outlived serve'
           echo 'the browser contract holds'
+
+      - name: Served microphone and dictation in Chromium and Firefox
+        working-directory: ui/desktop
+        env:
+          BIOROUTER_SERVE_BIN: ${{ github.workspace }}/target/debug/biorouter
+        run: npx playwright test tests/e2e/serve-app-microphone.spec.ts tests/e2e/serve-dictation.spec.ts --reporter=list
 
       # SIGTERM and SIGINT to `serve`, and SIGKILL, which leaves only the
       # daemon's own parent watch to stop it. Here rather than in the workspace

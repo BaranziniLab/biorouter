@@ -56,6 +56,10 @@
 use crate::commands::apps::{launch_pages_dir, open_launch_link, open_page_in_browser};
 use crate::commands::exe_path::{biorouterd_for, current_exe_resolved, daemon_file_name};
 use anyhow::{bail, Context, Result};
+use biorouter::dictation::catalog::CATALOG;
+use biorouter::dictation::paths::{self, Roots};
+use biorouter::dictation::service::{self, EngineState};
+use biorouter::managed::{DictationPolicy, ManagedPolicy, MANAGED_DICTATION_CAPTURE_OFF};
 use std::net::{TcpListener, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -69,6 +73,8 @@ pub const DEFAULT_PORT: u16 = 8765;
 
 /// How long to wait for the daemon to answer before giving up.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+const DICTATION_BROWSER_INSTALL_ENV: &str = "BIOROUTER_DICTATION_BROWSER_INSTALL";
 
 /// How long the daemon gets to shut down on its own before it is killed.
 ///
@@ -91,6 +97,7 @@ pub async fn handle_serve(
     port: u16,
     token: Option<String>,
     no_token: bool,
+    no_dictation_install: bool,
     web_dir: Option<PathBuf>,
     public_url: Option<String>,
     open_browser: bool,
@@ -144,6 +151,7 @@ pub async fn handle_serve(
         port,
         &browser_token,
         public_url.as_deref(),
+        no_dictation_install,
         &secret_key,
         &web_dir,
         computer_use_digest.is_some() || folder_access_digest.is_some(),
@@ -181,6 +189,7 @@ pub async fn handle_serve(
             &browser_token,
             bind_is_loopback,
             proxied_to.as_deref(),
+            &dictation_readiness(),
         );
         if computer_use_approval {
             eprintln!("  Biorouter Copilot approval is configured. Enter your approval key in the browser when approving a task.");
@@ -189,7 +198,7 @@ pub async fn handle_serve(
         if folder_access_approval {
             eprintln!("  Folder approval is configured. Enter its separate key only in the browser folder-access approval field. The key does not authorize other protected actions.");
         }
-        if open_browser {
+        if open_browser && (bind_is_loopback || public_url.is_some()) {
             launch_page = open_in_browser(&url);
         }
 
@@ -223,6 +232,7 @@ fn spawn_serve_daemon(
     port: u16,
     browser_token: &BrowserToken,
     public_url: Option<&str>,
+    no_dictation_install: bool,
     secret_key: &str,
     web_dir: &Path,
     approval_pipe: bool,
@@ -258,6 +268,7 @@ fn spawn_serve_daemon(
             command.env_remove(PUBLIC_URL_ENV);
         }
     }
+    configure_dictation_browser_install(&mut command, no_dictation_install);
     command
         .env("BIOROUTER_HOST", host)
         .env("BIOROUTER_PORT", port.to_string())
@@ -291,6 +302,12 @@ fn spawn_serve_daemon(
         .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("could not start {}", daemon.display()))
+}
+
+fn configure_dictation_browser_install(command: &mut Command, no_dictation_install: bool) {
+    if no_dictation_install {
+        command.env(DICTATION_BROWSER_INSTALL_ENV, "false");
+    }
 }
 
 /// How long the page `--open` hands the browser is kept. A browser reads it the
@@ -366,33 +383,136 @@ fn print_banner(
     browser_token: &BrowserToken,
     bind_is_loopback: bool,
     proxied_to: Option<&str>,
+    dictation: &str,
 ) {
-    println!("\n  Biorouter is serving at\n\n      {url}\n");
+    print!(
+        "{}",
+        banner_text(
+            url,
+            host,
+            port,
+            browser_token,
+            bind_is_loopback,
+            proxied_to,
+            dictation,
+            inside_container(),
+            &ssh_host(host),
+        )
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn banner_text(
+    url: &str,
+    host: &str,
+    port: u16,
+    browser_token: &BrowserToken,
+    bind_is_loopback: bool,
+    proxied_to: Option<&str>,
+    dictation: &str,
+    container: bool,
+    ssh_target: &str,
+) -> String {
+    let mut out = if bind_is_loopback || proxied_to.is_some() {
+        format!("\n  Biorouter is serving at\n\n      {url}\n\n")
+    } else {
+        format!("\n  Biorouter is listening on {host}:{port}.\n\n")
+    };
     if let Some(local) = proxied_to {
-        println!(
-            "  through a reverse proxy that forwards it to {local},\n  removing any path \
-             prefix on the way and passing WebSocket upgrades through.\n"
-        );
+        out.push_str(&format!("  through a reverse proxy that forwards it to {local},\n  removing any path prefix on the way and passing WebSocket upgrades through.\n\n"));
     }
-    if !bind_is_loopback {
-        match reachable_address(host) {
-            Some(addr) => println!(
-                "  From another machine on this network:\n\n      {}\n",
-                browser_url(&addr, port, browser_token.value())
-            ),
-            // The old implementation fell back to 127.0.0.1 here, which printed
-            // a URL that could not possibly work from the other machine the user
-            // had just asked to reach it from. Saying so is the whole point.
-            None => println!(
-                "  This port is bound on every interface, but no routable address could be \
-                 determined for this machine.\n  Use its own hostname or address in place of \
-                 the host above.\n"
-            ),
+    if !bind_is_loopback && proxied_to.is_none() {
+        let token_suffix = browser_token
+            .value()
+            .map_or(String::new(), |value| format!("?t={value}"));
+        if container {
+            out.push_str(&format!("  This runs in a container. On the computer that publishes its port, open http://127.0.0.1:<host port>/{token_suffix}, where <host port> is the port published for container port {port} (with Docker: -p 127.0.0.1:<host port>:{port}). Browsers refuse the microphone on other plain http addresses.\n\n"));
+        } else {
+            out.push_str(&format!("  Browsers refuse the microphone and this page on http://{}:{port}. On your own computer run `ssh -N -L {port}:127.0.0.1:{port} {ssh_target}`, then open http://127.0.0.1:{port}/{token_suffix}.\n\n",
+                reachable_address(host).unwrap_or_else(|| ssh_target.to_string()),
+            ));
         }
     }
-    println!("  {}\n", browser_token.provenance());
-    println!("  The model is whichever `biorouter configure` chose; a browser cannot change it.");
-    println!("  Press Ctrl-C to stop.\n");
+    out.push_str(&format!("  {}\n\n", browser_token.provenance()));
+    out.push_str(
+        "  The model is whichever `biorouter configure` chose; a browser cannot change it.\n",
+    );
+    out.push_str(&format!("  {dictation}\n"));
+    out.push_str("  Press Ctrl-C to stop.\n\n");
+    out
+}
+
+fn inside_container() -> bool {
+    Path::new("/.dockerenv").exists()
+        || Path::new("/run/.containerenv").exists()
+        || std::env::var_os("KUBERNETES_SERVICE_HOST").is_some()
+}
+
+fn ssh_host(bind: &str) -> String {
+    if bind != "0.0.0.0" && bind != "::" && bind != "[::]" {
+        return bind.to_string();
+    }
+    for key in ["HOSTNAME", "COMPUTERNAME"] {
+        if let Some(name) = std::env::var_os(key).filter(|name| !name.is_empty()) {
+            return name.to_string_lossy().into_owned();
+        }
+    }
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|answer| answer.status.success())
+        .and_then(|answer| String::from_utf8(answer.stdout).ok())
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .or_else(|| reachable_address(bind))
+        .unwrap_or_else(|| bind.to_string())
+}
+
+fn dictation_readiness() -> String {
+    let engine = service::service().status();
+    let policy = ManagedPolicy::load().dictation().clone();
+    dictation_readiness_with(engine.state, &policy, || {
+        let mut inventory = paths::inventory(&Roots::current(), &CATALOG);
+        service::active_model(
+            &mut inventory,
+            &policy,
+            service::configured_model().as_deref(),
+            service::host_class(),
+        )
+        .map(|model| model.id.to_string())
+    })
+}
+
+fn dictation_readiness_with(
+    engine: EngineState,
+    policy: &DictationPolicy,
+    active_model: impl FnOnce() -> Option<String>,
+) -> String {
+    if engine == EngineState::UnsupportedCpu {
+        return "Dictation: unavailable on this processor".to_string();
+    }
+    if engine == EngineState::NoEngine {
+        return "Dictation: unavailable in this build".to_string();
+    }
+    if !policy.enabled.is_allowed() {
+        return "Dictation: turned off by managed policy".to_string();
+    }
+    if !policy.capture.is_allowed() {
+        return format!(
+            "Dictation: {}",
+            policy
+                .capture
+                .reason()
+                .unwrap_or(MANAGED_DICTATION_CAPTURE_OFF)
+        );
+    }
+    match active_model() {
+        Some(model) => format!("Dictation: ready ({model})"),
+        None => match policy.model_downloads.reason() {
+            Some(reason) => format!("Dictation: {reason}"),
+            None => "Dictation: no speech model; run `biorouter dictation install`".to_string(),
+        },
+    }
 }
 
 fn configure_scoped_approval(enabled: bool, scope: &str) -> Result<Option<String>> {
@@ -962,6 +1082,143 @@ mod tests {
     fn the_default_port_does_not_collide_with_the_daemon_it_starts() {
         // biorouterd's own default is 3000, and so was the old `biorouter web`.
         assert_ne!(DEFAULT_PORT, 3000);
+    }
+
+    #[test]
+    fn dictation_banners_name_the_address_a_browser_can_open() {
+        let token = BrowserToken::Flag("test-token".into());
+        let ready = "Dictation: ready (whisper-small.en-q8_0)";
+        let loopback = banner_text(
+            "http://127.0.0.1:8765/?t=test-token",
+            "127.0.0.1",
+            8765,
+            &token,
+            true,
+            None,
+            ready,
+            false,
+            "lab.example",
+        );
+        assert!(loopback.contains("http://127.0.0.1:8765/?t=test-token"));
+        assert!(loopback.contains(ready));
+        assert!(!loopback.contains("ssh -N"));
+
+        let network = banner_text(
+            "http://0.0.0.0:8765/?t=test-token",
+            "0.0.0.0",
+            8765,
+            &token,
+            false,
+            None,
+            "Dictation: no speech model; run `biorouter dictation install`",
+            false,
+            "lab.example",
+        );
+        assert!(!network.contains("serving at\n\n      http://0.0.0.0"));
+        assert!(network.contains("ssh -N -L 8765:127.0.0.1:8765 lab.example"));
+        assert!(network.contains("http://127.0.0.1:8765/?t=test-token"));
+
+        let container = banner_text(
+            "http://0.0.0.0:8765/?t=test-token",
+            "0.0.0.0",
+            8765,
+            &token,
+            false,
+            None,
+            "Dictation: unavailable on this processor",
+            true,
+            "container",
+        );
+        assert!(container.contains("http://127.0.0.1:<host port>/?t=test-token"));
+        assert!(!container.contains("ssh -N"));
+
+        let public = banner_text(
+            "https://hub.example/user/a/biorouter/?t=test-token",
+            "0.0.0.0",
+            8765,
+            &token,
+            false,
+            Some("http://0.0.0.0:8765/"),
+            ready,
+            true,
+            "container",
+        );
+        assert!(public.contains("https://hub.example/user/a/biorouter/?t=test-token"));
+        assert!(!public.contains("Browsers refuse the microphone"));
+        assert!(!public.contains("This runs in a container"));
+    }
+
+    #[test]
+    fn a_capture_policy_refusal_never_prints_ready_for_an_installed_model() {
+        use biorouter::managed::Rule;
+        use std::cell::Cell;
+
+        let policy = DictationPolicy {
+            managed: true,
+            capture: Rule::Forbidden(MANAGED_DICTATION_CAPTURE_OFF.into()),
+            ..DictationPolicy::unmanaged()
+        };
+        assert!(policy.enabled.is_allowed());
+        let inspected_model = Cell::new(false);
+        let line = dictation_readiness_with(EngineState::Stopped, &policy, || {
+            inspected_model.set(true);
+            Some("whisper-small.en-q8_0".to_string())
+        });
+        assert_eq!(line, format!("Dictation: {MANAGED_DICTATION_CAPTURE_OFF}"));
+        assert!(!inspected_model.get());
+        assert!(!line.contains("ready"));
+    }
+
+    #[test]
+    fn a_download_policy_refusal_names_the_managed_folder_only_when_no_model_is_usable() {
+        let folder = std::env::temp_dir().join("managed-speech-models");
+        let yaml = format!(
+            "enabled: true\ncapture: true\nmodel_downloads: false\nmodels_dir: {}\n",
+            serde_yaml::to_string(&folder.display().to_string())
+                .unwrap()
+                .trim()
+        );
+        let block = serde_yaml::from_str(&yaml).unwrap();
+        let policy = DictationPolicy::parse_block(&block).unwrap();
+
+        let no_model = dictation_readiness_with(EngineState::Stopped, &policy, || None);
+        assert_eq!(
+            no_model,
+            format!("Dictation: {}", policy.model_downloads.reason().unwrap())
+        );
+        assert!(no_model.contains(&folder.display().to_string()));
+        assert!(no_model.contains("ask your administrator"));
+        assert!(!no_model.contains("biorouter dictation install"));
+
+        let installed = dictation_readiness_with(EngineState::Stopped, &policy, || {
+            Some("whisper-small.en-q8_0".to_string())
+        });
+        assert_eq!(installed, "Dictation: ready (whisper-small.en-q8_0)");
+    }
+
+    #[test]
+    fn serve_child_install_lock_overrides_only_when_requested() {
+        use std::ffi::OsStr;
+
+        fn setting(command: &Command) -> Option<&OsStr> {
+            command
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new(DICTATION_BROWSER_INSTALL_ENV))
+                .and_then(|(_, value)| value)
+        }
+
+        let mut locked = Command::new("not-run");
+        locked.env(DICTATION_BROWSER_INSTALL_ENV, "true");
+        configure_dictation_browser_install(&mut locked, true);
+        assert_eq!(setting(&locked), Some(OsStr::new("false")));
+
+        let mut inherited = Command::new("not-run");
+        configure_dictation_browser_install(&mut inherited, false);
+        assert_eq!(setting(&inherited), None);
+        inherited.env(DICTATION_BROWSER_INSTALL_ENV, "true");
+        configure_dictation_browser_install(&mut inherited, false);
+        assert_eq!(setting(&inherited), Some(OsStr::new("true")));
     }
 
     /// Issue #402: `--public-url` is back, for a reverse proxy that serves the

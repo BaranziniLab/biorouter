@@ -112,6 +112,11 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
           {refusal ?? failed}
         </p>
       )}
+      {status && !status.install.allowed && status.install.reason ? (
+        <p className="br-dictation-setup__warning" role="status">
+          {status.install.reason}
+        </p>
+      ) : null}
       {installing && (
         <div className="br-dictation-setup__progress" data-testid="dictation-setup-progress">
           <span className="text-supporting">{installingText}</span>

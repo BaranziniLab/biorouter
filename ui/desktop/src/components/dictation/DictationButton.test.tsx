@@ -1,7 +1,9 @@
 import React, { Profiler, useRef } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import { resetCapturePrewarmForTests, type CaptureOptions } from './capture';
+import { DICTATION_MESSAGES } from './copy';
 import {
   DictationButton,
   DictationHoldReason,
@@ -17,6 +19,7 @@ import {
   setDictationSnapshotForTests,
 } from './dictationSession';
 import { refreshDictationStatus, resetDictationStoreForTests } from './dictationStore';
+import { needsSharedOriginNotice, resetSharedOriginNoticeForTests } from './sharedOriginGate';
 import {
   DICTATION_CONTEXT_BYTES,
   DICTATION_HOLD_MS,
@@ -99,6 +102,7 @@ const settle = async () => {
 };
 
 beforeEach(() => {
+  resetSharedOriginNoticeForTests();
   secureMediaPage();
   Object.assign(window, { electron: { platform: 'darwin' } });
   status = speechStatus();
@@ -107,6 +111,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete document.documentElement.dataset.biorouterSurface;
   cleanup();
   resetDictationSessionForTests();
   resetDictationStoreForTests();
@@ -232,6 +237,54 @@ describe('phases and names', () => {
     expect(captures).toHaveLength(0);
   });
 
+  it('shows the daemon install lock after the first browser acknowledgement', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    status = speechStatus(
+      {
+        active_model: null,
+        install: { allowed: false, reason: DICTATION_MESSAGES['MSG-INSTALL-LOCKED'] },
+      },
+      { installed: false }
+    );
+    render(<Host />);
+    await settle();
+    fireEvent.pointerDown(mic(), { button: 0 });
+    await settle();
+    expect(screen.getByTestId('shared-origin-acknowledge')).toBeVisible();
+    expect(screen.queryByTestId('dictation-setup')).toBeNull();
+    expect(captures).toHaveLength(0);
+    expect(streams).toHaveLength(0);
+    expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('shared-origin-acknowledge'));
+    await settle();
+    expect(mic()).toHaveAttribute('data-dictation-phase', 'unavailable');
+    expect(mic()).toHaveAccessibleName(DICTATION_MESSAGES['MSG-INSTALL-LOCKED']);
+    expect(mic()).toBeDisabled();
+    expect(screen.queryByTestId('dictation-setup')).toBeNull();
+    expect(streams).toHaveLength(0);
+  });
+
+  it('shows the daemon install lock before a hovered browser microphone can be pressed', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    status = speechStatus(
+      {
+        active_model: null,
+        install: { allowed: false, reason: DICTATION_MESSAGES['MSG-INSTALL-LOCKED'] },
+      },
+      { installed: false }
+    );
+    render(<Host />);
+    fireEvent.pointerEnter(mic());
+    await settle();
+    expect(mic()).toHaveAttribute('data-dictation-phase', 'unavailable');
+    expect(mic()).toHaveAccessibleName(DICTATION_MESSAGES['MSG-INSTALL-LOCKED']);
+    expect(mic()).toBeDisabled();
+    expect(screen.queryByTestId('shared-origin-acknowledge')).toBeNull();
+    expect(captures).toHaveLength(0);
+    expect(streams).toHaveLength(0);
+    expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+  });
+
   it('opens the popover on a setup request while the status still reads idle (a 409 noModel)', async () => {
     render(<Host />);
     fireEvent.focus(screen.getByTestId('field'));
@@ -302,6 +355,52 @@ describe('phases and names', () => {
 });
 
 describe('gestures', () => {
+  it('shows the shared origin notice before the first browser capture and starts on its acknowledgement click', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    render(<Host />);
+    await settle();
+    expect(mic()).not.toHaveAttribute('aria-keyshortcuts');
+    fireEvent.pointerDown(mic(), { button: 0 });
+    expect(captures).toHaveLength(0);
+    expect(
+      screen.getByText(/Your browser's microphone permission covers every page at/)
+    ).toBeVisible();
+    fireEvent.click(screen.getByTestId('shared-origin-acknowledge'));
+    expect(captures).toHaveLength(1);
+    expect(needsSharedOriginNotice()).toBe(false);
+  });
+
+  it('starts browser capture after acknowledgement when local storage is blocked', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('Blocked', 'SecurityError');
+    });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Blocked', 'SecurityError');
+    });
+    render(<Host />);
+    await settle();
+    fireEvent.pointerDown(mic(), { button: 0 });
+    expect(captures).toHaveLength(0);
+    fireEvent.click(screen.getByTestId('shared-origin-acknowledge'));
+    expect(captures).toHaveLength(1);
+    expect(needsSharedOriginNotice()).toBe(false);
+  });
+
+  it('leaves the dictation shortcut to the browser', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    render(<Host />);
+    await settle();
+    const handled = fireEvent.keyDown(screen.getByTestId('field'), {
+      key: 'D',
+      code: 'KeyD',
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(handled).toBe(true);
+    expect(captures).toHaveLength(0);
+  });
+
   it('starts on pointerdown, never on a pointer click', async () => {
     render(<Host />);
     await settle();

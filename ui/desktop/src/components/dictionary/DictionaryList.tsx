@@ -29,7 +29,9 @@ export interface DictionaryListProps {
   /** Rows the person acted on while the pointer held the list. */
   settled: Readonly<Record<string, SettledKind>>;
   readOnly: boolean;
+  deleteAllowed?: boolean;
   tierChangeAllowed: boolean;
+  tierChangeReason?: string | null;
   /** One object whose callbacks keep their identity, so a drawn row re-renders only when it changes. */
   actions: DictionaryRowActions;
   /** Present when **Review all…** is offered on **Suggested**. */
@@ -106,7 +108,9 @@ function DictionaryList({
   groups,
   settled,
   readOnly,
+  deleteAllowed = true,
   tierChangeAllowed,
+  tierChangeReason,
   actions,
   onReviewAll,
   holding,
@@ -227,7 +231,9 @@ function DictionaryList({
                   entry={line.entry}
                   settled={settled[line.entry.id]}
                   readOnly={readOnly}
+                  deleteAllowed={deleteAllowed}
                   tierChangeAllowed={tierChangeAllowed}
+                  tierChangeReason={tierChangeReason}
                   {...actions}
                 />
               )

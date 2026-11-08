@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { Anchor } from '../../utils/dictatedText';
+import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import { BUNDLED_BIOROUTER_VERSION } from '../../utils/biorouterVersion';
 import type { Capture, CaptureOptions } from './capture';
 import type { DictationStatus, StreamRequest, Transcript } from './dictationApi';
@@ -22,6 +23,7 @@ import {
   type DictationComposer,
 } from './dictationSession';
 import { isPrivateDraft, resetPrivateDraftsForTests } from './privateDraft';
+import { acknowledgeSharedOriginNotice, resetSharedOriginNoticeForTests } from './sharedOriginGate';
 import { DictationStreamError, type DictationStream } from './transport';
 
 const RATE = 16000;
@@ -232,6 +234,7 @@ const settle = async () => {
 };
 
 beforeEach(() => {
+  resetSharedOriginNoticeForTests();
   captures = [];
   streams = [];
   captureGate = null;
@@ -284,6 +287,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete document.documentElement.dataset.biorouterSurface;
   resetDictationSessionForTests();
   resetPrivateDraftsForTests();
   document.body.innerHTML = '';
@@ -292,6 +296,19 @@ afterEach(() => {
 });
 
 describe('starting', () => {
+  it('refuses a direct browser start until the origin notice was acknowledged', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    composer('tab:a');
+    const options = { key: 'tab:a', target: { target_kind: 'chat' as const } };
+    await expect(startDictation(options)).resolves.toEqual({ kind: 'origin-notice' });
+    expect(captures).toHaveLength(0);
+    expect(streams).toHaveLength(0);
+    acknowledgeSharedOriginNotice();
+    const started = startDictation(options);
+    expect(captures).toHaveLength(1);
+    await expect(started).resolves.toEqual({ kind: 'recording' });
+  });
+
   it('starts capture and the stream inside the press when the status is loaded', async () => {
     const { field } = composer('tab:a', 'Check');
     field.focus();

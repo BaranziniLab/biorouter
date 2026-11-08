@@ -56,7 +56,7 @@ biorouter doctor
 `doctor` reports optional prerequisites — `git`, `uv`, `node` — that some extensions need. The
 packages themselves depend on `libxcb` and `zlib` plus the Biorouter Copilot helper's runtime:
 `python3`, the GObject and AT-SPI introspection bindings, and GTK 3. The full list is declared in
-[`packaging/cli/nfpm.yaml`](../../packaging/cli/nfpm.yaml). They install on a host with no
+[`packaging/biorouter-cli.yaml`](../../packaging/biorouter-cli.yaml). They install on a host with no
 display; Biorouter Copilot itself still reports `desktop_unavailable` there (see
 [below](#biorouter-copilot-requires-a-desktop-session)).
 
@@ -111,9 +111,9 @@ Prove the deployment works interactively before wrapping it in a service:
 biorouter serve --host 0.0.0.0
 ```
 
-`serve` prints the address to open, including the `?t=` access token, plus a second address built
-from a routable address of the host. A token is mandatory for any non-loopback bind — `--no-token`
-is refused there rather than warned about. `Ctrl-C` stops it.
+For a non-loopback bind, `serve` prints an SSH tunnel command and the local browser address with
+its `?t=` access token. It does not offer a plain HTTP network address to open. A token is
+mandatory for this bind; `--no-token` is refused. `Ctrl-C` stops it.
 
 If it cannot find the interface, pass `--web-dir /usr/share/biorouter/web` explicitly; the error
 names every location it tried.
@@ -177,8 +177,9 @@ sudo systemctl enable --now biorouter.service
 systemctl status biorouter.service
 ```
 
-The URL to hand to users is `http://<host>:8765/?t=<the token from the environment file>`. It stays
-valid until you change the token.
+Give users the HTTPS address from the reverse proxy, with `?t=<the token from the environment
+file>`, or have them use an SSH tunnel and open `http://127.0.0.1:8765/?t=<token>`. Do not hand
+out a plain HTTP network address. The token stays valid until you change it.
 
 > **Note.** `biorouter serve` starts `biorouterd` as a child process and stops it whenever it stops
 > itself — `systemctl stop` sends `serve` SIGTERM, and `serve` gives the daemon ten seconds to
@@ -207,6 +208,7 @@ reaching the port as equivalent to a shell account.
 
   ```nginx
   location / {
+      client_body_buffer_size 512k;
       proxy_pass http://127.0.0.1:8765;
       proxy_http_version 1.1;
       proxy_set_header Upgrade $http_upgrade;
@@ -215,6 +217,14 @@ reaching the port as equivalent to a shell account.
       proxy_set_header X-Forwarded-Proto $scheme;
   }
   ```
+
+  The `client_body_buffer_size 512k;` line keeps Biorouter's audio chunks in nginx memory.
+  `proxy_request_buffering off;` on this location is another option. Stock nginx writes chunks
+  larger than its 16 KiB buffer to a temporary file. Keep the request body limit at least 512 KiB
+  plus headers; nginx's 1 MiB default suffices. Prefer HTTP/2 from the browser to the proxy when
+  several tabs may be open. The browser shows a notice before its first microphone recording:
+  its permission covers every page at that origin. On a shared hub, use a subdomain per user when
+  possible, and recommend a grant for one visit.
 
   For a path prefix, end both the `location` and the `proxy_pass` address with a slash, which
   makes nginx remove the prefix: `location /biorouter/ { proxy_pass http://127.0.0.1:8765/; ... }`,

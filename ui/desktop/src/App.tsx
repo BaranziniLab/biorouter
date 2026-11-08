@@ -32,7 +32,6 @@ import { useNewChatTabRequests } from './components/chatGroups/useNewChatTabRequ
 import { useSavedTabTitleSync } from './components/chatGroups/useSavedTabTitleSync';
 import { runCloseActiveTabCommand } from './utils/closeActiveTabCommand';
 import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
-import { isBrowserSurface } from './utils/surface';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
 import ChatGroupsShell from './components/chatGroups/ChatGroupsShell';
 import SettingsView, { SettingsViewOptions } from './components/settings/SettingsView';
@@ -234,12 +233,7 @@ const WorkflowsRoute = () => {
 
 const SkillsRoute = () => <SkillsView />;
 const KnowledgeRoute = () => <KnowledgeView />;
-/**
- * The Dictionary page (DD-67). Desktop only until PR-21 lands the `serve` gates (DD-94): a
- * browser that follows a link here goes Home, as the sidebar there shows no row for it.
- */
-const DictionaryRoute = () =>
-  isBrowserSurface() ? <Navigate to="/" replace /> : <DictionaryView />;
+const DictionaryRoute = () => <DictionaryView />;
 
 const PermissionRoute = () => {
   const location = useLocation();

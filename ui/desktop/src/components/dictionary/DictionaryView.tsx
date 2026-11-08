@@ -79,8 +79,8 @@ async function copyTerm(entry: DictionaryEntryView): Promise<void> {
  * the page shows, which the hover hold keeps as they were while the pointer
  * rests on the list.
  *
- * Desktop only until PR-21 lands the `serve` gates (`App.tsx` does not route a
- * browser here). Managed `dictionary: false` shows MSG-POLICY and the list read
+ * In a served browser, the daemon's authority fields decide which writes and
+ * private term actions are available. Managed `dictionary: false` shows MSG-POLICY and the list read
  * only, with **Export…** and deleting still allowed. The settings area at the
  * page's foot arrives with the controls it needs (DD-94): **Agent's terms** and
  * **Suggest dictionary words from my chats** with the `dictionary` capability
@@ -113,10 +113,13 @@ export default function DictionaryView() {
 
   const authority = dictionary.settings?.authority ?? null;
   const policyOff = status?.policy.dictionary.allowed === false;
-  const writeAllowed = authority?.write.allowed ?? true;
+  const writeAllowed = authority?.write.allowed ?? !isBrowserSurface();
   const canWrite = !dictionary.absent && writeAllowed && !policyOff;
-  const canDelete = !dictionary.absent && writeAllowed;
-  const tierChangeAllowed = canWrite && (authority?.tier_change.allowed ?? true);
+  const deleteAllowed =
+    authority?.delete?.allowed ?? (!isBrowserSurface() && (authority?.write.allowed ?? true));
+  const canDelete = !dictionary.absent && deleteAllowed;
+  const tierChangeAllowed = canWrite && (authority?.tier_change.allowed ?? !isBrowserSurface());
+  const tierChangeReason = authority?.tier_change.reason ?? null;
   // What can be acted on is what the daemon holds now; what the page counts is what it shows,
   // which the hover hold keeps as it was while the pointer rests on the list.
   const total = dictionary.entries.length;
@@ -345,7 +348,9 @@ export default function DictionaryView() {
                 groups={groups}
                 settled={hold.settled}
                 readOnly={!canWrite}
+                deleteAllowed={canDelete}
                 tierChangeAllowed={tierChangeAllowed}
+                tierChangeReason={tierChangeReason}
                 actions={rowActions}
                 onReviewAll={canWrite && waitingRows.length > 0 ? openReview : undefined}
                 holding={hold.holding}

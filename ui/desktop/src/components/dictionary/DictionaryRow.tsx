@@ -28,8 +28,10 @@ export interface DictionaryRowProps extends DictionaryRowActions {
   settled?: SettledKind;
   /** Writes are refused here (managed policy, or a backend from before the dictionary). */
   readOnly?: boolean;
+  deleteAllowed?: boolean;
   /** Whether a tier change is admitted (`authority.tier_change.allowed`). */
   tierChangeAllowed: boolean;
+  tierChangeReason?: string | null;
 }
 
 /**
@@ -54,7 +56,9 @@ function DictionaryRow({
   entry,
   settled,
   readOnly = false,
+  deleteAllowed = true,
   tierChangeAllowed,
+  tierChangeReason,
   ...actions
 }: DictionaryRowProps) {
   const titleId = useId();
@@ -87,7 +91,12 @@ function DictionaryRow({
     menu = [
       ...common,
       { kind: 'separator' },
-      { label: DICTIONARY_LABELS.dismiss, onSelect: () => actions.onDismiss(entry) },
+      {
+        label: DICTIONARY_LABELS.dismiss,
+        onSelect: () => actions.onDismiss(entry),
+        disabled: !deleteAllowed,
+        testId: 'dictionary-row-dismiss',
+      },
     ];
   } else if (kind === 'agent') {
     primary = readOnly ? null : (
@@ -102,7 +111,11 @@ function DictionaryRow({
     menu = [
       ...common,
       { kind: 'separator' },
-      { label: DICTIONARY_LABELS.remove, onSelect: () => actions.onRemove(entry) },
+      {
+        label: DICTIONARY_LABELS.remove,
+        onSelect: () => actions.onRemove(entry),
+        disabled: !deleteAllowed,
+      },
     ];
   } else {
     primary = readOnly ? null : (
@@ -120,19 +133,29 @@ function DictionaryRow({
             label: DICTIONARY_LABELS.makePublic,
             onSelect: () => actions.onMakePublic(entry),
             disabled: !tierChangeAllowed,
+            testId: 'dictionary-make-public',
           }
         : {
             label: DICTIONARY_LABELS.makePrivate,
             onSelect: () => actions.onMakePrivate(entry),
             disabled: !tierChangeAllowed,
+            testId: 'dictionary-make-private',
           };
     menu = [
       ...common,
       { kind: 'separator' },
-      ...(readOnly ? [] : [tierItem]),
+      ...(readOnly
+        ? []
+        : [
+            tierItem,
+            ...(!tierChangeAllowed && tierChangeReason
+              ? [{ kind: 'label' as const, label: tierChangeReason }]
+              : []),
+          ]),
       {
         label: DICTIONARY_LABELS.delete,
         onSelect: () => actions.onDelete(entry),
+        disabled: !deleteAllowed,
         destructive: true,
         testId: 'dictionary-row-delete',
       },

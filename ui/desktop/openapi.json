@@ -15167,12 +15167,16 @@
         "description": "What this caller may do, before any click, so no surface offers a doomed control.",
         "required": [
           "write",
+          "delete",
           "add_private",
           "tier_change",
           "raise_settings"
         ],
         "properties": {
           "add_private": {
+            "$ref": "#/components/schemas/DictionaryAllowance"
+          },
+          "delete": {
             "$ref": "#/components/schemas/DictionaryAllowance"
           },
           "raise_settings": {

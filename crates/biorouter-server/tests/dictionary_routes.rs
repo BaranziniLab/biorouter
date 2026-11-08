@@ -362,8 +362,18 @@ async fn every_write_needs_the_proof() {
         settings.body["authority"]["write"],
         json!({"allowed": false, "reason": MSG_DICTIONARY_AGENT})
     );
+    assert_eq!(
+        settings.body["authority"]["delete"],
+        json!({"allowed": false, "reason": MSG_DICTIONARY_AGENT})
+    );
     let proven = get(&app, "/dictionary/settings", Caller::Proof).await;
-    for control in ["write", "add_private", "tier_change", "raise_settings"] {
+    for control in [
+        "write",
+        "delete",
+        "add_private",
+        "tier_change",
+        "raise_settings",
+    ] {
         assert_eq!(
             proven.body["authority"][control]["allowed"], true,
             "{control}"
@@ -1312,6 +1322,10 @@ async fn managed_policy_refuses_writes_but_not_deletes_or_export() {
     assert_eq!(
         settings.body["authority"]["write"],
         json!({"allowed": false, "reason": reason})
+    );
+    assert_eq!(
+        settings.body["authority"]["delete"],
+        json!({"allowed": true, "reason": null})
     );
     let export = get(&app, "/dictionary/export", Caller::Proof).await;
     assert_eq!(export.status, StatusCode::OK);

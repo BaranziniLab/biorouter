@@ -1939,6 +1939,7 @@ export type DictionaryAllowance = {
  */
 export type DictionaryAuthority = {
     add_private: DictionaryAllowance;
+    delete: DictionaryAllowance;
     raise_settings: DictionaryAllowance;
     tier_change: DictionaryAllowance;
     write: DictionaryAllowance;

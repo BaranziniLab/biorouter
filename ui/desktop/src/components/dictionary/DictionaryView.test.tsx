@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DictionaryEntryView } from '../../api';
+import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import { DICTATION_MESSAGES } from '../dictation/copy';
 import { refreshDictationStatus, resetDictationStoreForTests } from '../dictation/dictationStore';
 import { fakeStatusApi, speechStatus } from '../dictation/dictationTestKit';
@@ -50,6 +51,10 @@ beforeEach(() => {
   api.dismissDictionarySuggestions.mockResolvedValue(answer(200, { dismissed: 1 }));
   api.keepDictionaryEntries.mockResolvedValue(answer(200, { kept: 1 }));
   api.deleteDictionaryEntries.mockResolvedValue(answer(200, { deleted: 1 }));
+});
+
+afterEach(() => {
+  delete document.documentElement.dataset.biorouterSurface;
 });
 
 function renderPage() {
@@ -205,6 +210,110 @@ describe('a row’s second line', () => {
 });
 
 describe('the page', () => {
+  it('keeps browser writes closed when a settings response has no authority', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    rows = [entry({ written: 'EPAS1' }), entry({ written: 'Maybe', status: 'suggested' })];
+    api.getDictionarySettings.mockResolvedValue(answer(200, { ...settings(), authority: null }));
+    renderPage();
+    await screen.findByText('EPAS1');
+    expect(screen.queryByTestId('dictionary-add')).toBeNull();
+    expect(screen.queryByTestId('dictionary-row-edit')).toBeNull();
+    expect(screen.getByTestId('dictionary-export')).toBeEnabled();
+    const row = screen.getByText('EPAS1').closest('[data-dictionary-row]') as HTMLElement;
+    await userEvent.click(
+      within(row).getByRole('button', { name: DICTIONARY_LABELS.moreActions('EPAS1') })
+    );
+    expect(screen.getByTestId('dictionary-row-delete')).toHaveAttribute('data-disabled');
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: DICTIONARY_LABELS.pageMenu }));
+    expect(screen.getByTestId('dictionary-delete-all')).toHaveAttribute('data-disabled');
+    await userEvent.keyboard('{Escape}');
+    const suggested = screen.getByText('Maybe').closest('[data-dictionary-row]') as HTMLElement;
+    await userEvent.click(
+      within(suggested).getByRole('button', { name: DICTIONARY_LABELS.moreActions('Maybe') })
+    );
+    expect(screen.getByTestId('dictionary-row-dismiss')).toHaveAttribute('data-disabled');
+    expect(api.addDictionaryEntry).not.toHaveBeenCalled();
+    expect(api.editDictionaryEntry).not.toHaveBeenCalled();
+    expect(api.deleteDictionaryEntry).not.toHaveBeenCalled();
+    expect(api.dismissDictionarySuggestions).not.toHaveBeenCalled();
+  });
+
+  it('permits a browser public add while private add is denied by the host', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const reason = 'Only the host can add private terms.';
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          authority: {
+            ...settings().authority,
+            add_private: { allowed: false, reason },
+          },
+        })
+      )
+    );
+    api.addDictionaryEntry.mockResolvedValue(
+      answer(201, { entry: entry({ written: 'EPAS1' }), created: true })
+    );
+    renderPage();
+    await screen.findByText(DICTIONARY_MESSAGES['MSG-EMPTY']);
+    await userEvent.click(screen.getAllByTestId('dictionary-add')[0]);
+    await userEvent.click(screen.getByTestId('dictionary-add-term'));
+    expect(screen.getByTestId('dictionary-term-private')).toBeDisabled();
+    expect(screen.getByTestId('dictionary-term-private-help')).toHaveTextContent(reason);
+    await userEvent.type(screen.getByTestId('dictionary-term-written'), 'EPAS1');
+    await userEvent.click(screen.getByTestId('dictionary-term-save'));
+    await waitFor(() => expect(api.addDictionaryEntry).toHaveBeenCalledTimes(1));
+    expect(api.addDictionaryEntry.mock.calls[0][0].body).toMatchObject({ private: false });
+  });
+
+  it('uses daemon write authority on a serve browser', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    rows = [entry({ written: 'EPAS1' })];
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          authority: {
+            ...settings().authority,
+            write: { allowed: false, reason: 'This host does not allow dictionary edits.' },
+          },
+        })
+      )
+    );
+    renderPage();
+    await screen.findByText('EPAS1');
+    expect(screen.queryByTestId('dictionary-add')).toBeNull();
+    expect(screen.queryByTestId('dictionary-row-edit')).toBeNull();
+    expect(screen.getByTestId('dictionary-export')).toBeEnabled();
+  });
+
+  it('shows the daemon reason for a denied browser tier change before a click', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    rows = [entry({ written: 'EPAS1', tier: 'private' })];
+    const reason = 'Only the host can change this term’s visibility.';
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          authority: {
+            ...settings().authority,
+            tier_change: { allowed: false, reason },
+          },
+        })
+      )
+    );
+    renderPage();
+    const row = (await screen.findByText('EPAS1')).closest('[data-dictionary-row]') as HTMLElement;
+    await userEvent.click(
+      within(row).getByRole('button', { name: DICTIONARY_LABELS.moreActions('EPAS1') })
+    );
+    expect(screen.getByTestId('dictionary-make-public')).toHaveAttribute('data-disabled');
+    expect(screen.getByText(reason)).toBeVisible();
+    expect(api.changeDictionaryEntryTier).not.toHaveBeenCalled();
+  });
+
   it('shows MSG-EMPTY with the Add menu when there are no terms', async () => {
     renderPage();
     expect(await screen.findByText(DICTIONARY_MESSAGES['MSG-EMPTY'])).toBeInTheDocument();
@@ -234,6 +343,18 @@ describe('the page', () => {
       ).api
     );
     await refreshDictationStatus();
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          authority: {
+            ...settings().authority,
+            write: { allowed: false, reason: DICTATION_MESSAGES['MSG-POLICY'] },
+            delete: { allowed: true, reason: null },
+          },
+        })
+      )
+    );
     rows = [entry({ written: 'EPAS1' }), entry({ written: 'Maybe', status: 'suggested' })];
     renderPage();
     await screen.findByText('EPAS1');
@@ -245,6 +366,14 @@ describe('the page', () => {
     expect(screen.queryByTestId('dictionary-row-accept')).toBeNull();
     expect(screen.queryByTestId('dictionary-review-all')).toBeNull();
     expect(screen.getByTestId('dictionary-export')).toBeEnabled();
+    const row = screen.getByText('EPAS1').closest('[data-dictionary-row]') as HTMLElement;
+    await userEvent.click(
+      within(row).getByRole('button', { name: DICTIONARY_LABELS.moreActions('EPAS1') })
+    );
+    expect(screen.getByTestId('dictionary-row-delete')).not.toHaveAttribute('data-disabled');
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: DICTIONARY_LABELS.pageMenu }));
+    expect(screen.getByTestId('dictionary-delete-all')).not.toHaveAttribute('data-disabled');
   });
 
   it('opens with no row ticked, so neither button acts before the person chooses', async () => {

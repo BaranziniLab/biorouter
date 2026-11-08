@@ -1,4 +1,5 @@
 import { useId, useRef, useState } from 'react';
+import { isBrowserSurface } from '../../utils/surface';
 import type {
   DictionaryAddRequest,
   DictionaryAuthority,
@@ -142,9 +143,9 @@ export default function TermDialog({ mode, authority, onClose }: TermDialogProps
 
   const formsCount = spokenFormsOf(spoken).length;
   const tooManyForms = formsCount > MAX_SPOKEN_FORMS;
-  const canAddPrivate = authority?.add_private.allowed ?? true;
+  const canAddPrivate = authority?.add_private.allowed ?? !isBrowserSurface();
   const privateReason = canAddPrivate ? null : (authority?.add_private.reason ?? null);
-  const canChangeTier = authority?.tier_change.allowed ?? true;
+  const canChangeTier = authority?.tier_change.allowed ?? !isBrowserSurface();
   // On an edit the box is a tier change; it can be used only where tier changes are admitted.
   // On an add without private standing it cannot be ticked, but one ticked at open (a word from
   // a private chat or an unresolved transcript) can be unticked: the person may add it as a

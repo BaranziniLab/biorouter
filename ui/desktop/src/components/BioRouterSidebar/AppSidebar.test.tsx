@@ -602,11 +602,11 @@ describe('AppSidebar: Dictionary', () => {
     expect(window.localStorage.getItem('biorouter:sidebar-components-expanded')).toBeNull();
   });
 
-  it('is absent on a serve browser until PR-21, and under managed policy', async () => {
+  it('appears on a serve browser and remains hidden under managed policy', async () => {
     window.localStorage.setItem('biorouter:sidebar-components-expanded', 'true');
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     const browser = renderSidebar();
-    expect(componentLabels()).not.toContain('Dictionary');
+    expect(componentLabels()).toContain('Dictionary');
     browser.unmount();
     delete document.documentElement.dataset.biorouterSurface;
 

@@ -1160,13 +1160,14 @@ const REGISTRY: &[Guard] = &[
         sites: &[
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
-                counts: c(10, 0, 0),
+                counts: c(11, 0, 0),
                 kind: SiteKind::Guard,
                 what: "every write and the export: add, edit, delete, the tier change (again \
                        after the gate, right before the tier proof is built), the bulk routes' \
                        shared reader, import, export, observations, the settings change, and the \
-                       settings answer's `authority`, which asks the same function so no surface \
-                       offers a control it would refuse",
+                       settings answer's `authority`, which asks once for managed writes and \
+                       separately for deletion with the same caller proof and row reach, so \
+                       neither control is offered when its route would refuse",
             },
             Site {
                 file: SESSION_REACH,

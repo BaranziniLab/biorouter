@@ -26,6 +26,11 @@ import {
   writeDictationViewer,
 } from '../../dictation/dictationStore';
 import { micErrorNotice, type MicErrorNotice } from '../../dictation/micErrors';
+import { SharedOriginNotice } from '../../dictation/SharedOriginNotice';
+import {
+  acknowledgeSharedOriginNotice,
+  needsSharedOriginNotice,
+} from '../../dictation/sharedOriginGate';
 import { DICTIONARY_LABELS, dictionaryMessage } from '../../dictionary/copy';
 import { openDictionaryPage } from '../../dictionary/navigation';
 import { SettingSelect } from '../SettingSelect';
@@ -60,13 +65,9 @@ import './speechModels.css';
 
 /**
  * **Settings > Models > Speech models** (DD-66, PR-18): install, use, remove, update and cancel
- * speech models, Rescan the model folder, and set the language and the microphone, on the
- * desktop. One section of the Models tab, between the local model inventory and the danger zone;
+ * speech models, Rescan the model folder, and set the language and the microphone. One section
+ * of the Models tab, between the local model inventory and the danger zone;
  * there is no fourth tab.
- *
- * Hidden on a `serve` browser until PR-21 lands that surface's gates (DD-94: a control appears in
- * the pull request that makes it work end to end); `SpeechModelSection.test.tsx` pins it absent
- * there.
  *
  * The rows follow the Local models pattern (a name over one facts line, the trailing control on the
  * shared right edge, a hover `⋯`), and the privacy line is visible text, never an InfoTip (DD-92).
@@ -75,7 +76,6 @@ import './speechModels.css';
  * decides it again, and never offers a button the daemon would refuse.
  */
 export default function SpeechModelSection() {
-  if (isBrowserSurface()) return null;
   return <SpeechModelSectionBody />;
 }
 
@@ -453,6 +453,7 @@ function FolderRow({ status, enabled }: { status: DictationStatus; enabled: bool
   // Only for the daemon this app started: an external backend's folder is on another computer,
   // and the main process refuses it too.
   const canReveal =
+    !isBrowserSurface() &&
     dictationDaemonPlace(status).kind === 'this-computer' &&
     typeof window.electron?.dictationShowModelsFolder === 'function';
   // The status lists speech models only; a placed voice detector is named as the catalog names it.
@@ -594,6 +595,7 @@ function MicrophoneRow({ status }: { status: DictationStatus }) {
   const [devices, setDevices] = useState<Microphone[]>([]);
   const [choice, setChoice] = useState(() => readDictationViewer().deviceId ?? '');
   const [test, setTest] = useState<MicTest>({ phase: 'idle' });
+  const [sharedOriginOpen, setSharedOriginOpen] = useState(false);
   const capture = useRef<Capture | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(true);
@@ -743,6 +745,20 @@ function MicrophoneRow({ status }: { status: DictationStatus }) {
     }
   };
 
+  const pressTest = () => {
+    if (needsSharedOriginNotice()) {
+      setSharedOriginOpen(true);
+      return;
+    }
+    void runTest();
+  };
+
+  const acknowledgeOrigin = () => {
+    acknowledgeSharedOriginNotice();
+    setSharedOriginOpen(false);
+    void runTest();
+  };
+
   const seconds =
     test.phase === 'listening'
       ? Math.max(1, Math.ceil((MIC_TEST_MS - (performance.now() - test.startedAt)) / 1000))
@@ -788,35 +804,42 @@ function MicrophoneRow({ status }: { status: DictationStatus }) {
   ) : undefined;
 
   return (
-    <SettingRow
-      label={copy.microphone}
-      help={dictationMessage('MSG-MIC-HELP')}
-      data-testid="speech-microphone"
-      controlId={MIC_ROW_ID}
-      disabled={!captureAllowed}
-      status={line}
-    >
-      <div role="group" className="br-speech-row-actions">
-        <SettingSelect
-          options={options}
-          value={choice}
-          // The row's label and the chosen device, as every settings select is named.
-          aria-labelledby={settingLabelId(MIC_ROW_ID)}
-          disabled={!captureAllowed || test.phase === 'listening'}
-          onValueChange={choose}
-          triggerClassName="w-44"
-        />
-        <Button
-          type="button"
-          size="sm"
-          variant="secondary"
-          disabled={!captureAllowed || test.phase === 'listening'}
-          onClick={() => void runTest()}
-        >
-          {copy.testMicrophone}
-        </Button>
-      </div>
-    </SettingRow>
+    <>
+      <SettingRow
+        label={copy.microphone}
+        help={dictationMessage('MSG-MIC-HELP')}
+        data-testid="speech-microphone"
+        controlId={MIC_ROW_ID}
+        disabled={!captureAllowed}
+        status={line}
+      >
+        <div role="group" className="br-speech-row-actions">
+          <SettingSelect
+            options={options}
+            value={choice}
+            // The row's label and the chosen device, as every settings select is named.
+            aria-labelledby={settingLabelId(MIC_ROW_ID)}
+            disabled={!captureAllowed || test.phase === 'listening'}
+            onValueChange={choose}
+            triggerClassName="w-44"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={!captureAllowed || test.phase === 'listening'}
+            onClick={pressTest}
+          >
+            {copy.testMicrophone}
+          </Button>
+        </div>
+      </SettingRow>
+      <SharedOriginNotice
+        open={sharedOriginOpen}
+        onCancel={() => setSharedOriginOpen(false)}
+        onContinue={acknowledgeOrigin}
+      />
+    </>
   );
 }
 

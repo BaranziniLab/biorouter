@@ -42,6 +42,7 @@ export function settings(overrides: Partial<DictionarySettings> = {}): Dictionar
     agent_writes: 'on_request',
     authority: {
       write: allowed,
+      delete: allowed,
       add_private: allowed,
       tier_change: allowed,
       raise_settings: allowed,

@@ -21,6 +21,7 @@
  */
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { cn } from '../../utils';
+import { isBrowserSurface } from '../../utils/surface';
 import {
   getDictationAriaKeyShortcuts,
   getDictationShortcutText,
@@ -55,6 +56,7 @@ import {
   type PhaseDecision,
 } from './dictationStore';
 import { SetupPopover } from './SetupPopover';
+import { SharedOriginNotice } from './SharedOriginNotice';
 import type { DictationComposerControl } from './useDictationComposer';
 
 export type DictationPhase =
@@ -188,7 +190,8 @@ export function DictationButton({ control, setView, className }: DictationButton
   // press never silently does nothing.
   if (!showButton && !pill && phase !== 'arming' && !setupOpen) return null;
 
-  const chord = getDictationShortcutText();
+  const browser = isBrowserSurface();
+  const chord = browser ? '' : getDictationShortcutText();
   const clock = formatDictationClock(snapshot.key === control.key ? snapshot.elapsedS : 0);
   const label =
     phase === 'unavailable'
@@ -208,7 +211,9 @@ export function DictationButton({ control, setView, className }: DictationButton
     phase === 'recording'
       ? DICTATION_LABELS.recordingTooltip
       : phase === 'idle' || phase === 'error'
-        ? `${DICTATION_LABELS.idle} ${chord}`
+        ? browser
+          ? DICTATION_LABELS.idle
+          : `${DICTATION_LABELS.idle} ${chord}`
         : label;
 
   const press = () => {
@@ -278,7 +283,7 @@ export function DictationButton({ control, setView, className }: DictationButton
       aria-label={label}
       aria-pressed={phase === 'arming' || phase === 'recording'}
       aria-busy={phase === 'arming' || phase === 'transcribing' || undefined}
-      aria-keyshortcuts={getDictationAriaKeyShortcuts()}
+      aria-keyshortcuts={browser ? undefined : getDictationAriaKeyShortcuts()}
       aria-haspopup={phase === 'not-installed' || phase === 'installing' ? 'dialog' : undefined}
       aria-expanded={phase === 'not-installed' || phase === 'installing' ? setupOpen : undefined}
       className={cn('br-dictation-button', className)}
@@ -324,32 +329,39 @@ export function DictationButton({ control, setView, className }: DictationButton
     );
 
   return (
-    <Popover open={setupOpen} onOpenChange={setSetupOpen}>
-      <PopoverAnchor asChild>
-        <span className="br-dictation-slot">{withTooltip}</span>
-      </PopoverAnchor>
-      {setupOpen && (
-        <PopoverContent
-          side="top"
-          align="end"
-          className="w-80 p-0"
-          onInteractOutside={(event) => {
-            // The microphone toggles the popover itself, on its own pointer down.
-            if (buttonRef.current?.contains(event.target as Node)) event.preventDefault();
-          }}
-        >
-          <SetupPopover
-            status={statusSnapshot.status}
-            progress={phase === 'installing' ? (decision.progress ?? 0) : null}
-            onNotNow={() => setSetupOpen(false)}
-            onMoreInSettings={() => {
-              setSetupOpen(false);
-              setView('settings', { section: 'dictation' } as ViewOptions);
+    <>
+      <Popover open={setupOpen} onOpenChange={setSetupOpen}>
+        <PopoverAnchor asChild>
+          <span className="br-dictation-slot">{withTooltip}</span>
+        </PopoverAnchor>
+        {setupOpen && (
+          <PopoverContent
+            side="top"
+            align="end"
+            className="w-80 p-0"
+            onInteractOutside={(event) => {
+              // The microphone toggles the popover itself, on its own pointer down.
+              if (buttonRef.current?.contains(event.target as Node)) event.preventDefault();
             }}
-          />
-        </PopoverContent>
-      )}
-    </Popover>
+          >
+            <SetupPopover
+              status={statusSnapshot.status}
+              progress={phase === 'installing' ? (decision.progress ?? 0) : null}
+              onNotNow={() => setSetupOpen(false)}
+              onMoreInSettings={() => {
+                setSetupOpen(false);
+                setView('settings', { section: 'dictation' } as ViewOptions);
+              }}
+            />
+          </PopoverContent>
+        )}
+      </Popover>
+      <SharedOriginNotice
+        open={control.sharedOriginOpen}
+        onCancel={control.cancelSharedOrigin}
+        onContinue={control.acknowledgeSharedOrigin}
+      />
+    </>
   );
 }
 

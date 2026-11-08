@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BROWSER_SURFACE_MARKER } from '../../../utils/surface';
 import type { CaptureOptions } from '../../dictation/capture';
 import { DICTATION_MESSAGES } from '../../dictation/copy';
+import { resetSharedOriginNoticeForTests } from '../../dictation/sharedOriginGate';
 import type {
   DictationApi,
   DictationModelsApi,
@@ -201,6 +202,7 @@ async function renderSection() {
 const row = (id: string) => screen.getByTestId(`speech-model-${id}`);
 
 beforeEach(() => {
+  resetSharedOriginNoticeForTests();
   window.localStorage.removeItem(DICTATION_VIEWER_KEY);
   capture.options = null;
   capture.fail = null;
@@ -227,11 +229,30 @@ describe('Speech models in Settings', () => {
     ).toBeInTheDocument();
   });
 
-  it('is absent on a serve browser until PR-21 lands that surface’s gates', () => {
+  it('shows models on a serve browser without a host folder reveal action', async () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
-    const { container } = render(<SpeechModelSection />);
-    expect(container).toBeEmptyDOMElement();
-    expect(statusApi.status).not.toHaveBeenCalled();
+    await renderSection();
+    expect(screen.getByTestId('speech-privacy-line')).toBeInTheDocument();
+    expect(statusApi.status).toHaveBeenCalled();
+    expect(
+      within(screen.getByTestId('speech-model-folder')).queryByRole('button', {
+        name: copy.showInFinder,
+      })
+    ).toBeNull();
+    expect(revealFolder).not.toHaveBeenCalled();
+  });
+
+  it('shows the origin notice before the first browser microphone test and starts from its acknowledgement', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const user = userEvent.setup();
+    await renderSection();
+    await user.click(screen.getByRole('button', { name: copy.testMicrophone }));
+    expect(capture.options).toBeNull();
+    expect(
+      screen.getByText(/Your browser's microphone permission covers every page at/)
+    ).toBeVisible();
+    await user.click(screen.getByTestId('shared-origin-acknowledge'));
+    expect(capture.options).not.toBeNull();
   });
 
   it('says where speech is transcribed in visible text, never an InfoTip (DD-92)', async () => {

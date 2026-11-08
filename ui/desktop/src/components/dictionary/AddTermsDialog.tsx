@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { DictionaryAuthority, DictionaryImportAnswer } from '../../api';
+import { isBrowserSurface } from '../../utils/surface';
 import { ModalShell } from '../ModalShell';
 import { focusFieldOnOpen } from '../baam/focusFieldOnOpen';
 import { Button } from '../ui/button';
@@ -90,7 +91,7 @@ export default function AddTermsDialog({
   const [dragging, setDragging] = useState(false);
   const generation = useRef(0);
 
-  const canAddPrivate = authority?.add_private.allowed ?? true;
+  const canAddPrivate = authority?.add_private.allowed ?? !isBrowserSurface();
   const privateReason = canAddPrivate ? null : (authority?.add_private.reason ?? null);
   // Text over the daemon's 1 MiB is refused before anything walks it: no format sniffing, no
   // parse and no request, so a paste far over the limit costs one length check per change.

@@ -1284,11 +1284,8 @@ support that 1.89 had (issue #9).
 
 ## SD-16: App pages turn the microphone off; the grant still belongs to the origin
 
-> **First part (2026-11-05).** This part covers the headers, which land before any served page
-> asks for the microphone, and the residuals they leave. The rest of the record, how a browser on
-> `serve` dictates (what it may install, which dictionary entries it may use, what it asks of the
-> person before the first recording, and the residuals those leave), is added when dictation is
-> served to a browser.
+> **First part (2026-11-05).** The header ruling landed before a served page could ask for the
+> microphone. The browser dictation ruling below completes this record with PR-21.
 
 **Ruling.** Every document an Agent Drafter app serves carries
 `Permissions-Policy: microphone=(), camera=(), display-capture=()`: the app's page and its build
@@ -1370,6 +1367,36 @@ same way.
   that wants speech gets text the person dictated somewhere else and pasted or inserted.
 - The header also goes on the non-HTML files under `dist/` and `assets/`. A browser ignores it
   there; sending it on every file keeps the rule one line.
+
+**Browser dictation ruling (PR-21).** The served browser captures audio on the viewer's device
+and sends it to the daemon on the host running `serve`. A stream needs the daemon secret. A
+user-action proof is not required; on the desktop it decides whether private dictionary terms
+may bias recognition. In a served browser, `X-Caller-Provider` states the host's configured
+provider and gives private standing when that provider is private. The browser cookie's operator
+standing under SD-10 can list private dictionary rows even when that header is absent. Listing
+does not create private bias standing or grant a private row an institutional stamp.
+
+A keyless daemon accepts an install of a compiled, pinned speech model with its secret. The
+operator can stop browser installs with `biorouter serve --no-dictation-install`,
+`BIOROUTER_DICTATION_BROWSER_INSTALL=false`, or managed policy. The first switch passes `false`
+only to the daemon started by that `serve` command. A browser may add, edit, accept and delete
+dictionary terms one at a time. Publicize and privatize, raising `agent_writes`, and turning chat
+learning or dictionary suggestions on stay with the host. The page disables those actions with
+the matching host command before a click. A private add also needs private standing.
+
+Before the first microphone recording, the served page shows MSG-SHARED-ORIGIN once per browser
+origin. It tells the person that a microphone grant reaches every page on that origin and
+recommends **Allow this time** unless every page there is trusted. The person continues from a
+fresh click, which keeps `getUserMedia` inside a user gesture. Settings' microphone test follows
+the same gate. Behind a JupyterHub path prefix, other notebook pages can share that origin.
+
+The notice is a disclosure, not an authority proof. Chromium's app-page header does not govern a
+same-origin popup, and Firefox and Safari do not enforce the header. A keyless daemon's secret
+also lets any holder, including an agent shell that recovers it, install a pinned model and make
+the browser's permitted dictionary writes. Biorouter Copilot with a per-task grant can click the
+served microphone and then Send; this work adds no separate Copilot refusal (DD-88, O-15). ACP
+clients that extract text from a chat can carry dictated text outside the served page under their
+existing access. Per-app origins and a narrower ACP data boundary are separate future work.
 
 ---
 

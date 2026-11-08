@@ -329,10 +329,7 @@ describe('the address the not-found page echoes', () => {
   });
 });
 
-/**
- * DD-67: the Dictionary page lives at `/dictionary` inside the shell. Until PR-21 lands the
- * `serve` gates a browser that follows a link there goes Home, as its sidebar shows no row.
- */
+/** DD-67: the Dictionary page lives at `/dictionary` inside the shell on both surfaces. */
 describe('the Dictionary route', () => {
   afterEach(() => {
     delete document.documentElement.dataset.biorouterSurface;
@@ -343,10 +340,9 @@ describe('the Dictionary route', () => {
     expect(await screen.findByTestId('route-dictionary')).toBeInTheDocument();
   });
 
-  it('sends a serve browser Home until PR-21', async () => {
+  it('renders the page in a serve browser', async () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     renderAt('/dictionary');
-    expect(await screen.findByTestId('home-view')).toBeInTheDocument();
-    expect(screen.queryByTestId('route-dictionary')).toBeNull();
+    expect(await screen.findByTestId('route-dictionary')).toBeInTheDocument();
   });
 });

@@ -358,6 +358,10 @@ async fn tier_changes_and_raised_settings_are_the_hosts() {
     let authority = &settings["authority"];
     assert_eq!(authority["write"], json!({"allowed": true, "reason": null}));
     assert_eq!(
+        authority["delete"],
+        json!({"allowed": true, "reason": null})
+    );
+    assert_eq!(
         authority["add_private"],
         json!({"allowed": false, "reason": MSG_DICTIONARY_HOST_PRIVATE})
     );

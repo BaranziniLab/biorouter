@@ -17,7 +17,7 @@
  * needs one, `capture.ts`) still run inside a user activation. A press notes
  * interest in dictation only after the capture has started.
  */
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { isDictationChord } from '../../utils/keyboardShortcuts';
 import { isBrowserSurface } from '../../utils/surface';
@@ -35,6 +35,7 @@ import {
   type DictationTarget,
 } from './dictationSession';
 import { noteDictationInterest } from './dictationStore';
+import { acknowledgeSharedOriginNotice, needsSharedOriginNotice } from './sharedOriginGate';
 
 /** A hold of the chord at least this long talks while held (DD-62); a shorter one toggles. */
 export const DICTATION_HOLD_MS = 500;
@@ -91,7 +92,7 @@ export type DictationGate = 'free' | 'holding' | 'listening';
 
 export interface DictationComposerControl {
   key: string;
-  /** False on a `serve` browser until PR-21 lands its gates (DD-94): nothing renders. */
+  /** Whether this composer shows its microphone. */
   available: boolean;
   /** This composer's gate; the composer renders only when it changes. */
   gate: DictationGate;
@@ -110,6 +111,9 @@ export interface DictationComposerControl {
   handleKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => boolean;
   /** A sign that dictation may be used: loads the status once and warms the device list. */
   noteInterest: () => void;
+  sharedOriginOpen: boolean;
+  acknowledgeSharedOrigin: () => void;
+  cancelSharedOrigin: () => void;
 }
 
 const holding = (activity: DictationActivity): boolean =>
@@ -117,7 +121,8 @@ const holding = (activity: DictationActivity): boolean =>
 
 export function useDictationComposer(options: DictationComposerOptions): DictationComposerControl {
   const { key, textAreaRef, storesDraft } = options;
-  const available = !isBrowserSurface();
+  const available = true;
+  const [sharedOriginOpen, setSharedOriginOpen] = useState(false);
   const latest = useRef(options);
   latest.current = options;
 
@@ -155,12 +160,13 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
     noteDictationInterest();
   }, [available]);
 
-  const press = useCallback(() => {
+  const startOrStop = useCallback(() => {
     if (!available) return;
     const current = dictationActivityFor(key);
     if (current === 'transcribing') return;
     void startDictation({ key, target: latest.current.target() }).then((outcome) => {
       if (outcome.kind === 'setup') requestDictationSetup(key);
+      else if (outcome.kind === 'origin-notice') setSharedOriginOpen(true);
       else if (outcome.kind === 'unavailable' && outcome.reason) {
         noteDictationUnavailable(key, outcome.reason);
       }
@@ -170,6 +176,23 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
     // (`capture.ts`). A press that stops needs none.
     if (!holding(current)) noteDictationInterest();
   }, [available, key]);
+
+  const press = useCallback(() => {
+    const current = dictationActivityFor(key);
+    if (current === 'transcribing') return;
+    if (!holding(current) && needsSharedOriginNotice()) {
+      setSharedOriginOpen(true);
+      return;
+    }
+    startOrStop();
+  }, [key, startOrStop]);
+
+  const acknowledgeSharedOrigin = useCallback(() => {
+    acknowledgeSharedOriginNotice();
+    setSharedOriginOpen(false);
+    startOrStop();
+  }, [startOrStop]);
+  const cancelSharedOrigin = useCallback(() => setSharedOriginOpen(false), []);
 
   const stop = useCallback(() => stopDictation(key), [key]);
   const cancel = useCallback(() => cancelDictation(key), [key]);
@@ -227,6 +250,7 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
         isComposing: composing,
       });
       if (chord) {
+        if (isBrowserSurface()) return false;
         event.preventDefault();
         const wasHolding = holding(current);
         // `press` notes the interest itself, once the capture has started.
@@ -266,7 +290,22 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
       cancel,
       handleKeyDown,
       noteInterest,
+      sharedOriginOpen,
+      acknowledgeSharedOrigin,
+      cancelSharedOrigin,
     }),
-    [key, available, gate, press, stop, cancel, handleKeyDown, noteInterest]
+    [
+      key,
+      available,
+      gate,
+      press,
+      stop,
+      cancel,
+      handleKeyDown,
+      noteInterest,
+      sharedOriginOpen,
+      acknowledgeSharedOrigin,
+      cancelSharedOrigin,
+    ]
   );
 }

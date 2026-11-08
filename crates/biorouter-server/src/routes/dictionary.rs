@@ -1953,6 +1953,8 @@ impl DictionaryAllowance {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DictionaryAuthority {
     pub write: DictionaryAllowance,
+    /// Delete follows the entry routes' caller check, even when managed policy blocks additions.
+    pub delete: DictionaryAllowance,
     pub add_private: DictionaryAllowance,
     /// MSG-DICTIONARY-HOST-TIER in its publicize form; the page fills the verb and the term.
     pub tier_change: DictionaryAllowance,
@@ -1992,6 +1994,11 @@ fn authority_of(caller: &HttpCaller) -> DictionaryAuthority {
     };
     DictionaryAuthority {
         write: DictionaryAllowance::of(ask(DictionaryWrite::Entries { private: false })),
+        delete: DictionaryAllowance::of(
+            caller
+                .authorizes_dictionary_write(&DictionaryWrite::Entries { private: false }, None)
+                .map_err(|refusal| refusal.message),
+        ),
         add_private: DictionaryAllowance::of(ask(DictionaryWrite::Entries { private: true })),
         tier_change: DictionaryAllowance::of(ask(DictionaryWrite::TierChange {
             to: EntryTier::Public,

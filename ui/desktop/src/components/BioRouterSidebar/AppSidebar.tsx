@@ -225,7 +225,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   // when it mounts. Until it has loaded the row shows; managed `dictionary: false` hides it.
   const { status: dictationStatus } = useDictationStatus();
   const dictionaryAllowed = dictationStatus?.policy.dictionary.allowed !== false;
-  const showDictionary = !isBrowserSurface() && dictionaryAllowed;
+  const showDictionary = dictionaryAllowed;
   // The count reads `GET /dictionary/entries?status=suggested` only once the store says the
   // dictionary is allowed, on focus and every 60 s while the window is visible.
   const dictionaryWaiting = useDictionaryWaitingCount(
