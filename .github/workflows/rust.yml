@@ -1093,7 +1093,7 @@ jobs:
                      /etc/apt/sources.list.d/microsoft-prod.sources \
                      /etc/apt/sources.list.d/azure-cli.sources
           sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends libdbus-1-dev libxdo-dev
+          sudo apt-get install -y --no-install-recommends libdbus-1-dev libxdo-dev liblzma-dev
 
       - name: Build the interface bundle
         working-directory: ui/desktop
