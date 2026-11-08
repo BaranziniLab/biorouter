@@ -1231,6 +1231,7 @@ jobs:
         working-directory: ui/desktop
         env:
           BIOROUTER_SERVE_BIN: ${{ github.workspace }}/target/debug/biorouter
+          BIOROUTER_PW_CHANNEL: chromium
         run: npx playwright test tests/e2e/serve-app-microphone.spec.ts tests/e2e/serve-dictation.spec.ts --reporter=list
 
       # SIGTERM and SIGINT to `serve`, and SIGKILL, which leaves only the
