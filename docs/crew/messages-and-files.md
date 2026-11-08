@@ -10,6 +10,16 @@ This page assumes you have joined a workspace (see [Joining a workspace](joining
 The message box at the bottom of a channel holds the paperclip button (tooltip "Attach"),
 **Ask my agent** and the round Send button.
 
+The microphone before Send and the microphone beside **Start my agent and allow posting here**
+put speech in their own text boxes for review. Their tooltip reads "Dictate. The text goes into the
+box for you to check; nothing is posted until you press Send." Stopping a recording does not send
+the message or start a task. A line beginning with `@agent` stays in the box until you press Enter.
+Right click a microphone, or press Shift+F10 or the Menu key while it has focus, to find
+**Include my private terms** when your desktop app has private dictionary access. The warning
+reads "Your private dictionary terms may appear in this text, and Biorouter cannot keep them away
+from public models or from other institutions' models once you paste or post it. Include them?"
+Choose **Include** for one recording or **Public terms only** to record without private terms.
+
 ## Write and send a message
 
 1. Choose the message box. It reads "Message #methods".
@@ -30,15 +40,15 @@ The note stays with its draft: if you move to another channel, it comes back wit
 workspace refuses a message after you moved on, the connection bar says "Couldn’t send your message
 in #methods." with the reason.
 
-| Reason | What to do |
-|---|---|
-| "Messages can be up to 64 KB. Attach long text as a file." | Shorten the message, or attach the text as a file. |
-| "Refresh the workspace to verify connection privacy before sending." | Wait until the status row reads "Connected", then press Send again. If it shows another word, such as "Offline", see [Connections and troubleshooting](connections-and-troubleshooting.md). |
-| "Nothing was sent. Check the connection, then send again." | Crew lost the connection before the message left. Send again once the status row reads "Connected". |
-| "The workspace server can’t save messages right now." | The server's disk is full or failing. Ask the host, who sees what to do in [Administration](administration.md#server-storage-full-or-failing). |
-| "This workspace is full…", "This workspace has grown past the size Crew supports…" or "You have used your share of this workspace's…" | The workspace reached a limit. Reading still works. Ask the host ([Workspace limits](administration.md#workspace-limits)). |
-| "…was shared in #raw-data. Share it there, or upload it again here." | A file or server path from another channel cannot be posted here. Remove it, then upload it again or share the path again. |
-| "This channel is archived, so nothing more can be posted in it." | Copy your text and post it elsewhere. |
+| Reason                                                                                                                                | What to do                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "Messages can be up to 64 KB. Attach long text as a file."                                                                            | Shorten the message, or attach the text as a file.                                                                                                                                          |
+| "Refresh the workspace to verify connection privacy before sending."                                                                  | Wait until the status row reads "Connected", then press Send again. If it shows another word, such as "Offline", see [Connections and troubleshooting](connections-and-troubleshooting.md). |
+| "Nothing was sent. Check the connection, then send again."                                                                            | Crew lost the connection before the message left. Send again once the status row reads "Connected".                                                                                         |
+| "The workspace server can’t save messages right now."                                                                                 | The server's disk is full or failing. Ask the host, who sees what to do in [Administration](administration.md#server-storage-full-or-failing).                                              |
+| "This workspace is full…", "This workspace has grown past the size Crew supports…" or "You have used your share of this workspace's…" | The workspace reached a limit. Reading still works. Ask the host ([Workspace limits](administration.md#workspace-limits)).                                                                  |
+| "…was shared in #raw-data. Share it there, or upload it again here."                                                                  | A file or server path from another channel cannot be posted here. Remove it, then upload it again or share the path again.                                                                  |
+| "This channel is archived, so nothing more can be posted in it."                                                                      | Copy your text and post it elsewhere.                                                                                                                                                       |
 
 If the connection breaks just after you press Send, Crew cannot tell at once whether the message
 arrived. The note reads "Checking whether your message reached the channel…" while Crew reads the
@@ -197,16 +207,16 @@ While a file uploads:
 
 A refused file shows a red note above the box. Its × closes the note.
 
-| Refused | What to do |
-|---|---|
-| Several files at once | Crew takes the first, and the note names it: "Crew shares one file at a time. Only counts.csv was added." Add the others one at a time. |
-| A folder | Zip it, or share its files one by one. |
-| Over 1 GB | Share a [server path](#share-a-path-on-the-lab-server), or split the file. |
-| A picture not saved as a file | Save it as a file first. |
-| A shortcut to another folder | Share the original file. |
-| A device, socket or pipe | Save the data to an ordinary file. |
-| A file that moved, changed or cannot be read | Check that you can open it, then add it again. |
-| A credential file, such as `id_rsa` or `.env` | Do not share it. |
+| Refused                                                                                 | What to do                                                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Several files at once                                                                   | Crew takes the first, and the note names it: "Crew shares one file at a time. Only counts.csv was added." Add the others one at a time.                                                                                                                                                                                                                                                                  |
+| A folder                                                                                | Zip it, or share its files one by one.                                                                                                                                                                                                                                                                                                                                                                   |
+| Over 1 GB                                                                               | Share a [server path](#share-a-path-on-the-lab-server), or split the file.                                                                                                                                                                                                                                                                                                                               |
+| A picture not saved as a file                                                           | Save it as a file first.                                                                                                                                                                                                                                                                                                                                                                                 |
+| A shortcut to another folder                                                            | Share the original file.                                                                                                                                                                                                                                                                                                                                                                                 |
+| A device, socket or pipe                                                                | Save the data to an ordinary file.                                                                                                                                                                                                                                                                                                                                                                       |
+| A file that moved, changed or cannot be read                                            | Check that you can open it, then add it again.                                                                                                                                                                                                                                                                                                                                                           |
+| A credential file, such as `id_rsa` or `.env`                                           | Do not share it.                                                                                                                                                                                                                                                                                                                                                                                         |
 | A name with an invisible or formatting character, or with characters made to look blank | Rename the file, then share it again. Crew says so, such as "“report�.pdf” has an invisible or formatting character in its name. Rename the file, then share it again.", with each hidden character shown as �. A file you drag or paste in gets the general note "Crew couldn't take …" instead; rename it the same way. Such a name could hide the file's real type from the people you share it with. |
 
 The credential check runs however a file arrives (the paperclip, a drag, a paste or a terminal),
@@ -237,15 +247,15 @@ browser download.
 
 If Crew refuses where you chose to save, it says what to change:
 
-| Message | What to do |
-|---|---|
-| "…starts with a dot, which Crew doesn't save into your home." | Choose a name without the leading dot. |
-| "Choose a folder owned by your account that other accounts can't change." | Save into a folder of your own, such as Downloads. |
+| Message                                                                                       | What to do                                                                                                                                                                                                                                                                  |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "…starts with a dot, which Crew doesn't save into your home."                                 | Choose a name without the leading dot.                                                                                                                                                                                                                                      |
+| "Choose a folder owned by your account that other accounts can't change."                     | Save into a folder of your own, such as Downloads.                                                                                                                                                                                                                          |
 | "/Users/bob/shared goes through a link. Choose the folder it points to, /Volumes/lab/shared." | A folder on the way is a link, and Crew never saves through one. Choose the folder the sentence names, if it is yours, or another folder of your own. On a Mac, `/tmp` is a link to `/private/tmp`, which other accounts can change, so it gets the sentence above instead. |
-| "Crew won't save into a credential or settings location. Choose another folder." | Choose another folder. |
-| "That is a folder. Give a file name…" | Choose a file name, not a folder. |
-| "…is a program, and Crew won't replace one. Choose another name." | Choose another name. |
-| "A file named … already exists. Replace it, or choose another name." | Choose **Replace** in the save window, or another name. |
+| "Crew won't save into a credential or settings location. Choose another folder."              | Choose another folder.                                                                                                                                                                                                                                                      |
+| "That is a folder. Give a file name…"                                                         | Choose a file name, not a folder.                                                                                                                                                                                                                                           |
+| "…is a program, and Crew won't replace one. Choose another name."                             | Choose another name.                                                                                                                                                                                                                                                        |
+| "A file named … already exists. Replace it, or choose another name."                          | Choose **Replace** in the save window, or another name.                                                                                                                                                                                                                     |
 
 "You're not in that channel." means you were removed from the channel.
 
@@ -253,12 +263,12 @@ If Crew refuses where you chose to save, it says what to change:
 
 Choose **Channel details** in the channel header, then **Files**.
 
-| Section | What it lists |
-|---|---|
-| "In progress" | Unfinished transfers for this channel on this computer, with **Pause**, **Resume…** and **Remove from list** |
-| "In your message, not sent yet" | Files in the message you are writing |
-| "Uploaded, not sent" | Uploads in no message. **Attach** puts one back into your message. |
-| "In this channel" | Files and server paths in loaded messages, with who shared each |
+| Section                         | What it lists                                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| "In progress"                   | Unfinished transfers for this channel on this computer, with **Pause**, **Resume…** and **Remove from list** |
+| "In your message, not sent yet" | Files in the message you are writing                                                                         |
+| "Uploaded, not sent"            | Uploads in no message. **Attach** puts one back into your message.                                           |
+| "In this channel"               | Files and server paths in loaded messages, with who shared each                                              |
 
 Scroll up in the messages to list older files. If **Attach** says the upload no longer matches,
 upload the file again. After "Message sent, but its upload record couldn’t be cleared.", use
@@ -284,11 +294,11 @@ A transfer is one upload or download on this computer.
 
 ### Transfer states
 
-| State | Meaning | What to do |
-|---|---|---|
-| "Paused" | It stopped and can resume. The reason shows under the row: "You paused it", "The connection dropped", "The credential vault is locked", "Two other transfers were running", "The connection’s privacy changed", "The workspace server couldn’t save it" or, for any other interruption, "It stopped". After a computer restart, or quitting Biorouter on Windows, it shows no reason. | Resume it. After "The connection’s privacy changed", check the connection first, and share or save the file again if Crew refuses. After "The workspace server couldn’t save it", the server's disk is full or failing: choose **Resume…** once the host has freed space and restarted Crew. If you host the workspace, follow [Server storage full or failing](administration.md#server-storage-full-or-failing) first. |
-| "Failed" | The workspace refused it. The reason shows under the row. Resuming cannot fix it. | Remove it. Upload or save again once the cause is fixed. |
-| "Not confirmed" | It stopped at the end, so Crew cannot tell whether it finished. | Upload or save again, then remove the old row. |
+| State           | Meaning                                                                                                                                                                                                                                                                                                                                                                               | What to do                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| "Paused"        | It stopped and can resume. The reason shows under the row: "You paused it", "The connection dropped", "The credential vault is locked", "Two other transfers were running", "The connection’s privacy changed", "The workspace server couldn’t save it" or, for any other interruption, "It stopped". After a computer restart, or quitting Biorouter on Windows, it shows no reason. | Resume it. After "The connection’s privacy changed", check the connection first, and share or save the file again if Crew refuses. After "The workspace server couldn’t save it", the server's disk is full or failing: choose **Resume…** once the host has freed space and restarted Crew. If you host the workspace, follow [Server storage full or failing](administration.md#server-storage-full-or-failing) first. |
+| "Failed"        | The workspace refused it. The reason shows under the row. Resuming cannot fix it.                                                                                                                                                                                                                                                                                                     | Remove it. Upload or save again once the cause is fixed.                                                                                                                                                                                                                                                                                                                                                                 |
+| "Not confirmed" | It stopped at the end, so Crew cannot tell whether it finished.                                                                                                                                                                                                                                                                                                                       | Upload or save again, then remove the old row.                                                                                                                                                                                                                                                                                                                                                                           |
 
 ## Share a path on the lab server
 

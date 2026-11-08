@@ -115,9 +115,15 @@ export interface DictationButtonProps {
   control: DictationComposerControl;
   setView: (view: View, options?: ViewOptions) => void;
   className?: string;
+  idleTooltip?: string;
 }
 
-export function DictationButton({ control, setView, className }: DictationButtonProps) {
+export function DictationButton({
+  control,
+  setView,
+  className,
+  idleTooltip,
+}: DictationButtonProps) {
   const snapshot = useSnapshot();
   const statusSnapshot = useDictationStatus();
   const decision = useMemo(() => resolveDictationPhase(statusSnapshot), [statusSnapshot]);
@@ -211,9 +217,7 @@ export function DictationButton({ control, setView, className }: DictationButton
     phase === 'recording'
       ? DICTATION_LABELS.recordingTooltip
       : phase === 'idle' || phase === 'error'
-        ? browser
-          ? DICTATION_LABELS.idle
-          : `${DICTATION_LABELS.idle} ${chord}`
+        ? (idleTooltip ?? (browser ? DICTATION_LABELS.idle : `${DICTATION_LABELS.idle} ${chord}`))
         : label;
 
   const press = () => {
@@ -390,7 +394,11 @@ export function DictationNotices({ dictationKey }: { dictationKey: string }) {
   const waiting = mine && snapshot.waiting;
   return (
     <>
-      <span className="sr-only" role="status" aria-live="polite">
+      <span
+        className="sr-only"
+        role={mine && snapshot.announcement ? 'status' : undefined}
+        aria-live="polite"
+      >
         {mine ? snapshot.announcement : ''}
       </span>
       {(notice || partial || waiting) && (

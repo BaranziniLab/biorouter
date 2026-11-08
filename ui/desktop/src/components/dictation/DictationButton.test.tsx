@@ -35,6 +35,17 @@ import {
   transcript,
 } from './dictationTestKit';
 
+const setupReads = vi.hoisted(() => ({
+  config: vi.fn(),
+  dictionary: vi.fn(),
+}));
+
+vi.mock('../../api', async () => ({
+  ...(await vi.importActual<typeof import('../../api')>('../../api')),
+  readAllConfig: setupReads.config,
+  getDictionarySettings: setupReads.dictionary,
+}));
+
 let captures: FakeCapture[] = [];
 let streams: FakeStream[] = [];
 let status: DictationStatus | null = null;
@@ -68,7 +79,15 @@ function setup() {
   });
 }
 
-function Host({ onRender, sessionId = 'chat-1' }: { onRender?: () => void; sessionId?: string }) {
+function Host({
+  onRender,
+  sessionId = 'chat-1',
+  privatePress = false,
+}: {
+  onRender?: () => void;
+  sessionId?: string;
+  privatePress?: boolean;
+}) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [value, setValue] = React.useState('');
   const control = useDictationComposer({
@@ -92,6 +111,16 @@ function Host({ onRender, sessionId = 'chat-1' }: { onRender?: () => void; sessi
       <Profiler id="mic" onRender={() => onRender?.()}>
         <DictationButton control={control} setView={vi.fn()} />
       </Profiler>
+      {privatePress && (
+        <button
+          type="button"
+          onClick={() =>
+            control.pressWithTarget({ target_kind: 'crew', include_private_terms: true })
+          }
+        >
+          Include once
+        </button>
+      )}
     </div>
   );
 }
@@ -102,6 +131,17 @@ const settle = async () => {
 };
 
 beforeEach(() => {
+  setupReads.config.mockReset().mockResolvedValue({
+    data: { config: { dictation_dictionary_activation_version: 1 } },
+  });
+  setupReads.dictionary.mockReset().mockResolvedValue({
+    data: {
+      suggest_from_chats: false,
+      learn_from_chats: false,
+      agent_writes: 'on_request',
+      authority: { raise_settings: { allowed: false } },
+    },
+  });
   resetSharedOriginNoticeForTests();
   secureMediaPage();
   Object.assign(window, { electron: { platform: 'darwin' } });
@@ -584,5 +624,27 @@ describe('dictationContext', () => {
     expect(new TextEncoder().encode(cut).length).toBeLessThanOrEqual(DICTATION_CONTEXT_BYTES);
     expect(cut).toBe('é'.repeat(1024));
     expect(dictationContext('ab😀', 5)).toBe('b😀');
+  });
+});
+
+describe('one recording with Crew private terms', () => {
+  it('does not carry a confirmed target into the next ordinary press', async () => {
+    render(<Host privatePress />);
+    fireEvent.click(screen.getByRole('button', { name: 'Include once' }));
+    await settle();
+    act(() => captures[0].live());
+    act(() => captures[0].speak(1));
+    expect(streams[0].request).toMatchObject({
+      target_kind: 'crew',
+      include_private_terms: true,
+    });
+    fireEvent.pointerDown(mic(), { button: 0 });
+    await act(async () => streams[0].finishDeferred.resolve(transcript('first')));
+    await settle();
+
+    fireEvent.pointerDown(mic(), { button: 0 });
+    await settle();
+    expect(streams[1].request.target_kind).toBe('chat');
+    expect(streams[1].request.include_private_terms).toBeUndefined();
   });
 });

@@ -102,6 +102,8 @@ export interface DictationComposerControl {
   listening: boolean;
   /** The microphone's press (`pointerdown`, or a click from the keyboard). */
   press: () => void;
+  /** Start one recording with a target chosen by a confirmed person action. */
+  pressWithTarget: (target: DictationTarget) => void;
   stop: () => void;
   cancel: () => void;
   /**
@@ -160,22 +162,25 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
     noteDictationInterest();
   }, [available]);
 
-  const startOrStop = useCallback(() => {
-    if (!available) return;
-    const current = dictationActivityFor(key);
-    if (current === 'transcribing') return;
-    void startDictation({ key, target: latest.current.target() }).then((outcome) => {
-      if (outcome.kind === 'setup') requestDictationSetup(key);
-      else if (outcome.kind === 'origin-notice') setSharedOriginOpen(true);
-      else if (outcome.kind === 'unavailable' && outcome.reason) {
-        noteDictationUnavailable(key, outcome.reason);
-      }
-    });
-    // After the capture has started, never before it: interest noted first would make the
-    // capture context inside the press, beside `getUserMedia`, which holds the device back
-    // (`capture.ts`). A press that stops needs none.
-    if (!holding(current)) noteDictationInterest();
-  }, [available, key]);
+  const startOrStop = useCallback(
+    (target?: DictationTarget) => {
+      if (!available) return;
+      const current = dictationActivityFor(key);
+      if (current === 'transcribing') return;
+      void startDictation({ key, target: target ?? latest.current.target() }).then((outcome) => {
+        if (outcome.kind === 'setup') requestDictationSetup(key);
+        else if (outcome.kind === 'origin-notice') setSharedOriginOpen(true);
+        else if (outcome.kind === 'unavailable' && outcome.reason) {
+          noteDictationUnavailable(key, outcome.reason);
+        }
+      });
+      // After the capture has started, never before it: interest noted first would make the
+      // capture context inside the press, beside `getUserMedia`, which holds the device back
+      // (`capture.ts`). A press that stops needs none.
+      if (!holding(current)) noteDictationInterest();
+    },
+    [available, key]
+  );
 
   const press = useCallback(() => {
     const current = dictationActivityFor(key);
@@ -186,6 +191,14 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
     }
     startOrStop();
   }, [key, startOrStop]);
+
+  const pressWithTarget = useCallback(
+    (target: DictationTarget) => {
+      if (holding(dictationActivityFor(key))) return;
+      startOrStop(target);
+    },
+    [key, startOrStop]
+  );
 
   const acknowledgeSharedOrigin = useCallback(() => {
     acknowledgeSharedOriginNotice();
@@ -286,6 +299,7 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
       holdsComposer: gate !== 'free',
       listening: gate === 'listening',
       press,
+      pressWithTarget,
       stop,
       cancel,
       handleKeyDown,
@@ -299,6 +313,7 @@ export function useDictationComposer(options: DictationComposerOptions): Dictati
       available,
       gate,
       press,
+      pressWithTarget,
       stop,
       cancel,
       handleKeyDown,

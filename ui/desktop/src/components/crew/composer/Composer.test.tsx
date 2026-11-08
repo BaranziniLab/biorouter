@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -16,9 +17,22 @@ import type { CrewController, CrewDraft, SurfaceResetListener } from '../state/t
 import { AttachmentIndexProvider, useAttachmentIndex } from '../files/attachmentIndex';
 import { filesCopy } from '../files/copy';
 import { TRANSFER_POLL_MS } from '../files/useCrewTransfers';
+import { useCrewDraft } from '../state/crewSend';
 import { crewTestController, CrewTestProvider, testChannel } from '../files/crewTestController';
 import { Composer } from './Composer';
 import { composerCopy } from './copy';
+import type { CaptureOptions } from '../../dictation/capture';
+import type { StreamRequest } from '../../dictation/dictationApi';
+import { resetDictationSessionForTests } from '../../dictation/dictationSession';
+import { resetDictationStoreForTests } from '../../dictation/dictationStore';
+import {
+  FakeCapture,
+  FakeStream,
+  fakeStatusApi,
+  secureMediaPage,
+  speechStatus,
+  transcript,
+} from '../../dictation/dictationTestKit';
 
 const mocks = vi.hoisted(() => ({
   beginTransfer: vi.fn(),
@@ -1453,5 +1467,124 @@ describe('Crew composer', () => {
       });
       expect(addAttachment).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('Crew channel dictation', () => {
+  let captures: FakeCapture[];
+  let streams: FakeStream[];
+
+  beforeEach(() => {
+    mocks.beginTransfer.mockReset();
+    mocks.listTransfers.mockReset().mockResolvedValue([]);
+    mocks.pauseTransfer.mockReset();
+    mocks.resumeTransfer.mockReset();
+    secureMediaPage();
+    Object.assign(window, { electron: { platform: 'darwin' } });
+    captures = [];
+    streams = [];
+    resetDictationStoreForTests(fakeStatusApi(() => speechStatus()).api);
+    resetDictationSessionForTests({
+      startCapture: (options: CaptureOptions) => {
+        const capture = new FakeCapture(options);
+        captures.push(capture);
+        return Promise.resolve(capture);
+      },
+      createStream: (request: StreamRequest) => {
+        const stream = new FakeStream(request);
+        streams.push(stream);
+        return stream;
+      },
+    });
+  });
+
+  afterEach(() => {
+    resetDictationSessionForTests();
+    resetDictationStoreForTests();
+  });
+
+  it('inserts at the caret and leaves sending for a later Enter', async () => {
+    const send = vi.fn(async () => undefined);
+    render(<StatefulComposer initialBody="Dr aft" overrides={{ send }} />);
+    const field = screen.getByLabelText('Message #general') as HTMLTextAreaElement;
+    field.focus();
+    field.setSelectionRange(3, 3);
+    fireEvent.pointerDown(screen.getByTestId('dictation-button'), { button: 0 });
+    for (let i = 0; i < 6; i++) await act(async () => {});
+    expect(streams[0].request.target_kind).toBe('crew');
+    expect(streams[0].request.include_private_terms).toBeUndefined();
+    act(() => captures[0].live());
+    act(() => captures[0].speak(1));
+    fireEvent.keyDown(field, { key: 'Enter' });
+    expect(send).not.toHaveBeenCalled();
+    await act(async () => streams[0].finishDeferred.resolve(transcript('EGLN1')));
+    for (let i = 0; i < 6; i++) await act(async () => {});
+    expect(field.value).toBe('Dr EGLN1 aft');
+    await waitFor(() => {
+      expect(field.selectionStart).toBe(9);
+      expect(field.selectionEnd).toBe(9);
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('keeps a dictated agent command in the draft until Enter', async () => {
+    const send = vi.fn(async () => undefined);
+    const askAgent = vi.fn(async () => true);
+    render(<StatefulComposer overrides={{ send, askAgent }} />);
+    fireEvent.pointerDown(screen.getByTestId('dictation-button'), { button: 0 });
+    for (let i = 0; i < 6; i++) await act(async () => {});
+    act(() => captures[0].live());
+    act(() => captures[0].speak(1));
+    fireEvent.pointerDown(screen.getByTestId('dictation-button'), { button: 0 });
+    await act(async () =>
+      streams[0].finishDeferred.resolve(transcript('@agent summarize the thread'))
+    );
+    for (let i = 0; i < 6; i++) await act(async () => {});
+    expect((screen.getByLabelText('Message #general') as HTMLTextAreaElement).value).toContain(
+      '@agent summarize the thread'
+    );
+    expect(send).not.toHaveBeenCalled();
+    expect(askAgent).not.toHaveBeenCalled();
+  });
+
+  it('keeps the real draft attempt key when dictation edits its text', async () => {
+    let seedKey = () => '';
+    let currentKey = () => '';
+    function AttemptComposer() {
+      const draft = useCrewDraft();
+      seedKey = () => {
+        const attempt = draft.claimAttempt('connection-1', 'channel-1');
+        attempt.current = { digest: 'sent-digest', key: 'existing-idempotency-key' };
+        return attempt.current.key;
+      };
+      currentKey = () => draft.attemptFor('connection-1', 'channel-1')?.current?.key ?? '';
+      const controller = crewTestController({
+        draft: {
+          body: draft.body,
+          attachments: draft.attachments,
+          references: draft.references,
+        },
+        setBody: draft.setBody,
+      });
+      return (
+        <CrewTestProvider controller={controller}>
+          <Composer />
+        </CrewTestProvider>
+      );
+    }
+
+    render(<AttemptComposer />);
+    const field = screen.getByLabelText('Message #general') as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: 'Draft' } });
+    const before = seedKey();
+    fireEvent.pointerDown(screen.getByTestId('dictation-button'), { button: 0 });
+    for (let i = 0; i < 6; i++) await act(async () => {});
+    act(() => captures[0].live());
+    act(() => captures[0].speak(1));
+    fireEvent.pointerDown(screen.getByTestId('dictation-button'), { button: 0 });
+    await act(async () => streams[0].finishDeferred.resolve(transcript('EGLN1')));
+    for (let i = 0; i < 6; i++) await act(async () => {});
+    expect(field.value).toContain('EGLN1');
+    expect(currentKey()).toBe(before);
   });
 });
