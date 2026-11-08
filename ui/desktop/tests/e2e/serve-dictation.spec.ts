@@ -234,7 +234,28 @@ async function captureNothing(
     startedAt = Date.now();
     await page.getByTestId('shared-origin-acknowledge').click();
   } else await expect(page.getByText(NOTICE_START, { exact: false })).toHaveCount(0);
-  await expect(mic).toHaveAttribute('data-dictation-phase', 'recording', { timeout: 30_000 });
+  try {
+    await expect(mic).toHaveAttribute('data-dictation-phase', 'recording', { timeout: 30_000 });
+  } catch (error) {
+    if (!firefoxFakeAudio) throw error;
+    const diagnostic = await page.evaluate(() => {
+      const probe = window as Window & {
+        __pr21MicProbe?: { calls: number; settled: boolean };
+        __pr21AudioState?: string;
+      };
+      const phase = document
+        .querySelector('[data-testid="dictation-button"]')
+        ?.getAttribute('data-dictation-phase');
+      return {
+        getUserMediaCalls: probe.__pr21MicProbe?.calls ?? 0,
+        getUserMediaSettled: probe.__pr21MicProbe?.settled ?? false,
+        audioContextState: probe.__pr21AudioState ?? 'none',
+        capturePhase:
+          phase && ['idle', 'arming', 'recording', 'error'].includes(phase) ? phase : 'unknown',
+      };
+    });
+    throw new Error(`Firefox capture did not reach recording: ${JSON.stringify(diagnostic)}`);
+  }
   const startGestureToRecordingPhaseMs = Date.now() - startedAt;
   await expect.poll(() => micCallCount(page)).toBeGreaterThan(micCallsBeforePress);
   await page.waitForTimeout(2400);
@@ -326,17 +347,38 @@ for (const [name, nativeFallback] of [
         const media = navigator.mediaDevices;
         const original = media.getUserMedia.bind(media);
         let calls = 0;
+        let settled = false;
         Object.defineProperty(window, '__pr21MicCalls', { get: () => calls });
+        Object.defineProperty(window, '__pr21MicProbe', { get: () => ({ calls, settled }) });
         media.getUserMedia = (...args) => {
           calls += 1;
-          return original(...args);
+          const pending = original(...args);
+          void pending.then(
+            () => {
+              settled = true;
+            },
+            () => {
+              settled = true;
+            }
+          );
+          return pending;
         };
       });
       if (nativeFallback) {
         await page.addInitScript(() => {
+          let latestContext: AudioContext | null = null;
+          const originalResume = AudioContext.prototype.resume;
+          AudioContext.prototype.resume = function (this: AudioContext) {
+            latestContext = this;
+            return originalResume.call(this);
+          };
+          Object.defineProperty(window, '__pr21AudioState', {
+            get: () => latestContext?.state ?? 'none',
+          });
           const original = AudioContext.prototype.createMediaStreamSource;
           let first = true;
           AudioContext.prototype.createMediaStreamSource = function (stream) {
+            latestContext = this;
             if (first && this.sampleRate === 16000) {
               first = false;
               throw new DOMException('Native device rate required', 'NotSupportedError');

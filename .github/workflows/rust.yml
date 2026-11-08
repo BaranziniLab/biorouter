@@ -1093,7 +1093,7 @@ jobs:
                      /etc/apt/sources.list.d/microsoft-prod.sources \
                      /etc/apt/sources.list.d/azure-cli.sources
           sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends libdbus-1-dev libxdo-dev liblzma-dev
+          sudo apt-get install -y --no-install-recommends libdbus-1-dev libxdo-dev liblzma-dev pulseaudio pulseaudio-utils
 
       - name: Build the interface bundle
         working-directory: ui/desktop
@@ -1232,7 +1232,40 @@ jobs:
         env:
           BIOROUTER_SERVE_BIN: ${{ github.workspace }}/target/debug/biorouter
           BIOROUTER_PW_CHANNEL: chromium
-        run: npx playwright test tests/e2e/serve-app-microphone.spec.ts tests/e2e/serve-dictation.spec.ts --reporter=list
+        run: |
+          set -euo pipefail
+          pulse_pid=
+          pulse_start=
+          pulse_start_of() {
+            [ -r "/proc/$1/stat" ] || return 1
+            sed 's/^.*) //' "/proc/$1/stat" | awk '{print $20}'
+          }
+          stop_owned_pulse() {
+            if [ -n "$pulse_pid" ] &&
+               [ "$(pulse_start_of "$pulse_pid" 2>/dev/null || true)" = "$pulse_start" ] &&
+               [ "$(cat "/proc/$pulse_pid/comm" 2>/dev/null || true)" = pulseaudio ]; then
+              kill -TERM "$pulse_pid" 2>/dev/null || true
+              wait "$pulse_pid" || true
+            fi
+          }
+          trap stop_owned_pulse EXIT
+          if ! pactl info >/dev/null 2>&1; then
+            export XDG_RUNTIME_DIR="$RUNNER_TEMP/serve-pulse-runtime"
+            mkdir -p "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            pulseaudio --daemonize=no --exit-idle-time=-1 > "$RUNNER_TEMP/serve-pulse.log" 2>&1 &
+            pulse_pid=$!
+            pulse_start="$(pulse_start_of "$pulse_pid")"
+            [ -n "$pulse_start" ] || { echo 'FAILED: Firefox audio server process not recorded'; exit 1; }
+            printf '%s %s\n' "$pulse_pid" "$pulse_start" > "$RUNNER_TEMP/serve-pulse-owned.pid"
+            for _ in $(seq 1 50); do
+              if pactl info >/dev/null 2>&1; then break; fi
+              if ! kill -0 "$pulse_pid" 2>/dev/null; then break; fi
+              sleep 0.2
+            done
+            pactl info >/dev/null 2>&1 || { echo 'FAILED: Firefox audio server unavailable'; exit 1; }
+          fi
+          npx playwright test tests/e2e/serve-app-microphone.spec.ts tests/e2e/serve-dictation.spec.ts --reporter=list
 
       # SIGTERM and SIGINT to `serve`, and SIGKILL, which leaves only the
       # daemon's own parent watch to stop it. Here rather than in the workspace
