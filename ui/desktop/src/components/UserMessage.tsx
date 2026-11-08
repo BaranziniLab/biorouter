@@ -27,6 +27,12 @@ import { cn } from '../utils';
 import { DictationButton, DictationNotices } from './dictation/DictationButton';
 import { isDictationInserting, noteDictationEdit } from './dictation/dictationSession';
 import { dictationContext, useDictationComposer } from './dictation/useDictationComposer';
+import { recordComposerDictation } from '../utils/composerDrafts';
+import {
+  mapComposerDictation,
+  postCorrectionObservations,
+  type DictatedSpan,
+} from '../utils/dictationLedger';
 import type { View, ViewOptions } from '../utils/navigationUtils';
 
 /**
@@ -108,6 +114,23 @@ export default function UserMessage({
   const restoreEditFocus = useRef(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
+  const editSpansRef = useRef<DictatedSpan[]>([]);
+  const ledgerTextRef = useRef('');
+  const fieldEditRef = useRef<{ text: string; caret: number } | null>(null);
+  const editGenerationRef = useRef(0);
+  const savingRef = useRef(false);
+  useLayoutEffect(() => {
+    const edit = fieldEditRef.current;
+    editSpansRef.current = mapComposerDictation(
+      editSpansRef.current,
+      ledgerTextRef.current,
+      editContent,
+      edit?.text === editContent,
+      edit?.caret
+    );
+    ledgerTextRef.current = editContent;
+    fieldEditRef.current = null;
+  }, [editContent]);
   const [hasBeenEdited, setHasBeenEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Sticky per message, and component-local on purpose. The transcript keys
@@ -193,6 +216,28 @@ export default function UserMessage({
         if (field && document.activeElement === field) field.setSelectionRange(caret, caret);
       });
     },
+    onInserted: (event) => {
+      const prefix = joinLeadingCommand(editCommandRef.current, '').length;
+      const before = joinComposerText(
+        joinLeadingCommand(editCommandRef.current, event.before),
+        editRefsRef.current
+      );
+      const recorded = recordComposerDictation(
+        editSpansRef.current,
+        before,
+        { start: event.anchor.start + prefix, end: event.anchor.end + prefix },
+        event.transcript.text,
+        {
+          recordId: event.streamId ?? crypto.randomUUID(),
+          raw: event.transcript.raw_text,
+          changes: event.transcript.changes,
+          model: event.transcript.model,
+          biasScope: event.transcript.bias_scope,
+        }
+      );
+      editSpansRef.current = recorded.dictation;
+      ledgerTextRef.current = recorded.text;
+    },
   });
   const lastEditProseRef = useRef(editProse);
   useLayoutEffect(() => {
@@ -275,6 +320,9 @@ export default function UserMessage({
 
   // Initialize edit mode with current message content
   const initializeEditMode = useCallback(() => {
+    editSpansRef.current = [];
+    editGenerationRef.current += 1;
+    ledgerTextRef.current = editableText(displayText);
     setEditContent(editableText(displayText));
     setError(null);
   }, [displayText]);
@@ -322,10 +370,16 @@ export default function UserMessage({
         }
       }
       const newContent = joinComposerText(joinLeadingCommand(editCommand, value), editRefs);
+      if (!isDictationInserting(dictationKey)) {
+        fieldEditRef.current = {
+          text: newContent,
+          caret: e.target.selectionEnd + joinLeadingCommand(editCommand, '').length,
+        };
+      }
       setEditContent(newContent);
       setError(null); // Clear any previous errors
     },
-    [editCommand, editRefs]
+    [editCommand, editRefs, dictationKey]
   );
 
   const handleRemoveEditReference = useCallback((index: number) => {
@@ -354,20 +408,41 @@ export default function UserMessage({
         return;
       }
 
-      if (onMessageUpdate && message.id) {
-        // Refused before anything changed: keep the editor, and the words, where they are.
-        if (onMessageUpdate(message.id, editContent, editType) === false) return;
-        setHasBeenEdited(true);
+      if (!onMessageUpdate || !message.id || savingRef.current) return;
+      const generation = editGenerationRef.current;
+      const spans = editType === 'edit' ? editSpansRef.current : [];
+      savingRef.current = true;
+      let submitted: unknown;
+      try {
+        submitted = onMessageUpdate(message.id, editContent, editType);
+      } catch {
+        savingRef.current = false;
+        return;
       }
-      restoreEditFocus.current = true;
-      setIsEditing(false);
+      const complete = (accepted: unknown) => {
+        savingRef.current = false;
+        if (generation !== editGenerationRef.current || accepted === false) return;
+        editSpansRef.current = [];
+        if (accepted === true) postCorrectionObservations(spans, sessionId);
+        setHasBeenEdited(true);
+        restoreEditFocus.current = true;
+        setIsEditing(false);
+      };
+      if (submitted && typeof (submitted as PromiseLike<unknown>).then === 'function') {
+        void Promise.resolve(submitted).then(complete, () => {
+          savingRef.current = false;
+        });
+      } else complete(submitted);
     },
-    [editContent, displayText, onMessageUpdate, message.id]
+    [editContent, displayText, onMessageUpdate, message.id, sessionId]
   );
 
   // Handle cancel action
   const handleCancel = useCallback(() => {
-    window.electron.logInfo('Cancel clicked - reverting to original content');
+    editGenerationRef.current += 1;
+    editSpansRef.current = [];
+    ledgerTextRef.current = editableText(displayText);
+    fieldEditRef.current = null;
     restoreEditFocus.current = true;
     setIsEditing(false);
     setEditContent(editableText(displayText)); // Reset to original content

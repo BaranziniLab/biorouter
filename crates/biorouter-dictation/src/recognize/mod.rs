@@ -22,6 +22,7 @@
 pub mod correct;
 pub mod echo;
 pub mod key;
+pub mod learn;
 pub mod prompt;
 pub mod select;
 pub mod text;

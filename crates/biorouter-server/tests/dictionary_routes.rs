@@ -34,8 +34,10 @@ use axum::body::Body;
 use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::Router;
 use biorouter::config::with_config_overrides;
+use biorouter::dictation::bias::{bias_set, BiasTarget, Standing};
 use biorouter::model::ModelConfig;
-use biorouter::privacy::SessionClassification;
+use biorouter::privacy::affiliation::InstitutionId;
+use biorouter::privacy::{ModelAffiliation, SessionClassification};
 use biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL;
 use biorouter::security::dictionary_store::{self, store};
 use biorouter::session::session_manager::{SessionManager, DB_NAME, SESSIONS_FOLDER};
@@ -910,6 +912,22 @@ async fn observations_land_by_the_chats_stamp_and_count_once() {
     let bound = chat(&state, false).await;
     bind(&state, &bound, "versa").await;
     let before = row("EPAS1", EntryTier::Public).unwrap();
+    let aliases_for_chat_model = || {
+        let view = dictionary_store::open_store().view().unwrap();
+        let target = BiasTarget {
+            private: true,
+            affiliation: ModelAffiliation::institutions([InstitutionId::new("ucsf")]),
+            person_included: false,
+        };
+        let eligible = bias_set(&view, &target, Standing::from_checked(true), true);
+        eligible
+            .entries()
+            .iter()
+            .find(|entry| entry.written == "EPAS1")
+            .unwrap()
+            .misrecognitions
+            .clone()
+    };
 
     let pair = correction("dct_stream_a", "a pass one", "EPAS1");
     assert_eq!(
@@ -925,6 +943,7 @@ async fn observations_land_by_the_chats_stamp_and_count_once() {
     assert_eq!(twin.status, EntryStatus::Active);
     assert_eq!(twin.misrecognitions[0].text, "a pass one");
     assert_eq!(twin.misrecognitions[0].count, 1);
+    assert!(aliases_for_chat_model().is_empty());
     assert_eq!(
         twin.affiliation,
         Some(RowAffiliation {
@@ -946,6 +965,7 @@ async fn observations_land_by_the_chats_stamp_and_count_once() {
         row("EPAS1", EntryTier::Private).unwrap().misrecognitions[0].count,
         2
     );
+    assert_eq!(aliases_for_chat_model(), ["a pass one"]);
     let listed = get(&app, "/dictionary/entries", Caller::Proof).await;
     let private_view = listed.body["entries"]
         .as_array()
@@ -1554,7 +1574,7 @@ async fn every_write_parses_the_store_once_and_leaves_the_shared_cache_warm() {
         observe(
             &app,
             None,
-            json!([correction("dct_stream_a", "you see us f", "UCSF")])
+            json!([correction("dct_stream_a", "uc sf", "UCSF")])
         )
         .await,
         StatusCode::NO_CONTENT
@@ -1569,4 +1589,61 @@ async fn every_write_parses_the_store_once_and_leaves_the_shared_cache_warm() {
     .await;
     assert_eq!(settings.status, StatusCode::OK, "{}", settings.body);
     settle("settings");
+}
+
+/// PR-22: rejected edits never reach the store and one message teaches at most three pairs.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn observation_learner_checks_golden_pairs_and_message_volume() {
+    let (state, app) = daemon().await;
+    let session = chat(&state, false).await;
+    let before = std::fs::read(dictionary_store::open_store().store_path()).ok();
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../biorouter-dictation/src/recognize/learn_cases.json"
+    ))
+    .unwrap();
+    let invalid: Vec<Value> = cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case["accepted"] == false)
+        .enumerate()
+        .map(|(i, case)| {
+            correction(
+                &format!("invalid_{i}"),
+                case["from"].as_str().unwrap(),
+                case["to"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        observe(&app, Some(&session), json!(invalid)).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        std::fs::read(dictionary_store::open_store().store_path()).ok(),
+        before
+    );
+    let valid = json!([
+        correction("cap1", "epas one", "EPAS1"),
+        correction("cap2", "hiff two alpha", "HIF2-alpha"),
+        correction("cap3", "ventilin", "Ventolin"),
+        correction("cap4", "bio router", "Biorouter")
+    ]);
+    assert_eq!(
+        observe(&app, Some(&session), valid).await,
+        StatusCode::NO_CONTENT
+    );
+    for term in ["EPAS1", "HIF2-alpha", "Ventolin"] {
+        assert_eq!(
+            row(term, EntryTier::Public).unwrap().status,
+            EntryStatus::Suggested
+        );
+    }
+    assert!(row("Biorouter", EntryTier::Public).is_none());
+    state
+        .session_manager()
+        .delete_session(&session)
+        .await
+        .unwrap();
 }

@@ -775,7 +775,18 @@ describe('who owns the microphone', () => {
     expect(captures[0].stopped).toBe(true);
     streams[0].finishDeferred.resolve(transcript('and more'));
     await settle();
-    expect(insertIntoDraft).toHaveBeenCalledWith('tab:a', { start: 12, end: 12 }, 'and more');
+    expect(insertIntoDraft).toHaveBeenCalledWith(
+      'tab:a',
+      { start: 12, end: 12 },
+      'and more',
+      expect.objectContaining({
+        recordId: 'stream-1',
+        raw: 'and more',
+        changes: [],
+        model: 'whisper-small.en-q8_0',
+        biasScope: 'public',
+      })
+    );
   });
 
   it('text dictated with private terms into the stored draft of a composer that unmounted flags that draft', async () => {
@@ -791,7 +802,12 @@ describe('who owns the microphone', () => {
     await settle();
     streams[0].finishDeferred.resolve(transcript('EPAS1 again', { bias_scope: 'private' }));
     await settle();
-    expect(insertIntoDraft).toHaveBeenCalledWith('tab:a', { start: 12, end: 12 }, 'EPAS1 again');
+    expect(insertIntoDraft).toHaveBeenCalledWith(
+      'tab:a',
+      { start: 12, end: 12 },
+      'EPAS1 again',
+      expect.objectContaining({ recordId: 'stream-1', raw: 'EPAS1 again', biasScope: 'private' })
+    );
     // No composer was there to call `onInserted`, and the draft is flagged all the same.
     expect(a.binding.onInserted).not.toHaveBeenCalled();
     expect(isPrivateDraft('tab:a')).toBe(true);

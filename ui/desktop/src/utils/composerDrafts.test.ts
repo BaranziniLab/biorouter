@@ -297,3 +297,51 @@ describe('insertIntoComposerDraft: dictated text for a composer that unmounted',
     expect(readComposerDraft(key)?.text).toBe('bug in the parser');
   });
 });
+
+describe('dictation stays with its renderer draft', () => {
+  const recording = {
+    recordId: 'record-1',
+    raw: 'raw only in memory',
+    changes: [],
+    model: 'small',
+    biasScope: 'public' as const,
+  };
+  it('records a transcript delivered after unmount, including replaced text and spacing', () => {
+    const key = composerDraftKeyForTab('dictation');
+    saveComposerDraft(key, draft('Check old gene'));
+    insertIntoComposerDraft(key, { start: 6, end: 9 }, 'a pass one', recording);
+    const saved = readComposerDraft(key)!;
+    expect(saved.text).toBe('Check a pass one gene');
+    expect(saved.dictation?.[0]).toMatchObject({
+      recordId: 'record-1',
+      raw: recording.raw,
+      start: 6,
+      end: 16,
+      replaced: 'old',
+      inserted: 'a pass one',
+    });
+    const merged = mergeComposerDraft(draft('typed since'), saved);
+    expect(merged.dictation?.[0].start).toBe(6);
+    expect(merged.text.slice(merged.dictation![0].start, merged.dictation![0].end)).toBe(
+      'a pass one'
+    );
+    expect(isComposerSending(key)).toBe(false);
+  });
+
+  it('keeps both ledgers and offsets through a give-back, then frees them when the tab closes', () => {
+    const key = composerDraftKeyForTab('merge-ledgers');
+    saveComposerDraft(key, draft('First'));
+    insertIntoComposerDraft(key, 5, 'EPAS1', recording);
+    const first = readComposerDraft(key)!;
+    saveComposerDraft(key, draft('Second'));
+    insertIntoComposerDraft(key, 6, 'HIF2-alpha', { ...recording, recordId: 'record-2' });
+    giveBackToComposer(key, first);
+    const merged = readComposerDraft(key)!;
+    expect(merged.dictation?.map((span) => merged.text.slice(span.start, span.end))).toEqual([
+      ' EPAS1',
+      ' HIF2-alpha',
+    ]);
+    retainTabComposerDrafts([]);
+    expect(readComposerDraft(key)).toBeUndefined();
+  });
+});

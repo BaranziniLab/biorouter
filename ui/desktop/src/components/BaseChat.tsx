@@ -1996,6 +1996,7 @@ function BaseChatContent({
           return false;
         }
         adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
+        customEvent.detail?.onAcceptedSession?.(newSession.id);
         navigateToRoute(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   correctionCandidates,
+  mapComposerDictation,
+  observationsFromSpans,
   locateEdit,
   mapDictatedSpan,
   mapPosition,
@@ -209,4 +211,40 @@ describe('correctionCandidates', () => {
     const current = ' w1 A w2 B w3 C w4 D w5 E w6 f w7 g w8 h';
     expect(correctionCandidates(edited(inserted, current))).toHaveLength(3);
   });
+});
+
+it('programmatic changes taint a span even when a diff can place the replacement', () => {
+  const before = 'Check the a pass one gene in the lung';
+  const dictated = span(before, 0, before);
+  const after = 'Check the EPAS1 gene in the lung';
+  const programmed = mapComposerDictation([dictated], before, after, false);
+  expect(programmed[0].state).toBe('tainted');
+  expect(observationsFromSpans(programmed)).toEqual([]);
+  const typed = mapComposerDictation([dictated], before, after, true);
+  expect(observationsFromSpans(typed)).toMatchObject([{ from: 'a pass one', to: 'EPAS1' }]);
+});
+
+it('caps and deduplicates across all spans in one message', () => {
+  const make = (id: string) =>
+    span('', 0, 'the epas one gene is expressed here', {
+      recordId: id,
+      current: 'the EPAS1 gene is expressed here',
+      state: 'edited',
+    });
+  expect(
+    observationsFromSpans([make('1'), make('1'), make('2'), make('3'), make('4')]).map(
+      (pair) => pair.record_id
+    )
+  ).toEqual(['1', '2', '3']);
+});
+
+it('reads the shared golden table and forwards its accepted pairs to the daemon', async () => {
+  const { default: cases } =
+    await import('../../../../crates/biorouter-dictation/src/recognize/learn_cases.json');
+  for (const item of cases.filter((item) => item.accepted)) {
+    const before = `Check the ${item.from} gene in the lung today`;
+    const current = `Check the ${item.to} gene in the lung today`;
+    const dictated = span(before, 0, before, { current, state: 'edited' });
+    expect(correctionCandidates(dictated)).toMatchObject([{ from: item.from, to: item.to }]);
+  }
 });

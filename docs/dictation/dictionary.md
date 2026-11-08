@@ -993,7 +993,7 @@ When the person corrects a dictated word before sending, the dictionary learns f
 ### Desktop and `serve` ledger
 
 ```ts
-// ui/desktop/src/utils/composerDrafts.ts
+// ui/desktop/src/utils/dictationLedger.ts
 export type DictatedSpan = {
   recordId: string;            // the stream id of the dictation
   start: number;               // current position in the prose
@@ -1004,7 +1004,7 @@ export type DictatedSpan = {
   changes: TranscriptChange[]; // the transcript's changes
   state: 'pristine' | 'edited' | 'tainted' | 'undone';
   model: string;
-  dictionaryRevision: string;  // the listing ETag seen at insert time; opaque, never a store wide counter
+  dictionaryRevision: string;  // a listing ETag when known, otherwise ''; never a store wide counter
   biasScope: 'public' | 'private'; // for the private draft flag (DD-71)
 };
 
@@ -1012,9 +1012,9 @@ export type ComposerDraft = { text: string; images: ...; files: ...; dictation?:
 ```
 
 - The ledger lives in renderer memory only, on the existing `ComposerDraft` [C `ui/desktop/src/utils/composerDrafts.ts` `ComposerDraft`], so it survives remounts. `isEmptyComposerDraft` ignores it; it is never persisted, logged or attached to message metadata.
-- One `useLayoutEffect` maps every span through prose changes with `locateEdit` (a single region prefix and suffix diff, with the post edit caret as the hint). A programmatic replacement that the diff cannot place marks the span `tainted`; an undo back to the pre insert text marks it `undone`.
-- The three exits that hand the composer's text away, `performSubmit`, `handleInterruptionAndQueue` and `handleSteerFromComposer` [C `ui/desktop/src/components/ChatInput.tsx`], are factored into `releaseComposerText(reason)`. `/crew` and `/diverge` drop the ledger. The message editor does the same at `handleSave` in `UserMessage.tsx`.
-- Pairs are posted only after the send is accepted, with `userActionHeaders()`. A cancelled send posts nothing. The request names the chat the send went to, including the chat a Home send just created; `null` only when no chat id is known.
+- One `useLayoutEffect` maps every span through prose changes with `locateEdit` (a single region prefix and suffix diff, with the post edit caret as the hint). A programmatic replacement that touches a span marks it `tainted`, even when a diff could place that replacement; an undo back to the pre insert text marks it `undone`.
+- As built in PR-22, the three exits that hand the composer's text away, `performSubmit`, `handleInterruptionAndQueue` and `handleSteerFromComposer` [C `ui/desktop/src/components/ChatInput.tsx`], are factored into `releaseComposerText(reason)`. `/crew` and `/diverge` drop the ledger. The message editor does the same at `handleSave` in `UserMessage.tsx` for an accepted save in the current chat. **Save as new chat** drops its ledger in v1 because the editor callback does not expose the new destination. A failed or cancelled editor save teaches nothing.
+- Pairs are posted only after the send is accepted, with `userActionHeaders()`. A cancelled send posts nothing. The request names the chat the send went to, including the chat a Home send just created; `null` only when no chat id is known. The new chat and Home handlers report that id through a renderer callback before navigation. The callback carries no transcript or ledger. Queued spans follow their queue objects in a memory only side map and return with a refused message. A recording that finishes after its composer unmounts writes its spans into that composer's draft. No dictionary read is added to the insertion or send path just to fill `dictionaryRevision`; it is empty when no listing ETag is known.
 
 ### Extraction filters
 
@@ -1024,7 +1024,7 @@ Two stages. `utils/dictationLedger.ts` holds the span text, so it computes the w
 |---|---|
 | Size | each side at most 3 words and 64 characters; no newline; no comma in the source |
 | Similar | normalized Levenshtein distance 0.65 or less, or equal step 3 keys, or Double Metaphone codes within one edit |
-| Term like target | an inner capital, a letter and digit mix, all capitals of length 2 or more, or absent from the word list |
+| Term like target | an inner capital, a letter and digit mix, all capitals of length 2 or more, or absent from the common word list (proper names remain eligible) |
 | Not a language edit | not an inflection, a contraction expansion or a function word change |
 | Not an identifier | not a URL, email, path, hash, hex or digits only id ([Validation](#validation)) |
 | No secret or PII | `secret_output::redact_text` returns `None` and `guardrails::pii::PiiDetector::scan` finds nothing, for both sides [C `crates/biorouter/src/guardrails/pii.rs:227`]; run in the route and in the CLI, which depend on the core |
@@ -1036,7 +1036,7 @@ A shared table of golden pairs, `crates/biorouter-dictation/src/recognize/learn_
 
 `POST /dictionary/observations` with `{session_id | null, observations: [{record_id, kind, from, to, entry_id?}]}` ([Routes](#routes)). The handler checks `session_reach` for a named chat before touching the session and does nothing, silently, on a refusal; stamps through `chat_reach` over the chat's stored classification and the live agent's bound provider (Private unless it answers Public), or Private when the request names no chat ([Who stamps the tier](#who-stamps-the-tier)), and on a private stamp the institutions of [Private rows and institutions](#private-rows-and-institutions) (`[]` when the request names no chat, because there is no record or model to read, O-35); does nothing, silently, when that stamp is a tier the caller cannot list; drops secret and PII pairs; and is idempotent on `(record_id, from, to)`, so a resend or a give back never counts twice. It always answers 204.
 
-As built in PR-16: the route applies the store's effects (`StoreFile::observe`) and checks each pair with the store's validator (which refuses addresses, paths, identifiers and secret shaped terms), `secret_output::redact_text` and `PiiDetector::has_pii`; the similarity, term shape, language edit and volume filters of [Extraction filters](#extraction-filters) are `learn.rs`, which PR-22 adds, so until then the route takes any pair the composer sends. A row an observation creates records the chat in `suggested_in`. A rejection reaches only a row of the stamp tier, so a rejection in a private chat of a change a public row made changes nothing (DD-35). A chat with a live agent whose model was not read (the 250 ms bound passed, a Crew grant scopes the chat, or the provider read failed) stamps Private with the unknown model, unlike a chat with no live agent, which the stored tier decides: the dictation stream treats the two alike because its safe direction is a public target, and a stamp's is a private row.
+As built in PR-22, the route applies the similarity, term shape, language edit and size filters in `learn.rs`, scans both sides with `secret_output::redact_text` and `PiiDetector::has_pii`, then admits at most three pairs from the message. A rejection uses the size and identifier filter without the term shape filter so that putting an ordinary word back can reject an unwanted correction. The transport limit stays at 16 pairs per request. Admitted pairs reach the store's effects (`StoreFile::observe`) and its validator, which refuses addresses, paths, identifiers and secret shaped terms. A row an observation creates records the chat in `suggested_in`. A rejection reaches only a row of the stamp tier, so a rejection in a private chat of a change a public row made changes nothing (DD-35). A chat with a live agent whose model was not read (the 250 ms bound passed, a Crew grant scopes the chat, or the provider read failed) stamps Private with the unknown model, unlike a chat with no live agent, which the stored tier decides: the dictation stream treats the two alike because its safe direction is a public target, and a stamp's is a private row.
 
 ### Effects on the dictionary
 

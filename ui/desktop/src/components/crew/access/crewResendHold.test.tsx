@@ -128,7 +128,9 @@ describe('the Crew hold covers edits and every other re-send (F1)', () => {
     edit('summarise #data again', SAVE_IN_PLACE);
     expect(streamEdit).toHaveBeenCalledWith('message-1', 'summarise #data again', 'edit');
     expect(mocks.toastWarning).not.toHaveBeenCalled();
-    expect(screen.queryByRole('textbox', { name: 'Edit message content' })).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByRole('textbox', { name: 'Edit message content' })).toBeNull()
+    );
   });
 });
 

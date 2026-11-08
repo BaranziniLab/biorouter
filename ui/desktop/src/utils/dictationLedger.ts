@@ -1,3 +1,5 @@
+import { postDictionaryObservations } from '../api';
+import { userActionHeaders } from './userAction';
 /**
  * Where dictated text sits in a composer while the person edits around it, and
  * what their edits to it were (DD-58, `docs/dictation/dictionary.md`, "Desktop
@@ -224,7 +226,11 @@ export interface CorrectionObservation {
   entry_id?: string;
 }
 
-const words = (text: string): string[] => text.split(/\s+/).filter(Boolean);
+const words = (text: string): string[] =>
+  text
+    .split(/\s+/)
+    .map((word) => word.replace(/^[^\p{L}\p{N},]+|[^\p{L}\p{N},]+$/gu, ''))
+    .filter(Boolean);
 
 /**
  * The longest common subsequence of two word lists, as index pairs.
@@ -286,7 +292,7 @@ export function correctionCandidates(span: DictatedSpan): CorrectionObservation[
   const pairs = alignWords(inserted, current);
   if (!pairs) return [];
   const unchanged = pairs.length;
-  if (inserted.length - unchanged > inserted.length / 2) return [];
+  const rewritten = inserted.length - unchanged > inserted.length / 2;
 
   const out: CorrectionObservation[] = [];
   let i = 0;
@@ -296,7 +302,7 @@ export function correctionCandidates(span: DictatedSpan): CorrectionObservation[
       const from = inserted.slice(i, pi).join(' ');
       const to = current.slice(j, pj).join(' ');
       const reverted = span.changes.find((change) => change.to === from && change.from === to);
-      if (reverted) {
+      if (reverted && pairSizeFits(reverted.from) && pairSizeFits(reverted.to)) {
         out.push({
           record_id: span.recordId,
           kind: 'rejected',
@@ -304,7 +310,7 @@ export function correctionCandidates(span: DictatedSpan): CorrectionObservation[
           to: reverted.to,
           ...(reverted.entry_id ? { entry_id: reverted.entry_id } : {}),
         });
-      } else if (pairSizeFits(from) && pairSizeFits(to) && !from.includes(',')) {
+      } else if (!rewritten && pairSizeFits(from) && pairSizeFits(to) && !from.includes(',')) {
         out.push({ record_id: span.recordId, kind: 'correction', from, to });
       }
     }
@@ -312,4 +318,66 @@ export function correctionCandidates(span: DictatedSpan): CorrectionObservation[
     j = pj + 1;
   }
   return out.slice(0, MAX_PAIRS_PER_MESSAGE);
+}
+
+/** Raw spans follow queue objects only in memory; they never become message fields. */
+const queuedSpans = new WeakMap<object, DictatedSpan[]>();
+
+export function keepQueuedDictation(message: object, spans: DictatedSpan[]): void {
+  if (spans.length) queuedSpans.set(message, spans);
+}
+
+export function readQueuedDictation(message: object): DictatedSpan[] {
+  return queuedSpans.get(message) ?? [];
+}
+
+/** Only an actual field edit can teach; other replacements invalidate intersected spans. */
+export function mapComposerDictation(
+  spans: readonly DictatedSpan[],
+  before: string,
+  after: string,
+  userEdit: boolean,
+  caret?: number
+): DictatedSpan[] {
+  const mapped = mapDictatedSpans(spans, before, after, caret);
+  if (userEdit || before === after) return mapped;
+  const edit = locateEdit(before, after);
+  if (!edit) return mapped;
+  return mapped.map((span, i) => {
+    const old = spans[i];
+    const touches = edit.start < old.end && edit.endBefore > old.start;
+    const insertsInside =
+      edit.start === edit.endBefore && edit.start > old.start && edit.start < old.end;
+    return touches || insertsInside ? { ...span, state: 'tainted' } : span;
+  });
+}
+
+export function observationsFromSpans(spans: readonly DictatedSpan[]): CorrectionObservation[] {
+  const seen = new Set<string>();
+  return spans
+    .flatMap(correctionCandidates)
+    .filter((pair) => {
+      const key = JSON.stringify([pair.record_id, pair.from, pair.to]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, MAX_PAIRS_PER_MESSAGE);
+}
+
+/** A failed observation is silent and cannot change whether the send was accepted. */
+export function postCorrectionObservations(
+  spans: readonly DictatedSpan[],
+  sessionId?: string
+): void {
+  void Promise.resolve()
+    .then(async () => {
+      const observations = observationsFromSpans(spans);
+      if (observations.length === 0) return;
+      await postDictionaryObservations({
+        body: { session_id: sessionId ?? null, observations },
+        headers: await userActionHeaders(),
+      });
+    })
+    .catch(() => {});
 }

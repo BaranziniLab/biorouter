@@ -1842,7 +1842,16 @@ pub async fn post_dictionary_observations(
     let observations: Vec<Observation> = request
         .observations
         .into_iter()
+        .filter(|o| match o.kind {
+            DictionaryObservationKind::Correction => {
+                biorouter_dictation::recognize::learn::accepts_correction(&o.from, &o.to)
+            }
+            DictionaryObservationKind::Rejected => {
+                biorouter_dictation::recognize::learn::pair_fits(&o.from, &o.to)
+            }
+        })
         .filter(|o| !holds_secret_or_pii(&o.from) && !holds_secret_or_pii(&o.to))
+        .take(biorouter_dictation::recognize::learn::MAX_PAIRS_PER_MESSAGE)
         .map(|o| Observation {
             record_id: o.record_id,
             kind: match o.kind {

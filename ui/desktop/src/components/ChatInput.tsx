@@ -85,11 +85,20 @@ import {
   giveBackToComposer,
   mergeComposerDraft,
   readComposerDraft,
+  recordComposerDictation,
   saveComposerDraft,
   subscribeComposerGiveBack,
   type ComposerDraft,
   type DraftImage,
 } from '../utils/composerDrafts';
+import {
+  mapComposerDictation,
+  mapDictatedSpans,
+  keepQueuedDictation,
+  readQueuedDictation,
+  postCorrectionObservations,
+  type DictatedSpan,
+} from '../utils/dictationLedger';
 import {
   beginQueuedOffer,
   claimComposerQueue,
@@ -111,23 +120,36 @@ import {
  * back (`composerTextOfSent`) so it returns as the chip: a give-back stored
  * while no composer is mounted is adopted later without passing `takeBack`.
  */
+function submitComposer(
+  submit: (event: React.FormEvent) => void | Promise<boolean | void>,
+  event: React.FormEvent
+): void | Promise<boolean | void> {
+  try {
+    return submit(event);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
 function draftOfQueuedMessages(messages: readonly QueuedMessage[]): ComposerDraft {
-  return {
-    text: messages
-      .map((message) => composerTextOfSent(message.content.trim()))
-      .filter(Boolean)
-      .join('\n\n'),
-    images: messages.flatMap((message) =>
-      (message.attachments ?? [])
-        .filter((attachment) => attachment.kind === 'image')
-        .map((attachment, index) => ({
-          id: `queued-${message.id}-${index}`,
-          filePath: attachment.path,
-          dataUrl: '',
-        }))
-    ),
-    files: [],
-  };
+  return messages.reduce<ComposerDraft>((draft, message) => {
+    const text = composerTextOfSent(message.content.trim());
+    return mergeComposerDraft(
+      {
+        text,
+        images: (message.attachments ?? [])
+          .filter((attachment) => attachment.kind === 'image')
+          .map((attachment, index) => ({
+            id: `queued-${message.id}-${index}`,
+            filePath: attachment.path,
+            dataUrl: '',
+          })),
+        files: [],
+        dictation: mapDictatedSpans(readQueuedDictation(message), message.content, text),
+      },
+      draft
+    );
+  }, EMPTY_COMPOSER_DRAFT);
 }
 
 /**
@@ -466,6 +488,35 @@ export default function ChatInput({
   // followed renders would save the box as it was BEFORE the send cleared it.
   const displayValueRef = useRef(displayValue);
   displayValueRef.current = displayValue;
+  const dictatedSpansRef = useRef<DictatedSpan[]>(seedDraft?.dictation ?? []);
+  const ledgerTextRef = useRef(displayValue);
+  const fieldEditRef = useRef<{ text: string; caret: number } | null>(null);
+  const mapLedger = useCallback((after: string) => {
+    const edit = fieldEditRef.current;
+    dictatedSpansRef.current = mapComposerDictation(
+      dictatedSpansRef.current,
+      ledgerTextRef.current,
+      after,
+      edit?.text === after,
+      edit?.caret
+    );
+    ledgerTextRef.current = after;
+    fieldEditRef.current = null;
+  }, []);
+  // This effect precedes draft saves, including a replacement composer's seed read.
+  useLayoutEffect(() => {
+    mapLedger(displayValue);
+  }, [displayValue, mapLedger]);
+  const releaseComposerText = useCallback(
+    (reason: 'send' | 'queue' | 'steer' | 'drop'): DictatedSpan[] => {
+      mapLedger(displayValueRef.current);
+      const spans = reason === 'drop' ? [] : dictatedSpansRef.current;
+      dictatedSpansRef.current = [];
+      ledgerTextRef.current = '';
+      return spans;
+    },
+    [mapLedger]
+  );
 
   // Loading gates composer operations; live work drives the visual activity
   // indicator. LoadingConversation is intentionally only in the former.
@@ -877,53 +928,67 @@ export default function ChatInput({
         retryingQueuedOffersRef.current.delete(message.id);
         pendingQueuedOfferIdsRef.current.add(message.id);
         if (key) beginQueuedOffer(key, message.id);
-        const submitted = handleSubmit(
+        let acceptedSessionId = sessionId;
+        const submitted = submitComposer(
+          handleSubmit,
           new CustomEvent('submit', {
-            detail: { value: message.content, attachments: message.attachments ?? [] },
+            detail: {
+              value: message.content,
+              attachments: message.attachments ?? [],
+              onAcceptedSession: (id: string) => {
+                acceptedSessionId = id;
+              },
+            },
           }) as unknown as React.FormEvent
         );
-        void Promise.resolve(submitted).then((accepted) => {
-          pendingQueuedOfferIdsRef.current.delete(message.id);
-          if (key) endQueuedOffer(key, message.id);
-          // Only an explicit `false` is a refusal: a handler predating the
-          // contract resolves `undefined` and must not be read as one.
-          if (accepted !== false) {
-            if (continuationQueuedMessageIdRef.current === message.id) {
-              continuationQueuedMessageIdRef.current = null;
+        void Promise.resolve(submitted)
+          .catch(() => false)
+          .then((accepted) => {
+            pendingQueuedOfferIdsRef.current.delete(message.id);
+            if (key) endQueuedOffer(key, message.id);
+            // Only an explicit `false` is a refusal: a handler predating the
+            // contract resolves `undefined` and must not be read as one.
+            if (accepted !== false) {
+              postCorrectionObservations(
+                readQueuedDictation(message),
+                acceptedSessionId ?? undefined
+              );
+              if (continuationQueuedMessageIdRef.current === message.id) {
+                continuationQueuedMessageIdRef.current = null;
+              }
+              return;
             }
-            return;
-          }
-          // Not taken, and the composer that offered it is gone: no timer, no
-          // state on a component that no longer exists. The message goes back
-          // to whatever holds this chat's queue now.
-          if (queueDisposedRef.current) {
-            handBackQueuedMessage(key, draftKeyAtOffer, message);
-            return;
-          }
-          if (attempt < QUEUE_DRAIN_ATTEMPTS) {
-            // Next macrotask, which is all the in-flight submit's promise chain
-            // needs to unwind and release its latch. Deliberately not a poll:
-            // the attempt count is the whole retry budget.
-            retryingQueuedOffersRef.current.set(message.id, message);
-            const timer = setTimeout(() => {
-              queueRetryTimersRef.current.delete(timer);
-              offer(attempt + 1);
-            }, 0);
-            queueRetryTimersRef.current.add(timer);
-            return;
-          }
-          setQueuedMessages((prev) =>
-            prev.some((queued) => queued.id === message.id) ? prev : [message, ...prev]
-          );
-          toastWarning({
-            title: COMPOSER_COPY.toasts.queued.title,
-            msg: COMPOSER_COPY.toasts.queued.busy,
+            // Not taken, and the composer that offered it is gone: no timer, no
+            // state on a component that no longer exists. The message goes back
+            // to whatever holds this chat's queue now.
+            if (queueDisposedRef.current) {
+              handBackQueuedMessage(key, draftKeyAtOffer, message);
+              return;
+            }
+            if (attempt < QUEUE_DRAIN_ATTEMPTS) {
+              // Next macrotask, which is all the in-flight submit's promise chain
+              // needs to unwind and release its latch. Deliberately not a poll:
+              // the attempt count is the whole retry budget.
+              retryingQueuedOffersRef.current.set(message.id, message);
+              const timer = setTimeout(() => {
+                queueRetryTimersRef.current.delete(timer);
+                offer(attempt + 1);
+              }, 0);
+              queueRetryTimersRef.current.add(timer);
+              return;
+            }
+            setQueuedMessages((prev) =>
+              prev.some((queued) => queued.id === message.id) ? prev : [message, ...prev]
+            );
+            toastWarning({
+              title: COMPOSER_COPY.toasts.queued.title,
+              msg: COMPOSER_COPY.toasts.queued.busy,
+            });
           });
-        });
       };
       offer(1);
     },
-    [handleSubmit]
+    [handleSubmit, sessionId]
   );
 
   // Queue processing
@@ -1142,6 +1207,7 @@ export default function ChatInput({
   const heldDraft = useCallback(
     (): ComposerDraft => ({
       text: displayValueRef.current,
+      ...(dictatedSpansRef.current.length ? { dictation: dictatedSpansRef.current } : {}),
       images: draftImagesOf(pastedImagesRef.current),
       files: draftFilesOf([...parentDroppedFilesRef.current, ...localDroppedFilesRef.current]),
     }),
@@ -1157,6 +1223,9 @@ export default function ChatInput({
   const showDraft = useCallback(
     (next: ComposerDraft, { focus = true }: { focus?: boolean } = {}) => {
       displayValueRef.current = next.text;
+      dictatedSpansRef.current = next.dictation ?? [];
+      ledgerTextRef.current = next.text;
+      fieldEditRef.current = null;
       setDisplayValue(next.text);
       setValue(next.text);
       const images = pastedImagesOf(next.images);
@@ -1692,6 +1761,28 @@ export default function ChatInput({
     isComposing: () => isComposingRef.current,
     draftPrefix: () => joinLeadingCommand(composerCommandRef.current, '').length,
     onInserted: (event) => {
+      if (event.path !== 'draft') {
+        const prefix = joinLeadingCommand(composerCommandRef.current, '').length;
+        const before = joinComposerText(
+          joinLeadingCommand(composerCommandRef.current, event.before),
+          splitComposerText(displayValueRef.current).refs
+        );
+        const recorded = recordComposerDictation(
+          dictatedSpansRef.current,
+          before,
+          { start: event.anchor.start + prefix, end: event.anchor.end + prefix },
+          event.transcript.text,
+          {
+            recordId: event.streamId ?? crypto.randomUUID(),
+            raw: event.transcript.raw_text,
+            changes: event.transcript.changes,
+            model: event.transcript.model,
+            biasScope: event.transcript.bias_scope,
+          }
+        );
+        dictatedSpansRef.current = recorded.dictation;
+        ledgerTextRef.current = recorded.text;
+      }
       setHasUserTyped(true);
       if (event.transcript.bias_scope === 'private') markPrivateDraft(dictationKey);
     },
@@ -1778,6 +1869,13 @@ export default function ChatInput({
       setTimeout(() => textAreaRef.current?.setSelectionRange(caret, caret), 0);
     }
 
+    if (!isDictationInserting(dictationKey)) {
+      const next = joinComposerText(joinLeadingCommand(composerCommand, val), composerRefs);
+      fieldEditRef.current = {
+        text: next,
+        caret: cursorPosition + joinLeadingCommand(composerCommand, '').length,
+      };
+    }
     setComposerProse(val);
     setHasUserTyped(true);
     // Dictated text opens no menu: a spoken "@" is a word (DD-63 step 5).
@@ -2143,6 +2241,10 @@ export default function ChatInput({
         timestamp: Date.now(),
       };
 
+      keepQueuedDictation(
+        interruptionMessage,
+        mapDictatedSpans(releaseComposerText('queue'), displayValue, contentToQueue)
+      );
       // Add the interruption message to the front of the queue so it gets sent first
       setQueuedMessages((prev) => [interruptionMessage, ...prev]);
 
@@ -2165,6 +2267,10 @@ export default function ChatInput({
       ownedTempAttachmentPaths,
       timestamp: Date.now(),
     };
+    keepQueuedDictation(
+      newMessage,
+      mapDictatedSpans(releaseComposerText('queue'), displayValue, contentToQueue)
+    );
     setQueuedMessages((prev) => {
       const newQueue = [...prev, newMessage];
       // If adding to an empty queue, reset the paused state
@@ -2231,13 +2337,14 @@ export default function ChatInput({
   // Never drop the user's words: if the steer was refused (the turn ended in the
   // meantime) send the text now, or re-queue it if a turn is somehow running.
   const sendOrQueueText = useCallback(
-    (content: string) => {
+    (content: string, spans: DictatedSpan[] = []) => {
       const message = {
         id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
         content,
         attachments: [],
         timestamp: Date.now(),
       };
+      keepQueuedDictation(message, spans);
       if (queueDisposedRef.current) {
         // The steer was answered after this composer went away.
         handBackQueuedMessage(queueKeyRef.current, queueDraftKeyRef.current, message);
@@ -2256,19 +2363,20 @@ export default function ChatInput({
   );
 
   const steerText = useCallback(
-    (content: string, putBack?: () => boolean) => {
+    (content: string, putBack?: () => boolean, spans: DictatedSpan[] = []) => {
       if (!onSteer) return;
       void onSteer(content).then((accepted) => {
         if (accepted) {
           // The agent echoes the steer back as a user message on the live stream
           // once it consumes it, so nothing is appended to the transcript here.
           LocalMessageStorage.addMessage(content);
+          postCorrectionObservations(spans, sessionId ?? undefined);
         } else if (!putBack?.()) {
-          sendOrQueueText(content);
+          sendOrQueueText(content, spans);
         }
       });
     },
-    [onSteer, sendOrQueueText]
+    [onSteer, sendOrQueueText, sessionId]
   );
 
   /** Cmd/Ctrl+Enter while a turn runs: steer with whatever is in the composer. */
@@ -2278,11 +2386,18 @@ export default function ChatInput({
     if (!text || pastedImages.length > 0 || allDroppedFiles.length > 0) {
       return false;
     }
-    steerText(text);
+    steerText(text, undefined, mapDictatedSpans(releaseComposerText('steer'), displayValue, text));
     setDisplayValue('');
     setValue('');
     return true;
-  }, [canSteer, displayValue, pastedImages.length, allDroppedFiles.length, steerText]);
+  }, [
+    canSteer,
+    displayValue,
+    pastedImages.length,
+    allDroppedFiles.length,
+    steerText,
+    releaseComposerText,
+  ]);
 
   /** BR-61: send a queued message into the running turn without stopping it. */
   const handleSteerMessage = (messageId: string) => {
@@ -2294,16 +2409,20 @@ export default function ChatInput({
     // D5: a steer the daemon refuses while a turn is still running goes back
     // where it was in the queue, not to the back of it — "Add now" on the
     // first of three rows must not quietly make it the last.
-    steerText(messageToSteer.content, () => {
-      if (!isLoadingRef.current) return false;
-      setQueuedMessages((prev) => {
-        if (prev.some((msg) => msg.id === messageToSteer.id)) return prev;
-        const next = [...prev];
-        next.splice(Math.min(index, next.length), 0, messageToSteer);
-        return next;
-      });
-      return true;
-    });
+    steerText(
+      messageToSteer.content,
+      () => {
+        if (!isLoadingRef.current) return false;
+        setQueuedMessages((prev) => {
+          if (prev.some((msg) => msg.id === messageToSteer.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(index, next.length), 0, messageToSteer);
+          return next;
+        });
+        return true;
+      },
+      readQueuedDictation(messageToSteer)
+    );
   };
 
   /**
@@ -2370,13 +2489,14 @@ export default function ChatInput({
       setMentionPopover((prev) => ({ ...prev, isOpen: false }));
       return;
     }
+    releaseComposerText('drop');
     displayValueRef.current = '';
     setView('crew', { resumeSessionId: sessionId });
     setDisplayValue('');
     setValue('');
     setHasUserTyped(false);
     setMentionPopover((prev) => ({ ...prev, isOpen: false }));
-  }, [hasCrewCommandExtras, sessionId, setView, setValue]);
+  }, [hasCrewCommandExtras, sessionId, setView, setValue, releaseComposerText]);
 
   const canSubmit =
     !isLoading &&
@@ -2431,6 +2551,7 @@ export default function ChatInput({
           });
           return;
         }
+        releaseComposerText('drop');
         void diverge(sessionId);
         setDisplayValue('');
         setValue('');
@@ -2453,9 +2574,19 @@ export default function ChatInput({
           LocalMessageStorage.addMessage(nonImageFilePaths.join(' '));
         }
 
-        const submitted = handleSubmit(
+        const released = releaseComposerText('send');
+        const sentSpans = mapDictatedSpans(released, displayValue, textToSend);
+        let acceptedSessionId = sessionId;
+        const submitted = submitComposer(
+          handleSubmit,
           new CustomEvent('submit', {
-            detail: { value: textToSend, attachments: imageAttachments },
+            detail: {
+              value: textToSend,
+              attachments: imageAttachments,
+              onAcceptedSession: (id: string) => {
+                acceptedSessionId = id;
+              },
+            },
           }) as unknown as React.FormEvent
         );
 
@@ -2475,6 +2606,7 @@ export default function ChatInput({
         // and nothing else; any other composer hands it back to itself.
         const unsent: ComposerDraft = {
           text: displayValue,
+          ...(released.length ? { dictation: released } : {}),
           images: draftImagesOf(pastedImages),
           files: draftFilesOf(allDroppedFiles),
         };
@@ -2485,13 +2617,15 @@ export default function ChatInput({
         const inFlight = draftKey ? beginComposerSend(draftKey) : null;
         void Promise.resolve(submitted).then(
           (accepted) => {
-            if (accepted !== false) inFlight?.settle();
-            else if (inFlight) inFlight.giveBack(unsent);
+            if (accepted !== false) {
+              inFlight?.settle();
+              postCorrectionObservations(sentSpans, acceptedSessionId ?? undefined);
+            } else if (inFlight) inFlight.giveBack(unsent);
             else takeBack(unsent);
           },
-          (error: unknown) => {
-            inFlight?.settle();
-            throw error;
+          () => {
+            if (inFlight) inFlight.giveBack(unsent);
+            else takeBack(unsent);
           }
         );
 
@@ -2545,6 +2679,7 @@ export default function ChatInput({
       droppedImageAttachmentPath,
       droppedFiles.length,
       handleSubmit,
+      releaseComposerText,
       lastInterruption,
       localDroppedFiles.length,
       onFilesProcessed,
@@ -2847,7 +2982,15 @@ export default function ChatInput({
 
   const handleEditMessage = (messageId: string, newContent: string) => {
     setQueuedMessages((prev) =>
-      prev.map((msg) => (msg.id === messageId ? { ...msg, content: newContent } : msg))
+      prev.map((msg) => {
+        if (msg.id !== messageId) return msg;
+        const next = { ...msg, content: newContent };
+        keepQueuedDictation(
+          next,
+          mapComposerDictation(readQueuedDictation(msg), msg.content, newContent, true)
+        );
+        return next;
+      })
     );
   };
 

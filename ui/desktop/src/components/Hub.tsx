@@ -84,6 +84,7 @@ export default function Hub({
         });
 
         adoptDraftReasoningEffort(effortScope, session.id, submittedEffort);
+        customEvent.detail?.onAcceptedSession?.(session.id);
         setView('pair', {
           resumeSessionId: session.id,
           initialMessage: combinedTextFromInput,

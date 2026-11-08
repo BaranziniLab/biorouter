@@ -52,7 +52,7 @@
  *
  * Two windows may each record; the daemon queues their streams.
  */
-import { insertIntoComposerDraft } from '../../utils/composerDrafts';
+import { insertIntoComposerDraft, type DictationRecording } from '../../utils/composerDrafts';
 import {
   insertDictatedText,
   mapAnchor,
@@ -180,6 +180,8 @@ export interface DictationInserted {
   /** The anchor the text went to, as mapped at that moment. */
   anchor: Anchor;
   streamId: string | null;
+  /** The field before insertion, so an event render cannot replace the source. */
+  before: string;
 }
 
 export type DictationTarget = Omit<StreamRequest, 'sample_rate' | 'format'>;
@@ -210,7 +212,7 @@ interface Deps {
   ensureStatus(): Promise<unknown>;
   refreshStatus(): Promise<unknown>;
   phase(): PhaseDecision;
-  insertIntoDraft(key: string, at: Anchor, text: string): void;
+  insertIntoDraft(key: string, at: Anchor, text: string, recording?: DictationRecording): void;
 }
 
 const DEFAULT_DEPS: Deps = {
@@ -877,6 +879,7 @@ class Dictation {
       field = composer?.field() ?? null;
     }
     const anchor = this.anchor;
+    const before = field?.value ?? '';
     let path: InsertPath;
     if (composer && field) {
       inserting = this.key;
@@ -901,7 +904,14 @@ class Dictation {
       deps.insertIntoDraft(
         this.key,
         { start: anchor.start + prefix, end: anchor.end + prefix },
-        transcript.text
+        transcript.text,
+        {
+          recordId: stream.id ?? crypto.randomUUID(),
+          raw: transcript.raw_text,
+          changes: transcript.changes,
+          model: transcript.model,
+          biasScope: transcript.bias_scope,
+        }
       );
       // The private draft flag (DD-71) is set here, not only by the composer's
       // `onInserted`: a composer that unmounted while the person spoke (a tab or
@@ -909,7 +919,14 @@ class Dictation {
       // ask before it leaves for a public model.
       if (transcript.bias_scope === 'private') markPrivateDraft(this.key);
     }
-    composer?.onInserted?.({ key: this.key, path, transcript, anchor, streamId: stream.id });
+    composer?.onInserted?.({
+      key: this.key,
+      path,
+      transcript,
+      anchor,
+      streamId: stream.id,
+      before,
+    });
     stream.release();
     this.done(
       this.capStopped ? notice('MSG-CAP-STOPPED', false) : null,
