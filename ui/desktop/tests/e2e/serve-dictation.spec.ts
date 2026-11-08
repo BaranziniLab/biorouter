@@ -147,7 +147,9 @@ async function openShell(page: Page, origin: string): Promise<void> {
 
 type StreamEvidence = {
   rates: number[];
+  createdStreamIds: string[];
   audioRequestAt: number[];
+  audioStreamIds: string[];
   pcmBytes: number;
   finishRequests: number;
   heldReads: number;
@@ -157,19 +159,31 @@ type StreamEvidence = {
 
 function observeStream(page: Page): StreamEvidence {
   const evidence: StreamEvidence = {
-    rates: [], audioRequestAt: [], pcmBytes: 0, finishRequests: 0, heldReads: 0,
-    sseRequests: 0, transcript: null,
+    rates: [],
+    createdStreamIds: [],
+    audioRequestAt: [],
+    audioStreamIds: [],
+    pcmBytes: 0,
+    finishRequests: 0,
+    heldReads: 0,
+    sseRequests: 0,
+    transcript: null,
   };
   page.on('request', (request) => {
     const url = new URL(request.url());
-    if (url.pathname.startsWith('/dictation/streams/')
-      && request.headers().accept?.includes('text/event-stream')) evidence.sseRequests += 1;
+    if (
+      url.pathname.startsWith('/dictation/streams/') &&
+      request.headers().accept?.includes('text/event-stream')
+    )
+      evidence.sseRequests += 1;
     if (request.method() === 'POST' && url.pathname.endsWith('/dictation/streams')) {
       const body = JSON.parse(request.postData() ?? '{}');
       if (typeof body.sample_rate === 'number') evidence.rates.push(body.sample_rate);
     }
-    if (request.method() === 'PUT' && /\/dictation\/streams\/[^/]+\/audio$/.test(url.pathname)) {
+    const audioPath = /\/dictation\/streams\/([^/]+)\/audio$/.exec(url.pathname);
+    if (request.method() === 'PUT' && audioPath) {
       evidence.audioRequestAt.push(Date.now());
+      evidence.audioStreamIds.push(audioPath[1]);
       evidence.pcmBytes += request.postDataBuffer()?.byteLength ?? 0;
     }
     if (request.method() === 'POST' && /\/dictation\/streams\/[^/]+\/finish$/.test(url.pathname)) {
@@ -182,6 +196,19 @@ function observeStream(page: Page): StreamEvidence {
   });
   page.on('response', (response: Response) => {
     const path = new URL(response.url()).pathname;
+    if (
+      response.request().method() === 'POST' &&
+      path.endsWith('/dictation/streams') &&
+      response.status() === 201
+    ) {
+      void response
+        .json()
+        .then((body) => {
+          if (typeof body.stream_id === 'string') evidence.createdStreamIds.push(body.stream_id);
+        })
+        .catch(() => undefined);
+      return;
+    }
     if (!/\/dictation\/streams\/[^/]+(?:\/finish)?$/.test(path) || response.status() !== 200)
       return;
     void response
@@ -218,6 +245,7 @@ async function captureNothing(
   const mic = page.getByTestId('dictation-button').first();
   evidence.transcript = null;
   const streamsBeforePress = evidence.rates.length;
+  const createdStreamsBeforePress = evidence.createdStreamIds.length;
   const audioRequestsBeforePress = evidence.audioRequestAt.length;
   const finishRequestsBeforePress = evidence.finishRequests;
   const heldReadsBeforePress = evidence.heldReads;
@@ -258,23 +286,39 @@ async function captureNothing(
   }
   const startGestureToRecordingPhaseMs = Date.now() - startedAt;
   await expect.poll(() => micCallCount(page)).toBeGreaterThan(micCallsBeforePress);
-  await page.waitForTimeout(2400);
+  const currentStreamHasAudio = () =>
+    evidence.createdStreamIds
+      .slice(createdStreamsBeforePress)
+      .some((id) => evidence.audioStreamIds.slice(audioRequestsBeforePress).includes(id));
+  await expect.poll(currentStreamHasAudio, { timeout: 30_000 }).toBe(true);
   const stoppedAt = Date.now();
   await mic.click();
-  const notice = page.getByTestId('dictation-notice').first().locator('span.text-supporting').first();
-  await expect.poll(async () => {
-    const text = (await notice.textContent())?.trim();
-    return text === SILENT || (firefoxFakeAudio && text === NOTHING);
-  }, { timeout: 120_000 }).toBe(true);
+  const notice = page
+    .getByTestId('dictation-notice')
+    .first()
+    .locator('span.text-supporting')
+    .first();
+  await expect
+    .poll(
+      async () => {
+        const text = (await notice.textContent())?.trim();
+        return text === SILENT || (firefoxFakeAudio && text === NOTHING);
+      },
+      { timeout: 120_000 }
+    )
+    .toBe(true);
   const stopToNoticeMs = Date.now() - stoppedAt;
   const outcome = (await notice.textContent())?.trim() === SILENT ? 'silent' : 'no_speech';
-  const inputHasText = await page.getByTestId('chat-input').first().evaluate((element) => {
-    const value = 'value' in element ? element.value : element.textContent;
-    return Boolean(value?.trim());
-  });
+  const inputHasText = await page
+    .getByTestId('chat-input')
+    .first()
+    .evaluate((element) => {
+      const value = 'value' in element ? element.value : element.textContent;
+      return Boolean(value?.trim());
+    });
   expect(inputHasText).toBe(false);
   expect(evidence.rates.length).toBeGreaterThan(streamsBeforePress);
-  expect(evidence.audioRequestAt.length).toBeGreaterThan(audioRequestsBeforePress);
+  expect(currentStreamHasAudio()).toBe(true);
   expect(evidence.sseRequests).toBe(sseRequestsBeforePress);
   if (outcome === 'silent') {
     expect(evidence.finishRequests).toBe(finishRequestsBeforePress);

@@ -163,6 +163,16 @@ for bin in "${BINARIES[@]}"; do
   run_bounded "$TIMEOUT_SECS" "$out.raw" "$err.raw" \
     ${PREFIX[@]+"${PREFIX[@]}"} "$bin" "$WORKER_MARKER" self-test \
     --model "$MODEL" --vad "$VAD" --wav "$WAV" ${EXTRA[@]+"${EXTRA[@]}"} || rc=$?
+  if [ ! -f "$out.raw" ] || [ ! -f "$err.raw" ]; then
+    scratch_present=0
+    stdout_present=0
+    stderr_present=0
+    [ ! -d "$SCRATCH" ] || scratch_present=1
+    [ ! -f "$out.raw" ] || stdout_present=1
+    [ ! -f "$err.raw" ] || stderr_present=1
+    echo "::error::dictation self test output missing after binary $index: scratch=$scratch_present stdout=$stdout_present stderr=$stderr_present child_exit=$rc" >&2
+    exit 1
+  fi
   tr -d '\r' <"$out.raw" >"$out"
   tr -d '\r' <"$err.raw" >"$err"
   lines="$(grep -c . "$out" || true)"
