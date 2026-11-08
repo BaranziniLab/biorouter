@@ -1045,7 +1045,7 @@ jobs:
     # a loaded M4 Max); the budget keeps the same margin over that.
     timeout-minutes: 45
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
