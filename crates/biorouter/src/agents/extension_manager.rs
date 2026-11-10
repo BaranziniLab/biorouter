@@ -783,6 +783,43 @@ async fn call_admitted_tool(
     }
 }
 
+/// [`call_admitted_tool`] behind the status-check pacing
+/// (`tool_monitor::poll_pacing`): a repeated check of a job that is still
+/// running waits out the job's interval first, after every admission check and
+/// before the call, and its result says it was held. `call` is the chat's
+/// session id and the prefixed tool name the pacing keys on.
+async fn call_paced_tool(
+    call: (&str, &str),
+    client: &McpClientBox,
+    tool_name: &str,
+    arguments: Option<rmcp::model::JsonObject>,
+    meta: McpMeta,
+    cancellation_token: CancellationToken,
+    computer_permit: Option<crate::security::computer_use::ComputerUsePermit>,
+) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    use crate::tool_monitor::poll_pacing;
+    let (session_id, prefixed_name) = call;
+    let paced = poll_pacing::before_dispatch(
+        session_id,
+        prefixed_name,
+        arguments.as_ref(),
+        &cancellation_token,
+    )
+    .await;
+    let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
+    let mut result = call_admitted_tool(
+        client,
+        tool_name,
+        arguments.clone(),
+        meta,
+        cancellation_token,
+        computer_permit,
+    )
+    .await?;
+    poll_pacing::after_dispatch(paced, prefixed_name, arguments.as_ref(), &mut result);
+    Ok(result)
+}
+
 fn seal_file_diagnostics(
     result: &mut rmcp::model::CallToolResult,
     trusted_owner: bool,
@@ -3390,7 +3427,7 @@ impl ExtensionManager {
 
     async fn prefixed_tool_name(&self, tool_name: &str) -> String {
         if !tool_name.contains("__")
-            && ["execute_code", "read_module", "search_modules"].contains(&tool_name)
+            && ["execute_code", "read_module", "search_modules", "wait_for"].contains(&tool_name)
             && self.extensions.lock().await.contains_key("code_execution")
         {
             format!("code_execution__{tool_name}")
@@ -3525,10 +3562,11 @@ impl ExtensionManager {
             // `max(durations)`. `call_tool` takes `&self` and implementations
             // are internally synchronized, so the guard (and its
             // `mcp.client_lock_wait` span) is gone and calls now overlap.
-            let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
             // H1: credential material is withheld from what comes back, here,
-            // where every path to a model converges.
-            let mut result = call_admitted_tool(
+            // where every path to a model converges. A repeated check of a
+            // running job first waits out its interval (`call_paced_tool`).
+            let mut result = call_paced_tool(
+                (&session_id, &prefixed_name),
                 &client,
                 &tool_name,
                 arguments.clone(),
