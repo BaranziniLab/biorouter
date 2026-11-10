@@ -807,6 +807,8 @@ enum SessionCommand {
             help = "Output format (text, json)"
         )]
         format: crate::commands::session_subagents::SubagentsFormat,
+        #[arg(long, help = "Print JSON, the same as --format json")]
+        json: bool,
         #[arg(long, help = "Redraw every 2 seconds until Ctrl-C")]
         watch: bool,
         #[arg(
@@ -831,6 +833,14 @@ enum SessionCommand {
         filters: crate::commands::session_decisions::DecisionFilters,
         #[arg(long, help = "Print JSON (the summary and the page) instead of text")]
         json: bool,
+        #[arg(
+            short,
+            long,
+            value_enum,
+            default_value_t = crate::commands::TextOrJson::Text,
+            help = "Output format (text, json); --format json is the same as --json"
+        )]
+        format: crate::commands::TextOrJson,
         #[arg(
             long,
             help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, so a private chat's decisions can be listed"
@@ -880,6 +890,8 @@ enum SessionCommand {
             help = "Output format (text, json)"
         )]
         format: crate::commands::session_gates::GatesFormat,
+        #[arg(long, global = true, help = "Print JSON, the same as --format json")]
+        json: bool,
         #[arg(
             long,
             global = true,
@@ -2240,9 +2252,15 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
         SessionCommand::Subagents {
             session_id,
             format,
+            json,
             watch,
             user_action_key_stdin,
         } => {
+            let format = if json {
+                crate::commands::session_subagents::SubagentsFormat::Json
+            } else {
+                format
+            };
             crate::commands::session_subagents::handle_session_subagents(
                 &session_id,
                 format,
@@ -2255,12 +2273,13 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             session_id,
             filters,
             json,
+            format,
             user_action_key_stdin,
         } => {
             crate::commands::session_decisions::handle_session_decisions(
                 &session_id,
                 filters,
-                json,
+                json || format == crate::commands::TextOrJson::Json,
                 user_action_key_stdin,
             )
             .await?;
@@ -2281,8 +2300,14 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             session_id,
             command,
             format,
+            json,
             user_action_key_stdin,
         } => {
+            let format = if json {
+                crate::commands::session_gates::GatesFormat::Json
+            } else {
+                format
+            };
             crate::commands::session_gates::handle_session_gates(
                 &session_id,
                 command,
@@ -3616,6 +3641,7 @@ mod cli_tests {
         let Some(SessionCommand::Subagents {
             session_id,
             format,
+            json: false,
             watch,
             user_action_key_stdin,
         }) = parse(&["biorouter", "session", "subagents", "20261104_1"])
@@ -3639,6 +3665,12 @@ mod cli_tests {
         };
         assert_eq!(format, SubagentsFormat::Json);
         assert!(watch);
+        // D-9: `--json` is taken as well as `--format json`, on every session
+        // read-out command.
+        assert!(matches!(
+            parse(&["biorouter", "session", "subagents", "20261104_1", "--json"]),
+            Some(SessionCommand::Subagents { json: true, .. })
+        ));
 
         let Some(SessionCommand::Subagents {
             user_action_key_stdin,
@@ -3779,6 +3811,7 @@ mod cli_tests {
             filters,
             json,
             user_action_key_stdin,
+            ..
         }) = parse(&[
             "biorouter",
             "session",
@@ -3815,6 +3848,30 @@ mod cli_tests {
             crate::commands::session_decisions::DEFAULT_LIMIT
         );
         assert!(parse(&["biorouter", "session", "decisions"]).is_none());
+        // D-9: `--format json` is the same as `--json`.
+        assert!(matches!(
+            parse(&[
+                "biorouter",
+                "session",
+                "decisions",
+                "s1",
+                "--format",
+                "json"
+            ]),
+            Some(SessionCommand::Decisions {
+                json: false,
+                format: crate::commands::TextOrJson::Json,
+                ..
+            })
+        ));
+        // D-10: a page outside 1 to 200 is refused, not quietly clamped.
+        for limit in ["0", "201", "500"] {
+            assert!(
+                parse(&["biorouter", "session", "decisions", "s1", "--limit", limit]).is_none(),
+                "--limit {limit} was taken"
+            );
+        }
+        assert!(parse(&["biorouter", "session", "decisions", "s1", "--limit", "200"]).is_some());
         assert!(parse(&[
             "biorouter",
             "session",
@@ -3858,7 +3915,10 @@ mod cli_tests {
         assert!(matches!(
             parse(&["biorouter", "session", "monitors", "s1", "list"]),
             Some(SessionCommand::Monitors {
-                command: MonitorsCommand::List { json: false },
+                command: MonitorsCommand::List {
+                    json: false,
+                    format: crate::commands::TextOrJson::Text,
+                },
                 ..
             })
         ));
@@ -3893,12 +3953,18 @@ mod cli_tests {
             session_id,
             command: None,
             format: GatesFormat::Text,
+            json: false,
             user_action_key_stdin: false,
         }) = parse(&["biorouter", "session", "gates", "20261106_1"])
         else {
             panic!("bare `session gates <id>` did not parse");
         };
         assert_eq!(session_id, "20261106_1");
+        // D-9: `--json` is the same as `--format json`.
+        assert!(matches!(
+            parse(&["biorouter", "session", "gates", "s1", "list", "--json"]),
+            Some(SessionCommand::Gates { json: true, .. })
+        ));
         // `--format` and the key flag are global to the subcommands.
         assert!(matches!(
             parse(&[

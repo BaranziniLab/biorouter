@@ -322,12 +322,14 @@ pub fn gate_line(gate: &PhaseGateSnapshot) -> String {
         gate.attempts,
         gate.max_attempts
     );
+    // A gate passes or does not; "failed" reads as an error to a person.
     match (gate.last_passed, gate.last_min_p) {
         (Some(true), _) => words.push_str(", passed"),
-        (Some(false), Some(p)) => {
-            words.push_str(&format!(", last failed (lowest P(yes) {})", format_p(p)))
-        }
-        (Some(false), None) => words.push_str(", last failed"),
+        (Some(false), Some(p)) => words.push_str(&format!(
+            ", not passed last time (lowest P(yes) {})",
+            format_p(p)
+        )),
+        (Some(false), None) => words.push_str(", not passed last time"),
         (None, _) => {}
     }
     if gate.blocked {
@@ -348,7 +350,10 @@ fn gate_lines(session_id: &str, phase: &PhaseSnapshot, gate: &PhaseGateSnapshot)
     let mut out = vec![format!("     gate: {}", gate_line(gate))];
     let mut details = Vec::new();
     match &gate.model {
-        Some(model) => details.push(format!("asked of {}", terminal_text(model))),
+        Some(model) => details.push(format!(
+            "asked of {}",
+            super::decide::person_model_names(&terminal_text(model))
+        )),
         None => details.push("asked of the chat's default decision model".to_string()),
     }
     if gate.allow_uncalibrated {
@@ -657,9 +662,9 @@ pub async fn write_locally(
                 .await
             {
                 bail!(
-                    "Phase \"{phase}\"'s gate cannot be answered in this chat: {}. Nothing was \
-                     changed.",
-                    without_full_stop(&error.to_string())
+                    "The gate on phase \"{phase}\" cannot be answered in this chat. {}. Nothing \
+                     was changed.",
+                    without_full_stop(&super::decide::terminal_advice(&error.to_string()))
                 );
             }
             orchestration_plan::person_set_gate(manager, session_id, &phase, gate).await
@@ -676,13 +681,12 @@ pub async fn write_locally(
 
 fn print_plan(session_id: &str, plan: Option<&OrchestrationSnapshot>, format: GatesFormat) {
     match format {
-        GatesFormat::Json => println!(
-            "{}",
-            serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "null".to_string())
+        GatesFormat::Json => super::print_line(
+            serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "null".to_string()),
         ),
         GatesFormat::Text => {
             for line in render_gates(session_id, plan) {
-                println!("{line}");
+                super::print_line(line);
             }
         }
     }
@@ -690,8 +694,8 @@ fn print_plan(session_id: &str, plan: Option<&OrchestrationSnapshot>, format: Ga
 
 fn print_answer(answer: &GateAnswer, format: GatesFormat) -> Result<()> {
     match format {
-        GatesFormat::Json => println!("{}", serde_json::to_string_pretty(&answer.json())?),
-        GatesFormat::Text => println!("{}", answer.message),
+        GatesFormat::Json => super::print_line(serde_json::to_string_pretty(&answer.json())?),
+        GatesFormat::Text => super::print_line(&answer.message),
     }
     Ok(())
 }
@@ -713,7 +717,9 @@ pub async fn handle_session_gates(
                 print_plan(session_id, roster.plan.as_ref(), format);
             }
             Some(edit) => {
-                let answer = daemon_write(session_id, &edit, auth).await?;
+                let answer = daemon_write(session_id, &edit, auth)
+                    .await
+                    .map_err(super::decide::advise)?;
                 print_answer(&answer, format)?;
             }
         },
@@ -1110,10 +1116,11 @@ mod tests {
         );
         assert!(text.contains("     no gate"), "{text}");
         assert!(
-            text.contains(
-                "last failed (lowest P(yes) 0.42), blocked, set by the agent\n     asked of \
-                 ollama_decision/tev1:0.8b · given its attempts again 1 time\n"
-            ),
+            text.contains(&format!(
+                "not passed last time (lowest P(yes) 0.42), blocked, set by the agent\n     \
+                 asked of tev1:0.8b · {} · given its attempts again 1 time\n",
+                super::super::decide::model_place("ollama_decision", "tev1:0.8b").unwrap()
+            )),
             "{text}"
         );
         assert!(
@@ -1383,7 +1390,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .starts_with("Phase \"research\"'s gate cannot be answered in this chat: "),
+                .starts_with("The gate on phase \"research\" cannot be answered in this chat. "),
             "{error}"
         );
         assert!(

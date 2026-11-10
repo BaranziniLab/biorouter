@@ -1307,8 +1307,17 @@ impl CliSession {
         let result = self
             .process_message(message, false, CancellationToken::default())
             .await;
+        // A monitor's notice says "Send a message to carry on", which a run
+        // that has ended cannot do: say how to carry on from a terminal.
+        let carry_on = self
+            .agent
+            .take_monitor_stop(&self.session_id)
+            .map(|_| monitor_stop_hint(&self.session_id, self.ephemeral_store_dir.is_some()));
         self.end_session("prompt_input_exit").await;
         result?;
+        if let Some(line) = carry_on {
+            eprintln!("{line}");
+        }
         if let Some(code) = self.last_abort.clone() {
             let message = format!("the turn did not complete: {}", code.wire_code());
             return Err(TurnFailed::new(code, message).into());
@@ -2159,6 +2168,25 @@ impl CliSession {
     fn push_message(&mut self, message: Message) {
         self.messages.push(message);
     }
+}
+
+/// What `biorouter run` says after a monitor stopped its turn. The monitor's
+/// notice tells a person in a chat to send a message to carry on; a run has
+/// ended by then, so this names the commands that carry the chat on. A
+/// `--no-session` run kept no chat to go back to, so it says only that it
+/// stopped. The run still exits 0: the command reference gives no exit code
+/// to a turn a monitor stopped.
+pub(crate) fn monitor_stop_hint(session_id: &str, no_session: bool) -> String {
+    if no_session {
+        return "A monitor stopped this run. It ran with --no-session, so there is no chat to \
+                carry on."
+            .to_string();
+    }
+    format!(
+        "A monitor stopped this run. To carry on, send the chat a message: biorouter run \
+         --resume --session-id {session_id} --text \"<message>\", or open it with biorouter \
+         session --resume --session-id {session_id}."
+    )
 }
 
 /// Item B, for the terminal: Ctrl-C stops the subagents this chat started, as
@@ -3697,6 +3725,19 @@ mod tests {
                  provider bills them, Biorouter does not count it."
             )
         );
+    }
+
+    /// A run a monitor stopped names the commands that carry its chat on.
+    #[test]
+    fn a_run_a_monitor_stopped_says_how_to_carry_on() {
+        let line = monitor_stop_hint("20261110_5", false);
+        assert!(
+            line.contains("biorouter run --resume --session-id 20261110_5 --text"),
+            "{line}"
+        );
+        assert!(line.contains("biorouter session --resume --session-id 20261110_5"));
+        assert!(!line.contains("Send a message"), "{line}");
+        assert!(monitor_stop_hint("x", true).contains("--no-session"));
     }
 
     /// Item 9's wiring: `headless` does not end, and does not close the

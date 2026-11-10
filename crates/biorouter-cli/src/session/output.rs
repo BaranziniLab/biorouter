@@ -231,10 +231,10 @@ pub fn set_thinking_message(s: &String) {
 }
 
 /// What a turn's decision marker prints in place of its content: ONE line per
-/// origin, never one per call (they can number in the thousands), with
-/// ` · fired` after a monitor that fired; `biorouter session decisions` lists
-/// the calls themselves. `None` for a message that is not a marker, which
-/// prints its content instead.
+/// origin, never one per call (they can number in the thousands); whether a
+/// monitor fired is in its counts. `biorouter session decisions` lists the
+/// calls themselves. `None` for a message that is not a marker, which prints
+/// its content instead.
 fn decision_marker_lines(message: &Message) -> Option<Vec<String>> {
     let marker = message.metadata.decision_summary.as_ref()?;
     Some(
@@ -242,17 +242,52 @@ fn decision_marker_lines(message: &Message) -> Option<Vec<String>> {
             .items
             .iter()
             .map(|item| {
-                let mut line = format!(
+                format!(
                     "◇ {}",
                     crate::commands::session_decisions::marker_text(item)
-                );
-                if item.fired {
-                    line.push_str(" · fired");
-                }
-                line
+                )
             })
             .collect(),
     )
+}
+
+/// The marker's lines as printed, starting on a line of their own: a reply
+/// streamed before them can end without a newline, and the marker ran on from
+/// its last word ("…cohort size: 1.◇ Monitor"). `mid_line` is whether the
+/// last thing printed left the cursor after text ([`ASSISTANT_TEXT_MID_LINE`]);
+/// only then is a newline put first, so a reply that ended its own line, or
+/// a turn that streamed no text, is not followed by a blank line.
+pub fn decision_marker_block(lines: &[String], mid_line: bool) -> String {
+    let lines = lines.join("\n");
+    if mid_line {
+        format!("\n{lines}")
+    } else {
+        lines
+    }
+}
+
+/// Whether the last assistant text printed left the cursor after text rather
+/// than at the start of a line. Process-wide, as stdout is: the turn's chunks can
+/// be rendered from any runtime thread. Every other branch of
+/// [`render_message`] ends its output with a newline and clears it.
+static ASSISTANT_TEXT_MID_LINE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Where printing `text` leaves the cursor: `Some(true)` after text,
+/// `Some(false)` at the start of a line, `None` for empty text, which leaves
+/// it where it was.
+fn ends_mid_line(text: &str) -> Option<bool> {
+    text.chars().last().map(|last| last != '\n')
+}
+
+fn note_printed(text: &str) {
+    if let Some(mid_line) = ends_mid_line(text) {
+        ASSISTANT_TEXT_MID_LINE.store(mid_line, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn note_line_ended() {
+    ASSISTANT_TEXT_MID_LINE.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn render_message(message: &Message, debug: bool) {
@@ -261,9 +296,9 @@ pub fn render_message(message: &Message, debug: bool) {
     // A marker's notice text says the same thing in a sentence; only the
     // per-origin lines are printed.
     if let Some(lines) = decision_marker_lines(message) {
-        for line in lines {
-            println!("{}", style(line).dim());
-        }
+        let mid_line = ASSISTANT_TEXT_MID_LINE.load(std::sync::atomic::Ordering::Relaxed);
+        println!("{}", style(decision_marker_block(&lines, mid_line)).dim());
+        note_line_ended();
         let _ = std::io::stdout().flush();
         return;
     }
@@ -344,6 +379,19 @@ pub fn render_message(message: &Message, debug: bool) {
             _ => {
                 println!("WARNING: Message content type could not be rendered");
             }
+        }
+        // Text notes where it left the cursor itself; a thinking spinner
+        // prints nothing; every other branch ends its output with a newline.
+        let printed_a_line = match content {
+            MessageContent::Text(_) | MessageContent::Thinking(_) => false,
+            MessageContent::SystemNotification(notification) => !matches!(
+                notification.notification_type,
+                biorouter::conversation::message::SystemNotificationType::ThinkingMessage
+            ),
+            _ => true,
+        };
+        if printed_a_line {
+            note_line_ended();
         }
     }
 
@@ -1282,12 +1330,12 @@ pub fn env_no_color() -> bool {
 fn print_markdown(content: &str, theme: Theme) {
     if std::io::stdout().is_terminal() {
         let width = term_width().clamp(40, 100);
-        print!(
-            "{}",
-            super::markdown::render_markdown(content, theme, width)
-        );
+        let rendered = super::markdown::render_markdown(content, theme, width);
+        print!("{rendered}");
+        note_printed(&console::strip_ansi_codes(&rendered));
     } else {
         print!("{}", content);
+        note_printed(content);
     }
 }
 
@@ -1782,8 +1830,8 @@ mod tests {
     }
 
     /// The classic CLI prints a turn's decision marker as one dim line per
-    /// origin, ` · fired` only after a monitor that fired, and nothing of the
-    /// notice's own sentence; any other message prints its content.
+    /// origin, on a line of its own, and nothing of the notice's own
+    /// sentence; any other message prints its content.
     #[test]
     fn a_decision_marker_prints_one_line_per_origin_and_nothing_else() {
         use biorouter::decision::log::{DecisionTurnMarker, DecisionTurnMarkerItem};
@@ -1816,8 +1864,27 @@ mod tests {
             "one line per origin, not per call: {lines:?}"
         );
         assert!(lines.iter().all(|line| line.starts_with("◇ ")), "{lines:?}");
-        assert!(lines[0].ends_with(" · fired"), "{}", lines[0]);
+        // R1: a monitor's checks are "quiet" (or "fired"), never "failed",
+        // and the fired flag is not said a second time after its counts.
+        assert_eq!(
+            lines[0],
+            "◇ Monitor Form reached: 18 checks this turn · 18 quiet"
+        );
         assert!(!lines[1].contains("fired"), "{}", lines[1]);
+        assert!(!lines.join(" ").contains("failed"), "{lines:?}");
+        // D-1: the block starts on its own line, never on the reply's last.
+        assert_eq!(
+            decision_marker_block(&lines, true),
+            format!("\n{}\n{}", lines[0], lines[1])
+        );
+        // ...and adds no blank line when the reply already ended its line.
+        assert_eq!(
+            decision_marker_block(&lines, false),
+            format!("{}\n{}", lines[0], lines[1])
+        );
+        assert_eq!(ends_mid_line("cohort size: 1."), Some(true));
+        assert_eq!(ends_mid_line("cohort size: 1.\n"), Some(false));
+        assert_eq!(ends_mid_line(""), None, "empty text moves nothing");
         assert!(
             lines.iter().all(|line| !line.contains("Decision models:")),
             "the notice's sentence is not printed as well: {lines:?}"

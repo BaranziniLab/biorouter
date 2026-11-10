@@ -633,7 +633,7 @@ pub async fn handle_session_subagents(
         eprintln!("{}", local_note(why));
     }
     if !watch {
-        println!("{}", render(&roster, format, color)?);
+        super::print_line(render(&roster, format, color)?);
         return Ok(());
     }
 
@@ -655,7 +655,7 @@ pub async fn handle_session_subagents(
                     dim("Refreshing every 2 s. Press Ctrl-C to stop.", color)
                 );
             } else {
-                println!("{frame}");
+                super::print_line(&frame);
             }
             Ok(())
         },
