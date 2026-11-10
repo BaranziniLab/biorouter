@@ -185,6 +185,17 @@ pub async fn detect_read_only_requests(
     provider: Arc<dyn Provider>,
     tool_requests: Vec<&ToolRequest>,
 ) -> Vec<String> {
+    detect_read_only_requests_in_session(provider, None, tool_requests).await
+}
+
+/// [`detect_read_only_requests`] charging the judge's usage to `session_id`
+/// as a side call. With `None` the chat comes from the side-usage scope or
+/// `session_context`.
+pub async fn detect_read_only_requests_in_session(
+    provider: Arc<dyn Provider>,
+    session_id: Option<&str>,
+    tool_requests: Vec<&ToolRequest>,
+) -> Vec<String> {
     let tool_requests: Vec<_> = tool_requests
         .into_iter()
         .filter(|request| request.tool_call.is_ok())
@@ -213,7 +224,14 @@ pub async fn detect_read_only_requests(
         .await;
 
     // Process the response and return an empty vector if the response is invalid
-    if let Ok((message, _usage)) = res {
+    if let Ok((message, usage)) = res {
+        crate::session::session_manager::side_usage::record_side_call_usage(
+            session_id,
+            crate::session::session_manager::side_usage::SideCall::PermissionJudge,
+            provider.get_name(),
+            &usage,
+        )
+        .await;
         extract_read_only_requests(&message, &tool_requests).unwrap_or_default()
     } else {
         vec![]

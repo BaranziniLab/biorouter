@@ -821,6 +821,24 @@ impl ClientHandler for BioRouterClient {
                     Some(Value::from(e.to_string())),
                 )
             })?;
+        // The sampling call is billed. Charge it to the chat whose tool call is
+        // in flight on this client; with several (or none) it cannot be
+        // attributed, and is left to the scope or `session_context`. Several
+        // concurrent calls of ONE chat still name that chat.
+        let sampling_session = self.active_call_sessions.lock().ok().and_then(|sessions| {
+            let first = sessions.first()?;
+            sessions
+                .iter()
+                .all(|session| session == first)
+                .then(|| first.clone())
+        });
+        crate::session::session_manager::side_usage::record_side_call_usage(
+            sampling_session.as_deref(),
+            crate::session::session_manager::side_usage::SideCall::McpSampling,
+            provider.get_name(),
+            &usage,
+        )
+        .await;
 
         Ok(CreateMessageResult {
             model: usage.model,

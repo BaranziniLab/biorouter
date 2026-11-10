@@ -458,6 +458,19 @@ pub async fn check_progress(
     actions_taken: u32,
     previous_reason: Option<&str>,
 ) -> Option<String> {
+    check_progress_in_session(provider, None, tail, actions_taken, previous_reason).await
+}
+
+/// [`check_progress`] that charges the check's provider usage to `session_id`
+/// as a side call. With `None` the chat comes from the side-usage scope or
+/// `session_context`, and the call is not recorded when neither names one.
+pub async fn check_progress_in_session(
+    provider: Arc<dyn Provider>,
+    session_id: Option<&str>,
+    tail: &str,
+    actions_taken: u32,
+    previous_reason: Option<&str>,
+) -> Option<String> {
     let history = match previous_reason {
         Some(prev) => format!(
             "\n\nOn an earlier check this turn you already flagged a loop:\n\"{}\"\n\
@@ -483,7 +496,16 @@ pub async fn check_progress(
     .await;
 
     let response = match completion {
-        Ok(Ok((message, _usage))) => message.as_concat_text(),
+        Ok(Ok((message, usage))) => {
+            crate::session::session_manager::side_usage::record_side_call_usage(
+                session_id,
+                crate::session::session_manager::side_usage::SideCall::StallCheck,
+                provider.get_name(),
+                &usage,
+            )
+            .await;
+            message.as_concat_text()
+        }
         Ok(Err(e)) => {
             debug!("stall check: provider error, assuming progress: {e}");
             return None;
