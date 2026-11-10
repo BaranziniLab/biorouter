@@ -236,6 +236,47 @@ pub enum DownwardAdvice<'a> {
     Instead(&'a str),
 }
 
+/// Who reads a refusal sentence. The service writes every decision refusal
+/// for the agent that asked ([`DownwardAdvice::Instead`] names the
+/// `decision_models` tool); a sentence shown to a person goes through
+/// [`refusal_for`] first, so it never names an agent tool (R4, live QA
+/// 2026-11-10) and, on the desktop, carries no raw markdown (R5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalAudience {
+    /// The agent: the sentence as written, naming its own tool.
+    Agent,
+    /// A person at a terminal (`biorouter` human output): the agent tool's
+    /// advice becomes the command that lists the models.
+    Cli,
+    /// A person in the app (a notice, a dialog): no tool or command named,
+    /// and no backticks.
+    Person,
+}
+
+/// The agent's way to the list of decision models, as refusals write it.
+pub const MODEL_LIST_ADVICE_AGENT: &str = "(decision_models lists them)";
+/// The same advice for a person at a terminal.
+pub const MODEL_LIST_ADVICE_CLI: &str = "(`biorouter models decision list` shows them)";
+
+/// `text`, a refusal or error sentence written for the agent, as `audience`
+/// reads it. Only the advice and the markup change; the reason is the same
+/// sentence on every surface.
+pub fn refusal_for(text: &str, audience: RefusalAudience) -> String {
+    match audience {
+        RefusalAudience::Agent => text.to_string(),
+        RefusalAudience::Cli => text.replace(MODEL_LIST_ADVICE_AGENT, MODEL_LIST_ADVICE_CLI),
+        // "Name" is what the agent does in a call; a person chooses.
+        RefusalAudience::Person => text
+            .replace(&format!(" {MODEL_LIST_ADVICE_AGENT}"), "")
+            .replace(MODEL_LIST_ADVICE_AGENT, "")
+            .replace(
+                "Name a private decision model",
+                "Choose a private decision model",
+            )
+            .replace('`', ""),
+    }
+}
+
 /// [`assert_alt_provider_allowed`] for an alternate model that is not a
 /// [`Provider`]: a decision model (`crate::decision`), whose adapters declare a
 /// tier of their own rather than implementing the chat trait. Same rule, same
@@ -519,6 +560,34 @@ mod tests {
                 "with the switch OFF nothing is refused: {session:?} + {tier:?}"
             );
         }
+    }
+
+    /// R4 / R5: the agent keeps its tool, a terminal gets the command, and a
+    /// person in the app gets neither, nor any backticks.
+    #[test]
+    fn a_refusal_names_the_way_to_the_models_by_audience() {
+        let refusal = assert_alt_tier_allowed(
+            "this decision",
+            "joey-1",
+            ProviderTier::Public,
+            SessionClassification::Private,
+            true,
+            DownwardAdvice::Instead("Name a private decision model (decision_models lists them)"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(refusal_for(&refusal, RefusalAudience::Agent), refusal);
+        assert_eq!(
+            refusal_for(&refusal, RefusalAudience::Cli),
+            "This chat is private, so this decision cannot run on `joey-1`, which is a public \
+             model. Name a private decision model (`biorouter models decision list` shows \
+             them), or start this work in a public chat."
+        );
+        assert_eq!(
+            refusal_for(&refusal, RefusalAudience::Person),
+            "This chat is private, so this decision cannot run on joey-1, which is a public \
+             model. Choose a private decision model, or start this work in a public chat."
+        );
     }
 
     /// A model the caller named is refused with what to name instead, not

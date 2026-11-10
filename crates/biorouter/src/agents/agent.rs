@@ -12690,7 +12690,18 @@ impl Agent {
             settle_secs = settle.as_secs(),
             "a monitor's stop stopped the subagents this chat started"
         );
-        let titles: Vec<String> = stopped.iter().map(|child| child.title.clone()).collect();
+        // C-2: each named by its role when it has one.
+        let mut titles: Vec<String> = Vec::with_capacity(stopped.len());
+        for child in &stopped {
+            titles.push(
+                crate::agents::subagent_roster::display_name_of(
+                    &self.config.session_manager,
+                    &child.child_session_id,
+                    &child.title,
+                )
+                .await,
+            );
+        }
         let notice = self
             .durable_notice(session_id, children_stopped_notice(&titles))
             .await;
@@ -13063,11 +13074,13 @@ impl Agent {
         if session.session_type != SessionType::SubAgent {
             return;
         }
-        let title = subagent_handle::list_for_session(parent)
+        // C-2: named by its role when it has one, as the side panel names it.
+        let task = subagent_handle::list_for_session(parent)
             .into_iter()
             .find(|handle| handle.child_session_id == session_id)
             .map(|handle| handle.title.clone())
             .unwrap_or_else(|| session.name.clone());
+        let title = crate::agents::subagent_roster::display_name(&session.extension_data, &task);
         let Some((parent, stop)) =
             crate::decision::monitor::EscalatedStop::from_event(event, session_id, &title)
         else {
