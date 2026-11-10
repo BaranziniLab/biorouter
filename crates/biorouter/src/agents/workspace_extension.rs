@@ -4735,7 +4735,7 @@ impl WorkspaceClient {
                 if !announcement_delivered(&result) {
                     return Ok(vec![Content::text(format!(
                         "The GUI did NOT close the tab for session {} ({}). The session \
-                         is untouched; do not tell the user the tab is gone.",
+                         is untouched and its tab is still open, so never say the tab is gone.",
                         session_id,
                         gui_detail(&result).unwrap_or("no reason given")
                     ))]);
@@ -7355,13 +7355,13 @@ pub(crate) fn open_result_text(
             return format!(
                 "Session {session_id} already has a {noun} in the GUI, but the user has \
                  turned OFF automatic tab opening, so it was NOT brought to the front. \
-                 {handoff}. Do not tell the user you opened or switched to a {noun}."
+                 {handoff}. Never say you opened or switched to a {noun}."
             );
         }
         return format!(
             "Session {session_id} is ready, but the user has turned OFF automatic tab \
-             opening, so no {noun} was opened; {handoff}. Do not tell the user you \
-             opened a {noun}."
+             opening, so no {noun} was opened; {handoff}. Never say you opened a \
+             {noun}."
         );
     }
     // The separator belongs to the detail, not to the sentence: `place_in_gui`
@@ -16678,7 +16678,7 @@ pub(crate) mod tests {
         // …and in the SAME call the model was told the truth, not "opened".
         let text = text_of(&r);
         assert!(
-            text.contains("no tab was opened") && text.contains("Do not tell the user"),
+            text.contains("no tab was opened") && text.contains("Never say you opened"),
             "{text}"
         );
         assert!(
@@ -17344,7 +17344,7 @@ pub(crate) mod tests {
             "announce-only must not reuse the phrase the model will repeat: {announced}"
         );
         assert!(
-            announced.contains("no tab was opened") && announced.contains("Do not tell the user"),
+            announced.contains("no tab was opened") && announced.contains("Never say you opened"),
             "the model must be told, in words, not to claim a tab: {announced}"
         );
         assert!(
@@ -17490,10 +17490,49 @@ pub(crate) mod tests {
             "announce-only must deny the move it actually suppressed: {hushed}"
         );
         assert!(
-            hushed.contains("Do not tell the user you opened or switched"),
+            hushed.contains("Never say you opened or switched"),
             "{hushed}"
         );
         assert!(!hushed.contains("s-x opened"), "{hushed}");
+    }
+
+    /// D-14 / E-1 (live QA 2026-11-10): the same "Do not tell the user ..."
+    /// shape that made the spawn result trip the prompt-injection guard was in
+    /// `workspace_open`'s announce-only answers. Every arm of the model-facing
+    /// sentence must pass the real guard clean.
+    #[test]
+    fn open_result_text_does_not_trip_the_prompt_injection_guard() {
+        use crate::guardrails::tool_output::scan_injection;
+        for placement in ["tab", "window"] {
+            for focus in [false, true] {
+                for announce_only in [false, true] {
+                    for outcome in [
+                        TabOutcome::Opened,
+                        TabOutcome::AlreadyOpen,
+                        TabOutcome::Focused,
+                    ] {
+                        for gui in [
+                            json!({ "ok": true }),
+                            json!({ "ok": false, "detail": "no window" }),
+                        ] {
+                            let text = open_result_text(
+                                "20261110_2",
+                                placement,
+                                focus,
+                                announce_only,
+                                outcome,
+                                &gui,
+                            );
+                            assert!(
+                                scan_injection(&text).is_empty(),
+                                "{:?}: {text}",
+                                scan_injection(&text)
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------------

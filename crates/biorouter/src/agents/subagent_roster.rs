@@ -233,6 +233,32 @@ pub fn read_spawn_record(extension_data: &ExtensionData) -> Option<SubagentSpawn
         .and_then(|value| serde_json::from_value(value.clone()).ok())
 }
 
+/// The name a person-facing sentence gives a subagent: the `role` it was
+/// spawned with when it has one, else `fallback` (its handle's title, the task
+/// on one line). C-2 (live QA 2026-11-10): a monitor's stop named a subagent
+/// by its task ("Use the Developer shell tool to write a short synthetic note
+/// to…") while the side panel, its tab and History all call it "mon-1".
+pub fn display_name(extension_data: &ExtensionData, fallback: &str) -> String {
+    read_spawn_record(extension_data)
+        .and_then(|record| record.role)
+        .map(|role| role.trim().to_string())
+        .filter(|role| !role.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// [`display_name`] for a stored child, read from its session; `fallback`
+/// when it cannot be read.
+pub async fn display_name_of(
+    session_manager: &SessionManager,
+    child_session_id: &str,
+    fallback: &str,
+) -> String {
+    match session_manager.get_session(child_session_id, false).await {
+        Ok(session) => display_name(&session.extension_data, fallback),
+        Err(_) => fallback.to_string(),
+    }
+}
+
 /// The outcome record in `extension_data`, if one was written and parses.
 pub fn read_outcome_record(extension_data: &ExtensionData) -> Option<SubagentOutcomeRecord> {
     extension_data
@@ -876,6 +902,30 @@ mod tests {
             arguments: None,
             meta: None,
         }
+    }
+
+    /// C-2: a subagent with a role is named by it; one without keeps the
+    /// caller's fallback, and so does a blank role or a missing session.
+    #[tokio::test]
+    async fn a_subagent_is_named_by_its_role_when_it_has_one() {
+        let (_temp, sm) = store().await;
+        let child = spawn_child(&sm, "parent-names", "names").await;
+        assert_eq!(
+            display_name_of(&sm, &child, "Write a note").await,
+            "Write a note"
+        );
+        record_spawn_identity(&sm, &child, Some(" mon-1 "), None)
+            .await
+            .unwrap();
+        assert_eq!(display_name_of(&sm, &child, "Write a note").await, "mon-1");
+        record_spawn_identity(&sm, &child, Some("  "), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            display_name_of(&sm, &child, "Write a note").await,
+            "Write a note"
+        );
+        assert_eq!(display_name_of(&sm, "no-such-child", "task").await, "task");
     }
 
     /// The spawn record's two halves merge, and the runtime-profile install

@@ -1654,7 +1654,10 @@ impl MonitorRegistry {
                             Observation::Probability(decision.pass_probability.unwrap_or(0.0))
                         }
                         None => Observation::Error {
-                            message: format!("the decision model gave no answer for `{id}`"),
+                            // The criterion's id is internal (R6): a person
+                            // reads this in the monitor's notice.
+                            message: "the decision model gave no answer to its question"
+                                .to_string(),
                             refused: false,
                         },
                     },
@@ -2103,8 +2106,20 @@ fn rearm_level(event: &MonitorEvent) -> Option<f64> {
 
 /// The notice for one monitor event, and whether the loop should stop or
 /// tell the model. `None` for a step that says nothing.
+///
+/// A notice is read by a person, so an error or a reason it quotes, which the
+/// service wrote for the agent, goes through
+/// [`crate::privacy::alt_provider::refusal_for`] with
+/// [`RefusalAudience::Person`](crate::privacy::alt_provider::RefusalAudience):
+/// no agent tool named as advice (R4) and no backticks (R5).
 pub fn event_notice(event: &MonitorEvent) -> Option<String> {
     let name = &event.name;
+    let plain = |text: &str| {
+        crate::privacy::alt_provider::refusal_for(
+            text,
+            crate::privacy::alt_provider::RefusalAudience::Person,
+        )
+    };
     match &event.step {
         Step::Quiet | Step::Suppressed { .. } => None,
         Step::Fired { action, .. } => {
@@ -2137,16 +2152,19 @@ pub fn event_notice(event: &MonitorEvent) -> Option<String> {
             })
         }
         Step::FailedClosed { error } => Some(format!(
-            "Monitor '{name}' could not be checked ({error}). It is set to pause when that \
-             happens, so the turn stops here."
+            "Monitor '{name}' could not be checked ({}). It is set to pause when that \
+             happens, so the turn stops here.",
+            plain(error)
         )),
         Step::ErrorNotice { error, off: true } => Some(format!(
-            "Monitor '{name}' could not be checked ({error}), and is off for the rest of this \
-             turn."
+            "Monitor '{name}' could not be checked ({}), and is off for the rest of this \
+             turn.",
+            plain(error)
         )),
         Step::ErrorNotice { error, off: false } => Some(format!(
-            "Monitor '{name}' could not be checked ({error}). It keeps trying; after \
-             {ERRORS_BEFORE_OFF} failures in a row it is off for the rest of this turn."
+            "Monitor '{name}' could not be checked ({}). It keeps trying; after \
+             {ERRORS_BEFORE_OFF} failures in a row it is off for the rest of this turn.",
+            plain(error)
         )),
         Step::LimitReached { limit, stops } => {
             let checked = plural(u64::from(*limit), "time", "times");
@@ -2165,10 +2183,12 @@ pub fn event_notice(event: &MonitorEvent) -> Option<String> {
             })
         }
         Step::NotChecked { why, off: false } => Some(format!(
-            "Monitor '{name}' was not checked here: {why}. It is checked again at its next point."
+            "Monitor '{name}' was not checked here: {}. It is checked again at its next point.",
+            plain(why)
         )),
         Step::NotChecked { why, off: true } => Some(format!(
-            "Monitor '{name}' cannot be checked ({why}), so it is off for the rest of this turn."
+            "Monitor '{name}' cannot be checked ({}), so it is off for the rest of this turn.",
+            plain(why)
         )),
         Step::ChildStopped(stop) => {
             let condition = if stop.p.is_some() {
@@ -2625,8 +2645,13 @@ pub fn marker_text(marker: &DecisionTurnMarker) -> String {
                     if let Some(p) = item.last_pass_probability {
                         text.push_str(&format!(" (last P {})", format_p(p)));
                     }
+                    // R1 (live QA 2026-11-10): a person reads a monitor's
+                    // check as "fired" or "quiet", never as passed or failed.
+                    // A monitor whose every check errored is neither.
                     if item.fired {
                         text.push_str(", fired");
+                    } else if item.count > item.errors {
+                        text.push_str(", quiet");
                     }
                     text
                 }
@@ -2994,6 +3019,88 @@ mod tests {
 
     fn limit(limit: u32, stops: bool) -> Step {
         Step::LimitReached { limit, stops }
+    }
+
+    /// R4 / R5 (live QA 2026-11-10): an error a monitor's notice quotes was
+    /// written for the agent. The person reads it without the agent's tool as
+    /// advice and without backticks; the model-only stop note keeps it as
+    /// written.
+    #[test]
+    fn a_notice_quotes_an_error_in_a_persons_words() {
+        let refusal = "This chat is private, so this decision cannot run on `joey-1`, which \
+                       is a public model. Name a private decision model (decision_models lists \
+                       them), or start this work in a public chat.";
+        for step in [
+            Step::FailedClosed {
+                error: refusal.into(),
+            },
+            Step::ErrorNotice {
+                error: refusal.into(),
+                off: true,
+            },
+            Step::ErrorNotice {
+                error: refusal.into(),
+                off: false,
+            },
+            Step::NotChecked {
+                why: refusal.into(),
+                off: false,
+            },
+            Step::NotChecked {
+                why: refusal.into(),
+                off: true,
+            },
+        ] {
+            let notice = event_notice(&event(step.clone())).unwrap();
+            assert!(!notice.contains("decision_models"), "{notice}");
+            assert!(!notice.contains('`'), "{notice}");
+            assert!(notice.contains("cannot run on joey-1"), "{notice}");
+            assert!(
+                notice.contains("Choose a private decision model, or start"),
+                "{notice}"
+            );
+        }
+        let note = stop_note(&[event(Step::FailedClosed {
+            error: refusal.into(),
+        })])
+        .unwrap();
+        assert!(note.contains("decision_models lists"), "{note}");
+    }
+
+    /// R1: a monitor that answered and never fired reads "quiet" in the turn's
+    /// marker; one whose every check errored is neither fired nor quiet.
+    #[test]
+    fn the_marker_says_quiet_or_fired_never_failed() {
+        let item = |count: u64, errors: u64, fired: bool| DecisionTurnMarkerItem {
+            origin: DecisionOrigin::Monitor,
+            origin_id: Some("m1".into()),
+            label: "Form reached".into(),
+            count,
+            passed: 0,
+            failed: count - errors,
+            errors,
+            last_pass_probability: None,
+            fired,
+        };
+        let text = |item| {
+            marker_text(&DecisionTurnMarker {
+                turn_id: "t".into(),
+                items: vec![item],
+            })
+        };
+        assert_eq!(
+            text(item(17, 0, false)),
+            "Decision models: monitor 'Form reached' checked 17 times, quiet"
+        );
+        assert_eq!(
+            text(item(3, 0, true)),
+            "Decision models: monitor 'Form reached' checked 3 times, fired"
+        );
+        assert_eq!(
+            text(item(2, 2, false)),
+            "Decision models: monitor 'Form reached' checked 2 times, 2 errors"
+        );
+        assert!(!text(item(17, 0, false)).contains("failed"));
     }
 
     /// One evaluation point at `timing` of chat `s` over `conv`, as the agent
@@ -4105,8 +4212,7 @@ mod tests {
             event_notice(&held[0]).as_deref(),
             Some(
                 "Monitor 'bad' cannot be checked (Monitor \"bad\" asks a yes/no question, so \
-                 it can watch `yes` or `no`, not `maybe`.), so it is off for the rest of this \
-                 turn."
+                 it can watch yes or no, not maybe.), so it is off for the rest of this turn."
             )
         );
         assert!(registry.is_off_this_turn("s", "bad"));
@@ -4267,7 +4373,7 @@ mod tests {
         );
         assert_eq!(
             marker_text(&marker),
-            "Decision models: monitor 'Form reached' checked 18 times (last P 0.31); \
+            "Decision models: monitor 'Form reached' checked 18 times (last P 0.31), quiet; \
              decide: 600 chunks, 2 errors; gate 'Build': 2 checks, 1 passed"
         );
         assert!(turn_marker("empty", Vec::new(), Vec::new()).is_none());

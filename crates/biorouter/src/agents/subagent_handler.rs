@@ -3686,7 +3686,7 @@ mod tests {
         ];
         assert_eq!(
             decision_marker_text(busy.iter(), &earlier_turns).as_deref(),
-            Some("Decision models: monitor 'New check' checked 2 times")
+            Some("Decision models: monitor 'New check' checked 2 times, quiet")
         );
     }
 }
