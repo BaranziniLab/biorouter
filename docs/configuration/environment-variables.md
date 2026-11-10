@@ -150,6 +150,9 @@ These variables control how biorouter manages conversation sessions and context.
 | `BIOROUTER_RANDOM_THINKING_MESSAGES` | Controls whether to show amusing random messages during processing | `"true"`, `"false"` | `"true"` |
 | `BIOROUTER_CLI_SHOW_COST` | Toggles display of model cost estimates in CLI output | `"true"`, `"1"` (case insensitive) to enable | false |
 | `BIOROUTER_AUTO_COMPACT_THRESHOLD` | Percentage threshold at which biorouter automatically summarizes your session | Float between 0.0 and 1.0 (disabled at 0.0) | 0.8 |
+| `BIOROUTER_AUTO_COMPACT_MAX_TOKENS` | Token count at which a session is summarized whatever the window size. The trigger is the lower of this and the threshold above, so a model with a 1M-token window still compacts at a reasonable size | A whole number of tokens; `0` removes the ceiling | 200000 |
+| `BIOROUTER_LARGE_RESPONSE_TOKENS` | Largest tool result kept in the chat. A larger result is saved to a file under `.biorouter/tool-output/` in the working directory and replaced by a preview and the file's path | A whole number of tokens | 10000 |
+| `BIOROUTER_LARGE_RESPONSE_PREVIEW_TOKENS` | How much of a saved tool result stays in the chat as a head and tail preview | A whole number of tokens, below the limit above | 2000 |
 
 Ordinary chats have no turn or tool-call limit by default. Existing positive limits remain in effect until you change them; select **Unlimited** in Settings > Chat > Approvals or set the value to `0`. Stop, explicit reply budgets, and loop recovery remain active. See [Long-running tasks](../agent-loop/long-running-tasks.md).
 

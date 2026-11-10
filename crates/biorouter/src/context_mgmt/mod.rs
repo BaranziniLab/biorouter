@@ -20,6 +20,76 @@ pub use pins::{
 
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
 
+/// Auto-compaction also fires once the context passes this many tokens,
+/// whatever the window. The trigger is `min(threshold x window, ceiling)`.
+///
+/// A fraction alone scales with the window: on a 1,050,000-token model 0.8
+/// meant 840k, so a long chat never compacted and every request re-sent
+/// hundreds of thousands of tokens (and, past 272k input tokens, paid the
+/// long-context price for the whole request on models that bill one). 200k
+/// leaves the fraction in charge on windows up to 250k and caps the rest.
+/// `BIOROUTER_AUTO_COMPACT_MAX_TOKENS` overrides it; `0` removes the ceiling.
+pub const DEFAULT_AUTO_COMPACT_MAX_TOKENS: usize = 200_000;
+
+/// Config key for [`DEFAULT_AUTO_COMPACT_MAX_TOKENS`].
+pub const AUTO_COMPACT_MAX_TOKENS_KEY: &str = "BIOROUTER_AUTO_COMPACT_MAX_TOKENS";
+
+/// The configured token ceiling for auto-compaction, `None` when it is off
+/// (`0`).
+pub fn auto_compact_max_tokens() -> Option<usize> {
+    let ceiling = Config::global()
+        .get_param::<usize>(AUTO_COMPACT_MAX_TOKENS_KEY)
+        .unwrap_or(DEFAULT_AUTO_COMPACT_MAX_TOKENS);
+    (ceiling > 0).then_some(ceiling)
+}
+
+/// The token count above which auto-compaction fires: `threshold x
+/// context_limit`, lowered to `ceiling` when one is set. `None` when the
+/// fraction disables auto-compaction (`<= 0` or `>= 1`); the ceiling never
+/// turns it back on.
+pub fn auto_compact_trigger_tokens(
+    context_limit: usize,
+    threshold: f64,
+    ceiling: Option<usize>,
+) -> Option<usize> {
+    if threshold <= 0.0 || threshold >= 1.0 {
+        return None;
+    }
+    let by_fraction = (context_limit as f64 * threshold) as usize;
+    Some(match ceiling {
+        Some(ceiling) => by_fraction.min(ceiling),
+        None => by_fraction,
+    })
+}
+
+/// The inline notice shown when auto-compaction starts, naming whichever bound
+/// fired: the share of the window, or the token ceiling.
+pub fn auto_compact_notice(context_limit: usize, threshold: f64, ceiling: Option<usize>) -> String {
+    let by_fraction = (context_limit as f64 * threshold) as usize;
+    match ceiling {
+        Some(ceiling) if ceiling < by_fraction => format!(
+            "Exceeded the auto-compact limit of {} tokens. Performing auto-compaction...",
+            group_thousands(ceiling)
+        ),
+        _ => format!(
+            "Exceeded auto-compact threshold of {}%. Performing auto-compaction...",
+            (threshold * 100.0) as u32
+        ),
+    }
+}
+
+fn group_thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// BR-14: a usable compaction summary must clear this many characters. Below it
 /// the "summary" is effectively empty (a refusal, a stray token, a blank
 /// response) and is retried instead of silently becoming the agent's memory.
@@ -843,10 +913,14 @@ pub async fn check_if_compaction_needed(
 
     // Auto-compaction disabled: nothing below can change the answer, and the cold
     // path would otherwise pay for a full tokenization to reach the same `false`.
-    if threshold <= 0.0 || threshold >= 1.0 {
+    //
+    // Otherwise the trigger is the lower of the fraction of the window and the
+    // absolute ceiling, so a very large window still compacts at a sane size.
+    let Some(threshold_tokens) =
+        auto_compact_trigger_tokens(context_limit, threshold, auto_compact_max_tokens())
+    else {
         return Ok(false);
-    }
-    let threshold_tokens = (context_limit as f64 * threshold) as usize;
+    };
 
     // The provider-reported figure is trusted only while it is at least the
     // fewest tokens this request can possibly be. Ollama's `/v1` silently kept
@@ -955,8 +1029,9 @@ pub async fn check_if_compaction_needed(
 
     let usage_ratio = current_tokens as f64 / context_limit as f64;
 
-    // Auto-compact-disabled thresholds already returned above.
-    let mut needs_compaction = usage_ratio > threshold;
+    // Auto-compact-disabled thresholds already returned above. Compared in
+    // tokens, so the ceiling counts as well as the fraction.
+    let mut needs_compaction = current_tokens > threshold_tokens;
 
     // Compaction shrinks the CONVERSATION; the system prompt and tool schemas
     // are rebuilt in full for every request. If they ALONE are over the
@@ -982,11 +1057,12 @@ pub async fn check_if_compaction_needed(
     }
 
     debug!(
-        "Compaction check: {} / {} tokens ({:.1}%), threshold: {:.1}%, needs compaction: {}, source: {}",
+        "Compaction check: {} / {} tokens ({:.1}%), threshold: {:.1}% capped at {} tokens, needs compaction: {}, source: {}",
         current_tokens,
         context_limit,
         usage_ratio * 100.0,
         threshold * 100.0,
+        threshold_tokens,
         needs_compaction,
         token_source
     );
@@ -1090,7 +1166,23 @@ pub async fn run_eager_compaction(
 
     on_before_compact();
     let (compacted, usage) =
-        compact_messages(provider.as_ref(), &stored_conversation, false).await?;
+        match compact_messages(provider.as_ref(), &stored_conversation, false).await {
+            Ok(done) => done,
+            Err(error) => {
+                // A failed compaction may still have been billed (a junk summary
+                // and a failed retry). Record it before reporting the failure.
+                if let Some(spent) = spent_usage_of(&error) {
+                    record_unapplied_compaction_usage(
+                        &session_manager,
+                        &session_config.id,
+                        provider.get_name(),
+                        spent,
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        };
 
     // Swap under the store's own freshness guard: anything a concurrent turn
     // appended while we summarized is carried over instead of being clobbered,
@@ -1109,6 +1201,16 @@ pub async fn run_eager_compaction(
              was rewritten under it",
             session_config.id, outcome
         );
+        // The summary was billed even though it was thrown away. Count it as
+        // spend without moving the context gauge, since the history did not
+        // shrink.
+        record_unapplied_compaction_usage(
+            &session_manager,
+            &session_config.id,
+            provider.get_name(),
+            &usage,
+        )
+        .await;
         return Ok(EagerCompactionOutcome::Aborted);
     }
 
@@ -1124,6 +1226,39 @@ pub async fn run_eager_compaction(
     .await?;
 
     Ok(EagerCompactionOutcome::Swapped)
+}
+
+/// Record what a compaction that did not land was billed: in the usage ledger
+/// and the chat's accumulated totals, never in the context gauge (the history
+/// did not change). Best effort, like the rest of background compaction's
+/// bookkeeping: a failed write is logged, not raised.
+pub(crate) async fn record_unapplied_compaction_usage(
+    session_manager: &crate::session::SessionManager,
+    session_id: &str,
+    provider_name: &str,
+    usage: &ProviderUsage,
+) {
+    if usage.usage.input_tokens.is_none() && usage.usage.output_tokens.is_none() {
+        return;
+    }
+    // A side entry has no cache columns, so cached input (rare on a
+    // summarization request, whose prompt is unique) is left out rather than
+    // priced as fresh input.
+    let input = usage.usage.input_tokens.map(i64::from);
+    let entry = crate::session::SideUsageEntry {
+        event_key: format!("compaction:{}", uuid::Uuid::new_v4()),
+        session_id: session_id.to_string(),
+        provider: usage
+            .provider
+            .clone()
+            .unwrap_or_else(|| provider_name.to_string()),
+        model_id: usage.model.clone(),
+        input_tokens: input,
+        output_tokens: usage.usage.output_tokens.map(i64::from),
+    };
+    if let Err(e) = session_manager.apply_side_usage_event(entry).await {
+        warn!("BR-12: could not record the usage of a compaction that did not land: {e}");
+    }
 }
 
 fn filter_tool_responses<'a>(messages: &[&'a Message], remove_percent: u32) -> Vec<&'a Message> {
@@ -1265,47 +1400,127 @@ async fn complete_summary(
     }
 }
 
+/// A summarization that did not produce a summary, with what it still spent:
+/// a junk first summary is billed even when the retry then fails.
+struct SummaryFailure {
+    error: ProviderError,
+    spent: Option<ProviderUsage>,
+}
+
+/// Add `next` to a running total of billed usage.
+fn add_spent(total: Option<ProviderUsage>, next: Option<&ProviderUsage>) -> Option<ProviderUsage> {
+    match (total, next) {
+        (Some(total), Some(next)) => Some(total.combine_with(next)),
+        (None, Some(next)) => Some(next.clone()),
+        (total, None) => total,
+    }
+}
+
+/// Fill in token counts a provider did not report, so a billed call is never
+/// recorded as zero. Best effort: an estimate that fails keeps the raw usage.
+async fn ensure_summary_tokens(
+    usage: &mut ProviderUsage,
+    system_prompt: &str,
+    request: &[Message],
+    response: &Message,
+) {
+    if let Err(e) = usage
+        .ensure_tokens(system_prompt, request, response, &[])
+        .await
+    {
+        warn!("Compaction: could not estimate summary usage tokens: {e}");
+    }
+}
+
 /// BR-14: summarize with validation and a single retry. A junk/empty summary is
 /// re-requested once; if the retry is still not well-formed we keep whichever
 /// result is non-empty (a mediocre summary beats dead-ending the turn) and only
 /// error when both are truly empty. A provider error on the *first* call is
 /// propagated so [`do_compact`] can fall through to a smaller payload; a
 /// provider error on the *retry* falls back to the non-empty first result.
+///
+/// The usage returned, on success and on failure alike, is the SUM of every
+/// completion that came back: the discarded first summary was billed too.
 async fn summarize_with_validation(
     provider: &dyn Provider,
     use_fast_model: bool,
     system_prompt: &str,
     request: &[Message],
-) -> Result<(Message, ProviderUsage), ProviderError> {
-    let (response, usage) =
-        complete_summary(provider, use_fast_model, system_prompt, request).await?;
+) -> Result<(Message, ProviderUsage), SummaryFailure> {
+    let (response, mut usage) = complete_summary(provider, use_fast_model, system_prompt, request)
+        .await
+        .map_err(|error| SummaryFailure { error, spent: None })?;
+    ensure_summary_tokens(&mut usage, system_prompt, request, &response).await;
     if summary_is_usable(&response) {
         return Ok((response, usage));
     }
 
     warn!("Compaction summary failed validation (empty or missing sections); retrying once");
     match complete_summary(provider, use_fast_model, system_prompt, request).await {
-        Ok((retry_response, retry_usage)) if summary_is_usable(&retry_response) => {
-            Ok((retry_response, retry_usage))
-        }
-        Ok((retry_response, retry_usage)) => {
-            if !summary_text(&retry_response).trim().is_empty() {
-                Ok((retry_response, retry_usage))
+        Ok((retry_response, mut retry_usage)) => {
+            ensure_summary_tokens(&mut retry_usage, system_prompt, request, &retry_response).await;
+            let both = usage.combine_with(&retry_usage);
+            if summary_is_usable(&retry_response)
+                || !summary_text(&retry_response).trim().is_empty()
+            {
+                Ok((retry_response, both))
             } else if !summary_text(&response).trim().is_empty() {
-                Ok((response, usage))
+                Ok((response, both))
             } else {
-                Err(ProviderError::ExecutionError(
-                    "Compaction produced an empty summary even after one retry".to_string(),
-                ))
+                Err(SummaryFailure {
+                    error: ProviderError::ExecutionError(
+                        "Compaction produced an empty summary even after one retry".to_string(),
+                    ),
+                    spent: Some(both),
+                })
             }
         }
         Err(retry_err) => {
             if summary_text(&response).trim().is_empty() {
-                Err(retry_err)
+                Err(SummaryFailure {
+                    error: retry_err,
+                    spent: Some(usage),
+                })
             } else {
                 Ok((response, usage))
             }
         }
+    }
+}
+
+/// A compaction that failed after spending provider calls. It travels inside
+/// the `anyhow::Error` compaction returns, so a caller can still record what
+/// was billed; [`spent_usage_of`] reads it back.
+#[derive(Debug)]
+pub struct CompactionFailed {
+    message: String,
+    /// Every completion this compaction got back before it gave up.
+    pub spent: ProviderUsage,
+}
+
+impl std::fmt::Display for CompactionFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CompactionFailed {}
+
+/// The usage a failed compaction still spent, when the error carries it.
+pub fn spent_usage_of(error: &anyhow::Error) -> Option<&ProviderUsage> {
+    error
+        .downcast_ref::<CompactionFailed>()
+        .map(|failed| &failed.spent)
+}
+
+/// Wrap a compaction error with what was spent before it, if anything was.
+fn failed_with_spent(error: anyhow::Error, spent: Option<ProviderUsage>) -> anyhow::Error {
+    match spent {
+        Some(spent) => anyhow::Error::new(CompactionFailed {
+            message: error.to_string(),
+            spent,
+        }),
+        None => error,
     }
 }
 
@@ -1385,6 +1600,10 @@ async fn do_compact(
         },
     ];
 
+    // What earlier attempts were billed for. A context-length refusal bills
+    // nothing, but a validated retry inside an attempt does.
+    let mut spent: Option<ProviderUsage> = None;
+
     for (attempt, plan) in attempts.iter().enumerate() {
         let filtered_messages = filter_tool_responses(&agent_visible_messages, plan.remove_percent);
 
@@ -1408,7 +1627,10 @@ async fn do_compact(
             messages: messages_text,
         };
 
-        let system_prompt = render_global_file("summarize_oneshot.md", &context)?;
+        let system_prompt = match render_global_file("summarize_oneshot.md", &context) {
+            Ok(prompt) => prompt,
+            Err(e) => return Err(failed_with_spent(e.into(), spent)),
+        };
 
         let user_message = Message::user()
             .with_text("Please summarize the conversation history provided in the system prompt.");
@@ -1422,7 +1644,7 @@ async fn do_compact(
         )
         .await
         {
-            Ok((mut response, mut provider_usage)) => {
+            Ok((mut response, provider_usage)) => {
                 // BR-14: keep the summary as a User-role message. After compaction
                 // it is the *first* agent-visible message, and `fix_conversation`'s
                 // `fix_lead_trail` strips a leading *assistant* message — so
@@ -1432,30 +1654,33 @@ async fn do_compact(
                 // recovered context as user input, not an accidental mislabel.
                 response.role = Role::User;
 
-                provider_usage
-                    .ensure_tokens(&system_prompt, &summarization_request, &response, &[])
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to ensure usage tokens: {}", e))?;
-
-                return Ok((response, provider_usage));
+                // Token counts were filled in per completion inside
+                // `summarize_with_validation`; this adds earlier attempts.
+                let total = add_spent(spent, Some(&provider_usage)).unwrap_or(provider_usage);
+                return Ok((response, total));
             }
-            Err(e) => {
-                if matches!(e, ProviderError::ContextLengthExceeded(_)) {
+            Err(SummaryFailure { error, spent: cost }) => {
+                spent = add_spent(spent, cost.as_ref());
+                if matches!(error, ProviderError::ContextLengthExceeded(_)) {
                     if attempt < attempts.len() - 1 {
                         continue;
                     } else {
-                        return Err(anyhow::anyhow!(
-                            "Failed to compact: context limit exceeded even after removing all tool responses and truncating the largest messages"
+                        return Err(failed_with_spent(
+                            anyhow::anyhow!(
+                                "Failed to compact: context limit exceeded even after removing all tool responses and truncating the largest messages"
+                            ),
+                            spent,
                         ));
                     }
                 }
-                return Err(e.into());
+                return Err(failed_with_spent(error.into(), spent));
             }
         }
     }
 
-    Err(anyhow::anyhow!(
-        "Unexpected: exhausted all attempts without returning"
+    Err(failed_with_spent(
+        anyhow::anyhow!("Unexpected: exhausted all attempts without returning"),
+        spent,
     ))
 }
 
@@ -1567,6 +1792,9 @@ mod tests {
         // retry can be exercised.
         first_call_response: Option<Message>,
         call_count: std::sync::atomic::AtomicUsize,
+        /// What each completion reports as its usage (default: nothing, which
+        /// `ensure_tokens` then estimates).
+        usage: Usage,
         /// The summarizer carries the history it is asked to condense in the
         /// SYSTEM prompt, so recording it is how a test can assert on what did
         /// (and did not) reach the summarizer.
@@ -1592,8 +1820,15 @@ mod tests {
                 max_input_chars: None,
                 first_call_response: None,
                 call_count: std::sync::atomic::AtomicUsize::new(0),
+                usage: Usage::default(),
                 last_system_prompt: std::sync::Mutex::new(String::new()),
             }
+        }
+
+        /// Report `usage` for every completion.
+        fn with_usage(mut self, usage: Usage) -> Self {
+            self.usage = usage;
+            self
         }
 
         /// The history the most recent summarization call was handed.
@@ -1692,7 +1927,7 @@ mod tests {
 
             Ok((
                 response,
-                ProviderUsage::new("mock-model".to_string(), Usage::default()),
+                ProviderUsage::new("mock-model".to_string(), self.usage),
             ))
         }
 
@@ -2622,6 +2857,129 @@ mod tests {
         );
     }
 
+    /// Both completions of a validated retry were billed, so compaction reports
+    /// their sum, not only the kept summary's usage.
+    #[tokio::test]
+    async fn a_retried_summary_reports_the_usage_of_both_attempts() {
+        let good = Message::assistant().with_text(
+            "User Intent: continue the task.\nTechnical Concepts: rust, tokio.\n\
+             Files + Code: mod.rs.\nPending Tasks: finish BR-14.",
+        );
+        let provider = MockProvider::new(good, 100_000)
+            .with_first_response(Message::assistant().with_text("no"))
+            .with_usage(Usage::new(Some(1_000), Some(50), Some(1_050)));
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+        ]);
+        let (_, usage) = compact_messages_with_window(&provider, &conversation, false, 0)
+            .await
+            .unwrap();
+        assert_eq!(provider.calls(), 2);
+        assert_eq!(usage.usage.input_tokens, Some(2_000));
+        assert_eq!(usage.usage.output_tokens, Some(100));
+    }
+
+    /// A compaction that gives up after a billed attempt carries that usage in
+    /// its error, so a caller can still record it.
+    #[tokio::test]
+    async fn a_failed_compaction_carries_what_it_spent() {
+        // Both completions return an empty summary: billed twice, then refused.
+        let provider = MockProvider::new(Message::assistant().with_text("   "), 100_000)
+            .with_usage(Usage::new(Some(700), Some(3), Some(703)));
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+        ]);
+        let error = compact_messages_with_window(&provider, &conversation, false, 0)
+            .await
+            .expect_err("two empty summaries fail the compaction");
+        let spent = spent_usage_of(&error).expect("the error names what was spent");
+        assert_eq!(spent.usage.input_tokens, Some(1_400));
+        assert_eq!(spent.usage.output_tokens, Some(6));
+        assert!(error.to_string().contains("empty summary"), "{error}");
+    }
+
+    #[test]
+    fn the_compaction_trigger_is_the_lower_of_the_fraction_and_the_ceiling() {
+        assert_eq!(DEFAULT_AUTO_COMPACT_MAX_TOKENS, 200_000);
+        // A 1.05M window: 0.8 alone would wait for 840k tokens.
+        assert_eq!(
+            auto_compact_trigger_tokens(1_050_000, 0.8, Some(200_000)),
+            Some(200_000)
+        );
+        assert_eq!(
+            auto_compact_trigger_tokens(1_050_000, 0.8, None),
+            Some(840_000)
+        );
+        // A 128k window is untouched by the default ceiling.
+        assert_eq!(
+            auto_compact_trigger_tokens(128_000, 0.8, Some(200_000)),
+            Some(102_400)
+        );
+        // The ceiling never re-enables a disabled fraction.
+        assert_eq!(
+            auto_compact_trigger_tokens(1_050_000, 0.0, Some(200_000)),
+            None
+        );
+        assert_eq!(
+            auto_compact_trigger_tokens(1_050_000, 1.0, Some(200_000)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_compaction_notice_names_the_bound_that_fired() {
+        assert_eq!(
+            auto_compact_notice(1_050_000, 0.8, Some(200_000)),
+            "Exceeded the auto-compact limit of 200,000 tokens. Performing auto-compaction..."
+        );
+        assert_eq!(
+            auto_compact_notice(128_000, 0.8, Some(200_000)),
+            "Exceeded auto-compact threshold of 80%. Performing auto-compaction..."
+        );
+        assert_eq!(
+            auto_compact_notice(1_050_000, 0.8, None),
+            "Exceeded auto-compact threshold of 80%. Performing auto-compaction..."
+        );
+        assert_eq!(group_thousands(1_234_567), "1,234,567");
+        assert_eq!(group_thousands(999), "999");
+    }
+
+    /// The check itself applies the ceiling: on a 1.05M window a 250k-token
+    /// chat compacts, a 150k one does not.
+    #[tokio::test]
+    async fn a_very_large_window_compacts_at_the_token_ceiling() {
+        let provider =
+            MockProvider::new(Message::assistant().with_text("<mock summary>"), 1_050_000);
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("analyse the cohort"),
+            Message::assistant().with_text("done"),
+        ]);
+        let session_at = |tokens: i32| crate::session::Session {
+            total_tokens: Some(tokens),
+            ..Default::default()
+        };
+        assert!(check_if_compaction_needed(
+            &provider,
+            &conversation,
+            Some(0.8),
+            &session_at(250_000),
+            None
+        )
+        .await
+        .unwrap());
+        assert!(!check_if_compaction_needed(
+            &provider,
+            &conversation,
+            Some(0.8),
+            &session_at(150_000),
+            None
+        )
+        .await
+        .unwrap());
+    }
+
     /// BR-14: the summary lands as a `Role::User` message. This is load-bearing —
     /// it is the first agent-visible message after compaction and
     /// `fix_conversation`'s `fix_lead_trail` deletes a leading *assistant*
@@ -2930,6 +3288,16 @@ mod tests {
             0,
             "an aborted swap must not resurrect the truncated messages"
         );
+
+        // The thrown-away summary was billed: it is counted as spend, and the
+        // context gauge (which the history did not change) is left alone.
+        let session = manager.get_session(&id, false).await.unwrap();
+        assert!(
+            session.accumulated_input_tokens.unwrap_or(0) > 0,
+            "the aborted compaction's usage must be recorded: {:?}",
+            session.accumulated_input_tokens
+        );
+        assert_eq!(session.total_tokens, Some(90), "the gauge must not move");
     }
 
     /// A session comfortably under budget is left untouched — no summarization

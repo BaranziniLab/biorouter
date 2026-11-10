@@ -310,6 +310,38 @@ pub struct JobIdParams {
     pub job_id: String,
 }
 
+/// The longest `shell_status` wait, re-exported so `biorouter` can test it
+/// against its own per-call extension timeout.
+pub const SHELL_STATUS_MAX_WAIT_SECS: u64 = super::background::MAX_WAIT_SECS;
+/// The per-call timeout that wait was sized against.
+pub const SHELL_STATUS_ASSUMED_CALL_TIMEOUT_SECS: u64 =
+    super::background::EXTENSION_CALL_TIMEOUT_SECS;
+
+/// A foreground command's output stays inline up to this many lines.
+const SHELL_INLINE_MAX_LINES: usize = 100;
+/// ...and up to this many characters (about 10k tokens, the agent's default
+/// inline limit for any tool result).
+const SHELL_INLINE_MAX_CHARS: usize = 40_000;
+/// The tail preview of a spilled output never exceeds this many characters,
+/// however long its last lines are.
+const SHELL_PREVIEW_MAX_CHARS: usize = 8_000;
+
+/// The last `max_chars` characters of `text`, and whether anything was cut.
+/// Char-based, so it never splits a multibyte character.
+fn tail_chars(text: &str, max_chars: usize) -> (&str, bool) {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return (text, false);
+    }
+    let skip = total - max_chars;
+    let byte = text
+        .char_indices()
+        .nth(skip)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    (text.get(byte..).unwrap_or_default(), true)
+}
+
 /// Parameters for the `shell_status` tool.
 ///
 /// ⚠ Both fields optional and both plain scalars — no `oneOf`, no tagged
@@ -327,9 +359,11 @@ pub struct ShellStatusParams {
     /// Only meaningful with job_id. Omit it for an instant, non-blocking check
     /// that returns the job's status and any output produced since the last
     /// look. Give it to BLOCK instead, returning the moment the job exits or
-    /// when the seconds are up — default 120, capped at 600. If the job is
-    /// still running when the time elapses the result says so; call again to
-    /// keep watching. Waiting never kills the job.
+    /// when the seconds are up. Capped at 270 seconds, which keeps the call
+    /// under the 300-second tool-call timeout; a larger value waits 270. If the
+    /// job is still running when the time elapses the result says so; call
+    /// again to keep watching. Waiting never kills the job, and one blocking
+    /// wait is far cheaper than many quick checks.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 }
@@ -1468,7 +1502,7 @@ impl DeveloperServer {
 
     #[tool(
         name = "shell_status",
-        description = "Look at background shell jobs (started by `shell` with background=true). Omit job_id to list every job with its id, label, status, runtime and command. Give job_id for one job's status and the output produced since your last look. Add timeout_secs to that to BLOCK until it exits instead of peeking — up to 600 seconds, and the job is never killed by waiting."
+        description = "Look at background shell jobs (started by `shell` with background=true). Omit job_id to list every job with its id, label, status, runtime and command. Give job_id for one job's status and the output produced since your last look. Add timeout_secs to that to BLOCK until it exits instead of peeking: up to 270 seconds per call (the tool-call timeout is 300), and the job is never killed by waiting. Prefer one long blocking wait over repeated quick checks; each check costs a full model request."
     )]
     pub async fn shell_status(
         &self,
@@ -2434,57 +2468,73 @@ impl DeveloperServer {
         crate::file_access::normalize_image_path(path)
     }
 
-    // shell output can be large, this will help manage that
+    /// Bound what a foreground command's output puts into the chat.
+    ///
+    /// Output over [`SHELL_INLINE_MAX_LINES`] lines OR over
+    /// [`SHELL_INLINE_MAX_CHARS`] characters is written whole to a temporary
+    /// file, and the model gets the last lines (at most
+    /// [`SHELL_PREVIEW_MAX_CHARS`] characters of them) plus the file's path.
+    /// Counting lines alone let a three-line, 300 KB result (one JSON blob, one
+    /// wide row) through untouched, and every later request re-sent it.
     fn process_shell_output(&self, output_str: &str) -> Result<(String, String), ErrorData> {
         let lines: Vec<&str> = output_str.lines().collect();
         let line_count = lines.len();
+        let char_count = output_str.chars().count();
 
-        let start = lines.len().saturating_sub(100);
-        let last_100_lines_str = lines[start..].join("\n");
+        let too_many_lines = line_count > SHELL_INLINE_MAX_LINES;
+        let too_many_chars = char_count > SHELL_INLINE_MAX_CHARS;
+        if !too_many_lines && !too_many_chars {
+            return Ok((output_str.to_string(), output_str.to_string()));
+        }
 
-        let final_output = if line_count > 100 {
-            let tmp_file = tempfile::NamedTempFile::new().map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to create temporary file: {}", e),
-                    None,
-                )
-            })?;
-
-            std::fs::write(tmp_file.path(), output_str).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to write to temporary file: {}", e),
-                    None,
-                )
-            })?;
-
-            let (_, path) = tmp_file.keep().map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to persist temporary file: {}", e),
-                    None,
-                )
-            })?;
-
-            format!(
-                "private note: output was {} lines and we are only showing the most recent lines, remainder of lines in {} do not show tmp file to user, that file can be searched if extra context needed to fulfill request. truncated output: \n{}",
-                line_count,
-                path.display(),
-                last_100_lines_str
-            )
+        let start = lines.len().saturating_sub(SHELL_INLINE_MAX_LINES);
+        let last_lines = lines[start..].join("\n");
+        let (preview, preview_clipped) = tail_chars(&last_lines, SHELL_PREVIEW_MAX_CHARS);
+        let shown = if preview_clipped {
+            format!("the last {} characters", preview.chars().count())
         } else {
-            output_str.to_string()
+            format!("the last {} lines", line_count - start)
         };
 
-        let user_output = if line_count > 100 {
-            format!(
-                "NOTE: Output was {} lines, showing only the last 100 lines.\n\n{}",
-                line_count, last_100_lines_str
+        let tmp_file = tempfile::NamedTempFile::new().map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("Failed to create temporary file: {}", e),
+                None,
             )
+        })?;
+
+        std::fs::write(tmp_file.path(), output_str).map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("Failed to write to temporary file: {}", e),
+                None,
+            )
+        })?;
+
+        let (_, path) = tmp_file.keep().map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("Failed to persist temporary file: {}", e),
+                None,
+            )
+        })?;
+
+        // "remainder of lines in <path> do not show tmp file to user" is the
+        // phrase tests and the guardrail docs read the path between; keep it.
+        let size = if too_many_chars {
+            format!("{line_count} lines and {char_count} characters")
         } else {
-            output_str.to_string()
+            format!("{line_count} lines")
         };
+        let final_output = format!(
+            "private note: output was {size} and we are only showing {shown}, remainder of lines \
+             in {} do not show tmp file to user, that file can be searched with rg or read by line \
+             range if extra context needed to fulfill request. truncated output: \n{}",
+            path.display(),
+            preview
+        );
+        let user_output = format!("NOTE: Output was {size}, showing only {shown}.\n\n{preview}");
 
         Ok((final_output, user_output))
     }
@@ -4332,6 +4382,94 @@ mod tests {
     /// lines refuses to open without a `view_range`, for the express purpose of
     /// keeping it out of the model's context; the model complied and received
     /// the file anyway.
+    fn view_params(path: &str, view_range: Option<Vec<i64>>) -> Parameters<TextEditorParams> {
+        Parameters(TextEditorParams {
+            path: path.to_string(),
+            command: "view".to_string(),
+            view_range,
+            file_text: None,
+            old_str: None,
+            new_str: None,
+            insert_line: None,
+            diff: None,
+        })
+    }
+
+    /// A view is bounded by characters, not only by lines: five 15k-character
+    /// lines are far under `LINE_READ_LIMIT` but 75k characters, so the view
+    /// is refused with a range that fits. A range that fits still works.
+    #[tokio::test]
+    #[serial]
+    async fn test_text_editor_view_refuses_a_slice_over_the_character_cap() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("wide.json");
+        let file_path_str = file_path.to_str().unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
+        let server = create_test_server();
+
+        let content: String = (1..=5)
+            .map(|i| format!("{}\n", i.to_string().repeat(15_000)))
+            .collect();
+        std::fs::write(&file_path, &content).unwrap();
+
+        let err = server
+            .text_editor(view_params(file_path_str, None))
+            .await
+            .expect_err("a 75k-character view must be refused");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains(&format!(
+                "over the {}-character limit",
+                crate::developer::text_editor::VIEW_MAX_CHARS
+            )),
+            "{}",
+            err.message
+        );
+        assert!(err.message.contains("Lines 1-5"), "{}", err.message);
+        assert!(err.message.contains("view_range [1, 2]"), "{}", err.message);
+        assert!(err.message.contains("rg"), "{}", err.message);
+
+        // An explicit whole-file range is refused the same way.
+        let err = server
+            .text_editor(view_params(file_path_str, Some(vec![1, -1])))
+            .await
+            .expect_err("an explicit range over the cap is refused too");
+        assert!(err.message.contains("view_range [1, 2]"), "{}", err.message);
+
+        // The suggested shape works: two lines are 30,002 characters.
+        let ok = server
+            .text_editor(view_params(file_path_str, Some(vec![2, 3])))
+            .await
+            .expect("a range under the cap is returned");
+        let for_model = view_result_model_text(&ok);
+        assert_eq!(for_model.chars().count(), 30_002);
+        assert!(for_model.starts_with('2') && for_model.trim_end().ends_with('3'));
+    }
+
+    /// A single line over the cap cannot be fixed with a line range, so the
+    /// refusal says how to read part of the line instead.
+    #[tokio::test]
+    #[serial]
+    async fn test_text_editor_view_names_a_single_line_over_the_cap() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("blob.txt");
+        let file_path_str = file_path.to_str().unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
+        let server = create_test_server();
+
+        std::fs::write(&file_path, format!("short\n{}\n", "x".repeat(50_000))).unwrap();
+        let err = server
+            .text_editor(view_params(file_path_str, Some(vec![2, 2])))
+            .await
+            .expect_err("a 50k-character line is over the cap");
+        assert!(
+            err.message.contains("Line 2 alone is 50000 characters"),
+            "{}",
+            err.message
+        );
+        assert!(err.message.contains("cut -c1-20000"), "{}", err.message);
+    }
+
     #[tokio::test]
     #[serial]
     async fn test_text_editor_view_range_limits_the_model_copy_not_just_the_users() {
@@ -5659,6 +5797,109 @@ mod tests {
         // Both outputs should be empty
         assert_eq!(result.0, "");
         assert_eq!(result.1, "");
+    }
+
+    /// Few lines, many characters: one wide JSON line used to pass through
+    /// whole because only lines were counted. It now spills like a long
+    /// output, with a bounded tail preview and the full text in the file.
+    #[tokio::test]
+    #[serial]
+    async fn test_process_shell_output_spills_a_few_very_long_lines() {
+        let dir = TempDir::new().unwrap();
+        let _cwd = CwdGuard::enter(dir.path());
+        let server = create_test_server();
+
+        let wide = format!(
+            "header\n{}\nTAIL-MARKER",
+            (0..20_000).map(|i| format!("{i},")).collect::<String>()
+        );
+        assert!(wide.lines().count() <= SHELL_INLINE_MAX_LINES);
+        assert!(wide.chars().count() > SHELL_INLINE_MAX_CHARS);
+
+        let (for_model, for_user) = server.process_shell_output(&wide).unwrap();
+        assert!(
+            for_model.contains(&format!(
+                "output was 3 lines and {} characters",
+                wide.chars().count()
+            )),
+            "{}",
+            for_model.chars().take(200).collect::<String>()
+        );
+        assert!(for_model.contains("TAIL-MARKER"), "the tail is the preview");
+        assert!(
+            for_model.chars().count() < SHELL_PREVIEW_MAX_CHARS + 1_000,
+            "the model's copy must be bounded, got {} chars",
+            for_model.chars().count()
+        );
+        assert!(for_user.starts_with("NOTE: Output was 3 lines and"));
+        assert!(for_user.contains("showing only the last 8000 characters"));
+        assert!(!for_user.contains("private note"));
+
+        let start_tag = "remainder of lines in";
+        let end_tag = "do not show tmp file to user";
+        let start = for_model.find(start_tag).unwrap() + start_tag.len();
+        let end = for_model.find(end_tag).unwrap();
+        let path = for_model.get(start..end).unwrap().trim();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), wide);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// The character bound is inclusive: output at exactly the limit stays
+    /// inline, one character more spills.
+    #[tokio::test]
+    #[serial]
+    async fn test_process_shell_output_character_bound_is_inclusive() {
+        let dir = TempDir::new().unwrap();
+        let _cwd = CwdGuard::enter(dir.path());
+        let server = create_test_server();
+
+        let at_limit = "x".repeat(SHELL_INLINE_MAX_CHARS);
+        let (model, user) = server.process_shell_output(&at_limit).unwrap();
+        assert_eq!(model, at_limit);
+        assert_eq!(user, at_limit);
+
+        let over = "x".repeat(SHELL_INLINE_MAX_CHARS + 1);
+        let (model, _) = server.process_shell_output(&over).unwrap();
+        assert!(model.starts_with("private note: output was 1 lines and 40001 characters"));
+        let start = model.find("remainder of lines in").unwrap() + "remainder of lines in".len();
+        let end = model.find("do not show tmp file to user").unwrap();
+        let _ = std::fs::remove_file(model.get(start..end).unwrap().trim());
+    }
+
+    /// The wait the schema advertises is the wait the code applies, and both
+    /// stay under the call timeout with room to spare.
+    #[test]
+    fn shell_status_wait_cap_is_advertised_and_under_the_call_timeout() {
+        assert_eq!(SHELL_STATUS_MAX_WAIT_SECS, 270);
+        const {
+            assert!(
+                SHELL_STATUS_MAX_WAIT_SECS + 20 <= SHELL_STATUS_ASSUMED_CALL_TIMEOUT_SECS,
+                "a wait must end before the tool call times out"
+            )
+        };
+        let tools = DeveloperServer::tool_router().list_all();
+        let status = tools
+            .iter()
+            .find(|tool| tool.name == "shell_status")
+            .expect("shell_status is listed");
+        let description = status.description.as_deref().unwrap_or_default();
+        let schema = serde_json::to_string(&status.input_schema).unwrap();
+        let advertised = format!("{SHELL_STATUS_MAX_WAIT_SECS} seconds");
+        assert!(description.contains(&advertised), "{description}");
+        assert!(schema.contains(&advertised), "{schema}");
+        assert!(!description.contains("600") && !schema.contains("600"));
+    }
+
+    #[test]
+    fn tail_chars_never_splits_a_multibyte_character() {
+        let text = "aé😀b".repeat(10);
+        let (tail, clipped) = tail_chars(&text, 5);
+        assert!(clipped);
+        assert_eq!(tail.chars().count(), 5);
+        assert!(text.ends_with(tail));
+        let (whole, clipped) = tail_chars("short", 10);
+        assert_eq!(whole, "short");
+        assert!(!clipped);
     }
 
     #[test]

@@ -31,7 +31,21 @@ const MAX_OUTPUT_BYTES: usize = 400_000;
 /// There is no default: the retired `shell_wait` had one because waiting was
 /// the whole tool, whereas `shell_status` waits only when the caller passes
 /// `timeout_secs`, and an absent value means "peek", not "wait 120 seconds".
-pub const MAX_WAIT_SECS: u64 = 600;
+///
+/// It must stay under the agent's per-call extension timeout
+/// (`DEFAULT_EXTENSION_TIMEOUT`, 300 s, in `biorouter::config`), with a margin
+/// for the snapshot that follows the wait. It was 600 s, so any wait over
+/// 300 s died as a transport timeout instead of returning "still running".
+/// That constant lives in a crate this one cannot depend on, so the two are
+/// kept in step by hand; `CALL_TIMEOUT_MARGIN_SECS` is the margin.
+pub const MAX_WAIT_SECS: u64 = EXTENSION_CALL_TIMEOUT_SECS - CALL_TIMEOUT_MARGIN_SECS;
+
+/// The agent's default per-call extension timeout, mirrored from
+/// `biorouter::config::DEFAULT_EXTENSION_TIMEOUT`.
+pub const EXTENSION_CALL_TIMEOUT_SECS: u64 = 300;
+
+/// Room left between the longest wait and the call timeout.
+pub const CALL_TIMEOUT_MARGIN_SECS: u64 = 30;
 
 /// Terminal-or-running state of a job. `Exited` carries the real OS exit code,
 /// the only source of truth for done-vs-running.

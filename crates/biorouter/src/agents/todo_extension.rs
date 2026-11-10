@@ -75,7 +75,27 @@ struct TodoExpandParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct TodoUpdateParams {
-    /// The id (the `#N` shown in the checklist) of the item to update.
+    /// The id (the `#N` shown in the checklist) of the item to update. Omit it
+    /// when you pass `updates` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    /// New status: `pending`, `in_progress`, `blocked`, or `completed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    /// Optional replacement text for the item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    /// Several items at once, applied in order and all or nothing, e.g.
+    /// `[{"id": "2", "status": "completed"}, {"id": "3", "status": "in_progress"}]`.
+    /// Use this instead of one call per item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updates: Option<Vec<TodoItemUpdate>>,
+}
+
+/// One entry of `todo_update`'s `updates`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct TodoItemUpdate {
+    /// The item's `#N` id.
     id: String,
     /// New status: `pending`, `in_progress`, `blocked`, or `completed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,8 +164,10 @@ impl TodoClient {
                 Structured, per-item workflow:
                 - Start: `plan_write` the approach, then `todo_write` the initial
                   checklist (one `- [ ]` line per task).
-                - During: `todo_update` a single item's status as you go
-                  (`in_progress` when you pick it up, `completed` when done).
+                - During: `todo_update` items as you go (`completed` when
+                  done, `in_progress` when you pick one up). Change several in
+                  one call with `updates`, and send it in the same message as
+                  your next real tool call, never as a call on its own.
                 - When you reach a broad item that turns out to be several
                   steps, `todo_expand` it into the concrete steps before you
                   start it. Do not rewrite the list, and do not append the steps
@@ -405,34 +427,38 @@ impl TodoClient {
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args = arguments.as_ref().ok_or("Missing arguments")?;
-        let id = item_id_arg(args, "id")?;
-
-        let status = match args.get("status").and_then(|v| v.as_str()) {
-            Some(raw) => Some(TodoStatus::parse(raw).ok_or_else(|| {
-                format!("Unknown status: {raw} (use pending/in_progress/blocked/completed)")
-            })?),
-            None => None,
-        };
-        let text = args
-            .get("text")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        if status.is_none() && text.is_none() {
-            return Err("Provide a new status and/or text to update".to_string());
-        }
+        let updates = update_requests(args)?;
+        let single = updates.len() == 1;
 
         let message = self
             .with_state(session_id, move |state| {
-                if state.update_item(&id, status, text) {
-                    Ok(serde_json::json!({
-                        "message": format!("Updated item #{id}"),
-                        "task": state.items.iter().find(|item| item.id == id),
-                    })
-                    .to_string())
-                } else {
-                    Err(unknown_id_message(state, &id))
+                // `with_state` persists nothing when this returns an error, so
+                // an unknown id anywhere in the batch leaves every item as it
+                // was.
+                let mut ids = Vec::with_capacity(updates.len());
+                for update in updates {
+                    if !state.update_item(&update.id, update.status, update.text) {
+                        return Err(unknown_id_message(state, &update.id));
+                    }
+                    ids.push(update.id);
                 }
+                if single {
+                    let id = &ids[0];
+                    return Ok(serde_json::json!({
+                        "message": format!("Updated item #{id}"),
+                        "task": state.items.iter().find(|item| &item.id == id),
+                    })
+                    .to_string());
+                }
+                let tasks: Vec<_> = ids
+                    .iter()
+                    .filter_map(|id| state.items.iter().find(|item| &item.id == id))
+                    .collect();
+                Ok(serde_json::json!({
+                    "message": format!("Updated {} items: #{}", ids.len(), ids.join(", #")),
+                    "tasks": tasks,
+                })
+                .to_string())
             })
             .await?;
         Ok(vec![Content::text(message)])
@@ -531,9 +557,17 @@ impl TodoClient {
             tool_from_schema::<TodoUpdateParams>(
                 "todo_update",
                 indoc! {r#"
-                    Update a single checklist item by its `#N` id: change its
-                    status (pending/in_progress/blocked/completed) and/or its
-                    text, without touching the rest of the list.
+                    Update checklist items by their `#N` ids: change status
+                    (pending/in_progress/blocked/completed) and/or text, without
+                    touching the rest of the list. One item: `id` with `status`
+                    or `text`. Several: `updates`, a list of `{id, status, text}`
+                    applied all or nothing, e.g. finishing #2 and starting #3 in
+                    one call.
+
+                    Every call re-sends the whole conversation, so do not spend
+                    a call on bookkeeping alone. Update at real milestones, and
+                    put this call in the SAME message as the next real tool call
+                    rather than on its own.
 
                     Use `blocked` when the item is stuck on something outside
                     your control, rather than writing that into its text.
@@ -639,6 +673,92 @@ fn item_id_arg(args: &JsonObject, key: &str) -> Result<String, String> {
         .get(key)
         .ok_or_else(|| format!("Missing required parameter: {key}"))?;
     item_id_value(key, value)
+}
+
+/// One parsed item change of a `todo_update` call.
+struct UpdateRequest {
+    id: String,
+    status: Option<TodoStatus>,
+    text: Option<String>,
+}
+
+/// Read one item change: an `id` plus a `status` and/or `text`. `label` names
+/// where it came from in an error (`updates[1]`, or nothing for the top level).
+fn update_request(object: &JsonObject, label: &str) -> Result<UpdateRequest, String> {
+    let id_key = if label.is_empty() {
+        "id".to_string()
+    } else {
+        format!("{label}.id")
+    };
+    let id = match object.get("id") {
+        Some(value) => item_id_value(&id_key, value)?,
+        None => return Err(format!("Missing required parameter: {id_key}")),
+    };
+    let status = match object.get("status").and_then(|v| v.as_str()) {
+        Some(raw) => Some(TodoStatus::parse(raw).ok_or_else(|| {
+            format!("Unknown status: {raw} (use pending/in_progress/blocked/completed)")
+        })?),
+        None => None,
+    };
+    let text = object
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if status.is_none() && text.is_none() {
+        return Err(if label.is_empty() {
+            "Provide a new status and/or text to update".to_string()
+        } else {
+            format!("{label} needs a new status and/or text")
+        });
+    }
+    Ok(UpdateRequest { id, status, text })
+}
+
+/// Every item change one `todo_update` call asks for, in order: the top-level
+/// `id` form first (the original single-item shape), then each `updates`
+/// entry.
+fn update_requests(args: &JsonObject) -> Result<Vec<UpdateRequest>, String> {
+    let mut requests = Vec::new();
+    let has_top_level = args.get("id").is_some_and(|v| !v.is_null());
+    if has_top_level {
+        requests.push(update_request(args, "")?);
+    }
+    match args.get("updates") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Array(entries)) => {
+            for (index, entry) in entries.iter().enumerate() {
+                let label = format!("updates[{index}]");
+                let object = entry.as_object().ok_or_else(|| {
+                    format!(
+                        "{label} must be an object like {{\"id\": \"3\", \"status\": \"completed\"}}; got {}",
+                        describe_json(entry)
+                    )
+                })?;
+                requests.push(update_request(object, &label)?);
+            }
+        }
+        Some(other) => {
+            return Err(format!(
+                "updates must be an array of {{id, status, text}} objects; got {}",
+                describe_json(other)
+            ))
+        }
+    }
+    if requests.is_empty() {
+        return Err(if has_top_level || args.contains_key("updates") {
+            "updates is empty; pass at least one {id, status, text} entry".to_string()
+        } else {
+            "Missing required parameter: id (or pass `updates` to change several items)".to_string()
+        });
+    }
+    let max_items = TodoClient::max_items();
+    if max_items > 0 && requests.len() > max_items {
+        return Err(format!(
+            "Too many updates in one call: {} (max: {max_items})",
+            requests.len()
+        ));
+    }
+    Ok(requests)
 }
 
 /// Read a boolean argument, tolerating the stringified form.
@@ -1280,6 +1400,154 @@ mod tests {
         )
         .await;
         assert!(text(&unknown).contains("#1, #2, #3"), "{}", text(&unknown));
+    }
+
+    /// Finishing one item and starting the next used to take two calls, each
+    /// a full model request. `updates` does both in one, all or nothing.
+    #[tokio::test]
+    async fn todo_update_applies_several_updates_in_one_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "todo batch update").await;
+        call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] one\n- [ ] two\n- [ ] three"}),
+        )
+        .await;
+
+        let batch = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"updates": [
+                {"id": "#1", "status": "completed"},
+                {"id": 2, "status": "in_progress", "text": "two, renamed"},
+            ]}),
+        )
+        .await;
+        assert_eq!(batch.is_error, Some(false), "{}", text(&batch));
+        let parsed: serde_json::Value = serde_json::from_str(&text(&batch)).unwrap();
+        assert_eq!(parsed["message"], "Updated 2 items: #1, #2");
+        assert_eq!(parsed["tasks"][0]["status"], "completed");
+        assert_eq!(parsed["tasks"][1]["status"], "in_progress");
+        assert_eq!(parsed["tasks"][1]["text"], "two, renamed");
+
+        let checklist = client.get_moim(&id).await.unwrap();
+        assert!(checklist.contains("- [x] (#1) one"), "{checklist}");
+        assert!(checklist.contains("- [~] (#2) two, renamed"), "{checklist}");
+        assert!(checklist.contains("- [ ] (#3) three"), "{checklist}");
+
+        // The top-level form and `updates` combine, top level first.
+        let mixed = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"id": "2", "status": "completed",
+                               "updates": [{"id": "3", "status": "in_progress"}]}),
+        )
+        .await;
+        assert_eq!(mixed.is_error, Some(false), "{}", text(&mixed));
+        assert!(text(&mixed).contains("#2, #3"), "{}", text(&mixed));
+
+        // A one-entry batch answers in the single-item shape that the code
+        // execution and transcript readers parse.
+        let one = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"updates": [{"id": "3", "status": "completed"}]}),
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(&text(&one)).unwrap();
+        assert_eq!(parsed["message"], "Updated item #3");
+        assert_eq!(parsed["task"]["status"], "completed");
+    }
+
+    /// An unknown id anywhere in a batch changes nothing, and malformed
+    /// entries are named by index.
+    #[tokio::test]
+    async fn todo_update_batch_is_all_or_nothing_and_names_bad_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "todo batch refusal").await;
+        call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] one\n- [ ] two"}),
+        )
+        .await;
+
+        let refused = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"updates": [
+                {"id": "1", "status": "completed"},
+                {"id": "9", "status": "completed"},
+            ]}),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true));
+        assert!(
+            text(&refused).contains("No todo item with id #9"),
+            "{}",
+            text(&refused)
+        );
+        let checklist = client.get_moim(&id).await.unwrap();
+        assert!(
+            checklist.contains("- [ ] (#1) one"),
+            "a refused batch must not apply its first entry: {checklist}"
+        );
+
+        for (args, expected) in [
+            (serde_json::json!({"updates": []}), "updates is empty"),
+            (serde_json::json!({}), "or pass `updates`"),
+            (
+                serde_json::json!({"updates": [{"status": "completed"}]}),
+                "updates[0].id",
+            ),
+            (
+                serde_json::json!({"updates": [{"id": "1"}]}),
+                "updates[0] needs a new status and/or text",
+            ),
+            (
+                serde_json::json!({"updates": ["1"]}),
+                "updates[0] must be an object",
+            ),
+            (
+                serde_json::json!({"updates": "1"}),
+                "updates must be an array",
+            ),
+        ] {
+            let result = call(&client, &id, "todo_update", args.clone()).await;
+            assert_eq!(result.is_error, Some(true), "{args}");
+            assert!(
+                text(&result).contains(expected),
+                "{args}: {}",
+                text(&result)
+            );
+        }
+    }
+
+    /// The description is where the model learns to batch, so it says so.
+    #[test]
+    fn todo_update_tells_the_model_to_batch_and_ride_along() {
+        let tools = TodoClient::get_tools();
+        let update = tools
+            .iter()
+            .find(|tool| tool.name == "todo_update")
+            .unwrap();
+        let description = update.description.as_deref().unwrap_or_default();
+        assert!(description.contains("`updates`"), "{description}");
+        assert!(description.contains("SAME message"), "{description}");
+        let schema = serde_json::to_value(&*update.input_schema).unwrap();
+        assert!(schema["properties"]["updates"].is_object(), "{schema}");
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !required.iter().any(|value| value == "id"),
+            "id is optional now that `updates` exists: {schema}"
+        );
     }
 
     #[tokio::test]
