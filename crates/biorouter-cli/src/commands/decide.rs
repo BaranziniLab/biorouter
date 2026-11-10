@@ -50,7 +50,9 @@ use biorouter::decision::{
     Threshold,
 };
 use biorouter::privacy::ProviderTier;
-use biorouter::providers::decision::catalog::{baseten_display_name, BASETEN_DECISION_PROVIDER};
+use biorouter::providers::decision::catalog::{
+    baseten_display_name, ollama_base_url, BASETEN_DECISION_PROVIDER, OLLAMA_DECISION_PROVIDER,
+};
 use biorouter::session::SessionManager;
 
 /// Cells a probability bar takes.
@@ -160,6 +162,10 @@ fn strip_quotes(text: &str) -> &str {
     text
 }
 
+/// What an empty `--ask` is told, here and by `session monitors add`.
+pub const EMPTY_ASK: &str =
+    "--ask needs a question, for example --ask \"Is an EDSS score stated?\"";
+
 /// `--threshold`: a probability.
 pub fn parse_probability(raw: &str) -> Result<f64, String> {
     let p: f64 = raw
@@ -172,9 +178,28 @@ pub fn parse_probability(raw: &str) -> Result<f64, String> {
     Ok(p)
 }
 
+/// A monitor's `--threshold`: a probability above 0, at most 1. A monitor at 0
+/// would fire on every check, so the store refuses it; refusing it here gives
+/// 0 and 1.2 the same sentence, the one every probability flag of the
+/// command uses.
+pub fn parse_positive_probability(raw: &str) -> Result<f64, String> {
+    let p = parse_probability(raw).map_err(|_| positive_probability_message(raw))?;
+    if p <= 0.0 {
+        return Err(positive_probability_message(raw));
+    }
+    Ok(p)
+}
+
+fn positive_probability_message(raw: &str) -> String {
+    format!("{raw} is not a probability above 0 and at most 1")
+}
+
 /// The one question the options describe, checked the way the service checks
 /// it, so a mistake is reported before anything is sent.
 pub fn build_question(options: &DecideOptions) -> Result<Question> {
+    if options.ask.trim().is_empty() {
+        bail!("{EMPTY_ASK}");
+    }
     let kind = if !options.choices.is_empty() {
         DecisionKind::Choice {
             options: options.choices.iter().cloned().collect(),
@@ -353,6 +378,126 @@ pub fn short_model(model: &DecisionModelRef) -> String {
     terminal_text(model.model.rsplit('/').next().unwrap_or(&model.model))
 }
 
+/// Where a decision model runs, as a person reads it beside the model's name:
+/// `this computer` for an Ollama model on a loopback address, `Ollama cloud`
+/// for an Ollama cloud tag (`gpt-oss:120b-cloud`) whatever the host, `Ollama`
+/// for one on another host, `Baseten` for Baseten's. `None` for any other
+/// provider. The place is the model's, not only the provider's: a loopback
+/// Ollama forwards a cloud tag to ollama.com, so naming it `this computer`
+/// would say text stays here when it does not (the catalog lists such a model
+/// as remote and Public).
+pub fn model_place(provider: &str, model: &str) -> Option<&'static str> {
+    match provider {
+        BASETEN_DECISION_PROVIDER => Some("Baseten"),
+        OLLAMA_DECISION_PROVIDER => Some(ollama_place(model, ollama_is_this_computer())),
+        _ => None,
+    }
+}
+
+/// [`model_place`] for an Ollama model, with whether `OLLAMA_HOST` names this
+/// computer given. ⚠ A cloud model renamed with `ollama cp` carries no cloud
+/// tag, and only `/api/show` tells; a line that names a model from its id
+/// alone cannot ask, so the list, which reads each entry's `local` flag from
+/// the catalog, is the authority there.
+pub(crate) fn ollama_place(model: &str, host_is_this_computer: bool) -> &'static str {
+    if biorouter::providers::utils::is_ollama_cloud_model(model) {
+        "Ollama cloud"
+    } else if host_is_this_computer {
+        "this computer"
+    } else {
+        "Ollama"
+    }
+}
+
+/// Whether `OLLAMA_HOST` (or its default) names this computer, read once.
+fn ollama_is_this_computer() -> bool {
+    static LOCAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LOCAL.get_or_init(|| {
+        ollama_base_url()
+            .ok()
+            .is_some_and(|url| host_is_loopback(url.host_str().unwrap_or_default()))
+    })
+}
+
+/// `localhost`, `127.0.0.1` and the rest of 127/8, `::1`.
+pub fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// A decision model as a person reads it where it is not a value they type
+/// back: its short name and where it runs, `joey-1 · Baseten`,
+/// `tev1:0.8b · this computer`. `--model` and the lines that show what to type
+/// keep `provider/model` ([`model_label`]).
+pub fn model_for_person(model: &DecisionModelRef) -> String {
+    let name = short_model(model);
+    match model_place(&model.provider, &model.model) {
+        Some(place) => format!("{name} · {place}"),
+        None => name,
+    }
+}
+
+/// Every `provider/model` a supervision line names, as [`model_for_person`]
+/// names it: `baseten_decision/decision-models/baseten-joey-2b-latest` is
+/// `joey-1 · Baseten`. The lines are built where the agent's tools and the
+/// desktop share them; the terminal names the models as it names them
+/// everywhere else. A name with no slash or an unknown provider is left.
+pub fn person_model_names(text: &str) -> String {
+    replace_model_ids(text, model_for_person)
+}
+
+/// [`person_model_names`] for a sentence, where the place reads better in
+/// parentheses: "the chat's default decision model joey-1 (Baseten) could
+/// not run".
+pub fn person_model_names_in_sentence(text: &str) -> String {
+    replace_model_ids(text, |model| {
+        match model_place(&model.provider, &model.model) {
+            Some(place) => format!("{} ({place})", short_model(model)),
+            None => short_model(model),
+        }
+    })
+}
+
+fn replace_model_ids(text: &str, name: impl Fn(&DecisionModelRef) -> String) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let next = [BASETEN_DECISION_PROVIDER, OLLAMA_DECISION_PROVIDER]
+            .iter()
+            .filter_map(|provider| {
+                let prefix = format!("{provider}/");
+                rest.split_once(&prefix)
+                    .map(|(before, after)| (before, *provider, prefix, after))
+            })
+            .min_by_key(|(before, ..)| before.len());
+        let Some((before, provider, prefix, after)) = next else {
+            break;
+        };
+        out.push_str(before);
+        // A model id runs to the next space or quote; a sentence's last
+        // full stop or comma is not part of it.
+        let mut model = after
+            .split_once(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ';' | ')'))
+            .map_or(after, |(id, _)| id);
+        while let Some(stripped) = model.strip_suffix(['.', ',', ':']) {
+            model = stripped;
+        }
+        if model.is_empty() {
+            out.push_str(&prefix);
+            rest = after;
+            continue;
+        }
+        out.push_str(&name(&DecisionModelRef::new(provider, model)));
+        // `model` is where `after` starts, so this always strips it.
+        rest = after.strip_prefix(model).unwrap_or(after);
+    }
+    out.push_str(rest);
+    out
+}
+
 /// `1.2 s` or `22 ms`.
 pub fn format_latency(ms: u64) -> String {
     if ms >= 1_000 {
@@ -422,7 +567,7 @@ pub fn clip(text: &str, max: usize) -> String {
 
 /// What a threshold compares and against what: `P(yes)` and 0.80. A `below`
 /// threshold compares what its inner threshold does.
-fn threshold_terms(threshold: &Threshold, question: &Question) -> (String, f64) {
+pub fn threshold_terms(threshold: &Threshold, question: &Question) -> (String, f64) {
     match threshold {
         Threshold::Yes(t) => ("P(yes)".to_string(), *t),
         Threshold::No(t) => ("P(no)".to_string(), *t),
@@ -439,8 +584,10 @@ fn threshold_terms(threshold: &Threshold, question: &Question) -> (String, f64) 
     }
 }
 
-/// What the threshold compared, as a sentence: `P(yes) 0.82 ≥ 0.80, passed`.
-/// A `below` threshold passes under its bound: `P(yes) 0.12 < 0.30, passed`.
+/// What the threshold compared, as a sentence: `P(yes) 0.82 ≥ 0.80, passed`,
+/// or `P(yes) 0.40 < 0.80, not passed` (never "failed": a person reads that
+/// as an error). A `below` threshold passes under its bound:
+/// `P(yes) 0.12 < 0.30, passed`.
 pub fn threshold_line(decision: &Decision, question: Option<&Question>) -> Option<String> {
     let question = question?;
     let threshold = question.threshold.as_ref()?;
@@ -456,7 +603,7 @@ pub fn threshold_line(decision: &Decision, question: Option<&Question>) -> Optio
         "{wanted} {} {sign} {}, {}",
         format_p(p),
         format_p(bound),
-        if passed { "passed" } else { "failed" }
+        if passed { "passed" } else { "not passed" }
     ))
 }
 
@@ -614,7 +761,7 @@ pub fn render_batch(rows: &[BatchRow], question: &Question) -> Vec<String> {
                 let p = answer_probability(decision);
                 let outcome = match decision.passed {
                     Some(true) => "passed",
-                    Some(false) => "failed",
+                    Some(false) => "not passed",
                     None => "decided",
                 };
                 out.push(format!(
@@ -644,6 +791,31 @@ pub fn render_batch(rows: &[BatchRow], question: &Question) -> Vec<String> {
         }
     }
     out
+}
+
+/// The advice an agent is given in a decision-model refusal, as a person at
+/// a terminal is given it: the agent lists the models with its
+/// `decision_models` tool, a person with `biorouter models decision list`.
+/// The refusal is built where the agent's and the person's share it, so the
+/// terminal swaps the one phrase as it prints it.
+pub fn terminal_advice(text: &str) -> String {
+    text.replace(
+        "(decision_models lists them)",
+        "(`biorouter models decision list` shows them)",
+    )
+}
+
+/// `error` with [`terminal_advice`] applied when its sentence carries the
+/// agent's advice, else `error` itself, so a typed error (one that picks an
+/// exit code) keeps its type.
+pub fn advise(error: anyhow::Error) -> anyhow::Error {
+    let text = error.to_string();
+    let advised = terminal_advice(&text);
+    if advised == text {
+        error
+    } else {
+        anyhow!("{advised}")
+    }
 }
 
 /// `public` or `private`.
@@ -696,8 +868,20 @@ pub fn render_model_list(entries: &[DecisionModelEntry]) -> Vec<String> {
                 biorouter::decision::types::DecisionKindTag::Score => "score",
             })
             .collect();
+        // The catalog's `local` flag is the authority on "this computer": it
+        // reads `/api/show`, so a cloud model renamed with `ollama cp` is not
+        // local either. Anything else from Ollama is named by its own place,
+        // never this computer.
         let place = if entry.local {
             format!("{} · this computer", tier_word(entry.tier))
+        } else if entry.provider == BASETEN_DECISION_PROVIDER {
+            format!("{} · Baseten", tier_word(entry.tier))
+        } else if entry.provider == OLLAMA_DECISION_PROVIDER {
+            format!(
+                "{} · {}",
+                tier_word(entry.tier),
+                ollama_place(&entry.model, false)
+            )
         } else {
             tier_word(entry.tier).to_string()
         };
@@ -1060,9 +1244,45 @@ fn file_label(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// What a run says when `BIOROUTER_DECISION_MODEL` names a model with no
+/// provider (`tev1:0.8b` rather than `ollama_decision/tev1:0.8b`) and no
+/// `BIOROUTER_DECISION_PROVIDER` is set: the service cannot tell which
+/// provider serves it, so it is not used, and the run would otherwise choose
+/// another model without a word. `provider` and `model` are the two values,
+/// trimmed, as the configuration holds them.
+pub fn ignored_default_model_warning(
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> Option<String> {
+    let model = model.map(str::trim).filter(|m| !m.is_empty())?;
+    if provider.map(str::trim).is_some_and(|p| !p.is_empty()) || model.contains('/') {
+        return None;
+    }
+    Some(format!(
+        "warning: BIOROUTER_DECISION_MODEL is {model}, which names no provider, so it is not \
+         used and the model is chosen automatically. Write it provider/model (for example \
+         ollama_decision/tev1:0.8b), or set BIOROUTER_DECISION_PROVIDER as well."
+    ))
+}
+
+/// [`ignored_default_model_warning`] for this process's configuration.
+fn configured_default_warning() -> Option<String> {
+    let config = biorouter::config::Config::global();
+    let read = |key: &str| config.get_param::<String>(key).ok();
+    ignored_default_model_warning(
+        read("BIOROUTER_DECISION_PROVIDER").as_deref(),
+        read("BIOROUTER_DECISION_MODEL").as_deref(),
+    )
+}
+
 /// `biorouter decide`.
 pub async fn handle_decide(options: DecideOptions) -> Result<()> {
     let question = build_question(&options)?;
+    if options.model.is_none() {
+        if let Some(warning) = configured_default_warning() {
+            eprintln!("{warning}");
+        }
+    }
     let wanted = match options.model.as_deref() {
         Some(raw) => Some(DecisionModelRef::parse(raw).ok_or_else(|| {
             anyhow!("--model takes `provider/model`, for example `ollama_decision/tev1:0.8b`")
@@ -1145,7 +1365,7 @@ async fn chat_and_model(
         None => {
             let (model, lines) = pin_model(service, None, wanted)
                 .await
-                .map_err(|e| anyhow!("{e}"))?;
+                .map_err(|e| anyhow!("{}", terminal_advice(&e.to_string())))?;
             for line in lines {
                 eprintln!("{line}");
             }
@@ -1188,7 +1408,7 @@ async fn decide_text(options: &DecideOptions, target: &Target<'_>) -> Result<()>
                     .record_unresolved(session, &request, error)
                     .await;
             }
-            bail!("{error}");
+            bail!("{}", terminal_advice(&error.to_string()));
         }
     };
     let decisions = match target
@@ -1200,18 +1420,17 @@ async fn decide_text(options: &DecideOptions, target: &Target<'_>) -> Result<()>
         Err(error) => {
             // An answer that could not be read was billed all the same.
             report_unrecorded_usage(target, (1, error.billed_usage()));
-            bail!("{error}");
+            bail!("{}", terminal_advice(&error.to_string()));
         }
     };
     if options.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "decisions": decisions }))?
-        );
+        super::print_line_keep_going(serde_json::to_string_pretty(
+            &serde_json::json!({ "decisions": decisions }),
+        )?);
     } else {
         for decision in &decisions {
             for line in render_decision(decision, Some(target.question)) {
-                println!("{line}");
+                super::print_line_keep_going(line);
             }
         }
         eprintln!("{PROBABILITY_NOTE}");
@@ -1256,7 +1475,7 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
                     .record_unresolved_batch(session, &target.template.questions, &unsent, error)
                     .await;
             }
-            bail!("{error}");
+            bail!("{}", terminal_advice(&error.to_string()));
         }
     };
     for group in chunks.chunks(BATCH_GROUP) {
@@ -1271,7 +1490,7 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
                 group.iter().map(|(_, chunk)| chunk.clone()).collect(),
             )
             .await
-            .map_err(|e| anyhow!("{e}"))?;
+            .map_err(|e| anyhow!("{}", terminal_advice(&e.to_string())))?;
         for (index, outcome) in positions.into_iter().zip(outcomes) {
             rows[index] = Some(BatchRow::from_outcome(outcome));
         }
@@ -1289,17 +1508,14 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "question": options.name,
-                "files": files,
-                "summary": summary,
-            }))?
-        );
+        super::print_line_keep_going(serde_json::to_string_pretty(&serde_json::json!({
+            "question": options.name,
+            "files": files,
+            "summary": summary,
+        }))?);
     } else {
         for line in render_batch(&rows, target.question) {
-            println!("{line}");
+            super::print_line_keep_going(line);
         }
         eprintln!("{PROBABILITY_NOTE}");
     }
@@ -1311,10 +1527,10 @@ async fn decide_directory(options: &DecideOptions, target: &Target<'_>, dir: &Pa
 pub async fn handle_models_decision_list(format: &str) -> Result<()> {
     let entries = biorouter::decision::global().models().await;
     if format == "json" {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
+        super::print_line(serde_json::to_string_pretty(&entries)?);
     } else {
         for line in render_model_list(&entries) {
-            println!("{line}");
+            super::print_line(line);
         }
     }
     Ok(())
@@ -1575,7 +1791,8 @@ pub(crate) mod tests {
             "the answer is marked: {lines:?}"
         );
         assert!(lines[3].contains("Answer: no  p 0.69  uncalibrated (the model wrote it)"));
-        assert_eq!(lines[4], "Threshold: P(yes) 0.31 < 0.80, failed");
+        // A person reads "failed" as an error: a threshold is passed or not.
+        assert_eq!(lines[4], "Threshold: P(yes) 0.31 < 0.80, not passed");
     }
 
     /// A Baseten decision model is named by its alias wherever a terminal
@@ -1709,7 +1926,7 @@ pub(crate) mod tests {
         assert!(lines[1].contains("file") && lines[1].contains("outcome"));
         assert!(lines[2].contains("note-0001.txt") && lines[2].contains("yes"));
         assert!(lines[2].contains("0.97") && lines[2].ends_with("passed"));
-        assert!(lines[3].contains("no") && lines[3].ends_with("failed"));
+        assert!(lines[3].contains("no") && lines[3].ends_with("not passed"));
         assert!(lines[5].contains("note-0004.txt") && lines[5].ends_with("error"));
         assert!(lines[6].starts_with("Summary: 4 files"));
         assert_eq!(lines[7], "Errors:");
@@ -1775,7 +1992,8 @@ pub(crate) mod tests {
         assert!(lines[1].contains(
             "private · this computer · 8,192 tokens · yes/no, choice, score · system_one"
         ));
-        assert!(lines[2].contains("public · 16,384 tokens · yes/no · system_one"));
+        // R3: where a hosted model runs, beside its tier.
+        assert!(lines[2].contains("public · Baseten · 16,384 tokens · yes/no · system_one"));
         // A Baseten model by its alias, the name `--model` takes.
         assert!(
             lines[2].starts_with("  baseten_decision/elephant-1  "),
@@ -1783,6 +2001,133 @@ pub(crate) mod tests {
             lines[2]
         );
         assert!(!lines[2].contains("decision-models/"), "{}", lines[2]);
+    }
+
+    /// R3 and privacy: an Ollama cloud tag on a loopback host is served by
+    /// ollama.com and is Public, so no line names it "this computer" (the
+    /// place used to follow the provider and `OLLAMA_HOST` alone).
+    #[test]
+    fn an_ollama_cloud_model_never_reads_as_this_computer() {
+        assert_eq!(ollama_place("gpt-oss:120b-cloud", true), "Ollama cloud");
+        assert_eq!(ollama_place("glm-4.6:cloud", true), "Ollama cloud");
+        assert_eq!(ollama_place("tev1:0.8b", true), "this computer");
+        assert_eq!(ollama_place("tev1:0.8b", false), "Ollama");
+        let cloud = DecisionModelRef::new("ollama_decision", "gpt-oss:120b-cloud");
+        assert_eq!(
+            model_for_person(&cloud),
+            "gpt-oss:120b-cloud · Ollama cloud"
+        );
+        assert_eq!(
+            model_place("ollama_decision", "gpt-oss:120b-cloud"),
+            Some("Ollama cloud")
+        );
+        let line = person_model_names_in_sentence(
+            "the chat's default decision model ollama_decision/gpt-oss:120b-cloud could not run.",
+        );
+        assert_eq!(
+            line,
+            "the chat's default decision model gpt-oss:120b-cloud (Ollama cloud) could not run."
+        );
+        let entry = DecisionModelEntry {
+            provider: "ollama_decision".into(),
+            model: "gpt-oss:120b-cloud".into(),
+            display_name: "gpt-oss:120b-cloud".into(),
+            context_tokens: 8_192,
+            kinds: vec![DecisionKindTag::Binary],
+            tier: ProviderTier::Public,
+            affiliation: None,
+            adapter: DecisionAdapter::SystemOne,
+            local: false,
+            load_refusal: None,
+        };
+        let lines = render_model_list(&[entry]);
+        assert!(
+            lines[1].contains("public · Ollama cloud · 8,192 tokens"),
+            "{}",
+            lines[1]
+        );
+        assert!(!lines[1].contains("this computer"), "{}", lines[1]);
+    }
+
+    /// R3: a model a person reads (not one they type back) is its alias and
+    /// where it runs, and a Baseten slug in a line built elsewhere reads so.
+    #[test]
+    fn a_model_reads_by_its_alias_and_where_it_runs() {
+        let joey =
+            DecisionModelRef::new("baseten_decision", "decision-models/baseten-joey-2b-latest");
+        assert_eq!(model_for_person(&joey), "joey-1 · Baseten");
+        assert_eq!(model_place("baseten_decision", "x"), Some("Baseten"));
+        assert_eq!(model_place("versa_azure", "gpt-5.5"), None);
+        assert_eq!(
+            person_model_names(
+                "Default decision model: baseten_decision/decision-models/baseten-joey-2b-latest"
+            ),
+            "Default decision model: joey-1 · Baseten"
+        );
+        assert_eq!(
+            person_model_names_in_sentence(
+                "the chat's default decision model \
+                 baseten_decision/decision-models/baseten-joey-2b-latest could not run."
+            ),
+            "the chat's default decision model joey-1 (Baseten) could not run."
+        );
+        assert_eq!(
+            person_model_names("model baseten_decision/joey-1; and baseten_decision/ alone"),
+            "model joey-1 · Baseten; and baseten_decision/ alone"
+        );
+        assert_eq!(person_model_names("no model here"), "no model here");
+        for host in ["localhost", "127.0.0.1", "[::1]", "127.0.0.9"] {
+            assert!(host_is_loopback(host), "{host}");
+        }
+        for host in ["gpu-box", "10.0.0.2", "0.0.0.0"] {
+            assert!(!host_is_loopback(host), "{host}");
+        }
+    }
+
+    /// D-13: a model-only BIOROUTER_DECISION_MODEL is ignored by the
+    /// service, so the run says so rather than choosing another model
+    /// without a word.
+    #[test]
+    fn a_default_model_without_a_provider_is_warned_about() {
+        let warning = ignored_default_model_warning(None, Some("nonsense")).unwrap();
+        assert!(
+            warning.contains("BIOROUTER_DECISION_MODEL is nonsense"),
+            "{warning}"
+        );
+        assert!(warning.contains("provider/model"), "{warning}");
+        assert_eq!(
+            ignored_default_model_warning(None, Some("ollama_decision/tev1:0.8b")),
+            None
+        );
+        assert_eq!(
+            ignored_default_model_warning(Some("ollama_decision"), Some("tev1:0.8b")),
+            None
+        );
+        assert_eq!(ignored_default_model_warning(None, None), None);
+        assert_eq!(ignored_default_model_warning(None, Some("  ")), None);
+    }
+
+    /// R4 and D-9/D-13: a person's refusal names the command, not the
+    /// agent's tool; an empty `--ask` and a monitor at 0 are told in the
+    /// flag's words.
+    #[test]
+    fn refusals_read_in_a_terminals_words() {
+        assert_eq!(
+            terminal_advice("Name a private decision model (decision_models lists them), or …"),
+            "Name a private decision model (`biorouter models decision list` shows them), or …"
+        );
+        let empty = parse(&["--ask", "  ", "--text", "x"]).unwrap();
+        assert_eq!(build_question(&empty).unwrap_err().to_string(), EMPTY_ASK);
+        assert_eq!(
+            parse_positive_probability("0").unwrap_err(),
+            "0 is not a probability above 0 and at most 1"
+        );
+        assert_eq!(
+            parse_positive_probability("1.2").unwrap_err(),
+            "1.2 is not a probability above 0 and at most 1",
+            "one sentence for both ends of the range"
+        );
+        assert_eq!(parse_positive_probability("0.85"), Ok(0.85));
     }
 
     #[test]
@@ -1963,7 +2308,7 @@ pub(crate) mod tests {
         over.pass_probability = Some(0.45);
         assert_eq!(
             threshold_line(&over, Some(&question)).as_deref(),
-            Some("P(yes) 0.45 ≥ 0.30, failed")
+            Some("P(yes) 0.45 ≥ 0.30, not passed")
         );
         let score = Question {
             instructions: "How severe?".into(),
@@ -2373,7 +2718,10 @@ pub(crate) mod tests {
         async fn a_refusal_advises_by_where_the_pinned_model_came_from() {
             let key_advice = "Set BIOROUTER_DECISION_MODEL to a private model, or start this \
                               work in a public chat.";
-            let named_advice = "Name a private decision model (decision_models lists them), or \
+            // R4: a terminal names the command that lists the models, never
+            // the agent's tool.
+            let named_advice = "Name a private decision model (`biorouter models decision \
+                                list` shows them), or \
                                 start this work in a public chat.";
             let lab = Arc::new(Lab {
                 local_gone: Mutex::new(true),

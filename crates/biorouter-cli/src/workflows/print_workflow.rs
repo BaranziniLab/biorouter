@@ -50,7 +50,12 @@ fn supervision_lines(workflow: &Workflow) -> Vec<String> {
     if summary.is_empty() {
         return summary;
     }
-    let mut lines: Vec<String> = summary.iter().map(|line| format!("   - {line}")).collect();
+    // The lines name a model by `provider/model` and a Baseten one by its
+    // slug; the terminal names it by its alias and where it runs.
+    let mut lines: Vec<String> = summary
+        .iter()
+        .map(|line| format!("   - {}", crate::commands::decide::person_model_names(line)))
+        .collect();
     lines.push(format!("   {SUPERVISION_APPLIES}"));
     lines
 }
@@ -152,7 +157,7 @@ mod tests {
         let lines = supervision_lines(&workflow);
         let text = lines.join("\n");
         for expected in [
-            "   - Default decision model: baseten_decision/joey-1",
+            "   - Default decision model: joey-1 · Baseten",
             "   - Monitor \"Reached ten\": model chat default; checked after each step; fires \
              at 0.70 or above; when it fires: stop; on an error: pause",
             "   - Phase plan \"Count plan\": 2 phases",
@@ -167,6 +172,16 @@ mod tests {
             lines.last().map(String::as_str),
             Some(format!("   {SUPERVISION_APPLIES}").as_str())
         );
+
+        // D-2: a Baseten slug reads as its alias, as every terminal line names it.
+        let slugged = Workflow::from_content(
+            "version: 1.0.0\ntitle: Slug\ndescription: probe\nprompt: test\n\
+             decision_settings:\n  defaultModel: {provider: baseten_decision, model: \
+             decision-models/baseten-joey-2b-latest}\n",
+        )
+        .unwrap();
+        let lines = supervision_lines(&slugged);
+        assert_eq!(lines[0], "   - Default decision model: joey-1 · Baseten");
 
         let plain = Workflow::from_content(
             "version: 1.0.0\ntitle: Plain\ndescription: probe\nprompt: test\n",

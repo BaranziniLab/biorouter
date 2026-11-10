@@ -36,7 +36,9 @@ use crate::commands::decide::{
     answer_key, answer_label, answer_probability, calibration_flag, clip, format_latency, format_p,
     origin_word, outcome_labels, probability_bar, short_model, terminal_text, threshold_line,
 };
-use crate::commands::session_decisions::{aggregate_line, marker_text, record_line, turn_line};
+use crate::commands::session_decisions::{
+    aggregate_line, last_call, marker_text, record_line, turn_line,
+};
 
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 /// Cells of a bar in a decision card.
@@ -48,23 +50,23 @@ const CARD_LABEL_MAX: usize = 20;
 
 // ── the transcript marker ───────────────────────────────────────────────────
 
-/// One line per origin of a turn's decision calls, never one per call.
+/// One line per origin of a turn's decision calls, never one per call. A
+/// monitor that fired says so in its counts, and its line is drawn in the
+/// accent rather than dim, so it stands out without the word twice.
 pub fn marker_lines(marker: &DecisionTurnMarker) -> Vec<Line<'static>> {
     marker
         .items
         .iter()
         .map(|item| {
-            let mut spans = vec![
+            let text_style = if item.fired {
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                DIM
+            };
+            Line::from(vec![
                 Span::styled("◇ ", Style::new().fg(ACCENT)),
-                Span::styled(marker_text(item), DIM),
-            ];
-            if item.fired {
-                spans.push(Span::styled(
-                    " · fired",
-                    Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ));
-            }
-            Line::from(spans)
+                Span::styled(marker_text(item), text_style),
+            ])
         })
         .collect()
 }
@@ -180,6 +182,9 @@ pub struct CallsView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecisionsOverlay {
     pub summary: SessionDecisionSummary,
+    /// Each aggregate's newest call, when it was read, so an aggregate's line
+    /// puts that answer's own probability beside it.
+    pub last: Vec<DecisionRecord>,
     /// The selected aggregate.
     pub selected: usize,
     /// Rows scrolled from the top.
@@ -217,6 +222,7 @@ impl DecisionsOverlay {
     pub fn new(summary: SessionDecisionSummary) -> Self {
         Self {
             summary,
+            last: Vec::new(),
             selected: 0,
             scroll: 0,
             calls: None,
@@ -346,7 +352,7 @@ impl DecisionsOverlay {
         lines.push(Line::from(Span::styled("By source", head)));
         for (i, aggregate) in self.summary.aggregates.iter().enumerate() {
             let selected = i == self.selected;
-            let text = aggregate_line(aggregate, label_w);
+            let text = aggregate_line(aggregate, label_w, last_call(&self.last, aggregate));
             let text = text.strip_prefix("  ").unwrap_or(&text).to_string();
             lines.push(Line::from(vec![
                 Span::styled(if selected { "▸ " } else { "  " }, Style::new().fg(ACCENT)),
@@ -504,15 +510,26 @@ mod tests {
     fn a_marker_is_one_line_per_origin_never_one_per_call() {
         let lines = text(&marker_lines(&marker()));
         assert_eq!(lines.len(), 3, "three origins, 621 calls: three lines");
+        // R1: a monitor's checks fire or stay quiet; nothing reads "failed".
         assert_eq!(
             lines[0],
-            "◇ Monitor Form reached: 18 checks this turn · 18 failed · last P 0.31"
+            "◇ Monitor Form reached: 18 checks this turn · 18 quiet · last P 0.31"
         );
         assert_eq!(
             lines[1],
-            "◇ Decide: 600 calls this turn · 41 passed · 557 failed · 2 errors"
+            "◇ Decide: 600 calls this turn · 41 passed the threshold · 557 did not · 2 errors"
         );
-        assert!(lines[2].ends_with("last P 0.91 · fired"), "{}", lines[2]);
+        assert_eq!(
+            lines[2],
+            "◇ Monitor Task done: 3 checks this turn · 1 fired · 2 quiet · last P 0.91"
+        );
+        let styled = marker_lines(&marker());
+        assert_eq!(
+            styled[2].spans[1].style.fg,
+            Some(ACCENT),
+            "a fired monitor stands out"
+        );
+        assert_eq!(styled[0].spans[1].style, DIM);
     }
 
     fn card_record() -> DecisionRecord {
@@ -540,6 +557,15 @@ mod tests {
         assert_eq!(
             lines[4],
             "  yes · P 0.93 · calibrated · P(yes) 0.93 ≥ 0.80, passed"
+        );
+        let mut below = card_record();
+        below.decisions[0] = crate::commands::decide::tests::yes_no(0.4);
+        below.decisions[0].passed = Some(false);
+        below.decisions[0].pass_probability = Some(0.4);
+        let lines = text(&card_lines(&below));
+        assert_eq!(
+            lines[4], "  no · P 0.60 · calibrated · P(yes) 0.40 < 0.80, not passed",
+            "the answer's own P beside it; the threshold's named apart; never \"failed\""
         );
 
         let mut failed = card_record();
@@ -604,7 +630,7 @@ mod tests {
         );
         assert!(screen.contains("618 calls in this chat"), "{screen}");
         assert!(screen.contains("▸ monitor  Form reached"), "{screen}");
-        assert!(screen.contains("18 checks · 18 failed"), "{screen}");
+        assert!(screen.contains("18 checks · 18 quiet"), "{screen}");
         assert!(screen.contains("tool     decide"), "{screen}");
         assert!(screen.contains("Recent turns"), "{screen}");
         assert!(screen.contains("a1b2c3d4  monitor"), "{screen}");
@@ -636,7 +662,10 @@ mod tests {
             screen.contains("tool · decide  last 2 of 600 calls"),
             "{screen}"
         );
-        assert!(screen.contains("no  P 0.31"), "{screen}");
+        assert!(
+            screen.contains("no  P 0.69"),
+            "the answer's own P: {screen}"
+        );
         assert_eq!(on_key(&mut overlay, KeyCode::Esc), OverlayKey::Consumed);
         assert!(
             overlay.calls.is_none(),
