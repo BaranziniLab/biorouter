@@ -31,11 +31,32 @@ You can run multiple subagents sequentially or in parallel.
 
 ## Watching a subagent work
 
-Subagents used to be opaque: you saw a spinner, then a summary. In the desktop app they now run as ordinary chat tabs you can read, talk to and stop — the same conversation the parent agent is delegating to, rendered live.
+Subagents used to be opaque: you saw a spinner, then a summary. Now every subagent is an ordinary chat you can follow, open, talk to and stop: the same conversation the parent agent is delegating to.
+
+### Subagents run in the background
+
+A subagent runs in the background and **opens no tab** unless someone asks for one. The chat that started it lists it in its **chat summary**, the side panel to the right of the conversation (or the popover from the summary button in the chat header when the window is too narrow for the panel). Each row shows:
+
+- **the subagent's name and role**: the first line of its task, and the short role label the parent gave it, if any;
+- **its status**: queued, running, cancelling, completed, blocked, incomplete, failed, or interrupted (it was running when the app or daemon stopped);
+- **its model**, and how long it has run or ran;
+- **"quiet"** when a running subagent has recorded no activity for a while. This is a hint that it may be waiting on something slow, not a verdict that it has stopped.
+
+Hover or focus a row to see its setup: the extensions, skills and knowledge bases it was given. Click a row to open that subagent as a tab.
+
+Three things open a tab when the subagent starts, instead of leaving it in the background:
+
+- **You ask for one.** Ask the agent to let you watch a subagent in its own tab, and it passes `visible: true` (or a `placement`) on the spawn.
+- **The "Open subagent tabs automatically" setting.** Turn it on in Settings > App > General (config key `BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS`, off by default) and every new subagent opens in its own tab, as it did before the side panel.
+- **A `placement`** on the spawn (`tab`, `split` or `window`) is itself a request for a tab.
+
+Two things suppress a tab whatever was asked: no desktop window attached (a terminal session or a bare daemon), and the **"Never open tabs automatically"** setting described in the [Workspace Control guide](../extensions/built-in/workspace.md#focus-etiquette). A subagent still runs in either case, and the parent agent is told no tab opened, so it does not tell you one did.
+
+A background subagent still carries its `subagent` badge, so when you open it from the side panel or from History, its tab shows which chat it belongs to.
 
 ### The subagent tab
 
-When a subagent starts, a tab opens **in the background** (it never steals the composer you are typing into) carrying a `subagent` badge and, at the top of its transcript, one line that shows:
+When a subagent's tab opens (from the side panel, from History, or at spawn when a tab was asked for), it opens **in the background** (it never steals the composer you are typing into), carries a `subagent` badge and, at the top of its transcript, one line that shows:
 
 - **Subagent of**: a link back to the chat that delegated the work;
 - **the child's grants**: how many extensions and knowledge bases it was given; hover or focus a count for the names;
@@ -60,11 +81,34 @@ If you typed into the tab, the parent is told. Its tool result carries `human_in
 
 The flag tracks **messages you sent**, so it is Steer that sets it, not Stop. Pressing Stop without typing cancels the run without marking the result as intervened.
 
+### Monitors on a subagent
+
+A subagent can be watched by decision-model monitors like any chat, and they can come from the chat that started it as well as from its own tab:
+
+- **Yours, on the parent.** Tick "Also watch the subagents this chat starts" on a monitor of the parent chat (`--subagents` with `biorouter session monitors`), and every subagent it starts gets a copy. Saving the parent's monitors again updates the copies on the subagents still running.
+- **The agent's.** The parent agent can give a subagent monitors when it spawns it (the `subagent` tool's `monitors` field), through a phase of its plan, or later with `workspace_monitor`. They are yes/no questions that stop or steer the subagent, at most 4 per subagent within the chat's 8. The agent may change or remove only the monitors it set, never yours.
+- **Yours, on the subagent.** Open its tab and use its Monitors dialog, or `biorouter session monitors <subagent id>`. You may change or remove any of its monitors, the agent's included; in the app, editing one of the agent's makes it yours.
+- **A sub-workflow's.** A subagent spawned from a sub-workflow that declares `decision_settings` starts with its monitors, as yours.
+
+A subagent's chat runs its `turn_end` monitors at the end of each of its turns, and a `turn_end` steer sends it back to work. Every monitor is checked against the parent chat's privacy tier when the subagent is spawned, so a private chat's subagent is never started with a hosted decision model. The full rules are in [Monitors on subagents](decision-models.md#monitors-on-subagents).
+
+**When a monitor stops a subagent,** its result reads `incomplete` and opens with which monitor stopped it and why, as in "Stopped by monitor 'Off task' (set by this chat's agent): P 0.93 reached its threshold 0.80. Its question: "Is the agent editing files outside src/?". The run did not finish." That sentence is the first line the side panel, `biorouter session subagents` and the terminal pane show for it. The parent agent is told it was stopped and did not finish. After its own monitor's stop it may read the subagent, continue it or change the monitor; after yours it is told to tell you and wait, not to work around it. A copy of one of your "also watch" monitors that stops one subagent also stops its siblings and the chat that started them.
+
+### When the chat that started it stops
+
+Stopping a chat stops its subagents. A plain Stop in the chat that started them (the Stop button, `biorouter session cancel`, Ctrl-C in the terminal) and a decision-model monitor's stop of that chat both stop every subagent it started that still has work in flight: a delegated run that is running or queued, a later turn in its tab, or a Stop-and-Send continuation waiting to start. Finished subagents are left alone. Each stopped subagent ends `incomplete`, keeps what it had done, and its result and its own tab say why:
+
+- "Stopped because the person stopped the chat that started this subagent."
+- "Stopped because monitor 'Form reached' stopped the chat that started this subagent."
+- "Stopped because monitor 'Form reached', set by the person to watch every subagent of that chat, stopped subagent 'Fetch the data'."
+
+Stop-and-Send in the parent (sending a correction while its turn runs) leaves the subagents running, because the next turn keeps supervising them, and so does cancelling a tool approval. After a monitor's stop, the parent's turn waits up to 30 seconds (`BIOROUTER_MONITOR_STOP_SETTLE_SECS`) for the subagents to stop, so it can collect what each had done, and names any that had not stopped by then. See [A stop stops the chat's subagents](decision-models.md#a-stop-stops-the-chats-subagents).
+
 ### When the child needs your permission
 
 Even in Completely Autonomous mode some operations always ask — a recursive delete of a directory the session did not create, a write into a credential store, anything the security floor stops. A subagent running one of those has to reach **you**, and a card that lives only in a conversation you are not looking at is the same thing as no card at all.
 
-So the ask appears in **two** places: the child's own tab, and the conversation *you* started — the top of the chain, if the work was delegated more than once, because every layer below it is itself an agent. It is one decision with one identity: answer it in either place and the child continues. That matters most where the child has no tab to answer in — a `visible: false` spawn, a child past the four-tab fan-out cap, a fan-out you never opened.
+So the ask appears in **two** places: the child's own tab, and the conversation *you* started — the top of the chain, if the work was delegated more than once, because every layer below it is itself an agent. It is one decision with one identity: answer it in either place and the child continues. That matters most where the child has no tab to answer in: a background subagent (the default), a child past the four-tab fan-out cap, a fan-out you never opened.
 
 Two things it is not:
 
@@ -73,23 +117,45 @@ Two things it is not:
 
 If nobody answers, nothing is quietly allowed: the call is refused, the child is told the approval expired, and it carries on without it.
 
-### Visible by default
-
-Children are **visible by default** whenever the desktop app is open. To run one silently, ask for it — the agent passes `visible: false` on the spawn — and the child runs exactly as subagents did before, reachable only from History and from the parent's summary.
-
-Two things also suppress the tab without changing what runs: no GUI attached (a terminal session or a bare daemon), and the **"Never open tabs automatically"** setting described in the [Workspace Control guide](../extensions/built-in/workspace.md#focus-etiquette).
-
 ### The fan-out cap
 
-At most **4** children *running at the same time* get a tab from one parent. Ask for ten subagents in parallel and you get four tabs, not a tab storm; children five through ten run in the background, appear in History nested under their parent, and can be read with `workspace_read_conversation`. A spawn is **never refused** because of this cap, and the parent is told which children did not get a tab so it does not claim one exists. Raise or lower it with `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`.
+When subagents do open tabs at spawn (you asked, or the setting is on), at most **4** children *running at the same time* get a tab from one parent. Ask for ten subagents in parallel with the setting on and you get four tabs, not a tab storm; children five through ten run in the background, appear in the side panel and in History nested under their parent, and can be read with `workspace_read_conversation`. A spawn is **never refused** because of this cap, and the parent is told which children did not get a tab so it does not claim one exists. Raise or lower it with `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`.
 
-It is a cap on the burst, not a running total of open tabs. Each slot is released when that child's run ends, so a parent that spawns four, waits for them, and spawns four more gets tabs for all eight — you can finish a long conversation with more than four subagent tabs open, and closing them is up to you. That is the intended behaviour: the cap exists to stop a single parallel fan-out from burying the workspace, and a batch you have already read is not a fan-out.
+It is a cap on the burst, not a running total of open tabs. Each slot is released when that child's run ends, so a parent that spawns four, waits for them, and spawns four more gets tabs for all eight. Tabs you open yourself from the side panel or History never count toward it.
+
+### Phases and roles
+
+When you ask the agent to organise a larger piece of work into stages (plan, research, implementation, verification, testing and so on), it can declare a phase plan with the `workspace_orchestrate` tool and start each subagent inside a phase. Two spawn parameters carry this:
+
+- **`phase`** names the phase the subagent works in. A spawn into a phase the plan does not have, or one already completed or skipped, is refused before anything is created. Results handed off from earlier phases are added to the subagent's instructions, so a later phase starts from what an earlier one found.
+- **`role`** is a short label for what the subagent does ("reviewer", "data loader"), at most 40 characters, shown beside it in the side panel.
+
+The side panel, `biorouter session subagents` and the terminal pane then show the plan with each phase's progress: how many of its subagents are done, running, quiet or failed. A phase may carry a decision gate, which holds every phase after it until a decision model is confident the phase met its goal, or until you pass or skip it; the agent cannot change, remove or skip a gate. A phase may also carry monitors that every subagent spawned into it starts with. See [Orchestration phases](orchestration-phases.md) for how phases are declared, gated, completed and handed off.
 
 ### Finding subagent runs later
 
-History hides subagent runs by default, so your session list stays a list of *your* conversations. Turn on **Show subagent runs** in History and each child appears nested under the conversation that spawned it, with a live marker while it is still running.
+The side panel of the chat that started them is the quickest way back to a chat's subagents, and the only place that follows one live. History hides subagent runs by default, so your session list stays a list of *your* chats. Turn on **Show subagent runs** in History and each run appears nested under the chat that spawned it as a one-line row: its name, when it ran, the model it ran on, and how it ended (completed, blocked, failed or incomplete). A run that has not ended yet shows no status there. A chat with more than three runs shows the newest three and a **Show N more runs** row that opens the rest in place; while you search History, every matching run is shown. A run you have focused with the keyboard stays shown, in its place in the order, when newer activity pushes it out of the newest three, so the list never takes the focus away from under you.
 
-From the CLI, `biorouter session list --subagents` does the same, `biorouter session attach` joins a live child (`--of` to pick one by parent, `--read-only` to watch without steering), and `biorouter session cancel` stops it. Steering or stopping a child needs proof that a person acted: a daemon started with a user-action key asks the terminal for the key first, and one started without — `biorouter serve` — refuses, and says so; `--read-only` still follows the child there. See [the user-action key](workspace-control.md#as-subcommands-you-type).
+A subagent's status survives a restart of the app or daemon: when a run ends, its final status (completed, blocked, incomplete or failed) and the first line of its result are stored with the subagent's own session. A subagent that was still running when its process went away reads as **interrupted**, never as running.
+
+From the CLI, `biorouter session subagents <session-id>` lists a chat's subagents with the same status, model and setup the side panel shows, and the phase plan first when there is one (`--format json` for scripts, `--watch` to redraw every two seconds). Without a running daemon it reads the local session store, so a subagent that was running reads as interrupted or unknown.
+
+In the terminal chat (`biorouter session`), the subagent pane lists the current chat's subagents with their status, under their phases when the chat has a phase plan. It appears on its own once the chat has a subagent: beside the transcript in a terminal at least 120 columns wide, and as a strip above the input in a narrower one. The keys:
+
+| Key or command | What it does |
+|----------------|--------------|
+| `Ctrl-B` | Shows or hides the pane. |
+| `Ctrl-O` | Moves focus into the pane, and back to the input. |
+| `↑` `↓` `Home` `End` | With focus in the pane, choose a subagent. The pane then shows its setup: model, extensions, skills, knowledge bases, tokens and tool calls. |
+| `Enter` | With focus in the pane, opens the chosen subagent's chat to read. |
+| `Esc` | In the pane, returns focus to the input. In a subagent's chat, returns to the parent chat, and to the pane if that is where you opened it. |
+| `/subagents` | Shows or hides the pane, like `Ctrl-B`. `/subagents show` and `/subagents hide` set it either way. |
+| `/subagents list` | Prints the chat's subagents, numbered in the order they started. |
+| `/attach <n\|id\|name>` | Opens one subagent's chat by its number from `/subagents list`, its session id, or its name (a unique prefix of either is enough). |
+
+A subagent's chat opened this way is read-only: it follows the child as it works (`PageUp`, `PageDown`, `↑` and `↓` scroll it), and steering or stopping it is done with `biorouter session attach` and `biorouter session cancel`, below. Typing while the pane has focus returns focus to the input, so the start of a message is never lost, and `Ctrl-C` still stops a running turn wherever focus is. `Ctrl-B` is also tmux's default prefix key; inside tmux, use `Ctrl-O` or `/subagents` instead.
+
+`biorouter session list --subagents` nests children under their parents the way History does, `biorouter session attach` joins a live child (`--of` to pick one by parent, `--read-only` to watch without steering), and `biorouter session cancel` stops it. Steering or stopping a child needs proof that a person acted: a daemon started with a user-action key asks the terminal for the key first, and one started without — `biorouter serve` — refuses, and says so; `--read-only` still follows the child there. See [the user-action key](workspace-control.md#as-subcommands-you-type).
 
 ## Internal subagents
 
@@ -308,6 +374,7 @@ Subagents use the following pre-configured settings, but you can override any de
 | **Max turns** | 25 | Use natural language or set `BIOROUTER_SUBAGENT_MAX_TURNS` |
 | **Timeout** | 5 minutes | Request longer timeout in your prompt |
 | **Extensions** | Inherited from parent | Specify which extensions to use in your prompt |
+| **Model** | Inherited from parent | Name another chat model in your prompt (see [Model control](#model-control)) |
 | **Return mode** | All subagent information provided in main session | Specify how much detail you want in your prompt |
 
 ### Customizing settings in prompts
@@ -336,6 +403,12 @@ Control which tools and capabilities subagents can access. By default, subagents
 "Use a subagent with only code editing tools to refactor main.py"
 ```
 
+### Model control
+
+A subagent runs on the model of the chat that started it. You can ask for another model in your prompt, and biorouter passes it to the subagent as a provider, model or temperature override. The [privacy tier rules](#a-child-cannot-change-the-privacy-tier) below apply to whichever model you name.
+
+The model must be a chat model. A [decision model](decision-models.md) (any `baseten_decision` or `ollama_decision` model) answers a yes/no, choice or score question about the text it is sent and cannot carry out a task, so a spawn that would run on one is refused before the subagent is created. The check is made on the provider the subagent would really run on, so it also covers one that would inherit a decision model, although a decision chat never runs tools and so never spawns one today. The refusal tells the agent to give the subagent a chat model, or to call `decisions__decide`, which asks a decision model its questions about each item and returns the answers.
+
 ### Return mode control
 
 Choose how much information biorouter provides from its subagents in your main session.
@@ -363,7 +436,7 @@ If a prompt, skill or workflow of yours names `subagent_status`, this section is
 | block (`wait: true`) | `workspace_watch { session_ids: [...], timeout_s }` |
 | cancel (`cancel: true`) | `workspace_close { session_id, scope: "turn" }` |
 
-The background *handle* mechanism itself is unchanged, and so is `BIOROUTER_SUBAGENT_BACKGROUND`: a subagent started with `background: true` still returns immediately instead of blocking the parent's turn. What changed is the identifier — the child's **session id** is now what every one of these tools takes, in place of the old handle id.
+The background *handle* mechanism itself is unchanged, and every spawn now uses it: a `subagent` call always returns the child's session id immediately instead of blocking the parent's turn, and the parent collects the result with the tools above. What changed is the identifier: the child's **session id** is now what every one of these tools takes, in place of the old handle id.
 
 ## Security constraints
 
@@ -426,9 +499,13 @@ re-enabling the feature never revisits an existing row.
 ## Related documentation
 
 - [Workspace Control capability](../extensions/built-in/workspace.md) — the extension that advertises the spawn tool, plus the cross-session tools this page's migration table points at.
+- [Orchestration phases](orchestration-phases.md): declaring a phase plan, spawning into phases, and handing results forward.
+- [Chat summary rail](../desktop-ui/chat-summary-rail.md): the side panel that lists a chat's subagents.
+- [Workspace control](workspace-control.md): running several chats at once, and the CLI commands that reach them.
 - [Subworkflows](../workflows/subworkflows.md) — the workflow-driven counterpart to subagents, registered via `sub_workflows` and exposed as tools.
 - [Workflows](../workflows/README.md) — how to author the workflow files a subagent can be configured from.
 - [Workflow schema reference](../workflows/workflow-schema-reference.md) — every field available in a workflow file, including where workflows are discovered.
 - [Permission modes](../security/permission-modes.md) — which modes allow autonomous subagent dispatch and which disable it.
 - [Privacy tiers](../security/privacy-tiers.md) — why a spawn cannot change a chat's privacy tier in either direction, and what a public child loses from its inherited extension set.
+- [Decision models](decision-models.md): the yes/no, choice and score models a subagent cannot run on, the `decide` tool that screens items with them, and the monitors that watch and stop a subagent.
 - [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_SUBAGENT_MAX_TURNS` and the other session-management settings.

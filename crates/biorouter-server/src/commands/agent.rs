@@ -444,6 +444,11 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
     biorouter_mcp::app_folder::report_once();
     biorouter::session::SessionManager::instance().validate_storage()?;
+    // The decision log: every decision this daemon makes is a row in its chats' store.
+    // Before anything that could run a turn or a scheduled job, so none goes unlogged.
+    biorouter::decision::log::install_global_sink(std::sync::Arc::new(
+        biorouter::session::SessionManager::instance(),
+    ));
 
     // Opt-in: only `biorouter serve` passes the flag. See `watch_parent`.
     let orphaned = match exit_with_parent {
@@ -708,6 +713,20 @@ async fn serve(
         } else {
             task.abort();
         }
+    }
+
+    // A decision request whose caller stopped waiting (a timed-out monitor, a
+    // dropped HTTP request) still runs on its own task, and its answer is
+    // stored and billed when it comes. No new request arrives now, so give the
+    // ones in flight a few seconds to finish rather than lose their usage.
+    let unsettled =
+        biorouter::decision::settle_late_answers(std::time::Duration::from_secs(5)).await;
+    if unsettled > 0 {
+        tracing::warn!(
+            unsettled,
+            "decision requests were still running at shutdown; if their provider bills them, \
+             that usage is not counted"
+        );
     }
 
     // Take the llama-server sidecar down with us.

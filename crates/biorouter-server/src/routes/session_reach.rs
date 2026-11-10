@@ -226,6 +226,8 @@
 //! | `GET /agent/tools` | QA M2: a private chat's private-connector tool names, handed to a secret-only caller while `add_extension` on the same chat refused. Like the `callable_tool_count` row above it mints an agent for the chat, so the gate runs first. The empty `session_id` of the settings page names no chat and is not gated. |
 //! | `POST /workflows/create` | Loads the chat's whole transcript and returns what a model makes of it. |
 //! | `POST /skills/session` | Writes a skill's instructions into the chat's next turn. |
+//! | `GET /sessions/{session_id}/decisions` · `/decisions/summary` · `/decisions/{decision_id}` · `GET|PUT /sessions/{session_id}/decision-settings` · `GET|PUT /sessions/{session_id}/decision-chat` · `GET /decisions/models?sessionId=` · `POST /decisions/decide` with a `sessionId` | Decision models (`routes::decisions`, through its one `reach_chat`). The decision log stores what each call was sent, which is the chat's own content, and the settings choose which model reads the chat; the two PUTs also take the user-action proof on a daemon that holds a key, and on a daemon that holds none refuse a subagent's chat with `SUBAGENT_CONTROL_NO_KEY`, and only then ask whether what they turn on can run (422). An ad hoc decision that names a chat is then checked against that chat's tier by the decision service (Gate H). `GET|POST /decisions/models/install` name no chat and are not on this list: they install a model into the Ollama on this computer, and the installer refuses one elsewhere. |
+//! | `PUT /sessions/{session_id}/phase-gates/{phase_id}` · `POST …/phase-gates/{phase_id}/decision` · `DELETE …/phase-gates/{phase_id}` | The person's controls over a phase's gate (`routes::decisions`, through the same `reach_chat`), which decides when the chat's delegated work may go on. Then the user-action proof on a daemon that holds a key (`PHASE_GATES_NEED_USER`), the subagent rule on one that holds none, and for a set the gate model's check (422). The answer carries the plan exactly as `GET /sessions/{session_id}/subagents` shows it to the caller, read through that route. |
 //! | `POST /knowledge/bases/{id}/ingest-conversation` | Every chat the request names, checked before any is loaded. |
 //! | `POST /active_work/{id}/cancel` | Stops one chat's running work: a shell command's process group, a subagent, a detached turn or a scheduled run. The id names the work, so the route resolves it to the owning chat and asks [`work_reach`], which is `session_reach` on that chat. A handle that names nothing, work that names no chat and a schedule that is not running are all refused as a private chat is. |
 //! | `POST /schedule/{id}/kill` · `GET /schedule/{id}/inspect` | The same scheduled run by its schedule id, through [`work_reach`] on the chat it is running in. |
@@ -1790,6 +1792,7 @@ mod tests {
         let knowledge_rs = include_str!("knowledge.rs");
         let active_work_rs = include_str!("active_work.rs");
         let schedule_rs = include_str!("schedule.rs");
+        let subagents_rs = include_str!("session_subagents.rs");
         for (src, func, gate_call, first_touch, what) in [
             (
                 reply_rs,
@@ -1916,6 +1919,13 @@ mod tests {
                 "session_reach(",
                 "get_session_model_usage(",
                 "the usage read, whose 200/404 said whether the id existed",
+            ),
+            (
+                subagents_rs,
+                "pub async fn get_session_subagents(",
+                "session_reach(",
+                "get_session(",
+                "the parent's row read, whose 404 said whether the id existed",
             ),
             (
                 agent_rs,
@@ -2119,6 +2129,10 @@ mod tests {
             (schedule_rs, "fn create_schedule_status("),
             (schedule_rs, "async fn sessions_handler("),
             (schedule_rs, "pub fn routes("),
+            // `routes` sits after the one gated handler in this file, and
+            // `visible_roster` between them.
+            (subagents_rs, "pub(crate) fn visible_roster("),
+            (subagents_rs, "pub fn routes("),
         ] {
             // Every spelling the rows above use, so a control is a control for
             // every row it could be over-reading into.
@@ -3769,6 +3783,15 @@ mod bypass_tests {
         vec![
             ("GET", format!("/sessions/{id}/extensions"), None),
             ("GET", format!("/sessions/{id}/usage"), None),
+            ("GET", format!("/sessions/{id}/subagents"), None),
+            // Decision models: the log holds what was sent, and the settings
+            // choose which model reads the chat. `routes::decisions`' own tests
+            // drive these and the two routes that name a chat in a query or a
+            // body.
+            ("GET", format!("/sessions/{id}/decisions"), None),
+            ("GET", format!("/sessions/{id}/decisions/summary"), None),
+            ("GET", format!("/sessions/{id}/decision-settings"), None),
+            ("GET", format!("/sessions/{id}/decision-chat"), None),
             ("GET", format!("/agent/tools?session_id={id}"), None),
             (
                 "GET",
@@ -3794,6 +3817,35 @@ mod bypass_tests {
                 "POST",
                 "/skills/session".to_string(),
                 Some(serde_json::json!({ "sessionId": id, "add": ["qa-h2-probe-skill"] })),
+            ),
+            (
+                "PUT",
+                format!("/sessions/{id}/decision-settings"),
+                Some(serde_json::json!({ "monitors": [] })),
+            ),
+            (
+                "PUT",
+                format!("/sessions/{id}/decision-chat"),
+                Some(serde_json::json!({
+                    "question": { "instructions": "Is it done?", "kind": { "binary": {} } }
+                })),
+            ),
+            // The person's phase-gate controls: what may hold the chat's
+            // delegated work. The removal last of the three.
+            (
+                "PUT",
+                format!("/sessions/{id}/phase-gates/research"),
+                Some(serde_json::json!({ "questions": { "done": "Is it done?" } })),
+            ),
+            (
+                "POST",
+                format!("/sessions/{id}/phase-gates/research/decision"),
+                Some(serde_json::json!({ "decision": "pass" })),
+            ),
+            (
+                "DELETE",
+                format!("/sessions/{id}/phase-gates/research"),
+                None,
             ),
             (
                 "POST",

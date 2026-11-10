@@ -142,6 +142,19 @@ export const CAPABILITIES: CapabilityMeta[] = [
       'Lets a chat you connect with /crew read its Crew channels and post updates there.',
     defaultEnabled: true,
   },
+  {
+    /*
+     * The decision-model tools (`decide`, `decision_models`) ship with Biorouter
+     * (`PLATFORM_EXTENSIONS["decisions"]`), so like Workspace Control and Crew
+     * they are a capability, kept off the Extensions page, the Tools popover, the
+     * chip count and the load toast's denominator.
+     */
+    key: 'decisions',
+    label: 'Decisions',
+    description:
+      'Ask fast decision models typed questions (yes or no, a choice, a score) about many pieces of text at once.',
+    defaultEnabled: true,
+  },
 ];
 
 /** Set of normalized capability keys, for quick membership checks. */

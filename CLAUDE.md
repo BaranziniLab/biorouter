@@ -1375,8 +1375,19 @@ value's *location* is as load-bearing as the number.
   notices, chips and the text, then one 32px controls row: `+`, the Tools chip,
   the model and effort chip, and Send. Under the card, a 12px muted footer
   (`bottom_menu/ComposerFooter.tsx`): the working folder on the left, the context
-  ring and the chat's cost on the right, only the folder on Home. The card's
-  classes live in one module, `composer/composerCard.ts`, and Home renders the
+  ring and the chat's cost on the right, only the folder on Home. The three
+  footer items open the same light hover card (`bottom_menu/useFooterCard.ts`,
+  `bottom_menu/FooterCard.tsx`) with one behaviour: a hover previews it after
+  300ms and a Tab at once (its trigger holds nothing), a click, tap, Enter or Space keeps it
+  (its trigger holds `--background-fill-strong`, `data-pinned`), a hover never
+  replaces a kept card, Escape or a press outside closes it, one card is open at
+  a time, and it hangs above the composer card. That is the app's one pointer
+  rule, "hover peeks, click pins" (`design.md` D-43; `docs/desktop-ui/shared-controls.md`,
+  "Hover and click"). The folder card writes a path as `~/…` in the sans reading
+  (`FooterCardPath`, `utils/folderPath.ts`), never mono. A new footer item
+  uses that card, never a `Tooltip` (`docs/desktop-ui/shared-controls.md`,
+  "Composer footer cards"). The card's classes live in one module,
+  `composer/composerCard.ts`, and Home renders the
   same `ChatInput`, so the two never differ. Its surface,
   `composerCardSurfaceClassName`, is also what the in-place message edit card in
   `UserMessage.tsx` wears, because editing a message is writing in a composer
@@ -1869,7 +1880,10 @@ hold:
 self-excluding.** `ensure_spawn_extension` puts `workspace` into the extension
 map, so counting it would make one turn's `true` the reason for the next turn's
 `true` — an agent that removed its last real extension would keep delegating
-forever off a grant it derived from itself. The consequence to recognise: a chat
+forever off a grant it derived from itself. The default-on `decisions` platform
+extension is not counted either (`is_not_counted_by_the_delegation_gate` in
+`extension_manager.rs`): it is on in every chat, so counting it would enable
+delegation everywhere by itself. The consequence to recognise: a chat
 with **every** extension disabled has no `subagent` tool, which looks exactly
 like a registration bug and is not one.
 
@@ -2227,6 +2241,50 @@ BioRouter is the hub of a small ecosystem of Baranzini Lab / UCSF repositories: 
 | **biorouter** (this repo) | The main app: Rust workspace (CLI `biorouter`, daemon `biorouterd`, core agent lib, MCP servers) + Electron/React desktop GUI. | `/Users/wgu/Desktop/biorouter` | https://github.com/BaranziniLab/biorouter |
 | **landing site** (now in this repo) | Public website + docs, deployed at **http://biorouter.ucsf.edu/** (custom-domain GitHub Pages, `CNAME` = `biorouter.ucsf.edu`). Hosts the BAAM marketplace (`baam.html`), `download.html`, `docs.html`, `skills.html`, and the machine-readable **`registry.json`** (the authoritative marketplace catalog of extensions + skills). **As of the 2026-06-29 consolidation it lives in this repo under [`landing/`](landing/)** and is published by [`.github/workflows/deploy-landing.yml`](.github/workflows/deploy-landing.yml) (Pages source = "GitHub Actions") — so the site ships and versions with the app. The `biorouter.ucsf.edu` custom domain was **cut over** to this repo (released from `biorouter-landing`, claimed on `biorouter`); the live site now serves from `landing/`. The standalone `biorouter-landing` repo was **deleted** (remote + local) on 2026-06-29 after verification; its full history was archived to a git bundle (`~/Desktop/biorouter-landing-archive-2026-06-29.bundle`) kept as insurance. This `landing/` folder is now the single source of truth for the site. See [`landing/MIGRATION.md`](landing/MIGRATION.md). | `/Users/wgu/Desktop/biorouter/landing` | https://github.com/BaranziniLab/biorouter (was: https://github.com/BaranziniLab/biorouter-landing) |
 | **biorouter-skills** | Shareable Biorouter skills. Each skill ships as a GitHub Release asset `skill-<id>` → `<id>.zip`. Local clone has two remotes: `baranzini` → BaranziniLab (canonical) and `origin` → Broccolito (dev fork). | `/Users/wgu/Desktop/biorouter-skills` | https://github.com/BaranziniLab/biorouter-skills (fork: https://github.com/Broccolito/biorouter-skills) |
+| **biorouter-usage-dashboard** | Internal usage tracking: a live dashboard of release downloads, served at https://baranzinilab.github.io/biorouter-usage-dashboard/. Not advertised (see below). | `/Users/wgu/Desktop/biorouter-usage-dashboard` | https://github.com/BaranziniLab/biorouter-usage-dashboard |
+
+### Usage dashboard (download tracking)
+
+This is how Biorouter usage is tracked. GitHub releases are the only distribution
+channel, and GitHub keeps only a running download total per release file with no
+history, so a separate repository collects those totals every day and publishes a
+dashboard. Before answering a question about downloads, users or adoption, read the
+dashboard rather than summing `gh release` counts by hand.
+
+- **Where:** repo [BaranziniLab/biorouter-usage-dashboard](https://github.com/BaranziniLab/biorouter-usage-dashboard)
+  (public), local clone `/Users/wgu/Desktop/biorouter-usage-dashboard`, site
+  https://baranzinilab.github.io/biorouter-usage-dashboard/. Its machine-readable data is
+  `data/dashboard.json` on the site.
+- **⚠ Not advertised, by owner ruling (2026-11-06).** Never link the dashboard from the
+  Biorouter website (`landing/`, biorouter.ucsf.edu), the README, release notes, the docs or
+  the app. It carries `noindex` so search engines skip it. The repository traffic panels on
+  it (views, referrers, popular pages) are public there on purpose; do not remove them.
+- **How it updates:** the `daily.yml` workflow runs `scripts/collect.mjs` at 01:23 UTC,
+  commits the history under `data/` (`events.jsonl` holds every rise in a count) and deploys
+  GitHub Pages. Between runs the page reads this repo's releases from the GitHub API in the
+  browser every 5 minutes and adds what changed.
+- **Measured since 2026-11-06 19:13 UTC.** Earlier days are estimates: the totals that
+  existed then are spread evenly across the days each release was the newest one. Do not quote
+  an earlier daily figure as measured.
+- **What counts as what** (the classifier is `public/classify.js` there):
+  - **New installs:** `.dmg`, Windows `Setup.exe` and zip, Linux `.deb`/`.rpm`. Windows
+    updates download the installer, so they land here too.
+  - **Auto-updates:** `Biorouter-darwin-*.zip`.
+  - **CLI packages:** `biorouter-cli` `.deb`/`.rpm`, plus older headless and CLI binaries.
+  - **Update checks:** `latest-mac.yml`, read by every running Mac app at launch and every
+    3 hours. They are about 80% of all GitHub download counts and are **not downloads**;
+    adding them in inflates usage roughly fivefold.
+- ⚠ **The release asset names are a contract with that classifier.** Renaming or adding a
+  release artifact (the 11 assets in "Release assets" above, `forge.config.ts` makers,
+  `scripts/release.sh`) without updating `public/classify.js` files the new asset under
+  "Other" and silently drops it from every platform and kind total. Update both together.
+- **Traffic needs a secret.** The workflow token cannot read this repo's traffic API or list
+  its stargazers. Traffic history grows only once a fine-grained token with
+  **Administration: Read** on BaranziniLab/biorouter is saved as `TRAFFIC_TOKEN` in the
+  dashboard repo. Stars fall back to the stored list plus the repository's star count.
+- **Ecosystem coverage comes from the registry.** Skills, extensions and workflows are read
+  from the repositories named in https://biorouter.ucsf.edu/registry.json, so a new BAAM
+  listing is counted from the next daily run with no dashboard change.
 
 ### Marketplace & docs (BAAM)
 

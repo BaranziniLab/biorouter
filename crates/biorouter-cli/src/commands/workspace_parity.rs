@@ -140,6 +140,8 @@ pub enum WorkspaceCapability {
     // terminal, to read OR to photograph.
     ReadPanel,
     Spawn,
+    Orchestrate,
+    Monitor,
     // The daemon HTTP surface the GUI stands on (tag = "workspace").
     RouteReply,
     RouteInterrupt,
@@ -148,6 +150,10 @@ pub enum WorkspaceCapability {
     RouteContinuationRecover,
     RouteObserve,
     RouteRunning,
+    RouteSubagents,
+    RouteGateSet,
+    RouteGateRemove,
+    RouteGateDecision,
 }
 
 pub const ALL_CAPABILITIES: &[WorkspaceCapability] = &[
@@ -160,6 +166,8 @@ pub const ALL_CAPABILITIES: &[WorkspaceCapability] = &[
     WorkspaceCapability::Open,
     WorkspaceCapability::ReadPanel,
     WorkspaceCapability::Spawn,
+    WorkspaceCapability::Orchestrate,
+    WorkspaceCapability::Monitor,
     WorkspaceCapability::RouteReply,
     WorkspaceCapability::RouteInterrupt,
     WorkspaceCapability::RouteCancel,
@@ -167,6 +175,10 @@ pub const ALL_CAPABILITIES: &[WorkspaceCapability] = &[
     WorkspaceCapability::RouteContinuationRecover,
     WorkspaceCapability::RouteObserve,
     WorkspaceCapability::RouteRunning,
+    WorkspaceCapability::RouteSubagents,
+    WorkspaceCapability::RouteGateSet,
+    WorkspaceCapability::RouteGateRemove,
+    WorkspaceCapability::RouteGateDecision,
 ];
 
 pub enum Surface {
@@ -196,6 +208,8 @@ pub fn surface(capability: WorkspaceCapability) -> Surface {
         // SUBAGENT_TOOL_NAME`, not a `workspace_`-prefixed alias. The `workspace__`
         // form the model sees is the extension manager's prefix, applied later.
         C::Spawn => Surface::Tool("subagent"),
+        C::Orchestrate => Surface::Tool("workspace_orchestrate"),
+        C::Monitor => Surface::Tool("workspace_monitor"),
         C::RouteReply => Surface::Route {
             method: "POST",
             path: "/reply",
@@ -223,6 +237,22 @@ pub fn surface(capability: WorkspaceCapability) -> Surface {
         C::RouteRunning => Surface::Route {
             method: "GET",
             path: "/sessions/running",
+        },
+        C::RouteSubagents => Surface::Route {
+            method: "GET",
+            path: "/sessions/{session_id}/subagents",
+        },
+        C::RouteGateSet => Surface::Route {
+            method: "PUT",
+            path: "/sessions/{session_id}/phase-gates/{phase_id}",
+        },
+        C::RouteGateRemove => Surface::Route {
+            method: "DELETE",
+            path: "/sessions/{session_id}/phase-gates/{phase_id}",
+        },
+        C::RouteGateDecision => Surface::Route {
+            method: "POST",
+            path: "/sessions/{session_id}/phase-gates/{phase_id}/decision",
         },
     }
 }
@@ -270,6 +300,28 @@ pub fn cli_counterpart(capability: WorkspaceCapability) -> Counterpart {
                      in a `biorouter session` exactly as in the daemon. Verified in \
                      Task 42b's investigation; there is nothing for a subcommand to add.",
         },
+        // Declaring and driving a phase plan is a TOOL the model calls, like
+        // spawning, and it reaches a `biorouter session` the same way the spawn
+        // tool does. What a PERSON does with a plan is read its phases and their
+        // progress, which `session subagents` prints first (with who set each
+        // gate and what it holds), and decide its gates: set, replace, remove,
+        // pass, skip or retry one. Those decisions are the person's alone, so
+        // they are not this tool's; they are the three phase-gate routes below,
+        // each paired with its `session gates` subcommand. So this is a real
+        // counterpart, not a third asymmetry: the GUI offers no control over a
+        // plan that the terminal lacks.
+        C::Orchestrate => Counterpart::Cli {
+            path: &["session", "subagents"],
+            args: &[],
+        },
+        // The agent's monitors on a subagent it started. The person reaches the
+        // same record of any chat, a subagent's included, with `session
+        // monitors <id>` (list, add, remove), and may remove a monitor an agent
+        // set there.
+        C::Monitor => Counterpart::Cli {
+            path: &["session", "monitors"],
+            args: &[],
+        },
         C::SetTools => Counterpart::Asymmetry {
             reason: "Reconfiguring ANOTHER session's extensions/skills/model from a \
                      terminal is outside the operator's requirement (spin up, monitor, \
@@ -316,6 +368,17 @@ pub fn cli_counterpart(capability: WorkspaceCapability) -> Counterpart {
             path: &["session", "list"],
             args: &["subagents"],
         },
+        // Both flags: `--format json` is the route's own JSON, and `--watch` is
+        // what makes the listing a live view of the side panel rather than one
+        // reading of it.
+        C::RouteSubagents => Counterpart::Cli {
+            path: &["session", "subagents"],
+            args: &["format", "watch"],
+        },
+        // The person's gate controls, each named in this match so the
+        // exhaustiveness above still covers them; their rows are in
+        // `gate_counterpart`.
+        C::RouteGateSet | C::RouteGateRemove | C::RouteGateDecision => gate_counterpart(capability),
         // Not an omission: there is no preview panel in a terminal, so there is
         // nothing for a CLI command to read or photograph. A `biorouter session
         // read-panel` would have to invent a surface in order to report that it
@@ -324,6 +387,39 @@ pub fn cli_counterpart(capability: WorkspaceCapability) -> Counterpart {
             reason:
                 "the preview panel is a desktop surface; a terminal has none to read or photograph",
         },
+    }
+}
+
+/// The rows of the three phase-gate routes. Each names the subcommand that
+/// makes the same request, with the flags that carry the gate's terms, rather
+/// than `session gates` alone, so a lost flag is a red check C. Only
+/// [`cli_counterpart`] calls this, and only for those three; its match is the
+/// exhaustive one.
+fn gate_counterpart(capability: WorkspaceCapability) -> Counterpart {
+    use WorkspaceCapability as C;
+    match capability {
+        C::RouteGateSet => Counterpart::Cli {
+            path: &["session", "gates", "set"],
+            args: &[
+                "asks",
+                "threshold",
+                "attempts",
+                "model",
+                "allow_uncalibrated",
+            ],
+        },
+        C::RouteGateRemove => Counterpart::Cli {
+            path: &["session", "gates", "remove"],
+            args: &["phase"],
+        },
+        // One route takes pass, skip and retry; `pass` stands for the three,
+        // and `the_gate_decision_route_has_all_three_subcommands` checks that
+        // the other two are there too.
+        C::RouteGateDecision => Counterpart::Cli {
+            path: &["session", "gates", "pass"],
+            args: &["phase"],
+        },
+        other => unreachable!("{other:?} is not a phase-gate route"),
     }
 }
 
@@ -460,6 +556,26 @@ mod tests {
                     "{capability:?}: an accepted asymmetry needs a real reason, \
                      not a placeholder"
                 ),
+            }
+        }
+    }
+
+    /// The gate-decision route takes `pass`, `skip` and `retry`, and its row
+    /// can name only one subcommand: the other two must exist beside it, each
+    /// taking the phase.
+    #[test]
+    fn the_gate_decision_route_has_all_three_subcommands() {
+        let root = crate::cli::command_tree();
+        for choice in ["pass", "skip", "retry", "set", "remove", "list"] {
+            let command = resolve(&root, &["session", "gates", choice])
+                .unwrap_or_else(|| panic!("no `biorouter session gates {choice}`"));
+            if choice != "list" {
+                assert!(
+                    command
+                        .get_arguments()
+                        .any(|a| a.get_id().as_str() == "phase"),
+                    "`biorouter session gates {choice}` takes no phase"
+                );
             }
         }
     }

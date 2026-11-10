@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useId, useMemo, useRef } from 'react';
-import { ExternalLink } from '../../../icons/app-icons';
+import { ExternalLink, Lock } from '../../../icons/app-icons';
+import { ENTITY_ICONS } from '../../../icons/entity-icons';
 
 import { ModalShell } from '../../../ModalShell';
 import { Button } from '../../../ui/button';
@@ -33,6 +34,9 @@ import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_TITLE } from '../../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../../utils/surface';
 import { switchModelCopy } from '../copy';
+import { isDecisionProvider } from '../../../decisions/decisionWire';
+import { DecisionModelInstall } from '../../../decisions/DecisionModelInstall';
+import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import './model-dialogs.css';
 import {
   llamacppStatus,
@@ -139,7 +143,90 @@ export const PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP =
  * user HAS set up that cannot run right now — the daemon's own sentence, from
  * `ProviderDetails.unavailable_reason`.
  */
-type ProviderOption = { value: string; label: string; unavailableReason?: string };
+type ProviderOption = {
+  value: string;
+  label: string;
+  unavailableReason?: string;
+  /**
+   * Set for a decision-model provider (`baseten_decision`, `ollama_decision`): the menu lists it
+   * under its own "Decision models" heading, with its instance-resolved tier (`resolved_tier`,
+   * never the type-level `metadata.tier`) and what such a model does.
+   */
+  decision?: { tier: 'private' | 'public' | undefined };
+  detail?: string;
+};
+
+/**
+ * The decision provider whose models a person can install from here (`DecisionModelInstall`):
+ * Ollama's, into the Ollama on this computer. Baseten's are hosted and need only a key.
+ */
+const OLLAMA_DECISION_PROVIDER = 'ollama_decision';
+
+/** A decision provider's detail line: its tier when the daemon resolved one, then what it does. */
+function decisionProviderDetail(tier: 'private' | 'public' | undefined): string {
+  const word =
+    tier === 'private'
+      ? switchModelCopy.decisionPrivate
+      : tier === 'public'
+        ? switchModelCopy.decisionPublic
+        : null;
+  return [word, switchModelCopy.decisionDetail].filter(Boolean).join(' \u00b7 ');
+}
+
+/**
+ * The provider menu, grouped: chat models first, then the decision models under their own
+ * heading, then "Use other provider". A catalog with no decision provider stays one flat list.
+ */
+export function groupProviderOptions(
+  options: ProviderOption[]
+): ProviderOption[] | Array<{ label?: string; options: ProviderOption[] }> {
+  const decision = options.filter((option) => option.decision);
+  if (decision.length === 0) return options;
+  const other = options.filter((option) => option.value === 'configure_providers');
+  const chat = options.filter(
+    (option) => !option.decision && option.value !== 'configure_providers'
+  );
+  return [
+    { options: chat },
+    { label: switchModelCopy.decisionGroup, options: decision },
+    ...(other.length > 0 ? [{ options: other }] : []),
+  ];
+}
+
+/**
+ * A provider row: as a model row is, except that a decision provider's row carries the padlock
+ * when its resolved tier is private, so the tier is a shape as well as a word.
+ */
+const DecisionMark = ENTITY_ICONS.decision;
+
+const renderProviderOptionLabel = (
+  rawOption: unknown,
+  meta: { context: 'menu' | 'value' },
+  blockedReason?: string | null
+) => {
+  const option = rawOption as ProviderOption;
+  if (!option.decision || meta.context !== 'menu' || blockedReason) {
+    return renderModelOptionLabel(rawOption, meta, blockedReason);
+  }
+  return (
+    <div className="min-w-0 py-0.5" data-decision-provider={option.value}>
+      <div className="flex min-w-0 items-center gap-1.5 text-label text-current">
+        <DecisionMark
+          aria-hidden
+          className="size-3.5 shrink-0"
+          data-testid="decision-provider-mark"
+        />
+        <span className="truncate">{option.label}</span>
+        {option.decision.tier === 'private' && (
+          <Lock aria-hidden className="size-3.5 shrink-0" data-testid="decision-provider-lock" />
+        )}
+      </div>
+      <div className="mt-0.5 line-clamp-2 text-supporting text-current opacity-70">
+        {option.detail}
+      </div>
+    </div>
+  );
+};
 
 /**
  * The one reason this dialog writes itself rather than quoting the daemon, for
@@ -731,13 +818,25 @@ export const SwitchModelModal = ({
         // W2-PRV-13), so a disabled row sits where it always sat instead of
         // sinking to the bottom — then "Use other provider". A provider that is simply not set
         // up stays out, as before.
-        const offered = providersResponse
+        const offered: ProviderOption[] = providersResponse
           .filter((provider) => provider.is_configured || provider.unavailable_reason)
-          .map(({ metadata, name, is_configured, unavailable_reason }) => ({
-            value: name,
-            label: metadata.display_name,
-            unavailableReason: is_configured ? undefined : (unavailable_reason ?? undefined),
-          }));
+          .map((row) => {
+            const { metadata, name, is_configured, unavailable_reason } = row;
+            const decisionTier = isDecisionProvider(name)
+              ? readResolvedProviderTier(row)
+              : undefined;
+            return {
+              value: name,
+              label: metadata.display_name,
+              unavailableReason: is_configured ? undefined : (unavailable_reason ?? undefined),
+              ...(isDecisionProvider(name)
+                ? {
+                    decision: { tier: decisionTier },
+                    detail: decisionProviderDetail(decisionTier),
+                  }
+                : {}),
+            };
+          });
         // D6's consequence: the provider this dialog OPENED on is always offered,
         // even when the catalog would not list it. See `PROVIDER_NOT_SET_UP`.
         if (initialProvider && !offered.some((option) => option.value === initialProvider)) {
@@ -852,6 +951,9 @@ export const SwitchModelModal = ({
                 label: m,
                 provider: selectedProvider.name,
                 providerType: selectedProvider.provider_type,
+                ...(isDecisionProvider(selectedProvider.name)
+                  ? { detail: switchModelCopy.decisionModel }
+                  : {}),
               }
         );
 
@@ -936,6 +1038,11 @@ export const SwitchModelModal = ({
   const providerSelectValue = useMemo(
     () => providerOptions.find((option) => option.value === provider) || null,
     [providerOptions, provider]
+  );
+  // The same rows, decision models under their own heading (`groupProviderOptions`).
+  const providerMenuOptions = useMemo(
+    () => groupProviderOptions(providerOptions),
+    [providerOptions]
   );
 
   useEffect(() => {
@@ -1116,7 +1223,7 @@ export const SwitchModelModal = ({
               </label>
               <Select
                 inputId={providerInputId}
-                options={providerOptions}
+                options={providerMenuOptions}
                 value={providerSelectValue}
                 inputValue={providerInputValue}
                 onInputChange={(inputValue: string, actionMeta?: { action?: string }) => {
@@ -1163,7 +1270,7 @@ export const SwitchModelModal = ({
                 // react-select's own `aria-disabled` option, with the reason in
                 // its detail line — see `unavailableReasonFor`.
                 formatOptionLabel={(rawOption: unknown, meta) =>
-                  renderModelOptionLabel(
+                  renderProviderOptionLabel(
                     rawOption,
                     meta,
                     unavailableReasonFor((rawOption as ProviderOption).value)
@@ -1189,11 +1296,17 @@ export const SwitchModelModal = ({
                   Issue #56, DR-26. Whose agreements cover the models under this
                   provider, stated before the user picks one. Nothing renders for
                   a public provider — it has no affiliation — so this row appears
-                  exactly when there is something to say.
+                  exactly when there is something to say. The sentence beside
+                  the badge is the one its InfoTip would say, so the badge
+                  draws none here (`describedOnScreen`): say it once.
                 */}
               {selectedAffiliationWords && (
                 <div data-testid="switch-model-affiliation" className="flex items-start gap-2">
-                  <AffiliationBadge affiliation={selectedAffiliation} className="mt-0.5" />
+                  <AffiliationBadge
+                    affiliation={selectedAffiliation}
+                    describedOnScreen
+                    className="mt-0.5"
+                  />
                   <p className="min-w-0 flex-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
                     {selectedAffiliationWords.title}
                   </p>
@@ -1277,6 +1390,21 @@ export const SwitchModelModal = ({
                     />
                     {modelMessageNode}
                   </div>
+                )}
+                {/* Ollama's decision models, with none installed on this computer: the
+                    install is offered beside the list, never started for the person.
+                    `quiet` says nothing while one is installed or none can be. */}
+                {provider === OLLAMA_DECISION_PROVIDER && !isCustomModel && (
+                  <DecisionModelInstall
+                    quiet
+                    reason={privacyTier === 'private' ? 'private' : null}
+                    // Read Ollama's decision models again, with the one just installed.
+                    onInstalled={() =>
+                      setModelOptionsByProvider(
+                        ({ [OLLAMA_DECISION_PROVIDER]: _installed, ...rest }) => rest
+                      )
+                    }
+                  />
                 )}
               </>
             )}

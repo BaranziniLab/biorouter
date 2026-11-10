@@ -1,11 +1,22 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import CreateEditWorkflowModal from './CreateEditWorkflowModal';
+import type { Workflow } from '../../workflow';
+import CreateEditWorkflowModal, { SUPERVISION_KEPT } from './CreateEditWorkflowModal';
 import { workflowFormCopy as copy } from './copy';
 
 vi.mock('../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api')>()),
   getExtensions: vi.fn().mockResolvedValue({ data: { extensions: [] } }),
+}));
+
+const saving = vi.hoisted(() => ({ save: vi.fn(), models: vi.fn() }));
+vi.mock('../../workflow/workflow_management', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../workflow/workflow_management')>()),
+  saveWorkflow: saving.save,
+}));
+vi.mock('../../utils/sessionDecisions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/sessionDecisions')>()),
+  fetchDecisionModels: saving.models,
 }));
 
 const workflow = {
@@ -56,5 +67,70 @@ describe('CreateEditWorkflowModal', () => {
     expect(screen.queryByRole('button', { name: copy.saveAndRun })).toBeNull();
     // Nothing is filled in yet, so nothing can be saved.
     expect(screen.getByRole('button', { name: copy.createAndRun })).toBeDisabled();
+  });
+
+  it('saving keeps decision_settings and orchestration_plan', async () => {
+    saving.save.mockResolvedValue('wf-1');
+    saving.models.mockResolvedValue([]);
+    const supervised: Workflow = {
+      ...workflow,
+      decision_settings: {
+        defaultModel: { provider: 'ollama_decision', model: 'tev1:0.8b' },
+        monitors: [
+          {
+            id: 'reached-ten',
+            name: 'reached-ten',
+            question: {
+              instructions: 'Has the agent already echoed 10 or a larger number?',
+              kind: { binary: {} },
+            },
+            threshold: 0.7,
+            action: 'stop',
+            onError: 'pause',
+          },
+        ],
+      },
+      orchestration_plan: {
+        title: 'Echo plan',
+        phases: [
+          {
+            id: 'count',
+            title: 'Count',
+            gate: { questions: { done: 'Did the agent reach 30?' }, threshold: 0.9 },
+          },
+        ],
+      },
+    };
+    const onClose = vi.fn();
+    render(<CreateEditWorkflowModal isOpen onClose={onClose} workflow={supervised} />);
+
+    // A read-only summary: the editor has no fields for either block.
+    const summary = screen.getByTestId('workflow-supervision');
+    expect(
+      within(summary).getByTestId('workflow-supervision-monitor-reached-ten')
+    ).toHaveTextContent('reached-ten · chat default · stops the turn');
+    expect(within(summary).getByTestId('workflow-supervision-gate-count')).toBeInTheDocument();
+    expect(within(summary).getByTestId('workflow-supervision-kept')).toHaveTextContent(
+      SUPERVISION_KEPT
+    );
+    expect(SUPERVISION_KEPT).toBe(
+      'Monitors and phase gates are edited in the workflow file; saving here keeps them.'
+    );
+
+    fireEvent.change(screen.getByRole('textbox', { name: copy.title }), {
+      target: { value: 'Cohort review, renamed' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: copy.save }));
+    await waitFor(() => expect(saving.save).toHaveBeenCalledTimes(1));
+    const saved = saving.save.mock.calls[0][0] as Workflow;
+    expect(saved.title).toBe('Cohort review, renamed');
+    expect(saved.decision_settings).toEqual(supervised.decision_settings);
+    expect(saved.orchestration_plan).toEqual(supervised.orchestration_plan);
+  });
+
+  it('shows no Supervision summary for a workflow that declares none', () => {
+    render(<CreateEditWorkflowModal isOpen onClose={vi.fn()} workflow={workflow} />);
+    expect(screen.queryByTestId('workflow-supervision')).toBeNull();
+    expect(screen.queryByText(SUPERVISION_KEPT)).toBeNull();
   });
 });

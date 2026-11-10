@@ -13,6 +13,7 @@
 // fits beside it.
 import { Lock } from '../icons/app-icons';
 import { Badge } from './badge';
+import { InfoTip, useInsideAControl } from './info-tip';
 import { cn } from '../../utils';
 import { usePrivacyTiersEnabled } from '../ConfigContext';
 import type { SessionClassification } from '../../api';
@@ -184,14 +185,21 @@ export function PrivacyBadge({
   // unconditionally — and `??`, not `||`, so an explicit `enforcementOff={false}`
   // means what it says instead of falling through to the daemon's answer.
   const enforced = usePrivacyTiersEnabled();
+  // Also before the early return. Inside a control (the composer's model chip, a picker row) the
+  // padlock is part of that control, which names the tier itself (the chip's label and its hint),
+  // so there it draws no InfoTip of its own: a focus stop inside a button is a control inside a
+  // control, and its hint would stack on the host's.
+  const { inside: insideAControl, notice } = useInsideAControl();
   const off = enforcementOff ?? !enforced;
   const spec = TIER[tier];
 
   if (dense && !spec.markedWhenDense) return null; // no padlock means public
 
   if (dense) {
-    return (
+    const name = off ? 'Private chat, enforcement off' : 'Private chat';
+    const mark = (
       <span
+        ref={notice}
         data-testid="privacy-badge"
         data-enforcement={off ? 'off' : 'on'}
         // `{tier}`, never the literal `"private"`. The dense branch is reachable
@@ -202,20 +210,11 @@ export function PrivacyBadge({
         // and a hardcoded value is the one shape that would compile and then
         // silently mislabel the new tier as Private on every dense surface.
         data-privacy={tier}
-        // `role` and `title` on the SPAN, not on the glyph. `title` is an HTML
-        // global attribute; on an inline `<svg>` it is not the SVG tooltip
-        // mechanism (that is a `<title>` CHILD element), so hanging it there
-        // would silently drop the hover text in some engines. And a plain span
-        // maps to role `generic`, which does not take an accessible name — so
-        // `title` by itself would leave the padlock unannounced as well as
-        // untooltipped. Both live here; the glyph is decorative.
+        // `role` on the SPAN, not on the glyph: a plain span maps to role
+        // `generic`, which does not take an accessible name, so the padlock
+        // would go unannounced. The glyph is decorative.
         role="img"
-        aria-label={off ? 'Private chat, enforcement off' : 'Private chat'}
-        title={
-          off
-            ? 'Private, but privacy tiers are turned off, so nothing enforces this'
-            : 'Private. Biorouter only lets a private model open this chat.'
-        }
+        aria-label={name}
         // `inline-block`, not the default `inline`: this wrapper shrink-wraps a
         // glyph that carries its own box, and an inline box would additionally
         // reserve line-height around it. `shrink-0` because dense surfaces are
@@ -234,6 +233,24 @@ export function PrivacyBadge({
             and the two sit side by side on the composer's model chip. */}
         <Lock className="block h-3 w-3" aria-hidden="true" />
       </span>
+    );
+    if (insideAControl) return mark;
+    // The sentence is the padlock's help: an InfoTip with the mark as its trigger, so it opens on
+    // hover, on Tab and on a click, and is the mark's description for a screen reader. It used to
+    // be a `title=` on a span no key could reach (help never goes in `title=`, spec 2.6). The
+    // words are unchanged (the privacy copy is frozen).
+    return (
+      <InfoTip
+        label={name}
+        help={
+          off
+            ? 'Private, but privacy tiers are turned off, so nothing enforces this'
+            : 'Private. Biorouter only lets a private model open this chat.'
+        }
+        asChild
+      >
+        {mark}
+      </InfoTip>
     );
   }
 

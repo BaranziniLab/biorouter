@@ -230,8 +230,43 @@ pub fn set_thinking_message(s: &String) {
     }
 }
 
+/// What a turn's decision marker prints in place of its content: ONE line per
+/// origin, never one per call (they can number in the thousands), with
+/// ` · fired` after a monitor that fired; `biorouter session decisions` lists
+/// the calls themselves. `None` for a message that is not a marker, which
+/// prints its content instead.
+fn decision_marker_lines(message: &Message) -> Option<Vec<String>> {
+    let marker = message.metadata.decision_summary.as_ref()?;
+    Some(
+        marker
+            .items
+            .iter()
+            .map(|item| {
+                let mut line = format!(
+                    "◇ {}",
+                    crate::commands::session_decisions::marker_text(item)
+                );
+                if item.fired {
+                    line.push_str(" · fired");
+                }
+                line
+            })
+            .collect(),
+    )
+}
+
 pub fn render_message(message: &Message, debug: bool) {
     let theme = get_theme();
+
+    // A marker's notice text says the same thing in a sentence; only the
+    // per-origin lines are printed.
+    if let Some(lines) = decision_marker_lines(message) {
+        for line in lines {
+            println!("{}", style(line).dim());
+        }
+        let _ = std::io::stdout().flush();
+        return;
+    }
 
     for content in &message.content {
         match content {
@@ -1404,6 +1439,13 @@ fn shorten_path_with_home(path: &str, debug: bool, home: Option<&Path>) -> Strin
 }
 
 // Session display functions
+/// The banner's `model` row: a Baseten decision model by its alias
+/// (`joey-1`), as every other terminal surface names it, any other model by
+/// its id.
+fn banner_model(provider: &str, model: &str) -> String {
+    crate::commands::decide::model_name(provider, model)
+}
+
 pub fn display_session_info(
     resume: bool,
     provider: &str,
@@ -1446,7 +1488,7 @@ pub fn display_session_info(
         }
         None => {
             row("provider", provider.to_string());
-            row("model", model.to_string());
+            row("model", banner_model(provider, model));
         }
     }
 
@@ -1720,6 +1762,66 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};
+
+    #[test]
+    fn the_banner_names_a_baseten_decision_model_by_its_alias() {
+        assert_eq!(
+            banner_model(
+                "baseten_decision",
+                "decision-models/baseten-mammoth-27b-latest"
+            ),
+            "mammoth-1"
+        );
+        assert_eq!(banner_model("ollama_decision", "tev1:0.8b"), "tev1:0.8b");
+        assert_eq!(banner_model("openai", "gpt-6-sol"), "gpt-6-sol");
+    }
+
+    /// The classic CLI prints a turn's decision marker as one dim line per
+    /// origin, ` · fired` only after a monitor that fired, and nothing of the
+    /// notice's own sentence; any other message prints its content.
+    #[test]
+    fn a_decision_marker_prints_one_line_per_origin_and_nothing_else() {
+        use biorouter::decision::log::{DecisionTurnMarker, DecisionTurnMarkerItem};
+        use biorouter::decision::DecisionOrigin;
+        let item = |origin, label: &str, count, fired| DecisionTurnMarkerItem {
+            origin,
+            origin_id: None,
+            label: label.to_string(),
+            count,
+            passed: 0,
+            failed: count,
+            errors: 0,
+            last_pass_probability: None,
+            fired,
+        };
+        let mut marker = Message::assistant().with_text(
+            "Decision models: monitor 'Form reached' checked 18 times, fired; decide: 600 chunks",
+        );
+        marker.metadata.decision_summary = Some(DecisionTurnMarker {
+            turn_id: "t1".into(),
+            items: vec![
+                item(DecisionOrigin::Monitor, "Form reached", 18, true),
+                item(DecisionOrigin::Tool, "decide", 600, false),
+            ],
+        });
+        let lines = decision_marker_lines(&marker).expect("a marker prints its own lines");
+        assert_eq!(
+            lines.len(),
+            2,
+            "one line per origin, not per call: {lines:?}"
+        );
+        assert!(lines.iter().all(|line| line.starts_with("◇ ")), "{lines:?}");
+        assert!(lines[0].ends_with(" · fired"), "{}", lines[0]);
+        assert!(!lines[1].contains("fired"), "{}", lines[1]);
+        assert!(
+            lines.iter().all(|line| !line.contains("Decision models:")),
+            "the notice's sentence is not printed as well: {lines:?}"
+        );
+        assert_eq!(
+            decision_marker_lines(&Message::assistant().with_text("Hello.")),
+            None
+        );
+    }
 
     /// The default floor shows the tool output that tools actually produce.
     ///

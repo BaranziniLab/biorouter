@@ -139,11 +139,14 @@ describe('composer popup typography', () => {
 
   /**
    * Spec 3.7 acceptance: "No mono anywhere in the composer." Mono is for
-   * machine strings (principle 3); a count, a cost or a folder name is not one.
-   * The one sanctioned use is the working folder's full path, which lives in the
-   * folder chip's tooltip, not on the line.
+   * machine strings (principle 3); a count, a cost or a folder name is not one,
+   * and since the folder card's redesign neither is the folder's path there: it
+   * is a reading like the card's others, written `~/…` in the card's own face
+   * (`FooterCardPath`). So nothing in the composer may set mono. A path that is
+   * the exact argument of a security decision (the transcript's folder-approval
+   * card) is not composer surface and keeps its own rule.
    */
-  const MONO_ALLOWED: Record<string, number> = { 'DirSwitcher.tsx': 1 };
+  const MONO_ALLOWED: Record<string, number> = {};
   const composerSurfaces = [
     ...popups.map((file) => join(DIR, file)),
     ...COMPOSER.map((file) => join(COMPONENTS, file)),
@@ -153,7 +156,7 @@ describe('composer popup typography', () => {
     const code = codeOnly(readFileSync(path, 'utf8'));
     const name = path.split(/[\\/]/).pop() ?? path;
     const uses = code.match(/font-mono/g)?.length ?? 0;
-    expect(uses, `${name}: mono is for machine strings in tooltips only`).toBeLessThanOrEqual(
+    expect(uses, `${name}: the composer sets no visible text in mono`).toBeLessThanOrEqual(
       MONO_ALLOWED[name] ?? 0
     );
   });

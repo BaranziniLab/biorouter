@@ -1614,6 +1614,115 @@ fn modelfile_template(modelfile: &str) -> Option<&str> {
     rest.find("\"\"\"").and_then(|end| rest.get(..end))
 }
 
+// ── Token logprobs and structured output, for decision models ──────────────
+//
+// Additive: the chat path never sets these, so its requests are unchanged.
+// `providers::decision::logprob` builds a body with [`create_request`] and then
+// asks for logprobs (Ollama 0.12.11 and later) or a JSON-schema `format`.
+
+/// The most alternatives `top_logprobs` is asked for. Ollama's own range is
+/// reported as 0 to 20 by third parties; the official docs do not say.
+pub const MAX_TOP_LOGPROBS: u8 = 20;
+
+/// Ask an `/api/chat` body for the log-probability of each generated token and
+/// its `top_logprobs` most likely alternatives.
+pub fn request_token_logprobs(payload: &mut Value, top_logprobs: u8) {
+    payload["logprobs"] = json!(true);
+    payload["top_logprobs"] = json!(top_logprobs.min(MAX_TOP_LOGPROBS));
+}
+
+/// Constrain an `/api/chat` reply to `format`: `"json"` or a JSON schema.
+pub fn request_format(payload: &mut Value, format: Value) {
+    payload["format"] = format;
+}
+
+/// One alternative at a token position.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopLogprob {
+    pub token: String,
+    pub logprob: f64,
+}
+
+/// One generated token, as `logprobs[]` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenLogprob {
+    pub token: String,
+    pub logprob: f64,
+    pub top_logprobs: Vec<TopLogprob>,
+}
+
+/// The `logprobs` array of a non-streamed `/api/chat` response (or of one
+/// stream chunk), or `None` when the server sent none: an Ollama before
+/// 0.12.11, or one that ignored the request. A missing field is never read as
+/// certainty.
+pub fn response_logprobs(response: &Value) -> Option<Vec<TokenLogprob>> {
+    let entries = response.get("logprobs")?.as_array()?;
+    let read = |entry: &Value| -> Option<(String, f64)> {
+        let token = entry.get("token")?.as_str()?.to_string();
+        let logprob = entry.get("logprob")?.as_f64().filter(|lp| !lp.is_nan())?;
+        Some((token, logprob))
+    };
+    let tokens: Vec<TokenLogprob> = entries
+        .iter()
+        .filter_map(|entry| {
+            let (token, logprob) = read(entry)?;
+            let top_logprobs = entry
+                .get("top_logprobs")
+                .and_then(Value::as_array)
+                .map(|alternatives| {
+                    alternatives
+                        .iter()
+                        .filter_map(|alt| {
+                            read(alt).map(|(token, logprob)| TopLogprob { token, logprob })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(TokenLogprob {
+                token,
+                logprob,
+                top_logprobs,
+            })
+        })
+        .collect();
+    (!tokens.is_empty()).then_some(tokens)
+}
+
+#[cfg(test)]
+mod logprob_tests {
+    use super::*;
+
+    #[test]
+    fn logprob_fields_are_added_without_touching_the_rest_of_the_body() {
+        let mut payload = json!({"model": "m", "stream": false});
+        request_token_logprobs(&mut payload, 50);
+        request_format(&mut payload, json!({"type": "object"}));
+        assert_eq!(payload["logprobs"], true);
+        assert_eq!(payload["top_logprobs"], MAX_TOP_LOGPROBS);
+        assert_eq!(payload["format"]["type"], "object");
+        assert_eq!(payload["model"], "m");
+    }
+
+    #[test]
+    fn the_documented_response_shape_is_read_and_absence_is_none() {
+        let response = json!({
+            "message": {"role": "assistant", "content": "Yes"},
+            "logprobs": [{"token": "Yes", "logprob": -0.02, "bytes": [89, 101, 115],
+                "top_logprobs": [{"token": "Yes", "logprob": -0.02, "bytes": [89, 101, 115]},
+                                 {"token": "No", "logprob": -3.9, "bytes": [78, 111]}]}],
+            "done": true, "done_reason": "length"
+        });
+        let tokens = response_logprobs(&response).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].token, "Yes");
+        assert_eq!(tokens[0].top_logprobs[1].token, "No");
+        assert_eq!(tokens[0].top_logprobs[1].logprob, -3.9);
+        assert!(response_logprobs(&json!({"message": {"content": "Yes"}})).is_none());
+        assert!(response_logprobs(&json!({"logprobs": []})).is_none());
+        assert!(response_logprobs(&json!({"logprobs": null})).is_none());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,11 +15,16 @@ function getWorkflowSchema() {
 }
 
 /**
- * Resolves $ref references in OpenAPI schemas by expanding them with the actual schema definitions
+ * Resolves $ref references in OpenAPI schemas by expanding them with the actual schema definitions.
+ *
+ * A schema that refers to itself is expanded once along each path and then left as its `$ref`:
+ * `Threshold` holds a `below` that is another `Threshold` (a monitor's or gate's question may
+ * pass below its threshold), so expanding it without this guard never ends.
  */
 function resolveRefs(
   schema: Record<string, unknown>,
-  openApiSpec: Record<string, unknown>
+  openApiSpec: Record<string, unknown>,
+  expanding: ReadonlySet<string> = new Set()
 ): Record<string, unknown> {
   if (!schema || typeof schema !== 'object') {
     return schema;
@@ -27,6 +32,9 @@ function resolveRefs(
 
   // Handle $ref
   if (typeof schema.$ref === 'string') {
+    // Already being expanded further up this path: a recursive schema, kept as its reference.
+    if (expanding.has(schema.$ref)) return schema;
+    const inner = new Set(expanding).add(schema.$ref);
     const refPath = schema.$ref.replace('#/', '').split('/');
     let resolved: unknown = openApiSpec;
 
@@ -41,7 +49,7 @@ function resolveRefs(
 
     if (resolved && typeof resolved === 'object') {
       // Recursively resolve refs in the resolved schema
-      return resolveRefs(resolved as Record<string, unknown>, openApiSpec);
+      return resolveRefs(resolved as Record<string, unknown>, openApiSpec, inner);
     }
 
     return schema;
@@ -52,7 +60,7 @@ function resolveRefs(
     const merged: Record<string, unknown> = {};
     for (const subSchema of schema.allOf) {
       if (typeof subSchema === 'object' && subSchema !== null) {
-        const resolved = resolveRefs(subSchema as Record<string, unknown>, openApiSpec);
+        const resolved = resolveRefs(subSchema as Record<string, unknown>, openApiSpec, expanding);
         Object.assign(merged, resolved);
       }
     }
@@ -67,7 +75,7 @@ function resolveRefs(
       ...schema,
       oneOf: schema.oneOf.map((subSchema) =>
         typeof subSchema === 'object' && subSchema !== null
-          ? resolveRefs(subSchema as Record<string, unknown>, openApiSpec)
+          ? resolveRefs(subSchema as Record<string, unknown>, openApiSpec, expanding)
           : subSchema
       ),
     };
@@ -78,7 +86,7 @@ function resolveRefs(
       ...schema,
       anyOf: schema.anyOf.map((subSchema) =>
         typeof subSchema === 'object' && subSchema !== null
-          ? resolveRefs(subSchema as Record<string, unknown>, openApiSpec)
+          ? resolveRefs(subSchema as Record<string, unknown>, openApiSpec, expanding)
           : subSchema
       ),
     };
@@ -89,7 +97,11 @@ function resolveRefs(
     const resolvedProperties: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(schema.properties)) {
       if (typeof value === 'object' && value !== null) {
-        resolvedProperties[key] = resolveRefs(value as Record<string, unknown>, openApiSpec);
+        resolvedProperties[key] = resolveRefs(
+          value as Record<string, unknown>,
+          openApiSpec,
+          expanding
+        );
       } else {
         resolvedProperties[key] = value;
       }
@@ -104,7 +116,7 @@ function resolveRefs(
   if (schema.type === 'array' && schema.items && typeof schema.items === 'object') {
     return {
       ...schema,
-      items: resolveRefs(schema.items as Record<string, unknown>, openApiSpec),
+      items: resolveRefs(schema.items as Record<string, unknown>, openApiSpec, expanding),
     };
   }
 

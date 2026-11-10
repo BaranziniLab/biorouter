@@ -182,6 +182,8 @@ export interface ModelUsage {
   provider: string | null;
   /** True for the `Other` row that folds the named models past the top rows. */
   other: boolean;
+  /** True for a decision model's row, whose name is read as one (`joey-1`). */
+  decision: boolean;
   /**
    * True for the one row holding usage saved without a model name. It is
    * always last and carries no share: it says nothing about which models were
@@ -201,16 +203,45 @@ function hasUsage(row: UsageReportRow): boolean {
   return reportRowTokens(row) > 0 || row.turns > 0;
 }
 
+/**
+ * Baseten's decision models by slug, as `providers/decision/catalog.rs`
+ * (`BASETEN_DECISION_MODELS`) names them. A slug missing here reads without
+ * its `decision-models/` prefix.
+ */
+const BASETEN_DECISION_NAMES: Readonly<Record<string, string>> = {
+  'decision-models/baseten-joey-2b-latest': 'joey-1',
+  'decision-models/baseten-elephant-9b-latest': 'elephant-1',
+  'decision-models/baseten-mammoth-27b-latest': 'mammoth-1',
+};
+
+/** A decision model's name: `joey-1` for its Baseten slug, an Ollama tag as it is. */
+export function decisionModelName(modelId: string): string {
+  return BASETEN_DECISION_NAMES[modelId] ?? modelId.replace(/^decision-models\//, '');
+}
+
+/**
+ * True for a report row that holds decision-model requests and no turns: a
+ * decision model's own bucket when the report is grouped by model. The server
+ * makes the split (`decisions` is set only for a bucket with decision
+ * requests), so this needs no list of decision providers.
+ */
+export function isDecisionUsageRow(row: Pick<UsageReportRow, 'decisions' | 'turns'>): boolean {
+  return row.decisions != null && row.turns === 0;
+}
+
 function byUsage(a: UsageReportRow, b: UsageReportRow): number {
   return reportRowTokens(b) - reportRowTokens(a) || b.turns - a.turns;
 }
 
 /**
  * The model with the most tokens in range (ties: more turns). The unattributed
- * bucket wins only when it is the only model there is.
+ * bucket wins only when it is the only model there is. Decision models never
+ * win.
  */
 export function favoriteModel(rows: readonly UsageReportRow[]): UsageReportRow | null {
-  const used = rows.filter(hasUsage).sort(byUsage);
+  // A decision model answers questions about a chat; it is not the model the
+  // person talks to, however many tokens a batch sent it.
+  const used = rows.filter((row) => hasUsage(row) && !isDecisionUsageRow(row)).sort(byUsage);
   return used.find((row) => row.modelId) ?? used[0] ?? null;
 }
 
@@ -229,7 +260,10 @@ function sumTurns(rows: readonly UsageReportRow[]): number {
  * The Models tab, which agrees with Favorite model about the top row.
  *
  * Named models come first, by tokens, and their shares are of the named
- * models' tokens only. Usage saved without a model name (the report's
+ * models' tokens only. Decision models follow the chat models whatever their
+ * size, since Favorite model never picks one: a large `decide` batch would
+ * otherwise top this list while Overview names a chat model. Usage saved
+ * without a model name (the report's
  * unattributed bucket, often most of an older history) is folded into ONE
  * `unrecorded` row, ranked last whatever its size and given no share: leading
  * the list with it, as the tab used to, made Overview and Models disagree
@@ -240,7 +274,9 @@ function sumTurns(rows: readonly UsageReportRow[]): number {
  */
 export function modelBreakdown(rows: readonly UsageReportRow[]): ModelUsage[] {
   const used = rows.filter(hasUsage);
-  const named = used.filter((row) => row.modelId).sort(byUsage);
+  const named = used
+    .filter((row) => row.modelId)
+    .sort((a, b) => Number(isDecisionUsageRow(a)) - Number(isDecisionUsageRow(b)) || byUsage(a, b));
   const unrecorded = used.filter((row) => !row.modelId);
   const namedTotal = sumTokens(named);
   const share = (tokens: number) => (namedTotal > 0 ? tokens / namedTotal : 0);
@@ -251,6 +287,7 @@ export function modelBreakdown(rows: readonly UsageReportRow[]): ModelUsage[] {
       modelId: row.modelId ?? null,
       provider: row.provider ?? null,
       other: false,
+      decision: isDecisionUsageRow(row),
       unrecorded: false,
       tokens,
       turns: row.turns,
@@ -272,6 +309,7 @@ export function modelBreakdown(rows: readonly UsageReportRow[]): ModelUsage[] {
         modelId: null,
         provider: null,
         other: true,
+        decision: false,
         unrecorded: false,
         tokens: restTokens,
         turns: sumTurns(rest),
@@ -286,6 +324,7 @@ export function modelBreakdown(rows: readonly UsageReportRow[]): ModelUsage[] {
       modelId: null,
       provider: null,
       other: false,
+      decision: false,
       unrecorded: true,
       tokens: sumTokens(unrecorded),
       turns: sumTurns(unrecorded),

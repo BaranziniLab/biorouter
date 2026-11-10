@@ -153,6 +153,16 @@ Scheduled jobs run in the same environment as the Biorouter server process. Make
   session list or with `biorouter sessions`.
 - The schedule records a failed attempt even if readiness fails before a chat is created.
   Correct the problem, then choose **Run now** or wait for the next scheduled time.
+- A workflow that declares monitors or a phase plan (`decision_settings` or
+  `orchestration_plan`, see [Supervision](workflow-schema-reference.md#supervision-decision_settings-and-orchestration_plan))
+  has them applied to the run's new chat before it starts. When they cannot be applied, for
+  example a decision model the chat may not use, a phase plan while Biorouter is not in the
+  Autonomous approval mode, or a top-level `monitors:` key that belongs under
+  `decision_settings`, the run leaves no chat, and the schedule's last error reads "The workflow
+  was not started: " and the reason, such as "The workflow was not started: `monitors` is not a
+  top-level workflow field: monitors go under `decision_settings.monitors`." The firing is still
+  counted, like any other setup failure. A scheduled workflow file is read exactly as the CLI and
+  the app read it, so a file that would fail there fails here too.
 - A failed Meditation run keeps its last successful discovery date. The next run searches
   from that date; it starts a new chat rather than resuming the failed one.
 

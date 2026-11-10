@@ -82,8 +82,11 @@
 }
 
 /* ── The header's actions ── two always (Open externally, Close), the rest when
-   wanted. Muted ink at rest like the chat header's; default ink on hover and
-   while a menu is open. */
+   wanted. Muted ink at rest like the chat header's; default ink on hover. A
+   trigger whose menu is open holds the kept step (H4, only a click leaves a
+   mark): `--background-fill-strong` with `--text-default`, whether or not the
+   pointer is on it, as every ghost trigger whose surface a click opened does
+   (the tab overflow ▾, the summary button, the composer chips). */
 .br-preview-actions {
   display: flex;
   flex: none;
@@ -97,8 +100,21 @@
   color: var(--text-muted);
 }
 
-.br-preview-icon-button:hover,
-.br-preview-icon-button[data-state='open'] {
+.br-preview-icon-button:hover {
+  color: var(--text-default);
+}
+
+/* ⚠ "Open" is `aria-expanded` on a trigger that opens a surface, never
+   `data-state`. The `⋯` sits inside a `PreviewTip`, and Radix merges the
+   tooltip's `data-state` ("closed", "delayed-open") over the menu's own, so the
+   `[data-state='open']` this replaced never matched (measured in Chromium,
+   `previewMoreMenu.browser.test.tsx`). `aria-haspopup` keeps the fold toggle
+   out: it is a `.br-preview-icon-button` whose `aria-expanded` is the preview
+   it folds, open nearly all the time. The shorthand also clears the ghost
+   button's hover tint (a background-image), so a pointer on the open `⋯` does
+   not deepen the kept fill. */
+.br-preview-icon-button[aria-haspopup][aria-expanded='true'] {
+  background: var(--background-fill-strong);
   color: var(--text-default);
 }
 

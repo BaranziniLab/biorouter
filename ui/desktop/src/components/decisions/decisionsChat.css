@@ -1,0 +1,398 @@
+/*
+ * DECISION MODELS IN THE TRANSCRIPT AND THE COMPOSER
+ * (components/decisions/: DecisionCard, DecisionTurnMarker, DecideToolSummary,
+ * DecisionComposer).
+ *
+ * Authored CSS, not new Tailwind strings: under BIOROUTER_NO_HMR a newly written
+ * utility can silently fail to generate (CLAUDE.md, "Desktop shell geometry"), and
+ * the card's grid and the threshold mark are this surface's whole geometry.
+ *
+ * Fills before lines (R-27): the card is a subtle solid fill with a transparent
+ * 1px border and no resting outline, so a forced-colours border is its only edge
+ * there. It carries `.br-fill-surface`, so the progress tracks inside it step one
+ * ground in (`--br-track-ground`) and its link buttons rest as on any filled box.
+ *
+ * Two text sizes for everything but the answer: 13/18 (`--text-secondary`) for
+ * rows and 12/16 (`--text-supporting`) for meta. The answer is the title size,
+ * because it is the one thing the card exists to say.
+ */
+
+/* ── The decision card ─────────────────────────────────────────────────── */
+
+.br-decision-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 560px;
+  min-width: 0;
+  padding: 12px 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-container);
+  background-color: var(--background-fill);
+  color: var(--text-default);
+}
+
+.br-decision-card__decision {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.br-decision-card__question {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  overflow-wrap: anywhere;
+}
+
+.br-decision-card__headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  min-width: 0;
+}
+
+.br-decision-card__answer {
+  min-width: 0;
+  font-size: var(--text-title);
+  line-height: var(--text-title--line-height);
+  font-weight: 500;
+  letter-spacing: var(--text-title--letter-spacing);
+  overflow-wrap: anywhere;
+}
+
+.br-decision-card__answer-p {
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Passed or not, said with a word and a shape (a check or a cross). */
+.br-decision-card__verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-decision-card__verdict > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.br-decision-card__verdict[data-passed='true'] {
+  color: var(--text-success);
+}
+
+.br-decision-card__verdict[data-passed='false'] {
+  color: var(--text-muted);
+}
+
+/* THE BARS. One grid for every row, so the label, the track and the value line
+   up down the card whatever the labels are: the label column takes what the
+   longest label needs up to 40% of the card, the track takes the rest, and the
+   value is a fixed column of tabular figures. Each row is a subgrid of it. */
+.br-decision-bars {
+  display: grid;
+  grid-template-columns: fit-content(40%) minmax(64px, 1fr) max-content;
+  column-gap: 12px;
+  row-gap: 6px;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-decision-bars__row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  min-height: 20px;
+}
+
+.br-decision-bars__label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-decision-bars__row[data-answer] .br-decision-bars__label {
+  color: var(--text-default);
+}
+
+.br-decision-bars__track {
+  position: relative;
+  min-width: 0;
+}
+
+/* The answer's bar is the accent; every other outcome is the muted ink, so the
+   answer reads first without colour being the only thing that says it (the
+   answer is also the large word above). */
+.br-decision-bars__row:not([data-answer]) .br-decision-bars__fill {
+  background-color: var(--text-muted);
+}
+
+/* The threshold: a 2px mark across the track at the threshold's probability. */
+.br-decision-bars__threshold {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  border-radius: 1px;
+  background-color: var(--text-default);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.br-decision-bars__value {
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.br-decision-card__line {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  overflow-wrap: anywhere;
+}
+
+.br-decision-card__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-danger);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  overflow-wrap: anywhere;
+}
+
+.br-decision-card__error > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+}
+
+.br-decision-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-decision-card__model {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.br-decision-card__model > span {
+  min-width: 0;
+}
+
+.br-decision-card__model > svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.br-decision-card__tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.br-decision-card__tier > svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.br-decision-card__history {
+  margin-inline-start: auto;
+  padding-inline: 0;
+}
+
+/* ── The per-turn marker ───────────────────────────────────────────────── */
+
+.br-decision-marker__items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-decision-marker__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 12px;
+  min-height: 24px;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-decision-marker__text {
+  min-width: 0;
+  color: var(--text-default);
+  overflow-wrap: anywhere;
+}
+
+.br-decision-marker__turn {
+  margin-top: 4px;
+  padding-inline: 0;
+}
+
+/* ── The decide tool's well ────────────────────────────────────────────── */
+
+.br-decide-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.br-decide-summary__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-decide-summary__question {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  min-width: 0;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-decide-summary__name {
+  color: var(--text-default);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.br-decide-summary__detail {
+  min-width: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.br-decide-summary__head {
+  margin: 0 0 4px;
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-decide-summary__history {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding-inline: 0;
+}
+
+/* ── The decision composer, above the composer's text box ──────────────── */
+
+.br-decision-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 0 8px;
+}
+
+.br-decision-composer__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.br-decision-composer__row--controls {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.br-decision-composer__label {
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-decision-composer__threshold {
+  width: 88px;
+}
+
+.br-decision-composer__target {
+  width: 200px;
+  min-width: 0;
+}
+
+.br-decision-composer__entries {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.br-decision-composer__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-decision-composer__entry {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.br-decision-composer__status {
+  min-height: 16px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-decision-composer[data-draft] .br-decision-composer__status {
+  min-height: 0;
+}

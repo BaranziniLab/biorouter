@@ -1,4 +1,5 @@
 import type { ResourceContents } from '../../api';
+import type { DecisionHistoryFilter } from '../../utils/sessionDecisions';
 
 export type ArtifactSource =
   | {
@@ -43,6 +44,20 @@ export type ArtifactSource =
       resource: ResourceContents;
       preferredWidth?: number;
       preferredHeight?: number;
+    }
+  | {
+      /**
+       * A chat's decision history (`components/decisions/DecisionHistory.tsx`): the
+       * one place individual decision-model calls are listed. One tab per chat
+       * (`sessionId` is its key); opening it again with another `filter` re-filters
+       * that tab. `openedAt` makes a repeated open of the same filter still apply
+       * it. Built by `decisionHistoryArtifact` in `utils/sessionDecisions.ts`.
+       */
+      kind: 'decisions';
+      title: string;
+      sessionId: string;
+      filter: DecisionHistoryFilter;
+      openedAt: number;
     };
 
 export type ArtifactFileEntry = {

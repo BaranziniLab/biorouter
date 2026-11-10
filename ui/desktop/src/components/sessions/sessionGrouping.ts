@@ -104,3 +104,36 @@ export function groupSessionsByParent<T extends SessionRow>(
   }
   return topLevel.map((session) => ({ session, children: childrenOf.get(session.id) ?? [] }));
 }
+
+/**
+ * How many of a parent's runs History draws before it folds the rest behind "Show N more runs".
+ * Three is enough to see what a chat delegated without a parent of thirty runs pushing every
+ * other chat a screen down.
+ */
+export const NESTED_RUNS_SHOWN = 3;
+
+/**
+ * The runs a parent's block draws, and how many it folds away.
+ *
+ * `runs` are in the order the list shows them (newest first, or the held order while the pointer
+ * is over the list, `historyHold.ts`), so the first `limit` are the newest. A block that is
+ * `expanded`, or a list under a filter (every match shows at once, as the top-level rows do),
+ * draws every run. Nothing is dropped: `shown.length + hidden === runs.length`.
+ *
+ * A run `keep` names is drawn wherever it falls, in its place in the order: the run that holds
+ * keyboard focus. The live order moves while the list is open (a running child's activity, a new
+ * spawn at the top), and the pointer hold does not cover a keyboard user, so without it a focused
+ * run pushed past the newest few would be unmounted and its focus dropped to the page.
+ */
+export function splitNestedRuns<T>(
+  runs: readonly T[],
+  {
+    expanded = false,
+    limit = NESTED_RUNS_SHOWN,
+    keep,
+  }: { expanded?: boolean; limit?: number; keep?: (run: T) => boolean } = {}
+): { shown: readonly T[]; hidden: number } {
+  if (expanded || runs.length <= limit) return { shown: runs, hidden: 0 };
+  const shown = runs.filter((run, index) => index < limit || (keep?.(run) ?? false));
+  return { shown, hidden: runs.length - shown.length };
+}

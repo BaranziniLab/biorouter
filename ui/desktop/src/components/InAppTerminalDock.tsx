@@ -11,7 +11,8 @@ import { onTerminalRunRequest } from '../utils/terminalRunChannel';
 import { terminalInputForCommand } from '../utils/shellCommandBlock';
 import { cn } from '../utils';
 import { GENERATED_THEMES } from '../styles/themes.generated';
-import { tildePath } from './BioRouterSidebar/sidebarChatView';
+import { folderName, homeFolder } from '../utils/folderPath';
+import { TerminalCwd } from './TerminalCwd';
 import { TAB_CLOSE_CLASS, TAB_NEW_CLASS } from './chatGroups/tabClasses';
 
 interface InAppTerminalDockProps {
@@ -68,21 +69,13 @@ function getTerminalSize(fitAddon: FitAddon): ProposedDimensions {
   };
 }
 
-function basename(path?: string) {
-  if (!path) return 'terminal';
-  return path.replace(/\/+$/, '').split('/').pop() || 'terminal';
-}
-
-function formatCwd(cwd?: string) {
-  if (!cwd) return 'Chat terminal';
-  // The sidebar's boundary-safe shortening: `~` only when the home folder ends
-  // at a path separator, so `/Users/wgu2/work` never reads `~2/work`.
-  const home = window.appConfig?.get('BIOROUTER_HOME_DIR') as string | undefined;
-  return tildePath(cwd, home);
-}
-
+/**
+ * A pane's tab names its folder as the sidebar's folder groups and the composer's folder chip do
+ * (`folderName`, utils/folderPath.ts): the folder's own name whichever separator the path uses,
+ * `~` for the home folder, `Crew` for the Crew task folder.
+ */
 function makePaneTitle(workingDir: string | undefined, index: number) {
-  const name = basename(workingDir);
+  const name = (workingDir && folderName(workingDir, homeFolder())) || 'terminal';
   return index === 1 ? name : `${name} ${index}`;
 }
 
@@ -699,9 +692,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
             <Plus className="h-4 w-4" />
           </button>
         </div>
-        <span className="hidden min-w-0 max-w-[38%] truncate text-supporting text-text-muted sm:block">
-          {formatCwd(workingDir)}
-        </span>
+        <TerminalCwd cwd={workingDir} />
         <Button
           type="button"
           variant="ghost"

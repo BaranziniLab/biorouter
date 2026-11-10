@@ -74,7 +74,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
-import { EffortSection, moveFocusAcrossEffort } from './EffortSection';
+import { EffortSection, moveFocusAcrossMenuStops } from './EffortSection';
+import { InfoTip } from '../ui/info-tip';
+import { AffiliationBadge } from '../ui/AffiliationBadge';
 import {
   getReasoningEffort,
   subscribeToReasoningEffort,
@@ -97,8 +99,21 @@ function App() {
           id="menu"
           side="top"
           align="start"
-          onKeyDownCapture={(event) => moveFocusAcrossEffort(event, control.current)}
+          onKeyDownCapture={(event) => moveFocusAcrossMenuStops(event, control.current)}
         >
+          {/* The model menu's header, as ModelsBottomBar draws it: the notes glyph after the
+              heading, and the dense affiliation badge on the provider line. */}
+          <div>
+            <span>Current model</span>
+            <InfoTip label="About this model" help="New chats start here." data-testid="model-notes-info" />
+          </div>
+          <div>
+            <span>Versa API Azure · Private</span>
+            <AffiliationBadge
+              affiliation={{ kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] }}
+              dense
+            />
+          </div>
           <EffortSection scope={SCOPE} effort={effort} controlRef={control} />
           <DropdownMenuSeparator />
           <DropdownMenuItem id="change">Change model…</DropdownMenuItem>
@@ -274,6 +289,8 @@ describe('the model menu’s labelled effort segments in a real layout engine', 
       await tab.keyboard.press('ArrowUp');
       expect(await focused()).toBe('Normal');
       expect(await effort(tab)).toBe('normal');
+      await tab.keyboard.press('ArrowDown');
+      expect(await focused()).toBe('change');
       await tab.keyboard.press('ArrowUp');
       expect(await focused()).toBe('Normal');
       expect(await effort(tab)).toBe('normal');
@@ -295,6 +312,77 @@ describe('the model menu’s labelled effort segments in a real layout engine', 
       await tab.keyboard.press('ArrowDown');
       await expect.poll(focused).toBe('lead');
       expect(await effort(tab)).toBe('deep');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  /**
+   * Tab leaves an open menu (Q2-50) and Radix's Up and Down visit rows only, so the menu's InfoTips
+   * (the "About this model" and "About effort" glyphs, the dense affiliation badge, whose words
+   * were reachable by the pointer alone) had no key that reached them. Up and Down now take them
+   * in reading order, between the rows and the effort segment; Enter keeps a tip, and Escape on a
+   * kept tip closes the tip and leaves the menu open.
+   */
+  it('reaches every InfoTip in the menu with Up and Down, and Enter keeps its tip', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const focused = () =>
+        tab.evaluate(() => {
+          const el = document.activeElement;
+          if (el?.getAttribute('role') === 'radio') return el.textContent;
+          return el?.getAttribute('data-testid') ?? el?.id ?? null;
+        });
+      await tab.focus('#change');
+      const up: (string | null)[] = [];
+      for (let step = 0; step < 6; step++) {
+        await tab.keyboard.press('ArrowUp');
+        up.push(await focused());
+      }
+      expect(up, 'Up from the first row, to the top of the menu and no further').toEqual([
+        'Normal',
+        'effort-info',
+        'affiliation-badge',
+        'model-notes-info',
+        'model-notes-info',
+        'model-notes-info',
+      ]);
+      expect(await effort(tab), 'passing the segment changed nothing').toBe('normal');
+      const down: (string | null)[] = [];
+      for (let step = 0; step < 4; step++) {
+        await tab.keyboard.press('ArrowDown');
+        down.push(await focused());
+      }
+      expect(down, 'Down, back the way it came').toEqual([
+        'affiliation-badge',
+        'effort-info',
+        'Normal',
+        'change',
+      ]);
+
+      // On the badge, Enter keeps its tip (its words, the institution and what that covers).
+      await tab.keyboard.press('ArrowUp');
+      await tab.keyboard.press('ArrowUp');
+      await tab.keyboard.press('ArrowUp');
+      expect(await focused()).toBe('affiliation-badge');
+      const tips = () =>
+        tab.evaluate(() =>
+          [...document.querySelectorAll('[data-slot="info-tip-content"], [role="tooltip"]')]
+            .map((node) => node.textContent ?? '')
+            .filter(Boolean)
+        );
+      expect(await tips(), 'an arrow key previews nothing').toEqual([]);
+      await tab.keyboard.press('Enter');
+      await expect.poll(tips).toEqual([expect.stringContaining('UCSF')]);
+      expect(
+        await tab.getAttribute('[data-testid="affiliation-badge"]', 'data-pinned'),
+        'kept'
+      ).toBe('true');
+      await tab.keyboard.press('Escape');
+      await expect.poll(tips).toEqual([]);
+      expect(await tab.locator('[role="menu"]').count(), 'the menu stays open').toBe(1);
+      expect(await focused()).toBe('affiliation-badge');
     } finally {
       await tab.close();
     }

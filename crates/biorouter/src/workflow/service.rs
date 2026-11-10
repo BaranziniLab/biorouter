@@ -441,7 +441,7 @@ pub fn build_with_parameter_values(
 
 /// What a generated workflow gains from the session it was generated in.
 ///
-/// The generator writes prose; these three fields are facts about the live
+/// The generator writes prose; these fields are facts about the live
 /// session that no model should be guessing. They were computed inside the HTTP
 /// handler, which is precisely why the CLI's copy of the same flow produced a
 /// different document from the same conversation.
@@ -453,6 +453,51 @@ pub struct SessionEnrichment {
     pub knowledge_bases: Option<WorkflowKnowledgeBases>,
     /// Author details supplied by the caller (the desktop passes the user's).
     pub author: Option<crate::workflow::Author>,
+    /// The chat's decision settings as a workflow may carry them
+    /// ([`crate::workflow::supervision::capturable_settings`]): its default
+    /// decision model and the person's monitors, so a workflow made from a
+    /// supervised chat starts its own chats with the same monitors. `None`
+    /// when the chat has neither.
+    pub decision_settings: Option<crate::decision::settings::DecisionSettings>,
+    /// The chat's phase plan as declared, without any of its state (no
+    /// hand-off, subagent, status or gate record), so the workflow starts its
+    /// chats with the same phases and gates. `None` when the chat has no plan.
+    pub orchestration_plan: Option<crate::workflow::supervision::WorkflowPlan>,
+}
+
+/// A stored plan's declared skeleton
+/// ([`crate::agents::orchestration_plan::declared_skeleton`]) in the shape a
+/// workflow file declares it.
+fn workflow_plan_from_skeleton(
+    (title, goal, phases): (
+        String,
+        Option<String>,
+        Vec<crate::agents::orchestration_plan::OrchestratePhaseInput>,
+    ),
+) -> crate::workflow::supervision::WorkflowPlan {
+    use crate::workflow::supervision::{WorkflowGate, WorkflowPhase, WorkflowPlan};
+    WorkflowPlan {
+        title,
+        goal,
+        phases: phases
+            .into_iter()
+            .map(|input| WorkflowPhase {
+                id: input.phase.id,
+                title: input.phase.title,
+                kind: input.phase.kind,
+                goal: input.phase.goal,
+                depends_on: input.phase.depends_on,
+                gate: input.gate.map(|gate| WorkflowGate {
+                    questions: gate.questions,
+                    threshold: gate.threshold,
+                    max_attempts: gate.max_attempts,
+                    allow_uncalibrated: gate.allow_uncalibrated,
+                    model: gate.model,
+                }),
+                monitors: input.monitors,
+            })
+            .collect(),
+    }
 }
 
 /// What a person is told when a workflow would be made from a Crew chat.
@@ -496,7 +541,7 @@ pub async fn refuse_crew_source(session_id: &str) -> Result<()> {
 
 /// Gather everything a live session contributes to a workflow generated from it.
 ///
-/// ⚠ The ONE place these three facts are collected. Both the HTTP create route
+/// ⚠ The ONE place these facts are collected. Both the HTTP create route
 /// and the CLI's `/workflow` command call this and then
 /// [`apply_session_enrichment`]; before it existed only the route enriched, so
 /// the same conversation produced a different document depending on which
@@ -541,10 +586,31 @@ pub async fn session_enrichment(
         .map(enrich_extension_description)
         .collect();
 
+    // The supervision the chat runs under, so a workflow made from it carries
+    // the same monitors and phase gates (item 8). The settings go through
+    // `capturable_settings`, never verbatim: a subagent's chat holds agent
+    // monitors and inherited copies a workflow may not declare, and the
+    // generated file would not save. An unreadable record fails the capture
+    // rather than leaving the monitors out without a word.
+    let manager = agent.config.session_manager.as_ref();
+    let chat_settings = crate::decision::settings::load(manager, session_id)
+        .await
+        .with_context(|| {
+            "this chat's monitors could not be read, so a workflow made from it would leave \
+             them out"
+        })?;
+    let decision_settings = crate::workflow::supervision::capturable_settings(&chat_settings);
+    let orchestration_plan =
+        crate::agents::orchestration_plan::declared_skeleton(manager, session_id)
+            .await
+            .map(workflow_plan_from_skeleton);
+
     Ok(SessionEnrichment {
         extensions,
         knowledge_bases: knowledge_bases_for_session(knowledge, session_id)?,
         author,
+        decision_settings,
+        orchestration_plan,
     })
 }
 
@@ -564,6 +630,14 @@ pub fn apply_session_enrichment(workflow: &mut Workflow, enrichment: SessionEnri
     }
     if enrichment.author.is_some() {
         workflow.author = enrichment.author;
+    }
+    // Only where the generated workflow declares none: a block the generator
+    // wrote is the document's own.
+    if workflow.decision_settings.is_none() {
+        workflow.decision_settings = enrichment.decision_settings;
+    }
+    if workflow.orchestration_plan.is_none() {
+        workflow.orchestration_plan = enrichment.orchestration_plan;
     }
 }
 
@@ -788,6 +862,8 @@ mod tests {
                     visible: vec!["session".into()],
                 }),
                 author: None,
+                decision_settings: None,
+                orchestration_plan: None,
             },
         );
 
@@ -823,6 +899,8 @@ mod tests {
                     contact: Some("someone".into()),
                     metadata: None,
                 }),
+                decision_settings: None,
+                orchestration_plan: None,
             },
         );
         assert_eq!(
@@ -830,6 +908,45 @@ mod tests {
             Some("session")
         );
         assert_eq!(workflow.author.unwrap().contact.as_deref(), Some("someone"));
+    }
+
+    /// Item 8: the chat's monitors and plan fill a generated workflow's
+    /// `decision_settings` and `orchestration_plan` only where it declares
+    /// none; a block the generator wrote is the document's own.
+    #[test]
+    fn enrichment_fills_the_supervision_blocks_only_where_the_workflow_has_none() {
+        use crate::decision::settings::DecisionSettings;
+        use crate::workflow::supervision::WorkflowPlan;
+        let settings = |model: &str| -> DecisionSettings {
+            serde_json::from_value(serde_json::json!({
+                "defaultModel": {"provider": "ollama_decision", "model": model}
+            }))
+            .unwrap()
+        };
+        let plan = |title: &str| WorkflowPlan {
+            title: title.to_string(),
+            goal: None,
+            phases: Vec::new(),
+        };
+        let enrichment = || SessionEnrichment {
+            extensions: Vec::new(),
+            knowledge_bases: None,
+            author: None,
+            decision_settings: Some(settings("from-the-chat")),
+            orchestration_plan: Some(plan("From the chat")),
+        };
+
+        let mut bare = sample();
+        apply_session_enrichment(&mut bare, enrichment());
+        assert_eq!(bare.decision_settings, Some(settings("from-the-chat")));
+        assert_eq!(bare.orchestration_plan, Some(plan("From the chat")));
+
+        let mut declared = sample();
+        declared.decision_settings = Some(settings("declared"));
+        declared.orchestration_plan = Some(plan("Declared"));
+        apply_session_enrichment(&mut declared, enrichment());
+        assert_eq!(declared.decision_settings, Some(settings("declared")));
+        assert_eq!(declared.orchestration_plan, Some(plan("Declared")));
     }
 
     /// A description that merely repeats the extension's own name carries no
@@ -1364,6 +1481,114 @@ mod one_core_guards {
     /// straight to the model has silently dropped both `skills:` and
     /// `knowledge_bases:` — which is exactly what `biorouter run --workflow`
     /// did.
+    /// Item 8: every door that starts a workflow in its own chat seeds the
+    /// supervision it declares (`decision_settings`, `orchestration_plan`),
+    /// and every door that cannot refuses it rather than dropping it.
+    ///
+    /// - `runtime::install_prepared`, which `biorouter run --workflow` and the
+    ///   scheduler go through (the guard above), seeds before it installs
+    ///   anything else;
+    /// - `POST /agent/start` seeds, after asking for the person's proof;
+    /// - a slash command refuses a workflow that declares either block;
+    /// - a subagent's spawn from a sub-workflow refuses a plan and puts the
+    ///   sub-workflow's monitors on the child.
+    ///
+    /// A door that loses its call reads exactly like the bug this closes: the
+    /// workflow starts, and its monitors and gates are dropped without a word.
+    #[test]
+    fn every_door_that_starts_a_workflow_seeds_its_supervision() {
+        let read = |path: &str| {
+            production(
+                &std::fs::read_to_string(crates_dir().join(path))
+                    .unwrap_or_else(|e| panic!("{path} is readable: {e}")),
+            )
+        };
+        let body_of = |text: &str, start: &str| -> String {
+            text.split_once(start)
+                .unwrap_or_else(|| panic!("`{start}` exists"))
+                .1
+                .split_once("\n}\n")
+                .map(|(body, _)| body.to_string())
+                .unwrap_or_else(|| panic!("`{start}` has a body"))
+        };
+
+        let runtime = read("biorouter/src/workflow/runtime.rs");
+        let install = body_of(&runtime, "pub async fn install_prepared(");
+        let seeded = install
+            .find("supervision::seed(")
+            .expect("`install_prepared` seeds the workflow's supervision");
+        let knowledge = install
+            .find("apply_knowledge_selection")
+            .expect("`install_prepared` applies the knowledge selection");
+        assert!(
+            seeded < knowledge,
+            "`install_prepared` seeds before it installs anything else"
+        );
+
+        let routes = read("biorouter-server/src/routes/agent.rs");
+        let start = body_of(&routes, "\nasync fn start_agent(");
+        let proof = start
+            .find("decision_write_refusal")
+            .expect("`start_agent` asks for the person's proof for a supervised workflow");
+        let created = start
+            .find(".create_session(")
+            .expect("`start_agent` creates the chat");
+        let seed = start
+            .find("supervision::seed(")
+            .expect("`start_agent` seeds the workflow's supervision");
+        assert!(
+            proof < created,
+            "`start_agent` refuses an unproven supervised start before it makes a chat"
+        );
+        assert!(created < seed);
+
+        let slash = read("biorouter/src/agents/execute_commands.rs");
+        assert!(
+            body_of(&slash, "async fn handle_workflow_command(")
+                .contains("supervision::declares_supervision("),
+            "a slash command must refuse a workflow that declares monitors or a plan"
+        );
+
+        // `biorouter run --workflow --resume` tells a chat that already has
+        // messages what became of the workflow's blocks, from the chat's seed
+        // marker (`runtime::supervision_notice`), never from the outcome alone.
+        let cli = read("biorouter-cli/src/session/builder.rs");
+        assert!(
+            cli.contains("supervision_notice("),
+            "the CLI must say whether a resumed chat's supervision was applied when it started"
+        );
+
+        let spawn = read("biorouter/src/agents/subagent_tool.rs");
+        assert!(
+            spawn.contains("supervision::subworkflow_plan_refusal("),
+            "a sub-workflow that declares a plan must refuse the spawn"
+        );
+        assert!(
+            spawn.contains("workflow.decision_settings"),
+            "a sub-workflow's monitors must reach the child it spawns"
+        );
+
+        // And no other door seeds: a restart, `update_from_session`, the
+        // parameter values, an import, a copy or a diverge carries a chat's
+        // records as they are, and must never re-apply a workflow's blocks
+        // over the person's later edits.
+        let mut seeders: Vec<String> = rust_sources()
+            .iter()
+            .filter(|(_, text)| production(text).contains("supervision::seed("))
+            .map(|(path, _)| rel(path))
+            .collect();
+        seeders.sort();
+        assert_eq!(
+            seeders,
+            vec![
+                "biorouter-server/src/routes/agent.rs".to_string(),
+                "biorouter/src/workflow/runtime.rs".to_string(),
+            ],
+            "the only doors that seed a workflow's supervision are the shared install and \
+             `POST /agent/start`"
+        );
+    }
+
     #[test]
     fn every_surface_that_runs_a_workflow_goes_through_the_shared_install() {
         let sources = rust_sources();

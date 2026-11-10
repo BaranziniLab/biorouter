@@ -828,9 +828,9 @@ describe('SessionListView stat cells for a screen reader', () => {
 });
 
 /// A row shows names, not paths (principle 10). The folder a chat ran in is
-/// named by its last segment, in the body face; the full path is a machine
-/// string and lives in the row's tooltip (mono) and in the filter, never on the
-/// row itself.
+/// named as the sidebar names it, in the body face; the whole location lives in
+/// the row's tooltip (sans, from `~`: SessionListView.folderText.test.tsx) and
+/// in the filter, never on the row itself.
 describe('SessionListView — a row names its folder, not its path', () => {
   it('shows the folder name in the body face and keeps the path off the row', async () => {
     mocks.listSessions.mockResolvedValue({

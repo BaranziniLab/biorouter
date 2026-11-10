@@ -44,6 +44,140 @@ export const summaryCopy = {
   workflow: 'Workflow',
   diagnostics: 'Diagnostics',
 
+  /**
+   * The header button's name gains this while subagents run and the rail is
+   * hidden: "Chat summary, 3 subagents running".
+   */
+  buttonWithSubagents: (base: string, running: number) =>
+    `${base}, ${running} ${running === 1 ? 'subagent' : 'subagents'} running`,
+
+  /** The subagents and phases sections (`summary/SummarySubagents.tsx`). */
+  agents: {
+    phases: 'Phases',
+    /** Read after the phase count by assistive technology only: "1 of 4 phases complete". */
+    phasesCountSuffix: ' phases complete',
+    phaseListLabel: 'Phases of the plan',
+    phaseProgressLabel: (title: string) => `${title} progress`,
+    /** Visible per phase: "2 of 5". Read: "2 of 5 subagents done". */
+    phaseAgentsSuffix: ' subagents done',
+    subagents: 'Subagents',
+    otherSubagents: 'Other subagents',
+    subagentListLabel: 'Subagents of this chat',
+    /** Read after a list's count: "4 of 10 done". */
+    doneSuffix: ' done',
+    running: (count: number) => `${count} running`,
+    quiet: (count: number) => `${count} quiet`,
+    failed: (count: number) => `${count} failed`,
+    blocked: (count: number) => `${count} blocked`,
+    groups: { running: 'Running', attention: 'Needs attention', done: 'Done' },
+    showAll: (count: number) => `Show all ${count}`,
+    showFewer: 'Show fewer',
+    refreshFailed: 'Subagents could not refresh.',
+    noneInPhase: 'No subagents yet',
+    status: {
+      queued: 'Queued',
+      running: 'Running',
+      cancelling: 'Stopping',
+      completed: 'Completed',
+      blocked: 'Blocked',
+      incomplete: 'Incomplete',
+      failed: 'Failed',
+      interrupted: 'Interrupted',
+      unknown: 'Status unknown',
+    },
+    quietFor: (elapsed: string) => `quiet for ${elapsed}`,
+    /**
+     * A comfortable row's setup counts, drawn as a glyph and a number and read
+     * as these words: "2 extensions", "1 skill", "1 knowledge base". Never
+     * abbreviated: "1 KB" read as one kilobyte.
+     */
+    setupCount: {
+      extension: (count: number) => `${count} ${count === 1 ? 'extension' : 'extensions'}`,
+      skill: (count: number) => `${count} ${count === 1 ? 'skill' : 'skills'}`,
+      knowledge: (count: number) =>
+        `${count} ${count === 1 ? 'knowledge base' : 'knowledge bases'}`,
+    },
+    phaseStatus: {
+      pending: 'Pending',
+      in_progress: 'In progress',
+      completed: 'Complete',
+      blocked: 'Blocked',
+      skipped: 'Skipped',
+    },
+    phaseKind: {
+      plan: 'Plan',
+      research: 'Research',
+      execution: 'Execution',
+      implementation: 'Implementation',
+      verification: 'Verification',
+      testing: 'Testing',
+      auditing: 'Auditing',
+      review: 'Review',
+      meeting: 'Meeting',
+      synthesis: 'Synthesis',
+      other: 'Other',
+    },
+    /** The hover card's labels. */
+    card: {
+      role: 'Role',
+      phase: 'Phase',
+      model: 'Model',
+      extensions: 'Extensions',
+      skills: 'Skills',
+      knowledgeBases: 'Knowledge bases',
+      tokens: 'Tokens',
+      toolCalls: 'Tool calls',
+      messages: 'Messages',
+      runTime: 'Run time',
+      none: 'None',
+      private: 'Private',
+      openHint: 'Click to open in a tab',
+    },
+  },
+
+  /**
+   * The Decisions section (`summary/SummaryDecisions.tsx`): one row per source,
+   * never one per call.
+   */
+  decisions: {
+    title: 'Decisions',
+    countSuffix: ' decision calls',
+    listLabel: 'Decision sources',
+    calls: (n: number) => `${n.toLocaleString()} ${n === 1 ? 'call' : 'calls'}`,
+    errors: (n: number) => `${n.toLocaleString()} ${n === 1 ? 'error' : 'errors'}`,
+    notChecked: 'Not checked yet',
+    last: (answer: string) => `last ${answer}`,
+    gateAttempt: (attempt: number, max: number) => `attempt ${attempt} of ${max}`,
+    gateBlocked: (max: number) => `blocked after ${max} attempts`,
+    /** Blocked by evaluation errors in a row, which use no attempt. */
+    gateBlockedUnevaluated: 'blocked: could not be evaluated',
+    monitors: 'Monitors',
+    monitorsOn: (n: number) => (n === 0 ? 'none on' : `${n} on`),
+    monitorsAdd: 'Add',
+    refreshFailed: 'Decisions did not refresh',
+    openHint: 'Opens the decision history',
+    state: {
+      pending: 'Not checked yet',
+      armed: 'Watching',
+      fired: 'Fired',
+      off: 'Off',
+      error: 'Error',
+      done: 'Decided',
+      passed: 'Passed',
+      failed: 'Failed',
+      blocked: 'Blocked',
+      skipped: 'Skipped',
+    },
+    gate: {
+      passed: (p: string, t: string) => `Gate ${p} ≥ ${t} passed`,
+      failed: (p: string, t: string, attempt: number, max: number) =>
+        `Gate ${p} < ${t}, attempt ${attempt} of ${max}`,
+      blocked: 'Gate blocked',
+      pending: (t: string) => `Gate at ${t}`,
+      label: 'Phase gate',
+    },
+  },
+
   /** The Stop & send banner above the composer, one line per state. */
   stopAndSend: {
     owned: 'Stop & send is waiting',

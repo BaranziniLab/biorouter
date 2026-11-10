@@ -283,44 +283,50 @@ impl Agent {
     /// an active goal survives a daemon restart — mirroring how todos persist.
     /// Best-effort: a persistence failure only forfeits the restore-after-restart
     /// property, never the live in-memory goal.
+    ///
+    /// Only `goal.v0` is written, in one per-key transaction: a whole-blob
+    /// rewrite would put back every other key as it was read, erasing what a
+    /// concurrent writer (a spawn recording its child into the chat's
+    /// orchestration plan, a todo call) committed in between.
     async fn persist_goal(&self, session_id: &str, state: &GoalState) {
-        let manager = &self.config.session_manager;
-        match manager.get_session(session_id, false).await {
-            Ok(mut session) => {
-                if state.to_extension_data(&mut session.extension_data).is_ok() {
-                    if let Err(e) = manager
-                        .update(session_id)
-                        .extension_data(session.extension_data)
-                        .apply()
-                        .await
-                    {
-                        tracing::warn!("Failed to persist goal for session {session_id}: {e}");
-                    }
-                }
-            }
+        let value = match state.to_value() {
+            Ok(value) => value,
             Err(e) => {
-                tracing::warn!("Failed to load session {session_id} to persist goal: {e}");
+                tracing::warn!("Failed to serialize the goal for session {session_id}: {e}");
+                return;
             }
-        }
+        };
+        self.write_persisted_goal(session_id, value, "persist")
+            .await;
     }
 
     /// Clear any persisted goal for `session_id` (null out the `goal.v0` key),
     /// so a resolved or manually cleared goal does not resurrect on resume.
     async fn clear_persisted_goal(&self, session_id: &str) {
-        let manager = &self.config.session_manager;
-        if let Ok(mut session) = manager.get_session(session_id, false).await {
-            session.extension_data.set_extension_state(
+        self.write_persisted_goal(session_id, serde_json::Value::Null, "clear")
+            .await;
+    }
+
+    /// Store `value` under `goal.v0` and nothing else. Best-effort, like both
+    /// callers.
+    async fn write_persisted_goal(&self, session_id: &str, value: serde_json::Value, what: &str) {
+        let written = self
+            .config
+            .session_manager
+            .update_extension_state(
+                session_id,
                 GoalState::EXTENSION_NAME,
                 GoalState::VERSION,
-                serde_json::Value::Null,
-            );
-            if let Err(e) = manager
-                .update(session_id)
-                .extension_data(session.extension_data)
-                .apply()
-                .await
-            {
-                tracing::warn!("Failed to clear persisted goal for session {session_id}: {e}");
+                move |_| Ok(value),
+            )
+            .await;
+        match written {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                tracing::warn!("Failed to {what} the goal: session {session_id} does not exist");
+            }
+            Err(e) => {
+                tracing::warn!("Failed to {what} the goal for session {session_id}: {e}");
             }
         }
     }
@@ -717,6 +723,63 @@ mod persistence_tests {
         assert!(
             agent2.active_goal(&session_id).await.is_none(),
             "a cleared goal must not come back after a restart"
+        );
+    }
+
+    /// Persisting or clearing a goal touches `goal.v0` only. It used to read
+    /// the whole `extension_data`, change the goal in memory and write the
+    /// whole blob back, which erased any other key committed in between, such
+    /// as a child a parallel spawn recorded into the chat's orchestration plan.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn goal_writes_never_erase_a_concurrent_write_to_another_key() {
+        const ROUNDS: usize = 24;
+        let dir = TempDir::new().unwrap();
+        let agent = Arc::new(agent_over(dir.path()));
+        let session_id = new_session(&agent, "goal races another key").await;
+        let manager = Arc::clone(&agent.config.session_manager);
+
+        let mut tasks = Vec::new();
+        for i in 0..ROUNDS {
+            let goals = Arc::clone(&agent);
+            let session = session_id.clone();
+            tasks.push(tokio::spawn(async move {
+                if i % 3 == 2 {
+                    goals.clear_goal(&session).await;
+                } else {
+                    goals.set_goal(&session, format!("goal {i}")).await;
+                }
+            }));
+            let other = Arc::clone(&manager);
+            let session = session_id.clone();
+            tasks.push(tokio::spawn(async move {
+                other
+                    .update_extension_state(&session, "race_probe", "v1", move |current| {
+                        let mut seen: Vec<usize> = current
+                            .and_then(|value| serde_json::from_value(value.clone()).ok())
+                            .unwrap_or_default();
+                        seen.push(i);
+                        Ok(serde_json::to_value(seen)?)
+                    })
+                    .await
+                    .unwrap()
+                    .expect("the session exists");
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        let stored = manager
+            .get_extension_state(&session_id, "race_probe", "v1")
+            .await
+            .unwrap()
+            .expect("a goal write erased the other key");
+        let seen: Vec<usize> = serde_json::from_value(stored).unwrap();
+        assert_eq!(
+            seen.len(),
+            ROUNDS,
+            "a goal write erased {} concurrent write(s)",
+            ROUNDS - seen.len()
         );
     }
 }

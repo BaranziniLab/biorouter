@@ -8,6 +8,7 @@ use crate::{
         message::{Message, MessageContent},
         Conversation,
     },
+    decision::settings::MonitorStopReport,
     prompt_template::render_global_file,
     session::SessionManager,
     workflow::Workflow,
@@ -16,6 +17,7 @@ use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
 use rmcp::model::Role;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -34,8 +36,137 @@ struct SubagentPromptContext {
 /// Why a child's turn ended early: `(wire code, human-readable message)`.
 type TurnAbort = (String, String);
 
-type AgentMessagesFuture =
-    Pin<Box<dyn Future<Output = Result<(Conversation, Option<String>, Option<TurnAbort>)>> + Send>>;
+/// What one delegated run produced, for its [`SubagentResult`].
+struct ChildRun {
+    conversation: Conversation,
+    final_output: Option<String>,
+    aborted: Option<TurnAbort>,
+    /// The stop a decision-model monitor on the child made in this run, taken
+    /// once the reply stream ended ([`Agent::take_monitor_stop`]). The
+    /// transcript alone cannot show it: a stopped run often ends on ordinary
+    /// text, which would read as `completed`.
+    monitor_stop: Option<MonitorStopReport>,
+}
+
+type AgentMessagesFuture = Pin<Box<dyn Future<Output = Result<ChildRun>> + Send>>;
+
+/// The decision-marker turns already present in `messages`: the turn ids of
+/// every stored marker (`metadata.decision_summary`). Taken before a run
+/// starts, so [`decision_marker_text`] can tell this run's marker from an
+/// earlier turn's when the history it reads was replaced (a compaction
+/// re-emits every older row, markers included, and can move one past where
+/// the run's own messages began).
+pub fn decision_marker_turns<'a>(
+    messages: impl IntoIterator<Item = &'a Message>,
+) -> HashSet<String> {
+    messages
+        .into_iter()
+        .filter_map(|message| message.metadata.decision_summary.as_ref())
+        .map(|marker| marker.turn_id.clone())
+        .collect()
+}
+
+/// The text of the last decision marker in `messages` that belongs to none of
+/// `earlier_turns`: what the child's monitors and decision calls did in its
+/// last turn (`Decision models: monitor 'X' checked 3 times (last P 0.40); …`),
+/// so the chat that started it learns of a steer that fired or a check that
+/// failed, not only of a stop. `None` when no decision model ran.
+pub fn decision_marker_text<'a, I>(messages: I, earlier_turns: &HashSet<String>) -> Option<String>
+where
+    I: IntoIterator<Item = &'a Message>,
+    I::IntoIter: DoubleEndedIterator,
+{
+    messages
+        .into_iter()
+        .rev()
+        .filter_map(|message| message.metadata.decision_summary.as_ref())
+        .find(|marker| !earlier_turns.contains(&marker.turn_id))
+        .map(crate::decision::monitor::marker_text)
+}
+
+/// The child's transcript as its result is read from: every row except the
+/// inline notices only the person sees (a monitor's stop or notify notice,
+/// the turn's decision marker, the loop's other user-only notices).
+///
+/// They describe the run, not the child's work, and the loop writes them
+/// AFTER the child's closing text: the decision marker closes every turn in
+/// which a decision model ran. Left in, the last row is a notice rather than
+/// the child's text, so a child that finished read as one that "ended without
+/// a final summary" (`incomplete`) as soon as it carried a monitor.
+///
+/// One exception: when the child's last own row is a reply made only of tool
+/// calls written as text ([`is_unrun_text_call`]), the transcript is returned
+/// whole. Nothing ran, the loop says so in a user-only notice under that reply
+/// ("Nothing ran: …", `reply_parts::unrun_call_notice`), and the run did not
+/// finish: with the notices left out, the raw call JSON would become the
+/// closing statement and the parent would be told the delegation `completed`.
+/// Kept whole, it reads `incomplete` exactly as it did before decision
+/// markers existed.
+pub fn without_user_only_notices(conversation: &Conversation) -> Conversation {
+    let kept: Vec<Message> = conversation
+        .messages()
+        .iter()
+        .filter(|message| !is_user_only_notice(message))
+        .cloned()
+        .collect();
+    if kept.last().is_some_and(is_unrun_text_call) {
+        return conversation.clone();
+    }
+    Conversation::new_unvalidated(kept)
+}
+
+/// Whether `message` is an assistant reply made only of tool calls written as
+/// text, none of which ran: the same judgement the loop makes before it puts
+/// its "Nothing ran" notice under a reply (`reply_parts::UnrunCallWatch`).
+fn is_unrun_text_call(message: &Message) -> bool {
+    if message.role != Role::Assistant
+        || message.content.iter().any(|content| {
+            matches!(
+                content,
+                MessageContent::ToolRequest(_) | MessageContent::FrontendToolRequest(_)
+            )
+        })
+    {
+        return false;
+    }
+    let text: String = message
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            MessageContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    crate::providers::formats::text_tool_calls::whole_reply_call_names(&text).is_some()
+}
+
+fn is_user_only_notice(message: &Message) -> bool {
+    !message.is_agent_visible()
+        && !message.content.is_empty()
+        && message
+            .content
+            .iter()
+            .all(|content| matches!(content, MessageContent::SystemNotification(_)))
+}
+
+/// Fold what the child's decision models did into its result: a monitor's
+/// stop (the status becomes `incomplete` and the summary opens with which
+/// monitor stopped it and why, [`SubagentResult::apply_monitor_stop`]) and the
+/// last turn's decision marker. Called on every child result, the delegated
+/// run's and a later turn's alike, after the result is otherwise complete
+/// (after [`SubagentResult::mark_cancelled`]), so the reason stays first.
+pub fn apply_child_decisions(
+    result: &mut SubagentResult,
+    monitor_stop: Option<&MonitorStopReport>,
+    decisions: Option<String>,
+) {
+    if let Some(report) = monitor_stop {
+        result.apply_monitor_stop(report);
+    }
+    if decisions.is_some() {
+        result.decisions = decisions;
+    }
+}
 
 fn delegated_initial_message(user_task: String, mut pending: Vec<Message>) -> Message {
     if pending.is_empty() {
@@ -341,6 +472,19 @@ async fn load_granted_extensions(
     loaded
 }
 
+/// How a subagent run ended: its result, and whether its cancellation token had
+/// tripped when the run settled that result, which is exactly when the result
+/// was marked cancelled ([`SubagentResult::mark_cancelled`]).
+///
+/// Read from the run, never from the token afterwards. A stop can trip the
+/// token after the run has finished on its own but before its result is
+/// published (the handle reads as running until then), and that result must
+/// not then say the run was stopped.
+pub(crate) struct SubagentRunOutcome {
+    pub(crate) result: SubagentResult,
+    pub(crate) cancelled: bool,
+}
+
 /// Standalone function to run a complete subagent task, returning a structured
 /// result envelope. A run that fails, or one that ends on a tool call without a
 /// final text message, still yields a meaningful `SubagentResult` (BR-40) —
@@ -353,6 +497,29 @@ pub async fn run_complete_subagent_task(
     session_id: String,
     cancellation_token: Option<CancellationToken>,
 ) -> SubagentResult {
+    run_complete_subagent_task_outcome(
+        config,
+        workflow,
+        task_config,
+        return_last_only,
+        session_id,
+        cancellation_token,
+    )
+    .await
+    .result
+}
+
+/// [`run_complete_subagent_task`], also saying whether the run was cancelled
+/// ([`SubagentRunOutcome`]). The spawn paths call this one directly, so the
+/// child's run is polled no deeper on the parent's stack than before.
+pub(crate) async fn run_complete_subagent_task_outcome(
+    config: AgentConfig,
+    workflow: Workflow,
+    task_config: TaskConfig,
+    return_last_only: bool,
+    session_id: String,
+    cancellation_token: Option<CancellationToken>,
+) -> SubagentRunOutcome {
     let session_manager = config.session_manager.clone();
 
     // BR-71 reconciliation #2 — one token per run, addressable from everywhere:
@@ -373,9 +540,12 @@ pub async fn run_complete_subagent_task(
             Some(services) => match services.begin_turn(&session_id, run_token.clone()) {
                 Ok(lease) => Some(lease),
                 Err(conflict) => {
-                    return SubagentResult::from_error(format!(
-                        "subagent session is unexpectedly busy: {conflict}"
-                    ));
+                    return SubagentRunOutcome {
+                        result: SubagentResult::from_error(format!(
+                            "subagent session is unexpectedly busy: {conflict}"
+                        )),
+                        cancelled: false,
+                    };
                 }
             },
             None => None,
@@ -405,7 +575,12 @@ pub async fn run_complete_subagent_task(
         )
     };
 
-    let (messages, final_output, aborted) = match get_agent_messages(
+    let ChildRun {
+        conversation: messages,
+        final_output,
+        aborted,
+        monitor_stop,
+    } = match get_agent_messages(
         config,
         workflow,
         task_config,
@@ -424,7 +599,8 @@ pub async fn run_complete_subagent_task(
         Ok(v) => v,
         Err(e) => {
             let mut result = SubagentResult::from_error(format!("Failed to execute task: {e}"));
-            if run_token.is_cancelled() {
+            let cancelled = run_token.is_cancelled();
+            if cancelled {
                 result.mark_cancelled();
             }
             result.human_intervened = session_manager
@@ -435,7 +611,7 @@ pub async fn run_complete_subagent_task(
                 .as_ref()
                 .is_some_and(super::subagent_result::conversation_has_user_direct);
             result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
-            return result;
+            return SubagentRunOutcome { result, cancelled };
         }
     };
 
@@ -443,16 +619,31 @@ pub async fn run_complete_subagent_task(
     // well-formed assistant message behind explaining it. Deciding this here,
     // rather than letting `from_conversation` read that message as a summary, is
     // what keeps a subagent that never ran from reporting `completed`.
+    //
+    // Classified from the child's own rows: a notice only the person sees is
+    // not the child's closing statement (see [`without_user_only_notices`]).
+    let transcript = without_user_only_notices(&messages);
     let mut result = match aborted {
-        Some((code, message)) => SubagentResult::from_aborted_turn(&messages, &code, message),
-        None => SubagentResult::from_conversation(&messages, final_output, return_last_only),
+        Some((code, message)) => SubagentResult::from_aborted_turn(&transcript, &code, message),
+        None => SubagentResult::from_conversation(&transcript, final_output, return_last_only),
     };
-    if run_token.is_cancelled() {
+    let cancelled = run_token.is_cancelled();
+    if cancelled {
         result.mark_cancelled();
     }
+    // Item A: a monitor on the child that stopped its run reads as that stop,
+    // never as a run that finished, and what its decision models did reaches
+    // the chat that started it. The run's conversation holds only this run's
+    // messages (it starts from the delegated prompt), so no earlier turn's
+    // marker can be in it.
+    apply_child_decisions(
+        &mut result,
+        monitor_stop.as_ref(),
+        decision_marker_text(messages.messages(), &HashSet::new()),
+    );
     result.human_intervened = super::subagent_result::conversation_has_user_direct(&messages);
     result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
-    result
+    SubagentRunOutcome { result, cancelled }
 }
 
 /// A short, human-readable label for the active-work view: the subagent's task
@@ -627,6 +818,14 @@ fn get_agent_messages(
         // next line, so the spawn-context record's session handle is taken now.
         let session_manager = config.session_manager.clone();
         let agent = Arc::new(Agent::with_config(config));
+        // Item A: the child asks the decision models the chat that started it
+        // asks. When that chat's agent had its own decision service (an
+        // embedder's, or a test's), the spawn carried it here; without this
+        // the child's monitors would ask the process's service, which may not
+        // hold those models at all. Before anything below can run a turn.
+        if let Some(service) = task_config.decision_service.clone() {
+            agent.set_decision_service(service);
+        }
 
         // BR-71: make the live child addressable by the server control plane.
         // Best-effort — AgentManager::instance() needs global config; unit
@@ -850,6 +1049,24 @@ fn get_agent_messages(
             // at risk is the transcript header. Killing a configured run to
             // save a header would be the worse trade.
             tracing::warn!("failed to persist subagent spawn context: {e}");
+        }
+
+        // The structured half of the same grants, for the side panel, the CLI
+        // and the TUI (`subagent_roster`): the skills and knowledge bases the
+        // record above lists as prose. Merged into the spawn record the birth
+        // path started (role and phase), through a per-key transaction, after
+        // the runtime profile is installed. The profile install removes only
+        // its own keys, and this write never touches them. Best-effort for the
+        // same reason as the record above.
+        if let Err(e) = crate::agents::subagent_roster::record_spawn_grants(
+            &session_manager,
+            &session_id,
+            &skill_names,
+            &knowledge_bases,
+        )
+        .await
+        {
+            tracing::warn!("failed to record subagent spawn grants: {e}");
         }
 
         // Handoff without an admission gap: queued child input remains accepted
@@ -1180,7 +1397,17 @@ fn get_agent_messages(
             None
         };
 
-        Ok((conversation, final_output, aborted))
+        // The turn's first monitor stop, which the registry keeps after the
+        // stream ends and forgets when the next turn begins. Taken once,
+        // here, for the result.
+        let monitor_stop = agent.take_monitor_stop(&session_id);
+
+        Ok(ChildRun {
+            conversation,
+            final_output,
+            aborted,
+            monitor_stop,
+        })
     })
 }
 
@@ -1813,6 +2040,7 @@ mod tests {
             privacy_tier: crate::privacy::SessionClassification::Public,
             dropped_private_extensions: Vec::new(),
             dropped_cross_affiliation_extensions: Vec::new(),
+            decision_service: None,
         };
 
         // The sentinel: an agent nobody else owns, parked under the child's id.
@@ -2080,6 +2308,9 @@ mod tests {
         /// peek can tell "the run registered its own" from "nothing did".
         sentinel: Option<Arc<Agent>>,
         mid_run: std::sync::Mutex<Option<MidRun>>,
+        /// What `knowledge_selection` answers with: the child's knowledge
+        /// bases, as the daemon's `KnowledgeService` would report them.
+        knowledge_bases: Vec<String>,
     }
 
     struct SpyLease {
@@ -2111,7 +2342,12 @@ mod tests {
                 cancel_mid_run: false,
                 sentinel: None,
                 mid_run: std::sync::Mutex::new(None),
+                knowledge_bases: Vec::new(),
             }
+        }
+        fn granting_knowledge_bases(mut self, kbs: &[&str]) -> Self {
+            self.knowledge_bases = kbs.iter().map(|kb| kb.to_string()).collect();
+            self
         }
         fn refusing(mut self, message: &str) -> Self {
             self.conflict = Some(message.to_string());
@@ -2248,7 +2484,10 @@ mod tests {
             if self.cancel_mid_run {
                 self.cancel_turn(session_id);
             }
-            crate::workspace_services::KbSelectionView::default()
+            crate::workspace_services::KbSelectionView {
+                kb_ids: self.knowledge_bases.clone(),
+                primary_kb: None,
+            }
         }
         async fn gui_command(
             &self,
@@ -2358,6 +2597,60 @@ mod tests {
             "and the registration must not outlive the run"
         );
         manager.deregister_agent_if_same(&child, &sentinel).await;
+    }
+
+    /// The structured spawn record's second half: once the child's runtime is
+    /// assembled, the skills and knowledge bases its spawn-context message lists
+    /// are merged into the record the birth path started, keeping the role and
+    /// phase written there, and the runtime profile installed in between does
+    /// not remove it.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_run_records_its_grants_in_the_spawn_record() {
+        use crate::agents::subagent_roster::{read_spawn_record, record_spawn_identity};
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "granted child".into(),
+                crate::session::SessionType::SubAgent,
+            )
+            .await
+            .unwrap()
+            .id;
+        record_spawn_identity(&sm, &child, Some("reader"), Some("research"))
+            .await
+            .unwrap();
+
+        let _spy = LeaseSpy::new()
+            .granting_knowledge_bases(&["lab-notes", "soul"])
+            .install();
+        let (config, mut workflow, task_config) = bracket_fixture(&temp, &sm);
+        workflow.skills = Some(vec!["single-cell".to_string()]);
+        let _ = run_subagent_bounded!(config, workflow, task_config, true, child.clone(), None);
+        crate::workspace_services::clear_test_override();
+
+        let session = sm.get_session(&child, false).await.unwrap();
+        let record = read_spawn_record(&session.extension_data).expect("the spawn record");
+        assert_eq!(
+            record.role.as_deref(),
+            Some("reader"),
+            "the birth half survives"
+        );
+        assert_eq!(record.phase_id.as_deref(), Some("research"));
+        assert_eq!(record.skills, vec!["single-cell".to_string()]);
+        assert_eq!(
+            record.knowledge_bases,
+            vec!["lab-notes".to_string(), "soul".to_string()]
+        );
+        assert!(
+            session
+                .extension_data
+                .get_extension_state("subagent_runtime_profile", "v2")
+                .is_some(),
+            "fixture precondition: the runtime profile was installed before the grants"
+        );
     }
 
     /// Path 2 (Stop/abort): `cancel_turn` on the CHILD ends the child's run, and
@@ -2541,6 +2834,7 @@ mod tests {
             privacy_tier: crate::privacy::SessionClassification::Public,
             dropped_private_extensions: Vec::new(),
             dropped_cross_affiliation_extensions: Vec::new(),
+            decision_service: None,
         };
 
         let _result =
@@ -2743,6 +3037,7 @@ mod tests {
             privacy_tier: crate::privacy::SessionClassification::Public,
             dropped_private_extensions: Vec::new(),
             dropped_cross_affiliation_extensions: Vec::new(),
+            decision_service: None,
         };
         (config, workflow, task_config)
     }
@@ -3004,6 +3299,394 @@ mod tests {
                 Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "stop"
             ),
             "and it carries the reason the caller chose; got {events:?}"
+        );
+    }
+
+    // ─── Item A: what a child's decision models did reaches its result ───
+
+    /// The chat model of a child that ends every turn on ordinary text, which
+    /// on its own reads as `completed`.
+    struct DoneProvider;
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for DoneProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "scripted"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("scripted-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> std::result::Result<
+            (Message, crate::providers::base::ProviderUsage),
+            crate::providers::errors::ProviderError,
+        > {
+            Ok((
+                Message::assistant().with_text("Done. The notes are summarised."),
+                crate::providers::base::ProviderUsage::new(
+                    "scripted-model".to_string(),
+                    crate::providers::base::Usage::new(Some(10), Some(5), Some(15)),
+                ),
+            ))
+        }
+    }
+
+    struct AllowEveryChat;
+
+    #[async_trait::async_trait]
+    impl crate::decision::DecisionUseGate for AllowEveryChat {
+        async fn check(
+            &self,
+            _: &crate::decision::DecisionSession,
+            _: &dyn crate::decision::DecisionModel,
+        ) -> crate::decision::DecisionResult<()> {
+            Ok(())
+        }
+    }
+
+    /// The decision service the chat that started the child asks: one fake
+    /// model on this computer answering P(yes) = `p`, never reading config or
+    /// Crew, and the count of the requests it answered.
+    fn parents_decision_service(
+        p: f64,
+    ) -> (
+        Arc<crate::decision::DecisionService>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use crate::agents::decisions_extension::test_support::{entry, model, FakeSource};
+        let fake = model(
+            entry(
+                "tev1",
+                crate::privacy::ProviderTier::Private,
+                true,
+                crate::decision::DecisionAdapter::SystemOne,
+            ),
+            p,
+        );
+        let calls = Arc::clone(&fake.calls);
+        let service = Arc::new(
+            crate::decision::DecisionService::new(Arc::new(FakeSource { models: vec![fake] }))
+                .with_use_gate(Arc::new(AllowEveryChat))
+                .with_default_model(None),
+        );
+        (service, calls)
+    }
+
+    /// A subagent chat holding one `turn_end` monitor, "Task done", that
+    /// takes `action` at P(yes) >= 0.5.
+    async fn child_with_monitor(
+        temp: &tempfile::TempDir,
+        action: &str,
+    ) -> (Arc<SessionManager>, String) {
+        let sm = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let settings: crate::decision::settings::DecisionSettings =
+            serde_json::from_value(serde_json::json!({
+                "defaultModel": null,
+                "monitors": [{
+                    "id": "task-done",
+                    "name": "Task done",
+                    "question": {
+                        "instructions": "Has the agent finished summarising the notes?",
+                        "kind": {"binary": {}}
+                    },
+                    "model": null,
+                    "timing": "turn_end",
+                    "threshold": 0.5,
+                    "action": action,
+                    "onError": "notify"
+                }]
+            }))
+            .unwrap();
+        crate::decision::settings::save(&sm, &child.id, settings)
+            .await
+            .expect("a valid monitor is stored");
+        (sm, child.id)
+    }
+
+    /// Run the child to its end the way a spawn does, with the parent's
+    /// decision service on its task config.
+    async fn run_child(
+        temp: &tempfile::TempDir,
+        sm: &Arc<SessionManager>,
+        child_id: &str,
+        service: Arc<crate::decision::DecisionService>,
+    ) -> SubagentResult {
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let workflow: Workflow = serde_json::from_value(serde_json::json!({
+            "title": "t", "description": "d",
+            "instructions": "Summarise the notes.", "prompt": "go"
+        }))
+        .unwrap();
+        let task_config = TaskConfig::new(
+            Arc::new(DoneProvider),
+            "parent-of-a-monitored-child",
+            temp.path(),
+            vec![],
+        )
+        .with_decision_service(Some(service));
+        run_subagent_bounded!(
+            config,
+            workflow,
+            task_config,
+            true,
+            child_id.to_string(),
+            None
+        )
+    }
+
+    /// A monitor on the child that stops its run: the run ends on ordinary
+    /// text, which the transcript alone reads as `completed`, but the result
+    /// the chat that started it gets is `incomplete`, and its summary opens
+    /// with which monitor stopped it and why, the child's own words after.
+    #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
+    #[serial_test::serial(subagent_session_bus, agent_manager_pin)]
+    async fn a_child_monitor_stop_reaches_the_result() {
+        use crate::agents::subagent_result::SubagentStatus;
+        use crate::decision::settings::MonitorStopReason;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let (sm, child) = child_with_monitor(&temp, "stop").await;
+        let (service, _) = parents_decision_service(0.9);
+
+        let result = run_child(&temp, &sm, &child, service).await;
+
+        assert_eq!(result.status, SubagentStatus::Incomplete, "{result:?}");
+        assert!(
+            result.summary.starts_with(
+                "Stopped by monitor 'Task done' (set by the person): P 0.90 reached its \
+                 threshold 0.50."
+            ),
+            "the reason is the summary's first line: {}",
+            result.summary
+        );
+        assert!(
+            result.summary.contains("Done. The notes are summarised."),
+            "the child's work follows the reason: {}",
+            result.summary
+        );
+        let stop = result
+            .stopped_by_monitor
+            .as_deref()
+            .expect("the structured stop rides on the result");
+        assert_eq!(stop.name, "Task done");
+        assert_eq!(stop.reason, MonitorStopReason::Fired);
+        assert!(result.error.is_none());
+    }
+
+    /// The child asks the decision models the chat that started it asks: a
+    /// service set on the task config is the one its monitors reach, not the
+    /// process's.
+    #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
+    #[serial_test::serial(subagent_session_bus, agent_manager_pin)]
+    async fn a_child_uses_the_parents_decision_service() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (sm, child) = child_with_monitor(&temp, "notify").await;
+        let (service, calls) = parents_decision_service(0.2);
+
+        let result = run_child(&temp, &sm, &child, service).await;
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the child's turn_end monitor asked the parent's service once: {result:?}"
+        );
+    }
+
+    /// What the child's decision models did reaches the chat that started it
+    /// even when nothing stopped: a notify monitor that fired leaves the run
+    /// `completed`, and the result carries the turn's decision marker.
+    #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
+    #[serial_test::serial(subagent_session_bus, agent_manager_pin)]
+    async fn a_childs_decision_marker_reaches_the_result() {
+        use crate::agents::subagent_result::SubagentStatus;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let (sm, child) = child_with_monitor(&temp, "notify").await;
+        let (service, _) = parents_decision_service(0.9);
+
+        let result = run_child(&temp, &sm, &child, service).await;
+
+        assert_eq!(result.status, SubagentStatus::Completed, "{result:?}");
+        assert!(result.stopped_by_monitor.is_none());
+        assert_eq!(
+            result.decisions.as_deref(),
+            Some("Decision models: monitor 'Task done' checked 1 time (last P 0.90), fired"),
+            "{result:?}"
+        );
+    }
+
+    /// A notice only the person sees, written after the child's closing text
+    /// (a monitor's notice, the turn's decision marker), is not the child's
+    /// closing statement: the run still reads `completed` with its own words.
+    /// A row the child's model no longer sees but that holds its work (a
+    /// compaction's hidden original) is kept.
+    #[test]
+    fn a_notice_after_the_childs_text_does_not_hide_its_closing_statement() {
+        use crate::agents::subagent_result::SubagentStatus;
+        use crate::conversation::message::SystemNotificationType;
+
+        let hidden_original = Message::assistant()
+            .with_text("an earlier draft")
+            .with_visibility(true, false);
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("Summarise the notes."),
+            hidden_original,
+            Message::assistant().with_text("Done. The notes are summarised."),
+            Message::assistant()
+                .with_system_notification(
+                    SystemNotificationType::InlineMessage,
+                    "Monitor 'Task done' fired (P 0.90, threshold 0.50).",
+                )
+                .user_only(),
+            Message::assistant()
+                .with_system_notification(
+                    SystemNotificationType::InlineMessage,
+                    "Decision models: monitor 'Task done' checked 1 time",
+                )
+                .user_only(),
+        ]);
+
+        let transcript = without_user_only_notices(&conversation);
+        assert_eq!(transcript.len(), 3, "only the two notices go");
+        let result = SubagentResult::from_conversation(&transcript, None, true);
+        assert_eq!(result.status, SubagentStatus::Completed, "{result:?}");
+        assert_eq!(result.summary, "Done. The notes are summarised.");
+    }
+
+    /// A child whose last reply is a tool call written as text did not finish:
+    /// nothing ran, and the loop says so in a user-only notice under the reply
+    /// (`reply_parts::unrun_call_notice`). Leaving the notices out must not turn
+    /// that reply into the child's closing statement: the result reads
+    /// `incomplete` ("ended without a final summary"), as it did before decision
+    /// markers existed, never `completed` with the call's raw JSON as the
+    /// summary handed to the parent.
+    #[test]
+    fn an_unrun_call_written_as_text_is_not_the_childs_closing_statement() {
+        use crate::agents::subagent_result::SubagentStatus;
+        use crate::conversation::message::SystemNotificationType;
+
+        let call = r#"{"name": "developer__shell", "arguments": {"command": "ls"}}"#;
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("List the files."),
+            Message::assistant().with_text(call),
+            Message::assistant()
+                .with_system_notification(
+                    SystemNotificationType::InlineMessage,
+                    "Nothing ran: this reply is a call to 'developer__shell' written as text, \
+                     not a tool call Biorouter can run.",
+                )
+                .user_only(),
+            Message::assistant()
+                .with_system_notification(
+                    SystemNotificationType::InlineMessage,
+                    "Decision models: monitor 'Task done' checked 1 time",
+                )
+                .user_only(),
+        ]);
+
+        let transcript = without_user_only_notices(&conversation);
+        let result = SubagentResult::from_conversation(&transcript, None, true);
+        assert_eq!(result.status, SubagentStatus::Incomplete, "{result:?}");
+        assert!(
+            result
+                .summary
+                .starts_with("Subagent ended without a final summary"),
+            "{result:?}"
+        );
+
+        // The same reply with the call actually made is an ordinary closing
+        // statement once its notices are left out.
+        let prose = Conversation::new_unvalidated(vec![
+            Message::user().with_text("List the files."),
+            Message::assistant().with_text("I listed them: a.txt and b.txt."),
+            Message::assistant()
+                .with_system_notification(
+                    SystemNotificationType::InlineMessage,
+                    "Decision models: monitor 'Task done' checked 1 time",
+                )
+                .user_only(),
+        ]);
+        let result =
+            SubagentResult::from_conversation(&without_user_only_notices(&prose), None, true);
+        assert_eq!(result.status, SubagentStatus::Completed, "{result:?}");
+    }
+
+    /// A marker from an earlier turn is never read as this run's, wherever it
+    /// sits: a compaction re-emits older rows, markers included, and can move
+    /// one past where the run's own messages began.
+    #[test]
+    fn an_earlier_turns_decision_marker_is_not_this_runs() {
+        use crate::decision::log::{DecisionTurnMarker, DecisionTurnMarkerItem};
+        use crate::decision::DecisionOrigin;
+
+        fn marker(turn_id: &str, label: &str) -> Message {
+            let mut message = Message::assistant().with_text(format!("marker {turn_id}"));
+            message.metadata.decision_summary = Some(DecisionTurnMarker {
+                turn_id: turn_id.into(),
+                items: vec![DecisionTurnMarkerItem {
+                    origin: DecisionOrigin::Monitor,
+                    origin_id: Some(label.into()),
+                    label: label.into(),
+                    count: 2,
+                    passed: 0,
+                    failed: 0,
+                    errors: 0,
+                    last_pass_probability: None,
+                    fired: false,
+                }],
+            });
+            message
+        }
+
+        let earlier = marker("turn-1", "Old check");
+        let before = [Message::user().with_text("first"), earlier.clone()];
+        let earlier_turns = decision_marker_turns(before.iter());
+        assert_eq!(earlier_turns, HashSet::from(["turn-1".to_string()]));
+
+        // This turn wrote no marker; the older one sits among its messages.
+        let quiet = [
+            Message::user().with_text("second"),
+            earlier.clone(),
+            Message::assistant().with_text("done"),
+        ];
+        assert_eq!(decision_marker_text(quiet.iter(), &earlier_turns), None);
+
+        // This turn wrote one, so it is the one read.
+        let busy = [
+            Message::user().with_text("second"),
+            marker("turn-2", "New check"),
+            earlier,
+        ];
+        assert_eq!(
+            decision_marker_text(busy.iter(), &earlier_turns).as_deref(),
+            Some("Decision models: monitor 'New check' checked 2 times")
         );
     }
 }

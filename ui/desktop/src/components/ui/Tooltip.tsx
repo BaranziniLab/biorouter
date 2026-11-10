@@ -20,10 +20,11 @@ import { cn } from '../../utils';
  *
  * Z — deliberately `--z-modal-dropdown` (500), not `--z-dropdown` (200). A tooltip
  * must paint above whatever surface owns its trigger, and it is portalled to <body>
- * so it cannot know what that is. ContextWindowIndicator is the proof: its gauge
- * ("Compact chat", "Drag to adjust auto-compact threshold") renders INSIDE a
- * PopoverContent, which sits at 500 — at 200 those tooltips would hide behind the
- * very popover that contains them.
+ * so it cannot know what that is. The Tools popover is the proof: a row's
+ * description tooltip (`bottom_menu/PickerPanel.tsx`) renders INSIDE a PopoverContent, which
+ * sits at 500 — at 200 that tooltip would hide behind the very popover that
+ * contains it. (The context gauge was the example here until its card dropped
+ * its tooltips.)
  */
 export const TOOLTIP_SURFACE_CLASS_NAME =
   'bg-background-inverse text-text-inverse z-[var(--z-modal-dropdown)] w-max max-w-[min(20rem,calc(100vw-16px))] break-words rounded-container px-2 py-1.5 text-left font-sans text-supporting font-medium whitespace-normal';

@@ -98,14 +98,19 @@ mark.
    route (3.10).
 2. **Say it once, then hide the explanation.** A visible line is a label, a value or a state
    word. Explanations live in an `InfoTip` that opens on hover, on Tab focus and on click, and is
-   linked by `aria-describedby`. **These always stay visible:** errors, refusals, privacy
+   linked by `aria-describedby`. Since 2026-11 a hover or a Tab previews it and a click keeps it
+   ("hover peeks, click pins", `design.md` D-43). **These always stay visible:** errors, refusals, privacy
    disclosures (DR-17, §13.5, locked Settings copy), the consequence of a destructive action at the
    moment of decision, and empty-state one-liners.
 3. **Five sizes, two visible weights, two families.** The sizes are 12, 13, 14, 17 and 24. The
    weights are regular (400) and strong (600, which Arial draws as bold). The 500 weight is
    declared on `label`, `chip` and `caps` but must never be the only signal of a state. Mono is for
    machine strings only (code, paths in tooltips, IDs, versions, terminal text). Counts, dates,
-   costs and percentages use the sans face with `tabular-nums`.
+   costs and percentages use the sans face with `tabular-nums`. **Narrowed 2026-11** (`design.md`
+   D-42): mono is for a string read as data, such as a tool's argument or a decision's exact folder
+   (the transcript's folder approval card). A folder shown as where something lives is a name with a
+   place, in sans and written from `~`, including the full location in a tooltip or a card: the
+   footer's folder card, History's folder tooltip and detail line, the terminal dock.
 4. **Rows, not cards.** Anything enumerable is a hairline row list. A row has one primary line
    and at most one secondary line. A card is reserved for something that asks the person to act
    (an approval, an elicitation, a secret request) or for a standalone object (an artifact card,
@@ -431,7 +436,7 @@ row; export `MENU_ROW_CLASS_NAME` once):
 |---|---|
 | Trigger | A `<button type="button" aria-label="About {label}">` holding a 14px `Info` glyph (`icons/app-icons.tsx:168`). The hit box is 24×24, drawn with a −5px margin so it adds 14px to the line. It sits 4px after the label, centred on the baseline. Ink `--text-subtle` at rest, `--text-default` on hover, focus and open. Radius 4 for the focus fill. Styled in **authored CSS** (`.br-info-tip`), not with new Tailwind strings, because of the `BIOROUTER_NO_HMR` class-scanning trap. |
 | At rest | **Visible** in `--text-subtle` (owner decision 6.8). The InfoTip is not hidden until hover. |
-| Opens on | Pointer hover after **200ms**. Tab focus, immediately (reusing Tooltip's gate, so a programmatic focus restore never opens it). Click or tap, as a toggle. **Closes on** pointer leave (with a 100ms grace to cross the 8px gap), blur, Escape and scroll. |
+| Opens on | Pointer hover after **200ms**. Tab focus, immediately (reusing Tooltip's gate, so a programmatic focus restore never opens it). Click or tap, as a toggle. **Closes on** pointer leave (with a 100ms grace to cross the 8px gap), blur, Escape and scroll. **Updated 2026-11** (`design.md` D-43): a hover or a Tab opens a preview, which closes as above and leaves the glyph unmarked; a click, a tap, Enter, Space or a press on the preview keeps it, marked `data-pinned` (the strong fill on the glyph's mark box), and a kept tip ignores pointer leave, blur and scroll, closing on Escape, a press outside, a second click or focus that moves elsewhere. |
 | Description | The same text is always rendered in a visually hidden `<span id>`. The trigger carries `aria-describedby` to it, and `useInfoTipId()` and the `id` prop let the explained control point at the same id. So a screen reader hears the help when it reaches the control, and no hover is needed. |
 | Surface | The tooltip surface with max width 280px, `text-supporting` at **400**, `text-left`, `whitespace-normal`, `side="top"` with a collision flip, `align="start"` and an 8px offset |
 | Content | Plain text of at most two sentences. **No links, no buttons and no bold runs** (inline ink on an inverse ground disappears; see `knowledge/IngestPanel/Dropzone.tsx:179`). Anything longer, or anything with a link, uses `Disclosure` or a `Popover`. |
@@ -1576,9 +1581,36 @@ footer line.
     glyph. The folder is the chat's own (its row, else the session listing's row); an existing
     chat never shows the app default, and the folder is left out until it is known (V2-R7-3).
     Home and a new tab name the default or the picked folder.
+    **Superseded (2026-11):** the tooltip is now a hover card on a popover surface. It shows the
+    full location and, in a chat, every other folder the chat may use, each with Revoke. It
+    replaces the separate "Folder access" button and dialog that 1.94.0 added beside the folder.
+    The folder name is a button that keeps the card open in every state. Choosing a different
+    folder moved into the card, as a "Choose folder…" button shown only before the first
+    message; the locked chip still never changes the folder (#44). The same light card replaces
+    the context ring's one-line tooltip and its separate click popover (the card holds "N% left",
+    the tokens used, the gauge with its draggable auto-compact marker, and Compact chat), and the
+    cost figure's multi-line tooltip (the total, the tokens by bucket, input, output, cache read
+    and cache write, and a By model section). All three items share one behaviour from
+    `bottom_menu/useFooterCard.ts` and one format from `bottom_menu/FooterCard.tsx`, under the
+    app's one pointer rule, "hover peeks, click pins" (`design.md` D-43): a pointer resting on
+    the item previews its card after 300ms (touch never does) and a Tab onto it previews it at
+    once, and a preview leaves the item unmarked; a click, a tap, Enter or Space keeps it, and
+    the item then holds `--background-fill-strong` and carries `data-pinned`; leaving both the
+    item and the card closes a preview after 150ms but never a kept card; Escape or a press
+    outside closes it; and the card hangs above the composer card and below the 44px drag band.
+    One card is open at a time across the footer, and a hover over another item never replaces a
+    kept card; a click, a key or a Tab on that item does. The card writes each folder as a reading
+    in the card's own sans, from `~` (`FooterCardPath`, `utils/folderPath.ts`; `design.md` D-42),
+    never in mono. The chip names the folder as the sidebar's folder groups do (`~` for home,
+    `Crew` for the Crew task folder), and ⌘-click on macOS, Ctrl-click on Windows and Linux,
+    opens it in the file manager in the desktop app. See
+    `docs/security/folder-access.md`, "Seeing and revoking a chat's folders", and
+    `docs/desktop-ui/shared-controls.md`, "Hover and click" and "Composer footer cards".
   - On the right, a 14px context ring. Its text "N% left" appears **only below 50%**, and its
-    tooltip is one line, "72% context left · 92k of 128k".
+    tooltip is one line, "72% context left · 92k of 128k". **Superseded (2026-11):** the tooltip
+    and the click popover are one hover card; see the note above.
   - Cost appears **only when it is above $0 and inside a chat**, in sans `tabular-nums`.
+    **Superseded (2026-11):** its tooltip is the same hover card; see the note above.
 - **Placeholders:** "Ask Biorouter anything…" on Home and in empty chats (pinned by
   `Hub.startFailure.test.tsx`), and "Ask a follow-up" in a chat. This replaces "⌘↑/⌘↓ to navigate
   messages" (`utils/keyboardShortcuts.ts:6`).

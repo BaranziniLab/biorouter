@@ -13,12 +13,22 @@
 /*
  * A chip in the card's control row: ghost, 28px, 13/18, muted at rest.
  *
- * Ghost, not filled, under R-27 (fills before lines, design.md 9.11): the rule
- * turns OUTLINED chips into fills, and these never had an outline. They sit
- * inside the composer card, which is itself the fill, and a fill never sits on
- * a fill; a resting fill here would have to step back to the page ground and
- * draw two white pills in a grey card. The hover and open grounds are the ink
- * overlay, which reads on the card's fill in both modes, like a ghost Button.
+ * Ghost, not filled: R-27 (fills before lines, design.md 9.11) turned OUTLINED
+ * chips into fills, and these never had an outline. Since R-32 the composer card
+ * they sit in is the page ground with its resting hairline, not a fill (the one
+ * box the fill rule does not reach), so the chips rest on the page ground like
+ * any ghost button there.
+ *
+ * They answer the pointer by the app's one rule, hover peeks and click pins:
+ * the ink overlay while the pointer is on one, and the strong fill
+ * (`--background-fill-strong`) while its popover or menu is open, the step every
+ * trigger whose surface a click opened wears (a kept footer item below, the
+ * summary button, View options, the tab overflow). A hover never opens these, so
+ * "open" is always a click's. The open fill holds when the pointer comes back
+ * (it comes after the hover rule), and a press shows the pressed overlay at once
+ * (`:active`, last). The open step is subtle, about 1.21:1 off the page and
+ * 1.09:1 off the hover overlay in light; the chevron turning is the other cue,
+ * and the one forced colours keep.
  *
  * ⚠ "Open" is `aria-expanded`, never `data-state`. Each trigger sits inside a
  * Tooltip's trigger, and Radix merges the tooltip's `data-state` ("closed",
@@ -47,9 +57,13 @@
     color var(--dur-fast-min) var(--ease-out);
 }
 
-.br-picker-chip:hover,
-.br-picker-chip[aria-expanded='true'] {
+.br-picker-chip:hover {
   background: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+.br-picker-chip[aria-expanded='true'] {
+  background: var(--background-fill-strong);
   color: var(--text-default);
 }
 
@@ -275,7 +289,28 @@
   flex: none;
 }
 
-/* Folder, ring and cost: 24px hit areas that read as text until hovered. */
+/*
+ * Folder, ring and cost: 24px hit areas that read as text until hovered.
+ *
+ * HOVER PEEKS, CLICK PINS (docs/desktop-ui/shared-controls.md, "Composer footer
+ * cards"). Each item is a disclosure trigger, and its states are:
+ *   - rest: no ground, the muted ink;
+ *   - the pointer on it: the ink overlay and the default ink, whether or not its
+ *     card shows yet;
+ *   - a PREVIEW (a hover or a Tab opened the card) with the pointer elsewhere,
+ *     on its way to the card or in it: the rest look. A preview holds nothing,
+ *     so it marks nothing. `aria-expanded` is true for a preview too, so it is
+ *     never what paints;
+ *   - KEPT (`data-pinned`: a click, a tap, Enter, Space, or a press or focus
+ *     inside the card): the strong fill and the default ink, held whether or not
+ *     the pointer is on it, so its rule comes after the hover's;
+ *   - a press: the pressed overlay at once (`:active`, after both);
+ *   - keyboard focus (D-15, below) wins over all of them.
+ * The kept step is subtle, the one every trigger whose surface a click opened
+ * wears: about 1.21:1 off the page and 1.09:1 off the hover overlay in light
+ * (1.23:1 and 1.08:1 in dark). What says "kept" is mostly that the card stays;
+ * the fill is the trace the click leaves on its trigger.
+ */
 .br-footline__item {
   display: inline-flex;
   align-items: center;
@@ -298,10 +333,18 @@ button.br-footline__item {
   cursor: pointer;
 }
 
-button.br-footline__item:hover,
-button.br-footline__item[aria-expanded='true'] {
+button.br-footline__item:hover {
   background: var(--overlay-hover);
   color: var(--text-default);
+}
+
+button.br-footline__item[data-pinned] {
+  background: var(--background-fill-strong);
+  color: var(--text-default);
+}
+
+button.br-footline__item:active {
+  background: var(--overlay-pressed);
 }
 
 button.br-footline__item:disabled {
@@ -315,6 +358,22 @@ button.br-footline__item:disabled {
   height: var(--icon-chip);
 }
 
+/*
+ * The context ring's track, the circle its arc runs on: the subtle border ink,
+ * about 1.28:1 on the page at rest. On a kept item's strong fill that ink all
+ * but vanishes (1.06:1 in light, 1.05:1 in dark) and the ring loses its circle,
+ * so a kept ring's track takes the strong border ink instead: 1.26:1 and 1.29:1
+ * on the fill, the circle it has at rest. `check-contrast.mjs` holds the kept
+ * pair in every family and mode.
+ */
+.br-footline__ring-track {
+  color: var(--border-subtle);
+}
+
+button.br-footline__item[data-pinned] .br-footline__ring-track {
+  color: var(--border-strong);
+}
+
 /* The context ring's arc sweeps for a live update in the same chat only. A reading
    that arrives with the chat (an open, a tab switch) or after a model change lands
    at rest: `ContextWindowIndicator` marks that render `data-motion-still`. */
@@ -326,7 +385,7 @@ button.br-footline__item:disabled {
   transition-duration: 0ms;
 }
 
-/* A folder name, never a path: the path is in the tooltip. */
+/* A folder name, never a path: the path is in the chip's card. */
 .br-footline__name {
   min-width: 0;
   max-width: 240px;
@@ -349,6 +408,237 @@ button.br-footline__item:focus-visible {
   background: var(--background-focus);
   color: var(--text-default);
   box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/*
+ * The footer's cards (`FooterCard.tsx`): the working folder, the context
+ * window and the chat's cost, in ONE format. A popover surface, since they hold
+ * buttons, a slider and a field; `PopoverContent` gives it the floating
+ * hairline, shadow, 12px radius and `--background-default` ground. Sections are
+ * parted by air, not lines (R-27). These rules beat the primitive's `w-60` and
+ * `p-1` utilities because this file is unlayered.
+ */
+.br-footer-card {
+  /* A track in the card (the context card's bar) is one step deeper than the card (main.css,
+     "THE GROUNDS, said once"): the strong step, which a dark popover re-points to the page's own
+     well (#1b1b19, "popover fill"). The neutral track's fallback, `--background-muted`, is the
+     dark popover's rest fill and sat 1.13:1 off the lifted card (#2c2c29), all but invisible; it
+     is 1.23:1 now, and 1.21:1 in light (was 1.10), the step the popover's off Switch track
+     takes. `footerCardTrack.browser.test.tsx` and `check-contrast.mjs` measure every family
+     and mode. */
+  --br-track-ground: var(--background-fill-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(320px, calc(100vw - 16px));
+  max-height: min(480px, var(--radix-popover-content-available-height, 70vh));
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.br-footer-card__section,
+.br-footer-card__key {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* A section's label: the supporting size, in the muted ink. */
+.br-footer-card__label {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+/* A section's reading: the secondary size, the default ink, tabular figures. */
+.br-footer-card__value {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A folder (`FooterCardPath`): a reading like any other, in the card's own face
+   and ink. It is never cut, so it wraps, and only after a separator: each name
+   and the separator after it are one atomic box (`.br-path-piece`, drawn by
+   `PathSegments`) that is never wider than the line, and a line breaks only
+   between two boxes. A hyphen or a space is a break point of ordinary text, so
+   a path drawn as plain text split "biorouter-workflows-and-skills" and
+   "single cell atlas" inside, where a break at the separator before them would
+   have fitted; a box around the name alone let a separator start a line. Only a
+   name wider than the line breaks inside its box, at its own spaces and hyphens
+   first, and `anywhere` (inherited) is the last resort for one with none (a
+   content hash), which would otherwise run out of the card. No `break-all`:
+   that made every letter a break point. The boxes add no character, so a
+   selection still copies the path as written. */
+.br-footer-card__path {
+  overflow-wrap: anywhere;
+}
+
+.br-footer-card__path .br-path-piece {
+  display: inline-block;
+  max-width: 100%;
+}
+
+/* A name's spaces are characters of the name, kept as written. A name that
+   starts with a space begins its piece, and so a line of that atomic box, where
+   a collapsible space is dropped: "~/ Projects/kdps" was drawn and copied as
+   "~/Projects/kdps", another folder, and "/tmp/ /x" as "/tmp//x". `pre-wrap`
+   keeps every space, a run of them too, and still lets a name wider than the
+   line wrap at its own spaces. Only the names hold spaces; a separator is
+   slashes. */
+.br-footer-card__path bdi {
+  white-space: pre-wrap;
+}
+
+/* The muted lines: a value's detail, and a sentence that explains. */
+.br-footer-card__detail,
+.br-footer-card__note {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+/* A failure the person must read. */
+.br-footer-card__note[data-tone='danger'] {
+  color: var(--text-danger);
+}
+
+.br-footer-card__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A row: its text on the left, an optional action on the trailing edge. */
+.br-footer-card__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.br-footer-card__row-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* A row's action (Revoke, an xs button) centres on the FIRST line of the row's
+   value rather than hanging from its top: half the difference between the two
+   heights, -3px at 18px and 24px. It takes 3 of the 4px under a section label
+   and of the 8px between rows, so it still clears both. */
+.br-footer-card__row-action {
+  display: flex;
+  flex: none;
+  margin-top: calc((var(--text-secondary--line-height) - var(--control-compact)) / 2);
+}
+
+/* The card's buttons: left-aligned, 8px apart, a little air above them. */
+.br-footer-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.br-footer-card__section > .br-footer-card__actions {
+  margin-top: 4px;
+}
+
+/* A card's button (`FooterCardAction`: Choose folder…, Revoke, Compact chat)
+   reads at the card's reading size, 13/18 like the values beside it, keeping
+   the control role's weight. The shared xs button sets every rung in the 14/20
+   control role, which made a button's label the largest text in a card of 13px
+   readings and 12px labels. Only the type changes: the button keeps its 24px
+   height, which Revoke's offset above is derived from. Unlayered, so it beats
+   the button's `text-label` utility. */
+.br-footer-card__action {
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+/*
+ * A keyboard pin moves focus onto the card itself (the dialog). D-15 firms an
+ * edge rather than drawing a ring, so the surface's own hairline takes the
+ * focus ink, with a 1px inset of the same ink so the edge reads at 2px rather
+ * than as a hairline that changed colour; the popover's shadow stays. The
+ * contrast and forced-colours ring in main.css still applies on top.
+ */
+.biorouter-popover-surface.br-footer-card:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow:
+    inset 0 0 0 1px var(--border-focus),
+    var(--shadow-popover);
+}
+
+/*
+ * The context card's bar and its auto-compact marker (`ContextWindowGauge` in
+ * ContextWindowIndicator.tsx). The wrapper is exactly as wide as the track, so
+ * the marker's inline `left` is the threshold's share of the bar. Its 10px of
+ * top room is the triangle's: the marker's box runs from 2px above the wrapper
+ * to 6px into the 8px track, and the 10×6 glyph at its foot points down onto
+ * the track. The box is larger than the glyph so a press that grazes the glyph
+ * still lands on it; focused, it takes D-15's fill and edge from main.css.
+ * A press on either keeps the browser's own focus (it is what keeps the card
+ * open through a window switch), so a drag that starts here selecting the
+ * card's text is stopped by `user-select`, not by cancelling the press.
+ */
+.br-context-gauge {
+  position: relative;
+  padding-top: 10px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.br-context-gauge__bar {
+  cursor: pointer;
+}
+
+.br-context-gauge__marker {
+  position: absolute;
+  top: -2px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+}
+
+.br-context-gauge__glyph {
+  width: 0;
+  height: 0;
+  border-right: 5px solid transparent;
+  border-left: 5px solid transparent;
+  border-top: 6px solid var(--text-default);
+  pointer-events: none;
+}
+
+/*
+ * Forced colours repaint every fill as Canvas, so a kept item would look like
+ * one at rest (the items have no border to keep). It draws a 1px CanvasText edge
+ * inside its box instead, as a kept InfoTip does. The OS focus ring (main.css,
+ * `!important`) still wins while focus is on it.
+ */
+@media (forced-colors: active) {
+  button.br-footline__item[data-pinned] {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

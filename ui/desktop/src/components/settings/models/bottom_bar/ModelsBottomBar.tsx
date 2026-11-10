@@ -18,7 +18,7 @@ import { InfoTip, useInfoTipId } from '../../../ui/info-tip';
 import { MODEL_COPY } from '../../../bottom_menu/copy';
 import { friendlyModelName } from '../../../bottom_menu/modelLabel';
 import { useReasoningEffortValue } from '../../../bottom_menu/BottomMenuReasoningEffort';
-import { EffortSection, moveFocusAcrossEffort } from '../../../bottom_menu/EffortSection';
+import { EffortSection, moveFocusAcrossMenuStops } from '../../../bottom_menu/EffortSection';
 import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORT_LABELS,
@@ -28,6 +28,7 @@ import { getProviderMetadata } from '../modelInterface';
 import { Alert } from '../../../alerts';
 import BottomMenuAlertPopover from '../../../bottom_menu/BottomMenuAlertPopover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
+import { useSurfaceTriggerHint } from '../../../ui/surfaceTriggerHint';
 import { PrivacyBadge } from '../../../ui/PrivacyBadge';
 import { AffiliationBadge } from '../../../ui/AffiliationBadge';
 import {
@@ -38,6 +39,8 @@ import {
 import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/disclosureCopy';
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
+import { isDecisionProvider } from '../../../decisions/decisionWire';
+import { switchModelCopy } from '../copy';
 import { isBrowserSurface } from '../../../../utils/surface';
 import type {
   ProviderDetails,
@@ -258,6 +261,10 @@ export default function ModelsBottomBar({
   const [displayModelName, setDisplayModelName] = useState<string>('Select Model');
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
   const [isLeadWorkerModalOpen, setIsLeadWorkerModalOpen] = useState(false);
+  // The model menu, controlled for the chip's whole life so its hint can stay shut over it: the
+  // chip's tooltip names the model on a hover and never comes back over the open menu (H2).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuHint = useSurfaceTriggerHint(menuOpen);
   const [providerDefaultModel, setProviderDefaultModel] = useState<string | null>(null);
   /**
    * V2-R8-1. What the catalog said about each provider, KEYED BY THE PROVIDER
@@ -692,9 +699,9 @@ export default function ModelsBottomBar({
   return (
     <div className="relative flex min-w-0 items-center" ref={dropdownRef}>
       {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
-      <DropdownMenu>
-        <Tooltip>
-          <TooltipTrigger asChild>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+        <Tooltip {...menuHint.tooltip}>
+          <TooltipTrigger asChild {...menuHint.trigger}>
             <DropdownMenuTrigger
               // The parenthetical belongs to the MODEL; the sentence after the
               // period belongs to the CHAT. The old label put the chat's tier
@@ -744,8 +751,9 @@ export default function ModelsBottomBar({
           align="end"
           className="w-72"
           aria-describedby={notes ? notesId : undefined}
-          // The menu's arrow keys visit rows only; this includes the selected effort segment.
-          onKeyDownCapture={(event) => moveFocusAcrossEffort(event, effortControlRef.current)}
+          // The menu's arrow keys visit rows only, and Tab leaves the menu; this adds the selected
+          // effort segment and the InfoTips (the two About glyphs, the affiliation badge).
+          onKeyDownCapture={(event) => moveFocusAcrossMenuStops(event, effortControlRef.current)}
         >
           <div className="px-3 pt-2 pb-1.5">
             <div className="flex items-center text-supporting text-text-muted">
@@ -775,6 +783,17 @@ export default function ModelsBottomBar({
                     <span className="min-w-0 truncate">{affiliationWords.label}</span>
                   </>
                 )}
+              </div>
+            )}
+            {/* A decision model answers each message with a choice and its
+                probabilities, not with text; said here so the chip's menu names
+                what kind of model the chat runs on. */}
+            {isDecisionProvider(effectiveProvider) && (
+              <div
+                data-testid="model-decision-line"
+                className="text-supporting text-text-muted [overflow-wrap:anywhere]"
+              >
+                {`${switchModelCopy.decisionModel}: ${switchModelCopy.decisionDetail.toLowerCase()}`}
               </div>
             )}
             {showPrivacyBlock && (

@@ -667,10 +667,33 @@ answers in writing ([privacy tiers §3.1](../security/privacy-tiers.md#31-the-re
   | `POST /reply` — puts the caller's text in front of the chat's model | user; any holder of the daemon secret | `session_reach`, then the subagent rule | `routes/reply.rs::reply` |
   | `workspace_send_prompt { mode: "steer" \| "turn" }` — the same, from another chat | model | `refuse_unless_writable`; the text arrives framed as `AgentInjection`, and a private-to-public write raises a first-crossing approval | `agents/workspace_extension.rs::handle_send_prompt` |
   | `biorouter session cancel`, `attach` and `send` → these routes, and `/reply` | user at a terminal | the routes' own gates: the CLI sends the proof only when the person supplied it or a daemon that holds a key refused without it (see *The terminal, since* below) | `commands/session_watch.rs::with_key_if_wanted` |
+  | `PUT /sessions/{id}/decision-settings`: sets the chat's decision-model monitors, whose `stop` ends a later turn and whose `steer` puts a framed note in front of the chat's model during a later turn | user; any holder of the daemon secret | `session_reach`; then on a daemon that holds a key the user-action proof, and on one that holds none the subagent rule (`DECISION_SETTINGS_SUBAGENT_NO_KEY`, the sentence of `SUBAGENT_CONTROL_NO_KEY`) | `routes/decisions.rs::put_decision_settings`, through `write_refusal` |
+  | `PUT /sessions/{id}/decision-chat`: changes the question a decision chat asks of each message | user; any holder of the daemon secret | the same as the row above | `routes/decisions.rs::put_decision_chat`, through `write_refusal` |
+  | `biorouter session monitors <id> add` with no reachable daemon: writes the same monitors into the shared session store | user at a terminal; a model with a shell, whose environment never carries `BIOROUTER_SERVER__SECRET_KEY`, so this is the path it takes | `check_local_reach` (the tier rule only), on any daemon | `commands/session_monitors.rs::local_manager` |
 
   The third row is a finding rather than a guard: a subagent's work can be cancelled on any daemon
   by a caller that holds the secret and reads the id from `GET /active_work`. It is the residual
   `session_reach.rs` already records, and this record does not widen it.
+
+  The last three rows reach a chat's **later** turns, never the one in flight: a turn reads its
+  chat's monitors once, when it starts. That is what separates them from `/interrupt`, whose
+  refusal guards the running turn's in-memory queue, which only HTTP reaches. Steer monitors are
+  therefore admitted on a keyless daemon (owner ruling, 2026-11-05), because a refusal at the route
+  could not hold there: the local store path in the last row reaches the same settings with neither
+  the secret nor the proof, on every daemon, so refusing the HTTP write would block only the person
+  at the browser. The protection sits where the note is used, which covers every writer
+  (`decision::monitor::steer_note`):
+
+  - the monitor's name and question are quoted as JSON strings inside a `<decision-monitor>`
+    frame, with every `<` escaped, and the note says they are not a message from the user;
+  - the person sees each fire, with the question the agent was told
+    (`decision::monitor::event_notice`), so a steer never redirects a turn unseen;
+  - a subagent's chat is refused on a keyless daemon, matching this record's rule for that tab.
+
+  `crates/biorouter-server/tests/decision_settings_no_user_key.rs` pins all three keyless answers
+  (`a_browser_on_a_keyless_daemon_may_add_a_steer_monitor`,
+  `a_browser_on_a_keyless_daemon_sets_a_decision_chats_question`,
+  `a_keyless_write_never_reaches_a_subagents_chat`).
 
 **Displaced alternatives.**
 

@@ -33,6 +33,12 @@ pub const DESTINATION_CONFIG_KEYS: &[(&str, &str)] = &[
         "AZURE_OPENAI_ENDPOINT",
         "the host requests and the key or Entra sign-in go to",
     ),
+    // Baseten's decision models (`providers/decision/system_one.rs`) send the
+    // saved `BASETEN_API_KEY`, and a chat's decision states, to this host.
+    (
+        "BASETEN_DECISION_HOST",
+        "the host decision requests and the saved Baseten key go to",
+    ),
     (
         "DATABRICKS_HOST",
         "the host requests and the token or browser sign-in go to",

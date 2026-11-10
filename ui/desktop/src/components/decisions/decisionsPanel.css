@@ -1,0 +1,762 @@
+/* @ws WS-DECISIONS-PANEL begin: the decision history view and the Monitors dialog */
+/*
+ * THE DECISION HISTORY VIEW (components/decisions/DecisionHistory.tsx), a tab of
+ * the artifact side panel, and the MONITORS DIALOG (MonitorsDialog.tsx).
+ *
+ * Authored CSS, not new Tailwind strings: under BIOROUTER_NO_HMR a newly written
+ * utility can silently fail to generate (CLAUDE.md, "Desktop shell geometry"),
+ * and the list's windowing depends on the row height below being exact.
+ *
+ * Two type sizes, as the summary: 13/18 (`--text-secondary`) for rows and
+ * values, 12/16 (`--text-supporting`) for labels, second lines and notes. Fills
+ * before lines (R-27): the panes are parted by space and the list's selection
+ * by the fill step, never by a hairline. Statuses by shape, never by colour
+ * alone.
+ */
+
+.br-dh {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  container-type: inline-size;
+  container-name: decision-history;
+  background: var(--background-default);
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+/* FILTERS: one row of selects that wraps, then "More filters". */
+.br-dh__filters {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 4px 12px;
+  padding: 8px 16px 4px;
+}
+
+.br-dh-filters {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.br-dh-filters__row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.br-dh-filter {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 140px;
+  max-width: 220px;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.br-dh-filter--range {
+  flex: 1 1 160px;
+}
+
+.br-dh-filter__label {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-dh-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+}
+
+.br-dh-range input {
+  width: 64px;
+  min-width: 0;
+}
+
+.br-dh-check {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: var(--text-secondary);
+}
+
+.br-dh-filters__error {
+  margin: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-danger);
+}
+
+.br-dh__clear {
+  min-height: 32px;
+}
+
+/* A filter no select shows (one decide call's batch), as a removable chip: a filled
+   control with a transparent edge, no resting outline. */
+.br-dh-chip {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background-color: var(--br-control-ground, var(--background-fill));
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  cursor: pointer;
+}
+
+.br-dh-chip:hover {
+  background-color: var(--br-control-hover, var(--background-fill-strong));
+}
+
+.br-dh-chip svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-muted);
+}
+
+.br-dh-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-accent);
+  font: inherit;
+  font-size: var(--text-supporting);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.br-dh-link:focus-visible {
+  outline: none;
+  border-radius: var(--radius-inner);
+  box-shadow: 0 0 0 2px var(--border-focus);
+}
+
+.br-dh-icon-button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.br-dh-icon-button > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.br-dh-icon-button:hover {
+  background-color: var(--background-fill-strong);
+  color: var(--text-default);
+}
+
+.br-dh-icon-button:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* New calls arrived while the reader was scrolled into older ones. */
+.br-dh-new-calls {
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-fill);
+  color: var(--text-default);
+  font-size: var(--text-supporting);
+  cursor: pointer;
+}
+
+.br-dh-new-calls:hover {
+  background-color: var(--background-fill-strong);
+}
+
+.br-dh-new-calls:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* THE SPLIT: the list over its detail in a narrow panel, beside it in a wide one. */
+.br-dh__split {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-rows: minmax(160px, 42%) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  padding: 4px 8px 8px;
+}
+
+@container decision-history (min-width: 720px) {
+  .br-dh__split {
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: minmax(280px, 42%) minmax(0, 1fr);
+  }
+}
+
+.br-dh__list-pane {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.br-dh__detail {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 8px 16px;
+}
+
+.br-dh__state {
+  margin: 0;
+  padding: 8px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+/* THE LIST: a windowed listbox. Every row is exactly 44px (two lines and 5px
+   above and below), absolutely placed at index × 44 inside a box as tall as
+   the loaded rows, so only the rows in view are drawn whatever the count. */
+.br-dh-list {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: var(--radius-element);
+  contain: strict;
+}
+
+.br-dh-list__space {
+  position: relative;
+  width: 100%;
+}
+
+.br-dh-row {
+  position: absolute;
+  right: 0;
+  left: 0;
+  display: flex;
+  box-sizing: border-box;
+  height: 44px;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-element);
+  cursor: pointer;
+  user-select: none;
+}
+
+.br-dh-row:hover {
+  background-color: var(--background-fill);
+}
+
+.br-dh-row[data-selected] {
+  background-color: var(--background-fill-strong);
+}
+
+.br-dh-list:focus-visible .br-dh-row[data-selected] {
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.br-dh-row--more {
+  align-items: center;
+  font-size: var(--text-supporting);
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.br-dh-row__glyph {
+  display: inline-flex;
+  width: 14px;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.br-dh-row__glyph > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.br-dh-row[data-outcome='passed'] .br-dh-row__glyph {
+  color: var(--text-success);
+}
+
+.br-dh-row[data-outcome='error'] .br-dh-row__glyph,
+.br-dh-row[data-outcome='refused'] .br-dh-row__glyph {
+  color: var(--text-warning);
+}
+
+.br-dh-row__text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.br-dh-row__line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 18px;
+}
+
+.br-dh-row__meta {
+  height: 16px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-dh-row__title,
+.br-dh-row__when {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-dh-row__answer {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.br-dh-row__p {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.br-dh-row__p-value {
+  min-width: 32px;
+  text-align: end;
+}
+
+/* A bar that takes the option row's middle track. The bar itself is
+   probabilityBar.css. */
+.br-pbar--wide {
+  width: 100%;
+  min-width: 48px;
+}
+
+/* THE DETAIL PANE. */
+.br-dh-detail__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.br-dh-detail__head {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+}
+
+.br-dh-detail__title {
+  min-width: 0;
+  flex: 1 1 auto;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-dh-detail__outcome,
+.br-dh-detail__sub,
+.br-dh-detail__note,
+.br-dh-detail__section-meta,
+.br-dh-question__instructions,
+.br-dh-question__threshold,
+.br-dh-question__calibration {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-dh-detail__sub,
+.br-dh-detail__note,
+.br-dh-detail__error,
+.br-dh-question__instructions,
+.br-dh-question__threshold,
+.br-dh-question__answer,
+.br-dh-question__calibration {
+  margin: 0;
+}
+
+.br-dh-detail__error {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-danger);
+  overflow-wrap: anywhere;
+}
+
+.br-dh-detail__section {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 12px 0 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.br-dh-question {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-radius: var(--radius-element);
+  background-color: var(--background-fill);
+}
+
+.br-dh-question + .br-dh-question {
+  margin-top: 4px;
+}
+
+.br-dh-question__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.br-dh-question__name {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--text-supporting);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-dh-question__answer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+}
+
+.br-dh-question__answer strong {
+  font-weight: 500;
+}
+
+.br-dh-question__calibration:not([data-calibrated]) {
+  color: var(--text-warning);
+}
+
+.br-dh-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-dh-chip > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.br-dh-chip[data-state='passed'] {
+  color: var(--text-success);
+}
+
+.br-dh-chip[data-state='failed'] {
+  color: var(--text-warning);
+}
+
+.br-dh-options {
+  display: flex;
+  margin: 4px 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+
+.br-dh-option {
+  display: grid;
+  min-height: 24px;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: minmax(48px, 32%) minmax(48px, 1fr) 40px;
+}
+
+.br-dh-option__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-dh-option[data-chosen] .br-dh-option__label {
+  font-weight: 500;
+}
+
+.br-dh-option__p {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.br-dh-facts {
+  display: grid;
+  margin: 8px 0 0;
+  gap: 2px 12px;
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.br-dh-fact {
+  display: contents;
+}
+
+.br-dh-fact dt {
+  font-size: var(--text-supporting);
+  line-height: 18px;
+  color: var(--text-muted);
+}
+
+.br-dh-fact dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.br-dh-context {
+  min-width: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: var(--radius-element);
+  background-color: var(--background-well);
+}
+
+.br-dh-context__text {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.br-dh-context__text[data-preview] {
+  color: var(--text-muted);
+}
+
+.br-dh-context__messages {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+}
+
+.br-dh-context__message {
+  display: flex;
+  flex-direction: column;
+}
+
+.br-dh-context__role {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-dh-context__content {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.br-dh-raw {
+  margin-top: 8px;
+}
+
+.br-dh-raw .br-dh-context__text {
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: var(--radius-element);
+  background-color: var(--background-well);
+}
+
+/* THE MONITORS DIALOG. */
+.br-monitors {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.br-monitors__note {
+  margin: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-monitors__list {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+}
+
+.br-monitors__item {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  /* A fill with no resting outline; forced colours draw this edge. Its controls rest
+     one step back (`.br-fill-surface` on the element): a fill never sits on a fill. */
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background-color: var(--background-fill);
+}
+
+.br-monitors__item-text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.br-monitors__item-name {
+  overflow: hidden;
+  font-size: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-monitors__item-meta {
+  overflow: hidden;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-monitors__editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  /* As a list row: a transparent edge, and `.br-fill-surface` on the element. */
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background-color: var(--background-fill);
+}
+
+.br-monitors__row {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.br-monitors__options {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+}
+
+.br-monitors__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A score monitor's levels and watched level: shown, not edited. */
+.br-monitors__levels {
+  margin: 0;
+  padding-inline-start: 20px;
+  font-size: var(--text-secondary);
+  list-style: decimal;
+}
+
+.br-monitors__value {
+  margin: 0;
+  font-size: var(--text-secondary);
+}
+
+.br-monitors__threshold {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.br-monitors__threshold-value {
+  min-width: 36px;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.br-monitors__error {
+  margin: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-danger);
+}
+
+.br-monitors__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* @ws WS-DECISIONS-PANEL end */

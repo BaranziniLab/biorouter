@@ -232,6 +232,8 @@ pub fn bundled_extension_display_name(name: &str) -> Option<&'static str> {
         "todo" => return Some("Todo"),
         // A capability in the desktop's Settings, named as its row there names it.
         "crew" => return Some("Crew"),
+        // The decision-model tools (`decide`, `decision_models`).
+        "decisions" => return Some("Decisions"),
         _ => {}
     }
     BUILTIN_EXTENSION_METADATA
@@ -1248,5 +1250,20 @@ mod builtin_description_copy_tests {
                 "{relative} still says figures render inline"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod display_name_tests {
+    use super::bundled_extension_display_name;
+
+    /// The decision tools' extension reads as a name on its tool cards and in
+    /// the extension list, not as its lowercase key.
+    #[test]
+    fn the_decisions_extension_has_a_display_name() {
+        assert_eq!(
+            bundled_extension_display_name(crate::agents::decisions_extension::EXTENSION_NAME),
+            Some("Decisions")
+        );
     }
 }

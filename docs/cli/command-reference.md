@@ -62,6 +62,18 @@ the non-interactive route instead: choose the model with
 `biorouter models set --provider <provider> --model <model>` and pass the
 provider's API key in its environment variable (for example `OPENAI_API_KEY`).
 
+The provider list, and the lead and worker lists of lead/worker mode, leave out the two
+decision-model providers (`ollama_decision`, `baseten_decision`), as the desktop's provider
+catalog does. A decision model answers typed questions and writes no reply, so the setup's test
+request could never succeed, and a decision model as the lead would make every new chat a
+decision chat. When the default model is itself a decision model, the lead/worker setup says
+that lead/worker mode does not apply and changes nothing, because the worker is the default
+model. To make a decision model a chat's model, use
+`biorouter models set --provider ollama_decision --model tev1:0.8b`, or `--provider` and
+`--model` for one session or run; see [Decision models](../agent-loop/decision-models.md#a-decision-model-as-the-chats-own-model).
+Their keys are their chat siblings' (`OLLAMA_HOST`, `BASETEN_API_KEY`), which configuring Ollama
+or Baseten saves.
+
 ### info [options]
 
 Shows biorouter information, including the version, configuration file location, session storage, and logs.
@@ -105,6 +117,14 @@ biorouter models local pull qwen3.8-27b
 
 # Delete a downloaded model's Hugging Face files
 biorouter models local rm gemma4-31b
+
+# The decision models this machine can use, local first
+biorouter models decision list
+biorouter models decision list --format json
+
+# Install a decision model into the Ollama on this computer (tev1:0.8b by default)
+biorouter models decision pull
+biorouter models decision pull clef-flash:latest
 ```
 
 `models local` works on the shared model store directly, so it needs no running app or daemon.
@@ -116,6 +136,37 @@ download is still on disk, it also says how to free it. `local rm` resolves a na
 `local rm gemma4` deletes the files that retired model left behind and never the default
 model's. A model pulled through Ollama is removed with `ollama rm`. See the
 [Llama Server model catalog](../providers/llama-server/model-catalog.md).
+
+`models decision list` lists the decision models available now: the ones pulled into the local
+Ollama that declare the decision capability, and Baseten's when a Baseten API key is saved. Each
+line names the model as `provider/model` (the spelling `--model` takes everywhere), with
+Baseten's by their aliases (`baseten_decision/joey-1`, `elephant-1`, `mammoth-1`), its privacy
+tier, whether it runs on this computer, its context window in tokens, the question kinds it
+answers (yes/no, choice, score) and the adapter that reads its probabilities. The list is in the
+order the automatic choice tries it: local models first, with the shipped default `tev1:0.8b`
+first among the Ollama models and the rest by name, then Baseten's smallest first. A copy Ollama
+cannot load (one in a format it no longer supports) is listed after the other Ollama models and
+before Baseten's, marked `cannot be loaded`, with a line under it naming the fix
+(`ollama pull <model>` or `ollama rm <model>`); the automatic choice skips it. With
+`--format json` that sentence is the entry's `loadRefusal`, present only when it is set, and a
+Baseten entry keeps Baseten's slug in `model` (`decision-models/baseten-joey-2b-latest`) with
+the alias in `displayName`. See [`decide`](#decide-options) and
+[Decision models](../agent-loop/decision-models.md).
+
+`models decision pull [MODEL]` installs a decision model into the Ollama that `OLLAMA_HOST` names,
+which must run on this computer, and checks that Ollama answers decisions with it: a decision
+model on this computer is the only kind that may read a private chat. It offers `tev1:0.8b` (the
+default, about 1.5 GB) and `clef-flash:latest` (about 12 GB; `clef-flash` is accepted). No daemon
+is needed, and the next model listing sees the model. Before anything is printed it refuses what
+`POST /decisions/models/install` refuses: a model it does not offer, an `OLLAMA_HOST` that does not
+resolve, an Ollama on another computer (nothing is sent to it) and an Ollama that is not running.
+On a terminal it shows a spinner with "Downloading tev1:0.8b… 412 MB of 1.5 GB". Off one it prints
+to stderr "Downloading tev1:0.8b from Ollama's library…", each of Ollama's steps once, then
+"Downloaded 1.5 GB. Checking that Ollama answers decisions with tev1:0.8b…", and on stdout
+"Installed tev1:0.8b: Private, runs on this computer. Private chats can now use it for monitors
+and decisions." A failure exits non-zero and quotes Ollama's own words. Two minutes with no bytes
+from Ollama stops the download, and running the command again resumes it. See
+[Installing a local decision model](../agent-loop/decision-models.md#installing-a-local-decision-model).
 
 ### version
 
@@ -155,6 +206,28 @@ Report token and cost usage, per day or per model, month-to-date.
 - **`--to <YYYY-MM-DD>`**: End of the range, local time and inclusive. Defaults to today
 - **`--by-model`**: Group by model instead of by day
 - **`--json`**: Print machine-readable JSON
+
+**Decision models.** Calls to decision models about a chat (monitors, the `decide` tool, phase
+gates, decision chats, `biorouter decide --session`) count in TOTAL, COST and the monthly limit,
+and never in TURNS. With `--by-model` a decision model's row is labelled with its name and
+`(decision model)`, Baseten's by their short names (`mammoth-1 (decision model)`), and shows a
+dash in TURNS. The range table and the month summary each add one line:
+
+```text
+Decision models: 600 requests, 1,200,600 tokens, $0.12. Counted in TOTAL and COST, not in TURNS.
+```
+
+The second sentence is on the table's line only. A local decision model has no price, so it
+counts as $0 and does not mark the totals as incomplete. A Baseten decision model with no known
+price does, because Baseten billed it. The line's cost tells the two apart: `not metered` when
+every request went to a local model, `$X, some not metered` when local requests sit beside priced
+ones, `cost unavailable` when the requests went to a Baseten model with no known price (that
+model's own row shows `—`), and `$X, some unavailable` when such requests sit beside priced ones. `--json` carries the same split
+as `decisionRequests` and `decisions` on each row and on the totals, where `decisions.hasUnmetered`
+marks requests to a local model and `decisions.hasUnpriced` requests to a hosted one with no
+known price. A decision with no chat is not in this report; `biorouter decide` prints its
+usage on stderr instead. See
+[Usage and billing](../agent-loop/decision-models.md#usage-and-billing).
 
 **Usage:**
 
@@ -246,7 +319,9 @@ biorouter session -n my-session --debug --max-turns 25
 
 ### session list [options]
 
-List all saved sessions.
+List all saved sessions. A chat that has asked decision models shows how many calls it made at
+the end of its row (`- 642 decisions`), and the JSON carries it as `decision_count`. The calls
+themselves are listed by [`session decisions`](#session-decisions-options), never as rows here.
 
 **Options:**
 
@@ -286,15 +361,20 @@ agent delegates to a subagent is filtered out, so a fan-out of five children is
 invisible from the terminal. `--subagents` includes those runs and nests each one
 under the session that spawned it:
 
-```
+```text
 20260731_1 - Migration review - 2026-07-31 15:04:11 UTC
-  └─ Subagent: audit the migration for data loss [● live]  20260731_2  14 msgs  2026-07-31 15:09
-  └─ Subagent: benchmark the covering index [○ done]  20260731_3  8 msgs  2026-07-31 15:07
+  └─ audit the migration for data loss [◐ running]  20260731_2  gpt-5.5  14 msgs  2026-07-31 15:09
+  └─ benchmark the covering index [● completed]  20260731_3  gpt-5.5  8 msgs  2026-07-31 15:07
 ```
 
-Each child line carries its own label, its session id and its message count —
+Each child line carries its own label, its session id, the model it ran on and its message count —
 enough to tell two siblings of one fan-out apart, and enough to hand the id to
-`biorouter session --resume` or `biorouter session watch`.
+`biorouter session --resume` or `biorouter session watch`. The state is the one
+[`session subagents`](#session-subagents-options) draws: `◐ running` while the
+daemon reports a turn in flight, otherwise the outcome the run recorded when it
+ended (`● completed`, `⏸ blocked`, `✗ failed`, `✗ incomplete`). A run that is not
+running and recorded no outcome reads `· ended`. In `--format json` each row
+carries the same `outcome` (or `null`) and `model` fields.
 
 Two behaviours differ from a plain listing:
 
@@ -304,9 +384,10 @@ Two behaviours differ from a plain listing:
 - **Live/finished state is read from a running daemon**, which is the only
   authority on it (`biorouterd` tracks in-flight turns in memory). When no daemon
   can be reached — none running, or `BIOROUTER_SERVER__SECRET_KEY` not set or not
-  matching — every run reads `· state unknown` and the reason is printed once on
-  stderr. It never reads `done`, because "finished" and "not knowable from here"
-  are different answers and only one of them is safe to guess.
+  matching — a run with no recorded outcome reads `· state unknown` and the reason
+  is printed once on stderr. It never reads `ended`, because "finished" and "not
+  knowable from here" are different answers and only one of them is safe to guess.
+  A recorded outcome is shown either way, because it was written when the run ended.
 
 `--name` resolves subagent runs too, so a run found this way can be addressed by
 its label as well as by its id.
@@ -531,11 +612,320 @@ Stop the turn a session is currently running. This is the same action as the Sto
 
 Cancelling is idempotent: a session with no turn in flight is not an error, it reports `nothing to cancel: this session had no turn in flight`.
 
+**Subagents.** A cancel also stops every subagent the chat started that still has work in flight
+(a delegated run, running or queued; a later turn in its tab; a continuation waiting to start),
+even when the chat itself was idle, and prints a second line, "Also stopped 2 subagents this chat
+started." ("1 subagent" for one). Each stopped subagent ends `incomplete`, and its result opens
+"Stopped because the person stopped the chat that started this subagent." Ctrl-C during a turn in
+`biorouter session` (the terminal UI and the classic REPL) and in `biorouter run` does the same and
+prints the same line. Cancelling a tool approval ends the turn and leaves the subagents running.
+
 **Usage:**
 
 ```bash
 # Stop the turn a session is running
 biorouter session cancel 20251108_2
+```
+
+### session subagents [options]
+
+List the subagents a session started, oldest first, with what each one is doing and how it is set up. This is the terminal counterpart of the list in the chat's side panel in biorouter Desktop.
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (required): The parent chat whose subagents to list
+
+**Options:**
+
+- **`-f, --format <FORMAT>`**: Output format: `text` (default) or `json`. The JSON is exactly what the daemon's `GET /sessions/{session_id}/subagents` route answers, with camelCase fields and snake_case status values
+- **`--watch`**: Redraw every 2 seconds until you press `Ctrl+C`. On a terminal the text redraws in place; piped, or with `--format json`, one frame is printed per refresh
+- **`--user-action-key-stdin`**: Read the raw user-action key from the first line of stdin, so a daemon that holds a key lists a private chat's subagents. See [the user-action key](#live-session-commands-and-the-daemon)
+
+**What it prints.** When the chat's agent declared a phase plan, the plan comes first: its title, then one line per phase with the phase's status, title and progress (`done/total`, plus how many are running, blocked, failed or quiet). Then one numbered entry per subagent:
+
+```text
+Plan: Migrate the auth layer
+  ● Research        3/3 done
+  ◐ Implementation  1/4 done · 2 running · 1 quiet
+  ○ Verification    0/0 done
+
+Subagents of session 20261104_1 (2):
+  1. ● survey the auth code (researcher)  completed · phase Research
+       20261104_2  gpt-5.5  3 ext · 1 skill · 0 kb  12 tool calls  1m42s
+       Found three call sites that bypass the session check.
+  2. ◐ port the login handler  running · quiet 4m00s · phase Implementation
+       20261104_5  gpt-5.5  2 ext · 0 skills · 1 kb  7 tool calls  6m10s
+
+Follow a running one: biorouter session attach <session id>. Read a finished one: biorouter session export --session-id <session id>.
+```
+
+A gated phase's line adds who set its gate and your decision, as in "· gate set by the agent,
+passed by you", and " · needs you" when the gate waits for you; a phase an earlier gate holds adds
+" · waits for Build's gate". A subagent a monitor stopped shows the monitor's sentence as its last
+line ("Stopped by monitor 'Off task' (set by this chat's agent): …"). To see or change the gates
+themselves, use [`session gates`](#session-gates).
+
+The status glyphs are `○` queued, `◐` running (or stopping), `●` completed, `⏸` blocked (it stopped to ask its parent a question), `✗` failed or incomplete, `⊘` interrupted (its process went away mid-run) and `·` unknown. "Quiet" means a running subagent has recorded no activity for 3 minutes or more, the same threshold the phase line counts with and the desktop panel and the TUI pane use. It is a hint, not a verdict that the run is stuck. The last line of an entry is the first line of the subagent's result, its error, or the question it is blocked on.
+
+**With and without a daemon.** When a daemon is reachable (see [Live-session commands and the daemon](#live-session-commands-and-the-daemon)), the list comes from it, so a subagent's live state is known. Without one, the list is read from the local session store and a note on stderr says so: a subagent that was running then reads as interrupted or unknown, because nothing in your terminal is running it. A daemon that answers and refuses is never worked around this way.
+
+**Privacy.** A private chat's subagents are listed only to a caller that may open the chat, exactly as `GET /sessions/{session_id}` decides. A terminal configured for a public model is refused a private chat on either path, and a subagent more private than its parent is left out of the list and out of every phase's counts.
+
+**Usage:**
+
+```bash
+# List a chat's subagents
+biorouter session subagents 20261104_1
+
+# Keep the list on screen while the work runs
+biorouter session subagents 20261104_1 --watch
+
+# The same data for a script
+biorouter session subagents 20261104_1 --format json
+```
+
+### session decisions [options]
+
+List the decision-model calls one chat made. Decision models can be asked thousands of times in
+one chat (a monitor after every iteration, a `decide` call over hundreds of chunks), so the
+output leads with aggregates and pages through individual calls. This is the terminal counterpart
+of the desktop's decision history view.
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (required): The chat whose decisions to list
+
+**Options:**
+
+- **`--source <SOURCE>`**: Only calls from `monitor`, `tool` (the agent's `decide` tool), `gate`
+  (a phase gate), `chat` (a chat whose main model is a decision model) or `adhoc` (a
+  `biorouter decide --session` call)
+- **`--origin-id <ID>`**: Only calls from one monitor, tool call or phase
+- **`--turn <TURN_ID>`**: Only calls made in one turn
+- **`--batch <BATCH_ID>`**: Only calls of one `decide` batch
+- **`--outcome <OUTCOME>`**: Only `passed`, `failed`, `decided`, `error` or `refused` calls
+- **`--min-p <P>`**, **`--max-p <P>`**: Only calls whose lowest pass probability is in the range
+- **`--errors`**: Only calls that failed or were refused
+- **`-l, --limit <N>`**: Calls per page, 20 by default and at most 200
+- **`--before <CURSOR>`**: The next page: the cursor the previous page's last line printed
+- **`--json`**: Print the summary and the page as JSON
+- **`--user-action-key-stdin`**: Read the raw user-action key from the first line of stdin, so a
+  daemon that holds a key lists a private chat's decisions
+
+**What it prints.** First the aggregates, one line per source and criterion (count, how many
+passed and failed, errors, the last answer and its probability, the model), then one line per
+source for each recent turn. A page of calls follows, newest first: the time, the source, the
+criterion (and the chunk), the answers, the probability, the outcome, the model and the latency.
+A model is named by its short name: an Ollama tag as it is (`tev1:0.8b`), and a Baseten model by
+its alias (`joey-1`), never by the slug the log records; `--json` keeps the slug.
+
+```text
+Decisions in session 20261104_1: 618 calls
+
+By source:
+  monitor  Form reached  18 checks · 18 failed · last no P 0.31 ██▌░░░░░ · tev1:0.8b
+  tool     decide        600 calls · 41 passed · 557 failed · 2 errors · last yes P 0.93 ███████▌ · tev1:0.8b
+
+Recent turns:
+  0193a1b2  monitor  Form reached  18 checks · 18 failed · last P 0.31 · 10:42:01 to 10:44:12
+
+Calls, newest first (20 of 618):
+  11-04 10:44:12  monitor  Form reached  no  P 0.31 ██▌░░░░░  failed  tev1:0.8b  22 ms
+  ...
+More: biorouter session decisions 20261104_1 --before <cursor>
+```
+
+**With and without a daemon, and privacy.** As for [`session subagents`](#session-subagents-options):
+with a reachable daemon the calls come from it; without one they are read from the local session
+store and a note on stderr says so. A private chat's decisions are listed only to a caller that
+may open the chat, on either path.
+
+**Usage:**
+
+```bash
+# A chat's decision activity, aggregates first
+biorouter session decisions 20261104_1
+
+# The errors of one decide batch
+biorouter session decisions 20261104_1 --source tool --batch <batch id> --errors
+
+# The calls of one turn, 50 at a time, as JSON
+biorouter session decisions 20261104_1 --turn <turn id> --limit 50 --json
+```
+
+### session monitors
+
+List, add or remove the decision-model monitors that watch a chat. A monitor asks a decision
+model one question about the chat's recent messages after each agent iteration, or once as a turn
+ends. When the probability of the wanted answer reaches its threshold (or falls below it, for a
+`--below` monitor), it stops the turn, shows a notice, or tells the model. A turn that ran
+monitors shows one summary line per monitor, never one line per check. A chat takes at most 8
+monitors. They are the same monitors the desktop's Monitors dialog edits, and a change applies at
+the chat's next check, in a running turn too.
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (required): The chat
+- **`list [--json]`**: The chat's monitors and its default decision model
+- **`add`**: Add a monitor, with the options below
+- **`remove <MONITOR>`**: Remove a monitor by its id or name
+
+**`add` options:**
+
+- **`--name <NAME>`** (required): A short name, at most 60 characters. The id is made from it
+- **`--ask <QUESTION>`** (required): The question about the chat's recent messages
+- **`--threshold <P>`** (required): Fire when the probability of the wanted answer is at least `P`
+  (above 0, at most 1), or falls below it with `--below`
+- **`--below`**: Fire when the probability falls below `--threshold` instead of reaching it
+- **`--action <ACTION>`**: `notify` (the default) shows a notice, `stop` ends the turn and hands
+  control back to you, `steer` tells the model what the monitor found
+- **`--timing <TIMING>`**: `post-iteration` (the default) asks after every iteration of the agent
+  loop, `turn-end` once as a turn ends
+- **`--model <PROVIDER/MODEL>`**: The decision model; without it the chat's default
+- **`--option <OPTION>`**: The answer whose probability is compared: `yes` (the default) or `no`
+  on a yes/no question, or one of the `--choice` options
+- **`--choice <NAME[=DESCRIPTION]>`**: Make the question a choice; repeat it once per option
+- **`--consecutive <N>`**: Checks in a row on the firing side of the threshold before it fires (1
+  to 5)
+- **`--rearm-below <P>`**: After firing, fire again only once the probability has dropped below
+  `P`, which must be under `--threshold`. For a stop monitor it is also what keeps later turns
+  going: without it a stop monitor stops every turn in which its answer holds
+- **`--rearm-above <P>`**: For a `--below` monitor, the same the other way: re-arm only once the
+  probability rises to `P` or above, which must be over `--threshold`
+- **`--on-error <POLICY>`**: `notify` (the default) shows a notice, and after three failures in a
+  row the monitor is off for the rest of the turn; `pause` stops the turn whenever a check fails
+- **`--max-checks <N>`**: At most this many checks per turn (default 50, at most 200)
+- **`--subagents`**: Also watch the subagents this chat starts: the monitor is copied onto each of
+  them, and onto the ones running when it is saved. Refused on a subagent's own chat with "Only a
+  chat that starts subagents can share its monitors with them."
+- **`--id <ID>`**, **`--disabled`**: Choose the id, or add the monitor switched off
+
+A direction mixed up is refused before anything is sent: "--rearm-below is for a monitor that
+fires at or above its threshold; a --below monitor re-arms with --rearm-above", "--rearm-above is
+for a --below monitor; …", "--rearm-above must be over --threshold: …", and "--option on a yes/no
+question is `yes` or `no`".
+
+**What `list` prints.** One entry per monitor, its rule first (`P(yes) ≥ 0.85`, or `P(yes) < 0.30`
+for a below monitor), then what it does and when, and then what else is set: "re-arms below 0.40"
+or "re-arms above 0.60", "stops again while it holds" for a stop monitor with no re-arm level, "an
+error pauses the turn", "also watches the subagents this chat starts". A monitor on a subagent's
+chat names who set it: "set by the agent of chat 20261106_1", or "from the chat that started this
+subagent (20261106_1)" for a copy.
+
+**Removing.** You may remove any monitor, an agent's included, and the message says who set it
+("It was set by the agent of chat 20261106_1."). A copy you remove comes back when the parent's
+monitors are saved again while this subagent runs, and the message says so.
+
+**What a save checks.** Before anything is stored, the command checks that what the change turns
+on can run for this chat: the model is there, takes the question and will load, and the chat's
+privacy tier, an institution or a Crew grant does not refuse it. Nothing of the chat is sent
+([What a save checks](../agent-loop/decision-models.md#what-a-save-checks)). With a daemon, a 400
+or 422 prints the daemon's sentence as it is and never asks for a key. Without one the same check
+runs locally, prints "Error: Nothing was saved: …" and exits 1.
+
+**With and without a daemon.** With a reachable daemon the monitors are read and written through
+it. A change names where the chat's content goes, so a daemon started with a user-action key
+wants the key: when it refuses a change with 403, the command shows its reason and asks for the
+key once, without echo, and pressing Enter stops. `--user-action-key-stdin` supplies it without a
+prompt. Without a daemon the monitors are read and written in the local session store, under the
+same privacy rule as `session decisions` and with no key, whatever kind of daemon the store
+belongs to. A daemon with no user-action key (`biorouter serve`) takes a change without the key
+too, except to a subagent's chat. Copies onto running subagents are made only with a daemon.
+
+**What a `steer` monitor tells the model.** The note quotes the monitor's name and question as
+JSON strings inside a `<decision-monitor>` frame and says they come from the chat's monitor
+settings, not from the user, so a question cannot pass itself off as an instruction. The notice
+you see when it fires shows the question the model was told, on one line and clipped to 120
+characters:
+
+```text
+Monitor 'Form reached' fired (P 0.93, threshold 0.50) and told the agent. Its question: "Is the intake form complete?"
+```
+
+**Usage:**
+
+```bash
+# The chat's monitors
+biorouter session monitors 20261104_1 list
+
+# Stop the turn once the agent has reached the consent form, and stay quiet after that
+biorouter session monitors 20261104_1 add --name "Form reached" \
+  --ask "Has the agent reached the consent form page?" --threshold 0.85 --action stop \
+  --rearm-below 0.40
+
+# Stop the turn while the chance that tests pass falls below 0.30, on this chat and its subagents
+biorouter session monitors 20261104_1 add --name "Tests failing" \
+  --ask "Do the latest results show the tests passing?" --threshold 0.30 --below \
+  --action stop --on-error pause --subagents
+
+# Remove it again
+biorouter session monitors 20261104_1 remove form-reached
+```
+
+### session gates
+
+List a chat's phase gates, or set, remove, pass, skip or retry one. A phase gate asks a decision
+model yes/no questions about a phase's hand-off before the phase may complete, and holds every
+phase listed after it until it passes. Whoever set a gate (the agent, you, or the workflow the
+chat was started from), the agent cannot change, remove or skip it; only you can, here or in the
+app. See [Decision gates](../agent-loop/orchestration-phases.md#decision-gates).
+
+**Arguments and subcommands:**
+
+- **`<SESSION_ID>`** (required): The chat whose plan holds the phases
+- **`list`** (the default, also with no subcommand): Every phase and its gate
+- **`set <PHASE> --ask NAME=QUESTION ...`**: Set or replace a phase's gate. The gate is yours, its
+  attempts start over, and a phase its old gate blocked goes back in progress
+- **`remove <PHASE>`**: Remove a phase's gate, which releases the phases after it
+- **`pass <PHASE>`**, **`skip <PHASE>`**: Pass or skip a gated phase without asking its gate: at
+  once, or, while its subagents still work, once they finish and the agent completes it
+- **`retry <PHASE>`**: Give a gate its attempts again, so the agent can complete the phase once
+  more to ask it
+
+**`set` options:**
+
+- **`--ask <NAME=QUESTION>`** (required, up to 8): One yes/no question the decision model answers
+  from the phase's hand-off; every question must pass. The text splits at the first `=`, and the
+  name is made into lowercase letters, digits, `_` and `-`
+- **`--threshold <P>`**: The P(yes) every question must reach, from 0 to 1 (default 0.80). The
+  0.50 floor the agent's gates have does not apply to yours
+- **`--attempts <N>`**: Failed evaluations allowed before the phase is blocked, 1 to 5 (default 3)
+- **`--model <PROVIDER/MODEL>`**: The decision model; without it the chat's default
+- **`--allow-uncalibrated`**: Accept probabilities a model states in words
+
+**Options for every subcommand:**
+
+- **`--format <FORMAT>`**: `text` (the default) or `json`. For `list`, JSON is the plan as
+  `GET /sessions/{session_id}/subagents` returns it; for a write, `{message, applied, plan}`
+- **`--user-action-key-stdin`**: As for [`session monitors`](#session-monitors)
+
+**What `list` prints.** One entry per phase: its id, title and status, then its gate (the
+questions, the threshold, the attempts used, the last result, whether it is blocked, who set it
+and your decision), the model it asks, how many times its attempts were given again, the last
+error, what it holds, a "needs you" line when it waits for you, and "your pass stands" or "your
+skip stands" on an open phase. A held phase reads "waits for build's gate", naming the holder by
+its id, which is what the subcommands take.
+
+**With and without a daemon.** With a daemon, `list` reads `GET /sessions/{session_id}/subagents`
+and the writes go through the phase-gate routes. A 400, 404, 409 or 422 prints the daemon's
+sentence alone; a 403 adds the advice about the key and, on a terminal, asks for it once. Without
+a daemon the gates are read and written in the local session store, under the privacy rule of
+`session monitors`, and a gate's model is checked as the route checks it: "Phase "build"'s gate
+cannot be answered in this chat: …. Nothing was changed."
+
+**Usage:**
+
+```bash
+# A chat's gates
+biorouter session gates 20261106_1
+
+# Your own gate on the research phase, at a threshold of 0.30
+biorouter session gates 20261106_1 set research \
+  --ask facts="Does the hand-off list two facts about the moon?" --threshold 0.3
+
+# Let a blocked phase through, or give its gate another three tries
+biorouter session gates 20261106_1 pass build
+biorouter session gates 20261106_1 retry build
 ```
 
 ### session diagnostics [options]
@@ -674,12 +1064,29 @@ Execute commands from an instruction file or stdin.
 - **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths
 - **`--max-tool-repetitions <NUMBER>`**: Maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops
 - **`--max-turns <NUMBER>`**: Maximum number of turns allowed without user input (`0` means Unlimited, the default)
-- **`--explain`**: Show a workflow's title, description, and parameters
+- **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan: the default decision model, one line per monitor, the plan and each gate, and a note that these apply once to the new chat and that a monitor's decision model reads that chat's newest messages
 - **`--render-workflow`**: Print the rendered workflow instead of running it
 - **`-q, --quiet`**: Quiet mode. Suppress non-response output, printing only the model response to stdout
 - **`--output-format <FORMAT>`**: Output format (`text`, `json`, or `stream-json`). Default is `text`. Use JSON structured output for automation and scripting: `json` for results after completion, `stream-json` for events as they occur
 - **`--provider`**: Specify the provider to use for this session (overrides environment variable)
 - **`--model`**: Specify the model to use for this session (overrides environment variable)
+
+**A workflow's monitors and phase plan.** A workflow that declares `decision_settings` or an
+`orchestration_plan` ([the workflow schema reference](../workflows/workflow-schema-reference.md#supervision-decision_settings-and-orchestration_plan))
+applies them once, to the new chat the run makes, before its first message. When they cannot be
+applied (a decision model the chat may not use, a plan outside the Autonomous approval mode, a
+block that is malformed), the run prints "The workflow was not started: " and the reason, removes
+the chat it made, and exits 1. With `--resume` on a chat that already has messages, nothing is
+applied again, and one line says which case it is: "This chat already has messages. The monitors
+and phase plan this workflow declares were applied when the chat started and are not applied
+again, so the chat keeps them as they are now." when this workflow seeded it, or "This chat
+already has messages, so the monitors and phase plan this workflow declares were not applied to
+it. Run the workflow in a new chat to get them." otherwise. With `--resume` on a chat that has no
+messages yet but that another workflow already set up, nothing is applied either, and the line
+reads "Another workflow already gave this chat its monitors and phase plan before its first
+message, so the ones this workflow declares were not applied to it. Run the workflow in a new chat
+to get them." Resuming such a chat with the workflow that set it up says nothing. The run then goes
+on.
 
 **Usage:**
 
@@ -710,6 +1117,122 @@ biorouter run --provider anthropic --model claude-sonnet-5 -t "initial prompt"
 
 # Run with limited turns before prompting user
 biorouter run --workflow workflow.yaml --max-turns 10
+```
+
+### decide [options]
+
+Ask a decision model one typed question about a text. A decision model answers with a typed
+answer (yes or no, one of named options, or a level of a score) and the probability of every
+outcome, in tens of milliseconds, instead of writing text. The command prints a probability bar
+per outcome, the answer and its probability, whether the probabilities are calibrated, the model
+and the latency.
+
+**Options:**
+
+- **`--ask <QUESTION>`** (required): The question to ask about the text
+- **`--model <PROVIDER/MODEL>`**: The decision model, as `biorouter models decision list` names
+  it. Without it the model is the chat's default decision model (with `--session`), else
+  `BIOROUTER_DECISION_MODEL` (or `BIOROUTER_DECISION_PROVIDER`), else the first model in the list
+  that may read the text: local first, `tev1:0.8b` first among the Ollama models, never a copy
+  Ollama cannot load. The model is chosen once, before anything is sent, and used for every
+  request of the run
+- **`--choice <NAME[=DESCRIPTION]>`**: Makes the question a choice; repeat it once per option (2
+  to 26). The model reads the description, and the answer is the name
+- **`--levels <LEVEL,LEVEL,...>`**: Makes the question a score with 1 to 10 levels, lowest first
+- **`--threshold <P>`**: Pass when the probability of the wanted answer is at least `P` (0 to 1)
+- **`--threshold-on <ANSWER>`**: What the threshold is on: `yes` (the default) or `no` for a
+  yes/no question, an option name for a choice, or a level (its text, or its number from 0) for a
+  score, which then counts that level and every level above it
+- **`--text <TEXT>`**: The text to decide on. Without it, and without `--batch`, the text is read
+  from stdin
+- **`--batch <DIR>`**: Decide once per file in the directory (not recursive, hidden files
+  skipped, in name order), several at a time, and print one row per file and a summary
+- **`--session <SESSION_ID>`**: Record the decision in that chat's decision log
+- **`--name <NAME>`**: The question's name in the log and the JSON (default `question`)
+- **`--json`**: Print JSON instead of text
+
+**What it prints.** For one text:
+
+```text
+Does this note state the patient has multiple sclerosis?
+▸ yes  ███████████████████▋░░░░  0.82
+  no   ████▍░░░░░░░░░░░░░░░░░░░  0.18
+Answer: yes  p 0.82  calibrated  ollama_decision/tev1:0.8b  22 ms
+Threshold: P(yes) 0.82 ≥ 0.80, passed
+```
+
+The Answer line names the model as `provider/model`, a Baseten one by its alias
+(`baseten_decision/joey-1`), the same name the stderr lines below and `models decision list`
+use; `--json` keeps Baseten's slug in the decision's `model`.
+
+`calibrated` means the probabilities are the model's own distribution, or token probabilities
+that covered at least 90% of the probability. `uncalibrated` says where the number came from
+instead, for example a number the model wrote. Either way these are model probabilities that have
+not been validated on your data, and a line on stderr says so. With `--batch`, one row per file
+shows the answer, its probability, a short bar and whether it passed the threshold. The last
+lines give the count of each answer, how many passed, how many failed with an error, and each
+error in full. A file over 4 MiB, an empty file, or one that is not UTF-8 text is reported as an
+error row and not sent. So is a text too large for the model's window; split it and ask again.
+
+**On stderr.** Besides the line on probabilities, a run can print these:
+
+```text
+warning: <model> is hosted outside your institution (public tier). Do not send it private or patient data.
+note: this chat is not private, so the text you send is kept in its decision history, where public chats can read it. For private text, leave out --session or name a private chat.
+usage: 2 requests on baseten_decision/mammoth-1: 1,200,000 input and 3 output tokens, about $0.12. Without --session this is not recorded in Biorouter's usage.
+```
+
+- `warning:` comes before anything is sent, when the model is hosted outside your institution.
+  It is left out for a private chat with privacy tiers on, which refuses such a model anyway.
+- `note:` comes before anything is sent, with `--session` naming a chat that is not private and
+  privacy tiers on.
+- `usage:` comes after a run without `--session`, because nothing in Biorouter records that run.
+  A local model has no price, so its line gives tokens only, and a run whose model reported no
+  usage prints none. A run with `--session` is counted in [`usage`](#usage-options) instead.
+- With `--session`, a run whose decision requests are still in flight when it ends waits up to
+  30 seconds for them, so their rows are stored and their usage counted, and says so: "waiting up
+  to 30 s for 2 decision request(s) that answered late, so their usage is counted". One still out
+  after that is named: "note: 1 decision request(s) had not answered when this run ended; if the
+  provider bills them, Biorouter does not count it." Nothing is printed when none is in flight.
+  `biorouter session` and `biorouter run` wait the same way when they end, before the SessionEnd
+  hooks, and Ctrl-C stops their wait.
+
+**Privacy.** With `--session`, the chat's privacy tier decides which decision models may read the
+text, exactly as it does for the agent: a private chat never reaches a model hosted outside your
+institution, and the refusal comes before anything is sent. Its advice follows where the model
+came from: a model you named with `--model`, or the chat's own default, is refused with "Name a
+private decision model", and one the configured default chose with "Set
+BIOROUTER_DECISION_MODEL to a private model". The text is yours, not the chat's, and
+it is kept in the chat's decision history at the chat's reach, which is why a chat that is not
+private gets the note above. Without `--session` there is no chat to protect and nothing is
+logged. When the model the command resolved is hosted outside your institution (Baseten's are),
+one line on stderr names it before the text is sent, so you can stop if the text is private.
+Because the model is chosen once, a long `--batch` never moves from a local model to a hosted one
+partway: if the chosen model goes away, the run fails.
+
+The question types and their limits descend from Albert Lee's System One prototype in PR #469.
+
+**Usage:**
+
+```bash
+# Ask a yes/no question about a note
+biorouter decide --model ollama_decision/tev1:0.8b --ask "Is an EDSS score stated?" < note.txt
+
+# A choice, with a threshold on one option
+biorouter decide --ask "Which MS course is described?" \
+  --choice rrms="Relapsing-remitting" --choice spms="Secondary progressive" \
+  --choice ppms="Primary progressive" --choice none="Not stated" \
+  --threshold 0.8 --threshold-on rrms --text "Neuro f/u. 34F, RRMS dx 2019."
+
+# One decision per note in a directory, with a summary table. For a screen, a choice with the
+# abbreviations spelled out, a meaning for each answer and a threshold near 0.5 keeps true cases
+biorouter decide --ask "Does this note state the patient has multiple sclerosis (MS, RRMS, SPMS or PPMS)?" \
+  --choice yes="The patient has multiple sclerosis (MS, RRMS, SPMS or PPMS)." \
+  --choice no="The patient does not have multiple sclerosis." \
+  --threshold 0.5 --threshold-on yes --batch notes/
+
+# Record the decision in a chat's decision log, as JSON
+biorouter decide --session 20261104_1 --ask "Is the form complete?" --json < form.txt
 ```
 
 ### bench
@@ -1150,8 +1673,16 @@ start of the message. The chip is only how the composer draws it: the message is
 sent as `/bug <text>`.
 
 The TUI and classic CLI additionally support `/help` (alias `/?`), `/exit` (alias `/quit`),
-`/rename <name>`, and `/diverge [name]`. The following commands are **classic CLI only**;
-start it with `BIOROUTER_CLI_CLASSIC=1 biorouter session`:
+`/rename <name>`, and `/diverge [name]`. The TUI also has `/decisions`, an overlay listing the
+chat's decision-model calls by source and by recent turn; ↑↓ selects a source, Enter shows its
+last calls and Esc goes back. In the TUI and the classic CLI a turn's decision calls show as one
+line per source (`◇ Monitor Form reached: 18 checks this turn · 18 failed · last P 0.31`), never
+one line per call, and the reply of a chat whose main model is a decision model shows as a small
+card with a bar per option. Such a chat has no running context, so neither prints a context
+meter for it, and `/compact` answers that there is no context to compact, without announcing a
+compaction or asking you to confirm one first. The TUI's decision card names a Baseten model by
+its alias (`joey-1`). The following commands
+are **classic CLI only**; start it with `BIOROUTER_CLI_CLASSIC=1 biorouter session`:
 
 - `/builtin <names>` — add built-in extensions by name, comma-separated.
 - `/extension <command>` — add a stdio extension, with optional `ENV=value` prefixes.
@@ -1244,5 +1775,6 @@ Use the `"GWAS summary"` or `"enrichment"` search term to find and rerun it.
 - [Environment variables](../configuration/environment-variables.md) — per-invocation overrides for the same settings, including `BIOROUTER_CLI_THEME`.
 - [Managing sessions](../getting-started/managing-sessions.md) — how sessions are stored, resumed, and pruned behind the `session` subcommands.
 - [Workspace control](../agent-loop/workspace-control.md) — the daemon routes behind `session watch`, `send`, `attach`, and `cancel`, and the agent-side tools that do the same things.
+- [Decision models](../agent-loop/decision-models.md): what a decision model is, monitors, the `decide` tool and phase gates, behind `decide`, `models decision list`, `session decisions` and `session monitors`.
 - [Reaching Biorouter from a browser](../deployment/browser-access.md) — the full guide to `serve`: the access token, reaching it from another machine, and what a browser session cannot do.
 - [Creating and sharing workflows](../workflows/creating-and-sharing-workflows.md) — how to author the workflow files that `run --workflow`, `workflow`, and `schedule` consume.

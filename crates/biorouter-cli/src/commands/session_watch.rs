@@ -125,7 +125,10 @@ pub(crate) async fn daemon_auth() -> Result<DaemonAuth> {
 /// Read up front, unlike the terminal prompt, which waits for a daemon to ask:
 /// on `attach` every later line of stdin is a message, so the key's line must
 /// be taken before the reader that treats lines as messages starts.
-async fn with_supplied_key(auth: DaemonAuth, key_from_stdin: bool) -> Result<DaemonAuth> {
+pub(crate) async fn with_supplied_key(
+    auth: DaemonAuth,
+    key_from_stdin: bool,
+) -> Result<DaemonAuth> {
     if !key_from_stdin {
         return Ok(auth);
     }
@@ -271,7 +274,7 @@ fn key_verdict(code: u16, body: &str) -> KeyVerdict {
 /// `ErrorResponse` answers `{"message": …}` and the reach gate answers plain
 /// text where a route hands its refusal back directly. Both are the daemon's
 /// own words and are shown as they are.
-fn refusal_sentence(body: &str) -> Option<String> {
+pub(crate) fn refusal_sentence(body: &str) -> Option<String> {
     let text = json_object(body)
         .and_then(|value| value.get("message")?.as_str().map(str::to_string))
         .unwrap_or_else(|| body.to_string());
@@ -1239,6 +1242,123 @@ pub(crate) async fn daemon_json_request(
     parse_http_response(&raw, &format!("{method} {path}"))
 }
 
+/// A GET of a JSON route that names a session, carrying the user-action proof
+/// exactly when `auth` holds the key (see [`push_proof`]) — `GET
+/// /sessions/{id}/subagents`, where the proof lets the person reach a private
+/// chat on a daemon that holds a key. The status and the body.
+///
+/// Composed through `auth.headers()` like both request builders above, so this
+/// request cannot authenticate without also stating its capability.
+pub(crate) async fn daemon_get_json(
+    path: &str,
+    auth: &DaemonAuth,
+    port: u16,
+    deadline: std::time::Duration,
+) -> Result<(u16, String)> {
+    let mut request = Zeroizing::new(format!(
+        "GET {path} HTTP/1.1\r\nHost: {DAEMON_HOST}\r\n{}",
+        auth.headers()
+    ));
+    push_proof(&mut request, auth);
+    request.push_str("Accept: application/json\r\nConnection: close\r\n\r\n");
+    let raw = tokio::time::timeout(deadline, async {
+        let mut stream =
+            biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?;
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        Ok::<Vec<u8>, std::io::Error>(raw)
+    })
+    .await
+    .map_err(|_| anyhow!("the daemon did not answer GET {path} within {deadline:?}"))??;
+    parse_http_response(&raw, &format!("GET {path}"))
+}
+
+/// A JSON request to a route that names a session and whose writes need the
+/// user-action proof (`PUT /sessions/{id}/decision-settings`), carrying the
+/// proof exactly when `auth` holds the key (see [`push_proof`]). The status and
+/// the body.
+pub(crate) async fn daemon_protected_json(
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    auth: &DaemonAuth,
+    port: u16,
+    deadline: std::time::Duration,
+) -> Result<(u16, String)> {
+    let body = body.unwrap_or("");
+    let mut request = Zeroizing::new(format!(
+        "{method} {path} HTTP/1.1\r\nHost: {DAEMON_HOST}\r\n{}",
+        auth.headers()
+    ));
+    push_proof(&mut request, auth);
+    request.push_str("Content-Type: application/json\r\nContent-Length: ");
+    request.push_str(&body.len().to_string());
+    request.push_str("\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
+    request.push_str(body);
+    let raw = tokio::time::timeout(deadline, async {
+        let mut stream =
+            biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?;
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        Ok::<Vec<u8>, std::io::Error>(raw)
+    })
+    .await
+    .map_err(|_| anyhow!("the daemon did not answer {method} {path} within {deadline:?}"))??;
+    parse_http_response(&raw, &format!("{method} {path}"))
+}
+
+/// A settings write, made once without the key and, only if the daemon refuses
+/// it and a person is at the terminal, once more with the key they type.
+///
+/// Unlike the turn-control routes, a settings route does not promise an empty
+/// 403 for a missing key, so the refusal cannot say by its shape whether a key
+/// would help. The person is therefore shown the daemon's own words first and
+/// asked whether they hold a key; pressing Enter stops with that refusal. A
+/// request that already carried a key (`--user-action-key-stdin`) is never
+/// followed by a prompt, and without a terminal the refusal is returned as it
+/// came, for the caller to print.
+///
+/// Returns the last answer and the auth it was made with.
+pub(crate) async fn protected_write_with_key_if_wanted(
+    method: &str,
+    path: &str,
+    body: &str,
+    auth: DaemonAuth,
+    port: u16,
+    deadline: std::time::Duration,
+) -> Result<((u16, String), DaemonAuth)> {
+    let answer = daemon_protected_json(method, path, Some(body), &auth, port, deadline).await?;
+    if answer.0 != 403
+        || auth.holds_key()
+        || !std::io::stdin().is_terminal()
+        || !std::io::stderr().is_terminal()
+    {
+        return Ok((answer, auth));
+    }
+    if let Some(sentence) = refusal_sentence(&answer.1) {
+        eprintln!("The daemon refused the change: {sentence}");
+    }
+    eprintln!(
+        "If this daemon was started with a user-action key, enter it to try again, or press \
+         Enter to stop (input is hidden):"
+    );
+    let key = tokio::task::spawn_blocking(|| {
+        console::Term::stderr()
+            .read_secure_line()
+            .map(Zeroizing::new)
+    })
+    .await
+    .map_err(|join| anyhow!("could not read the user-action key: {join}"))??;
+    if key.is_empty() {
+        return Ok((answer, auth));
+    }
+    let auth = auth.with_user_action(key);
+    let answer = daemon_protected_json(method, path, Some(body), &auth, port, deadline).await?;
+    Ok((answer, auth))
+}
+
 /// An HTTP/1.1 chunked body, joined. Malformed framing ends the body where it
 /// breaks rather than inventing bytes.
 fn dechunk(mut rest: &[u8]) -> Vec<u8> {
@@ -2107,17 +2227,7 @@ async fn resolve_attach_target(
     let sessions = session_manager
         .list_sessions_by_types_including_empty(listed_session_types(true))
         .await?;
-    let rows: Vec<SessionRow> = sessions
-        .iter()
-        .map(|s| SessionRow {
-            id: s.id.clone(),
-            name: s.name.clone(),
-            session_type: s.session_type,
-            parent_session_id: s.parent_session_id.clone(),
-            updated_at: s.updated_at,
-            message_count: s.message_count,
-        })
-        .collect();
+    let rows: Vec<SessionRow> = sessions.iter().map(SessionRow::from_session).collect();
     if let Some(name) = name {
         return pick_named(&rows, &name);
     }
@@ -2354,6 +2464,11 @@ pub async fn handle_session_attach(
 /// `cancelled: false`, never an error." A CLI that exited non-zero on it would
 /// re-introduce exactly the unreliability BR-62 removed. The only `Err` here is
 /// a body that did not answer the question at all.
+///
+/// A Stop also stops the subagents the chat started (item B), and the daemon
+/// lists them in `stopped_subagents`; a second line says how many, whether or
+/// not the chat itself had a turn running. A daemon from before that field
+/// sends none, and nothing is added.
 pub(crate) fn render_cancel(response: &serde_json::Value) -> Result<String> {
     let cancelled = response
         .get("cancelled")
@@ -2361,16 +2476,42 @@ pub(crate) fn render_cancel(response: &serde_json::Value) -> Result<String> {
         .ok_or_else(|| {
             anyhow!("the daemon's cancel response did not say whether it cancelled anything")
         })?;
-    if !cancelled {
-        return Ok("nothing to cancel: this session had no turn in flight".to_string());
-    }
-    Ok(format!(
-        "cancelled turn {}",
+    let turn = if cancelled {
+        format!(
+            "cancelled turn {}",
+            response
+                .get("turn_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(unnamed)")
+        )
+    } else {
+        "nothing to cancel: this session had no turn in flight".to_string()
+    };
+    Ok(match stopped_subagents_line(response) {
+        Some(line) => format!("{turn}\n{line}"),
+        None => turn,
+    })
+}
+
+/// [`stopped_subagents_sentence`] for the cancel response's `stopped_subagents`.
+fn stopped_subagents_line(response: &serde_json::Value) -> Option<String> {
+    stopped_subagents_sentence(
         response
-            .get("turn_id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("(unnamed)")
-    ))
+            .get("stopped_subagents")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len),
+    )
+}
+
+/// What a Stop that also stopped `stopped` of the chat's subagents says about
+/// them: "Also stopped {n} subagents this chat started.", or `None` for none.
+/// One sentence for `session cancel` and an interactive session's Ctrl-C.
+pub(crate) fn stopped_subagents_sentence(stopped: usize) -> Option<String> {
+    match stopped {
+        0 => None,
+        1 => Some("Also stopped 1 subagent this chat started.".to_string()),
+        n => Some(format!("Also stopped {n} subagents this chat started.")),
+    }
 }
 
 /// `biorouter session cancel <id>` — stop the turn a session is running.
@@ -4252,6 +4393,8 @@ mod tests {
             parent_session_id: parent.map(str::to_string),
             updated_at: chrono::Utc::now(),
             message_count: 3,
+            model: None,
+            outcome: None,
         }
     }
 
@@ -4414,5 +4557,42 @@ mod tests {
             "the two outcomes are both successes and must still read differently"
         );
         assert!(render_cancel(&stopped).unwrap().contains("t-7"));
+    }
+
+    /// Item B: a Stop that also stopped the chat's subagents says so, from the
+    /// daemon's `stopped_subagents`, under the line about the chat's own turn.
+    #[test]
+    fn a_cancel_that_stopped_subagents_says_how_many() {
+        let both = serde_json::json!({
+            "cancelled": true,
+            "turn_id": "t-8",
+            "settled": false,
+            "stopped_subagents": ["child-a", "child-b"],
+        });
+        assert_eq!(
+            render_cancel(&both).unwrap(),
+            "cancelled turn t-8\nAlso stopped 2 subagents this chat started."
+        );
+
+        // The chat itself was idle, but its background subagents were not.
+        let idle = serde_json::json!({
+            "cancelled": false,
+            "turn_id": null,
+            "settled": true,
+            "stopped_subagents": ["child-a"],
+        });
+        assert_eq!(
+            render_cancel(&idle).unwrap(),
+            "nothing to cancel: this session had no turn in flight\n\
+             Also stopped 1 subagent this chat started."
+        );
+
+        // None stopped, or a daemon from before the field: nothing is added.
+        for response in [
+            serde_json::json!({ "cancelled": true, "turn_id": "t-9", "stopped_subagents": [] }),
+            serde_json::json!({ "cancelled": true, "turn_id": "t-9" }),
+        ] {
+            assert_eq!(render_cancel(&response).unwrap(), "cancelled turn t-9");
+        }
     }
 }

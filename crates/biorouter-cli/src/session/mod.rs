@@ -546,8 +546,7 @@ impl CliSession {
         if !use_classic {
             self.update_completion_cache().await?;
             let result = tui::run(self, prompt).await;
-            self.fire_session_end_hooks("exit").await;
-            self.close_ephemeral_store().await;
+            self.end_session("exit").await;
             return result;
         }
 
@@ -580,8 +579,7 @@ impl CliSession {
                 .await?;
         }
 
-        self.fire_session_end_hooks("exit").await;
-        self.close_ephemeral_store().await;
+        self.end_session("exit").await;
 
         println!(
             "Closing session. Session ID: {}",
@@ -589,6 +587,18 @@ impl CliSession {
         );
 
         Ok(())
+    }
+
+    /// Everything an interactive or headless session does as it ends, in order:
+    /// wait for decision requests that answered late, run the SessionEnd hooks,
+    /// close a `--no-session` run's private store.
+    ///
+    /// The wait comes first because a late answer is stored in this chat's
+    /// decision log and counted in its usage, which needs the store still open.
+    async fn end_session(&mut self, reason: &str) {
+        settle_late_decision_answers(crate::commands::decide::LATE_ANSWER_GRACE).await;
+        self.fire_session_end_hooks(reason).await;
+        self.close_ephemeral_store().await;
     }
 
     /// Run SessionEnd hooks before the process exits. Awaited (not
@@ -1161,17 +1171,24 @@ impl CliSession {
     }
 
     async fn handle_compact(&mut self) -> Result<()> {
-        let prompt =
-            "Are you sure you want to compact this chat? This will condense the message history.";
-        let should_summarize = match cliclack::confirm(prompt).initial_value(true).interact() {
-            Ok(choice) => choice,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::Interrupted {
-                    false
-                } else {
-                    return Err(e.into());
+        let provider_name = match self.agent.provider().await {
+            Ok(provider) => provider.get_name().to_string(),
+            Err(_) => String::new(),
+        };
+        // A decision chat asks nothing: the agent answers there that there is
+        // no context to compact, as the TUI does.
+        let should_summarize = match compact_confirmation(&provider_name) {
+            None => true,
+            Some(prompt) => match cliclack::confirm(prompt).initial_value(true).interact() {
+                Ok(choice) => choice,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::Interrupted {
+                        false
+                    } else {
+                        return Err(e.into());
+                    }
                 }
-            }
+            },
         };
 
         if should_summarize {
@@ -1275,8 +1292,7 @@ impl CliSession {
         let result = self
             .process_message(message, false, CancellationToken::default())
             .await;
-        self.fire_session_end_hooks("prompt_input_exit").await;
-        self.close_ephemeral_store().await;
+        self.end_session("prompt_input_exit").await;
         result?;
         if let Some(code) = self.last_abort.clone() {
             let message = format!("the turn did not complete: {}", code.wire_code());
@@ -1310,9 +1326,16 @@ impl CliSession {
             .ok_or_else(|| anyhow::anyhow!("No user message"))?;
 
         let cancel_token_interrupt = cancel_token.clone();
+        let interrupted_session = self.session_id.clone();
         let handle = tokio::spawn(async move {
             if ctrl_c().await.is_ok() {
                 cancel_token_interrupt.cancel();
+                // Item B: the person's Stop stops the subagents this chat
+                // started too. They run on tokens of their own, so cancelling
+                // the turn alone left them running, and spending.
+                if let Some(line) = stop_subagents_after_ctrl_c(&interrupted_session) {
+                    eprintln!("{line}");
+                }
             }
         });
         let _drop_handle = AbortOnDropHandle::new(handle);
@@ -2046,6 +2069,9 @@ impl CliSession {
         let provider = self.agent.provider().await?;
         let model_config = provider.get_model_config();
         let context_limit = model_config.context_limit();
+        // A decision chat has no running context to measure, so it prints no
+        // meter, as the TUI draws none; the cost line still prints.
+        let meter = tui::draws_context_meter(provider.get_name());
 
         let config = Config::global();
         let show_cost = config
@@ -2060,7 +2086,9 @@ impl CliSession {
             Ok(metadata) => {
                 let total_tokens = metadata.total_tokens.unwrap_or(0) as usize;
 
-                output::display_context_usage(total_tokens, context_limit);
+                if meter {
+                    output::display_context_usage(total_tokens, context_limit);
+                }
 
                 if show_cost {
                     let input_tokens = metadata.input_tokens.unwrap_or(0) as usize;
@@ -2073,9 +2101,10 @@ impl CliSession {
                     );
                 }
             }
-            Err(_) => {
+            Err(_) if meter => {
                 output::display_context_usage(0, context_limit);
             }
+            Err(_) => {}
         }
 
         Ok(())
@@ -2106,6 +2135,89 @@ impl CliSession {
     fn push_message(&mut self, message: Message) {
         self.messages.push(message);
     }
+}
+
+/// Item B, for the terminal: Ctrl-C stops the subagents this chat started, as
+/// the desktop's Stop and `biorouter session cancel` do. They run on tokens of
+/// their own, so cancelling the chat's turn alone left them running, and the
+/// chat's next turn was told to keep supervising them. Each one stopped ends
+/// `incomplete` and says the person stopped the chat that started it.
+///
+/// No daemon serves this process, so a child is stopped through its handle;
+/// that is every child an in-process session has. Returns the line that says
+/// how many it stopped (`None` for none) and prints nothing.
+pub(crate) fn stop_subagents_after_ctrl_c(session_id: &str) -> Option<String> {
+    crate::commands::session_watch::stopped_subagents_sentence(
+        stop_chat_subagents(session_id).len(),
+    )
+}
+
+/// The one way a terminal session's Stop stops the subagents its chat started
+/// (item B; see [`stop_subagents_after_ctrl_c`]). Returns the stopped
+/// children's session ids, oldest first. A child still unwinding from an
+/// earlier stop is named again, so a caller that may stop more than once (the
+/// TUI, where Stop can be pressed again while a turn unwinds) merges by id.
+pub(crate) fn stop_chat_subagents(session_id: &str) -> Vec<String> {
+    biorouter::agents::subagent_handle::stop_delegated_children(
+        session_id,
+        biorouter::agents::subagent_handle::ChildStopCause::ParentStopped,
+    )
+    .into_iter()
+    .map(|child| child.child_session_id)
+    .collect()
+}
+
+/// Item 9: before an interactive or headless session ends, wait up to `grace`
+/// for decision requests that are still running after their caller stopped
+/// waiting (a monitor's check on a turn that was stopped, a check whose
+/// deadline passed), so each answer is stored in the chat's decision log and
+/// its usage counted.
+///
+/// Says nothing when none is running, which is nearly always. When one is, the
+/// wait is announced (`biorouter decide`'s line, so a pause at exit does not
+/// read as a hang). Ctrl-C ends the wait early. If any still have not answered
+/// when `grace` runs out or the wait is ended, [`late_unsettled_session_note`]
+/// says so. Returns that note.
+async fn settle_late_decision_answers(grace: std::time::Duration) -> Option<String> {
+    let pending = biorouter::decision::late::in_flight();
+    if pending == 0 {
+        return None;
+    }
+    eprintln!(
+        "{}; Ctrl-C stops waiting",
+        crate::commands::decide::late_wait_line(pending)
+    );
+    // Once a turn has listened for Ctrl-C, tokio holds SIGINT for the rest of
+    // the process, so without this arm the person could not end the wait.
+    let remaining = tokio::select! {
+        remaining = biorouter::decision::settle_late_answers(grace) => remaining,
+        _ = ctrl_c() => biorouter::decision::late::in_flight(),
+    };
+    let note = late_unsettled_session_note(remaining);
+    if let Some(note) = &note {
+        eprintln!("{note}");
+    }
+    note
+}
+
+/// What a session that ended with `remaining` decision requests unanswered
+/// says about them, or `None` when every one answered.
+fn late_unsettled_session_note(remaining: usize) -> Option<String> {
+    (remaining > 0).then(|| {
+        format!(
+            "note: {remaining} decision request(s) had not answered when this session ended; \
+             if the provider bills them, Biorouter does not count it."
+        )
+    })
+}
+
+/// What `/compact` asks before it runs, or None in a decision chat: there
+/// the agent answers that there is no context to compact, and a prompt that
+/// promised to condense the history contradicted that answer on the next line.
+fn compact_confirmation(provider_name: &str) -> Option<&'static str> {
+    tui::draws_context_meter(provider_name).then_some(
+        "Are you sure you want to compact this chat? This will condense the message history.",
+    )
 }
 
 fn emit_stream_event(event: &StreamEvent) {
@@ -2816,6 +2928,14 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 #[cfg(test)]
 mod tests {
 
+    #[test]
+    fn compact_asks_first_except_in_a_decision_chat() {
+        assert!(super::compact_confirmation("openai")
+            .is_some_and(|prompt| prompt.contains("condense the message history")));
+        assert_eq!(super::compact_confirmation("ollama_decision"), None);
+        assert_eq!(super::compact_confirmation("baseten_decision"), None);
+    }
+
     fn confirmation_card(tool_name: &str, arguments: serde_json::Value) -> super::Message {
         super::Message::assistant().with_content(
             super::MessageContent::action_required_with_context(
@@ -3413,6 +3533,136 @@ mod tests {
             Some(1234),
             "real token total, not zero"
         );
+    }
+
+    /// A subagent `parent` started, with its delegated run in flight on a token
+    /// of its own, exactly as a spawn's is.
+    fn running_child(
+        parent: &str,
+        child: &str,
+    ) -> std::sync::Arc<biorouter::agents::subagent_handle::BackgroundSubagent> {
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            parent,
+            child,
+            "delegated work",
+            CancellationToken::new(),
+        );
+        assert!(handle.is_running());
+        handle
+    }
+
+    /// Item B: Ctrl-C in a terminal session stops the subagents the chat
+    /// started, not only its own turn, and says how many.
+    #[test]
+    fn ctrl_c_stops_the_chats_running_subagents() {
+        let parent = "p10-cli-ctrl-c-parent";
+        let first = running_child(parent, "p10-cli-ctrl-c-child-1");
+        let second = running_child(parent, "p10-cli-ctrl-c-child-2");
+        let other = running_child("p10-cli-ctrl-c-other-parent", "p10-cli-ctrl-c-other");
+
+        let line = stop_subagents_after_ctrl_c(parent);
+
+        assert_eq!(
+            line.as_deref(),
+            Some("Also stopped 2 subagents this chat started.")
+        );
+        assert!(first.is_cancelled() && second.is_cancelled());
+        assert_eq!(
+            first.stop_cause(),
+            Some(biorouter::agents::subagent_handle::ChildStopCause::ParentStopped)
+        );
+        assert!(!other.is_cancelled(), "another chat's subagent was stopped");
+        assert_eq!(
+            stop_subagents_after_ctrl_c("p10-cli-ctrl-c-childless"),
+            None,
+            "a chat with no subagents says nothing"
+        );
+        for handle in [&first, &second, &other] {
+            handle.complete(
+                biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"),
+            );
+        }
+    }
+
+    /// Item 9: a session waits for a decision request that answers late, and
+    /// says nothing about it once it has; one that never answers within the
+    /// grace is named in a note.
+    #[tokio::test]
+    async fn a_session_settles_late_decision_answers_before_it_ends() {
+        // Released during the wait: no note.
+        let guard = biorouter::decision::late::enter_in_flight();
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let releaser = {
+            let released = released.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                released.store(true, std::sync::atomic::Ordering::SeqCst);
+                drop(guard);
+            })
+        };
+        assert_eq!(
+            settle_late_decision_answers(Duration::from_secs(20)).await,
+            None
+        );
+        assert!(
+            released.load(std::sync::atomic::Ordering::SeqCst),
+            "the session ended before the late answer arrived"
+        );
+        releaser.await.unwrap();
+
+        // Never released within the grace: the note says so.
+        let held = biorouter::decision::late::enter_in_flight();
+        let note = settle_late_decision_answers(Duration::from_millis(50))
+            .await
+            .expect("an unanswered request is named");
+        assert!(note.starts_with("note: "), "{note}");
+        assert!(
+            note.ends_with(
+                "decision request(s) had not answered when this session ended; if the provider \
+                 bills them, Biorouter does not count it."
+            ),
+            "{note}"
+        );
+        drop(held);
+        assert_eq!(late_unsettled_session_note(0), None);
+        assert_eq!(
+            late_unsettled_session_note(2).as_deref(),
+            Some(
+                "note: 2 decision request(s) had not answered when this session ended; if the \
+                 provider bills them, Biorouter does not count it."
+            )
+        );
+    }
+
+    /// Item 9's wiring: `headless` does not end, and does not close the
+    /// session's store, while a decision request is still on its way back.
+    #[tokio::test]
+    async fn headless_waits_for_a_late_decision_answer_before_it_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager, "text").await;
+        let guard = biorouter::decision::late::enter_in_flight();
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let releaser = {
+            let released = released.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                released.store(true, std::sync::atomic::Ordering::SeqCst);
+                drop(guard);
+            })
+        };
+
+        // This agent has no model, so the turn fails at once; what matters is
+        // that the session's end waits for the late answer either way.
+        let _ = session.headless("hello".to_string()).await;
+
+        assert!(
+            released.load(std::sync::atomic::Ordering::SeqCst),
+            "headless ended while a decision request was still in flight"
+        );
+        releaser.await.unwrap();
     }
 
     #[test]

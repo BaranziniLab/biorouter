@@ -31,11 +31,21 @@
 //!   (`SessionStorage::try_update_working_dir_if_empty`).
 //!
 //! ⚠ **Nothing else reads the scope, on purpose.** A message insert, a
-//! conversation rewrite, a truncation, the token ledger and every other
+//! conversation rewrite, a truncation, a turn's token ledger
+//! (`SessionStorage::apply_usage_event`) and every other
 //! `SessionUpdateBuilder::apply` (a rename above all, even one that also sets
 //! `extension_data`) stamp whether or not they run inside it. A rename is
 //! activity even while a chat is being opened, and a scope that grew by mistake
 //! to cover a turn must not stop that turn from moving its chat.
+//!
+//! ⚠ **The side usage write never stamps**, inside a scope or out
+//! (`SessionStorage::apply_side_usage_event`, the decision model's share of
+//! the usage ledger). A decision is a question asked about a chat, not a change
+//! made to it: `POST /decisions/decide` with a `sessionId` and
+//! `biorouter decide --session` run outside any turn, and a 1,000-chunk batch
+//! must not reorder the sidebar. A decision made inside a turn needs no stamp
+//! of its own, because the turn's own message and token writes stamp. It
+//! enters no scope, so the census below does not count it.
 //!
 //! ⚠ **The default is "this write is activity".** Outside a scope every write
 //! stamps, exactly as before R-30. A forgotten scope costs a chat that jumps on

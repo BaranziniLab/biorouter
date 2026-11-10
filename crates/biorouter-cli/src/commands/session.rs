@@ -345,6 +345,25 @@ pub async fn resolve_session_by_name(
         .map(|s| s.id))
 }
 
+/// One row of `session list`: id, name and last activity, then the chat's
+/// decision-model call count when it has any. Decision calls can number in the
+/// thousands, so a listing shows this one number, never a row per call;
+/// `session decisions <id>` lists them.
+pub fn session_list_line(
+    id: &str,
+    name: &str,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    decision_count: Option<u64>,
+) -> String {
+    let mut line = format!("{id} - {name} - {updated_at}");
+    match decision_count {
+        Some(1) => line.push_str(" - 1 decision"),
+        Some(n) if n > 1 => line.push_str(&format!(" - {n} decisions")),
+        _ => {}
+    }
+    line
+}
+
 pub async fn handle_session_list(
     format: String,
     ascending: bool,
@@ -389,9 +408,15 @@ pub async fn handle_session_list(
 
                 println!("Available sessions:");
                 for session in sessions {
-                    let output =
-                        format!("{} - {} - {}", session.id, session.name, session.updated_at);
-                    println!("{}", output);
+                    println!(
+                        "{}",
+                        session_list_line(
+                            &session.id,
+                            &session.name,
+                            session.updated_at,
+                            session.decision_count,
+                        )
+                    );
                 }
             }
         }
@@ -432,17 +457,7 @@ async fn print_grouped_sessions(
             }
         };
 
-    let rows: Vec<SessionRow> = sessions
-        .iter()
-        .map(|s| SessionRow {
-            id: s.id.clone(),
-            name: s.name.clone(),
-            session_type: s.session_type,
-            parent_session_id: s.parent_session_id.clone(),
-            updated_at: s.updated_at,
-            message_count: s.message_count,
-        })
-        .collect();
+    let rows: Vec<SessionRow> = sessions.iter().map(SessionRow::from_session).collect();
     let mut groups = group_by_parent(rows);
     // ⚠ `limit` caps the TOP-LEVEL rows, after grouping. Truncating the flat row
     // list first would let one parent's six children consume a `--limit 5`.
@@ -475,6 +490,11 @@ async fn print_grouped_sessions(
             "updated_at": row.updated_at,
             "message_count": row.message_count,
             "live": liveness_label(liveness_of(&row.id)),
+            "model": row.model,
+            // A subagent's recorded outcome (`completed`, `failed`, ...), or
+            // null when none was recorded. Separate from `live`: a run that was
+            // steered into a new turn is live and carries its previous outcome.
+            "outcome": row.outcome,
         })
     };
 
@@ -1191,6 +1211,28 @@ pub(crate) fn restrict_by_crew_grant(session_ids: &[&str]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// History's rule in the terminal: one count per chat, never a row per call.
+    #[test]
+    fn a_session_list_row_carries_its_decision_count_only_when_it_has_one() {
+        let at = chrono::DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        assert_eq!(
+            session_list_line("20261104_1", "Notes", at, None),
+            format!("20261104_1 - Notes - {at}")
+        );
+        assert_eq!(
+            session_list_line("20261104_1", "Notes", at, Some(0)),
+            format!("20261104_1 - Notes - {at}")
+        );
+        assert_eq!(
+            session_list_line("20261104_1", "Notes", at, Some(1)),
+            format!("20261104_1 - Notes - {at} - 1 decision")
+        );
+        assert_eq!(
+            session_list_line("20261104_1", "Notes", at, Some(642)),
+            format!("20261104_1 - Notes - {at} - 642 decisions")
+        );
+    }
     use biorouter::conversation::message::Message;
     use biorouter::session::session_manager::SessionType;
     use tempfile::TempDir;

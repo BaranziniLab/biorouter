@@ -1,4 +1,5 @@
 import { chatKindOf, type ChatKindSource } from '../chats/chatKind';
+import { shortModelLabel } from '../../utils/sessionSubagents';
 
 /**
  * Small pure helpers for a chat row's second line in Chat history and the
@@ -76,4 +77,97 @@ export function historyRowTitle(session: ChatKindSource): string {
     return job || name;
   }
   return name;
+}
+
+/**
+ * The `extension_data` key of a finished subagent run's outcome record, `{ status, ended_at,
+ * result_line? }` (`SUBAGENT_OUTCOME_STATE` . `SUBAGENT_OUTCOME_VERSION` in
+ * `crates/biorouter/src/agents/subagent_roster.rs`). Written once, when the run ends.
+ */
+export const SUBAGENT_OUTCOME_KEY = 'subagent_outcome.v1';
+
+/** The ends a run's outcome record can name, and the only ones a History row draws. */
+export type SubagentOutcomeStatus = 'completed' | 'blocked' | 'failed' | 'incomplete';
+
+const OUTCOME_STATUSES: ReadonlySet<string> = new Set<SubagentOutcomeStatus>([
+  'completed',
+  'blocked',
+  'failed',
+  'incomplete',
+]);
+
+export interface SubagentOutcome {
+  status: SubagentOutcomeStatus;
+  /** First line of the run's summary, its error, or the question it stopped to ask. */
+  resultLine: string | null;
+}
+
+/**
+ * How a subagent run ended, read from its outcome record, or `null` when there is nothing to
+ * say: no record (a run that is still going, one whose process went away, or one that predates
+ * the record), a malformed one, or a status that is not an end (`running`, `interrupted`, ...).
+ * History says nothing rather than guess; the chat's side panel is where a live run shows.
+ */
+export function subagentOutcomeOf(
+  extensionData: Record<string, unknown> | null | undefined
+): SubagentOutcome | null {
+  const record = extensionData?.[SUBAGENT_OUTCOME_KEY];
+  if (!record || typeof record !== 'object') return null;
+  const { status, result_line: resultLine } = record as { status?: unknown; result_line?: unknown };
+  if (typeof status !== 'string' || !OUTCOME_STATUSES.has(status)) return null;
+  const line = typeof resultLine === 'string' ? resultLine.trim() : '';
+  return { status: status as SubagentOutcomeStatus, resultLine: line || null };
+}
+
+/**
+ * The model a run used, for the small chip on its History row: the short label the chat
+ * summary and the terminal use too (`gpt-5.5`, not `gpt-5.5-2026-04-24`), which is what tells
+ * two runs of one parent apart. The full id stays in the chip's tooltip
+ * ([`runModelFullName`]). `null` when the row records none.
+ */
+export function runModelName(session: {
+  model_config?: { model_name?: string | null } | null;
+}): string | null {
+  const name = runModelFullName(session);
+  return name ? shortModelLabel(name) : null;
+}
+
+/** The model id a run recorded, unshortened, for the chip's tooltip. */
+export function runModelFullName(session: {
+  model_config?: { model_name?: string | null } | null;
+}): string | null {
+  const name = session.model_config?.model_name?.trim();
+  return name ? name : null;
+}
+
+/** `extension_data` key of a run's spawn record, which holds the role its parent gave it. */
+export const SUBAGENT_SPAWN_KEY = 'subagent_spawn.v1';
+
+/**
+ * The short role a run's parent gave it at spawn (`celsius`, `sq-3`), read from the spawn
+ * record, or `null`. A History run leads with it, as the chat summary and the terminal do,
+ * because the session name is the first words of the task and reads the same for every run of
+ * a fan-out.
+ */
+export function subagentRoleOf(
+  extensionData: Record<string, unknown> | null | undefined
+): string | null {
+  const record = extensionData?.[SUBAGENT_SPAWN_KEY];
+  if (!record || typeof record !== 'object') return null;
+  const role = (record as { role?: unknown }).role;
+  if (typeof role !== 'string') return null;
+  const trimmed = role.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * How many decision-model calls a chat made, from its row (`decision_count`,
+ * which the daemon's listing fills from the `decisions` table), or 0. History
+ * shows it as one count on the chat's own row, never as rows of their own: a
+ * chat's decision calls can number in the thousands (owner rule A1.5).
+ */
+export function decisionCountOf(session: object): number {
+  const row = session as { decision_count?: unknown; decisionCount?: unknown };
+  const value = row.decision_count ?? row.decisionCount;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }

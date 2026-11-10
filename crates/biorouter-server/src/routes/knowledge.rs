@@ -2586,6 +2586,7 @@ mod tests {
             parent_session_id: None,
             privacy_tier: tier,
             privacy_reason: None,
+            decision_count: None,
         }
     }
 

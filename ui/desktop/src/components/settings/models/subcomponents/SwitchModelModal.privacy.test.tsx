@@ -1,6 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../../api';
+import {
+  affiliationPresentation,
+  type ProviderAffiliation,
+} from '../../../privacy/providerAffiliation';
 import { SwitchModelModal } from './SwitchModelModal';
 
 const mocks = vi.hoisted(() => ({
@@ -275,6 +279,47 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
     const row = await screen.findByTestId('switch-model-affiliation');
     expect(row).toHaveTextContent('UCSF');
     expect(row).toHaveTextContent(/compliance does not transfer/i);
+  });
+
+  /**
+   * Say it once (spec 2.6). The row's sentence IS the badge's explanation, so the
+   * badge beside it draws no InfoTip: with one, the sentence was a hidden
+   * description on a tab stop as well as the paragraph, and a screen reader read
+   * it twice.
+   */
+  it('states the affiliation sentence once, with no InfoTip on the badge beside it', async () => {
+    const ucsf: ProviderAffiliation = {
+      kind: 'institutions',
+      institutions: [{ id: 'ucsf', display_name: 'UCSF' }],
+    };
+    mocks.getProviders.mockResolvedValue([
+      provider('anthropic', 'public', 'Anthropic'),
+      provider('versa_azure', 'private', 'Versa', ucsf),
+    ]);
+
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        privacyTier="private"
+        initialProvider="versa_azure"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+      />
+    );
+
+    const row = await screen.findByTestId('switch-model-affiliation');
+    const sentence = affiliationPresentation(ucsf)!.title;
+    const text = row.textContent ?? '';
+    expect(
+      text.split(sentence).length - 1,
+      'the affiliation sentence is said once, never again by the badge’s tip'
+    ).toBe(1);
+    expect(row.querySelector('[data-slot="info-tip-description"]')).toBeNull();
+    expect(row.querySelector('[data-slot="info-tip-trigger"]')).toBeNull();
+    expect(row.querySelector('[tabindex]')).toBeNull();
+    const badge = within(row).getByTestId('affiliation-badge');
+    expect(badge).not.toHaveAttribute('aria-describedby');
+    expect(badge).not.toHaveAttribute('title');
   });
 
   it('does not submit the old model while a different provider search is uncommitted', async () => {

@@ -35,6 +35,8 @@ import {
   filePathLookupFromPaths,
   filePathsBeforeMessage,
 } from './artifacts/artifactFileProvenance';
+import { DecisionCard } from './decisions/DecisionCard';
+import { messageDecisionId } from '../utils/sessionDecisions';
 
 interface BioRouterMessageProps {
   sessionId: string;
@@ -186,6 +188,11 @@ export default function BioRouterMessage({
 
   const quotedSelection = useTextSelection(contentRef, `${sessionId}:${message.id}`);
 
+  // A decision chat's reply (its chat's main model is a decision model): one
+  // card drawn from its decision-log row, with the reply's own words while the
+  // row loads or when it cannot be read.
+  const decisionId = messageDecisionId(message);
+
   // The daemon's own turn-ending notice ("Ran into this error: …") is stored as
   // an assistant message. It draws as the error row the live failure draws,
   // never as prose holding a raw provider response (vision V2-07).
@@ -196,6 +203,28 @@ export default function BioRouterMessage({
         : null,
     [displayText, message.content, toolRequests.length]
   );
+  if (decisionId && toolRequests.length === 0) {
+    return (
+      <div className="biorouter-message flex w-full justify-start min-w-0">
+        <div className="br-message-actions-scope flex w-full min-w-0 flex-col">
+          {!isStreaming && (
+            <MessageActions timestamp={timestamp}>
+              {displayText && <MessageCopyLink text={displayText} contentRef={contentRef} />}
+            </MessageActions>
+          )}
+          <div ref={contentRef} className="w-full min-w-0">
+            <DecisionCard
+              sessionId={sessionId}
+              decisionId={decisionId}
+              fallback={displayText ? <MarkdownContent content={displayText} /> : null}
+              onOpenArtifact={onOpenArtifact}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (storedError) {
     return (
       <div className="biorouter-message flex w-full justify-start min-w-0">

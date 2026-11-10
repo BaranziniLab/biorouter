@@ -17,6 +17,7 @@ pub mod claude_code;
 pub mod codex;
 pub mod coding_agent;
 pub mod databricks;
+pub mod decision;
 pub mod destination_keys;
 pub mod embedding;
 pub mod errors;

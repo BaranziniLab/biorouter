@@ -1,24 +1,48 @@
 import type { ModelCostRow } from '../../hooks/useCostTracking';
-import { UNKNOWN_MODEL_LABEL } from '../../hooks/useCostTracking';
+import { modelRowKey } from '../../hooks/useCostTracking';
 import { billedTokens, knownBilledTokens } from '../../utils/usageAccounting';
-import { formatTooltipMoney } from './CostTracker';
+import { decisionModelName } from '../../utils/usageStats';
+import { isDecisionProvider, pluralize } from '../decisions/decisionWire';
+import { MODEL_NOT_RECORDED } from './copy';
+import { formatTooltipMoney, isUnmeteredDecisionRow } from './CostTracker';
 
 interface ModelBreakdownTableProps {
   rows: ModelCostRow[];
   currency?: string;
 }
 
-/** Label a row's model, folding the null/unknown bucket to a readable name. */
+/**
+ * Label a row's model for a person: `provider/model`, or `MODEL_NOT_RECORDED` for the bucket of
+ * turns saved without a model. A label is copy, never a key: key a row by `modelRowKey`. A
+ * decision model's row is named as one (`Decision model: joey-1`), since its Baseten slug says
+ * little.
+ */
 export function modelLabel(row: Pick<ModelCostRow, 'provider' | 'model'>): string {
   if (!row.model) {
-    return UNKNOWN_MODEL_LABEL;
+    return MODEL_NOT_RECORDED;
+  }
+  if (isDecisionProvider(row.provider)) {
+    return `Decision model: ${decisionModelName(row.model)}`;
   }
   return row.provider ? `${row.provider}/${row.model}` : row.model;
 }
 
-/** Per-token cost cell for models without a pricing entry. */
-function costCell(row: Pick<ModelCostRow, 'totalCost'>, currency: string): string {
-  return formatTooltipMoney(row.totalCost, currency);
+/**
+ * The Turns cell. A decision model's count is of requests (a monitor check, a
+ * chunk of a `decide` batch), which are not turns, so it says so.
+ */
+function turnsCell(row: Pick<ModelCostRow, 'provider' | 'turns'>): string {
+  return isDecisionProvider(row.provider)
+    ? pluralize(row.turns, 'request')
+    : row.turns.toLocaleString();
+}
+
+/**
+ * The Cost cell. A local decision model has no meter, so its row reads "Not
+ * metered" (the Usage panel's word) rather than "Unavailable".
+ */
+function costCell(row: Pick<ModelCostRow, 'provider' | 'totalCost'>, currency: string): string {
+  return isUnmeteredDecisionRow(row) ? 'Not metered' : formatTooltipMoney(row.totalCost, currency);
 }
 
 function tokenCell(tokens: number | null): string {
@@ -62,11 +86,11 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
       <tbody>
         {rows.map((row) => (
           <tr
-            key={modelLabel(row)}
+            key={modelRowKey(row.provider, row.model)}
             className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
           >
             <td className="pr-3">{modelLabel(row)}</td>
-            <td className="px-2 text-right tabular-nums">{row.turns.toLocaleString()}</td>
+            <td className="px-2 text-right tabular-nums">{turnsCell(row)}</td>
             <td className="px-2 text-right tabular-nums">{row.inputTokens.toLocaleString()}</td>
             <td className="px-2 text-right tabular-nums">{tokenCell(row.cacheReadTokens)}</td>
             <td className="px-2 text-right tabular-nums">{tokenCell(row.cacheCreationTokens)}</td>

@@ -19,27 +19,68 @@
   background: var(--background-canvas);
 }
 
-/* A parent's subagent runs: one block indented to where the parent's title starts, tied to it
-   by a 2px rail drawn as a FILL (the strong step), not a hairline (fills before lines, R-27).
-   The rail sits under the parent's glyph (the row's 12px padding plus half of its 16px slot)
-   and stops 8px short of the block's end, so it reads as a bracket and not as a divider. */
+/* A parent's subagent runs: one inset block that reads as held inside the parent, not as a second
+   list (the person's ask: a run should not look as wide and as heavy as the chat that started it).
+
+   - Left: the child's glyph sits under the parent's TITLE, 36px in (the parent row's 12px padding,
+     its 16px glyph and the 8px gap), reached as the block's 27px margin, its 1px edge and the
+     child row's 8px padding.
+   - Right: 16px in, so the block is narrower than the parent on both sides.
+   - Ground: the subtle fill on the container radius, with no resting outline (fills before lines,
+     R-27). The 1px border is kept and transparent, so forced colours draw the block's edge. The
+     block carries `.br-fill-surface`, so a control in it rests one step back (a fill never sits
+     on a fill, design.md 9.11).
+   - Tie: a 2px rail drawn as a FILL (the strong step), not a hairline, under the parent's glyph
+     (x = 27 + 1 - 9 = 19, so it is centred on the glyph's 20), and a 2px elbow from it to each
+     run (below). The rail stops at the last run's elbow, so the two read as one bracket. Both are
+     drawn inside the list shell, which clips its paint (`.session-grid`, main.css). */
 .br-history-children {
   position: relative;
   display: flex;
   flex-direction: column;
-  margin-left: 24px;
+  margin: 2px 16px 6px 27px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background-color: var(--background-fill);
+  --br-history-more-height: 32px;
 }
 
 .br-history-children::before {
   content: '';
   position: absolute;
   top: 0;
-  bottom: 8px;
-  left: -5px;
+  /* To the middle of the last run (the elbow's lower edge): half of a 40px row. A block that ends
+     in "Show N more runs" ends at that row's middle instead. */
+  bottom: calc(var(--row-height) / 2 - 1px);
+  left: -9px;
   width: 2px;
   border-radius: 1px;
   background: var(--background-fill-strong);
   pointer-events: none;
+}
+
+.br-history-children:has(> .br-history-more:last-child)::before {
+  bottom: calc(var(--br-history-more-height) / 2 - 1px);
+}
+
+/* The elbow: from the rail (x = 19) to the block's edge (x = 27), at each run's middle. A list
+   row's `::before` is otherwise unused (its `::after` is the hairline). A row's offsets are from
+   its padding box, which stops above the row's 1px transparent bottom edge, so its elbow sits
+   half a pixel lower than the button's to land on the middle of the 40px the row paints. */
+.br-history-children > :is(.br-history-row, .br-history-more)::before {
+  content: '';
+  position: absolute;
+  top: calc(50% - 1px);
+  left: -9px;
+  width: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--background-fill-strong);
+  pointer-events: none;
+}
+
+.br-history-children > .br-history-row::before {
+  top: calc(50% - 0.5px);
 }
 
 .br-history-row {
@@ -47,6 +88,47 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+}
+
+/* A nested run is ONE line at the 40px row floor (D-12, no compact mode): 4px of padding above and
+   below 28px actions, where a chat's row is two lines (about 55px). Its title is the secondary
+   size, 13px at weight 400 where a chat's is 14px at 500, and its muted line (when, and the model
+   it ran on) sits after the title on the same line. Authored, not utilities: the subordinate look
+   is the point of the rule.
+
+   The right padding is what keeps the runs' stat columns under the parent's, so the figures read
+   straight down from a chat into its runs: the block's 16px inset, its 1px edge, these 3px, the
+   two 28px actions with their 2px gap and the row's 8px gap come to 86px, the parent's 12px
+   padding, two 32px actions with their gap and its 8px gap. The actions still clear the block's
+   rounded corner (a 28px button in a 40px row). */
+.br-history-row[data-depth='1'] {
+  padding: 4px 3px 4px 8px;
+}
+
+.br-history-row[data-depth='1'] .br-history-row-open {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.br-history-row-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: var(--text-secondary--font-weight);
+}
+
+.br-history-row[data-depth='1'] .br-history-row-meta {
+  flex: none;
+  gap: 8px;
+}
+
+/* The model chip: a neutral badge (the strong step, a step off the block's fill), capped so a
+   long model id truncates rather than squeezing the title to nothing. */
+.br-history-run-model {
+  min-width: 0;
+  max-width: 160px;
 }
 
 /* A row whose menu is open keeps the hover ground (vision V1-R2-6). A modal menu takes the
@@ -109,6 +191,24 @@
   gap: 4px;
 }
 
+/* A top-level chat's decision-model call count, after where it ran: the
+   decision mark and a figure, never rows of their own (owner rule A1.5).
+   It keeps its width; the folder before it is what truncates. */
+.br-history-decisions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.br-history-decisions__glyph {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
 .br-history-row-stats {
   display: grid;
   flex-shrink: 0;
@@ -140,6 +240,46 @@
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
+}
+
+/* "Show N more runs": a 32px row inside the block after the newest three, its chevron on the runs'
+   glyph column and its words on their title column. A plain button, so it is in the tab order and
+   takes the app's one focus treatment (D-15), restated here because the hover rule below would
+   otherwise outrank the layered one. */
+.br-history-more {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  height: var(--br-history-more-height);
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-history-more:hover {
+  background-color: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+.br-history-more:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-history-more {
+    transition: none;
+  }
 }
 
 /* The skeleton-to-content crossfade on a cold load: the content rises in over

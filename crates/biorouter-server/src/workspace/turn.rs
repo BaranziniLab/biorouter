@@ -359,14 +359,21 @@ pub async fn run_turn(
     let outcome = Arc::new(AtomicU8::new(TURN_OUTCOME_NONE));
     let stop_record = turn_guard.stop_record();
     let frame_log = turn_guard.stream();
-    let turn = run_turn_body(
-        state,
-        request,
-        turn_id,
-        cancel_token,
-        Arc::clone(&outcome),
-        (stop_record, frame_log),
-    );
+    // Built off this frame and boxed ([`biorouter::agents::boxed_off_frame`]):
+    // `run_turn`'s future, and every frame that moves it (`carry`, `scope`,
+    // the task-local wrapper, `supervise_turn`), then holds a box rather than
+    // the whole turn, and they all sit under the reply loop's frame.
+    let outcome_for_body = Arc::clone(&outcome);
+    let turn = biorouter::agents::boxed_off_frame(move || {
+        run_turn_body(
+            state,
+            request,
+            turn_id,
+            cancel_token,
+            outcome_for_body,
+            (stop_record, frame_log),
+        )
+    });
     supervise_turn(session_id, turn_guard, outcome, turn).await;
 }
 
@@ -439,6 +446,18 @@ pub(crate) fn stamp_user_direct_if_subagent(
         })
     } else {
         message
+    }
+}
+
+/// Admit this turn when the chat is a subagent's
+/// ([`biorouter::agents::subagent_handle::admit_child_turn`]), and then stamp
+/// the message as the person's own input ([`stamp_user_direct_if_subagent`]).
+/// Any other chat's message comes back unchanged.
+fn admit_child_turn_message(session_id: &str, user_message: Message) -> Message {
+    if biorouter::agents::subagent_handle::admit_child_turn(session_id) {
+        stamp_user_direct_if_subagent(user_message, biorouter::session::SessionType::SubAgent)
+    } else {
+        user_message
     }
 }
 
@@ -842,11 +861,7 @@ async fn run_turn_body(
     let _active_work =
         register_detached_turn_work(extras.register_active_work, &session_id, &cancel_token);
 
-    let admitted_child_turn = biorouter::agents::subagent_handle::admit_child_turn(&session_id);
-    if admitted_child_turn {
-        user_message =
-            stamp_user_direct_if_subagent(user_message, biorouter::session::SessionType::SubAgent);
-    }
+    user_message = admit_child_turn_message(&session_id, user_message);
     let setup_failure_messages =
         Conversation::new_unvalidated(std::iter::once(user_message.clone()));
 
@@ -872,72 +887,87 @@ async fn run_turn_body(
         mut all_messages,
         user_message,
         turn_message_start,
-    }) = prepare_turn(
-        &state,
-        &session_id,
-        user_message,
-        extras.reasoning_effort,
-        extras.conversation_so_far,
-    )
+    }) = biorouter::agents::boxed_off_frame(|| {
+        prepare_turn(
+            &state,
+            &session_id,
+            user_message,
+            extras.reasoning_effort,
+            extras.conversation_so_far,
+        )
+    })
     .await
     else {
         record_setup_failure(
+            &state,
             &session_id,
             &cancel_token,
             &setup_failure_messages,
             &outcome,
-        );
+        )
+        .await;
         return;
     };
+
+    // Item A: the decision markers this chat already holds, taken before the
+    // turn runs, so a child's result names this turn's marker and never an
+    // older one a compaction moved past `turn_message_start`.
+    let earlier_decision_turns =
+        biorouter::agents::subagent_handler::decision_marker_turns(all_messages.messages());
 
     // D12a: the steer queue is already open (`prepare_turn`), so the reply's own
     // prologue — hooks, the auto-compaction model call, context — accepts steers
     // too. D20: `_pin` keeps this agent out of the LRU until the turn ends; an
     // agent evicted mid-turn would make `/interrupt` resolve a FRESH one whose
     // queue no loop drains.
-    let stream = match agent
-        .reply(
-            user_message,
-            session_config.clone(),
-            Some(cancel_token.clone()),
-        )
-        .await
-    {
-        Ok(stream) => stream,
-        Err(e) => {
-            // A steer accepted during the prologue is stored, marked unanswered,
-            // before the failure is reported.
-            abandon_prepared_turn(&session_id, &agent).await;
-            let turn_messages = (&all_messages, turn_message_start);
-            report_reply_start_failure(&session_id, &e, &cancel_token, turn_messages, &outcome);
-            return;
-        }
+    let Some(stream) = open_reply_stream(
+        &state,
+        &session_id,
+        &agent,
+        (user_message, &session_config),
+        &cancel_token,
+        (&all_messages, turn_message_start),
+        &outcome,
+    )
+    .await
+    else {
+        return;
     };
 
     let mut stopped_rows = Vec::new();
-    let terminal_error = drive_turn_with_continuations(
-        &session_id,
-        stream,
-        &agent,
-        &session_config,
-        &cancel_token,
-        &mut all_messages,
-        &mut stopped_rows,
-    )
+    let terminal_error = biorouter::agents::boxed_off_frame(|| {
+        drive_turn_with_continuations(
+            &session_id,
+            stream,
+            &agent,
+            &session_config,
+            &cancel_token,
+            &mut all_messages,
+            &mut stopped_rows,
+        )
+    })
     .await;
     agent.mark_loop_idle();
     // Before `finish_turn`, and so before the guard retires: a cancel waiting on
     // that retirement reads this record the moment it wakes.
     stop_record.record(stopped_rows);
 
-    record_child_turn_outcome(
+    // Item A: a later generation of a subagent (the person typed into its tab,
+    // or the chat that started it sent it a prompt) reports a monitor's stop
+    // the way the delegated run does. The registry keeps the turn's first stop
+    // after the stream ends; taken once, here. For a chat that is no one's
+    // subagent nothing reads it, and `record_child_turn_terminal` matches no
+    // handle. Item B the same way: why the chat that started it stopped it.
+    record_child_turn_end(
+        &state,
         &session_id,
-        terminal_error,
-        cancel_token.is_cancelled(),
-        &all_messages,
-        turn_message_start,
+        &agent,
+        (terminal_error, cancel_token.is_cancelled()),
+        (&all_messages, turn_message_start),
         &outcome,
-    );
+        earlier_decision_turns,
+    )
+    .await;
 
     spawn_session_rename(&agent, &session_id);
 
@@ -1086,17 +1116,96 @@ impl Drop for TurnPin {
     }
 }
 
+/// Open the turn's reply stream. When it cannot open, a steer accepted during
+/// the prologue is stored, marked unanswered, before the failure is reported
+/// ([`report_reply_start_failure`]), and `None` comes back: the turn is over.
+/// Split out of [`run_turn_body`] only to keep it under clippy's line budget.
+async fn open_reply_stream<'a>(
+    state: &AppState,
+    session_id: &str,
+    agent: &'a biorouter::agents::Agent,
+    (user_message, session_config): (Message, &SessionConfig),
+    cancel_token: &CancellationToken,
+    turn_messages: (&Conversation, usize),
+    outcome: &AtomicU8,
+) -> Option<futures::stream::BoxStream<'a, anyhow::Result<AgentEvent>>> {
+    // Each future is built off this frame ([`biorouter::agents::boxed_off_frame`]),
+    // which is live under the whole reply prologue.
+    let reply = biorouter::agents::boxed_off_frame(|| {
+        agent.reply(
+            user_message,
+            session_config.clone(),
+            Some(cancel_token.clone()),
+        )
+    });
+    match reply.await {
+        Ok(stream) => Some(stream),
+        Err(e) => {
+            biorouter::agents::boxed_off_frame(|| abandon_prepared_turn(session_id, agent)).await;
+            biorouter::agents::boxed_off_frame(|| {
+                report_reply_start_failure(
+                    state,
+                    session_id,
+                    &e,
+                    cancel_token,
+                    turn_messages,
+                    outcome,
+                )
+            })
+            .await;
+            None
+        }
+    }
+}
+
+/// A turn whose reply stream ran has ended: record the child's outcome with the
+/// turn's first monitor stop, the decision markers the chat held before the
+/// turn (`earlier_turns`), and why the chat that started a subagent stopped it
+/// ([`note_child_turn_stop_cause`]). `cancelled` is the turn's one sample of
+/// its token. Split out of [`run_turn_body`] only to keep it under clippy's
+/// line budget.
+async fn record_child_turn_end(
+    state: &AppState,
+    session_id: &str,
+    agent: &biorouter::agents::Agent,
+    (terminal_error, cancelled): (bool, bool),
+    turn_messages: (&Conversation, usize),
+    outcome: &AtomicU8,
+    earlier_turns: std::collections::HashSet<String>,
+) {
+    record_child_turn_outcome_with(
+        session_id,
+        terminal_error,
+        cancelled,
+        turn_messages,
+        outcome,
+        ChildTurnDecisions {
+            monitor_stop: agent.take_monitor_stop(session_id),
+            earlier_turns,
+            stop_cause: biorouter::agents::boxed_off_frame(|| {
+                note_child_turn_stop_cause(state, session_id, cancelled)
+            })
+            .await,
+        },
+    );
+}
+
 /// The reply stream never opened: publish the turn's one terminal and record the
-/// child outcome, exactly as the inline arm in [`run_turn_body`] used to. Split
-/// out only to keep that function under clippy's line budget.
-fn report_reply_start_failure(
+/// child outcome, exactly as the inline arm in [`run_turn_body`] used to, with
+/// why the chat that started a subagent stopped it ([`note_child_turn_stop_cause`]).
+/// Split out only to keep that function under clippy's line budget.
+async fn report_reply_start_failure(
+    state: &AppState,
     session_id: &str,
     error: &anyhow::Error,
     cancel_token: &CancellationToken,
-    (all_messages, turn_message_start): (&Conversation, usize),
+    turn_messages: (&Conversation, usize),
     outcome: &AtomicU8,
 ) {
     tracing::error!("turn: failed to start reply stream: {error:?}");
+    // Before the terminal, so the child's chat says why the turn stopped first.
+    let cancelled = cancel_token.is_cancelled();
+    let stop_cause = note_child_turn_stop_cause(state, session_id, cancelled).await;
     publish_turn_error(
         session_id,
         error.to_string(),
@@ -1105,32 +1214,93 @@ fn report_reply_start_failure(
         false,
         None,
     );
-    record_child_turn_outcome(
+    record_child_turn_outcome_with(
         session_id,
         true,
-        cancel_token.is_cancelled(),
-        all_messages,
-        turn_message_start,
+        cancelled,
+        turn_messages,
         outcome,
+        ChildTurnDecisions {
+            stop_cause,
+            ..ChildTurnDecisions::default()
+        },
     );
 }
 
-fn record_setup_failure(
+/// [`prepare_turn`] failed, and has already published the turn's terminal.
+async fn record_setup_failure(
+    state: &AppState,
     session_id: &str,
     cancel_token: &CancellationToken,
     setup_messages: &Conversation,
     outcome: &AtomicU8,
 ) {
-    record_child_turn_outcome(
+    let cancelled = cancel_token.is_cancelled();
+    let stop_cause = biorouter::agents::boxed_off_frame(|| {
+        note_child_turn_stop_cause(state, session_id, cancelled)
+    })
+    .await;
+    record_child_turn_outcome_with(
         session_id,
         true,
-        cancel_token.is_cancelled(),
-        setup_messages,
-        0,
+        cancelled,
+        (setup_messages, 0),
         outcome,
+        ChildTurnDecisions {
+            stop_cause,
+            ..ChildTurnDecisions::default()
+        },
     );
 }
 
+/// Item B, for a later turn of a subagent (one the daemon runs after its
+/// delegated run finished): when the chat that started the subagent stopped
+/// this turn ([`biorouter::agents::subagent_handle::stop_delegated_children`]),
+/// store why in the subagent's own chat and hand the reason back for the
+/// turn's result.
+///
+/// The stop records its reason on the subagent's handle and cancels the turn
+/// through the daemon, which leaves the handle's token alone, so the delegated
+/// run's completion, the only other reader, never sees it. `cancelled` is the
+/// turn's one sample of its token, the same one its result is classified
+/// with: a turn that was not cancelled was not stopped. The notice is
+/// user-only, as the delegated run's is, so a later turn does not read it as
+/// context, and it is published only once it is stored. A failure to store it
+/// is logged; the result still says why.
+async fn note_child_turn_stop_cause(
+    state: &AppState,
+    session_id: &str,
+    cancelled: bool,
+) -> Option<biorouter::agents::subagent_handle::ChildStopCause> {
+    if !cancelled {
+        return None;
+    }
+    let cause = biorouter::agents::subagent_handle::child_turn_stop_cause(session_id)?;
+    let mut notice = Message::assistant()
+        .with_system_notification(
+            biorouter::conversation::message::SystemNotificationType::InlineMessage,
+            cause.sentence(),
+        )
+        .user_only();
+    match state
+        .session_manager()
+        .add_message_adopting_uid(session_id, &mut notice)
+        .await
+    {
+        Ok(()) => session_events::publish(
+            session_id,
+            SessionBusEvent::Agent(AgentEvent::Message(notice)),
+        ),
+        Err(e) => tracing::warn!(
+            session_id,
+            error = %e,
+            "could not store why a stopped subagent turn was stopped; its result still says so"
+        ),
+    }
+    Some(cause)
+}
+
+#[cfg(test)]
 fn record_child_turn_outcome(
     session_id: &str,
     terminal_error: bool,
@@ -1139,6 +1309,36 @@ fn record_child_turn_outcome(
     turn_message_start: usize,
     outcome: &AtomicU8,
 ) {
+    record_child_turn_outcome_with(
+        session_id,
+        terminal_error,
+        cancelled,
+        (all_messages, turn_message_start),
+        outcome,
+        ChildTurnDecisions::default(),
+    );
+}
+
+/// What the turn's decision models did, for a subagent's result: a monitor's
+/// stop of the turn ([`biorouter::agents::Agent::take_monitor_stop`]) and the
+/// decision markers that were already in the chat before the turn began. And
+/// why the chat that started the subagent stopped the turn, when it did
+/// ([`note_child_turn_stop_cause`]).
+#[derive(Default)]
+struct ChildTurnDecisions {
+    monitor_stop: Option<biorouter::decision::settings::MonitorStopReport>,
+    earlier_turns: std::collections::HashSet<String>,
+    stop_cause: Option<biorouter::agents::subagent_handle::ChildStopCause>,
+}
+
+fn record_child_turn_outcome_with(
+    session_id: &str,
+    terminal_error: bool,
+    cancelled: bool,
+    (all_messages, turn_message_start): (&Conversation, usize),
+    outcome: &AtomicU8,
+    decisions: ChildTurnDecisions,
+) {
     let turn_messages = Conversation::new_unvalidated(
         all_messages
             .messages()
@@ -1146,17 +1346,36 @@ fn record_child_turn_outcome(
             .skip(turn_message_start)
             .cloned(),
     );
+    // Classified from the child's own rows: the decision marker and the
+    // monitors' notices come after its closing text, and only the person sees
+    // them (`without_user_only_notices`).
+    let transcript = biorouter::agents::subagent_handler::without_user_only_notices(&turn_messages);
     let mut child_result = if terminal_error {
         biorouter::agents::SubagentResult::from_aborted_turn(
-            &turn_messages,
+            &transcript,
             "child_turn_error",
             "Child turn ended with an error; inspect its conversation for the classified cause",
         )
     } else {
-        biorouter::agents::SubagentResult::from_conversation(&turn_messages, None, true)
+        biorouter::agents::SubagentResult::from_conversation(&transcript, None, true)
     };
     if cancelled {
         child_result.mark_cancelled();
+    }
+    // After `mark_cancelled`, so a monitor's reason stays the summary's first
+    // line.
+    biorouter::agents::subagent_handler::apply_child_decisions(
+        &mut child_result,
+        decisions.monitor_stop.as_ref(),
+        biorouter::agents::subagent_handler::decision_marker_text(
+            turn_messages.messages(),
+            &decisions.earlier_turns,
+        ),
+    );
+    // Last, as the delegated run's completion does: the chat that started the
+    // subagent stopping it is the summary's first line.
+    if let Some(cause) = decisions.stop_cause.as_ref().filter(|_| cancelled) {
+        child_result.note_stop_cause(cause);
     }
     child_result.human_intervened =
         biorouter::agents::subagent_result::conversation_has_user_direct(&turn_messages);
@@ -1661,8 +1880,12 @@ mod tests {
             .find("state.take_extension_loading_task(session_id).await;")
             .expect("run_turn's setup no longer waits for the session's extensions");
         let reply = src
-            .find("let stream = match agent\n        .reply(")
-            .expect("run_turn_body no longer calls reply");
+            .find("let Some(stream) = open_reply_stream(\n")
+            .expect("run_turn_body no longer opens the reply stream");
+        assert!(
+            src.contains("        agent.reply(\n            user_message,\n"),
+            "open_reply_stream no longer calls reply"
+        );
         assert!(
             take < open && open < wait,
             "the steer queue must be open BEFORE the extension wait (D12a)"
@@ -1887,6 +2110,68 @@ mod tests {
         assert!(terminal.result.error.is_none());
         assert!(terminal.result.summary.contains("partial useful work"));
         assert!(terminal.result.human_intervened);
+    }
+
+    /// A later child turn whose last reply is a tool call written as text did
+    /// not finish: nothing ran, and the loop's user-only notice says so under
+    /// the reply. The parent must read `incomplete`, never `completed` with the
+    /// raw call JSON as the child's summary, even though the turn's notices and
+    /// decision marker are left out of the classification.
+    #[test]
+    fn a_later_child_turn_ending_on_an_unrun_text_call_reads_incomplete() {
+        use biorouter::agents::subagent_result::SubagentStatus;
+        use biorouter::conversation::message::SystemNotificationType;
+
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "p09-unrun-call-parent",
+            "p09-unrun-call-child",
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn(&handle.child_session_id);
+        handle.complete(biorouter::agents::SubagentResult::from_error(
+            "initial generation",
+        ));
+        assert!(biorouter::agents::subagent_handle::admit_child_turn(
+            &handle.child_session_id
+        ));
+        let call = r#"{"name": "developer__shell", "arguments": {"command": "ls"}}"#;
+        let messages = Conversation::new_unvalidated([
+            Message::user().with_text("carry on"),
+            Message::assistant().with_text(call),
+            Message::assistant()
+                .with_system_notification(
+                    SystemNotificationType::InlineMessage,
+                    "Nothing ran: this reply is a call to 'developer__shell' written as text, \
+                     not a tool call Biorouter can run.",
+                )
+                .user_only(),
+            Message::assistant()
+                .with_system_notification(
+                    SystemNotificationType::InlineMessage,
+                    "Decision models: monitor 'Task done' checked 1 time",
+                )
+                .user_only(),
+        ]);
+
+        let outcome = AtomicU8::new(TURN_OUTCOME_NONE);
+        record_child_turn_outcome(
+            &handle.child_session_id,
+            false,
+            false,
+            &messages,
+            0,
+            &outcome,
+        );
+
+        let result = handle.terminal_generation().unwrap().result;
+        assert_eq!(result.status, SubagentStatus::Incomplete, "{result:?}");
+        assert!(
+            result
+                .summary
+                .starts_with("Subagent ended without a final summary"),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -2273,6 +2558,61 @@ mod tests {
         .expect("turn lock released");
     }
 
+    /// The turn runner's futures hold their children boxed
+    /// ([`biorouter::agents::boxed_off_frame`]), so the frames that move them
+    /// stay small. `tokio::spawn` takes `carry(run_turn(..))`, and at
+    /// `opt-level = 0` every frame between a worker and the reply loop
+    /// (`carry`, `scope`, the task-local wrapper, `run_turn`, `supervise_turn`,
+    /// `run_turn_body`, `open_reply_stream`) is several copies of the future it
+    /// moves. With the turn's children inline those futures were 22-151 KiB
+    /// and the frames added about 0.8 MiB under the reply loop: a turn needed
+    /// 1.9 MiB of a 2 MiB worker stack on main, and overflowed it in CI once
+    /// the reply loop grew (debug, measured 2026-11-07). A size, not a stack
+    /// limit, so it reads the same on every platform: each future here is
+    /// 1-4 KiB boxed, and an inline child puts back 20 KiB or more.
+    #[tokio::test]
+    async fn the_turn_runner_holds_its_children_boxed() {
+        const BOUND: usize = 8 * 1024;
+        let state = crate::state::AppState::new().await.unwrap();
+        let (_workdir, sid) = session(&state, "turn-future-sizes").await;
+        let agent = state.get_agent(sid.clone()).await.unwrap();
+        let session_config = biorouter::agents::SessionConfig {
+            id: sid.clone(),
+            schedule_id: None,
+            max_turns: None,
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+
+        let reply = agent.reply(Message::user().with_text("x"), session_config, None);
+        let reply_size = std::mem::size_of_val(&reply);
+        drop(reply);
+        let cancel = CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&sid, cancel.clone(), None)
+            .unwrap();
+        let turn = run_turn(
+            state.clone(),
+            TurnRequest::new(sid.clone(), Message::user().with_text("x")),
+            guard,
+            cancel,
+        );
+        let turn_size = std::mem::size_of_val(&turn);
+        let spawned_size = std::mem::size_of_val(&biorouter::native_client::carry(turn));
+
+        assert!(
+            reply_size <= BOUND,
+            "Agent::reply's future is {reply_size} bytes: build the prologue off its frame"
+        );
+        assert!(
+            turn_size <= BOUND && spawned_size <= BOUND,
+            "run_turn's future is {turn_size} bytes and the spawned one {spawned_size}: \
+             an await in run_turn / run_turn_body is inline again"
+        );
+    }
+
     #[tokio::test]
     async fn idempotency_key_is_forwarded_so_reply_reconnects_still_dedupe() {
         // Task 8 depends on this: /reply forwards the client's turn_id, and a
@@ -2530,6 +2870,221 @@ mod tests {
                 .is_some_and(|call| call.iter().any(|text| text.contains("use the 2024 cohort"))),
             "the first model call must carry the prologue steer: {seen:?}"
         );
+    }
+
+    /// Item B, a later turn: `child` is a subagent of `parent` whose delegated
+    /// run finished, and it takes a turn the daemon runs (the person typed into
+    /// its tab). The turn is held in its prologue, on the session's extensions,
+    /// while `parent` is stopped. Returns the stopped turn's result once it is
+    /// recorded, and every bus event of the turn up to its terminal.
+    async fn stop_a_later_subagent_turn_with_its_parent(
+        state: &Arc<crate::state::AppState>,
+        child: &str,
+        parent: &str,
+        cause: &biorouter::agents::subagent_handle::ChildStopCause,
+    ) -> (biorouter::agents::SubagentResult, Vec<SessionBusEvent>) {
+        use biorouter::agents::subagent_handle::{self as handles, BackgroundSubagent};
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+        let handle =
+            BackgroundSubagent::register(parent, child, "delegated work", CancellationToken::new());
+        handles::begin_child_turn(child);
+        handle.complete(biorouter::agents::SubagentResult::from_error(
+            "delegated run",
+        ));
+        let agent = state.get_agent(child.to_string()).await.unwrap();
+        let (release, loaded) = tokio::sync::oneshot::channel::<()>();
+        state
+            .set_extension_loading_task(
+                child.to_string(),
+                tokio::spawn(async move {
+                    let _ = loaded.await;
+                    Vec::new()
+                }),
+            )
+            .await;
+        let mut rx = session_events::subscribe(child);
+
+        start_turn(
+            state.clone(),
+            TurnRequest::new(child.to_string(), Message::user().with_text("carry on")),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(BOUND, async {
+            while agent.loop_phase_snapshot().0
+                != biorouter::agents::loop_phase::LoopPhase::Prologue
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the turn reaches its prologue");
+        let stopped_generation = handle.child_turn_generation();
+
+        // The parent's Stop, through this daemon's own turn registry.
+        let services = crate::workspace::services::ServerWorkspaceServices::new(state.clone());
+        let stopped = handles::stop_children_with(parent, None, cause, Some(&services));
+        assert_eq!(
+            stopped
+                .iter()
+                .map(|s| s.child_session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![child],
+            "the parent's stop must stop the later turn"
+        );
+        assert!(
+            !handle.is_cancelled(),
+            "a later turn stops through the daemon, not the handle's token"
+        );
+        release.send(()).unwrap();
+
+        let events = events_until_terminal(&mut rx, BOUND).await;
+        let result = tokio::time::timeout(BOUND, async {
+            loop {
+                match handle.terminal_generation() {
+                    Some(terminal) if terminal.generation == stopped_generation => {
+                        break terminal.result
+                    }
+                    _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .expect("the stopped turn must record its result");
+        (result, events)
+    }
+
+    /// The rows of `session_id` that are the inline notice `text`.
+    async fn stored_notices(
+        state: &Arc<crate::state::AppState>,
+        session_id: &str,
+        text: &str,
+    ) -> Vec<Message> {
+        state
+            .session_manager()
+            .get_session(session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap_or_default()
+            .messages()
+            .iter()
+            .filter(|message| stop_notice_text(message) == Some(text))
+            .cloned()
+            .collect()
+    }
+
+    /// Item B: a subagent stopped with the chat that started it records why,
+    /// in a later turn as in its delegated run. The cause was recorded on the
+    /// handle and read only by the delegated run's completion, so a later turn
+    /// stopped by the parent's Stop ended "cancelled" with nothing saying who
+    /// stopped it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_later_subagent_turn_stopped_with_its_parent_says_why() {
+        use biorouter::agents::subagent_handle::ChildStopCause;
+        use biorouter::agents::subagent_result::SubagentStatus;
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let child = state
+            .session_manager()
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "item b later turn stopped with its parent".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = state.get_agent(child.id.clone()).await.unwrap();
+        agent
+            .update_provider(Arc::new(RecordingProvider::default()), &child.id)
+            .await
+            .unwrap();
+        let cause = ChildStopCause::ParentMonitor {
+            monitor: "budget".into(),
+        };
+        let sentence = cause.sentence();
+
+        let (result, events) = stop_a_later_subagent_turn_with_its_parent(
+            &state,
+            &child.id,
+            "item-b-later-turn-parent",
+            &cause,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "cancelled"
+            ),
+            "the fixture must end through the reply stream, cancelled: {events:#?}"
+        );
+        assert_eq!(result.status, SubagentStatus::Incomplete, "{result:?}");
+        assert!(
+            result.summary.starts_with(&sentence),
+            "the result must open with why: {result:?}"
+        );
+        let notices = stored_notices(&state, &child.id, &sentence).await;
+        assert_eq!(notices.len(), 1, "one notice in the child's chat");
+        assert!(!notices[0].is_agent_visible(), "the notice is user-only");
+        let notice_at = events.iter().position(|event| {
+            matches!(event, SessionBusEvent::Agent(AgentEvent::Message(m))
+                if stop_notice_text(m) == Some(sentence.as_str()))
+        });
+        assert!(
+            notice_at.is_some_and(|at| at + 1 < events.len()),
+            "the notice is published before the turn's terminal: {events:#?}"
+        );
+    }
+
+    /// The same when the stopped turn fails in its setup, after the stop: here
+    /// a subagent row with no delegated runtime profile, which is refused once
+    /// the extensions settle.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_later_subagent_turn_stopped_in_its_setup_says_why() {
+        use biorouter::agents::subagent_handle::ChildStopCause;
+        use biorouter::agents::subagent_result::SubagentStatus;
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let child = state
+            .session_manager()
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "item b later turn stopped in setup".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let cause = ChildStopCause::ParentStopped;
+        let sentence = cause.sentence();
+
+        let (result, events) = stop_a_later_subagent_turn_with_its_parent(
+            &state,
+            &child.id,
+            "item-b-setup-stop-parent",
+            &cause,
+        )
+        .await;
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, SessionBusEvent::TurnError { .. })),
+            "the fixture must fail in setup: {events:#?}"
+        );
+        assert_eq!(result.status, SubagentStatus::Incomplete, "{result:?}");
+        assert!(
+            result.summary.starts_with(&sentence),
+            "the result must open with why: {result:?}"
+        );
+        let notices = stored_notices(&state, &child.id, &sentence).await;
+        assert_eq!(notices.len(), 1, "one notice in the child's chat");
+        assert!(!notices[0].is_agent_visible(), "the notice is user-only");
     }
 
     /// The text of a row that is only an inline system notice.
@@ -4010,6 +4565,249 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ─── Item A: a later child turn reports a monitor's stop ───
+
+    fn local_checker() -> biorouter::decision::model::DecisionModelEntry {
+        biorouter::decision::model::DecisionModelEntry {
+            provider: "test_decision".into(),
+            model: "local-checker".into(),
+            display_name: "local-checker".into(),
+            context_tokens: 4_096,
+            kinds: vec![biorouter::decision::types::DecisionKindTag::Binary],
+            tier: biorouter::privacy::ProviderTier::Private,
+            affiliation: Some(biorouter::privacy::affiliation::ModelAffiliation::Local),
+            adapter: biorouter::decision::DecisionAdapter::SystemOne,
+            local: true,
+            load_refusal: None,
+        }
+    }
+
+    /// A decision model on this computer that answers P(yes) = 0.9 to every
+    /// question, so a monitor at 0.5 fires.
+    struct YesChecker;
+
+    #[async_trait::async_trait]
+    impl biorouter::decision::model::DecisionModel for YesChecker {
+        fn model_ref(&self) -> biorouter::decision::DecisionModelRef {
+            local_checker().model_ref()
+        }
+        fn display_name(&self) -> String {
+            "local-checker".into()
+        }
+        fn tier(&self) -> biorouter::privacy::ProviderTier {
+            biorouter::privacy::ProviderTier::Private
+        }
+        fn affiliation(&self) -> Option<biorouter::privacy::affiliation::ModelAffiliation> {
+            Some(biorouter::privacy::affiliation::ModelAffiliation::Local)
+        }
+        fn caps(&self) -> biorouter::decision::model::DecisionCaps {
+            biorouter::decision::model::DecisionCaps {
+                kinds: vec![biorouter::decision::types::DecisionKindTag::Binary],
+                max_questions: 64,
+                context_tokens: 4_096,
+                max_concurrency: 2,
+                max_request_bytes: None,
+                local: true,
+            }
+        }
+        async fn decide(
+            &self,
+            request: &biorouter::decision::DecisionRequest,
+        ) -> biorouter::decision::DecisionResult<biorouter::decision::types::ModelVerdicts>
+        {
+            Ok(biorouter::decision::types::ModelVerdicts {
+                verdicts: request
+                    .questions
+                    .keys()
+                    .map(|name| biorouter::decision::types::QuestionVerdict {
+                        question: name.clone(),
+                        probabilities: [("yes".to_string(), 0.9), ("no".to_string(), 0.1)]
+                            .into_iter()
+                            .collect(),
+                        source: biorouter::decision::ProbabilitySource::Native,
+                        calibrated: true,
+                        reported_choice: None,
+                        raw: serde_json::Value::Null,
+                    })
+                    .collect(),
+                usage: Default::default(),
+                served_model: None,
+            })
+        }
+    }
+
+    struct OneChecker;
+
+    #[async_trait::async_trait]
+    impl biorouter::decision::model::DecisionModelSource for OneChecker {
+        async fn list(&self) -> Vec<biorouter::decision::model::DecisionModelEntry> {
+            vec![local_checker()]
+        }
+        async fn open(
+            &self,
+            _wanted: &biorouter::decision::DecisionModelRef,
+        ) -> biorouter::decision::DecisionResult<Arc<dyn biorouter::decision::model::DecisionModel>>
+        {
+            Ok(Arc::new(YesChecker))
+        }
+    }
+
+    struct AdmitEveryChat;
+
+    #[async_trait::async_trait]
+    impl biorouter::decision::DecisionUseGate for AdmitEveryChat {
+        async fn check(
+            &self,
+            _: &biorouter::decision::DecisionSession,
+            _: &dyn biorouter::decision::model::DecisionModel,
+        ) -> biorouter::decision::DecisionResult<()> {
+            Ok(())
+        }
+    }
+
+    /// A subagent's later generation (here, a turn the daemon runs after its
+    /// delegated run finished) that a monitor on it stops: the chat that
+    /// started it collects an `incomplete` result whose summary opens with
+    /// the monitor's reason, not a `completed` one built from the text the
+    /// turn ended on, and the result carries the turn's decision marker.
+    ///
+    /// On the daemon's own runtime (`build_agent_runtime`, 16 MiB workers):
+    /// the turn runs on a spawned worker, and a debug build's reply loop with
+    /// a monitor point overflows tokio's default 2 MiB worker stack, which is
+    /// not the stack the daemon gives it.
+    #[test]
+    fn a_later_child_turn_stopped_by_a_monitor_reads_incomplete() {
+        use biorouter::agents::subagent_result::SubagentStatus;
+
+        let result = run_monitored_child_followup("stop");
+
+        assert_eq!(result.status, SubagentStatus::Incomplete, "{result:?}");
+        assert!(
+            result.summary.starts_with(
+                "Stopped by monitor 'Task done' (set by the person): P 0.90 reached its \
+                 threshold 0.50."
+            ),
+            "the reason is the summary's first line: {}",
+            result.summary
+        );
+        assert!(
+            result.summary.contains("on it"),
+            "the turn's own words follow: {}",
+            result.summary
+        );
+        assert!(result.stopped_by_monitor.is_some());
+        assert_eq!(
+            result.decisions.as_deref(),
+            Some("Decision models: monitor 'Task done' checked 1 time (last P 0.90), fired"),
+            "{result:?}"
+        );
+    }
+
+    /// …and one whose monitor only notifies finishes `completed` with its own
+    /// closing words: the monitor's notice and the decision marker, written
+    /// after them, are not what the turn ended on.
+    #[test]
+    fn a_later_child_turn_a_monitor_did_not_stop_reads_completed() {
+        use biorouter::agents::subagent_result::SubagentStatus;
+
+        let result = run_monitored_child_followup("notify");
+
+        assert_eq!(result.status, SubagentStatus::Completed, "{result:?}");
+        assert_eq!(result.summary, "on it");
+        assert!(result.stopped_by_monitor.is_none());
+        assert_eq!(
+            result.decisions.as_deref(),
+            Some("Decision models: monitor 'Task done' checked 1 time (last P 0.90), fired"),
+            "{result:?}"
+        );
+    }
+
+    /// Run one daemon turn on a subagent whose delegated run is over, with a
+    /// `turn_end` monitor "Task done" that takes `action` at P(yes) >= 0.5,
+    /// and return the result the chat that started it collects.
+    fn run_monitored_child_followup(action: &str) -> biorouter::agents::SubagentResult {
+        let action = action.to_string();
+        biorouter::execution::runtime::build_agent_runtime()
+            .expect("an agent runtime")
+            .block_on(monitored_child_followup(action))
+    }
+
+    async fn monitored_child_followup(action: String) -> biorouter::agents::SubagentResult {
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                work_dir.path().to_path_buf(),
+                "monitored child follow-up".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        // The delegated run is over and collected; the next turn is new work.
+        let handle = biorouter::agents::subagent_handle::BackgroundSubagent::register(
+            "item-a-monitored-followup-parent",
+            session.id.clone(),
+            "delegated work",
+            CancellationToken::new(),
+        );
+        biorouter::agents::subagent_handle::begin_child_turn(&handle.child_session_id);
+        handle.complete(biorouter::agents::SubagentResult::from_error(
+            "initial generation",
+        ));
+        let initial_generation = handle.child_turn_generation();
+
+        let settings: biorouter::decision::settings::DecisionSettings =
+            serde_json::from_value(serde_json::json!({
+                "defaultModel": null,
+                "monitors": [{
+                    "id": "task-done",
+                    "name": "Task done",
+                    "question": {
+                        "instructions": "Has the agent finished the delegated work?",
+                        "kind": {"binary": {}}
+                    },
+                    "model": null,
+                    "timing": "turn_end",
+                    "threshold": 0.5,
+                    "action": action,
+                    "onError": "notify"
+                }]
+            }))
+            .unwrap();
+        biorouter::decision::settings::save(state.session_manager(), &session.id, settings)
+            .await
+            .expect("a valid monitor is stored");
+        let agent = state.get_agent(session.id.clone()).await.unwrap();
+        agent.set_decision_service(Arc::new(
+            biorouter::decision::DecisionService::new(Arc::new(OneChecker))
+                .with_use_gate(Arc::new(AdmitEveryChat))
+                .with_default_model(None),
+        ));
+        agent
+            .update_provider(Arc::new(RecordingProvider::default()), &session.id)
+            .await
+            .unwrap();
+        let mut rx = session_events::subscribe(&session.id);
+
+        let _started = start_turn(
+            state.clone(),
+            TurnRequest::new(session.id.clone(), Message::user().with_text("carry on")),
+        )
+        .await
+        .unwrap();
+        let seen = events_until_terminal(&mut rx, BOUND).await;
+        assert!(seen.iter().any(is_terminal), "the turn ends: {seen:?}");
+
+        let terminal = handle
+            .terminal_generation()
+            .expect("the follow-up's result is recorded for the chat that started it");
+        assert_eq!(terminal.generation, initial_generation + 1);
+        terminal.result
     }
 
     fn message_text_contains(

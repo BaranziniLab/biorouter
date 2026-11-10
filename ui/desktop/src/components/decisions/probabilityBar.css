@@ -1,0 +1,52 @@
+/* @ws WS-DECISIONS-PBAR begin: the thin probability bar (ProbabilityBar.tsx) */
+/*
+ * A 4px track one step off the ground it sits on (`--background-fill-strong`:
+ * on the summary card's fill and on the panel's paper alike), the accent's fill,
+ * and the threshold as a 2px tick that stands 3px proud of the track each side.
+ * Authored, not Tailwind, for the reason chatSummary.css gives. No line: the
+ * track is a fill.
+ */
+.br-pbar {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 4px;
+  flex: none;
+  border-radius: 2px;
+  background-color: var(--background-fill-strong);
+}
+
+.br-pbar__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 2px;
+  background-color: var(--background-accent);
+}
+
+.br-pbar__mark {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background-color: var(--text-default);
+}
+
+@media (forced-colors: active) {
+  .br-pbar {
+    background-color: Canvas;
+    outline: 1px solid CanvasText;
+  }
+
+  .br-pbar__fill {
+    background-color: Highlight;
+  }
+
+  .br-pbar__mark {
+    background-color: CanvasText;
+  }
+}
+/* @ws WS-DECISIONS-PBAR end */

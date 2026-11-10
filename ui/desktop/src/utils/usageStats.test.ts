@@ -3,12 +3,14 @@ import type { ActivityWindow, DailyActivity, UsageReportRow } from '../api';
 import {
   DEFAULT_USAGE_RANGE,
   USAGE_RANGES,
+  decisionModelName,
   deriveUsageStats,
   expectedHeatmapWeeks,
   favoriteModel,
   formatShare,
   formatTokensCompact,
   heatmapWeeks,
+  isDecisionUsageRow,
   isUsageRange,
   modelBreakdown,
   rangeStart,
@@ -231,6 +233,60 @@ describe('favoriteModel', () => {
   it('answers null when nothing was used', () => {
     expect(favoriteModel([])).toBeNull();
     expect(favoriteModel([row('a', 0, 0)])).toBeNull();
+  });
+});
+
+/** A decision model's own bucket: requests, no turns (`decisions` set by the server). */
+const decisionRow = (modelId: string, totalTokens: number): UsageReportRow =>
+  row(modelId, totalTokens, 0, {
+    provider: 'baseten_decision',
+    decisionRequests: 600,
+    decisions: {
+      inputTokens: totalTokens,
+      outputTokens: 0,
+      totalTokens,
+      cost: 0.12,
+      hasUnpriced: false,
+      hasUnmetered: false,
+    },
+  });
+
+describe('decision models', () => {
+  it('never become the favorite model, however many tokens a batch sent', () => {
+    const rows = [
+      decisionRow('decision-models/baseten-mammoth-27b-latest', 1_200_000),
+      row('a', 900),
+    ];
+    expect(favoriteModel(rows)?.modelId).toBe('a');
+    expect(favoriteModel([rows[0]])).toBeNull();
+  });
+
+  it('keep their row in the Models tab, after the chat models', () => {
+    const rows = [decisionRow('decision-models/baseten-joey-2b-latest', 300), row('a', 100)];
+    const models = modelBreakdown(rows);
+    expect(models.map((m) => [m.modelId, m.decision])).toEqual([
+      ['a', false],
+      ['decision-models/baseten-joey-2b-latest', true],
+    ]);
+    // The Models tab's top row is the Favorite model, as on Overview.
+    expect(models[0].modelId).toBe(favoriteModel(rows)?.modelId);
+    expect(models[1].share).toBeCloseTo(0.75);
+  });
+
+  it('read by their alias, or the tag without the prefix', () => {
+    expect(decisionModelName('decision-models/baseten-joey-2b-latest')).toBe('joey-1');
+    expect(decisionModelName('decision-models/baseten-mammoth-27b-latest')).toBe('mammoth-1');
+    expect(decisionModelName('decision-models/baseten-new-4b-latest')).toBe(
+      'baseten-new-4b-latest'
+    );
+    expect(decisionModelName('tev1:0.8b')).toBe('tev1:0.8b');
+  });
+
+  it('are told apart by the server split, not a provider list', () => {
+    expect(isDecisionUsageRow(decisionRow('x', 1))).toBe(true);
+    expect(isDecisionUsageRow(row('a', 1))).toBe(false);
+    // A day bucket that mixes turns and decision requests is not a decision row.
+    expect(isDecisionUsageRow({ ...decisionRow('x', 1), turns: 3 })).toBe(false);
   });
 });
 

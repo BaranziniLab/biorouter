@@ -15,6 +15,9 @@ pub(crate) mod chatrecall_extension;
 // sub-calls' full arguments (their records are truncated).
 pub(crate) mod code_delta;
 pub(crate) mod code_execution_extension;
+// Decision models: the `decide` and `decision_models` tools (a default-on
+// platform extension the delegation gate does not count).
+pub mod decisions_extension;
 // BR-48: a deterministic done-ness gate for interactive chat — reuses the
 // workflow `SuccessCheck` machinery to keep a turn working until its checks
 // pass. Config-gated, default OFF.
@@ -36,6 +39,9 @@ pub mod mcp_pool;
 pub mod mistakes;
 pub mod moim;
 pub mod operation_outcome;
+// A chat's orchestration plan (phases of delegated work) and the roster of its
+// subagents that every interface reads.
+pub mod orchestration_plan;
 // The one approval card `platform__manage_workflow` and `platform__manage_schedule`
 // park before they change the user's setup — shared so the two cannot disagree
 // about whether to ask (QA 2026-09-10, F1).
@@ -96,6 +102,7 @@ pub mod subagent_execution_tool;
 pub mod subagent_handle;
 pub mod subagent_handler;
 pub mod subagent_result;
+pub mod subagent_roster;
 pub(crate) mod subagent_runtime_profile;
 mod subagent_task_config;
 pub mod subagent_tool;
@@ -128,9 +135,9 @@ pub mod workspace_inspector;
 pub mod workspace_summary;
 
 pub use agent::{
-    Agent, AgentConfig, AgentEvent, ConfirmationOutcome, Drained, ExtensionLoadResult,
-    InterruptRefused, InterruptedTurnRows, PersistedMessage, SteerAdmission, SteerWaitReason,
-    TurnId, DEFAULT_MAX_TURNS, STEER_CONTINUATION_NOTE,
+    boxed_off_frame, Agent, AgentConfig, AgentEvent, ConfirmationOutcome, Drained,
+    ExtensionLoadResult, InterruptRefused, InterruptedTurnRows, PersistedMessage, SteerAdmission,
+    SteerWaitReason, TurnId, DEFAULT_MAX_TURNS, STEER_CONTINUATION_NOTE,
 };
 pub use budget::ReplyBudget;
 pub use effort::ReasoningEffort;
