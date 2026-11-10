@@ -110,3 +110,39 @@ export const settingsUsageCopy = {
   cacheExcludedNote:
     'Some cache cost is unavailable because cache pricing or historical accounting is incomplete.',
 } as const;
+
+/**
+ * Settings > App > Usage's Limits group (`settings/usage/UsageLimitsRows.tsx`): the monthly limit
+ * and the default limit per chat. Each is "No limit" until a person sets one, in tokens or, while
+ * Show costs is on, dollars. A chat's own limit is set from the cost in its composer
+ * (`USAGE_LIMIT_COPY` in bottom_menu/copy.ts).
+ */
+export const settingsLimitsCopy = {
+  groupTitle: 'Limits',
+  monthly: 'Monthly limit',
+  monthlyHelp:
+    'Stops every chat before its next model request once this month reaches it. Resets on the 1st, local time.',
+  defaultPerChat: 'Default limit per chat',
+  defaultPerChatHelp:
+    "Applies to every chat without its own limit. Set a chat's own limit from the cost under its composer.",
+  noLimit: 'No limit',
+  /** A row's value before the first read of the month has answered. */
+  pending: '…',
+  /** A dollar limit while Show costs is off: no figure is shown. */
+  dollarLimitHidden: 'Dollar limit',
+  change: 'Change',
+  changeName: (label: string) => `Change ${label.toLowerCase()}`,
+  amountLabel: (label: string) => `${label} amount`,
+  unitLabel: 'Limit unit',
+  dollars: 'Dollars',
+  tokens: 'Tokens',
+  save: 'Save',
+  removeLimit: 'No limit',
+  removeLimitName: (label: string) => `Remove the ${label.toLowerCase()}`,
+  cancel: 'Cancel',
+  invalidUsd: 'Enter an amount above $0.',
+  invalidTokens: 'Enter a number of tokens above 0, such as 5m.',
+  saveFailed: 'The limit could not be saved. Try again.',
+  needUser: 'Biorouter could not confirm this change came from you. Try again.',
+  browserNote: 'Change limits in the Biorouter desktop app.',
+} as const;

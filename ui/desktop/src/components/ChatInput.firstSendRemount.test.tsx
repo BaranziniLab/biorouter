@@ -103,6 +103,20 @@ vi.mock('./ModelAndProviderContext', () => ({
     getCurrentProviderDisplayName: async () => 'Versa API Azure',
   }),
 }));
+// The chat's usage limit is read over HTTP; nothing here is about it.
+vi.mock('./bottom_menu/useSessionUsageLimit', () => ({
+  useSessionUsageLimit: (sessionId: string | null) => ({
+    sessionId,
+    state: null,
+    loadFailed: false,
+    saving: false,
+    saveError: null,
+    reload: () => {},
+    save: async () => false,
+    openCardRequest: 0,
+    requestOpenCard: () => {},
+  }),
+}));
 vi.mock('./settings/models/subcomponents/SwitchModelModal', () => ({
   SwitchModelModal: () => null,
 }));

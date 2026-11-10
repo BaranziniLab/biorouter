@@ -8,6 +8,7 @@ import { settingsUsageCopy as copy } from '../../usage/copy';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { loadUsage } from './loadUsage';
 import { UsagePanel } from './UsagePanel';
+import { UsageLimitsRows, type ConfiguredLimits } from './UsageLimitsRows';
 import { readUsageSnapshot } from './usageSnapshot';
 
 /**
@@ -20,6 +21,9 @@ import { readUsageSnapshot } from './usageSnapshot';
  * `showCosts` (Settings > App > Show costs) drops the dollar figures and keeps the tokens and
  * turns, in the same row; the section never unmounts on that switch, so nothing below it moves
  * under the pointer (vision V4-02).
+ *
+ * Under the month, the Limits group (`UsageLimitsRows`): the monthly limit and the default limit
+ * per chat, read from the same summary the budget gauges read, and written back into it on save.
  *
  * The App tab unmounts on a tab switch, so the section seeds itself from the last read of this
  * month (`usageSnapshot.ts`) and draws the row in its first frame; the daemon is still asked, and
@@ -36,6 +40,9 @@ export default function UsageSection({ showCosts = true }: { showCosts?: boolean
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryVersion, setRetryVersion] = useState(0);
+  // A saved limit reads the month again without a status line: its gauges' percentages are the
+  // daemon's, and the limits themselves are already in place from the write's answer.
+  const [savedVersion, setSavedVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +67,12 @@ export default function UsageSection({ showCosts = true }: { showCosts?: boolean
     return () => {
       cancelled = true;
     };
-  }, [retryVersion]);
+  }, [retryVersion, savedVersion]);
+
+  const onLimitsSaved = (limits: ConfiguredLimits) => {
+    setSummary((current) => (current ? { ...current, ...limits } : current));
+    setSavedVersion((version) => version + 1);
+  };
 
   return (
     <SettingSection
@@ -100,6 +112,23 @@ export default function UsageSection({ showCosts = true }: { showCosts?: boolean
           showCosts={showCosts}
         />
       ) : null}
+      {/* Drawn while the first read runs too, its values pending, so the answer moves nothing. */}
+      {(summary || loading) && (
+        <UsageLimitsRows
+          limits={
+            summary
+              ? {
+                  monthlyTokenLimit: summary.monthlyTokenLimit ?? null,
+                  monthlyDollarLimit: summary.monthlyDollarLimit ?? null,
+                  defaultSessionTokenLimit: summary.defaultSessionTokenLimit ?? null,
+                  defaultSessionDollarLimit: summary.defaultSessionDollarLimit ?? null,
+                }
+              : null
+          }
+          showCosts={showCosts}
+          onSaved={onLimitsSaved}
+        />
+      )}
       {/* Only a retry the person asked for says it is working; the seeded read stays silent. */}
       {loading && summary && retryVersion > 0 && (
         <p className="px-3 text-supporting text-text-muted" role="status">

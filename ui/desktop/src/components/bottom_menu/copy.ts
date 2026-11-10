@@ -318,3 +318,68 @@ export const COST_CARD_COPY = {
       tokens
     ),
 } as const;
+
+/**
+ * The cost card's Limit section (`UsageLimitSection` in CostTracker.tsx), the footer trigger's
+ * limit state, and the composer notice a paused chat shows (`ChatInput`). Amounts come in already
+ * formatted (`formatLimitUsd`, `formatLimitTokens` in components/usage/usageLimits.ts). Where the
+ * monthly and default limits are set is Settings > App > Usage (`settingsLimitsCopy`).
+ */
+export const USAGE_LIMIT_COPY = {
+  section: 'Limit',
+  checking: 'Checking the limit…',
+  loadFailed: 'The limit could not be loaded.',
+  noLimit: 'No limit',
+  /** A dollar limit while Settings > App > Show costs is off: no figure is shown. */
+  dollarLimitHidden: 'Dollar limit',
+  /** Where the limit in force comes from, under its value. */
+  source: {
+    chat: 'Set for this chat',
+    default: 'Default from Settings',
+    unlimited: 'No limit for this chat',
+    none: 'No default limit is set',
+  },
+  used: (used: string, limit: string) => `${used} of ${limit} used`,
+  /** "12,000 of 100,000 tokens used": the counts come in as numbers. */
+  usedTokens: (used: number, limit: number) =>
+    `${Math.round(used).toLocaleString()} of ${Math.round(limit).toLocaleString()} tokens used`,
+  usedOnly: (used: string) => `${used} used`,
+  month: (reading: string) => `This month: ${reading}`,
+  pausedChat: 'This chat reached its limit. Raise or remove it to continue.',
+  pausedMonth: 'The monthly limit is reached. Raise it in Settings to continue.',
+  warnChat: 'This chat is near its limit.',
+  warnMonth: 'Usage is near the monthly limit.',
+  chatDollarInert: 'Nothing this chat used has a price, so its dollar limit cannot stop it.',
+  monthDollarInert: 'Nothing this month has a price, so the monthly dollar limit cannot stop it.',
+  parentChat: 'This chat counts toward the limit of the chat that started it.',
+  browserNote: 'Limits can be changed in the Biorouter desktop app.',
+  noChatYet: 'A limit can be set once the chat has started. Until then the default applies.',
+  setLimit: 'Set limit…',
+  changeLimit: 'Change limit…',
+  noLimitForChat: 'No limit',
+  noLimitForChatName: 'No limit for this chat',
+  useDefault: 'Use default',
+  fieldLabel: 'Limit for this chat',
+  unitLabel: 'Limit unit',
+  dollars: 'Dollars',
+  tokens: 'Tokens',
+  save: 'Save',
+  cancel: 'Cancel',
+  invalidUsd: 'Enter an amount above $0.',
+  invalidTokens: 'Enter a number of tokens above 0, such as 500k.',
+  saveFailed: 'The limit could not be saved. Try again.',
+  needUser: 'Biorouter could not confirm this change came from you. Try again.',
+  openSettings: 'Open usage settings',
+  /** The footer trigger's name when there is no cost figure to show. */
+  triggerLabel: 'Usage and limit',
+  /** Added to the trigger's name for a chat near or at a limit. */
+  triggerWarn: 'near its usage limit',
+  triggerPaused: 'paused by a usage limit',
+  /** The one-line composer notice while a limit holds the chat. */
+  noticeChat: 'This chat reached its usage limit.',
+  noticeMonth: 'The monthly usage limit is reached.',
+  noticeChatAction: 'Change limit',
+  noticeMonthAction: 'Open usage settings',
+  /** Send's tooltip while the chat is paused. */
+  sendPaused: 'Paused by a usage limit',
+} as const;
