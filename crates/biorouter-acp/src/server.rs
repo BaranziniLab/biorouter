@@ -15,15 +15,15 @@ use biorouter::session::{Session, SessionManager, WorkingDirUpdate};
 use fs_err as fs;
 use rmcp::model::{CallToolResult, RawContent, ResourceContents, Role};
 use sacp::schema::{
-    AgentCapabilities, AuthenticateRequest, AuthenticateResponse, BlobResourceContents,
-    CancelNotification, Content, ContentBlock, ContentChunk, EmbeddedResource,
-    EmbeddedResourceResource, ImageContent, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, ResourceLink, SessionId,
-    SessionNotification, SessionUpdate, StopReason, TextContent, TextResourceContents, ToolCall,
-    ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, ToolKind,
+    AgentCapabilities, AuthenticateRequest, AuthenticateResponse, AvailableCommand,
+    AvailableCommandsUpdate, BlobResourceContents, CancelNotification, Content, ContentBlock,
+    ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, InitializeRequest,
+    InitializeResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, ResourceLink, SessionId, SessionNotification, SessionUpdate,
+    StopReason, TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId,
+    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use sacp::{AgentToClient, ByteStreams, Handled, JrConnectionCx, JrMessageHandler, MessageCx};
 use std::collections::HashMap;
@@ -33,6 +33,21 @@ use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt 
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use url::Url;
+
+const ACP_CLIENT_ENV: &str = "BIOROUTER_ACP_CLIENT";
+const JUPYTER_AI_CLIENT: &str = "jupyter-ai";
+const ACP_DICTATE_DESCRIPTION: &str = "How to dictate into this editor";
+const MSG_ACP_DICTATE: &str = "To dictate, use Dictate to clipboard in the Biorouter app or run `biorouter dictate --copy`, then paste. Your system's own dictation also works, without your Biorouter dictionary.";
+const MSG_ACP_NOTE: &str = "(An audio clip was attached here. Biorouter does not take audio from this editor, so the clip was left out. To dictate, use Dictate to clipboard in the Biorouter app or run `biorouter dictate --copy`, then paste. Your system's own dictation also works, without your Biorouter dictionary.)";
+
+fn dictate_command_update(available: bool) -> Option<AvailableCommandsUpdate> {
+    available.then(|| {
+        AvailableCommandsUpdate::new(vec![AvailableCommand::new(
+            "dictate",
+            ACP_DICTATE_DESCRIPTION,
+        )])
+    })
+}
 
 struct BioRouterAcpSession {
     messages: Conversation,
@@ -49,6 +64,7 @@ pub struct BioRouterAcpAgent {
     /// that launched us (an editor). False over the WebSocket transport, whose
     /// clients are artifact documents and must never gain process execution.
     allow_stdio_mcp: bool,
+    dictate_available: bool,
 }
 
 pub struct BioRouterAcpConfig {
@@ -377,15 +393,39 @@ impl BioRouterAcpAgent {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             agent: agent_ptr,
             allow_stdio_mcp: true,
+            dictate_available: true,
         })
     }
 
-    /// Deny client-registered stdio MCP servers on this agent. Used for the
-    /// WebSocket transport, where the peer is untrusted artifact content.
+    /// Deny client-registered stdio MCP servers and the dictate command on this
+    /// agent. Used for the WebSocket transport, where the peer is untrusted
+    /// artifact content.
     pub fn deny_stdio_mcp(mut self) -> Self {
         self.allow_stdio_mcp = false;
+        self.dictate_available = false;
         self.agent.set_dictionary_learning(false);
         self
+    }
+
+    /// Jupyter AI displays ACP available commands, but this persona has no
+    /// dictation feature.
+    fn without_dictate_command(mut self) -> Self {
+        self.dictate_available = false;
+        self
+    }
+
+    fn announce_dictate_command(
+        &self,
+        session_id: SessionId,
+        cx: &JrConnectionCx<AgentToClient>,
+    ) -> Result<(), sacp::Error> {
+        if let Some(update) = dictate_command_update(self.dictate_available) {
+            cx.send_notification(SessionNotification::new(
+                session_id,
+                SessionUpdate::AvailableCommandsUpdate(update),
+            ))?;
+        }
+        Ok(())
     }
 
     /// Names of all extensions registered on the shared agent. Exposed for
@@ -394,7 +434,7 @@ impl BioRouterAcpAgent {
         self.agent.list_extensions().await
     }
 
-    fn convert_acp_prompt_to_message(&self, prompt: Vec<ContentBlock>) -> Message {
+    fn convert_acp_prompt_to_message(prompt: Vec<ContentBlock>) -> Message {
         let mut user_message = Message::user();
 
         // Process all content blocks from the prompt
@@ -426,7 +466,11 @@ impl BioRouterAcpAgent {
                         user_message = user_message.with_text(text)
                     }
                 }
-                ContentBlock::Audio(..) => (),
+                ContentBlock::Audio(..) => {
+                    // The clip itself never reaches the provider (DD-82): the
+                    // turn carries the note in its place.
+                    user_message = user_message.with_text(MSG_ACP_NOTE);
+                }
                 _ => (), // Handle any future ContentBlock variants
             }
         }
@@ -968,6 +1012,47 @@ impl BioRouterAcpAgent {
         cx: &JrConnectionCx<AgentToClient>,
     ) -> Result<PromptResponse, sacp::Error> {
         let session_id = args.session_id.0.to_string();
+        if !self.sessions.lock().await.contains_key(&session_id) {
+            return Err(
+                sacp::Error::invalid_params().data(format!("Session not found: {}", session_id))
+            );
+        }
+
+        if self.dictate_available
+            && matches!(
+                args.prompt.as_slice(),
+                [ContentBlock::Text(text)] if text.text.as_str() == "/dictate"
+            )
+        {
+            cx.send_notification(SessionNotification::new(
+                args.session_id,
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    TextContent::new(MSG_ACP_DICTATE),
+                ))),
+            ))?;
+            return Ok(PromptResponse::new(StopReason::EndTurn));
+        }
+
+        let has_audio = args
+            .prompt
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Audio(_)));
+        if has_audio {
+            cx.send_notification(SessionNotification::new(
+                args.session_id.clone(),
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    TextContent::new(MSG_ACP_NOTE),
+                ))),
+            ))?;
+            if args
+                .prompt
+                .iter()
+                .all(|block| matches!(block, ContentBlock::Audio(_)))
+            {
+                return Ok(PromptResponse::new(StopReason::EndTurn));
+            }
+        }
+
         let cancel_token = CancellationToken::new();
 
         {
@@ -978,7 +1063,7 @@ impl BioRouterAcpAgent {
             session.cancel_token = Some(cancel_token.clone());
         }
 
-        let user_message = self.convert_acp_prompt_to_message(args.prompt);
+        let user_message = Self::convert_acp_prompt_to_message(args.prompt);
 
         let session_config = SessionConfig {
             id: session_id.clone(),
@@ -1107,13 +1192,18 @@ impl JrMessageHandler for BioRouterAcpHandler {
             .await
             .if_request(
                 |req: NewSessionRequest, req_cx: JrRequestCx<NewSessionResponse>| async {
-                    req_cx.respond(self.agent.on_new_session(req).await?)
+                    let response = self.agent.on_new_session(req).await?;
+                    let session_id = response.session_id.clone();
+                    req_cx.respond(response)?;
+                    self.agent.announce_dictate_command(session_id, &cx)
                 },
             )
             .await
             .if_request(
                 |req: LoadSessionRequest, req_cx: JrRequestCx<LoadSessionResponse>| async {
-                    req_cx.respond(self.agent.on_load_session(req, &cx).await?)
+                    let session_id = req.session_id.clone();
+                    req_cx.respond(self.agent.on_load_session(req, &cx).await?)?;
+                    self.agent.announce_dictate_command(session_id, &cx)
                 },
             )
             .await
@@ -1175,8 +1265,19 @@ pub async fn run(builtins: Vec<String>) -> Result<()> {
     // stdio transport: the peer is the local process that launched us (an
     // editor / Jupyter AI), running with the user's own privileges, so load the
     // user's enabled config extensions — matching the CLI and GUI.
-    let agent = Arc::new(BioRouterAcpAgent::new(builtins, true).await?);
+    let mut agent = BioRouterAcpAgent::new(builtins, true).await?;
+    if client_hides_dictate(std::env::var(ACP_CLIENT_ENV).ok().as_deref()) {
+        agent = agent.without_dictate_command();
+    }
+    let agent = Arc::new(agent);
     serve(agent, incoming, outgoing).await
+}
+
+/// Whether the stdio client named in `BIOROUTER_ACP_CLIENT` is one that must not
+/// be offered `/dictate`. The Jupyter AI persona names itself there (O-30: Jupyter
+/// AI has no dictation feature), and every other client, or none, keeps it.
+fn client_hides_dictate(client: Option<&str>) -> bool {
+    client == Some(JUPYTER_AI_CLIENT)
 }
 
 /// Default address for the ACP WebSocket server. Matches the default endpoint
@@ -1260,9 +1361,9 @@ fn token_from_query(query: &str) -> Option<&str> {
 
 /// Resolve the bearer token the WebSocket server will require.
 ///
-/// The desktop app sets `BIOROUTER_ACP_WS_TOKEN` when it spawns the sidecar. A
-/// human running `biorouter acp --ws` by hand gets a freshly generated token
-/// printed once, so the endpoint is never unauthenticated by default.
+/// An operator can supply `BIOROUTER_ACP_WS_TOKEN` for a WebSocket sidecar.
+/// Otherwise a fresh token is printed once for the person launching it, so the
+/// endpoint is never unauthenticated by default.
 fn resolve_ws_token() -> String {
     if let Ok(token) = std::env::var(ACP_WS_TOKEN_ENV) {
         if !token.is_empty() {
@@ -1379,6 +1480,87 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
     use test_case::test_case;
+
+    #[test]
+    fn audio_content_becomes_the_catalog_note_in_the_turn() {
+        use sacp::schema::AudioContent;
+
+        let message = BioRouterAcpAgent::convert_acp_prompt_to_message(vec![
+            ContentBlock::Text(TextContent::new("retained text")),
+            ContentBlock::Audio(AudioContent::new("discard-me", "audio/wav")),
+        ]);
+        assert!(matches!(
+            message.content.as_slice(),
+            [MessageContent::Text(text), MessageContent::Text(note)]
+                if text.text.as_str() == "retained text" && note.text.as_str() == MSG_ACP_NOTE
+        ));
+    }
+
+    #[test]
+    fn dictate_is_only_in_an_enabled_clients_command_list() {
+        let update = dictate_command_update(true).unwrap();
+        assert_eq!(update.available_commands.len(), 1);
+        assert_eq!(update.available_commands[0].name, "dictate");
+        assert_eq!(
+            update.available_commands[0].description,
+            ACP_DICTATE_DESCRIPTION
+        );
+        assert!(dictate_command_update(false).is_none());
+    }
+
+    /// O-30: only the Jupyter AI persona's own name hides `/dictate`; any other
+    /// value, a near miss, or no value keeps it for that stdio client.
+    #[test]
+    fn only_the_jupyter_ai_persona_name_hides_dictate() {
+        assert!(client_hides_dictate(Some("jupyter-ai")));
+        for other in [
+            None,
+            Some(""),
+            Some("zed"),
+            Some("Jupyter-AI"),
+            Some("jupyter-ai "),
+        ] {
+            assert!(!client_hides_dictate(other), "{other:?}");
+        }
+    }
+
+    /// Both doors that take `/dictate` away really clear it on the agent the
+    /// transports serve: the Jupyter AI persona's on stdio, and the WebSocket
+    /// transport's `deny_stdio_mcp`. A fresh stdio agent keeps it, and
+    /// `run_ws` builds its agent through `deny_stdio_mcp`.
+    #[tokio::test]
+    async fn the_persona_and_the_websocket_agent_offer_no_dictate_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let stdio = acp_agent_with_the_dictionary_loaded(dir.path()).await;
+        assert!(
+            stdio.dictate_available,
+            "a stdio client is offered /dictate"
+        );
+        assert!(dictate_command_update(stdio.dictate_available).is_some());
+
+        let persona = acp_agent_with_the_dictionary_loaded(dir.path())
+            .await
+            .without_dictate_command();
+        assert!(!persona.dictate_available);
+        assert!(dictate_command_update(persona.dictate_available).is_none());
+
+        let websocket = acp_agent_with_the_dictionary_loaded(dir.path())
+            .await
+            .deny_stdio_mcp();
+        assert!(!websocket.dictate_available);
+        assert!(dictate_command_update(websocket.dictate_available).is_none());
+
+        let source = include_str!("server.rs");
+        let run_ws = source
+            .split("pub async fn run_ws(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("run_ws is defined in this file");
+        assert!(
+            run_ws.contains(".deny_stdio_mcp()"),
+            "run_ws must build its agent through deny_stdio_mcp"
+        );
+    }
 
     /// The ACP client draws this in a human's editor, so the guardrail's
     /// untrusted-data frame must not reach it. The fixture is built with the

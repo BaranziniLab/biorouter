@@ -1122,6 +1122,10 @@ biorouter acp
 
 > **Note.** This command is automatically invoked by ACP-compatible clients and is not typically run directly by users. The client manages the lifecycle of the `biorouter acp` process.
 
+Editors that connect over ACP do not send audio, so there is no microphone button in their chat. To dictate with Biorouter's speech model and dictionary, use Dictate to clipboard in the Biorouter app, or run `biorouter dictate --copy` in a terminal, then paste. Your system's own dictation also works, without your Biorouter dictionary.
+
+ACP editors can show the `/dictate` command. It explains the clipboard route without starting a model turn. The Jupyter AI persona does not show this command because dictation is not offered there.
+
 ## Extensions, skills, and knowledge
 
 ### extension

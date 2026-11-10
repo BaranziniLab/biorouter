@@ -9,8 +9,8 @@ use biorouter_acp::server::{serve, BioRouterAcpAgent, BioRouterAcpConfig};
 use common::{setup_mock_openai, spawn_mcp_http_server, FAKE_CODE};
 use fs_err as fs;
 use sacp::schema::{
-    ContentBlock, ContentChunk, InitializeRequest, LoadSessionRequest, McpServer, McpServerHttp,
-    NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion,
+    AudioContent, ContentBlock, ContentChunk, InitializeRequest, LoadSessionRequest, McpServer,
+    McpServerHttp, NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, TextContent,
     ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
@@ -73,6 +73,137 @@ fn test_acp_basic_completion() {
             },
         )
         .await;
+    });
+}
+
+#[test]
+fn test_dictate_command_is_advertised_and_answers_without_a_provider() {
+    run_async_test(async {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mock_server = setup_mock_openai(vec![]).await;
+        run_acp_session(
+            &mock_server,
+            vec![],
+            &[],
+            temp_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            |cx, session_id, updates| async move {
+                wait_for_command(&updates, "dictate").await;
+                let response = cx
+                    .send_request(PromptRequest::new(
+                        session_id,
+                        vec![ContentBlock::Text(TextContent::new("/dictate"))],
+                    ))
+                    .block_task()
+                    .await
+                    .unwrap();
+                assert_eq!(response.stop_reason, StopReason::EndTurn);
+                wait_for(
+                    &updates,
+                    &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                        TextContent::new("To dictate, use Dictate to clipboard in the Biorouter app or run `biorouter dictate --copy`, then paste. Your system's own dictation also works, without your Biorouter dictionary."),
+                    ))),
+                )
+                .await;
+            },
+        )
+        .await;
+        assert!(mock_server.received_requests().await.unwrap().is_empty());
+    });
+}
+
+#[test]
+fn test_audio_block_gets_the_note_without_processing_the_audio() {
+    run_async_test(async {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mock_server = setup_mock_openai(vec![]).await;
+        run_acp_session(
+            &mock_server,
+            vec![],
+            &[],
+            temp_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            |cx, session_id, updates| async move {
+                let response = cx
+                    .send_request(PromptRequest::new(
+                        session_id,
+                        vec![ContentBlock::Audio(AudioContent::new("ZmFrZQ==", "audio/wav"))],
+                    ))
+                    .block_task()
+                    .await
+                    .unwrap();
+                assert_eq!(response.stop_reason, StopReason::EndTurn);
+                wait_for(
+                    &updates,
+                    &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                        TextContent::new("(An audio clip was attached here. Biorouter does not take audio from this editor, so the clip was left out. To dictate, use Dictate to clipboard in the Biorouter app or run `biorouter dictate --copy`, then paste. Your system's own dictation also works, without your Biorouter dictionary.)"),
+                    ))),
+                )
+                .await;
+            },
+        )
+        .await;
+        assert!(mock_server.received_requests().await.unwrap().is_empty());
+    });
+}
+
+/// DD-82 and S12: in a prompt that also carries text, the audio arm becomes a
+/// text part with MSG-ACP-NOTE, so the provider gets the text and the note and
+/// never the clip.
+#[test]
+fn test_mixed_prompt_sends_the_text_and_the_note_but_not_the_audio() {
+    run_async_test(async {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompt = "what is 1+1";
+        let mock_server = setup_mock_openai(vec![(
+            "the clip was left out".to_string(),
+            include_str!("./test_data/openai_basic_response.txt"),
+        )])
+        .await;
+        run_acp_session(
+            &mock_server,
+            vec![],
+            &[],
+            temp_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            |cx, session_id, updates| async move {
+                let response = cx
+                    .send_request(PromptRequest::new(
+                        session_id,
+                        vec![
+                            ContentBlock::Text(TextContent::new(prompt)),
+                            ContentBlock::Audio(AudioContent::new("ZmFrZQ==", "audio/wav")),
+                        ],
+                    ))
+                    .block_task()
+                    .await
+                    .unwrap();
+                assert_eq!(response.stop_reason, StopReason::EndTurn);
+                wait_for(
+                    &updates,
+                    &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                        TextContent::new("2"),
+                    ))),
+                )
+                .await;
+            },
+        )
+        .await;
+        let bodies: Vec<String> = mock_server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+            .collect();
+        let reached = bodies
+            .iter()
+            .any(|body| body.contains(prompt) && body.contains("the clip was left out"));
+        assert!(reached, "the provider got the text and the note");
+        assert!(!bodies.iter().any(|body| body.contains("ZmFrZQ==")));
     });
 }
 
@@ -341,6 +472,8 @@ fn test_acp_load_session_replays_history() {
                         .await
                         .unwrap();
 
+                    wait_for_command(&updates, "dictate").await;
+
                     // The user's original prompt is replayed back to the client...
                     wait_for(
                         &updates,
@@ -525,6 +658,27 @@ async fn wait_for(updates: &Arc<Mutex<Vec<SessionNotification>>>, expected: &Ses
     }
 }
 
+async fn wait_for_command(updates: &Arc<Mutex<Vec<SessionNotification>>>, name: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+    loop {
+        let found = updates.lock().unwrap().iter().any(|notification| {
+            matches!(
+                &notification.update,
+                SessionUpdate::AvailableCommandsUpdate(update)
+                    if update.available_commands.iter().any(|command| command.name == name)
+            )
+        });
+        if found {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "ACP session did not advertise {name}"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
 async fn spawn_server_in_process(
     mock_server: &MockServer,
     builtins: &[&str],
@@ -624,10 +778,12 @@ async fn run_acp_client<F, Fut>(
         .run_until({
             let updates = updates.clone();
             move |cx: JrConnectionCx<ClientToAgent>| async move {
-                cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+                let initialized = cx
+                    .send_request(InitializeRequest::new(ProtocolVersion::LATEST))
                     .block_task()
                     .await
                     .unwrap();
+                assert!(!initialized.agent_capabilities.prompt_capabilities.audio);
 
                 test_fn(cx.clone(), updates).await;
                 Ok(())
