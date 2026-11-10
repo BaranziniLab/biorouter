@@ -382,7 +382,7 @@ async fn a_failed_question_names_its_failure_row() {
         .record
         .error
         .as_deref()
-        .is_some_and(|e| e.contains("8192-token window")));
+        .is_some_and(|e| e.contains("(its window is 8192 tokens)")));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -232,15 +232,21 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("qwen3.6-27b", 262_144),
         ("qwen3.6-35b-a3b", 262_144),
         // ── Decision models (`providers/decision/catalog.rs`) ──
-        // Baseten's three: 16,384 each (`BASETEN_DECISION_CONTEXT`, Baseten's
-        // docs). A decision chat sends one note per call, so the gauge must show
-        // this window, not the 128k default.
-        ("joey-1", 16_384),
-        ("elephant-1", 16_384),
-        ("mammoth-1", 16_384),
-        // The Ollama decision provider's default model; the window it assumes
-        // for a tag that states none (`OLLAMA_DEFAULT_DECISION_CONTEXT`).
-        ("tev1:0.8b", 8_192),
+        // Baseten's three: 16,000 each (`BASETEN_DECISION_CONTEXT`), the prompt
+        // length Baseten's runtime accepts (measured 2026-11-10: 422 `exceeding
+        // max_len 16000`), not the 16,384 its feed states. A decision chat's
+        // config and the CLI's model list read this, not the 128k default.
+        ("joey-1", 16_000),
+        ("elephant-1", 16_000),
+        ("mammoth-1", 16_000),
+        // The two Ollama decision models Biorouter installs, at the `num_ctx`
+        // their Modelfiles state, which is the limit the server enforces
+        // (measured 2026-11-10: tev1 400 `expected 1–2048`, clef 400 `context
+        // limit is 16384`). A decision chat reads the window discovery finds
+        // first (`DecisionChatProvider::from_env`); these stand when the
+        // server does not answer.
+        ("tev1:0.8b", 2_048),
+        ("clef-flash:latest", 16_384),
         // ── DeepSeek ──
         ("deepseek-chat", 1_000_000),
         // DeepSeek-V4.1-Flash (2026-09-10); DeepSeek tells users to call it

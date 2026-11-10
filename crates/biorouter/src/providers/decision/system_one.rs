@@ -169,6 +169,9 @@ impl SystemOneAdapter {
     /// two refusals ([`ollama_refusal`]), whose advice names `entry.model` and
     /// never the body.
     fn error_for_status(&self, status: u16, body: &Value) -> DecisionError {
+        if let Some(error) = self.limit_refusal(status, body) {
+            return error;
+        }
         let classified = match self.flavor {
             SystemOneFlavor::Ollama => ollama_refusal(status, body),
             SystemOneFlavor::Baseten => None,
@@ -186,6 +189,94 @@ impl SystemOneAdapter {
             message,
         }
     }
+}
+
+impl SystemOneAdapter {
+    /// The body this adapter sends for `request`.
+    fn body_for(&self, request: &DecisionRequest) -> Value {
+        let mut body = build_body(&self.entry.model, request);
+        if self.flavor == SystemOneFlavor::Ollama {
+            body["keep_alive"] = json!(OLLAMA_KEEP_ALIVE);
+        }
+        body
+    }
+
+    /// A refusal that says the request was over one of the model's limits
+    /// ([`over_limit_refusal`]), as the error Biorouter's own check before
+    /// sending gives for the same limit: the window as
+    /// [`DecisionError::TooLarge`], the 64 KiB body as a sentence about bytes,
+    /// a family's option limit as one about options.
+    fn limit_refusal(&self, status: u16, body: &Value) -> Option<DecisionError> {
+        if self.flavor == SystemOneFlavor::Ollama && status == 413 {
+            return Some(DecisionError::Invalid(format!(
+                "The request to {} was over its {OLLAMA_MAX_REQUEST_BYTES}-byte request limit. \
+                 Split the text into smaller pieces and ask again.",
+                self.name()
+            )));
+        }
+        match over_limit_refusal(status, body)? {
+            OverLimit::Window { tokens, limit } => Some(DecisionError::TooLarge {
+                chunk: "The text".to_string(),
+                tokens,
+                usable: limit,
+                limit,
+                model: format!("`{}`", self.entry.display_name),
+            }),
+            OverLimit::ChoiceOptions { limit } => Some(DecisionError::Unsupported(format!(
+                "{} takes at most {limit} options per choice question. Ask with fewer options.",
+                self.name()
+            ))),
+        }
+    }
+}
+
+/// A refusal of a request over one of the model's limits, read from the
+/// numbers in the server's error text and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverLimit {
+    /// The prompt was `tokens` tokens, over the `limit`-token window.
+    Window { tokens: usize, limit: usize },
+    /// A choice offered more than the `limit` options this model takes.
+    ChoiceOptions { limit: usize },
+}
+
+/// Which [`OverLimit`] a 400, 413 or 422 is, from its `error` text. Measured
+/// 2026-11-10, each server says the window its own way: Ollama's tev1
+/// `prompt 0 has 2503 tokens; expected 1–2048 (input is never truncated)`,
+/// Ollama's clef `Clef input has 18140 tokens; context limit is 16384`, and
+/// Baseten (422) `OneJev prompt has 18102 tokens, exceeding max_len 16000;
+/// prompts are never truncated`; tev1 refuses a 25-option choice with
+/// `question "q": Tev1 supports at most 24 candidates`. Only the two numbers
+/// are read: the text can quote a question name, and is never copied.
+pub fn over_limit_refusal(status: u16, body: &Value) -> Option<OverLimit> {
+    if !matches!(status, 400 | 413 | 422) {
+        return None;
+    }
+    let text = ["error", "detail", "message"]
+        .iter()
+        .find_map(|key| body.get(*key).and_then(Value::as_str))?;
+    if text.contains(" candidates") {
+        if let Some(limit) = number_after(text, "supports at most ") {
+            return Some(OverLimit::ChoiceOptions { limit });
+        }
+    }
+    let tokens = number_after(text, " has ").filter(|_| text.contains(" tokens"))?;
+    let limit = [
+        "expected 1\u{2013}",
+        "expected 1-",
+        "context limit is ",
+        "max_len ",
+    ]
+    .iter()
+    .find_map(|marker| number_after(text, marker))?;
+    Some(OverLimit::Window { tokens, limit })
+}
+
+/// The whole number that follows the first `marker` in `text`.
+fn number_after(text: &str, marker: &str) -> Option<usize> {
+    let (_, after) = text.split_once(marker)?;
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 /// An Ollama refusal BioRouter recognises from the error text, without copying
@@ -306,11 +397,21 @@ impl DecisionModel for SystemOneAdapter {
         system_one_caps(&self.entry, self.flavor)
     }
 
+    fn max_choice_options(&self) -> usize {
+        super::catalog::choice_option_limit(&self.entry.model_ref())
+    }
+
+    /// The encoded body, as sent: Ollama's 64 KiB is a limit on it, and JSON
+    /// escaping (a newline or a quote is two bytes), the model name and
+    /// `keep_alive` make it larger than the state's own bytes. Measured
+    /// 2026-11-10, a state that passed a count of the raw bytes was refused
+    /// with HTTP 413.
+    fn request_bytes(&self, request: &DecisionRequest) -> usize {
+        serde_json::to_vec(&self.body_for(request)).map_or(usize::MAX, |body| body.len())
+    }
+
     async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
-        let mut body = build_body(&self.entry.model, request);
-        if self.flavor == SystemOneFlavor::Ollama {
-            body["keep_alive"] = json!(OLLAMA_KEEP_ALIVE);
-        }
+        let body = self.body_for(request);
         let response = self.post_with_retry(&body).await?;
         let status = response.status();
         if !status.is_success() {
@@ -928,6 +1029,140 @@ mod tests {
         assert!(OllamaRefusal::NotADecisionModel
             .error_type()
             .starts_with("biorouter."));
+    }
+
+    /// The three servers' over-window refusals, as measured 2026-11-10, all
+    /// read as one: the two numbers, nothing else of the text.
+    #[test]
+    fn every_servers_over_window_refusal_reads_as_the_same_two_numbers() {
+        let tev = json!({"error": "prompt 0 has 2503 tokens; expected 1\u{2013}2048 (input is \
+                                    never truncated)"});
+        let clef = json!({"error": "Clef input has 18140 tokens; context limit is 16384"});
+        let baseten = json!({"error": "OneJev prompt has 18102 tokens, exceeding max_len 16000; \
+                                        prompts are never truncated", "error_type": "Validation"});
+        assert_eq!(
+            over_limit_refusal(400, &tev),
+            Some(OverLimit::Window {
+                tokens: 2503,
+                limit: 2048
+            })
+        );
+        assert_eq!(
+            over_limit_refusal(400, &clef),
+            Some(OverLimit::Window {
+                tokens: 18140,
+                limit: 16384
+            })
+        );
+        assert_eq!(
+            over_limit_refusal(422, &baseten),
+            Some(OverLimit::Window {
+                tokens: 18102,
+                limit: 16000
+            })
+        );
+        assert_eq!(
+            over_limit_refusal(
+                400,
+                &json!({"error": "question \"q\": Tev1 supports at most 24 candidates"})
+            ),
+            Some(OverLimit::ChoiceOptions { limit: 24 })
+        );
+        // Anything else keeps the generic sentence.
+        assert_eq!(over_limit_refusal(500, &tev), None);
+        assert_eq!(over_limit_refusal(400, &format_refusal_body()), None);
+        assert_eq!(
+            over_limit_refusal(400, &json!({"error": "prompt 0 has 3309 tokens"})),
+            None
+        );
+        assert_eq!(over_limit_refusal(400, &Value::Null), None);
+    }
+
+    fn adapter(flavor: SystemOneFlavor) -> SystemOneAdapter {
+        let entry = DecisionModelEntry {
+            provider: "ollama_decision".to_string(),
+            model: "tev1:0.8b".to_string(),
+            display_name: "tev1:0.8b".to_string(),
+            context_tokens: 2048,
+            kinds: vec![crate::decision::types::DecisionKindTag::Binary],
+            tier: ProviderTier::Private,
+            affiliation: None,
+            adapter: crate::decision::types::DecisionAdapter::SystemOne,
+            local: true,
+            load_refusal: None,
+        };
+        let client = ApiClient::new(
+            "http://127.0.0.1:9/".to_string(),
+            AuthMethod::Custom(Box::new(NoAuth)),
+        )
+        .unwrap();
+        SystemOneAdapter::new(client, flavor, entry)
+    }
+
+    #[test]
+    fn a_limit_refusal_says_which_limit_and_never_echoes_the_body() {
+        let model = adapter(SystemOneFlavor::Ollama);
+        let window = model.error_for_status(
+            400,
+            &json!({"error": "prompt 0 has 2503 tokens; expected 1\u{2013}2048 SECRET"}),
+        );
+        assert!(
+            matches!(
+                &window,
+                DecisionError::TooLarge { tokens: 2503, limit: 2048, model, .. }
+                    if model == "`tev1:0.8b`"
+            ),
+            "{window:?}"
+        );
+        assert!(!window.to_string().contains("SECRET"));
+        let bytes = model.error_for_status(
+            413,
+            &json!({"error": "text and schema must not exceed 64 KiB"}),
+        );
+        assert!(
+            matches!(&bytes, DecisionError::Invalid(text)
+                if text.contains("65536-byte request limit") && !text.contains("window")),
+            "{bytes:?}"
+        );
+        let options = model.error_for_status(
+            400,
+            &json!({"error": "question \"SECRET\": Tev1 supports at most 24 candidates"}),
+        );
+        assert!(
+            matches!(&options, DecisionError::Unsupported(text)
+                if text.contains("at most 24 options") && !text.contains("SECRET")),
+            "{options:?}"
+        );
+        // A 413 from Baseten is not Ollama's body limit.
+        let baseten = adapter(SystemOneFlavor::Baseten).error_for_status(413, &json!({}));
+        assert!(
+            matches!(baseten, DecisionError::Backend { .. }),
+            "{baseten:?}"
+        );
+    }
+
+    #[test]
+    fn the_bytes_counted_are_the_encoded_body() {
+        let model = adapter(SystemOneFlavor::Ollama);
+        let mut questions = IndexMap::new();
+        questions.insert(
+            "q".to_string(),
+            Question {
+                instructions: "Is it there?".to_string(),
+                kind: DecisionKind::Binary {},
+                threshold: None,
+            },
+        );
+        // Every newline and quote is two bytes once escaped.
+        let text = format!("A note.{}", "\n\"".repeat(1_000));
+        let request = DecisionRequest {
+            questions,
+            context: DecisionContext::Text(text.clone()),
+        };
+        let sent = serde_json::to_vec(&model.body_for(&request)).unwrap().len();
+        assert_eq!(model.request_bytes(&request), sent);
+        assert!(model.request_bytes(&request) > text.len() + 2_000);
+        assert_eq!(model.max_choice_options(), 24);
     }
 
     #[test]

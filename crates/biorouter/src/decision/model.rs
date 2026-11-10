@@ -12,6 +12,7 @@ use utoipa::ToSchema;
 use super::error::DecisionResult;
 use super::types::{
     DecisionAdapter, DecisionKindTag, DecisionModelRef, DecisionRequest, ModelVerdicts,
+    MAX_CHOICE_OPTIONS,
 };
 use crate::privacy::affiliation::ModelAffiliation;
 use crate::privacy::ProviderTier;
@@ -27,7 +28,8 @@ pub struct DecisionCaps {
     pub context_tokens: usize,
     /// Requests in flight at once for this model.
     pub max_concurrency: usize,
-    /// A body size the backend refuses above (Ollama's System One: 64 KiB).
+    /// A body size the backend refuses above (Ollama's System One: 64 KiB),
+    /// counted by [`DecisionModel::request_bytes`].
     pub max_request_bytes: Option<usize>,
     /// Runs on this machine: ranked first, and given longer for the first call,
     /// which includes loading the model.
@@ -49,6 +51,26 @@ pub trait DecisionModel: Send + Sync {
     fn tier(&self) -> ProviderTier;
     fn affiliation(&self) -> Option<ModelAffiliation>;
     fn caps(&self) -> DecisionCaps;
+    /// The most options one choice question may offer this model. Defaults to
+    /// the shared [`MAX_CHOICE_OPTIONS`]; a model family that takes fewer
+    /// says so here, and the service refuses a larger choice before sending
+    /// (and as a setting that asks one is saved).
+    fn max_choice_options(&self) -> usize {
+        MAX_CHOICE_OPTIONS
+    }
+    /// The bytes `request` takes as it is sent, which
+    /// [`DecisionCaps::max_request_bytes`] is a limit on. Defaults to the
+    /// state's own bytes plus each question's instructions and 64 for its
+    /// framing; an adapter that builds the body itself counts the encoded
+    /// body, which JSON escaping and its own fields make larger.
+    fn request_bytes(&self, request: &DecisionRequest) -> usize {
+        request.context.byte_len()
+            + request
+                .questions
+                .values()
+                .map(|q| q.instructions.len() + 64)
+                .sum::<usize>()
+    }
     /// Answer every question over the request's one state. The service has
     /// already validated the request, checked privacy and checked its size.
     async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts>;

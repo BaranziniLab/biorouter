@@ -41,6 +41,7 @@ fn every_decision_error_is_answered_with_one_status() {
             DecisionError::TooLarge {
                 chunk: "c".into(),
                 tokens: 9,
+                usable: 1,
                 limit: 1,
                 model: "m".into(),
             },
@@ -1594,6 +1595,41 @@ async fn an_adhoc_decision_without_a_chat_says_so_and_names_a_public_model() {
         "{note}"
     );
     assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
+}
+
+/// An ad hoc decision over a state the model's window cannot hold is 413 with
+/// the size sentence, and nothing is sent (F9: the status was only ever
+/// checked against the error table, never through a request).
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn an_oversized_adhoc_state_is_413_and_nothing_is_sent() {
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let fake = fake_listing(vec![DecisionModelEntry {
+        context_tokens: 2_048,
+        ..entry("small-checker", ProviderTier::Private, true)
+    }]);
+    let (status, body) = send(
+        fake.app(&state),
+        "POST",
+        "/decisions/decide",
+        Some(json!({
+            "model": { "provider": "test_decision", "model": "small-checker" },
+            "questions": { "has_ms": yes_no(None) },
+            "context": { "text": "Neuro follow-up, EDSS 2.0. ".repeat(600) }
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert!(
+        body.starts_with("The text is about ")
+            && body.contains(
+                "`small-checker` takes beside these questions (its window is 2048 tokens)"
+            ),
+        "{body}"
+    );
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

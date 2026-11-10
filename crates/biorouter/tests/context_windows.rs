@@ -184,3 +184,41 @@ async fn the_uis_pattern_scan_lands_on_each_models_true_window() {
         wrong.join("\n")
     );
 }
+
+/// Decision models: each registry row is the window its server enforces,
+/// measured 2026-11-10 (Baseten's runtime takes 16,000, not the 16,384 its
+/// feed states; Ollama's limit is the Modelfile's `num_ctx`), and the Ollama
+/// decision provider declares no model list, so no listing reports one window
+/// for every model it has pulled (it reported tev1:0.8b at 8,192).
+#[tokio::test]
+async fn decision_model_windows_are_the_ones_their_servers_enforce() {
+    use biorouter::providers::decision::catalog::{
+        BASETEN_DECISION_CONTEXT, BASETEN_DECISION_MODELS,
+    };
+    assert_eq!(BASETEN_DECISION_CONTEXT, 16_000);
+    for known in BASETEN_DECISION_MODELS {
+        assert_eq!(
+            known.context_tokens, BASETEN_DECISION_CONTEXT,
+            "{}",
+            known.name
+        );
+        assert_eq!(
+            ModelConfig::context_window_for(known.name),
+            BASETEN_DECISION_CONTEXT,
+            "{}",
+            known.name
+        );
+    }
+    assert_eq!(ModelConfig::context_window_for("tev1:0.8b"), 2_048);
+    assert_eq!(ModelConfig::context_window_for("clef-flash:latest"), 16_384);
+    let (ollama_decision, _) = providers()
+        .await
+        .into_iter()
+        .find(|(meta, _)| meta.name == "ollama_decision")
+        .expect("the Ollama decision provider is registered");
+    assert!(
+        ollama_decision.known_models.is_empty(),
+        "{:?}",
+        ollama_decision.known_models
+    );
+}
