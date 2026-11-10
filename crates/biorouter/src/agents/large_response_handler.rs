@@ -37,11 +37,17 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 /// Aggregate inline token budget for a single tool result. Above this the
-/// result is offloaded to a handle and replaced by a preview. ~25k tokens is
-/// about an eighth of a 200k window — roomy enough for real grep/SQL/omics
-/// output, small enough that one tool call can no longer eat the context.
-/// Override with `BIOROUTER_LARGE_RESPONSE_TOKENS`.
-pub const DEFAULT_LARGE_RESPONSE_TOKENS: usize = 25_000;
+/// result is offloaded to a handle and replaced by a preview.
+///
+/// A result that stays inline is re-sent with every later request of the chat,
+/// so its cost is its size times the number of requests that follow it, not
+/// its size once. It was 25k tokens until 2026-11; a long data-analysis chat
+/// then carried six results of 8-15k tokens each for 250-410 later requests
+/// apiece. 10k tokens (about 40k characters) still holds a real grep, a table
+/// schema or a page of query rows; anything larger is read back from the
+/// handle with a range or a search. Override with
+/// `BIOROUTER_LARGE_RESPONSE_TOKENS`.
+pub const DEFAULT_LARGE_RESPONSE_TOKENS: usize = 10_000;
 
 /// Internal protocol receipts (notably Workspace terminal-result receipts)
 /// must remain deliverable even when an operator lowers the general
@@ -60,8 +66,10 @@ fn minimum_response_tokens_for_tool(tool_name: &str) -> usize {
 }
 
 /// How much of an offloaded result stays inline as a head/tail preview.
-/// Override with `BIOROUTER_LARGE_RESPONSE_PREVIEW_TOKENS`.
-pub const DEFAULT_LARGE_RESPONSE_PREVIEW_TOKENS: usize = 4_000;
+/// It is re-sent with every later request too, so it is kept to a fifth of
+/// the inline limit (it was 4,000 beside the old 25k limit). Override with
+/// `BIOROUTER_LARGE_RESPONSE_PREVIEW_TOKENS`.
+pub const DEFAULT_LARGE_RESPONSE_PREVIEW_TOKENS: usize = 2_000;
 
 /// Used only when the tokenizer cannot be initialized: a deliberately
 /// conservative (low) chars-per-token divisor, so the estimate errs high and we
@@ -449,7 +457,7 @@ mod tests {
         })
     }
 
-    /// A payload comfortably over the default 25k-token budget.
+    /// A payload comfortably over the default 10k-token budget.
     fn huge_text() -> String {
         (0..40_000)
             .map(|i| format!("line {i} of the oversized tool output\n"))
@@ -661,6 +669,89 @@ mod tests {
         let name = handle_filename(&ctx);
         assert!(!name.contains('/'));
         assert!(!name.contains(".."));
+    }
+
+    /// The defaults are a cost decision: an inline result is re-sent with every
+    /// later request, so the limit stays near 10k tokens and the preview near
+    /// 2k. Raising either should be a deliberate edit of this test.
+    #[test]
+    fn default_limits_are_ten_thousand_inline_and_two_thousand_preview() {
+        assert_eq!(DEFAULT_LARGE_RESPONSE_TOKENS, 10_000);
+        assert_eq!(DEFAULT_LARGE_RESPONSE_PREVIEW_TOKENS, 2_000);
+        let limits = LargeResponseLimits::new_with_minimum(
+            DEFAULT_LARGE_RESPONSE_TOKENS,
+            DEFAULT_LARGE_RESPONSE_PREVIEW_TOKENS,
+            1,
+        );
+        assert_eq!(limits.max_tokens, 10_000);
+        assert_eq!(limits.preview_tokens, 2_000);
+        // The workspace receipt floor still sits under the general default, so
+        // the default never has to be raised to keep receipts deliverable.
+        const { assert!(MIN_INTERNAL_PROTOCOL_RESPONSE_TOKENS < DEFAULT_LARGE_RESPONSE_TOKENS) };
+    }
+
+    /// A result between the new 10k limit and the old 25k one (the band the
+    /// mid-sized query results of a long data chat fell in) is now offloaded,
+    /// and what stays inline is a preview of about 2k tokens.
+    #[tokio::test]
+    async fn a_mid_sized_result_over_ten_thousand_tokens_is_offloaded() {
+        let dir = TempDir::new().unwrap();
+        let limits = LargeResponseLimits::new_with_minimum(
+            DEFAULT_LARGE_RESPONSE_TOKENS,
+            DEFAULT_LARGE_RESPONSE_PREVIEW_TOKENS,
+            1,
+        );
+        // Distinct numbers keep this token-dense: roughly 15-20k tokens.
+        let mid: String = (0..2_000)
+            .map(|i| format!("row {i} value {}\n", i * 7))
+            .collect();
+        let tokens = count_tokens(Arc::new(mid.clone())).await;
+        assert!(
+            tokens > 10_000 && tokens < 25_000,
+            "fixture must sit between the new and the old limit; got {tokens}"
+        );
+        assert!(!text_will_remain_inline_with_limits(&mid, limits).await);
+
+        let processed = process_tool_response(ok(vec![Content::text(mid.clone())]), &ctx(&dir))
+            .await
+            .unwrap();
+        let text = &processed.content[0].as_text().unwrap().text;
+        assert!(text.contains("inline limit"), "{text}");
+        let preview_tokens = count_tokens(Arc::new(text.clone())).await;
+        assert!(
+            preview_tokens < 3_000,
+            "the inline reply should be about a 2k-token preview; got {preview_tokens}"
+        );
+    }
+
+    /// The cap bounds one result; the system prompt is what keeps a model from
+    /// pulling bulk data or free text into the chat in the first place. Pin
+    /// the parts of "# Tool Use" that say so.
+    #[test]
+    fn system_prompt_tells_the_model_data_is_processed_not_read() {
+        let prompt = include_str!("../prompts/system.md");
+        let tool_use = prompt
+            .split("# Tool Use")
+            .nth(1)
+            .and_then(|rest| rest.split("\n# ").next())
+            .expect("system.md has a Tool Use section");
+        for phrase in [
+            "Every tool call re-sends the whole conversation",
+            "data to process in code",
+            "counts, schemas and a few sample rows",
+            "write bulk results to a file",
+            "select only the columns",
+            "clinical notes",
+            "metadata columns only",
+            "never as a call on its own",
+            "code_execution__wait_for",
+            "shell_status` with `timeout_secs`",
+            "workspace_watch",
+            "`sleep()`",
+            "every 30 seconds",
+        ] {
+            assert!(tool_use.contains(phrase), "Tool Use is missing {phrase:?}");
+        }
     }
 
     #[test]
