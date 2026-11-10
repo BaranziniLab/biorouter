@@ -3994,6 +3994,44 @@ enum WrapUp {
     ActionLimit,
     /// The turn ended at its tool-call limit (`max_tool_calls`).
     ToolCallLimit,
+    /// A per-chat or monthly usage limit is reached
+    /// ([`crate::agents::usage_limit`]).
+    UsageLimit,
+}
+
+/// The side-usage row for one workflow-generation call, `None` when the
+/// provider reported no tokens. Cache buckets are not carried by a side row.
+fn workflow_side_usage(
+    session_id: &str,
+    provider_name: &str,
+    usage: &crate::providers::base::ProviderUsage,
+) -> Option<crate::session::SideUsageEntry> {
+    let input = usage.usage.input_tokens.map(i64::from);
+    let output = usage.usage.output_tokens.map(i64::from);
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    Some(crate::session::SideUsageEntry {
+        event_key: format!("workflow:{}", uuid::Uuid::new_v4()),
+        session_id: session_id.to_string(),
+        provider: usage
+            .provider
+            .clone()
+            .unwrap_or_else(|| provider_name.to_string()),
+        model_id: usage.model.clone(),
+        input_tokens: input,
+        output_tokens: output,
+    })
+}
+
+/// What the usage limit gate decided before a model request
+/// ([`Agent::usage_limit_gate`]). Both arms carry events in yield order.
+pub(super) enum UsageLimitGate {
+    Proceed,
+    /// The once-per-reply warning; the request goes ahead.
+    Notices(Vec<AgentEvent>),
+    /// A limit is reached: end the turn with no further model request.
+    Stop(Vec<AgentEvent>),
 }
 
 /// The `turn_end` monitors each chat's running decision turn has already
@@ -4145,6 +4183,7 @@ fn wound_down_notice(names: &[String], why: WrapUp) -> Option<String> {
         WrapUp::Stall => "was being wound down because the agent stopped making progress",
         WrapUp::ActionLimit => "ended because it reached its action limit",
         WrapUp::ToolCallLimit => "ended because it reached its tool-call limit",
+        WrapUp::UsageLimit => "ended because it reached a usage limit",
     };
     let subject = if rest.is_empty() {
         format!("Monitor {first} was")
@@ -4485,6 +4524,9 @@ pub struct Agent {
     pub(super) cached_classification: CachedClassification,
     /// What the reply loop is awaiting right now. See [`crate::agents::loop_phase`].
     pub(super) loop_phase: crate::agents::loop_phase::LoopPhaseCell,
+    /// Whether this reply already warned about, or stopped at, a usage limit.
+    /// See [`crate::agents::usage_limit`].
+    pub(super) usage_limit_reply: crate::agents::usage_limit::ReplyLimitState,
     /// Acknowledgements a live-steering provider still owes. See [`LiveAcks`].
     pub(super) live_acks: LiveAcks,
     /// How the last reply loop on this agent ended. See [`TurnExit`].
@@ -5695,6 +5737,7 @@ impl Agent {
             normalizer: Default::default(),
             cached_classification: Default::default(),
             loop_phase: Default::default(),
+            usage_limit_reply: Default::default(),
             live_acks: Default::default(),
             turn_exit: std::sync::Mutex::new(None),
             steer_arrivals: tokio::sync::watch::Sender::new(0),
@@ -10968,6 +11011,20 @@ impl Agent {
             NeverYielded::ClientPromptAndModelOnly,
         );
 
+        // A chat already at a usage limit: the message is stored above, the
+        // durable notice names the limit, and no model request is made (no
+        // auto-compaction either, which is spend).
+        if let Some(notice) =
+            boxed_off_frame(|| self.usage_limit_paused_notice(&session_config.id)).await
+        {
+            return Ok(Box::pin(async_stream::try_stream! {
+                if let Some(published) = prestream_published {
+                    yield published;
+                }
+                yield AgentEvent::Message(notice);
+            }));
+        }
+
         // A decision model bound as this chat's main model answers the prompt
         // itself: no LLM loop, no tools, no compaction. Gate B above has run
         // (the bind is Gate A's); Gate H runs inside the decision service.
@@ -11371,6 +11428,117 @@ impl Agent {
                 format!("Stop hook blocked completion: {reason}"),
             ),
         }
+    }
+
+    /// Add one workflow-generation call's usage to `session_id`'s ledger as a
+    /// side call (no `updated_at` stamp, once per call). A failed write is
+    /// logged, never fails the workflow.
+    async fn record_workflow_usage(
+        &self,
+        session_id: &str,
+        provider_name: &str,
+        usage: &crate::providers::base::ProviderUsage,
+    ) {
+        let Some(entry) = workflow_side_usage(session_id, provider_name, usage) else {
+            return;
+        };
+        if let Err(e) = self
+            .config
+            .session_manager
+            .apply_side_usage_event(entry)
+            .await
+        {
+            warn!(
+                session_id,
+                "could not record the workflow call's usage: {e:#}"
+            );
+        }
+    }
+
+    /// The usage limit gate, asked before every model request of a reply
+    /// ([`crate::agents::usage_limit`]). Reached: the turn ends here, with no
+    /// further provider call and no wrap-up call, on a durable notice naming the
+    /// limit. A steer does not resume it ([`TurnExit::Final`], like the BR-35
+    /// spend cap). At 80% of a limit: one inline warning per reply. A failed
+    /// read proceeds (logged). Once a reply has stopped, later asks stop again
+    /// with no second notice. A plain `async fn` the loop boxes.
+    async fn usage_limit_gate(&self, session_id: &str, turns_taken: u32) -> UsageLimitGate {
+        use crate::agents::usage_limit;
+        if self.usage_limit_reply.stopped() {
+            return UsageLimitGate::Stop(Vec::new());
+        }
+        let check = match usage_limit::check(&self.config.session_manager, session_id).await {
+            Ok(check) => check,
+            Err(e) => {
+                warn!(
+                    session_id,
+                    "usage limit check failed, not enforced this time: {e:#}"
+                );
+                return UsageLimitGate::Proceed;
+            }
+        };
+        if let Some(hit) = check.reached {
+            self.usage_limit_reply.take_stop();
+            self.record_turn_exit(TurnExit::Final);
+            crate::agents::subagent_handle::begin_parent_closing(session_id);
+            warn!(
+                session_id,
+                axis = hit.amount.axis(),
+                scope = ?hit.scope,
+                "usage limit reached; ending the turn before the next model request"
+            );
+            emit_loop_safety(
+                LoopSafetyKind::UsageLimitStop,
+                session_id,
+                turns_taken,
+                None,
+                Some(hit.amount.axis()),
+            );
+            let mut events = vec![AgentEvent::Message(
+                self.durable_notice(session_id, usage_limit::stop_notice(&hit))
+                    .await,
+            )];
+            events.extend(
+                self.forced_exit_monitor_notices(session_id, WrapUp::UsageLimit)
+                    .await,
+            );
+            return UsageLimitGate::Stop(events);
+        }
+        match check.warning {
+            Some(hit) if self.usage_limit_reply.take_warning() => {
+                emit_loop_safety(
+                    LoopSafetyKind::UsageLimitWarn,
+                    session_id,
+                    turns_taken,
+                    None,
+                    Some(hit.amount.axis()),
+                );
+                UsageLimitGate::Notices(vec![AgentEvent::Message(inline_notice_user_only(
+                    usage_limit::warning_notice(&hit),
+                ))])
+            }
+            _ => UsageLimitGate::Proceed,
+        }
+    }
+
+    /// The prologue's half of the usage limit: a message sent to a chat that is
+    /// already at a limit is stored by the caller and gets this durable notice,
+    /// and no model request is made. `None` when no limit is reached.
+    async fn usage_limit_paused_notice(&self, session_id: &str) -> Option<Message> {
+        use crate::agents::usage_limit;
+        let hit = usage_limit::reached_limit(&self.config.session_manager, session_id).await?;
+        self.record_turn_exit(TurnExit::Final);
+        emit_loop_safety(
+            LoopSafetyKind::UsageLimitStop,
+            session_id,
+            0,
+            None,
+            Some(hit.amount.axis()),
+        );
+        Some(
+            self.durable_notice(session_id, usage_limit::stop_notice(&hit))
+                .await,
+        )
     }
 
     /// A user-visible notice that OUTLIVES the stream it was yielded on.
@@ -12595,6 +12763,7 @@ impl Agent {
             .find(|m| m.role == rmcp::model::Role::User)
             .map(|m| m.created)
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        self.usage_limit_reply.begin_reply();
         Ok(Box::pin(async_stream::try_stream! {
             let _ = reply_span.enter();
             // Pre-turn snapshot: the clean work-tree state as this turn opens, so a
@@ -12896,6 +13065,24 @@ impl Agent {
                         yield event;
                     }
                     break;
+                }
+                // Usage limits (per chat, default per chat, monthly), asked before
+                // every model request. Reached ends the turn here: no further
+                // provider call, no wrap-up call, and a steer is stored unanswered.
+                match boxed_off_frame(|| self.usage_limit_gate(&session_config.id, turns_taken)).await {
+                    UsageLimitGate::Proceed => {}
+                    UsageLimitGate::Notices(events) => {
+                        for event in events {
+                            yield event;
+                        }
+                    }
+                    UsageLimitGate::Stop(events) => {
+                        native_supervision_required = true;
+                        for event in events {
+                            yield event;
+                        }
+                        break;
+                    }
                 }
 
                 // Soft interrupt: inject any user messages queued mid-turn at this
@@ -14189,6 +14376,28 @@ impl Agent {
                                 messages_to_add.push(message);
                                 pending_turn_abort = Some(abort);
                                 break;
+                            }
+                            // A compaction is spend: none once a usage limit is
+                            // reached. The gate stops the turn, and the loop top
+                            // stops again without a second notice.
+                            match boxed_off_frame(|| {
+                                self.usage_limit_gate(&session_config.id, turns_taken)
+                            })
+                            .await
+                            {
+                                UsageLimitGate::Proceed => {}
+                                UsageLimitGate::Notices(events) => {
+                                    for event in events {
+                                        yield event;
+                                    }
+                                }
+                                UsageLimitGate::Stop(events) => {
+                                    native_supervision_required = true;
+                                    for event in events {
+                                        yield event;
+                                    }
+                                    break;
+                                }
                             }
                             compaction_attempts += 1;
 
@@ -15713,8 +15922,23 @@ impl Agent {
         }
     }
 
+    /// [`Self::create_workflow_for_session`] for the chat in the task's
+    /// session scope, if any.
+    pub async fn create_workflow(&self, messages: Conversation) -> Result<Workflow> {
+        let session_id = crate::session_context::current_session_id();
+        self.create_workflow_for_session(messages, session_id.as_deref())
+            .await
+    }
+
+    /// Generate a workflow from `messages`. The model call's usage is added to
+    /// `session_id`'s ledger as a side call (it is spend the person caused from
+    /// that chat), so usage limits and the cost card count it.
     #[allow(clippy::too_many_lines)]
-    pub async fn create_workflow(&self, mut messages: Conversation) -> Result<Workflow> {
+    pub async fn create_workflow_for_session(
+        &self,
+        mut messages: Conversation,
+        session_id: Option<&str>,
+    ) -> Result<Workflow> {
         tracing::info!(
             "Starting workflow creation with {} messages",
             messages.len()
@@ -15769,15 +15993,18 @@ impl Agent {
         );
 
         tracing::info!("Calling provider to generate workflow content");
-        let (result, _usage) = self
-            .provider()
-            .await?
+        let workflow_provider = self.provider().await?;
+        let (result, usage) = workflow_provider
             .complete(&system_prompt, messages.messages(), &tools)
             .await
             .map_err(|e| {
                 tracing::error!("Provider completion failed during workflow creation: {}", e);
                 e
             })?;
+        if let Some(session_id) = session_id {
+            self.record_workflow_usage(session_id, workflow_provider.get_name(), &usage)
+                .await;
+        }
 
         let content = result.as_concat_text();
         tracing::debug!(
@@ -16014,6 +16241,30 @@ mod tests {
     use crate::permission::{Permission, PermissionConfirmation};
     use crate::workflow::Response;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn a_workflow_call_is_billed_to_the_chat_as_a_side_call() {
+        let usage = crate::providers::base::ProviderUsage::new(
+            "gpt-test".to_string(),
+            crate::providers::base::Usage::new(Some(1200), Some(300), Some(1500)),
+        );
+        let entry = workflow_side_usage("20261110_1", "openai", &usage).expect("tokens reported");
+        assert_eq!(entry.session_id, "20261110_1");
+        assert_eq!(entry.provider, "openai");
+        assert_eq!(entry.model_id, "gpt-test");
+        assert_eq!(entry.input_tokens, Some(1200));
+        assert_eq!(entry.output_tokens, Some(300));
+        assert!(entry.event_key.starts_with("workflow:"));
+        // Each call is its own ledger row.
+        let again = workflow_side_usage("20261110_1", "openai", &usage).unwrap();
+        assert_ne!(entry.event_key, again.event_key);
+
+        let none = crate::providers::base::ProviderUsage::new(
+            "gpt-test".to_string(),
+            crate::providers::base::Usage::new(None, None, None),
+        );
+        assert!(workflow_side_usage("20261110_1", "openai", &none).is_none());
+    }
 
     #[test]
     fn same_turn_catalog_refresh_covers_every_mutating_manager_tool_only() {

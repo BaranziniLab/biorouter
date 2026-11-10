@@ -223,6 +223,7 @@
 //! | `PUT /sessions/{session_id}/name` · `user_workflow_values` | Writes into the chat; the second re-applies its workflow to the live agent. |
 //! | `POST /sessions/{session_id}/edit_message`, `editType: edit` | Truncates the chat in place. (`diverge` keeps DR-19's stricter proof gate.) |
 //! | `GET /sessions/{session_id}/extensions` · `usage` | The chat's extensions by name (M2's sibling); its usage, whose 200/404 was an existence oracle. |
+//! | `GET|PUT /sessions/{session_id}/usage-limit` | The chat's usage limit and what it used (`routes::usage_limit`, through its own `reach_chat`). The PUT also takes the user-action proof on a daemon that holds a key, so a model cannot lift its own limit, and refuses a subagent's chat, which is held to its parent's limit. |
 //! | `GET /agent/tools` | QA M2: a private chat's private-connector tool names, handed to a secret-only caller while `add_extension` on the same chat refused. Like the `callable_tool_count` row above it mints an agent for the chat, so the gate runs first. The empty `session_id` of the settings page names no chat and is not gated. |
 //! | `POST /workflows/create` | Loads the chat's whole transcript and returns what a model makes of it. |
 //! | `POST /skills/session` | Writes a skill's instructions into the chat's next turn. |
@@ -1793,6 +1794,7 @@ mod tests {
         let active_work_rs = include_str!("active_work.rs");
         let schedule_rs = include_str!("schedule.rs");
         let subagents_rs = include_str!("session_subagents.rs");
+        let usage_limit_rs = include_str!("usage_limit.rs");
         for (src, func, gate_call, first_touch, what) in [
             (
                 reply_rs,
@@ -1919,6 +1921,27 @@ mod tests {
                 "session_reach(",
                 "get_session_model_usage(",
                 "the usage read, whose 200/404 said whether the id existed",
+            ),
+            (
+                usage_limit_rs,
+                "async fn reach_chat(",
+                "session_reach(",
+                ".get_session(",
+                "the row read, whose 404 said whether the id existed",
+            ),
+            (
+                usage_limit_rs,
+                "pub async fn get_session_usage_limit(",
+                "reach_chat(",
+                "usage_limit_state(",
+                "the limit and spend read",
+            ),
+            (
+                usage_limit_rs,
+                "pub async fn put_session_usage_limit(",
+                "reach_chat(",
+                "set_for_session(",
+                "the per-chat limit write",
             ),
             (
                 subagents_rs,
@@ -3783,6 +3806,7 @@ mod bypass_tests {
         vec![
             ("GET", format!("/sessions/{id}/extensions"), None),
             ("GET", format!("/sessions/{id}/usage"), None),
+            ("GET", format!("/sessions/{id}/usage-limit"), None),
             ("GET", format!("/sessions/{id}/subagents"), None),
             // Decision models: the log holds what was sent, and the settings
             // choose which model reads the chat. `routes::decisions`' own tests
@@ -3817,6 +3841,11 @@ mod bypass_tests {
                 "POST",
                 "/skills/session".to_string(),
                 Some(serde_json::json!({ "sessionId": id, "add": ["qa-h2-probe-skill"] })),
+            ),
+            (
+                "PUT",
+                format!("/sessions/{id}/usage-limit"),
+                Some(serde_json::json!({ "mode": "unlimited" })),
             ),
             (
                 "PUT",
@@ -4123,6 +4152,7 @@ mod bypass_tests {
         for (method, uri, expected) in [
             ("GET", format!("/sessions/{id}/extensions"), StatusCode::OK),
             ("GET", format!("/sessions/{id}/usage"), StatusCode::OK),
+            ("GET", format!("/sessions/{id}/usage-limit"), StatusCode::OK),
             ("DELETE", format!("/sessions/{id}"), StatusCode::OK),
         ] {
             let (status, body) = call(state.clone(), method, &uri, None, &[]).await;

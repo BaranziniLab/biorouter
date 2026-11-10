@@ -2770,6 +2770,17 @@ async fn discard_unstarted_run_session(session_manager: &SessionManager, session
     }
 }
 
+/// The refusal for a scheduled run at the monthly usage limit, `None` below it
+/// or with no monthly limit set.
+async fn monthly_usage_limit_refusal(
+    session_manager: &SessionManager,
+    limits: &crate::config::usage::UsageLimits,
+) -> Option<&'static str> {
+    crate::agents::usage_limit::reached_monthly_limit_with(session_manager, limits)
+        .await
+        .map(|_| crate::agents::usage_limit::SCHEDULED_RUN_MONTH_LIMIT)
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
@@ -2795,6 +2806,17 @@ async fn execute_job(
         .map_err(|error| error.context(crate::workflow::runtime::WORKFLOW_NOT_STARTED))?;
 
     let agent = Agent::new();
+
+    // At the monthly usage limit no run starts (a run is spend nobody is
+    // watching). Refused before anything exists, so the firing is given back.
+    if let Some(refusal) = monthly_usage_limit_refusal(
+        agent.config.session_manager.as_ref(),
+        &crate::config::usage::UsageLimits::load(),
+    )
+    .await
+    {
+        return Err(ScheduledRunRefused(refusal).into());
+    }
 
     // Issue #56 (§9.3 C2 / R5). The creating chat's model first, the global
     // default only as a fallback — see [`resolve_scheduled_provider`].
@@ -6834,5 +6856,67 @@ mod armed_standing_tests {
             .for_a_counted_run(true)
             .apply(&mut never_counted);
         assert_eq!(never_counted.run_count, 0, "saturates rather than wrapping");
+    }
+}
+
+#[cfg(test)]
+mod usage_limit_tests {
+    use super::*;
+    use crate::config::usage::UsageLimits;
+    use crate::session::SideUsageEntry;
+
+    async fn manager_with_month_spend(temp: &tempfile::TempDir, tokens: i64) -> SessionManager {
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let chat = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "spend".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.apply_side_usage_event(SideUsageEntry {
+            event_key: "test:1".to_string(),
+            session_id: chat.id,
+            provider: "openai".to_string(),
+            model_id: "gpt-test".to_string(),
+            input_tokens: Some(tokens),
+            output_tokens: Some(0),
+        })
+        .await
+        .unwrap();
+        sm
+    }
+
+    #[tokio::test]
+    async fn a_run_at_the_monthly_limit_is_refused_and_gives_its_firing_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let sm = manager_with_month_spend(&temp, 1_000).await;
+        let at_limit = UsageLimits {
+            monthly_token_limit: Some(1_000),
+            ..UsageLimits::default()
+        };
+        let refusal = monthly_usage_limit_refusal(&sm, &at_limit).await;
+        assert_eq!(
+            refusal,
+            Some(crate::agents::usage_limit::SCHEDULED_RUN_MONTH_LIMIT)
+        );
+
+        let completion = RunCompletion::from_result(
+            &Err(ScheduledRunRefused(refusal.unwrap()).into()),
+            Utc::now(),
+        )
+        .for_a_counted_run(true);
+        assert!(completion.uncount, "a refused run gives its firing back");
+
+        let below = UsageLimits {
+            monthly_token_limit: Some(10_000),
+            ..UsageLimits::default()
+        };
+        assert_eq!(monthly_usage_limit_refusal(&sm, &below).await, None);
+        assert_eq!(
+            monthly_usage_limit_refusal(&sm, &UsageLimits::default()).await,
+            None
+        );
     }
 }

@@ -2008,6 +2008,23 @@ async fn execute_subagent(
             phase_id,
         )
     });
+    // A chat or a month at its usage limit starts no subagent: a child is spend
+    // against a limit the person set. Before anything exists, like the phase
+    // check below. (A running child is also held to its parent's limit at each
+    // of its own model requests, `usage_limit::billing_session_id`.)
+    if crate::agents::usage_limit::reached_limit(
+        &config.session_manager,
+        &task_config.parent_session_id,
+    )
+    .await
+    .is_some()
+    {
+        return Err(ErrorData {
+            code: ErrorCode::INVALID_REQUEST,
+            message: Cow::from(crate::agents::usage_limit::SUBAGENT_LIMIT_REFUSAL),
+            data: None,
+        });
+    }
     // Before the in-flight count and before any session: a refused phase must
     // leave nothing behind (see `apply_orchestration_phase`).
     apply_orchestration_phase(
@@ -5892,6 +5909,74 @@ mod tests {
             1,
             "only the parent exists: the refusal must precede session creation"
         );
+    }
+
+    /// A chat at its usage limit starts no subagent, and nothing is created.
+    #[tokio::test]
+    async fn a_spawn_from_a_chat_at_its_usage_limit_creates_nothing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let parent = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "parent".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        crate::agents::usage_limit::set_for_session(
+            &sm,
+            &parent.id,
+            Some(crate::agents::usage_limit::ChatLimitOverride::Limit {
+                max_tokens: Some(10),
+                max_usd: None,
+            }),
+        )
+        .await
+        .unwrap();
+        sm.apply_side_usage_event(crate::session::SideUsageEntry {
+            event_key: "spawn-limit:1".to_string(),
+            session_id: parent.id.clone(),
+            provider: "openai".to_string(),
+            model_id: "gpt-test".to_string(),
+            input_tokens: Some(10),
+            output_tokens: Some(0),
+        })
+        .await
+        .unwrap();
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> = std::sync::Arc::new(
+            crate::providers::testprovider::TestProvider::new_replaying(
+                temp.path().join("no-such-cassette.json").to_string_lossy(),
+            )
+            .unwrap(),
+        );
+        let task_config = TaskConfig::new(provider, &parent.id, temp.path(), vec![]);
+
+        let refused = handle_subagent_tool(
+            &config,
+            json!({ "instructions": "do the thing" }),
+            task_config,
+            HashMap::new(),
+            temp.path().to_path_buf(),
+            None,
+        );
+        let err = refused
+            .result
+            .await
+            .expect_err("a chat at its limit must not spawn");
+        assert_eq!(
+            err.message,
+            crate::agents::usage_limit::SUBAGENT_LIMIT_REFUSAL
+        );
+        assert_eq!(sm.count_all_sessions().await.unwrap(), 1, "nothing created");
     }
 
     /// A child that records the system prompt it was given, so a test can read

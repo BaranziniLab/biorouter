@@ -1,5 +1,8 @@
-//! Queryable usage reporting: per-day / per-model token + cost breakdowns and a
-//! month-to-date summary against the (display-only) configured monthly budget.
+//! Queryable usage reporting: per-day / per-model token + cost breakdowns, a
+//! month-to-date summary against the configured monthly limits, and the write
+//! of those limits and of the default per-chat limits (`PUT /usage/limits`).
+//! The limits are enforced by the reply loop; see
+//! `docs/agent-loop/usage-limits.md`.
 //!
 //! Cost is computed server-side through the single shared
 //! [`biorouter::providers::pricing::model_cost`] helper, so the report, the
@@ -9,11 +12,14 @@
 
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::get;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, put};
 use axum::{Json, Router};
-use biorouter::config::{percent_of, UsageLimits};
+use biorouter::config::usage::{LimitChange, UsageLimitsUpdate};
+use biorouter::config::{percent_of, Config, UsageLimits};
 use biorouter::session::{UsageGroup, UsageReportRow, UsageSummary};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -115,16 +121,20 @@ pub struct UsageSummaryResponse {
     /// MTD cost as a percent of the dollar limit; `null` when no limit is set or
     /// the MTD cost is unknown or only a lower bound.
     pub dollar_percent: Option<f64>,
+    /// Default per-chat token limit for chats without their own, or `null`.
+    pub default_session_token_limit: Option<i64>,
+    /// Default per-chat dollar limit for chats without their own, or `null`.
+    pub default_session_dollar_limit: Option<f64>,
 }
 
 /// Assemble the summary response from the raw totals + configured limits. Pure,
 /// so the percent math is unit-tested without a database or config file.
 fn build_summary_response(summary: UsageSummary, limits: UsageLimits) -> UsageSummaryResponse {
+    // The limits in force: a zero or negative value in config is unlimited.
+    let monthly_token_limit = limits.monthly_tokens().map(|limit| limit as i64);
+    let monthly_dollar_limit = limits.monthly_usd();
     let token_percent = summary.month_to_date.total_tokens.and_then(|tokens| {
-        percent_of(
-            tokens as f64,
-            limits.monthly_token_limit.map(|limit| limit as f64),
-        )
+        percent_of(tokens as f64, monthly_token_limit.map(|limit| limit as f64))
     });
     let dollar_percent =
         if summary.month_to_date.has_unpriced || summary.month_to_date.cost_excludes_cache {
@@ -133,15 +143,17 @@ fn build_summary_response(summary: UsageSummary, limits: UsageLimits) -> UsageSu
             summary
                 .month_to_date
                 .cost
-                .and_then(|cost| percent_of(cost, limits.monthly_dollar_limit))
+                .and_then(|cost| percent_of(cost, monthly_dollar_limit))
         };
 
     UsageSummaryResponse {
         summary,
-        monthly_token_limit: limits.monthly_token_limit,
-        monthly_dollar_limit: limits.monthly_dollar_limit,
+        monthly_token_limit,
+        monthly_dollar_limit,
         token_percent,
         dollar_percent,
+        default_session_token_limit: limits.default_session_tokens().map(|limit| limit as i64),
+        default_session_dollar_limit: limits.default_session_usd(),
     }
 }
 
@@ -170,10 +182,140 @@ pub async fn get_usage_summary(
     Ok(Json(build_summary_response(summary, UsageLimits::load())))
 }
 
+/// A field that may be absent (keep), `null` (unlimited) or a value (set).
+fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// Body of `PUT /usage/limits`. A field left out keeps what is stored, `null`
+/// makes that limit unlimited, and a value above 0 sets it.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateUsageLimitsRequest {
+    /// Billed tokens per local calendar month, over every chat.
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<i64>, nullable = true)]
+    pub monthly_token_limit: Option<Option<i64>>,
+    /// Priced dollars per local calendar month, over every chat.
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>, nullable = true)]
+    pub monthly_dollar_limit: Option<Option<f64>>,
+    /// Billed tokens per chat, for chats without their own limit.
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<i64>, nullable = true)]
+    pub default_session_token_limit: Option<Option<i64>>,
+    /// Priced dollars per chat, for chats without their own limit.
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>, nullable = true)]
+    pub default_session_dollar_limit: Option<Option<f64>>,
+}
+
+/// The configured limits, as stored after a write; `null` is unlimited.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimitsResponse {
+    pub monthly_token_limit: Option<i64>,
+    pub monthly_dollar_limit: Option<f64>,
+    pub default_session_token_limit: Option<i64>,
+    pub default_session_dollar_limit: Option<f64>,
+}
+
+impl From<&UsageLimits> for UsageLimitsResponse {
+    fn from(limits: &UsageLimits) -> Self {
+        Self {
+            monthly_token_limit: limits.monthly_tokens().map(|limit| limit as i64),
+            monthly_dollar_limit: limits.monthly_usd(),
+            default_session_token_limit: limits.default_session_tokens().map(|limit| limit as i64),
+            default_session_dollar_limit: limits.default_session_usd(),
+        }
+    }
+}
+
+fn token_change(name: &str, value: Option<Option<i64>>) -> Result<LimitChange<i64>, String> {
+    match value {
+        None => Ok(LimitChange::Keep),
+        Some(None) => Ok(LimitChange::Clear),
+        Some(Some(tokens)) if tokens > 0 => Ok(LimitChange::Set(tokens)),
+        Some(Some(_)) => Err(format!(
+            "`{name}` must be a whole number above 0, or null for unlimited."
+        )),
+    }
+}
+
+fn dollar_change(name: &str, value: Option<Option<f64>>) -> Result<LimitChange<f64>, String> {
+    match value {
+        None => Ok(LimitChange::Keep),
+        Some(None) => Ok(LimitChange::Clear),
+        Some(Some(usd)) if usd.is_finite() && usd > 0.0 => Ok(LimitChange::Set(usd)),
+        Some(Some(_)) => Err(format!(
+            "`{name}` must be a number above 0, or null for unlimited."
+        )),
+    }
+}
+
+/// The update a request asks for, or the sentence that says why it is invalid.
+fn requested_update(request: UpdateUsageLimitsRequest) -> Result<UsageLimitsUpdate, String> {
+    Ok(UsageLimitsUpdate {
+        monthly_token_limit: token_change("monthlyTokenLimit", request.monthly_token_limit)?,
+        monthly_dollar_limit: dollar_change("monthlyDollarLimit", request.monthly_dollar_limit)?,
+        default_session_token_limit: token_change(
+            "defaultSessionTokenLimit",
+            request.default_session_token_limit,
+        )?,
+        default_session_dollar_limit: dollar_change(
+            "defaultSessionDollarLimit",
+            request.default_session_dollar_limit,
+        )?,
+    })
+}
+
+#[utoipa::path(
+    put,
+    path = "/usage/limits",
+    request_body = UpdateUsageLimitsRequest,
+    responses(
+        (status = 200, description = "The monthly and default per-chat limits as stored", body = UsageLimitsResponse),
+        (status = 400, description = "A body that could not be read or a limit that is not above 0 (plain text)"),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Human user-action proof required: a model may not raise or lift a limit"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(("api_key" = [])),
+    tag = "Usage"
+)]
+pub async fn put_usage_limits(headers: HeaderMap, body: Bytes) -> Response {
+    if let Err(status) = require_billing_user(&headers) {
+        return status.into_response();
+    }
+    let request: UpdateUsageLimitsRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("The usage limits could not be read: {error}"),
+            )
+                .into_response()
+        }
+    };
+    let update = match requested_update(request) {
+        Ok(update) => update,
+        Err(sentence) => return (StatusCode::BAD_REQUEST, sentence).into_response(),
+    };
+    match UsageLimits::apply_update(Config::global(), &update) {
+        Ok(stored) => Json(UsageLimitsResponse::from(&stored)).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/usage/report", get(get_usage_report))
         .route("/usage/summary", get(get_usage_summary))
+        .route("/usage/limits", put(put_usage_limits))
         .with_state(state)
 }
 
@@ -212,6 +354,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: Some(66_000_000),
             monthly_dollar_limit: Some(250.0),
+            ..UsageLimits::default()
         };
         let resp = build_summary_response(summary, limits);
         // 33M / 66M = 50%, $125 / $250 = 50%.
@@ -239,6 +382,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: Some(1_000),
             monthly_dollar_limit: Some(100.0),
+            ..UsageLimits::default()
         };
         let resp = build_summary_response(summary, limits);
         assert_eq!(resp.token_percent, Some(50.0), "tokens still measurable");
@@ -253,6 +397,7 @@ mod tests {
             UsageLimits {
                 monthly_token_limit: None,
                 monthly_dollar_limit: Some(100.0),
+                ..UsageLimits::default()
             },
         );
         assert_eq!(
@@ -267,6 +412,7 @@ mod tests {
             UsageLimits {
                 monthly_token_limit: None,
                 monthly_dollar_limit: Some(100.0),
+                ..UsageLimits::default()
             },
         );
         assert_eq!(resp.dollar_percent, None);
@@ -280,6 +426,7 @@ mod tests {
             UsageLimits {
                 monthly_token_limit: Some(10_000),
                 monthly_dollar_limit: None,
+                ..UsageLimits::default()
             },
         );
         let json = serde_json::to_value(&resp).unwrap();
@@ -301,6 +448,120 @@ mod tests {
             Some(10.0)
         );
         assert!(json.get("dollarPercent").unwrap().is_null());
+    }
+
+    #[test]
+    fn summary_carries_the_default_session_limits_and_drops_non_positive_ones() {
+        let summary = summary_with_mtd(totals(1_000, Some(2.5), false));
+        let resp = build_summary_response(
+            summary,
+            UsageLimits {
+                monthly_token_limit: Some(0),
+                monthly_dollar_limit: None,
+                default_session_token_limit: Some(5_000),
+                default_session_dollar_limit: Some(-1.0),
+            },
+        );
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(
+            json["monthlyTokenLimit"].is_null(),
+            "0 is unlimited: {json}"
+        );
+        assert!(json["tokenPercent"].is_null());
+        assert_eq!(json["defaultSessionTokenLimit"], 5_000);
+        assert!(json["defaultSessionDollarLimit"].is_null());
+    }
+
+    #[test]
+    fn a_limits_body_keeps_clears_or_sets_each_field() {
+        let request: UpdateUsageLimitsRequest = serde_json::from_value(serde_json::json!({
+            "monthlyTokenLimit": 100,
+            "monthlyDollarLimit": null,
+            "defaultSessionDollarLimit": 2.5
+        }))
+        .unwrap();
+        let update = requested_update(request).unwrap();
+        assert_eq!(update.monthly_token_limit, LimitChange::Set(100));
+        assert_eq!(update.monthly_dollar_limit, LimitChange::Clear);
+        assert_eq!(update.default_session_token_limit, LimitChange::Keep);
+        assert_eq!(update.default_session_dollar_limit, LimitChange::Set(2.5));
+
+        for bad in [
+            serde_json::json!({ "monthlyTokenLimit": 0 }),
+            serde_json::json!({ "monthlyTokenLimit": -3 }),
+            serde_json::json!({ "defaultSessionDollarLimit": 0.0 }),
+        ] {
+            let request: UpdateUsageLimitsRequest = serde_json::from_value(bad.clone()).unwrap();
+            assert!(requested_update(request).is_err(), "{bad}");
+        }
+        assert!(serde_json::from_value::<UpdateUsageLimitsRequest>(
+            serde_json::json!({ "weeklyTokenLimit": 1 })
+        )
+        .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn only_a_person_writes_the_limits_and_the_write_merges() {
+        use crate::routes::session::diverge_tests::{
+            install_test_user_action_key, TEST_USER_ACTION_KEY,
+        };
+        use axum::body::{to_bytes, Body};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        install_test_user_action_key();
+        let put = |body: serde_json::Value, proven: bool| async move {
+            let mut builder = Request::builder()
+                .method("PUT")
+                .uri("/usage/limits")
+                .header("content-type", "application/json");
+            if proven {
+                builder = builder.header("X-User-Action", TEST_USER_ACTION_KEY);
+            }
+            let state = AppState::new().await.unwrap();
+            let res = routes(state)
+                .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+                .await
+                .unwrap();
+            let status = res.status();
+            let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        };
+
+        let (status, _) = put(serde_json::json!({ "monthlyTokenLimit": 1 }), false).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "a model cannot set a limit");
+
+        // Limits far out of reach, so a parallel test is never stopped by them.
+        let (status, body) = put(
+            serde_json::json!({
+                "monthlyTokenLimit": 900_000_000_000_000i64,
+                "defaultSessionTokenLimit": 800_000_000_000_000i64
+            }),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let stored: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(stored["monthlyTokenLimit"], 900_000_000_000_000i64);
+        assert_eq!(stored["defaultSessionTokenLimit"], 800_000_000_000_000i64);
+
+        // A field left out is kept.
+        let (status, body) = put(serde_json::json!({ "monthlyTokenLimit": null }), true).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let stored: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(stored["monthlyTokenLimit"].is_null(), "{body}");
+        assert_eq!(stored["defaultSessionTokenLimit"], 800_000_000_000_000i64);
+
+        let (status, _) = put(serde_json::json!({ "monthlyTokenLimit": -1 }), true).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, body) = put(
+            serde_json::json!({ "defaultSessionTokenLimit": null }),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     #[test]
