@@ -45,13 +45,18 @@ use tokio_util::sync::CancellationToken;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
 use crate::decision::model::DecisionModelEntry;
+use crate::decision::service::{usable_chunk, UsableChunk};
+use crate::decision::types::MAX_CHOICE_OPTIONS;
 use crate::decision::types::{validate_questions, DecisionKindTag};
 use crate::decision::{
     Answer, ChunkOutcome, Decision, DecisionAdapter, DecisionChunk, DecisionContext, DecisionKind,
     DecisionModelRef, DecisionOrigin, DecisionService, DecisionSession, Question, Threshold,
 };
 use crate::privacy::ProviderTier;
-use crate::providers::decision::catalog::decision_model_display_label;
+use crate::providers::decision::catalog::{
+    choice_option_limit, decision_model_display_label, OLLAMA_DECISION_PROVIDER,
+};
+use crate::providers::decision::system_one::OLLAMA_MAX_REQUEST_BYTES;
 
 pub static EXTENSION_NAME: &str = "decisions";
 const EXTENSION_TITLE: &str = "Decisions";
@@ -118,8 +123,9 @@ const DECIDE_DESCRIPTION: &str = concat!(
     "files or functions, document sections, table rows): it answers in tens of milliseconds ",
     "per piece, so do not read hundreds of pieces yourself or call it once per piece.\n",
     "- Split the input along natural boundaries (one note, one function or file, one ",
-    "section), each chunk under the model's window (decision_models reports it), each with ",
-    "an id you can find it by again.\n",
+    "section), each chunk within the size decision_models gives for the model (in tokens and ",
+    "in characters of prose or of numbers, which take far more tokens; it also says which ",
+    "model is used when `model` is left out), each with an id you can find it by again.\n",
     "- Put every question for a chunk in ONE call: the questions share the chunk, which is ",
     "read once. Up to 16 questions and 200 chunks per call.\n",
     "- type is yes_no (the default), choice (options: name to meaning) or score (1 to 10 ",
@@ -152,9 +158,11 @@ const DECIDE_DESCRIPTION: &str = concat!(
 const DECISION_MODELS_DESCRIPTION: &str = concat!(
     "List the decision models `decide` can use: each one's provider/model name, tier ",
     "(private or public), whether it runs on this computer, how it produces probabilities, ",
-    "the question types it takes and its window in tokens. A model this chat may not use is ",
-    "listed with the reason: a private chat can use only private decision models. Call it ",
-    "before choosing a `model` for decide, or to size chunks to the model's window."
+    "the question types it takes, its window in tokens and how much text one chunk can carry ",
+    "on it (in characters of prose and of numbers), and which model decide uses here when ",
+    "`model` is left out. A model this chat may not use is listed with the reason: a private ",
+    "chat can use only private decision models. Call it before choosing a `model` for decide, ",
+    "and to size chunks."
 );
 
 const INSTRUCTIONS: &str = concat!(
@@ -179,9 +187,11 @@ struct DecideParams {
     /// function or file, one section.
     #[schemars(extend("minItems" = 1, "maxItems" = 200))]
     chunks: Vec<DecideChunk>,
-    /// Optional decision model as provider/model, one decision_models lists for
-    /// this chat. Leave it out for this chat's default decision model, else the
-    /// configured default, else the first model this chat may use.
+    /// Optional decision model as provider/model, or by its name or alias when
+    /// that names one model decision_models lists for this chat (`joey-1`).
+    /// Leave it out for this chat's default decision model, else the
+    /// configured default, else the first model this chat may use;
+    /// decision_models says which that is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
 }
@@ -199,7 +209,8 @@ struct DecideQuestion {
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     #[schemars(extend("enum" = ["yes_no", "choice", "score"]))]
     kind: Option<String>,
-    /// For choice: 2 to 26 options, name to what it means, for example
+    /// For choice: 2 to 26 options (some models take fewer: decision_models
+    /// says), name to what it means, for example
     /// {"rrms": "Relapsing-remitting", "none": "Not stated"}. Offer a "none"
     /// option when the text may not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -692,29 +703,69 @@ fn question_summary(
     }
 }
 
-/// The batch's distinct errors, each with the chunks it hit (capped).
+/// What two errors share when they differ only in the chunk they name and
+/// its numbers (an over-size refusal names the chunk and its size): the
+/// message with the chunk's id and every run of digits taken out.
+fn error_shape(message: &str, chunk_id: &str) -> String {
+    let mut shape = String::with_capacity(message.len());
+    let mut in_digits = false;
+    for ch in message.replace(&format!("`{chunk_id}`"), "`…`").chars() {
+        if ch.is_ascii_digit() {
+            if !in_digits {
+                shape.push('#');
+            }
+            in_digits = true;
+        } else {
+            shape.push(ch);
+            in_digits = false;
+        }
+    }
+    shape
+}
+
+/// The batch's distinct errors, each with the chunks it hit (capped). Errors
+/// that differ only in the chunk they name and its numbers are one group,
+/// shown by its first message: 50 oversized chunks are one group of 50, not
+/// 50 groups of which five were listed. Past [`LISTED_ERRORS`] groups, the
+/// rest are one last group, so every failed chunk is counted.
 fn error_groups(outcomes: &[ChunkOutcome]) -> Vec<ErrorGroup> {
-    let mut groups: IndexMap<String, Vec<String>> = IndexMap::new();
+    let mut groups: IndexMap<String, (String, Vec<String>)> = IndexMap::new();
     for outcome in outcomes {
         if let Some(error) = &outcome.error {
             groups
-                .entry(error.clone())
-                .or_default()
+                .entry(error_shape(error, &outcome.chunk_id))
+                .or_insert_with(|| (error.clone(), Vec::new()))
+                .1
                 .push(outcome.chunk_id.clone());
         }
     }
-    groups
-        .into_iter()
+    let group = |message: String, ids: Vec<String>| {
+        let more = ids.len().saturating_sub(LISTED_ERROR_IDS);
+        ErrorGroup {
+            message,
+            chunk_ids: ids.into_iter().take(LISTED_ERROR_IDS).collect(),
+            more,
+        }
+    };
+    let mut groups = groups.into_values();
+    let mut listed: Vec<ErrorGroup> = groups
+        .by_ref()
         .take(LISTED_ERRORS)
-        .map(|(message, ids)| {
-            let more = ids.len().saturating_sub(LISTED_ERROR_IDS);
-            ErrorGroup {
-                message,
-                chunk_ids: ids.into_iter().take(LISTED_ERROR_IDS).collect(),
-                more,
-            }
-        })
-        .collect()
+        .map(|(message, ids)| group(message, ids))
+        .collect();
+    let rest: Vec<(String, Vec<String>)> = groups.collect();
+    if !rest.is_empty() {
+        let kinds = rest.len();
+        let ids = rest.into_iter().flat_map(|(_, ids)| ids).collect();
+        listed.push(group(
+            format!(
+                "{kinds} other error{}; the chat's decision history has each one.",
+                if kinds == 1 { "" } else { "s" }
+            ),
+            ids,
+        ));
+    }
+    listed
 }
 
 /// The aggregate of one batch. Pure, so the no-flood shape is testable.
@@ -1004,21 +1055,26 @@ impl DecisionsClient {
             .map_err(|e| format!("This chat could not be read, so nothing was decided: {e}"))
     }
 
-    /// Resolve a `model` argument against what `decision_models` lists.
+    /// Resolve a `model` argument against what `decision_models` lists: as
+    /// provider/model, or by a model's bare name or alias (`joey-1`,
+    /// `tev1:0.8b`) when that names exactly one listed model.
     async fn named_model(
         &self,
         session: &DecisionSession,
         wanted: &str,
     ) -> Result<DecisionModelRef, String> {
-        let Some(parsed) = DecisionModelRef::parse(wanted) else {
-            return Err(format!(
-                "`model` is provider/model, for example ollama_decision/tev1:0.8b, not \
-                 `{wanted}`. decision_models lists them."
-            ));
-        };
         let listed = self.service.models_for(Some(session)).await;
-        let Some((entry, reason)) = listed.iter().find(|(entry, _)| entry.answers_to(&parsed))
-        else {
+        let found = match find_named(&listed, wanted) {
+            Ok(found) => found,
+            Err(spellings) => {
+                return Err(format!(
+                    "`{wanted}` names more than one decision model: {}. Name one of them as \
+                     provider/model.",
+                    spellings.join(", ")
+                ))
+            }
+        };
+        let Some((entry, reason)) = found else {
             let names: Vec<String> = listed
                 .iter()
                 .filter(|(_, reason)| reason.is_none())
@@ -1099,7 +1155,19 @@ impl DecisionsClient {
             result = run => result.map_err(|e| e.to_string())?,
         };
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let summary = summarize(&questions, &outcomes, &batch_id, elapsed_ms);
+        let mut summary = summarize(&questions, &outcomes, &batch_id, elapsed_ms);
+        if summary.model.is_none() {
+            // Nothing was decided, so no answer names the model: name the one
+            // the batch was sized for, as the service chose it.
+            if let Some(entry) = self
+                .service
+                .model_entry_for(Some(&session), model.as_ref())
+                .await
+            {
+                summary.model = Some(entry.model_ref());
+                summary.tier = Some(entry.tier);
+            }
+        }
         let text = render_summary(&summary, &questions, &outcomes);
         Ok(CallToolResult {
             content: vec![Content::text(text)],
@@ -1121,9 +1189,19 @@ impl DecisionsClient {
         // would refuse it with, a Crew grant included, so this tool,
         // `GET /decisions/models` and the Monitors dialog say the same thing.
         let listed = self.service.models_for(Some(&session)).await;
+        // The model a `decide` call that names none would use in this chat,
+        // by the service's own order, so the agent sizes chunks for it.
+        let default = self
+            .service
+            .model_entry_for(Some(&session), None)
+            .await
+            .map(|entry| entry.model_ref());
         let rows: Vec<ModelRow> = listed
             .into_iter()
-            .map(|(entry, reason)| ModelRow::from_entry(&entry, reason))
+            .map(|(entry, reason)| ModelRow {
+                default: default.as_ref() == Some(&entry.model_ref()),
+                ..ModelRow::from_entry(&entry, reason)
+            })
             .collect();
         let private_chat = enforced && session.classification.is_private();
         let text = render_models(&rows, private_chat);
@@ -1138,6 +1216,34 @@ impl DecisionsClient {
             is_error: Some(false),
             meta: None,
         })
+    }
+}
+
+/// The listed model `wanted` names: by provider/model first, else by a bare
+/// model id or alias that exactly one listed model answers to. `Err` holds
+/// the provider/model spellings of every model a bare name matched, when it
+/// matched more than one.
+fn find_named<'a>(
+    listed: &'a [(DecisionModelEntry, Option<String>)],
+    wanted: &str,
+) -> Result<Option<&'a (DecisionModelEntry, Option<String>)>, Vec<String>> {
+    let wanted = wanted.trim();
+    if let Some(parsed) = DecisionModelRef::parse(wanted) {
+        if let Some(hit) = listed.iter().find(|(entry, _)| entry.answers_to(&parsed)) {
+            return Ok(Some(hit));
+        }
+    }
+    let bare: Vec<&(DecisionModelEntry, Option<String>)> = listed
+        .iter()
+        .filter(|(entry, _)| entry.model == wanted || entry.display_name == wanted)
+        .collect();
+    match bare.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(*one)),
+        many => Err(many
+            .iter()
+            .map(|(entry, _)| decision_model_display_label(&entry.model_ref()))
+            .collect()),
     }
 }
 
@@ -1161,12 +1267,25 @@ pub struct ModelRow {
     pub calibrated: Option<bool>,
     pub kinds: Vec<String>,
     pub context_tokens: usize,
+    /// How much text one chunk can carry on this model, by the size check's
+    /// own arithmetic: what to size chunks by, rather than the window.
+    pub usable: UsableChunk,
+    /// A body size the server refuses above (Ollama's System One: 64 KiB).
+    pub max_request_bytes: Option<usize>,
+    /// The most options a choice question may offer it.
+    pub max_choice_options: usize,
+    /// Whether `decide` uses this model in this chat when `model` is left out.
+    pub default: bool,
     pub available: bool,
     pub unavailable_reason: Option<String>,
 }
 
 impl ModelRow {
     fn from_entry(entry: &DecisionModelEntry, reason: Option<String>) -> Self {
+        // Only Ollama's System One limits the body (`system_one_caps`).
+        let max_request_bytes = (entry.provider == OLLAMA_DECISION_PROVIDER
+            && entry.adapter == DecisionAdapter::SystemOne)
+            .then_some(OLLAMA_MAX_REQUEST_BYTES);
         Self {
             name: entry.model_ref().label(),
             provider: entry.provider.clone(),
@@ -1186,6 +1305,10 @@ impl ModelRow {
                 .map(|k| kind_word(*k).to_string())
                 .collect(),
             context_tokens: entry.context_tokens,
+            usable: usable_chunk(entry.context_tokens, max_request_bytes),
+            max_request_bytes,
+            max_choice_options: choice_option_limit(&entry.model_ref()),
+            default: false,
             available: reason.is_none(),
             unavailable_reason: reason,
         }
@@ -1217,8 +1340,21 @@ pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
         } else {
             row.name.clone()
         };
+        let options = if row.max_choice_options < MAX_CHOICE_OPTIONS
+            && row.kinds.iter().any(|kind| kind == "choice")
+        {
+            format!(" (a choice of at most {} options)", row.max_choice_options)
+        } else {
+            String::new()
+        };
+        let bytes = row
+            .max_request_bytes
+            .map(|bytes| format!(", and a request of at most {bytes} bytes"))
+            .unwrap_or_default();
         text.push_str(&format!(
-            "\n- {name}: {}{}, {}; takes {}; window about {} tokens.",
+            "\n- {name}: {}{}, {}; takes {}{options}; window {} tokens, of which a chunk can \
+             fill about {} (about {} characters of prose, or {} of numbers, tables, ids or code, \
+             less the questions' own length{bytes}).",
             tier_word(row.tier),
             if row.local {
                 ", runs on this computer"
@@ -1227,8 +1363,14 @@ pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
             },
             adapter_words(row.adapter),
             row.kinds.join(", "),
-            row.context_tokens
+            row.context_tokens,
+            row.usable.tokens,
+            row.usable.prose_chars,
+            row.usable.number_chars,
         ));
+        if row.default {
+            text.push_str(" decide uses this model here when `model` is left out.");
+        }
         if let Some(reason) = &row.unavailable_reason {
             text.push_str(&format!(" Not available to this chat: {reason}"));
         }
@@ -1236,11 +1378,18 @@ pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
     if available.is_empty() {
         text.push_str("\nNone of these may read this chat, so decide will be refused here.");
     } else {
-        text.push_str(
-            "\nName one in decide's `model` as provider/model, or leave `model` out for this \
-             chat's default decision model, else the configured default, else the first model \
-             this chat may use.",
-        );
+        let default = rows.iter().find(|row| row.default && row.available);
+        text.push_str(&match default {
+            Some(row) => format!(
+                "\nName one in decide's `model` as provider/model or by its name; left out, \
+                 decide uses {} here, so size chunks for it.",
+                row.name
+            ),
+            None => "\nName one in decide's `model` as provider/model or by its name, or leave \
+                     `model` out for this chat's default decision model, else the configured \
+                     default, else the first model this chat may use."
+                .to_string(),
+        });
     }
     text
 }
@@ -2281,16 +2430,92 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let body = text(&result);
         assert!(body.contains("test_decision/tev1"), "{body}");
-        let unparsable = call(
+        let unknown_bare = call(
             &client,
             &session,
             "decide",
             json!({"questions": {"q": {"instructions": "yes?"}},
-                   "chunks": [{"id": "a", "text": "x"}], "model": "tev1"}),
+                   "chunks": [{"id": "a", "text": "x"}], "model": "gpt-giant"}),
             enforced(),
         )
         .await;
-        assert!(text(&unparsable).contains("provider/model"));
+        assert_eq!(unknown_bare.is_error, Some(true));
+        assert!(
+            text(&unknown_bare).contains("test_decision/tev1"),
+            "{}",
+            text(&unknown_bare)
+        );
+    }
+
+    /// B-2: a bare model name or alias names the one listed model it answers
+    /// to, so `joey-1` works as `baseten_decision/joey-1` does; a name two
+    /// listed models answer to is refused with both spellings.
+    #[tokio::test]
+    async fn a_bare_name_that_names_one_listed_model_is_that_model() {
+        let mut alias = entry(
+            "decision-models/test-joey-2b-latest",
+            ProviderTier::Private,
+            true,
+            DecisionAdapter::SystemOne,
+        );
+        alias.display_name = "joey-1".into();
+        let mut twin = entry(
+            "twin",
+            ProviderTier::Private,
+            true,
+            DecisionAdapter::SystemOne,
+        );
+        twin.provider = "other_decision".into();
+        let (client, session) = client_with(
+            vec![
+                model(alias, 0.9),
+                model(
+                    entry(
+                        "twin",
+                        ProviderTier::Private,
+                        true,
+                        DecisionAdapter::SystemOne,
+                    ),
+                    0.9,
+                ),
+                model(twin, 0.9),
+            ],
+            false,
+        )
+        .await;
+        let ask = |name: &str| {
+            json!({"questions": {"q": {"instructions": "yes?"}},
+                   "chunks": [{"id": "a", "text": "x"}], "model": name})
+        };
+        for name in ["joey-1", "decision-models/test-joey-2b-latest"] {
+            let result = call(&client, &session, "decide", ask(name), enforced()).await;
+            assert_eq!(result.is_error, Some(false), "{name}: {}", text(&result));
+            let summary: DecideSummary =
+                serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+            assert_eq!(
+                summary.model.unwrap().model,
+                "decision-models/test-joey-2b-latest"
+            );
+        }
+        let both = call(&client, &session, "decide", ask("twin"), enforced()).await;
+        assert_eq!(both.is_error, Some(true));
+        let body = text(&both);
+        assert!(
+            body.contains("names more than one decision model")
+                && body.contains("test_decision/twin")
+                && body.contains("other_decision/twin"),
+            "{body}"
+        );
+        // provider/model still picks one of the two.
+        let one = call(
+            &client,
+            &session,
+            "decide",
+            ask("other_decision/twin"),
+            enforced(),
+        )
+        .await;
+        assert_eq!(one.is_error, Some(false), "{}", text(&one));
     }
 
     #[tokio::test]
@@ -2340,6 +2565,97 @@ mod tests {
         let tev1 = rows.iter().find(|r| r.model == "tev1").unwrap();
         assert!(tev1.available && tev1.local);
         assert_eq!(tev1.kinds, ["yes_no", "choice", "score"]);
+        // W1/W3: the size to chunk by, in tokens and characters, and which
+        // model a decide that names none uses in this chat.
+        let usable = crate::decision::service::usable_chunk(4_096, None);
+        assert_eq!(tev1.usable, usable);
+        assert_eq!(
+            usable.tokens,
+            ((4_096 - 128) as f64 / 1.15).floor() as usize
+        );
+        assert_eq!(usable.prose_chars, usable.tokens * 4);
+        assert_eq!(usable.number_chars, usable.tokens);
+        assert!(tev1.default && !cloud.default);
+        assert!(
+            body.contains(&format!(
+                "window 4096 tokens, of which a chunk can fill about {} (about {} characters of \
+                 prose, or {} of numbers",
+                usable.tokens, usable.prose_chars, usable.number_chars
+            )),
+            "{body}"
+        );
+        assert!(
+            body.contains("left out, decide uses test_decision/tev1 here"),
+            "{body}"
+        );
+    }
+
+    /// W3: a batch in which every chunk was refused still names the model it
+    /// was sized for. F3: chunks refused for the same reason, each naming its
+    /// own size, are one error group that counts them all.
+    #[tokio::test]
+    async fn an_all_refused_batch_names_its_model_and_groups_its_refusals() {
+        let mut small = entry(
+            "tiny",
+            ProviderTier::Private,
+            true,
+            DecisionAdapter::SystemOne,
+        );
+        small.context_tokens = 512;
+        let (client, session) = client_with(vec![model(small, 0.9)], false).await;
+        let chunks: Vec<serde_json::Value> = (0..12)
+            .map(|i| json!({"id": format!("n{i}"), "text": "word ".repeat(600 + 40 * i)}))
+            .collect();
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}}, "chunks": chunks}),
+            enforced(),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true));
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(summary.decided, 0);
+        assert_eq!(summary.model.as_ref().unwrap().model, "tiny");
+        assert_eq!(summary.error_groups.len(), 1, "{:?}", summary.error_groups);
+        let group = &summary.error_groups[0];
+        assert_eq!(group.chunk_ids.len() + group.more, 12);
+        let body = text(&result);
+        assert!(
+            body.contains(" with test_decision/tiny (private)"),
+            "{body}"
+        );
+        assert!(body.contains("Failed (12 chunks)"), "{body}");
+    }
+
+    #[test]
+    fn errors_past_the_listed_kinds_are_counted_together() {
+        let outcomes: Vec<ChunkOutcome> = (0..8)
+            .map(|i| ChunkOutcome {
+                chunk_id: format!("c{i}"),
+                decisions: None,
+                error: Some(format!(
+                    "distinct failure kind {}",
+                    ["a", "b", "c", "d", "e", "f", "g", "h"][i]
+                )),
+                billed_usage: None,
+            })
+            .collect();
+        let groups = error_groups(&outcomes);
+        assert_eq!(groups.len(), LISTED_ERRORS + 1);
+        let last = groups.last().unwrap();
+        assert_eq!(last.chunk_ids, ["c5", "c6", "c7"]);
+        assert!(
+            last.message.starts_with("3 other errors"),
+            "{}",
+            last.message
+        );
+        assert_eq!(
+            error_shape("Chunk `n12` is about 2346 tokens", "n12"),
+            "Chunk `…` is about # tokens"
+        );
     }
 
     #[test]

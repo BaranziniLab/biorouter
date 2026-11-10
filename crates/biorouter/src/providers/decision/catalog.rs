@@ -4,7 +4,9 @@
 //!   (`providers::live_catalog`), else the three slugs this release knows.
 //!   They are read here and never reach the chat picker: the feed's
 //!   `advertised()` drops them already (no `tools`, and a 16,384-token window
-//!   under the agent's floor), and nothing here changes that.
+//!   under the agent's floor), and nothing here changes that. A known model's
+//!   window is the 16,000 tokens Baseten's runtime accepts
+//!   ([`BASETEN_DECISION_CONTEXT`]), not the feed's 16,384.
 //! - **Ollama**: every pulled model whose `/api/show` capabilities include
 //!   `decision` (System One), on the server `OLLAMA_HOST` names, the shipped
 //!   default first. A copy Ollama refuses to load (a format it no longer
@@ -47,10 +49,27 @@ pub const BASETEN_DECISION_PROVIDER: &str = "baseten_decision";
 pub const OLLAMA_DECISION_PROVIDER: &str = "ollama_decision";
 /// The id prefix Baseten's catalog gives its decision models.
 pub const DECISION_MODEL_PREFIX: &str = "decision-models/";
-/// Every Baseten decision model's window (Baseten's docs).
-pub const BASETEN_DECISION_CONTEXT: usize = 16_384;
-/// The window assumed for an Ollama decision model that states none.
+/// Every Baseten decision model's window: the prompt length Baseten's System
+/// One runtime accepts, not the 16,384 its `/v1/models` feed (and its docs)
+/// state. Measured 2026-11-10 on joey-1, elephant-1 and mammoth-1 alike: a
+/// 15,995-token prompt answered 200, a 16,094-token one 422 `OneJev prompt has
+/// 16094 tokens, exceeding max_len 16000; prompts are never truncated`. A
+/// known model is held to this even when the feed says more
+/// ([`baseten_window`]), so the window the agent is told is one the model
+/// takes.
+pub const BASETEN_DECISION_CONTEXT: usize = 16_000;
+/// The window assumed for an Ollama decision model that states no `num_ctx`
+/// and is not loaded, and the most a cloud model is given: what Ollama
+/// enforces for such a model is its server default (`OLLAMA_CONTEXT_LENGTH`,
+/// or a memory tier), which Biorouter cannot read, so the trained window
+/// (up to 262,144) would admit states the server refuses.
 pub const OLLAMA_DEFAULT_DECISION_CONTEXT: usize = 8_192;
+/// Choice options per question for a System One model family that takes
+/// fewer than [`crate::decision::types::MAX_CHOICE_OPTIONS`], by the model's
+/// base name (`tev1:0.8b` is `tev1`). Measured 2026-11-10: tev1:0.8b answers
+/// 24 options and refuses 25 with 400 `Tev1 supports at most 24 candidates`;
+/// clef-flash:latest answers 26.
+const CHOICE_OPTION_LIMITS: &[(&str, usize)] = &[("tev1", 24)];
 /// The largest window assumed for a model read through logprobs, so a model
 /// trained on 262k tokens is not loaded with a cache that size for a one-token
 /// answer.
@@ -132,6 +151,41 @@ pub fn decision_model_display_label(model: &DecisionModelRef) -> String {
     format!("{}/{}", model.provider, decision_model_short_name(model))
 }
 
+/// The most options a choice question may have on `model`: its family's limit
+/// ([`CHOICE_OPTION_LIMITS`]), else the shared one.
+pub fn choice_option_limit(model: &DecisionModelRef) -> usize {
+    let base = model
+        .model
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    CHOICE_OPTION_LIMITS
+        .iter()
+        .find(|(family, _)| base.starts_with(family))
+        .map_or(crate::decision::types::MAX_CHOICE_OPTIONS, |&(_, limit)| {
+            limit
+        })
+}
+
+/// The window a Baseten decision model is given from a feed that states
+/// `stated`: a model this release knows is held to [`BASETEN_DECISION_CONTEXT`],
+/// the length its runtime accepts, however much the feed says. A model the
+/// feed adds since takes the feed's figure.
+pub fn baseten_window(slug: &str, stated: usize) -> usize {
+    if BASETEN_DECISION_MODELS
+        .iter()
+        .any(|known| known.slug == slug)
+    {
+        stated.min(BASETEN_DECISION_CONTEXT)
+    } else {
+        stated
+    }
+}
+
 /// A Baseten decision model entry.
 pub fn baseten_entry(slug: &str, context_tokens: usize) -> DecisionModelEntry {
     DecisionModelEntry {
@@ -159,7 +213,9 @@ pub fn baseten_entries_from(catalog: Option<&LiveCatalog>) -> Vec<DecisionModelE
                 .models
                 .iter()
                 .filter(|model| model.id.starts_with(DECISION_MODEL_PREFIX))
-                .map(|model| baseten_entry(&model.id, model.context_length))
+                .map(|model| {
+                    baseten_entry(&model.id, baseten_window(&model.id, model.context_length))
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -211,9 +267,57 @@ pub struct OllamaDecisionFacts {
     pub thinking: bool,
     /// Served from another host (an Ollama cloud model, or `remote_host`).
     pub remote: bool,
-    /// The window: the Modelfile's `num_ctx`, else the trained window, else
-    /// [`OLLAMA_DEFAULT_DECISION_CONTEXT`].
+    /// The window a System One request is held to ([`ollama_window`]): the
+    /// Modelfile's `num_ctx`, else the window the loaded model was given
+    /// (`/api/ps`), else the trained window capped at
+    /// [`OLLAMA_DEFAULT_DECISION_CONTEXT`]; a cloud model is capped there
+    /// whatever it states. System One sends no `num_ctx`, so the server's own
+    /// limit is the one that holds.
     pub context_tokens: usize,
+}
+
+/// The window a System One request to an Ollama model may fill, from what
+/// `/api/show` states (`num_ctx`, the trained window) and the window the
+/// loaded copy was given (`/api/ps` `context_length`, when it is loaded).
+///
+/// Measured 2026-11-10, the server's limit is exactly the Modelfile's
+/// `num_ctx` (tev1:0.8b 2,048 and clef-flash:latest 16,384, against a trained
+/// 262,144), and `/api/ps` reports the same figure. A model that states none
+/// runs at the server's default, which only `/api/ps` shows once it is loaded;
+/// before then the trained window is capped at
+/// [`OLLAMA_DEFAULT_DECISION_CONTEXT`] so a 262k figure is never advertised.
+/// A cloud model (`remote`) is served elsewhere at a limit nothing here can
+/// read, so it is capped there too. ⚠ With `OLLAMA_NUM_PARALLEL` above one,
+/// `/api/ps` may report the window of every slot together; a model that
+/// states `num_ctx` is not affected.
+pub fn ollama_window(
+    remote: bool,
+    num_ctx: Option<usize>,
+    trained: Option<usize>,
+    loaded: Option<usize>,
+) -> usize {
+    let capped = |window: usize| window.min(OLLAMA_DEFAULT_DECISION_CONTEXT);
+    if remote {
+        return capped(
+            num_ctx
+                .or(trained)
+                .unwrap_or(OLLAMA_DEFAULT_DECISION_CONTEXT),
+        );
+    }
+    num_ctx
+        .or(loaded.filter(|&n| n > 0))
+        .unwrap_or_else(|| capped(trained.unwrap_or(OLLAMA_DEFAULT_DECISION_CONTEXT)))
+}
+
+/// The window a log-probability request to an Ollama model is given: that
+/// adapter sends it as `options.num_ctx`, so the server allocates exactly it.
+/// The Modelfile's `num_ctx`, else the trained window, at most
+/// [`LOGPROB_MAX_CONTEXT`].
+fn logprob_window(show: &Value) -> usize {
+    parameter_num_ctx(show)
+        .or(ModelFacts::from_show(show).trained_context)
+        .unwrap_or(OLLAMA_DEFAULT_DECISION_CONTEXT)
+        .min(LOGPROB_MAX_CONTEXT)
 }
 
 /// `num_ctx` from `/api/show`'s `parameters` text (`num_ctx   16384`).
@@ -232,15 +336,56 @@ fn parameter_num_ctx(show: &Value) -> Option<usize> {
 /// ([`ModelFacts::from_show`]) for capabilities, the trained window and the
 /// remote-host rule.
 pub fn ollama_facts_from_show(name: &str, show: &Value) -> OllamaDecisionFacts {
+    ollama_facts_loaded(name, show, None)
+}
+
+/// [`ollama_facts_from_show`] for a copy `/api/ps` lists as loaded with a
+/// window of `loaded` tokens ([`ollama_window`]).
+pub fn ollama_facts_loaded(name: &str, show: &Value, loaded: Option<usize>) -> OllamaDecisionFacts {
     let facts = ModelFacts::from_show(show);
+    let remote = facts.remote || crate::providers::utils::is_ollama_cloud_model(name);
     OllamaDecisionFacts {
         decision: facts.has("decision"),
         thinking: facts.has("thinking"),
-        remote: facts.remote || crate::providers::utils::is_ollama_cloud_model(name),
-        context_tokens: parameter_num_ctx(show)
-            .or(facts.trained_context)
-            .unwrap_or(OLLAMA_DEFAULT_DECISION_CONTEXT),
+        remote,
+        context_tokens: ollama_window(
+            remote,
+            parameter_num_ctx(show),
+            facts.trained_context,
+            loaded,
+        ),
     }
+}
+
+/// The window each copy `/api/ps` lists as loaded was given, by name. An
+/// unreachable server, or one that answers otherwise, lists none.
+async fn loaded_windows(client: &ApiClient) -> HashMap<String, usize> {
+    let ps = async {
+        let response = client.response_get("api/ps").await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response.json::<Value>().await.ok()
+    };
+    let Some(ps) = tokio::time::timeout(TAGS_TIMEOUT, ps).await.ok().flatten() else {
+        return HashMap::new();
+    };
+    loaded_windows_from(&ps)
+}
+
+/// [`loaded_windows`] from an `/api/ps` body.
+pub fn loaded_windows_from(ps: &Value) -> HashMap<String, usize> {
+    ps.get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let name = m.get("name").or_else(|| m.get("model"))?.as_str()?;
+            let window = m.get("context_length")?.as_u64()?;
+            Some((name.to_string(), usize::try_from(window).ok()?))
+        })
+        .filter(|(_, window)| *window > 0)
+        .collect()
 }
 
 /// An Ollama entry for `name` on `base_url`.
@@ -309,15 +454,32 @@ async fn show(client: &ApiClient, name: &str) -> Option<Value> {
     tokio::time::timeout(SHOW_TIMEOUT, probe).await.ok()?
 }
 
-/// The facts for one model on `base_url`, asking the server.
+/// The facts for one model on `base_url`, asking the server (`/api/show`,
+/// and `/api/ps` for the window a loaded copy was given).
 pub async fn ollama_facts(
     base_url: &Url,
     name: &str,
 ) -> DecisionResult<Option<OllamaDecisionFacts>> {
+    Ok(ollama_described(base_url, name)
+        .await?
+        .map(|(facts, _)| facts))
+}
+
+/// [`ollama_facts`] and `/api/show` itself, for the logprob window.
+async fn ollama_described(
+    base_url: &Url,
+    name: &str,
+) -> DecisionResult<Option<(OllamaDecisionFacts, Value)>> {
     let client = ollama_client(base_url, SHOW_TIMEOUT)?;
-    Ok(show(&client, name)
-        .await
-        .map(|show| ollama_facts_from_show(name, &show)))
+    let Some(show) = show(&client, name).await else {
+        return Ok(None);
+    };
+    let loaded = if parameter_num_ctx(&show).is_none() {
+        loaded_windows(&client).await.get(name).copied()
+    } else {
+        None
+    };
+    Ok(Some((ollama_facts_loaded(name, &show, loaded), show)))
 }
 
 /// Ollama decision models in the order an automatic choice tries them: the
@@ -461,9 +623,10 @@ async fn discover_one(
     client: &ApiClient,
     base_url: &Url,
     pulled: PulledModel,
+    loaded: &HashMap<String, usize>,
 ) -> Option<DecisionModelEntry> {
     let show = show(client, &pulled.name).await?;
-    let facts = ollama_facts_from_show(&pulled.name, &show);
+    let facts = ollama_facts_loaded(&pulled.name, &show, loaded.get(&pulled.name).copied());
     if !facts.decision {
         return None;
     }
@@ -516,9 +679,12 @@ pub async fn discover_ollama(base_url: &Url) -> Vec<DecisionModelEntry> {
         }
     }
     use futures::StreamExt;
+    // The window each loaded copy was given, for a model that states none.
+    let loaded = loaded_windows(&client).await;
     let client = &client;
+    let loaded = &loaded;
     let mut entries: Vec<DecisionModelEntry> = futures::stream::iter(pulled)
-        .map(|pulled| discover_one(client, base_url, pulled))
+        .map(|pulled| discover_one(client, base_url, pulled, loaded))
         .buffer_unordered(SHOW_CONCURRENCY)
         .filter_map(|entry| async move { entry })
         .collect()
@@ -583,13 +749,20 @@ impl DecisionModelSource for ConfiguredDecisionModels {
             }
             OLLAMA_DECISION_PROVIDER => {
                 let base = ollama_base_url()?;
-                let facts = ollama_facts(&base, &wanted.model).await?.ok_or_else(|| {
-                    DecisionError::NoModel(format!(
-                        "`{}` is not pulled on the Ollama server at {base}, or the server did \
-                         not answer. Pull it with `ollama pull {}`.",
-                        wanted.model, wanted.model
-                    ))
-                })?;
+                let (mut facts, show) =
+                    ollama_described(&base, &wanted.model)
+                        .await?
+                        .ok_or_else(|| {
+                            DecisionError::NoModel(format!(
+                                "`{}` is not pulled on the Ollama server at {base}, or the \
+                                 server did not answer. Pull it with `ollama pull {}`.",
+                                wanted.model, wanted.model
+                            ))
+                        })?;
+                if ollama_adapter(wanted, &facts) == DecisionAdapter::Logprob {
+                    // That adapter states its window to the server itself.
+                    facts.context_tokens = logprob_window(&show);
+                }
                 open_ollama(&base, wanted, &facts)
             }
             other => Err(DecisionError::NoModel(format!(
@@ -644,6 +817,16 @@ pub fn resolve_baseten(wanted: &DecisionModelRef) -> DecisionResult<DecisionMode
     )))
 }
 
+/// The adapter an Ollama model is opened with: the one `wanted` asks for,
+/// else System One for a decision model and logprobs for any other.
+fn ollama_adapter(wanted: &DecisionModelRef, facts: &OllamaDecisionFacts) -> DecisionAdapter {
+    wanted.adapter.unwrap_or(if facts.decision {
+        DecisionAdapter::SystemOne
+    } else {
+        DecisionAdapter::Logprob
+    })
+}
+
 /// Open an Ollama model from its facts: System One for a decision model,
 /// logprobs for any other, or whichever adapter `wanted` asks for.
 pub fn open_ollama(
@@ -651,11 +834,7 @@ pub fn open_ollama(
     wanted: &DecisionModelRef,
     facts: &OllamaDecisionFacts,
 ) -> DecisionResult<Arc<dyn DecisionModel>> {
-    let adapter = wanted.adapter.unwrap_or(if facts.decision {
-        DecisionAdapter::SystemOne
-    } else {
-        DecisionAdapter::Logprob
-    });
+    let adapter = ollama_adapter(wanted, facts);
     match adapter {
         DecisionAdapter::SystemOne if !facts.decision => Err(DecisionError::Unsupported(format!(
             "`{}` is not a decision model (its capabilities lack `decision`). Ask with the \
@@ -715,6 +894,15 @@ mod tests {
             ["joey-1", "elephant-1", "baseten-newt-1b-latest"]
         );
         assert_eq!(entries[2].context_tokens, 8192);
+        // The feed says 16,384 for the known models; their runtime takes
+        // 16,000, and that is the window they are given.
+        assert_eq!(entries[0].context_tokens, BASETEN_DECISION_CONTEXT);
+        assert_eq!(entries[1].context_tokens, 16_000);
+        // A model the feed adds keeps the feed's figure.
+        assert_eq!(
+            baseten_window("decision-models/baseten-newt-1b-latest", 16_384),
+            16_384
+        );
         assert!(entries.iter().all(|e| e.tier == ProviderTier::Public
             && e.affiliation.is_none()
             && !e.local
@@ -740,7 +928,7 @@ mod tests {
                 "decision-models/baseten-mammoth-27b-latest",
             ]
         );
-        assert!(entries.iter().all(|e| e.context_tokens == 16_384));
+        assert!(entries.iter().all(|e| e.context_tokens == 16_000));
     }
 
     #[test]
@@ -789,8 +977,21 @@ mod tests {
         assert!(clef.decision && !clef.thinking && !clef.remote);
         assert_eq!(clef.context_tokens, 16384);
 
+        // A model that states no `num_ctx` runs at the server's default,
+        // which nothing here can read until it is loaded: never its 262k.
         let trained = ollama_facts_from_show("nimble:9b", &show(&["decision"], json!({})));
-        assert_eq!(trained.context_tokens, 262144);
+        assert_eq!(trained.context_tokens, OLLAMA_DEFAULT_DECISION_CONTEXT);
+        // Once loaded, the window `/api/ps` reports for it.
+        let loaded =
+            ollama_facts_loaded("nimble:9b", &show(&["decision"], json!({})), Some(32_768));
+        assert_eq!(loaded.context_tokens, 32_768);
+        // A stated `num_ctx` is the server's limit whatever `/api/ps` says.
+        let stated = ollama_facts_loaded(
+            "tev1:0.8b",
+            &show(&["decision"], json!({"parameters": "num_ctx 2048"})),
+            Some(4_096),
+        );
+        assert_eq!(stated.context_tokens, 2_048);
 
         let bare = ollama_facts_from_show("tev1:0.8b", &json!({"capabilities": ["decision"]}));
         assert_eq!(bare.context_tokens, OLLAMA_DEFAULT_DECISION_CONTEXT);
@@ -809,6 +1010,54 @@ mod tests {
             ),
         );
         assert!(renamed.remote);
+        // A cloud model's limit is the remote server's: capped, even when its
+        // stub states more.
+        assert_eq!(renamed.context_tokens, OLLAMA_DEFAULT_DECISION_CONTEXT);
+        let stub = ollama_facts_loaded(
+            "big:cloud",
+            &show(&["decision"], json!({"parameters": "num_ctx 65536"})),
+            Some(65_536),
+        );
+        assert!(stub.remote);
+        assert_eq!(stub.context_tokens, OLLAMA_DEFAULT_DECISION_CONTEXT);
+        // A cloud model that states less keeps it.
+        assert_eq!(ollama_window(true, Some(4_096), Some(262_144), None), 4_096);
+    }
+
+    #[test]
+    fn the_logprob_window_is_the_stated_or_trained_one_capped() {
+        let trained = show(&["completion"], json!({}));
+        assert_eq!(logprob_window(&trained), LOGPROB_MAX_CONTEXT);
+        let stated = show(&["completion"], json!({"parameters": "num_ctx 4096"}));
+        assert_eq!(logprob_window(&stated), 4_096);
+    }
+
+    #[test]
+    fn loaded_windows_are_read_from_api_ps() {
+        let ps = json!({"models": [
+            {"name": "clef-flash:latest", "model": "clef-flash:latest", "context_length": 16384},
+            {"name": "tev1:0.8b", "model": "tev1:0.8b", "context_length": 2048},
+            {"name": "odd:latest", "context_length": 0},
+            {"name": "older:latest"}
+        ]});
+        let windows = loaded_windows_from(&ps);
+        assert_eq!(windows.get("clef-flash:latest"), Some(&16_384));
+        assert_eq!(windows.get("tev1:0.8b"), Some(&2_048));
+        assert_eq!(windows.len(), 2);
+        assert!(loaded_windows_from(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn a_family_that_takes_fewer_choice_options_says_so() {
+        let tev = DecisionModelRef::new(OLLAMA_DECISION_PROVIDER, "tev1:0.8b");
+        assert_eq!(choice_option_limit(&tev), 24);
+        let tev_big = DecisionModelRef::new(OLLAMA_DECISION_PROVIDER, "hf.co/lab/TEV1:4b");
+        assert_eq!(choice_option_limit(&tev_big), 24);
+        let clef = DecisionModelRef::new(OLLAMA_DECISION_PROVIDER, "clef-flash:latest");
+        assert_eq!(
+            choice_option_limit(&clef),
+            crate::decision::types::MAX_CHOICE_OPTIONS
+        );
     }
 
     #[test]

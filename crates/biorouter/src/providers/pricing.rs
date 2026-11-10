@@ -1900,7 +1900,10 @@ mod tests {
                 "{slug}: {pricing:?}"
             );
             assert_eq!(pricing.output_token_cost, 0.0, "{slug}: output is free");
-            assert_eq!(pricing.context_length, Some(16_384));
+            assert_eq!(
+                pricing.context_length,
+                u32::try_from(crate::providers::decision::catalog::BASETEN_DECISION_CONTEXT).ok()
+            );
             // The async path, which the Usage panel and `/config/pricing` take,
             // gives the same price.
             assert_eq!(

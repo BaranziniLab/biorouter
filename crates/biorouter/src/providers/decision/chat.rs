@@ -154,15 +154,32 @@ pub fn declared_axes(
 }
 
 impl<F: DecisionChatFlavor> DecisionChatProvider<F> {
+    /// The provider for `model`, with the window the decision listing gives
+    /// it ([`listed_window`]): the window an Ollama model was discovered with
+    /// (tev1:0.8b 2,048, clef-flash:latest 16,384), a Baseten model's 16,000.
+    /// A window the config states is kept.
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
+        let model = if model.context_limit.is_some() {
+            model
+        } else {
+            let listed = listed_window(F::KIND, &model.model_name).await;
+            model.with_context_limit(listed)
+        };
         Ok(Self::with_model(model))
     }
 
+    /// The provider for `model` without asking any server. A window the config
+    /// states is kept; else the model's registry row, else the backend's
+    /// default ([`BASETEN_DECISION_CONTEXT`], [`OLLAMA_DEFAULT_DECISION_CONTEXT`]).
     pub fn with_model(model: ModelConfig) -> Self {
         let (tier, affiliation) = declared_axes(F::KIND, &model.model_name);
-        let context = match F::KIND {
-            DecisionChatKind::Baseten => BASETEN_DECISION_CONTEXT,
-            DecisionChatKind::Ollama => OLLAMA_DEFAULT_DECISION_CONTEXT,
+        let context = if ModelConfig::has_declared_context_window(&model.model_name) {
+            ModelConfig::context_window_for(&model.model_name)
+        } else {
+            match F::KIND {
+                DecisionChatKind::Baseten => BASETEN_DECISION_CONTEXT,
+                DecisionChatKind::Ollama => OLLAMA_DEFAULT_DECISION_CONTEXT,
+            }
         };
         let model = if model.context_limit.is_some() {
             model
@@ -181,6 +198,40 @@ impl<F: DecisionChatFlavor> DecisionChatProvider<F> {
     pub fn model_ref(&self) -> DecisionModelRef {
         DecisionModelRef::new(provider_id(F::KIND), &self.model.model_name)
     }
+}
+
+/// The window the decision listing gives `model`: Baseten's entry for it by
+/// alias or slug, or the window Ollama's discovery found for it
+/// (`/api/show`'s `num_ctx`, else the loaded window, else the capped default).
+/// `None` when nothing lists it, or the server does not answer.
+pub async fn listed_window(kind: DecisionChatKind, model: &str) -> Option<usize> {
+    let wanted = DecisionModelRef::new(provider_id(kind), model);
+    match kind {
+        DecisionChatKind::Baseten => baseten_entries()
+            .into_iter()
+            .find(|entry| entry.answers_to(&wanted))
+            .map(|entry| entry.context_tokens),
+        DecisionChatKind::Ollama => {
+            let base = ollama_base_url().ok()?;
+            discover_ollama(&base)
+                .await
+                .into_iter()
+                .find(|entry| entry.answers_to(&wanted))
+                .map(|entry| entry.context_tokens)
+        }
+    }
+}
+
+/// The decision models the Ollama server at `base` lists, by the name each is
+/// bound under: exactly the models the decision service discovers there
+/// ([`discover_ollama`]), so the chat's model picker, `decision_models` and
+/// the Monitors dialog list the same ones.
+pub async fn ollama_decision_chat_models(base: &url::Url) -> Vec<String> {
+    discover_ollama(base)
+        .await
+        .into_iter()
+        .map(|entry| entry.model)
+        .collect()
 }
 
 fn metadata_for(kind: DecisionChatKind) -> ProviderMetadata {
@@ -211,16 +262,19 @@ fn metadata_for(kind: DecisionChatKind) -> ProviderMetadata {
             .with_unlisted_models()
             .with_tier(ProviderTier::Public)
         }
+        // No declared list: which decision models exist is what this Ollama
+        // has pulled, so every picker asks `fetch_supported_models`, as for
+        // the Ollama chat provider. A declared list was read instead of it
+        // (the desktop's picker uses a non-empty `known_models` and asks
+        // nothing), which listed tev1:0.8b alone, at a window it does not
+        // have, while clef-flash:latest was installed (live QA 2026-11-10).
         DecisionChatKind::Ollama => ProviderMetadata::with_models(
             OLLAMA_DECISION_PROVIDER,
             "Ollama decision models",
             "Decision models pulled into a local Ollama (System One): a typed answer with \
              probabilities, computed on this computer.",
             OLLAMA_DEFAULT_DECISION_MODEL,
-            vec![ModelInfo::new(
-                OLLAMA_DEFAULT_DECISION_MODEL,
-                OLLAMA_DEFAULT_DECISION_CONTEXT,
-            )],
+            Vec::<ModelInfo>::new(),
             "https://ollama.com/search",
             vec![ConfigKey::new(
                 "OLLAMA_HOST",
@@ -283,15 +337,17 @@ impl<F: DecisionChatFlavor> Provider for DecisionChatProvider<F> {
                 .map(|entry| entry.display_name)
                 .collect::<Vec<_>>(),
             DecisionChatKind::Ollama => match ollama_base_url() {
-                Ok(base) => discover_ollama(&base)
-                    .await
-                    .into_iter()
-                    .map(|entry| entry.model)
-                    .collect(),
+                Ok(base) => ollama_decision_chat_models(&base).await,
                 Err(_) => Vec::new(),
             },
         };
         Ok(Some(names))
+    }
+
+    /// Every decision model listed, unfiltered: the canonical registry knows
+    /// none of them, and a filter that matched some would hide the rest.
+    async fn fetch_recommended_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
+        self.fetch_supported_models().await
     }
 
     /// Named from the first message without a model call: a decision model
@@ -682,6 +738,80 @@ mod tests {
         assert_eq!(
             BasetenDecisionChatProvider::metadata().tier,
             ProviderTier::Public
+        );
+    }
+
+    /// The window a decision chat's config carries is the model's own, not
+    /// one figure for every Ollama model: the registry row when the server is
+    /// not asked, and a window the config states is kept.
+    #[test]
+    fn a_decision_chats_window_is_its_models_own() {
+        let tev = OllamaDecisionChatProvider::with_model(ModelConfig::new_or_fail("tev1:0.8b"));
+        assert_eq!(tev.get_model_config().context_limit(), 2_048);
+        let clef =
+            OllamaDecisionChatProvider::with_model(ModelConfig::new_or_fail("clef-flash:latest"));
+        assert_eq!(clef.get_model_config().context_limit(), 16_384);
+        let unknown = OllamaDecisionChatProvider::with_model(ModelConfig::new_or_fail("nimble:9b"));
+        assert_eq!(
+            unknown.get_model_config().context_limit(),
+            OLLAMA_DEFAULT_DECISION_CONTEXT
+        );
+        let stated = OllamaDecisionChatProvider::with_model(
+            ModelConfig::new_or_fail("nimble:9b").with_context_limit(Some(4_096)),
+        );
+        assert_eq!(stated.get_model_config().context_limit(), 4_096);
+        let joey = BasetenDecisionChatProvider::with_model(ModelConfig::new_or_fail("joey-1"));
+        assert_eq!(joey.get_model_config().context_limit(), 16_000);
+    }
+
+    /// The Ollama decision provider declares no model list, so every picker
+    /// asks what this Ollama has pulled (B-1: clef-flash:latest was missing
+    /// from the chat's picker while the Monitors dialog listed it).
+    #[tokio::test]
+    async fn the_ollama_decision_models_listed_are_the_ones_discovered() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        assert!(OllamaDecisionChatProvider::metadata()
+            .known_models
+            .is_empty());
+        assert!(OllamaDecisionChatProvider::metadata().allows_unlisted_models);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    {"name": "clef-flash:latest", "digest": "b1-clef"},
+                    {"name": "tev1:0.8b", "digest": "b1-tev"},
+                    {"name": "qwen3.8:27b", "digest": "b1-qwen"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        for (name, capabilities, num_ctx) in [
+            (
+                "clef-flash:latest",
+                vec!["decision", "vision"],
+                "num_ctx 16384",
+            ),
+            ("tev1:0.8b", vec!["decision"], "num_ctx 2048"),
+            ("qwen3.8:27b", vec!["completion", "tools"], ""),
+        ] {
+            Mock::given(method("POST"))
+                .and(path("/api/show"))
+                .and(body_partial_json(serde_json::json!({"model": name})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "capabilities": capabilities,
+                    "parameters": num_ctx,
+                })))
+                .mount(&server)
+                .await;
+        }
+        let base = url::Url::parse(&server.uri()).unwrap();
+        assert_eq!(
+            ollama_decision_chat_models(&base).await,
+            ["tev1:0.8b", "clef-flash:latest"]
         );
     }
 }
