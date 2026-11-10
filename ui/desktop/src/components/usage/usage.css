@@ -293,3 +293,31 @@
     animation: none;
   }
 }
+
+/* ── Settings > App > Usage, Limits ────────────────────────────────────────
+   The editor a row's Change opens under it (`settings/usage/UsageLimitsRows.tsx`): the amount
+   and its unit on one line, then the row's three buttons. Indented to the row's 12px text edge. */
+.br-usage-limit-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.br-usage-limit-editor__fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.br-usage-limit-editor__input {
+  flex: 0 1 180px;
+  min-width: 0;
+}
+
+.br-usage-limit-editor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useId, useState } from 'react';
+import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { useModelAndProvider } from '../ModelAndProviderContext';
-import { COST_CARD_COPY, FOOTER_COPY } from './copy';
+import { Gauge } from '../icons/app-icons';
+import { COST_CARD_COPY, FOOTER_COPY, USAGE_LIMIT_COPY } from './copy';
 import './pickers.css';
 import { fetchModelPricing } from '../../utils/pricing';
 import { PricingData } from '../../api';
@@ -24,6 +25,8 @@ import {
 } from './FooterCard';
 import { useFooterCard } from './useFooterCard';
 import { isUnmeteredDecisionProvider } from '../decisions/decisionWire';
+import { UsageLimitSection } from './UsageLimitSection';
+import type { SessionUsageLimitController } from './useSessionUsageLimit';
 
 interface CostTrackerProps {
   inputTokens?: number;
@@ -37,6 +40,14 @@ interface CostTrackerProps {
    * showed "<$0.01" at GPT-5.5's rate for a request that costs nothing.
    */
   ledgerOnly?: boolean;
+  /**
+   * This chat's usage limit (`useSessionUsageLimit`, owned by `ChatInput`). Given, the card gains
+   * its Limit section and the trigger is always on the line, even with no cost to show, in a new
+   * chat, and with Show costs off (then it shows no dollar figure).
+   */
+  usageLimit?: SessionUsageLimitController;
+  /** Opens Settings > App > Usage, where the monthly and default limits are set. */
+  onOpenUsageSettings?: () => void;
 }
 
 export interface CostEstimate {
@@ -232,30 +243,90 @@ function TokenDetail({ lines }: { lines: string[] }) {
   );
 }
 
+/** The trigger's limit mark: `paused` while a limit holds the chat, `warn` at 80%. */
+export function limitState(
+  usageLimit: SessionUsageLimitController | undefined
+): 'paused' | 'warn' | undefined {
+  const state = usageLimit?.state;
+  if (!state) return undefined;
+  if (state.paused) return 'paused';
+  return state.warn ? 'warn' : undefined;
+}
+
+/** The trigger's accessible name: the cost, or what the item is, then the limit's state. */
+export function costTriggerLabel(
+  summary: CostSummary | null,
+  limit: 'paused' | 'warn' | undefined
+): string {
+  const base = summary
+    ? summary.estimate.amount === null
+      ? FOOTER_COPY.costUnavailable
+      : FOOTER_COPY.cost(
+          formatCostEstimate(summary.estimate, summary.currency),
+          summary.estimate.partial
+        )
+    : USAGE_LIMIT_COPY.triggerLabel;
+  if (limit === 'paused') return `${base}, ${USAGE_LIMIT_COPY.triggerPaused}`;
+  if (limit === 'warn') return `${base}, ${USAGE_LIMIT_COPY.triggerWarn}`;
+  return base;
+}
+
 /**
  * The footer's cost: the figure on the line (sans with tabular numbers, `.br-footline__item`) and
  * the card it opens, one of the footer's three `FooterCard`s, which open and close alike
- * (`useFooterCard`): the chat's total and its tokens, then the cost and tokens per model.
+ * (`useFooterCard`): the chat's total and its tokens, then the cost and tokens per model, then
+ * the chat's Limit (when `usageLimit` is given).
+ *
+ * With no cost worth showing (`summary` is `null`: $0, unavailable, a new chat, or Show costs
+ * off) and a limit to manage, the trigger is the gauge glyph alone (`chat-usage`), so the Limit
+ * section is always one click away. It is the same element at the same place either way, so a
+ * card the person kept stays kept when the first cost arrives.
  */
-function CostFigure({ summary }: { summary: CostSummary }) {
+function CostFigure({
+  summary,
+  usageLimit,
+  showCosts,
+  priced,
+  onOpenUsageSettings,
+}: {
+  summary: CostSummary | null;
+  usageLimit?: SessionUsageLimitController;
+  showCosts: boolean;
+  priced: boolean;
+  onOpenUsageSettings?: () => void;
+}) {
   const card = useFooterCard();
   const cardId = useId();
   const byModelId = useId();
-  const { estimate, currency, models } = summary;
-  const label = formatCostEstimate(estimate, currency);
+  const limit = limitState(usageLimit);
+  const label = summary ? formatCostEstimate(summary.estimate, summary.currency) : null;
+
+  // The card reads the limit afresh each time it opens.
+  const reload = usageLimit?.reload;
+  useEffect(() => {
+    if (card.open) reload?.();
+  }, [card.open, reload]);
+
+  // The composer notice's "Change limit" keeps the card open and moves focus into it.
+  const openRequest = usageLimit?.openCardRequest ?? 0;
+  const handledRequest = useRef(openRequest);
+  const { pinned, togglePin } = card;
+  useEffect(() => {
+    if (openRequest === handledRequest.current) return;
+    handledRequest.current = openRequest;
+    if (!pinned) togglePin({ moveFocus: true });
+  }, [openRequest, pinned, togglePin]);
+
   return (
     <FooterCardRoot card={card}>
       <FooterCardTrigger
         card={card}
         cardId={cardId}
-        data-testid="chat-cost"
-        aria-label={
-          estimate.amount === null
-            ? FOOTER_COPY.costUnavailable
-            : FOOTER_COPY.cost(label, estimate.partial)
-        }
+        data-testid={summary ? 'chat-cost' : 'chat-usage'}
+        data-limit-state={limit}
+        aria-label={costTriggerLabel(summary, limit)}
       >
-        {label}
+        {label ?? <Gauge aria-hidden />}
       </FooterCardTrigger>
       <FooterCard
         card={card}
@@ -264,20 +335,24 @@ function CostFigure({ summary }: { summary: CostSummary }) {
         align="end"
         testId="cost-card"
       >
-        <FooterCardSection label={COST_CARD_COPY.section}>
-          <FooterCardValue>{label}</FooterCardValue>
-          <TokenDetail lines={COST_CARD_COPY.tokens(summary)} />
-          {estimate.partial && <FooterCardNote>{COST_CARD_COPY.partialNote}</FooterCardNote>}
-        </FooterCardSection>
-        {models.length > 0 && (
+        {summary && label !== null && (
+          <FooterCardSection label={COST_CARD_COPY.section}>
+            <FooterCardValue>{label}</FooterCardValue>
+            <TokenDetail lines={COST_CARD_COPY.tokens(summary)} />
+            {summary.estimate.partial && (
+              <FooterCardNote>{COST_CARD_COPY.partialNote}</FooterCardNote>
+            )}
+          </FooterCardSection>
+        )}
+        {summary && summary.models.length > 0 && (
           <FooterCardSection label={COST_CARD_COPY.byModel} labelId={byModelId}>
             <FooterCardList labelledBy={byModelId}>
-              {models.map((row, index) => (
+              {summary.models.map((row, index) => (
                 <FooterCardRow key={`${modelRowKey(row.provider, row.model)}:${index}`}>
                   <FooterCardValue>{modelLabel(row)}</FooterCardValue>
                   <TokenDetail
                     lines={COST_CARD_COPY.modelDetail(
-                      formatTooltipMoney(row.totalCost, currency),
+                      formatTooltipMoney(row.totalCost, summary.currency),
                       row
                     )}
                   />
@@ -285,6 +360,16 @@ function CostFigure({ summary }: { summary: CostSummary }) {
               ))}
             </FooterCardList>
           </FooterCardSection>
+        )}
+        {usageLimit && (
+          <UsageLimitSection
+            controller={usageLimit}
+            open={card.open}
+            showCosts={showCosts}
+            priced={priced}
+            onOpenUsageSettings={onOpenUsageSettings}
+            contentRef={card.contentRef}
+          />
         )}
       </FooterCard>
     </FooterCardRoot>
@@ -297,6 +382,8 @@ export function CostTracker({
   sessionCosts,
   modelCostRows,
   ledgerOnly = false,
+  usageLimit,
+  onOpenUsageSettings,
 }: CostTrackerProps) {
   const { currentModel, currentProvider } = useModelAndProvider();
   const [costInfo, setCostInfo] = useState<PricingData | null>(null);
@@ -335,18 +422,35 @@ export function CostTracker({
     loadCostInfo();
   }, [currentModel, currentProvider]);
 
-  if (!showPricing) return null;
+  if (!showPricing && !usageLimit) return null;
 
-  const summary = costSummary({
-    modelCostRows,
-    sessionCosts,
-    inputTokens,
-    outputTokens,
-    // Loading, no model to price the counters at, or a chat whose counters are not the current
-    // model's (`ledgerOnly`): nothing from this path.
-    pricing: !ledgerOnly && currentModel && currentProvider && !isLoading ? costInfo : null,
-  });
+  const summary = !showPricing
+    ? null
+    : costSummary({
+        modelCostRows,
+        sessionCosts,
+        inputTokens,
+        outputTokens,
+        // Loading, no model to price the counters at, or a chat whose counters are not the current
+        // model's (`ledgerOnly`): nothing from this path.
+        pricing: !ledgerOnly && currentModel && currentProvider && !isLoading ? costInfo : null,
+      });
+  // A new limit starts in dollars when something the chat runs on has a price.
+  const priced =
+    showPricing &&
+    ((!!costInfo &&
+      ((costInfo.input_token_cost ?? 0) > 0 || (costInfo.output_token_cost ?? 0) > 0)) ||
+      (modelCostRows ?? []).some((row) => row.totalCost !== null && row.totalCost > 0));
   // One element at one place for every path, so a card the person pinned stays pinned when the
   // ledger's answer replaces the live price.
-  return summary ? <CostFigure summary={summary} /> : null;
+  if (!summary && !usageLimit) return null;
+  return (
+    <CostFigure
+      summary={summary}
+      usageLimit={usageLimit}
+      showCosts={showPricing}
+      priced={priced}
+      onOpenUsageSettings={onOpenUsageSettings}
+    />
+  );
 }

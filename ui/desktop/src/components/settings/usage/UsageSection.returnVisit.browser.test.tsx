@@ -127,6 +127,8 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
         });
       };
       export const getUsageReport = () => late({ rows: [] });
+      // The Limits group's write; nothing here saves a limit.
+      export const putUsageLimits = async () => ({ data: {} });
     `,
   },
   { filter: /\/userAction$/, contents: `export const userActionHeaders = async () => ({});` },

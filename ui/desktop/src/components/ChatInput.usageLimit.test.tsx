@@ -1,0 +1,209 @@
+/**
+ * The composer while a usage limit holds the chat (owner requirement 2): the daemon makes no
+ * model request until the limit is raised or lifted, so the composer says so on one line with
+ * the way out, and Send refuses by button and by Enter alike. The daemon's answer decides, never
+ * a stored notice: an old notice stays in the transcript after the limit is lifted, and the
+ * composer only reads the limit again when one lands.
+ */
+import React from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { SessionUsageLimitResponse } from '../api';
+import { USAGE_LIMIT_COPY } from './bottom_menu/copy';
+
+const api = vi.hoisted(() => ({ getLimit: vi.fn() }));
+
+vi.mock('./ConfigContext', () => ({
+  useConfig: () => ({
+    getProviders: vi.fn(async () => []),
+    read: vi.fn(async () => null),
+  }),
+}));
+vi.mock('./ModelAndProviderContext', () => ({
+  useModelAndProvider: () => ({
+    getCurrentModelAndProvider: vi.fn(async () => ({
+      model: 'gpt-5.6-sol',
+      provider: 'versa_azure',
+    })),
+    currentModel: 'gpt-5.6-sol',
+    currentProvider: 'versa_azure',
+    modelConfigStatus: 'ready',
+    currentModelSupportsVision: false,
+    currentModelSupportedInputMimeTypes: null,
+  }),
+}));
+vi.mock('../hooks/useDiverge', () => ({
+  useDiverge: () => ({ diverge: vi.fn() }),
+}));
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
+// The footer as what the composer hands it: the cost card's open requests.
+vi.mock('./bottom_menu/ComposerFooter', () => ({
+  ComposerFooter: ({ usageLimit }: { usageLimit?: { openCardRequest: number } }) => (
+    <span data-testid="footer-open-requests">{usageLimit?.openCardRequest ?? 'none'}</span>
+  ),
+}));
+vi.mock('./MessageQueue', () => ({ default: () => null }));
+vi.mock('./MentionPopover', () => {
+  const MentionPopoverMock = React.forwardRef(() => null);
+  MentionPopoverMock.displayName = 'MentionPopoverMock';
+  return { default: MentionPopoverMock };
+});
+vi.mock('../api', () => ({
+  getSession: vi.fn(async () => ({ data: { privacy_tier: 'public' } })),
+  llamacppStatus: vi.fn(async () => ({ data: {} })),
+  ollamaContextWindow: vi.fn(async () => ({ data: { model: 'x', context_window: null } })),
+  updateWorkingDir: vi.fn(async () => ({ data: {} })),
+  getSessionUsageLimit: api.getLimit,
+  putSessionUsageLimit: vi.fn(),
+}));
+vi.mock('../utils/userAction', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/userAction')>()),
+  userActionHeaders: async () => ({ 'X-User-Action': 'proof' }),
+}));
+
+import ChatInput from './ChatInput';
+import { ChatState } from '../types/chatState';
+
+function limitState(overrides: Partial<SessionUsageLimitResponse> = {}): SessionUsageLimitResponse {
+  return {
+    billingSessionId: 'chat-a',
+    chatDollarLimitInert: false,
+    chatOverride: null,
+    defaults: { maxTokens: null, maxUsd: null },
+    limit: { maxTokens: null, maxUsd: null, source: 'none' },
+    monthDollarLimitInert: false,
+    monthly: { maxTokens: null, maxUsd: null },
+    paused: false,
+    reason: null,
+    used: {
+      chatTokens: 0,
+      chatUsdComplete: true,
+      month: '2026-11',
+      monthTokens: 0,
+      monthUsdComplete: true,
+    },
+    warn: false,
+    ...overrides,
+  };
+}
+
+const pausedBy = (reason: 'chat' | 'month') =>
+  limitState({
+    limit: { maxTokens: 10_000, maxUsd: null, source: 'chat' },
+    paused: true,
+    reason,
+  });
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.getLimit.mockResolvedValue({ data: limitState() });
+  Object.assign(window, {
+    appConfig: { get: () => '/default/workdir' },
+    electron: {
+      directoryChooser: vi.fn(),
+      addRecentDir: vi.fn(),
+      logInfo: vi.fn(),
+      getPathForFile: vi.fn(() => ''),
+      on: vi.fn(),
+      off: vi.fn(),
+    },
+  });
+});
+
+const setView = vi.fn();
+const handleSubmit = vi.fn();
+
+function composer(chatState = ChatState.Idle, usageLimitNoticeKey?: string) {
+  return (
+    <ChatInput
+      sessionId="chat-a"
+      handleSubmit={handleSubmit}
+      chatState={chatState}
+      onStop={vi.fn()}
+      initialValue="hello"
+      setView={setView}
+      totalTokens={0}
+      accumulatedInputTokens={0}
+      accumulatedOutputTokens={0}
+      droppedFiles={[]}
+      onFilesProcessed={vi.fn()}
+      messagesLength={2}
+      toolCount={0}
+      onWorkingDirChange={vi.fn()}
+      usageLimitNoticeKey={usageLimitNoticeKey}
+    />
+  );
+}
+
+const send = () => document.querySelector('button[type="submit"]');
+
+describe('the composer while a usage limit holds the chat', () => {
+  it('reads the chat’s limit with the proof', async () => {
+    render(composer());
+    await waitFor(() =>
+      expect(api.getLimit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: { session_id: 'chat-a' },
+          headers: { 'X-User-Action': 'proof' },
+        })
+      )
+    );
+  });
+
+  it('says so on one line, and refuses to send by button and by Enter alike', async () => {
+    api.getLimit.mockResolvedValue({ data: pausedBy('chat') });
+    render(composer());
+    const notice = await screen.findByTestId('composer-usage-limit-notice');
+    expect(notice).toHaveTextContent(USAGE_LIMIT_COPY.noticeChat);
+    expect(notice).toHaveAttribute('role', 'status');
+    expect(send()).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', code: 'Enter' });
+    expect(handleSubmit).not.toHaveBeenCalled();
+  });
+
+  it('opens the cost card for a chat limit', async () => {
+    api.getLimit.mockResolvedValue({ data: pausedBy('chat') });
+    render(composer());
+    const action = await screen.findByRole('button', { name: USAGE_LIMIT_COPY.noticeChatAction });
+    expect(screen.getByTestId('footer-open-requests')).toHaveTextContent('0');
+    fireEvent.click(action);
+    expect(screen.getByTestId('footer-open-requests')).toHaveTextContent('1');
+  });
+
+  it('opens Settings > App > Usage for the monthly limit', async () => {
+    api.getLimit.mockResolvedValue({ data: pausedBy('month') });
+    render(composer());
+    const notice = await screen.findByTestId('composer-usage-limit-notice');
+    expect(notice).toHaveTextContent(USAGE_LIMIT_COPY.noticeMonth);
+    fireEvent.click(screen.getByRole('button', { name: USAGE_LIMIT_COPY.noticeMonthAction }));
+    expect(setView).toHaveBeenCalledWith('settings', { section: 'usage' });
+  });
+
+  it('sends as usual when no limit holds the chat', async () => {
+    render(composer());
+    await waitFor(() => expect(api.getLimit).toHaveBeenCalled());
+    expect(screen.queryByTestId('composer-usage-limit-notice')).toBeNull();
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', code: 'Enter' });
+    expect(handleSubmit).toHaveBeenCalled();
+  });
+
+  it('reads the limit again after a turn and when a stored notice lands, and follows the answer', async () => {
+    const { rerender } = render(composer(ChatState.Streaming));
+    await waitFor(() => expect(api.getLimit).toHaveBeenCalledTimes(1));
+
+    // The turn ends: the gate may have stopped it.
+    api.getLimit.mockResolvedValue({ data: pausedBy('chat') });
+    rerender(composer(ChatState.Idle));
+    await waitFor(() => expect(api.getLimit).toHaveBeenCalledTimes(2));
+    await screen.findByTestId('composer-usage-limit-notice');
+
+    // The person lifts the limit elsewhere; the old notice stays in the transcript, and a new
+    // one landing is only a reason to read again.
+    api.getLimit.mockResolvedValue({ data: limitState() });
+    rerender(composer(ChatState.Idle, 'notice-1'));
+    await waitFor(() => expect(api.getLimit).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByTestId('composer-usage-limit-notice')).toBeNull());
+    expect(send()).not.toBeDisabled();
+  });
+});

@@ -1,8 +1,13 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getUsageReport, getUsageSummary, type UsageSummaryResponse } from '../../../api';
-import { settingsUsageCopy as copy } from '../../usage/copy';
+import {
+  getUsageReport,
+  getUsageSummary,
+  putUsageLimits,
+  type UsageSummaryResponse,
+} from '../../../api';
+import { settingsLimitsCopy, settingsUsageCopy as copy } from '../../usage/copy';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import UsageSection from './UsageSection';
 import { DATA_RESET_EVENT, forgetUsageSnapshot, rememberUsageSnapshot } from './usageSnapshot';
@@ -10,6 +15,10 @@ import { DATA_RESET_EVENT, forgetUsageSnapshot, rememberUsageSnapshot } from './
 vi.mock('../../../api', () => ({
   getUsageReport: vi.fn(),
   getUsageSummary: vi.fn(),
+  putUsageLimits: vi.fn(),
+}));
+vi.mock('../../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'proof' }),
 }));
 
 /** The month-to-date summary these tests serve; `turns` tells one answer from another. */
@@ -251,5 +260,62 @@ describe('UsageSection', () => {
         view.unmount();
       }
     });
+  });
+});
+
+describe('the Limits group under the month', () => {
+  it('reads the limits from the summary, and a save shows in the budget gauges', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getUsageSummary).mockResolvedValue({
+      data: { ...summaryBody(3), defaultSessionTokenLimit: 250_000 },
+    } as never);
+    vi.mocked(putUsageLimits).mockResolvedValue({
+      data: {
+        monthlyTokenLimit: 5_000_000,
+        monthlyDollarLimit: null,
+        defaultSessionTokenLimit: 250_000,
+        defaultSessionDollarLimit: null,
+      },
+    } as never);
+    render(<UsageSection />);
+    await screen.findByTestId('usage-panel');
+    const monthly = screen.getByTestId('usage-limit-row-monthly');
+    expect(monthly).toHaveTextContent(settingsLimitsCopy.noLimit);
+    expect(screen.getByTestId('usage-limit-row-defaultPerChat')).toHaveTextContent(
+      '250,000 tokens'
+    );
+
+    await user.click(
+      screen.getByRole('button', {
+        name: settingsLimitsCopy.changeName(settingsLimitsCopy.monthly),
+      })
+    );
+    await user.click(screen.getByRole('radio', { name: settingsLimitsCopy.tokens }));
+    // The daemon's next read of the month carries what was saved.
+    vi.mocked(getUsageSummary).mockResolvedValue({
+      data: {
+        ...summaryBody(3),
+        monthlyTokenLimit: 5_000_000,
+        defaultSessionTokenLimit: 250_000,
+        tokenPercent: 0,
+      },
+    } as never);
+    await user.type(
+      screen.getByLabelText(settingsLimitsCopy.amountLabel(settingsLimitsCopy.monthly)),
+      '5m{Enter}'
+    );
+    await waitFor(() => expect(monthly).toHaveTextContent('5,000,000 tokens'));
+    expect(putUsageLimits).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: { 'X-User-Action': 'proof' },
+        body: { monthlyTokenLimit: 5_000_000, monthlyDollarLimit: null },
+      })
+    );
+    // The month is read again, quietly, for the gauges' percentages.
+    await waitFor(() => expect(getUsageSummary).toHaveBeenCalledTimes(2));
+
+    // The report's token budget gauge reads the same value.
+    await user.click(screen.getByRole('button', { name: copy.detailsName }));
+    expect(await screen.findByTestId('usage-gauge-tokens')).toBeInTheDocument();
   });
 });

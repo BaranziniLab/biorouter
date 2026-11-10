@@ -7,6 +7,7 @@ import { ContextWindowIndicator } from '../ContextWindowIndicator';
 import { CostTracker } from './CostTracker';
 import { DirSwitcher } from './DirSwitcher';
 import { FooterCardGroup } from './FooterCard';
+import type { SessionUsageLimitController } from './useSessionUsageLimit';
 
 /**
  * The composer's footer line (spec 3.7): the working folder on the left, the
@@ -76,6 +77,14 @@ export interface ComposerFooterProps {
   outputTokens?: number;
   sessionCosts?: SessionCosts;
   modelCostRows?: ModelCostRow[];
+  /**
+   * The chat's usage limit, which `ChatInput` reads (it holds Send while the chat is paused) and
+   * the cost card shows and changes. Given, the cost item is always on the line in a chat, even
+   * with no cost to show (`CostTracker`).
+   */
+  usageLimit?: SessionUsageLimitController;
+  /** Opens Settings > App > Usage (the monthly and default limits). */
+  onOpenUsageSettings?: () => void;
   /** Layout only (the inset that lines the folder up with the card's text). */
   className?: string;
   /**
@@ -104,6 +113,8 @@ export function ComposerFooter({
   outputTokens,
   sessionCosts,
   modelCostRows,
+  usageLimit,
+  onOpenUsageSettings,
   className,
   composerRef,
 }: ComposerFooterProps) {
@@ -144,6 +155,8 @@ export function ComposerFooter({
                 sessionCosts={sessionCosts}
                 modelCostRows={modelCostRows}
                 ledgerOnly={costFromLedgerOnly}
+                usageLimit={usageLimit}
+                onOpenUsageSettings={onOpenUsageSettings}
               />
             )}
           </div>

@@ -12,6 +12,8 @@ import { ToolsChip } from './bottom_menu/ToolsChip';
 import { useSessionWorkingDir } from './bottom_menu/useSessionWorkingDir';
 import { ModelEffortChip } from './bottom_menu/ModelEffortChip';
 import { ComposerFooter } from './bottom_menu/ComposerFooter';
+import { useSessionUsageLimit } from './bottom_menu/useSessionUsageLimit';
+import { USAGE_LIMIT_COPY } from './bottom_menu/copy';
 import { contextWindowModelKey } from './ContextWindowIndicator';
 import { draftReasoningScope, sessionReasoningScope } from '../store/reasoningEffort';
 import { InfoTip } from './ui/info-tip';
@@ -407,6 +409,13 @@ interface ChatInputProps {
    * monitor to.
    */
   onOpenDecisionMonitors?: () => void;
+  /**
+   * Moves when a stored usage limit notice lands in the transcript (`BaseChat`, from
+   * `conversation/usageLimitNotice.ts`), so the composer reads the chat's limit again at once.
+   * The notice itself never pauses the composer: the daemon's answer does, because an old notice
+   * stays in the transcript after the limit is raised.
+   */
+  usageLimitNoticeKey?: string;
 }
 
 export default function ChatInput({
@@ -418,7 +427,7 @@ export default function ChatInput({
   setChatState,
   onStop,
   onAbandonContinuation,
-  submissionBlocked = false,
+  submissionBlocked: submissionBlockedByOwner = false,
   onSteer,
   commandHistory = [],
   initialValue = '',
@@ -443,6 +452,7 @@ export default function ChatInput({
   supportedInputMimeTypesOverride,
   autoFocus = true,
   onOpenDecisionMonitors,
+  usageLimitNoticeKey,
 }: ChatInputProps) {
   const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
@@ -485,6 +495,25 @@ export default function ChatInput({
   const wasLoadingRef = useRef(isLoading);
   const isLoadingNowRef = useRef(isLoading);
   isLoadingNowRef.current = isLoading;
+
+  // THE CHAT'S USAGE LIMIT (docs/agent-loop/usage-limits.md). Read when the chat opens, after
+  // every turn and when a stored limit notice lands; the cost card in the footer shows and
+  // changes it through the same controller. While the daemon says a limit holds the chat, Send
+  // is off and a one-line notice says why, with the way out.
+  const [turnsEnded, setTurnsEnded] = useState(0);
+  const wasLoadingForLimitRef = useRef(isLoading);
+  useEffect(() => {
+    if (wasLoadingForLimitRef.current && !isLoading) setTurnsEnded((count) => count + 1);
+    wasLoadingForLimitRef.current = isLoading;
+  }, [isLoading]);
+  const usageLimit = useSessionUsageLimit(sessionId, `${turnsEnded}:${usageLimitNoticeKey ?? ''}`);
+  const usagePaused = usageLimit.state?.paused === true;
+  const usagePausedBy = usagePaused ? (usageLimit.state?.reason ?? 'chat') : null;
+  const submissionBlocked = submissionBlockedByOwner || usagePaused;
+  const openUsageSettings = () => {
+    const options: ViewOptions & { section: string } = { section: 'usage' };
+    setView('settings', options);
+  };
 
   // The queue — renderer memory only, and the CHAT's rather than this
   // instance's: it is parked under the chat's key when this composer unmounts
@@ -2609,7 +2638,7 @@ export default function ChatInput({
 
       if (canSubmit && !submissionBlocked) {
         performSubmit();
-      } else if (canSubmit && submissionBlocked && crewHold) {
+      } else if (canSubmit && submissionBlockedByOwner && crewHold) {
         toastWarning({ title: crewHold.title, msg: crewHold.message });
       }
     }
@@ -2930,7 +2959,9 @@ export default function ChatInput({
         ? COMPOSER_COPY.send.processingFiles
         : chatState === ChatState.RestartingAgent
           ? COMPOSER_COPY.send.restarting
-          : COMPOSER_COPY.send.tooltip;
+          : usagePaused
+            ? USAGE_LIMIT_COPY.sendPaused
+            : COMPOSER_COPY.send.tooltip;
 
   const sendOrStop = showStop ? (
     <Tooltip>
@@ -3053,6 +3084,35 @@ export default function ChatInput({
               data-testid="composer-no-model-action"
             >
               {NO_MODEL_COMPOSER_ACTION}
+            </Button>
+          </div>
+        )}
+
+        {/* A usage limit holds the chat: the daemon makes no model request until it is raised
+            or lifted, so Send is off and the way out is one press away. */}
+        {usagePausedBy && (
+          <div
+            data-testid="composer-usage-limit-notice"
+            data-reason={usagePausedBy}
+            className="br-composer-notice"
+            role="status"
+          >
+            <span className="text-supporting">
+              {usagePausedBy === 'month'
+                ? USAGE_LIMIT_COPY.noticeMonth
+                : USAGE_LIMIT_COPY.noticeChat}
+            </span>
+            <Button
+              type="button"
+              variant="link"
+              size="xs"
+              className="h-auto px-0 text-supporting"
+              onClick={usagePausedBy === 'month' ? openUsageSettings : usageLimit.requestOpenCard}
+              data-testid="composer-usage-limit-action"
+            >
+              {usagePausedBy === 'month'
+                ? USAGE_LIMIT_COPY.noticeMonthAction
+                : USAGE_LIMIT_COPY.noticeChatAction}
             </Button>
           </div>
         )}
@@ -3195,6 +3255,8 @@ export default function ChatInput({
         outputTokens={accumulatedOutputTokens}
         sessionCosts={sessionCosts}
         modelCostRows={modelCostRows}
+        usageLimit={usageLimit}
+        onOpenUsageSettings={openUsageSettings}
       />
 
       <MentionPopover
