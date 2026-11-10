@@ -48,6 +48,7 @@ import { useLiveSessionTiers, useLiveSessionTypes } from '../../hooks/chatStream
 import { mergeSessionTiers, raiseTier } from '../privacy/sessionTier';
 import { useSessionListTiers } from '../privacy/useSessionListTiers';
 import { getSession, type Session, type SessionClassification, type SessionType } from '../../api';
+import { subagentRoleOf } from '../sessions/historyRow';
 import { userActionHeaders } from '../../utils/userAction';
 import {
   forgetSessionTypesExcept,
@@ -540,6 +541,7 @@ function useSessionPrivacyTiers(
 function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): {
   outsideListTiers: Record<string, SessionClassification>;
   rowSessionTypes: Record<string, SessionType>;
+  rowSessionRoles: Record<string, string>;
 } {
   const dispatch = groups?.dispatch;
   // Read through a ref so the effect depends on the SIGNATURE below and not on
@@ -556,6 +558,9 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
   // read on its own (see above) — for the tab's kind. Seeded from the memory, so
   // a tab that was a sub-agent's before the shell last unmounted still is on the
   // first paint of this mount.
+  // Each held subagent chat's role, from its row's spawn record (listed or read
+  // on its own), so its tab is titled by the role (F-15, C-3).
+  const [rowSessionRoles, setRowSessionRoles] = useState<Record<string, string>>({});
   const [rowSessionTypes, setRowSessionTypes] = useState<Record<string, SessionType>>(() =>
     recallSessionTypes(heldSessionIds(groups?.state))
   );
@@ -664,6 +669,27 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
       });
     };
 
+    /**
+     * Fold the roles some rows reported into `rowSessionRoles` in one update; a
+     * row with no role clears its chat's, and with `held` a chat no tab holds is
+     * dropped. Same object back when nothing changed.
+     */
+    const keepSessionRoles = (
+      roles: ReadonlyMap<string, string | null>,
+      held?: ReadonlySet<string>
+    ) => {
+      setRowSessionRoles((prev) => {
+        let next = held ? onlyHeld(prev, held) : prev;
+        for (const [sessionId, role] of roles) {
+          if ((next[sessionId] ?? null) === role) continue;
+          if (next === prev) next = { ...prev };
+          if (role) next[sessionId] = role;
+          else delete next[sessionId];
+        }
+        return next;
+      });
+    };
+
     /** Stop asking about a chat again: it was answered, or no tab holds it. */
     const dropRetry = (sessionId: string) => {
       clearTimeout(retryRef.current.get(sessionId)?.timer);
@@ -756,6 +782,7 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
         // So is the type, and for the same reason it is kept before rules 5
         // and 4 can drop the name.
         if (row.session_type) keepSessionTypes(new Map([[sessionId, row.session_type]]));
+        keepSessionRoles(new Map([[sessionId, subagentRoleOf(row.extension_data)]]));
         // Rule 5, then rule 4.
         if (newestReadRef.current.get(sessionId) !== seq) return;
         if (titleOf(sessionId) !== askedAbout) return;
@@ -774,6 +801,7 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
       const rowById = new Map(rows.map((row) => [row.id, row]));
       const seen = new Set<string>();
       const listedTypes = new Map<string, SessionType>();
+      const listedRoles = new Map<string, string | null>();
       for (const group of Object.values(state.groups)) {
         for (const tab of group.tabs) {
           if (!tab.sessionId || seen.has(tab.sessionId)) continue;
@@ -784,6 +812,7 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
             // History's "Show subagent runs" ticked, a subagent tab IS listed,
             // and is never read on its own (see "its session type", above).
             if (row.session_type) listedTypes.set(tab.sessionId, row.session_type);
+            listedRoles.set(tab.sessionId, subagentRoleOf(row.extension_data));
             // Rule 1 lives inside: a user-named tab is never renamed.
             renameFromRow(tab.sessionId, row);
           } else if (readForGenerationRef.current.get(tab.sessionId) !== generation) {
@@ -808,6 +837,7 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
       // tier map — which also keeps an id reissued by a store without the
       // high-water mark from inheriting a closed tab's kind or tier.
       keepSessionTypes(listedTypes, seen);
+      keepSessionRoles(listedRoles, seen);
       setOutsideListTiers((prev) => onlyHeld(prev, seen));
     };
     reconcileRef.current = reconcile;
@@ -840,7 +870,7 @@ function useTabTitlesFromSessionList(groups: ReturnType<typeof useChatGroups>): 
     }
   }, [liveSessionTypes, tabTitleSignature]);
 
-  return { outsideListTiers, rowSessionTypes: sessionTypes };
+  return { outsideListTiers, rowSessionTypes: sessionTypes, rowSessionRoles };
 }
 
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
@@ -849,7 +879,8 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   // Each map keeps its identity until one of its own sources changes — the tier
   // map is state, the type map is memoised over state and two snapshots — and
   // the wrapper object is new per render and is never passed on.
-  const { outsideListTiers, rowSessionTypes } = useTabTitlesFromSessionList(groups);
+  const { outsideListTiers, rowSessionTypes, rowSessionRoles } =
+    useTabTitlesFromSessionList(groups);
   const privacyTiers = useSessionPrivacyTiers(outsideListTiers);
   const sessionWorkingDirs = useSessionListWorkingDirs();
 
@@ -1354,6 +1385,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         // `tabAnnotations`, which do not survive leaving `/pair` or a reload.
         sessionTypes={rowSessionTypes}
         sessionWorkingDirs={sessionWorkingDirs}
+        sessionRoles={rowSessionRoles}
         // The MERGE caret. It cannot come from `dragOverTabId` like the local
         // one does: while a cross-window drag is in flight this window receives
         // no pointer events at all, so its own drag state is empty and the caret

@@ -12,17 +12,15 @@ import {
   MessageSquareText,
   Target,
   AlertCircle,
-  AlertTriangle,
-  CheckCircle2,
   ChevronDown,
-  CircleDotDashed,
-  CircleHelp,
   Pencil,
   Upload,
   Puzzle,
   MoreHorizontal,
 } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
+import { SUBAGENT_STATUS_GLYPHS } from '../subagent/subagentStatus';
+import { isDecisionProvider } from '../decisions/decisionWire';
 import { useNavigate } from 'react-router-dom';
 import { toastError, toastSuccess } from '../../toasts';
 import { ContextMenu, ContextMenuTrigger } from '../ui/context-menu';
@@ -372,10 +370,12 @@ const RUN_STATUS_GLYPHS: Record<
   SubagentOutcomeStatus,
   React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' }>
 > = {
-  completed: CheckCircle2,
-  blocked: CircleHelp,
-  failed: AlertTriangle,
-  incomplete: CircleDotDashed,
+  // The one status map the chat summary's roster reads too (C-1): a stopped run
+  // wears the stop shape, never the dashed ring that means "running".
+  completed: SUBAGENT_STATUS_GLYPHS.completed,
+  blocked: SUBAGENT_STATUS_GLYPHS.blocked,
+  failed: SUBAGENT_STATUS_GLYPHS.failed,
+  incomplete: SUBAGENT_STATUS_GLYPHS.incomplete,
 };
 
 /** The decision-model mark beside a chat's decision count. */
@@ -548,9 +548,12 @@ const HistoryRow = React.memo(function HistoryRow({
     }
   };
 
+  // A decision chat's model reads the chat and calls no tools, so the extensions
+  // its session row happens to carry are not something it used (B-3).
+  const decisionChat = isDecisionProvider(session.provider_name);
   const extensionNames = useMemo(
-    () => (nested ? [] : getSessionExtensionNames(session.extension_data)),
-    [nested, session.extension_data]
+    () => (nested || decisionChat ? [] : getSessionExtensionNames(session.extension_data)),
+    [nested, decisionChat, session.extension_data]
   );
   const outcome = useMemo(
     () => (nested ? subagentOutcomeOf(session.extension_data) : null),

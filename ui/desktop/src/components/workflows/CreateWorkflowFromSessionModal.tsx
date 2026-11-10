@@ -18,6 +18,8 @@ import { Spinner } from '../ui/spinner';
 import { workflowFormCopy as copy } from './copy';
 import './workflows.css';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
+import { WorkflowSupervisionSummary, type WorkflowSupervision } from '../ui/WorkflowWarningModal';
+import { SUPERVISION_KEPT } from './CreateEditWorkflowModal';
 
 interface CreateWorkflowFromSessionModalProps {
   isOpen: boolean;
@@ -97,7 +99,18 @@ export default function CreateWorkflowFromSessionModal({
     skills?: string[];
     author?: Workflow['author'];
     version?: string;
+    /*
+     * The chat's monitors and its phase plan, as `/workflows/create` captured
+     * them (H-4). There are no form fields for either: they are shown read-only
+     * under the form, as `CreateEditWorkflowModal` shows a saved workflow's, and
+     * written back on save. Dropping them made a workflow made here lose the
+     * supervision the CLI's `biorouter workflow create` keeps.
+     */
+    decisionSettings?: Workflow['decision_settings'];
+    orchestrationPlan?: Workflow['orchestration_plan'];
   }>({});
+  // What the generated draft declares, for the read-only summary under the form.
+  const [supervision, setSupervision] = useState<WorkflowSupervision | null>(null);
   const resourceEditsRef = useRef({
     extensions: false,
     knowledgeBases: false,
@@ -256,6 +269,18 @@ export default function CreateWorkflowFromSessionModal({
             // attach.
             generatedResourcesRef.current.author = workflow.author ?? undefined;
             generatedResourcesRef.current.version = workflow.version ?? undefined;
+            generatedResourcesRef.current.decisionSettings =
+              workflow.decision_settings ?? undefined;
+            generatedResourcesRef.current.orchestrationPlan =
+              workflow.orchestration_plan ?? undefined;
+            setSupervision(
+              workflow.decision_settings || workflow.orchestration_plan
+                ? {
+                    decisionSettings: workflow.decision_settings,
+                    orchestrationPlan: workflow.orchestration_plan,
+                  }
+                : null
+            );
 
             if (workflow.response?.json_schema) {
               form.setFieldValue(
@@ -328,6 +353,7 @@ export default function CreateWorkflowFromSessionModal({
       setKnowledgeSelectionUnread(false);
       setSkillItems([]);
       setWorkflowSkillIds([]);
+      setSupervision(null);
       generatedResourcesRef.current = {};
       resourceEditsRef.current = {
         extensions: false,
@@ -472,6 +498,13 @@ export default function CreateWorkflowFromSessionModal({
         // Captured at generation time; see generatedResourcesRef above.
         author: generatedResources.author,
         ...(generatedResources.version ? { version: generatedResources.version } : {}),
+        // The chat's monitors and phase plan, kept as captured (H-4).
+        ...(generatedResources.decisionSettings
+          ? { decision_settings: generatedResources.decisionSettings }
+          : {}),
+        ...(generatedResources.orchestrationPlan
+          ? { orchestration_plan: generatedResources.orchestrationPlan }
+          : {}),
       };
 
       let workflowId = await saveWorkflow(workflow, null);
@@ -602,6 +635,20 @@ export default function CreateWorkflowFromSessionModal({
                 setWorkflowSkillIds(ids);
               }}
             />
+            {/* Read-only, as in the workflow editor: the form has no fields for
+                monitors or gates, and saving keeps both blocks (H-4). */}
+            {supervision ? (
+              <div className="pt-4">
+                <WorkflowSupervisionSummary supervision={supervision}>
+                  <p
+                    className="text-supporting text-text-muted"
+                    data-testid="workflow-supervision-kept"
+                  >
+                    {SUPERVISION_KEPT}
+                  </p>
+                </WorkflowSupervisionSummary>
+              </div>
+            ) : null}
           </div>
         )}
       </div>

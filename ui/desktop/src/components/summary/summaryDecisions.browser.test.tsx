@@ -233,14 +233,21 @@ describe('the Decisions section in the summary card, in a real layout engine', (
           const box = row.getBoundingClientRect();
           return { height: box.height, left: box.left, right: box.right };
         }),
-        bars: Array.from(document.querySelectorAll<HTMLElement>('.br-decisions__bar')).map(
-          (bar) => {
-            const box = bar.getBoundingClientRect();
-            return { width: box.width, height: box.height, right: box.right };
-          }
-        ),
-        monitorsButton: document.querySelector('.br-decisions__monitors')!.getBoundingClientRect()
-          .height,
+        bars: document.querySelectorAll('.br-decisions__bar, .br-pbar').length,
+        heading: (() => {
+          const line = document.querySelector('.br-decisions .br-summary__heading')!;
+          const box = line.getBoundingClientRect();
+          const toggle = line.querySelector('.br-summary__toggle')!.getBoundingClientRect();
+          const button = line.querySelector('.br-decisions__monitors')!.getBoundingClientRect();
+          return {
+            height: box.height,
+            toggleRight: toggle.right,
+            buttonLeft: button.left,
+            buttonRight: button.right,
+            buttonHeight: button.height,
+            buttonWidth: button.width,
+          };
+        })(),
         cut: rows.filter((row) => {
           const name = row.querySelector<HTMLElement>('.br-decisions__name')!;
           return name.scrollWidth > name.clientWidth;
@@ -251,21 +258,26 @@ describe('the Decisions section in the summary card, in a real layout engine', (
       };
     });
     await tab.close();
-    // Four monitors, one decide row for fifty calls, one gate: six rows for 5,000 calls.
-    expect(measured.rows).toHaveLength(6);
+    // Four monitors and one decide row for fifty calls: five rows for 5,000 calls. No gate
+    // row (its place is its phase's chip). An errored monitor opens the section by default.
+    expect(measured.rows).toHaveLength(5);
     expect(measured.card.width).toBeLessThanOrEqual(RAIL_WIDTH);
     for (const row of measured.rows) {
-      expect(row.height).toBeGreaterThanOrEqual(28);
+      // One line, the card's 28px.
+      expect(row.height).toBe(28);
       // The row bleeds 8px into the 12px gutter, never past the card.
       expect(row.left).toBeGreaterThanOrEqual(measured.card.left);
       expect(row.right).toBeLessThanOrEqual(measured.card.right + 0.5);
     }
-    for (const bar of measured.bars) {
-      expect(bar.height).toBe(4);
-      expect(bar.width).toBe(40);
-      expect(bar.right).toBeLessThanOrEqual(measured.card.right);
-    }
-    expect(measured.monitorsButton).toBeGreaterThanOrEqual(28);
+    // No probability bar anywhere in the section.
+    expect(measured.bars).toBe(0);
+    // The heading is one 28px line at 240px: the toggle, then the 24px Monitors button,
+    // inside the card.
+    expect(measured.heading.height).toBe(28);
+    expect(measured.heading.buttonHeight).toBe(24);
+    expect(measured.heading.buttonWidth).toBe(24);
+    expect(measured.heading.toggleRight).toBeLessThanOrEqual(measured.heading.buttonLeft + 0.5);
+    expect(measured.heading.buttonRight).toBeLessThanOrEqual(measured.card.right);
     // The long names were long enough to overflow, and were cut rather than widening anything.
     expect(measured.cut).toBeGreaterThan(0);
     expect(measured.bodyScroll.scroll).toBeLessThanOrEqual(measured.bodyScroll.client);

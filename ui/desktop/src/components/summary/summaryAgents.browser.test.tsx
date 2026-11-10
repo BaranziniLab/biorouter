@@ -387,62 +387,54 @@ describe('the subagents in the summary card, in a real layout engine', () => {
     }
   });
 
-  it('draws the setup counts as 12px glyphs on the 16px second line, and in full', async (ctx) => {
+  it('draws one muted second line, and keeps the peek left of its row, one at a time', async (ctx) => {
     if (!browser) return ctx.skip();
-    // The fixture's model name is long enough to fill the line on its own (the instrument),
-    // and a usual one is not.
-    for (const model of [undefined, 'gpt-5.5']) {
-      const { tab, measured } = await mount({ agents: 3, model });
-      try {
-        for (const height of measured.comfortable) expect(height).toBe(44);
-        // Extensions, skills and knowledge bases on each of the three rows.
-        expect(measured.counts.map((count) => count.kind)).toEqual(
-          Array.from({ length: 3 }, () => ['extension', 'skill', 'knowledge']).flat()
-        );
-        for (const count of measured.counts) {
-          // Held to the 16px line, so the row does not grow.
-          expect(count.line.height).toBe(16);
-          expect(count.height).toBe(16);
-          expect(count.top).toBe(count.line.top);
-          expect(count.glyph.width).toBe(12);
-          expect(count.glyph.height).toBe(12);
-          expect(count.glyph.top - count.top).toBe(2);
-          // Drawn in full: the line's ellipsis never takes a count.
-          expect(count.left).toBeGreaterThanOrEqual(count.line.left);
-          expect(count.right).toBeLessThanOrEqual(count.line.right);
-        }
-        expect(measured.lines).toHaveLength(3);
-        for (const line of measured.lines) {
-          // Model, dot, counts, dot, and the run time or (on the fixture's first row, quiet
-          // for 10 minutes) the quiet note in its place.
-          expect(line.parts.map((part) => part.fit)).toEqual([true, false, false, false, false]);
-          const [modelPart, ...rest] = line.parts;
-          const time = rest[rest.length - 1];
-          for (const part of line.parts) expect(part.right).toBeLessThanOrEqual(line.right);
-          // The dots and the counts never give way; the time only once the model is gone.
-          for (const part of rest.slice(0, -1)) expect(part.cut).toBe(false);
-          if (time.cut) expect(modelPart.width).toBe(0);
-        }
-        expect(measured.lines.map((line) => line.time)).toEqual([
-          'quiet for 10m',
-          '1h 5m',
-          '1h 5m',
-        ]);
-        // Beside a run time the counts leave room: the long model name is cut and a usual one
-        // is not, and the time is whole.
-        for (const line of measured.lines.slice(1)) {
-          expect(line.parts[0].cut).toBe(!model);
-          expect(line.parts[0].width).toBeGreaterThan(0);
-          expect(line.parts[4].cut).toBe(false);
-        }
-        // The narrowest case, a private row (its lock takes 20px of the line) that is also quiet:
-        // the model gives all its room before the note's tail goes.
-        expect(measured.lines[0].parts[0].width).toBe(0);
-        expect(measured.body.scrollWidth).toBeLessThanOrEqual(measured.body.clientWidth);
-        expect(measured.rightmost).toBeLessThanOrEqual(measured.card.right);
-      } finally {
-        await tab.close();
-      }
+    const { tab, measured } = await mount({ agents: 3 });
+    try {
+      // An 18px name over one 16px line; no setup counts on the row (F-2).
+      for (const height of measured.comfortable) expect(height).toBe(44);
+      expect(measured.counts).toEqual([]);
+      expect(measured.lines).toHaveLength(3);
+      for (const line of measured.lines)
+        expect(line.right).toBeLessThanOrEqual(measured.card.right);
+
+      const peekOf = (id: string) =>
+        tab.evaluate((child) => {
+          const row = document.querySelector(`[data-testid="subagent-row-${child}"]`)!;
+          const card = document.querySelector(`[data-testid="subagent-card-${child}"]`);
+          const box = row.getBoundingClientRect();
+          const peek = card?.getBoundingClientRect();
+          return {
+            open: document.querySelectorAll('[data-testid^="subagent-card-"]').length,
+            pinned: row.getAttribute('data-pinned'),
+            fill: getComputedStyle(row).backgroundColor,
+            rowLeft: box.left,
+            rowTop: box.top,
+            peekRight: peek?.right ?? null,
+            peekTop: peek?.top ?? null,
+          };
+        }, id);
+
+      const resting = await peekOf('child-1');
+      await tab.click('[data-testid="subagent-row-child-1"]');
+      await tab.waitForSelector('[data-testid="subagent-card-child-1"]');
+      const kept = await peekOf('child-1');
+      expect(kept.open).toBe(1);
+      expect(kept.pinned).toBe('true');
+      // The kept row wears the strong fill; at rest it had none.
+      expect(kept.fill).not.toBe(resting.fill);
+      // The peek hangs to the LEFT of the row, 12px off, from its top.
+      expect(kept.peekRight!).toBeLessThanOrEqual(kept.rowLeft);
+      expect(Math.abs(kept.peekTop! - kept.rowTop)).toBeLessThanOrEqual(1);
+
+      // Keeping another row's peek closes the first: one open at a time.
+      await tab.click('[data-testid="subagent-row-child-2"]');
+      await tab.waitForSelector('[data-testid="subagent-card-child-2"]');
+      const second = await peekOf('child-2');
+      expect(second.open).toBe(1);
+      expect((await peekOf('child-1')).pinned).toBe(null);
+    } finally {
+      await tab.close();
     }
   });
 

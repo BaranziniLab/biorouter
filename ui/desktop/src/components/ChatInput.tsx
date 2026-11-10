@@ -3219,16 +3219,23 @@ export default function ChatInput({
         {/* THE CONTROLS ROW: what to add, what the agent can reach, which model
             answers, and Send at the end, Crew's `.crew-compose-controls`. */}
         <div data-testid="chat-input-toolbar" className="br-composer-controls">
-          <ComposerPlusMenu
-            onAttachFiles={attachPickedFiles}
-            onInsertTrigger={insertTrigger}
-            onOpenDecisionMonitors={sessionId ? onOpenDecisionMonitors : undefined}
-          />
-          <ToolsChip
-            sessionId={sessionId}
-            privacyTier={sessionPrivacyTier}
-            handOffKey={handOffKey}
-          />
+          {/* A decision chat has nothing to attach, insert or switch on: its model
+              reads the chat and answers, and calls no tools (B-3). The monitors
+              stay reachable from an ordinary chat's `+`. */}
+          {!decisionChat && (
+            <>
+              <ComposerPlusMenu
+                onAttachFiles={attachPickedFiles}
+                onInsertTrigger={insertTrigger}
+                onOpenDecisionMonitors={sessionId ? onOpenDecisionMonitors : undefined}
+              />
+              <ToolsChip
+                sessionId={sessionId}
+                privacyTier={sessionPrivacyTier}
+                handOffKey={handOffKey}
+              />
+            </>
+          )}
           <span className="br-composer-controls__spacer" />
           <div ref={modelSlotRef} className="br-composer-controls__model">
             <ModelEffortChip

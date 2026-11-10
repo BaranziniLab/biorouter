@@ -217,3 +217,16 @@ describe('UserMessage edit actions', () => {
     expect(document.querySelectorAll('[data-message-meta]')).toHaveLength(1);
   });
 });
+
+describe('UserMessage in a read-only transcript (E-12)', () => {
+  it('draws no edit pencil without onMessageUpdate, and keeps Copy', () => {
+    render(<UserMessage message={message} />);
+    expect(screen.queryByRole('button', { name: /edit message:/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /copy/i })).toBeInTheDocument();
+  });
+
+  it('draws the pencil when an edit can be saved', () => {
+    render(<UserMessage message={message} onMessageUpdate={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /edit message:/i })).toBeInTheDocument();
+  });
+});

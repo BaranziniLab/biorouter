@@ -68,7 +68,12 @@ describe('editing a sent message', () => {
   // markup still leaks — and a user tidying their sentence would delete half a
   // tag and silently lose the reference.
   it('keeps the markup out of the edit box and the reference on screen', () => {
-    render(<UserMessage message={userMessage(`hello ${refTag('skill', 'my skill')}`)} />);
+    render(
+      <UserMessage
+        message={userMessage(`hello ${refTag('skill', 'my skill')}`)}
+        onMessageUpdate={() => undefined}
+      />
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
 

@@ -31,6 +31,10 @@ export const summaryCopy = {
   retry: 'Retry',
 
   statsLabel: 'Chat statistics',
+  /** The disclosure the statistics sit behind (F-1). */
+  details: 'Details',
+  /** Its closed summary: the token figure alone, "392k tokens" (or "Tokens N/A"). */
+  detailsSummary: (tokens: string) => (tokens === 'N/A' ? 'Tokens N/A' : `${tokens} tokens`),
   toolCalls: 'Tool calls',
   tokens: 'Tokens',
   tokensHelp:
@@ -54,49 +58,37 @@ export const summaryCopy = {
   /** The subagents and phases sections (`summary/SummarySubagents.tsx`). */
   agents: {
     phases: 'Phases',
+    /** The Phases section's accessible name, with the plan's title: "Phases: Fever notes". */
+    phasesLabel: (title: string | null | undefined) =>
+      title?.trim() ? `Phases: ${title.trim()}` : 'Phases',
     /** Read after the phase count by assistive technology only: "1 of 4 phases complete". */
     phasesCountSuffix: ' phases complete',
     phaseListLabel: 'Phases of the plan',
-    phaseProgressLabel: (title: string) => `${title} progress`,
     /** Visible per phase: "2 of 5". Read: "2 of 5 subagents done". */
     phaseAgentsSuffix: ' subagents done',
+    /** A phase's accessible kind: "research phase". */
+    phaseKindWords: (kind: string) => `${kind.toLowerCase()} phase`,
     subagents: 'Subagents',
     otherSubagents: 'Other subagents',
     subagentListLabel: 'Subagents of this chat',
     /** Read after a list's count: "4 of 10 done". */
     doneSuffix: ' done',
     running: (count: number) => `${count} running`,
-    quiet: (count: number) => `${count} quiet`,
     failed: (count: number) => `${count} failed`,
     blocked: (count: number) => `${count} blocked`,
     groups: { running: 'Running', attention: 'Needs attention', done: 'Done' },
     showAll: (count: number) => `Show all ${count}`,
     showFewer: 'Show fewer',
     refreshFailed: 'Subagents could not refresh.',
-    noneInPhase: 'No subagents yet',
-    status: {
-      queued: 'Queued',
-      running: 'Running',
-      cancelling: 'Stopping',
-      completed: 'Completed',
-      blocked: 'Blocked',
-      incomplete: 'Incomplete',
-      failed: 'Failed',
-      interrupted: 'Interrupted',
-      unknown: 'Status unknown',
-    },
-    quietFor: (elapsed: string) => `quiet for ${elapsed}`,
-    /**
-     * A comfortable row's setup counts, drawn as a glyph and a number and read
-     * as these words: "2 extensions", "1 skill", "1 knowledge base". Never
-     * abbreviated: "1 KB" read as one kilobyte.
-     */
-    setupCount: {
-      extension: (count: number) => `${count} ${count === 1 ? 'extension' : 'extensions'}`,
-      skill: (count: number) => `${count} ${count === 1 ? 'skill' : 'skills'}`,
-      knowledge: (count: number) =>
-        `${count} ${count === 1 ? 'knowledge base' : 'knowledge bases'}`,
-    },
+    /** A row's second line while it works (F-2). */
+    working: 'Working…',
+    stopping: 'Stopping…',
+    /** A quiet child's second line, and its peek's result label: "Quiet for 4m". */
+    quietFor: (elapsed: string) => `Quiet for ${elapsed}`,
+    /** A dense row's trailing note for a quiet child: "quiet 4m". */
+    quietShort: (elapsed: string) => `quiet ${elapsed}`,
+    /** Read at the end of a private child's row. */
+    private: 'private',
     phaseStatus: {
       pending: 'Pending',
       in_progress: 'In progress',
@@ -117,21 +109,24 @@ export const summaryCopy = {
       synthesis: 'Synthesis',
       other: 'Other',
     },
-    /** The hover card's labels. */
-    card: {
-      role: 'Role',
-      phase: 'Phase',
+    /** The peek a row's hover previews and its click keeps (F-2, F-3). */
+    peek: {
+      label: (title: string) => `${title}, subagent`,
+      task: 'Task',
+      openInTab: 'Open in a tab',
+      details: 'Details',
+      noResult: 'It left no result.',
       model: 'Model',
       extensions: 'Extensions',
       skills: 'Skills',
       knowledgeBases: 'Knowledge bases',
-      tokens: 'Tokens',
-      toolCalls: 'Tool calls',
-      messages: 'Messages',
-      runTime: 'Run time',
+      used: 'Used',
       none: 'None',
-      private: 'Private',
-      openHint: 'Click to open in a tab',
+      /** After the first names of a long list: "and 10 more". */
+      more: (count: number) => `and ${count} more`,
+      tokens: (value: string) => `${value} tokens`,
+      toolCalls: (count: string, n: number) => `${count} ${n === 1 ? 'tool call' : 'tool calls'}`,
+      messages: (count: string, n: number) => `${count} ${n === 1 ? 'message' : 'messages'}`,
     },
   },
 
@@ -141,40 +136,27 @@ export const summaryCopy = {
    */
   decisions: {
     title: 'Decisions',
-    countSuffix: ' decision calls',
     listLabel: 'Decision sources',
-    calls: (n: number) => `${n.toLocaleString()} ${n === 1 ? 'call' : 'calls'}`,
+    /** A `decide` or chat row's accessible count: "10 checks". */
+    checks: (n: number) => `${n.toLocaleString()} ${n === 1 ? 'check' : 'checks'}`,
+    /** A monitor row's accessible count: "checked 4 times". */
+    checkedTimes: (n: number) => `checked ${n.toLocaleString()} ${n === 1 ? 'time' : 'times'}`,
     errors: (n: number) => `${n.toLocaleString()} ${n === 1 ? 'error' : 'errors'}`,
-    notChecked: 'Not checked yet',
-    last: (answer: string) => `last ${answer}`,
-    gateAttempt: (attempt: number, max: number) => `attempt ${attempt} of ${max}`,
-    gateBlocked: (max: number) => `blocked after ${max} attempts`,
-    /** Blocked by evaluation errors in a row, which use no attempt. */
-    gateBlockedUnevaluated: 'blocked: could not be evaluated',
+    /** Every `decide` batch together. */
+    agentChecks: 'Agent checks',
+    /** The decision chat's own answers. */
+    chatAnswers: "This chat's answers",
     monitors: 'Monitors',
-    monitorsOn: (n: number) => (n === 0 ? 'none on' : `${n} on`),
-    monitorsAdd: 'Add',
     refreshFailed: 'Decisions did not refresh',
     openHint: 'Opens the decision history',
+    /** A row's trailing word (R1: a monitor fired or stayed quiet, never passed or failed). */
     state: {
-      pending: 'Not checked yet',
-      armed: 'Watching',
       fired: 'Fired',
+      quiet: 'Quiet',
+      pending: 'Not checked yet',
       off: 'Off',
       error: 'Error',
       done: 'Decided',
-      passed: 'Passed',
-      failed: 'Failed',
-      blocked: 'Blocked',
-      skipped: 'Skipped',
-    },
-    gate: {
-      passed: (p: string, t: string) => `Gate ${p} ≥ ${t} passed`,
-      failed: (p: string, t: string, attempt: number, max: number) =>
-        `Gate ${p} < ${t}, attempt ${attempt} of ${max}`,
-      blocked: 'Gate blocked',
-      pending: (t: string) => `Gate at ${t}`,
-      label: 'Phase gate',
     },
   },
 

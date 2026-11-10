@@ -594,7 +594,12 @@ export default function ModelsBottomBar({
   // ⚠ Unconditional on the master privacy switch — DR-15 turns off enforcement,
   // not the truth. See `privacy/disclosureCopy.ts`.
   const { copy: disclosure } = useDisclosure(needsDisclosure === true);
-  const disclosureLine = needsDisclosure === true ? (disclosure?.short ?? null) : null;
+  // A decision chat (B-3) runs a model that reads only the chat it answers:
+  // it calls no tools, so "this model can read files on this computer" is not
+  // true of it, and the line is not drawn. The DR-17 text itself is unchanged.
+  const decisionChat = isDecisionProvider(effectiveProvider);
+  const disclosureLine =
+    needsDisclosure === true && !decisionChat ? (disclosure?.short ?? null) : null;
 
   // §14.2's line for the chat's tier. A "Private" PILL cannot fit in this chip
   // — the trigger is `max-w-[120px]` and the label is already truncated at 24
@@ -681,7 +686,8 @@ export default function ModelsBottomBar({
   const chipModelLabel = chipPair.role
     ? `${friendlyModelName(displayModel)} (${chipPair.role})`
     : friendlyModelName(displayModel);
-  const showEffort = effort !== null && effort !== DEFAULT_REASONING_EFFORT;
+  // A decision model has no reasoning effort to set: it answers in one step.
+  const showEffort = !decisionChat && effort !== null && effort !== DEFAULT_REASONING_EFFORT;
   // The InfoTip's notes: where a choice here reaches, and the lead/worker pair.
   // At most one of the first two applies (Home vs a chat with its own binding).
   const notes = [
@@ -710,7 +716,7 @@ export default function ModelsBottomBar({
               aria-label={joinSentences([
                 `Current model: ${fullModelLabel}${modelClause ? ` (${modelClause})` : ''}`,
                 privacyLine,
-                effort !== null && `Effort: ${REASONING_EFFORT_LABELS[effort]}`,
+                !decisionChat && effort !== null && `Effort: ${REASONING_EFFORT_LABELS[effort]}`,
               ])}
               data-testid="model-chip"
               data-kind="model"
@@ -788,7 +794,7 @@ export default function ModelsBottomBar({
             {/* A decision model answers each message with a choice and its
                 probabilities, not with text; said here so the chip's menu names
                 what kind of model the chat runs on. */}
-            {isDecisionProvider(effectiveProvider) && (
+            {decisionChat && (
               <div
                 data-testid="model-decision-line"
                 className="text-supporting text-text-muted [overflow-wrap:anywhere]"
@@ -817,7 +823,7 @@ export default function ModelsBottomBar({
             as the items, so the reason is visible where they are grey.
           */}
           <HostManagedModelNote variant="inset" />
-          {effort !== null && reasoningScope && (
+          {effort !== null && reasoningScope && !decisionChat && (
             <>
               <DropdownMenuSeparator />
               {/* Effort applies immediately to this scope while the menu stays open. */}
@@ -831,12 +837,16 @@ export default function ModelsBottomBar({
           >
             {MODEL_COPY.changeModel}
           </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={hostManaged}
-            onClick={hostManaged ? undefined : () => setIsLeadWorkerModalOpen(true)}
-          >
-            {MODEL_COPY.leadWorker}
-          </DropdownMenuItem>
+          {/* Lead and worker pairs two chat models for one turn; a decision chat
+              runs no turns of that kind, so it is not offered there (B-3). */}
+          {!decisionChat && (
+            <DropdownMenuItem
+              disabled={hostManaged}
+              onClick={hostManaged ? undefined : () => setIsLeadWorkerModalOpen(true)}
+            >
+              {MODEL_COPY.leadWorker}
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 

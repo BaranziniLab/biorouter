@@ -56,6 +56,10 @@ export const EXTENSIONS_COPY = {
   enableAll: (n: number) => `Enable all (${n})`,
   disableAll: (n: number) => `Disable all (${n})`,
   empty: 'No extensions available',
+  /** The list while this chat's extensions have not answered yet (A-6). */
+  loading: 'Loading extensions…',
+  /** The list when this chat's extensions could not be read (A-6). */
+  loadFailed: "Couldn't load this chat's extensions.",
   noMatch: 'No extensions found',
   /** §14.5, visible on the row: a refusal is never tooltip-only. */
   pairingRefused: 'Unavailable in this chat (public model)',

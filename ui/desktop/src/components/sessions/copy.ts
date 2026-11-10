@@ -71,14 +71,14 @@ export const RUN_STATUS_WORDS = {
   completed: 'Completed',
   blocked: 'Blocked',
   failed: 'Failed',
-  incomplete: 'Incomplete',
+  incomplete: 'Stopped',
 } as const;
 /** What each end means, after the word in the tooltip when the run left no line of its own. */
 export const RUN_STATUS_DETAILS = {
   completed: 'Finished and reported a result.',
   blocked: 'Stopped to ask a question before acting.',
   failed: 'Ended in an error.',
-  incomplete: 'Ended before it finished.',
+  incomplete: 'Stopped before it finished.',
 } as const;
 /** The model chip's tooltip: which provider served the model. */
 export const runModelTooltip = (model: string, provider: string | null | undefined) =>

@@ -124,6 +124,26 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* DETAILS: the chat's statistics behind the shared Disclosure, closed by default
+   (F-1). Its trigger takes the rows' left edge, and its summary ("392k tokens")
+   sits in the label's muted 12px. */
+.br-summary__body > * + .br-summary__details {
+  margin-top: 12px;
+}
+
+/* The trigger is a Button, 14/500 at every rung: here it takes the summary's
+   12px label role, so the card keeps its two sizes. */
+.br-summary__details .biorouter-disclosure-trigger {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 400;
+}
+
+/* The rows sit 4px under the trigger, not a form's 12px. */
+.br-summary__details .biorouter-disclosure-body {
+  padding-top: 4px;
+}
+
 /* The bar itself is the primitive's `size="thin"` (4px); only its gap and its
    track's ground are ours. The primitive's track is `--background-muted`, which
    IS `--background-fill` in both modes, so on the rail's filled card it would
@@ -308,3 +328,13 @@
   }
 }
 /* @ws WS-SUMMARY end: chat summary content */
+
+/* A KEPT SUBAGENT PEEK'S ROW in forced colours (summaryAgents.css paints it the
+   strong fill, which forced colours drop): a 1px system-ink outline instead.
+   Here, not in summaryAgents.css, whose rows draw no line of any kind. */
+@media (forced-colors: active) {
+  .br-agents__row[data-pinned='true'] {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+}

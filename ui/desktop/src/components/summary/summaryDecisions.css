@@ -37,10 +37,11 @@
   list-style: none;
 }
 
-/* A full-width button that bleeds 8px into the body's 12px gutter, so its text
-   keeps the to-do list's left edge and its hover wash has room. */
-.br-decisions__row,
-.br-decisions__monitors {
+/* A ROW: one 28px line and a full-width button that bleeds 8px into the body's
+   12px gutter, so its text keeps the to-do list's left edge and its hover wash
+   has room. A glyph by shape, the name, one trailing muted word (F-1): no second
+   line, no probability and no bar (R2). */
+.br-decisions__row {
   display: flex;
   width: calc(100% + 16px);
   min-width: 0;
@@ -48,7 +49,7 @@
   margin: 0 -8px;
   padding: 5px 8px;
   gap: 8px;
-  align-items: flex-start;
+  align-items: center;
   border: 0;
   border-radius: var(--radius-element);
   background-color: transparent;
@@ -62,73 +63,35 @@
   transition: background-color var(--dur-fast-min) var(--ease-out);
 }
 
-.br-decisions__monitors {
-  align-items: center;
-  color: var(--text-default);
-}
-
-.br-decisions__row:hover,
-.br-decisions__monitors:hover {
+.br-decisions__row:hover {
   background-color: var(--br-control-hover, var(--background-fill-strong));
 }
 
-.br-decisions__row:focus-visible,
-.br-decisions__monitors:focus-visible,
-.br-decisions__retry:focus-visible {
+.br-decisions__row:focus-visible {
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
-.br-decisions__text {
-  display: flex;
+.br-decisions__name {
   min-width: 0;
   flex: 1 1 auto;
-  flex-direction: column;
-}
-
-.br-decisions__line {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.br-decisions__name,
-.br-decisions__last {
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.br-decisions__name {
-  flex: 1 1 auto;
-}
-
-.br-decisions__count,
-.br-decisions__meta {
+.br-decisions__count {
+  flex: none;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
-.br-decisions__count {
-  flex: none;
-}
-
-/* The bar keeps its 48px and the words give way. */
-.br-decisions .br-decisions__bar {
-  width: 40px;
-  background-color: var(--br-summary-track, var(--background-fill-strong));
-}
-
-.br-decisions__row[data-state='fired'] .br-decisions__glyph,
-.br-decisions__row[data-state='failed'] .br-decisions__glyph,
-.br-decisions__row[data-state='blocked'] .br-decisions__glyph {
+/* Accent only for what needs the person: a monitor that fired. */
+.br-decisions__row[data-state='fired'] .br-decisions__glyph {
   color: var(--text-accent);
 }
 
@@ -136,8 +99,17 @@
   color: var(--text-warning);
 }
 
-.br-decisions__row[data-state='passed'] .br-decisions__glyph {
-  color: var(--text-success);
+/* THE MONITORS BUTTON (F-16): a 24px quiet icon button on the heading line,
+   after the toggle, whether the section is open or closed. The Button's own
+   ghost recipe draws it; only its place on the 28px line is ours. */
+.br-decisions .br-decisions__monitors {
+  flex: none;
+  margin-right: -4px;
+  color: var(--text-muted);
+}
+
+.br-decisions .br-decisions__monitors:hover {
+  color: var(--text-default);
 }
 
 .br-decisions__error {
@@ -162,57 +134,92 @@
   background-color: var(--br-control-hover, var(--background-fill-strong));
 }
 
-/* A phase gate's chip on its phase row (SummarySubagents.tsx). */
-.br-agents__gate {
-  display: inline-flex;
-  max-width: 100%;
-  min-height: 24px;
-  margin: 0 -8px;
-  padding: 2px 8px;
-  gap: 6px;
-  align-items: center;
-  border: 0;
-  border-radius: var(--radius-element);
-  background-color: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: var(--text-supporting);
-  line-height: var(--text-supporting--line-height);
-  text-align: start;
-  cursor: pointer;
-}
-
-.br-agents__gate > .br-summary__glyph {
-  height: 16px;
-}
-
-.br-agents__gate:hover {
-  background-color: var(--br-control-hover, var(--background-fill-strong));
-  color: var(--text-default);
-}
-
-.br-agents__gate:focus-visible {
+.br-decisions__retry:focus-visible {
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
-.br-agents__gate[data-state='blocked'],
-.br-agents__gate[data-state='failed'] {
+/* A PHASE GATE'S CHIP at the end of its phase's line (SummarySubagents.tsx,
+   spec 3.3): 20px, the inner radius, 12px words and a 12px glyph, resting on the
+   control ground one step back from the filled card (no fill on a fill) and the
+   hover step under the pointer. The transparent 1px border is what forced
+   colours draw. "Add gate" wears the same chip in the same slot. */
+.br-agents__gate-slot {
+  display: inline-flex;
+  flex: none;
+}
+
+.br-agents__gate {
+  display: inline-flex;
+  max-width: 100%;
+  height: 20px;
+  flex: none;
+  padding: 0 6px;
+  gap: 4px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-inner);
+  background-color: var(--br-control-ground, var(--background-default));
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.br-agents__gate[data-static] {
+  cursor: default;
+}
+
+.br-agents__gate-glyph {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+.br-agents__gate-glyph > svg {
+  width: 12px;
+  height: 12px;
+}
+
+button.br-agents__gate:hover {
+  background-color: var(--br-control-hover, var(--background-fill-strong));
   color: var(--text-default);
+}
+
+button.br-agents__gate:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* A gate that waits for the person: its glyph and word in the accent. */
+.br-agents__gate[data-needs-person] {
+  color: var(--text-accent);
+}
+
+/* "Add gate": quiet until the phase is hovered or the button focused, but
+   always in the row order and always a target. */
+.br-agents__gate[data-add-gate] {
+  opacity: 0;
+}
+
+.br-agents__gate[data-add-gate][data-visible] {
+  opacity: 1;
 }
 
 .br-agents__gate-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .br-decisions__row,
-  .br-decisions__monitors {
+  .br-decisions__row {
     transition: none;
   }
 }

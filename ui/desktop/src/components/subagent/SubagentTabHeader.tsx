@@ -21,9 +21,11 @@ import { useState } from 'react';
 import { Button } from '../ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 import { InfoTip } from '../ui/info-tip';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { ChevronRight } from '../icons/app-icons';
 import { transcriptCopy } from '../transcript/copy';
+import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
+import { useOptionalKnowledge } from '../knowledge/KnowledgeContext';
+import { knowledgeBaseWords } from '../summary/SubagentPeek';
 import { unwrapGuardrailFrame } from '../../utils/guardrailFrame';
 import {
   SUBAGENT_STOP_NEEDS_DESKTOP,
@@ -34,20 +36,46 @@ import { useParentChatName } from './useParentChatName';
 
 const copy = transcriptCopy.subagent;
 
+/** The header's own words (F-15, C-3): what replaced the visible counts and "Context". */
+export const SUBAGENT_HEADER_COPY = {
+  /** The one InfoTip that names what the child was given. */
+  whatItCanUse: 'What it can use',
+  /** The disclosure that holds the spawn record (it read "Context"). */
+  instructions: 'Instructions',
+  extensions: (names: string) => `Extensions: ${names}.`,
+  knowledgeBase: (names: string) => `Knowledge base: ${names}.`,
+  knowledgeBases: (names: string) => `Knowledge bases: ${names}.`,
+};
+
+/** At most this many names per list in the InfoTip, then "and N more". */
+const GRANT_NAME_LIMIT = 3;
+
+/** `Developer, Knowledge, Biorouter Copilot and 11 more`. */
+function grantNames(names: readonly string[]): string {
+  const shown = names.slice(0, GRANT_NAME_LIMIT);
+  const more = names.length - shown.length;
+  if (more > 0) return `${shown.join(', ')} and ${more} more`;
+  if (shown.length <= 1) return shown.join('');
+  return `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}`;
+}
+
 /**
- * A grant count ("2 extensions") whose names are its description: an InfoTip
- * in its `asChild` form makes the count itself the focusable trigger, so the
- * names open on hover, on Tab and on click, and a screen reader hears them on
- * reaching the count. Never `title=`, which would rename it.
+ * What the child can use, in at most two sentences of display names (R6): an
+ * empty list's sentence is left out, and `null` when both are empty, so no
+ * InfoTip is drawn.
  */
-function GrantCount({ label, names }: { label: string; names: string[] }) {
-  return (
-    <InfoTip label={label} help={names.join(', ')} asChild>
-      <span className="flex-none rounded-inner text-supporting text-text-muted tabular-nums">
-        {label}
-      </span>
-    </InfoTip>
-  );
+export function grantsHelp(extensions: readonly string[], knowledgeBases: readonly string[]) {
+  const parts: string[] = [];
+  if (extensions.length > 0) parts.push(SUBAGENT_HEADER_COPY.extensions(grantNames(extensions)));
+  if (knowledgeBases.length > 0) {
+    const names = grantNames(knowledgeBases);
+    parts.push(
+      knowledgeBases.length === 1
+        ? SUBAGENT_HEADER_COPY.knowledgeBase(names)
+        : SUBAGENT_HEADER_COPY.knowledgeBases(names)
+    );
+  }
+  return parts.length > 0 ? parts.join(' ') : null;
 }
 
 export function SubagentTabHeader({
@@ -73,6 +101,15 @@ export function SubagentTabHeader({
 }) {
   const [expanded, setExpanded] = useState(false);
   const spawnContextId = `subagent-spawn-context-${sessionId}`;
+  // Names a person reads (R6): extensions by display name, knowledge bases by the
+  // knowledge list's names, an id it does not list read as words.
+  const knowledge = useOptionalKnowledge();
+  const help = grantsHelp(
+    extensions.map((name) => extensionDisplayName(name)),
+    knowledgeBases.map(
+      (id) => knowledge?.bases.find((base) => base.id === id)?.name || knowledgeBaseWords(id)
+    )
+  );
   const stopUnavailable = subagentTabReadOnlyReason();
   // ⚠ The parent is named by its NAME, never its id (principle 10, vision
   // V2-R2-2): the line read "Subagent of 20260828_5" because no caller passed
@@ -104,40 +141,39 @@ export function SubagentTabHeader({
          * first message, and a third ground beside the header's and the
          * transcript's.
          *
-         * Counts, not names: the names are behind each count's InfoTip, the
-         * same trade the composer's chips make (`ChatInput.tsx` records the
-         * decision). A list of one chip per grant made a subagent tab grow
-         * taller with every grant.
+         * No counts and no names on the line (F-15): what the child can use is
+         * behind one "What it can use" InfoTip beside the parent link. A list
+         * of one chip per grant made a subagent tab grow taller with every
+         * grant, and the counts that replaced it were still more than the line
+         * needed.
          */
         className="mx-auto flex h-8 w-full max-w-measure-chat min-w-0 items-center gap-3 text-secondary text-text-muted"
         data-testid={`subagent-header-${sessionId}`}
       >
         {/* The tab strip already badges this tab as a subagent; this line says
-            whose. The parent's name is the link back to it, and its tooltip
-            holds the parent's id, the one place the id is shown. */}
+            whose. The parent's name is the link back to it. Its id is not shown
+            here (R6, R9): the tab's context menu has "Copy chat ID". */}
         {parentLabel !== undefined && (
           <span className="flex min-w-0 items-center gap-1">
             <span className="flex-none">{copy.of}</span>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="link"
-                  className="h-auto min-w-0 truncate px-0 text-secondary"
-                  onClick={onOpenParent}
-                >
-                  {parentLabel}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent className="font-mono">{parentSessionId}</TooltipContent>
-            </Tooltip>
+            <Button
+              type="button"
+              variant="link"
+              className="h-auto min-w-0 truncate px-0 text-secondary"
+              onClick={onOpenParent}
+            >
+              {parentLabel}
+            </Button>
           </span>
         )}
-        {extensions.length > 0 && (
-          <GrantCount label={copy.extensions(extensions.length)} names={extensions} />
-        )}
-        {knowledgeBases.length > 0 && (
-          <GrantCount label={copy.knowledgeBases(knowledgeBases.length)} names={knowledgeBases} />
+        {/* What it was given, behind one InfoTip (F-15): the visible counts
+            made the line busier than the tab it heads. */}
+        {help && (
+          <InfoTip
+            label={SUBAGENT_HEADER_COPY.whatItCanUse}
+            help={help}
+            data-testid={`subagent-grants-${sessionId}`}
+          />
         )}
         {/* Only offered when there is something to disclose. The backend's
           `persist_spawn_context` is best-effort (a failure only warns) and
@@ -159,7 +195,7 @@ export function SubagentTabHeader({
               aria-controls={spawnContextId}
             >
               <ChevronRight aria-hidden="true" className="biorouter-disclosure-chevron" />
-              {copy.context}
+              {SUBAGENT_HEADER_COPY.instructions}
             </Button>
           </CollapsibleTrigger>
         )}
@@ -197,7 +233,9 @@ export function SubagentTabHeader({
           open or shut. The shared disclosure height animation, one well. */}
       {spawnContext && (
         <CollapsibleContent className="biorouter-disclosure-panel" id={spawnContextId}>
-          <pre className="mx-auto mb-2 max-h-64 w-full max-w-measure-chat overflow-auto whitespace-pre-wrap break-words rounded-element bg-background-well p-3 font-mono text-code text-text-default">
+          {/* In sans (R9): the record is instructions for a person to read, not
+              code. The same well, height cap and scroll as before. */}
+          <div className="mx-auto mb-2 max-h-64 w-full max-w-measure-chat overflow-auto whitespace-pre-wrap break-words rounded-element bg-background-well p-3 text-secondary text-text-default">
             {/*
              * ⚠ The last human-facing surface that showed the guardrail's frame
              * raw.
@@ -226,7 +264,7 @@ export function SubagentTabHeader({
              *    still sees the prompt exactly as the child received it.
              */}
             {unwrapGuardrailFrame(spawnContext)}
-          </pre>
+          </div>
         </CollapsibleContent>
       )}
     </Collapsible>

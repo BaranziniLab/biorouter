@@ -111,8 +111,19 @@ function tabKindSource(
  * Display only. The stored `tab.title` is what the rename field starts from and what
  * the rename rolls back to, and the overflow filter matches it as well as this.
  */
-function tabShownTitle(source: ChatKindSource): string {
+function tabShownTitle(source: ChatKindSource, role?: string | null): string {
+  // F-15 / C-3: a subagent's tab is titled by its role ("Reviewer"), the name the
+  // roster gives it, and falls back to its short task. Display only, like the
+  // rest: a later list refresh that renames the stored title cannot undo it.
+  if (role && source.session_type === 'sub_agent') return role;
   return historyRowTitle(source);
+}
+
+/** The tab's tooltip: "{role}: {task}" when the role is shown, else the shown title. */
+function tabTooltip(source: ChatKindSource, role?: string | null): string {
+  const shown = tabShownTitle(source, role);
+  const task = historyRowTitle(source);
+  return shown !== task ? `${shown}: ${task}` : shown;
 }
 
 /**
@@ -284,6 +295,12 @@ export interface ChatTabStripProps {
    * before the title). Optional with a `{}` default, like `sessionTypes`.
    */
   sessionWorkingDirs?: Record<string, string>;
+  /**
+   * Each held subagent chat's role, from its row's spawn record, per SESSION id,
+   * so its tab shows the role (F-15). Optional with a `{}` default, like
+   * `sessionTypes`.
+   */
+  sessionRoles?: Record<string, string>;
   onSelect: (tabId: ChatTabId) => void;
   onClose: (tabId: ChatTabId) => void;
   /**
@@ -334,6 +351,7 @@ export function ChatTabStrip({
   privacyTiers = {},
   sessionTypes = {},
   sessionWorkingDirs = {},
+  sessionRoles = {},
   onSelect,
   onClose,
   onCloseOthers,
@@ -875,7 +893,9 @@ export function ChatTabStrip({
           const kindSource = kindSourceOf(tab);
           // What the tab says, everywhere it says it: label, tooltip, drag ghost
           // and the accessible names. `tab.title` stays the stored name.
-          const shownTitle = tabShownTitle(kindSource);
+          const role = sessionRoles[tab.sessionId];
+          const shownTitle = tabShownTitle(kindSource, role);
+          const tooltip = tabTooltip(kindSource, role);
           return (
             <div
               key={tab.tabId}
@@ -942,7 +962,7 @@ export function ChatTabStrip({
                       role="tab"
                       aria-selected={isActive}
                       tabIndex={isActive ? 0 : -1}
-                      title={shownTitle}
+                      title={tooltip}
                       // Astryx §4.3: ONE icon-label gap across the app, 8px. The 7px
                       // here was the last arbitrary one in the strip — a document tab
                       // and a nav row now measure the same distance from glyph to
@@ -1108,7 +1128,7 @@ export function ChatTabStrip({
             />
           )}
           // ...and the same title, from the same source.
-          titleOf={(tab) => tabShownTitle(kindSourceOf(tab))}
+          titleOf={(tab) => tabShownTitle(kindSourceOf(tab), sessionRoles[tab.sessionId])}
         />
       )}
     </div>

@@ -67,6 +67,29 @@ describe('ChatTabStrip: the title a tab shows', () => {
     expect(node.textContent).not.toContain('Subagent:');
   });
 
+  /** F-15 / C-3: a subagent's tab is titled by its role, with "{role}: {task}" as its tooltip. */
+  it('titles a sub-agent tab by its role, with the task in its tooltip', () => {
+    const { container } = renderStrip({ sessionRoles: { s1: 'Reviewer' } });
+    const node = tabNode(container);
+    expect(node.querySelector('.br-tab__label')?.textContent).toBe('Reviewer');
+    expect(within(node).getByRole('tab').getAttribute('title')).toBe(`Reviewer: ${SHOWN}`);
+    expect(
+      within(node).getByRole('button', { name: chatTabStripCopy.close('Reviewer') })
+    ).toBeTruthy();
+  });
+
+  it('falls back to the short task without a role, and never titles a plain chat by a role', () => {
+    const { container } = renderStrip({
+      tabs: [tab(), tab({ tabId: 'tab-2', sessionId: 's2', title: 'Cohort review' })],
+      tabAnnotations: { s1: subagent },
+      sessionRoles: { s2: 'Reviewer' },
+    });
+    expect(tabNode(container).querySelector('.br-tab__label')?.textContent).toBe(SHOWN);
+    expect(tabNode(container, 'tab-2').querySelector('.br-tab__label')?.textContent).toBe(
+      'Cohort review'
+    );
+  });
+
   it('takes the kind from the row too, after the annotation is gone', () => {
     const { container } = renderStrip({ tabAnnotations: {}, sessionTypes: { s1: 'sub_agent' } });
     expect(tabNode(container).querySelector('.br-tab__label')?.textContent).toBe(SHOWN);
