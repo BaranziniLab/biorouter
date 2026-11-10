@@ -28,6 +28,9 @@ use std::sync::{Arc, LazyLock, OnceLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
+mod spend;
+pub use spend::SpendSnapshot;
+
 pub const CURRENT_SCHEMA_VERSION: i32 = 21;
 
 /// The arm that adds the decision log's `decisions` table.
