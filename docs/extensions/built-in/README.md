@@ -10,6 +10,7 @@ Come here when you want to know what a specific built-in capability can do, or w
 |----------|----------------|
 | [Auto Visualiser](auto-visualiser.md) | How to enable the Auto Visualiser and which figures it produces, with a worked cohort-data example. The capability declares three tools — `render_figure`, `describe_figure` and `render_dashboard` — and reaches its 32 figure kinds through `render_figure`'s `kind`. |
 | [Chat Recall](chat-recall.md) | Searching your past session history by keyword or session ID so BioRouter can pull earlier context into the current conversation. Unlike most built-ins, this one ships disabled by default. |
+| [Dictionary](dictionary.md) | The words an agent may suggest or add when you ask, and how to keep or undo them. It starts off until you choose chat suggestions. |
 | [Code Execution](code-execution.md) | Code Mode: instead of calling MCP tools one at a time, the model writes a short JavaScript program that batches many tool calls into a single execution. |
 | [Biorouter Copilot](computer-controller.md) | Native application observation, capture and control with per-chat task approval. |
 | [Web & Documents](web-documents.md) | URL fetching, document utilities, and cache tools independent of the desktop runtime. |

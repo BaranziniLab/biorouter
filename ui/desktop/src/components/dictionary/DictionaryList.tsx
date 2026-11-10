@@ -203,6 +203,7 @@ function DictionaryList({
             title={group.title}
             count={group.entries.length}
             rowsLine={rowsLine}
+            empty={group.key === 'user' ? DICTIONARY_LABELS.userGroupEmpty : undefined}
             action={
               group.key === 'suggested' && onReviewAll ? (
                 <Button
@@ -247,12 +248,17 @@ function DictionaryList({
 
 export default memo(DictionaryList);
 
-/** One group: a caps label with its count, then flat rows told apart by air and the hover wash. */
+/**
+ * One group: a caps label with its count, then flat rows told apart by air and the hover wash.
+ * A group shown with no rows (**Added by you**, which shows whenever the dictionary holds any
+ * row) says so in one muted line rather than a heading over nothing.
+ */
 function TermGroup({
   groupKey,
   title,
   count,
   rowsLine,
+  empty,
   action,
   children,
 }: {
@@ -260,6 +266,7 @@ function TermGroup({
   title: string;
   count: number;
   rowsLine: number;
+  empty?: string;
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
@@ -278,9 +285,15 @@ function TermGroup({
         </h2>
         {action}
       </div>
-      <div className="biorouter-list-shell br-rows-flat" data-dictionary-rows="">
-        {children}
-      </div>
+      {count === 0 && empty ? (
+        <p className="px-3 py-1 text-supporting text-text-muted" data-dictionary-group-empty="">
+          {empty}
+        </p>
+      ) : (
+        <div className="biorouter-list-shell br-rows-flat" data-dictionary-rows="">
+          {children}
+        </div>
+      )}
     </section>
   );
 }

@@ -7786,3 +7786,223 @@ mod opening_is_not_activity_route_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod dictionary_script_route_tests {
+    //! PR-23, DD-42, at the script door a person reaches through `POST /agent/call_tool`.
+    //! The route judges only the outer tool name, so a `code_execution__execute_code` call
+    //! passes it and runs its script with the route's public capability. The script's own
+    //! calls of `dictionary__add_terms` and `dictionary__remove_added_terms` are refused
+    //! before dispatch and change nothing in the store, while `dictionary__list_terms` from
+    //! the same kind of script still runs and sees the store.
+    //!
+    //! Driven through the real router, agent and extensions, on the sandboxed store
+    //! `src/test_sandbox.rs` points the configuration folder at.
+
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use biorouter::security::dictionary_store::{open_store, store};
+    use tower::ServiceExt;
+
+    /// The code execution result's record of each call its script made.
+    const TOOL_CALLS: &str = "biorouter/tool-calls";
+    const ADD_PROBE: &str = "Scriptadd Probe";
+    const REMOVE_PROBE: &str = "Scriptremove Probe";
+
+    /// One `code_execution__execute_code` call through the route, with no proof, as a
+    /// person's script or a client would send it.
+    async fn run_script(
+        state: &Arc<AppState>,
+        session_id: &str,
+        code: &str,
+    ) -> (StatusCode, Value) {
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "name": "code_execution__execute_code",
+            "arguments": { "code": code },
+        });
+        let response = routes(Arc::clone(state))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/call_tool")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn text_of(body: &Value) -> String {
+        body["content"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    }
+
+    /// The one call the script made, from the result's record of its calls.
+    fn only_call(body: &Value) -> Value {
+        let calls = body["_meta"][TOOL_CALLS]
+            .as_array()
+            .unwrap_or_else(|| panic!("the result records no script calls: {body}"));
+        assert_eq!(calls.len(), 1, "{body}");
+        calls[0].clone()
+    }
+
+    /// The written forms of every row in the store.
+    fn stored_terms() -> Vec<String> {
+        open_store()
+            .view()
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|entry| entry.written.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_script_run_through_call_tool_cannot_add_or_remove_dictionary_terms() {
+        let state = AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "PR-23 dictionary script route".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        // Session ids are reissued: never inherit an agent an earlier test left.
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        let agent = state.get_agent(session.id.clone()).await.unwrap();
+        for name in ["code_execution", "dictionary"] {
+            let target = biorouter::agents::extension_manager::resolve_bundled_extension(name)
+                .unwrap_or_else(|| panic!("{name} is a bundled capability"));
+            agent
+                .add_extension(target.into_config(format!("{name} for the script route test")))
+                .await
+                .unwrap();
+        }
+
+        // An agent row `remove_added_terms` would take if it ran: suggested and public.
+        let seeded = open_store()
+            .write(|file| {
+                let mut term = store::NewTerm::person(REMOVE_PROBE, store::EntryTier::Public);
+                term.source = store::EntrySource::Agent;
+                term.status = store::EntryStatus::Suggested;
+                Ok(
+                    match file.add(term, store::Reach::Public, store::schema::now())? {
+                        store::AddOutcome::Created { id, .. }
+                        | store::AddOutcome::Exists { id } => Some(id),
+                        store::AddOutcome::Skipped => None,
+                    },
+                )
+            })
+            .unwrap()
+            .expect("the seeded agent row was written");
+
+        // The listing tool runs from a script through this route and sees the store, so
+        // the refusals below are about the writing tools, not a script that cannot reach
+        // the dictionary at all.
+        let (status, body) = run_script(
+            &state,
+            &session.id,
+            &format!(
+                "import {{ list_terms }} from \"dictionary\"; \
+                 record_result(list_terms({{ status: \"all\", query: \"{REMOVE_PROBE}\" }}));"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["is_error"], serde_json::json!(false), "{body}");
+        let call = only_call(&body);
+        assert_eq!(call["tool"], "dictionary__list_terms", "{body}");
+        assert_eq!(call["status"], "ok", "{body}");
+        assert!(text_of(&body).contains(REMOVE_PROBE), "{body}");
+
+        let (status, body) = run_script(
+            &state,
+            &session.id,
+            &format!(
+                "import {{ add_terms }} from \"dictionary\"; \
+                 record_result(add_terms({{ terms: [{{ written: \"{ADD_PROBE}\" }}], \
+                 requested_by_user: true }}));"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["is_error"], serde_json::json!(true), "{body}");
+        let call = only_call(&body);
+        assert_eq!(call["tool"], "dictionary__add_terms", "{body}");
+        assert_eq!(call["status"], "error", "{body}");
+        assert!(
+            call["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("dictionary_store")),
+            "the add was not refused by the dictionary store's boundary: {body}"
+        );
+        let text = text_of(&body);
+        assert!(
+            text.contains("dictionary__add_terms") && text.contains("biorouter dictionary add"),
+            "the script was not told why: {text}"
+        );
+        assert!(
+            !stored_terms().iter().any(|written| written == ADD_PROBE),
+            "the refused add still wrote a row"
+        );
+
+        let (status, body) = run_script(
+            &state,
+            &session.id,
+            &format!(
+                "import {{ remove_added_terms }} from \"dictionary\"; \
+                 record_result(remove_added_terms({{ ids: [\"{}\"] }}));",
+                seeded.as_str()
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["is_error"], serde_json::json!(true), "{body}");
+        let call = only_call(&body);
+        assert_eq!(call["tool"], "dictionary__remove_added_terms", "{body}");
+        assert_eq!(call["status"], "error", "{body}");
+        assert!(
+            call["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("dictionary_store")),
+            "the removal was not refused by the dictionary store's boundary: {body}"
+        );
+        assert!(
+            text_of(&body).contains("dictionary__remove_added_terms"),
+            "{body}"
+        );
+        assert!(
+            open_store().view().unwrap().find(&seeded).is_some(),
+            "the refused removal still took the agent's row"
+        );
+
+        let _ = open_store().write(|file| {
+            file.entries.retain(|entry| entry.id != seeded);
+            Ok(())
+        });
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        let _ = state.session_manager().delete_session(&session.id).await;
+    }
+}

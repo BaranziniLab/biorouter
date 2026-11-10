@@ -3,6 +3,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { speechStatus } from './dictationTestKit';
 
 const install = vi.hoisted(() => vi.fn(async () => undefined));
+const activation = vi.hoisted(() => ({
+  ready: true,
+  checked: true,
+  disabled: false,
+  showChoice: true,
+  needsSave: false,
+  help: 'Terms from chats are suggested.',
+  setChecked: vi.fn(),
+  startInstall: vi.fn(),
+  activationFailed: false,
+  savedChoiceDiffered: false,
+  saving: false,
+  retryActivation: vi.fn(),
+}));
+vi.mock('../dictionary/activationChoice', () => ({
+  useDictionaryActivationChoice: () => activation,
+}));
 vi.mock('../settings/models/speechModelStore', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   installSpeechModel: install,
@@ -19,6 +36,12 @@ const turbo = {
 };
 
 beforeEach(() => {
+  activation.ready = true;
+  activation.activationFailed = false;
+  activation.savedChoiceDiffered = false;
+  activation.saving = false;
+  activation.needsSave = false;
+  activation.retryActivation.mockClear();
   Object.assign(window, {
     appConfig: { get: (key: string) => (key === 'BIOROUTER_LOCAL_BACKEND' ? true : undefined) },
   });
@@ -30,6 +53,40 @@ afterEach(() => {
 });
 
 describe('the setup popover', () => {
+  it('keeps a retry action visible after the model installs but activation saving fails', () => {
+    activation.activationFailed = true;
+    activation.needsSave = true;
+    const status = speechStatus({ active_model: turbo.id }, { ...turbo, installed: true });
+    render(
+      <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
+    );
+    expect(
+      screen.getByText('Dictionary choice could not be saved. Retry to finish setting it up.')
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(activation.retryActivation).toHaveBeenCalledTimes(1);
+  });
+  it('shows when the server kept a different saved choice', () => {
+    activation.savedChoiceDiffered = true;
+    const status = speechStatus({ active_model: turbo.id }, { ...turbo, installed: true });
+    render(
+      <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Dictionary kept the choice already saved here. Review it in Dictionary settings.'
+    );
+  });
+  it('holds the first Install until the dictionary activation choice is resolved', () => {
+    activation.ready = false;
+    const status = speechStatus({ active_model: null }, turbo);
+    render(
+      <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
+    );
+    const button = screen.getByRole('button', { name: 'Install' });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(install).not.toHaveBeenCalled();
+  });
   it('names the model, its size and its folder, and says where speech is transcribed', () => {
     const status = speechStatus({ active_model: null }, turbo);
     render(

@@ -921,6 +921,13 @@ pub struct InstallArgs {
 /// `install`: the gates of `engine-and-models.md` "The installer, step by step", in
 /// order, then the download (or `--from`), then a warm up in the background.
 pub async fn handle_install(args: InstallArgs) -> Result<()> {
+    handle_install_with_choice(args, None).await
+}
+
+pub async fn handle_install_with_choice(
+    args: InstallArgs,
+    suggest_from_chats_choice: Option<bool>,
+) -> Result<()> {
     if in_agent_shell() {
         return Err(refuse(MSG_INSTALL_SHELL));
     }
@@ -959,8 +966,37 @@ pub async fn handle_install(args: InstallArgs) -> Result<()> {
     } else {
         WriteMode::User
     };
+    // DD-56: the question belongs to the first verified install alone, as the setup
+    // popover's box does. Once the marker records a choice, no later install asks again,
+    // and `activate_first_install` below leaves that choice as it is.
+    let chosen_before = !matches!(
+        biorouter::config::Config::global()
+            .get_param::<u8>(biorouter::dictation::activation::ACTIVATION_VERSION_KEY),
+        Err(biorouter::config::ConfigError::NotFound(_))
+    );
+    // Managed `dictionary_agent_writes: false` refuses turning the capability on, as
+    // `dictionary settings --suggest-from-chats on` and the desktop's hidden box do: the
+    // question is not asked, and an explicit flag is answered with the policy's reason.
+    let managed_refusal = policy.dictionary_agent_writes.reason();
+    let suggest_from_chats = match (suggest_from_chats_choice, &managed_refusal) {
+        (Some(true), Some(reason)) if !chosen_before => {
+            eprintln!("{}", style(reason).yellow());
+            false
+        }
+        (_, Some(_)) => false,
+        (Some(value), None) => value,
+        (None, None) if args.yes || chosen_before => false,
+        (None, None) if terminal => cliclack::confirm("Suggest dictionary words from your chats?")
+            .initial_value(true)
+            .interact()?,
+        (None, None) => false,
+    };
     if let Some(from) = &args.from {
-        return install_from(&policy, from, &target, mode, terminal, args.yes);
+        let installed = install_from(&policy, from, &target, mode, terminal, args.yes)?;
+        if installed {
+            biorouter::dictation::activation::activate_first_install(suggest_from_chats)?;
+        }
+        return Ok(());
     }
 
     let host = HostFacts::current();
@@ -1094,6 +1130,7 @@ pub async fn handle_install(args: InstallArgs) -> Result<()> {
             if outcomes.iter().any(|o| o.id == entry.id && o.downloaded) {
                 start_warm_up(entry, args.system);
             }
+            biorouter::dictation::activation::activate_first_install(suggest_from_chats)?;
             Ok(())
         }
         Err(InstallError::Offline) => Err(anyhow!(msg_offline(&target))),
@@ -1109,7 +1146,7 @@ fn install_from(
     mode: WriteMode,
     terminal: bool,
     yes: bool,
-) -> Result<()> {
+) -> Result<bool> {
     if !terminal && !yes {
         return Err(refuse(msg_confirm_terminal(
             "install",
@@ -1121,7 +1158,7 @@ fn install_from(
             .initial_value(true)
             .interact()?
     {
-        return Ok(());
+        return Ok(false);
     }
     let allow = |entry: &SttCatalogEntry| !entry.is_speech() || policy.model(entry.id).allowed;
     let space: models::SpaceProbe =
@@ -1157,7 +1194,7 @@ fn install_from(
             start_warm_up(entry, mode == WriteMode::System);
         }
     }
-    Ok(())
+    Ok(!report.installed.is_empty())
 }
 
 /// Shows an install's progress: a bar on a terminal, a line per phase otherwise (the

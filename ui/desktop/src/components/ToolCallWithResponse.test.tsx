@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import ToolCallWithResponse, { logToString, summarizeToolCall } from './ToolCallWithResponse';
 import { toolRowLabel } from './toolCallCopy';
 import type {
@@ -11,6 +11,14 @@ import type {
 // The transcript is no longer a display surface for artifacts — it can only hand
 // one to the panel — so `onOpenArtifact` is required all the way down the chain.
 const noopOpenArtifact = vi.fn();
+const dictionaryCalls = vi.hoisted(() => ({
+  acceptTerms: vi.fn(),
+  keepTerms: vi.fn(),
+  undoAgentAdd: vi.fn(),
+  toastError: vi.fn(),
+}));
+vi.mock('./dictionary/useDictionary', () => dictionaryCalls);
+vi.mock('../toasts', () => ({ toastError: dictionaryCalls.toastError }));
 
 describe('summarizeToolCall', () => {
   it('summarizes file editing tools as natural reading and editing actions', () => {
@@ -2335,5 +2343,360 @@ describe('ToolCallWithResponse: a failed row and an empty output say so (V2-11, 
     fireEvent.click(screen.getByText('Ran true').closest('button') as HTMLElement);
     expect(screen.queryByText('Output')).not.toBeInTheDocument();
     expect(screen.queryByText('No output')).not.toBeInTheDocument();
+  });
+});
+
+describe('dictionary result actions', () => {
+  beforeEach(() => {
+    for (const mock of Object.values(dictionaryCalls)) mock.mockReset();
+  });
+  const request: ToolRequestMessageContent = {
+    type: 'toolRequest',
+    id: 'dictionary-add-1',
+    toolCall: {
+      status: 'success',
+      value: { name: 'dictionary__add_terms', arguments: { terms: [{ written: 'EPAS1' }] } },
+    },
+  };
+
+  it('reads the user-only rows and sends Keep for an unreviewed active term', async () => {
+    dictionaryCalls.keepTerms.mockResolvedValue({ ok: true, status: 200, data: { kept: 1 } });
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'dictionary-add-1',
+          toolResult: {
+            status: 'success',
+            value: {
+              content: [
+                {
+                  type: 'text',
+                  text: "Added 1 terms to the dictionary. They are marked for the person's review.",
+                },
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    dictionary_rows: [
+                      {
+                        id: 'dct_test',
+                        rev: 1,
+                        written: 'EPAS1',
+                        status: 'active',
+                        reviewed: false,
+                        source: 'agent',
+                      },
+                    ],
+                  }),
+                  annotations: { audience: ['user'] },
+                },
+              ],
+            },
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    // The term is drawn beside its own buttons, and each button's name carries it.
+    expect(screen.getByTestId('dictionary-tool-term')).toHaveTextContent('EPAS1');
+    const keep = screen.getByRole('button', { name: 'Keep EPAS1' });
+    expect(keep).toHaveTextContent('Keep');
+    expect(screen.getByRole('button', { name: 'Undo adding EPAS1' })).toHaveTextContent('Undo');
+    expect(screen.getByRole('button', { name: 'Review in Dictionary' })).toBeInTheDocument();
+    fireEvent.click(keep);
+    await waitFor(() => expect(dictionaryCalls.keepTerms).toHaveBeenCalledWith(['dct_test']));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Keep EPAS1' })).not.toBeInTheDocument()
+    );
+    // A settled term leaves with its buttons; Review in Dictionary stays.
+    expect(screen.queryByTestId('dictionary-tool-term')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review in Dictionary' })).toBeInTheDocument();
+  });
+
+  it('draws each term beside its own Keep and Undo, so two pairs are told apart', async () => {
+    dictionaryCalls.keepTerms.mockResolvedValue({
+      ok: false,
+      error: { status: 409, code: 'stale', message: 'This term changed.' },
+    });
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'dictionary-add-1',
+          toolResult: {
+            status: 'success',
+            value: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    dictionary_rows: [
+                      {
+                        id: 'dct_epas',
+                        rev: 1,
+                        written: 'EPAS1',
+                        status: 'active',
+                        reviewed: false,
+                        source: 'agent',
+                      },
+                      {
+                        id: 'dct_hif',
+                        rev: 2,
+                        // The agent wrote it, so hidden characters are dropped before it is drawn.
+                        written: 'HIF2A​',
+                        status: 'active',
+                        reviewed: false,
+                        source: 'agent',
+                      },
+                    ],
+                  }),
+                  annotations: { audience: ['user'] },
+                },
+              ],
+            },
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    const actions = screen.getByTestId('dictionary-tool-actions');
+    const pairs = [...actions.querySelectorAll<HTMLElement>('[data-dictionary-term]')];
+    expect(pairs.map((pair) => pair.textContent)).toEqual(['EPAS1KeepUndo', 'HIF2AKeepUndo']);
+    expect(within(pairs[1]).getByRole('button', { name: 'Keep HIF2A' })).toBeInTheDocument();
+    expect(within(pairs[1]).getByRole('button', { name: 'Undo adding HIF2A' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Keep / })).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Keep HIF2A' }));
+    await waitFor(() => expect(dictionaryCalls.keepTerms).toHaveBeenCalledWith(['dct_hif']));
+    // A failure is titled with the term it was about.
+    await waitFor(() =>
+      expect(dictionaryCalls.toastError).toHaveBeenCalledWith({
+        title: 'HIF2A',
+        msg: 'This term changed.',
+      })
+    );
+  });
+
+  it('binds duplicate action labels to their call and row', async () => {
+    dictionaryCalls.keepTerms.mockResolvedValue({ ok: true, status: 200, data: { kept: 1 } });
+    const response = (callId: string, ids: string[]): ToolResponseMessageContent => ({
+      type: 'toolResponse',
+      id: callId,
+      toolResult: {
+        status: 'success',
+        value: {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                dictionary_rows: ids.map((id) => ({
+                  id,
+                  rev: 1,
+                  status: 'active',
+                  reviewed: false,
+                  source: 'agent',
+                })),
+              }),
+              annotations: { audience: ['user'] },
+            },
+          ],
+        },
+      },
+    });
+    const { container } = render(
+      <>
+        <ToolCallWithResponse
+          isCancelledMessage={false}
+          toolRequest={{ ...request, id: 'call-a' }}
+          toolResponse={response('call-a', ['dct_a', 'dct_b'])}
+          onOpenArtifact={noopOpenArtifact}
+        />
+        <ToolCallWithResponse
+          isCancelledMessage={false}
+          toolRequest={{ ...request, id: 'call-b' }}
+          toolResponse={response('call-b', ['dct_c'])}
+          onOpenArtifact={noopOpenArtifact}
+        />
+      </>
+    );
+    expect(screen.getAllByRole('button', { name: 'Keep' })).toHaveLength(3);
+    const target = container.querySelector(
+      '[data-dictionary-call-id="call-a"][data-dictionary-row-id="dct_b"][data-dictionary-action="keep"][data-dictionary-rev="1"]'
+    );
+    expect(target).not.toBeNull();
+    fireEvent.click(target as HTMLElement);
+    await waitFor(() => expect(dictionaryCalls.keepTerms).toHaveBeenCalledWith(['dct_b']));
+    expect(dictionaryCalls.keepTerms).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses conditional Undo and leaves the action available after a stale response', async () => {
+    dictionaryCalls.undoAgentAdd.mockResolvedValue({
+      ok: false,
+      error: { status: 412, code: 'stale', message: 'This term changed.' },
+    });
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'dictionary-add-1',
+          toolResult: {
+            status: 'success',
+            value: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    dictionary_rows: [
+                      {
+                        id: 'dct_test',
+                        rev: 1,
+                        status: 'active',
+                        reviewed: false,
+                        source: 'agent',
+                      },
+                    ],
+                  }),
+                  annotations: { audience: ['user'] },
+                },
+              ],
+            },
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(dictionaryCalls.undoAgentAdd).toHaveBeenCalledWith('dct_test', 1));
+    // A row from before the rows carried the term keeps the plain labels and a plain title.
+    await waitFor(() =>
+      expect(dictionaryCalls.toastError).toHaveBeenCalledWith({
+        title: 'Dictionary',
+        msg: 'This term changed.',
+      })
+    );
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+    expect(screen.queryByTestId('dictionary-tool-term')).not.toBeInTheDocument();
+  });
+
+  it('keeps historical rows without a revision safe from Undo', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'dictionary-add-1',
+          toolResult: {
+            status: 'success',
+            value: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    dictionary_rows: [
+                      { id: 'dct_test', status: 'active', reviewed: false, source: 'agent' },
+                    ],
+                  }),
+                  annotations: { audience: ['user'] },
+                },
+              ],
+            },
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Keep' })).toBeInTheDocument();
+  });
+
+  it('sends Accept from Add to dictionary for a suggested term', async () => {
+    dictionaryCalls.acceptTerms.mockResolvedValue({ ok: true, status: 200, data: { accepted: 1 } });
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'dictionary-add-1',
+          toolResult: {
+            status: 'success',
+            value: {
+              content: [
+                { type: 'text', text: 'Recorded 1 suggestions for review.' },
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    dictionary_rows: [
+                      {
+                        id: 'dct_test',
+                        written: 'EPAS1',
+                        status: 'suggested',
+                        reviewed: false,
+                        source: 'agent',
+                      },
+                    ],
+                  }),
+                  annotations: { audience: ['user'] },
+                },
+              ],
+            },
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.getByTestId('dictionary-tool-term')).toHaveTextContent('EPAS1');
+    const add = screen.getByRole('button', { name: 'Add to dictionary: EPAS1' });
+    expect(add).toHaveTextContent('Add to dictionary');
+    expect(screen.queryByRole('button', { name: /^Keep/ })).not.toBeInTheDocument();
+    fireEvent.click(add);
+    await waitFor(() => expect(dictionaryCalls.acceptTerms).toHaveBeenCalledWith(['dct_test']));
+  });
+
+  it('does not offer Keep or Undo for an existing person row', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'dictionary-add-1',
+          toolResult: {
+            status: 'success',
+            value: {
+              content: [
+                { type: 'text', text: '1 term was already in Dictionary.' },
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    dictionary_rows: [
+                      {
+                        id: 'dct_test',
+                        written: 'EPAS1',
+                        status: 'active',
+                        reviewed: true,
+                        source: 'user',
+                      },
+                    ],
+                  }),
+                  annotations: { audience: ['user'] },
+                },
+              ],
+            },
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.queryByRole('button', { name: /^Keep/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Undo/ })).not.toBeInTheDocument();
+    // Nothing to act on, so no term is drawn without its buttons.
+    expect(screen.queryByTestId('dictionary-tool-term')).not.toBeInTheDocument();
   });
 });

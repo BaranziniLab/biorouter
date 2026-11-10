@@ -14,6 +14,8 @@ import { groupEntries, lineTwo, privateLine, reviewRows, usesMeta } from './rows
 const api = vi.hoisted(() => ({
   listDictionaryEntries: vi.fn(),
   getDictionarySettings: vi.fn(),
+  changeDictionarySettings: vi.fn(),
+  activateDictionary: vi.fn(),
   addDictionaryEntry: vi.fn(),
   editDictionaryEntry: vi.fn(),
   changeDictionaryEntryTier: vi.fn(),
@@ -47,6 +49,8 @@ beforeEach(() => {
   rows = [];
   api.listDictionaryEntries.mockImplementation(async () => listing(rows));
   api.getDictionarySettings.mockResolvedValue(answer(200, settings()));
+  api.changeDictionarySettings.mockResolvedValue(answer(200, settings()));
+  api.activateDictionary.mockResolvedValue(answer(200, settings({ suggest_from_chats: true })));
   api.acceptDictionarySuggestions.mockResolvedValue(answer(200, { accepted: 1 }));
   api.dismissDictionarySuggestions.mockResolvedValue(answer(200, { dismissed: 1 }));
   api.keepDictionaryEntries.mockResolvedValue(answer(200, { kept: 1 }));
@@ -145,6 +149,19 @@ describe('the groups', () => {
       DICTIONARY_LABELS.reviewAll
     );
     expect(screen.getByRole('heading', { name: /Added by you 2/ })).toBeInTheDocument();
+    expect(screen.queryByText(DICTIONARY_LABELS.userGroupEmpty)).toBeNull();
+  });
+
+  it('says so under an empty Added by you, as in a dictionary the agent started', async () => {
+    rows = [entry({ written: 'EPAS1', source: 'agent', reviewed: false })];
+    renderPage();
+    await waitFor(() => expect(sections()).toEqual(['agent', 'user']));
+    const user = document.querySelector('[data-dictionary-section="user"]') as HTMLElement;
+    expect(within(user).getByRole('heading', { name: /Added by you 0/ })).toBeInTheDocument();
+    expect(within(user).getByText(DICTIONARY_LABELS.userGroupEmpty)).toBeInTheDocument();
+    expect(user.querySelector('[data-dictionary-rows]')).toBeNull();
+    const agent = document.querySelector('[data-dictionary-section="agent"]') as HTMLElement;
+    expect(within(agent).queryByText(DICTIONARY_LABELS.userGroupEmpty)).toBeNull();
   });
 });
 
@@ -233,10 +250,16 @@ describe('the page', () => {
       within(suggested).getByRole('button', { name: DICTIONARY_LABELS.moreActions('Maybe') })
     );
     expect(screen.getByTestId('dictionary-row-dismiss')).toHaveAttribute('data-disabled');
+    expect(screen.getByTestId('dictionary-agent-writes')).toBeDisabled();
+    expect(
+      screen.getByRole('checkbox', { name: 'Suggest dictionary words from my chats' })
+    ).toBeDisabled();
     expect(api.addDictionaryEntry).not.toHaveBeenCalled();
     expect(api.editDictionaryEntry).not.toHaveBeenCalled();
     expect(api.deleteDictionaryEntry).not.toHaveBeenCalled();
     expect(api.dismissDictionarySuggestions).not.toHaveBeenCalled();
+    expect(api.changeDictionarySettings).not.toHaveBeenCalled();
+    expect(api.activateDictionary).not.toHaveBeenCalled();
   });
 
   it('permits a browser public add while private add is denied by the host', async () => {
@@ -550,5 +573,131 @@ describe('no row moves under a hovering pointer', () => {
       const moved = screen.getByText('EPAS1').closest('[data-dictionary-section]');
       expect(moved).toHaveAttribute('data-dictionary-section', 'user');
     });
+  });
+});
+
+describe('agent dictionary settings', () => {
+  it('sits in the list column, the same measure and gutter as the rows above', async () => {
+    rows = [entry({ written: 'EPAS1' })];
+    renderPage();
+    const bar = await screen.findByTestId('dictionary-agent-settings');
+    const column = bar.closest<HTMLElement>('.biorouter-readable-content');
+    const listColumn = screen
+      .getByTestId('dictionary-groups')
+      .closest<HTMLElement>('.biorouter-readable-content');
+    expect(column).not.toBeNull();
+    expect(column).not.toBe(listColumn);
+    expect(column).toHaveAttribute('data-size', listColumn!.getAttribute('data-size'));
+    expect(column).toHaveAttribute('data-size', 'chat');
+    expect(column!.classList.contains('px-6')).toBe(true);
+    expect(listColumn!.classList.contains('px-6')).toBe(true);
+    // The rule spans the column and the first word sits on the rows' 12px text inset.
+    expect(bar.classList.contains('border-t')).toBe(true);
+    expect(bar.classList.contains('px-3')).toBe(true);
+  });
+
+  it('keeps controls closed while settings authority is pending', async () => {
+    api.getDictionarySettings.mockImplementation(() => new Promise(() => {}));
+    renderPage();
+    await screen.findByTestId('dictionary-view');
+    expect(screen.queryByTestId('dictionary-agent-writes')).toBeNull();
+    expect(
+      screen.queryByRole('checkbox', { name: 'Suggest dictionary words from my chats' })
+    ).toBeNull();
+    expect(api.changeDictionarySettings).not.toHaveBeenCalled();
+    expect(api.activateDictionary).not.toHaveBeenCalled();
+  });
+
+  it('blocks raises but allows a lower mode when the host denies raising settings', async () => {
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          authority: {
+            ...settings().authority,
+            raise_settings: { allowed: false, reason: 'Use the host command.' },
+          },
+        })
+      )
+    );
+    renderPage();
+    const mode = await screen.findByTestId('dictionary-agent-writes');
+    const activation = screen.getByRole('checkbox', {
+      name: 'Suggest dictionary words from my chats',
+    });
+    expect(mode).toBeEnabled();
+    expect(activation).toBeDisabled();
+    await userEvent.click(mode);
+    const add = await screen.findByRole('menuitemradio', { name: 'Add without asking' });
+    expect(add).toHaveAttribute('data-disabled');
+    fireEvent.click(add);
+    fireEvent.click(activation);
+    expect(api.changeDictionarySettings).not.toHaveBeenCalled();
+    expect(api.activateDictionary).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Wait for my review' }));
+    await waitFor(() =>
+      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { agent_writes: 'suggest' } })
+      )
+    );
+  });
+
+  it('lets a known no-raise caller turn an enabled capability off', async () => {
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          suggest_from_chats: true,
+          authority: {
+            ...settings().authority,
+            raise_settings: { allowed: false, reason: 'Use the host command.' },
+          },
+        })
+      )
+    );
+    renderPage();
+    const activation = await screen.findByRole('checkbox', {
+      name: 'Suggest dictionary words from my chats',
+    });
+    expect(activation).toBeEnabled();
+    expect(activation).toBeChecked();
+    fireEvent.click(activation);
+    await waitFor(() =>
+      expect(api.activateDictionary).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { suggest_from_chats: false } })
+      )
+    );
+  });
+
+  it('starts off and offers the person the activation switch', async () => {
+    renderPage();
+    const choice = await screen.findByRole('checkbox', {
+      name: 'Suggest dictionary words from my chats',
+    });
+    expect(choice).not.toBeChecked();
+    fireEvent.click(choice);
+    await waitFor(() =>
+      expect(api.activateDictionary).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { suggest_from_chats: true } })
+      )
+    );
+  });
+
+  it('shows the person all three agent write modes', async () => {
+    renderPage();
+    const choice = await screen.findByTestId('dictionary-agent-writes');
+    expect(choice).toBeEnabled();
+    await userEvent.click(choice);
+    expect(screen.getByRole('menuitemradio', { name: 'Wait for my review' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitemradio', { name: 'Add when I ask, suggest otherwise' })
+    ).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: 'Add without asking' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Wait for my review' }));
+    await waitFor(() =>
+      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { agent_writes: 'suggest' } })
+      )
+    );
   });
 });

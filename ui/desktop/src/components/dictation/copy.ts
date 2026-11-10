@@ -141,7 +141,7 @@ export const DICTATION_MESSAGES = {
   'MSG-SETUP':
     "Dictation turns your speech into text <where>. It needs a speech model: <name> (<size>), downloaded once from the Baranzini Lab's model repository on GitHub into <folder>. Audio is not saved.",
   'MSG-SETUP-SUGGEST':
-    'The agent and Biorouter can propose terms they see in your chats. Biorouter also looks for terms in every message you write, on this computer. A term goes into your dictionary when you ask the agent to add it, or agree when it offers; everything else waits for you to accept it.',
+    'The agent and Biorouter can propose terms they see in your chats. Biorouter also looks for terms in every message you write, on this computer. A term can go into your dictionary when you ask the agent to add it, or reply to its offer naming that term, even if you decline; everything else waits for you to accept it.',
   'MSG-PRIVATE-DRAFT':
     'This message was dictated with your private dictionary terms turned on, so it may contain them, and <model> is a public model. Send it anyway?',
   'MSG-PRIVATE-DRAFT-SWITCH':
@@ -163,7 +163,7 @@ export type DictationMessageId = keyof typeof DICTATION_MESSAGES;
  */
 export const SETUP_SUGGEST_LAST_SENTENCE = {
   on_request:
-    'A term goes into your dictionary when you ask the agent to add it, or agree when it offers; everything else waits for you to accept it.',
+    'A term can go into your dictionary when you ask the agent to add it, or reply to its offer naming that term, even if you decline; everything else waits for you to accept it.',
   suggest: 'Nothing is added until you accept it.',
   add: "The agent's terms are added at once, and you can undo each one; everything else waits for you to accept it.",
 } as const;
@@ -186,6 +186,7 @@ export const setupWhereOnServer = (host: string): string => `on ${whereOnServer(
 export const DICTATION_ACTIONS = {
   openSettings: 'Open settings',
   retry: 'Retry',
+  saveChoice: 'Save choice',
   installAnyway: 'Install anyway',
   cancel: 'Cancel',
   install: 'Install',
@@ -213,6 +214,10 @@ export const DICTATION_ACTIONS = {
  */
 export const DICTATION_LABELS = {
   setUp: 'Set up dictation',
+  activationSaveFailed: 'Dictionary choice could not be saved. Retry to finish setting it up.',
+  activationChoicePending: 'Finish setting up Dictionary for new chats.',
+  activationSavedChoiceDiffered:
+    'Dictionary kept the choice already saved here. Review it in Dictionary settings.',
   installing: 'Downloading speech model… <n>%',
   idle: 'Dictate',
   arming: 'Starting microphone…',

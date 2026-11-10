@@ -140,7 +140,16 @@ export const DICTIONARY_LABELS = {
     imported: 'Imported',
     matches: 'Matches',
   },
+  // Under an empty **Added by you**, which shows whenever the dictionary holds any row: a
+  // dictionary the agent started has rows that are not the person's yet.
+  userGroupEmpty: 'Terms you add show here.',
   reviewAll: 'Review all…',
+  agentSettings: {
+    title: "Agent's terms",
+    suggest: 'Wait for my review',
+    onRequest: 'Add when I ask, suggest otherwise',
+    add: 'Add without asking',
+  },
   sources: {
     user: 'Added by you',
     import: 'Imported',

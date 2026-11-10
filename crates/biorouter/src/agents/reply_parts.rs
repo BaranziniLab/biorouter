@@ -280,6 +280,14 @@ pub(crate) fn survives_code_execution_filter(
         || crate::security::computer_use::is_computer_use_tool(tool_name)
         || tool_name == SUBAGENT_TOOL_NAME
         || tool_name == SUBAGENT_TOOL_PREFIXED
+        // Nested scripts always refuse Dictionary writes because they bypass the
+        // tool inspector. A configured Dictionary therefore needs its direct tools.
+        || matches!(
+            tool_name,
+            "dictionary__add_terms"
+                | "dictionary__list_terms"
+                | "dictionary__remove_added_terms"
+        )
         // BR-40's separate poll tool used to need its own clause here, so a
         // model that spawned a background child could still collect it. BR-71
         // decision 23 deleted that tool: collecting a background child is now
@@ -1709,6 +1717,18 @@ mod tests {
             &prefix,
             &no_frontend
         ));
+        for name in [
+            "dictionary__add_terms",
+            "dictionary__list_terms",
+            "dictionary__remove_added_terms",
+        ] {
+            assert!(survives_code_execution_filter(name, &prefix, &no_frontend));
+        }
+        assert!(!survives_code_execution_filter(
+            "dictionary__unexpected_tool",
+            &prefix,
+            &no_frontend
+        ));
         // Dropped: everything the model is supposed to reach through code.
         assert!(!survives_code_execution_filter(
             "developer__shell",
@@ -1846,7 +1866,7 @@ mod tests {
                 .await
                 .expect("add the ordinary extension");
             // … Knowledge, which is what opens two of the platform tools …
-            for name in ["knowledge", "code_execution"] {
+            for name in ["knowledge", "code_execution", "dictionary"] {
                 let target = crate::agents::extension_manager::resolve_bundled_extension(name)
                     .unwrap_or_else(|| panic!("{name} must resolve as a bundled capability"));
                 agent
@@ -1893,6 +1913,31 @@ mod tests {
                 surface.code_execution_active,
                 "precondition: Code Execution narrowing must be in force, else this proves nothing"
             );
+            assert!(
+                crate::agents::extension::PLATFORM_EXTENSIONS["code_execution"].default_enabled,
+                "this is the ordinary session's default Code Execution mode"
+            );
+            let direct_names: HashSet<&str> = surface
+                .directly_callable_tools
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect();
+            let available_names: HashSet<&str> = surface
+                .available_tools
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect();
+            for name in [
+                "dictionary__add_terms",
+                "dictionary__list_terms",
+                "dictionary__remove_added_terms",
+            ] {
+                assert!(available_names.contains(name), "{name} was not loaded");
+                assert!(
+                    direct_names.contains(name),
+                    "{name} is absent from the model roster"
+                );
+            }
 
             let catalogue: HashSet<String> = agent
                 .extension_manager

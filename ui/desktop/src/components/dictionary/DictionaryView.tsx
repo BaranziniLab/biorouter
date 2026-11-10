@@ -8,14 +8,21 @@ import { ModalShell } from '../ModalShell';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { PageHeader, PageHeaderMenu } from '../Layout/PageHeader';
 import { ReadableContent } from '../Layout/ReadableContent';
-import { dictationMessage } from '../dictation/copy';
+import { DICTATION_ACTIONS, dictationMessage } from '../dictation/copy';
 import { noteDictationInterest, useDictationStatus } from '../dictation/dictationStore';
-import { Plus } from '../icons/app-icons';
+import { ChevronDown, Plus } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { Button } from '../ui/button';
+import { Checkbox } from '../ui/Checkbox';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { DangerousConfirmDialog } from '../ui/DangerousConfirmDialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { EmptyState } from '../ui/empty-state';
 import { FilterInput } from '../ui/filter-input';
 import { Note } from '../ui/note';
@@ -112,6 +119,7 @@ export default function DictionaryView() {
   const waitingRows = useMemo(() => reviewRows(dictionary.entries), [dictionary.entries]);
 
   const authority = dictionary.settings?.authority ?? null;
+  const canRaiseAgentSettings = authority?.raise_settings.allowed === true;
   const policyOff = status?.policy.dictionary.allowed === false;
   const writeAllowed = authority?.write.allowed ?? !isBrowserSurface();
   const canWrite = !dictionary.absent && writeAllowed && !policyOff;
@@ -376,6 +384,106 @@ export default function DictionaryView() {
             </div>
           </ScrollArea>
         </ReadableContent>
+        {/* The settings sit in the list's own column (the same measure and gutter), so their
+            rule spans the rows above edge to edge, and the same 12px inset as a group heading
+            and a row's term puts their first word on the list's text edge. */}
+        {dictionary.settings && !dictionary.absent && !policyOff ? (
+          <ReadableContent size="chat" className="px-6">
+            <div
+              className="flex flex-wrap items-center gap-4 border-t px-3 py-3"
+              data-testid="dictionary-agent-settings"
+            >
+              <div className="flex flex-wrap items-center gap-2 text-label">
+                <span id="dictionary-agent-writes-label">
+                  {DICTIONARY_LABELS.agentSettings.title}
+                </span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild disabled={!authority}>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="gap-2"
+                      aria-labelledby="dictionary-agent-writes-label dictionary-agent-writes-value"
+                      data-testid="dictionary-agent-writes"
+                      disabled={!authority}
+                    >
+                      <span id="dictionary-agent-writes-value">
+                        {dictionary.settings.agent_writes === 'suggest'
+                          ? DICTIONARY_LABELS.agentSettings.suggest
+                          : dictionary.settings.agent_writes === 'on_request'
+                            ? DICTIONARY_LABELS.agentSettings.onRequest
+                            : DICTIONARY_LABELS.agentSettings.add}
+                      </span>
+                      <ChevronDown aria-hidden="true" className="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuRadioGroup
+                      value={dictionary.settings.agent_writes}
+                      onValueChange={(value) => {
+                        if (!authority) return;
+                        const mode = value as 'suggest' | 'on_request' | 'add';
+                        if (
+                          ['suggest', 'on_request', 'add'].indexOf(mode) >
+                            ['suggest', 'on_request', 'add'].indexOf(
+                              dictionary.settings!.agent_writes
+                            ) &&
+                          !canRaiseAgentSettings
+                        )
+                          return;
+                        void dictionary.setAgentWrites(mode).then((result) => {
+                          if (!result.ok)
+                            toastError({
+                              title: DICTIONARY_LABELS.agentSettings.title,
+                              msg: result.error.message,
+                            });
+                        });
+                      }}
+                    >
+                      <DropdownMenuRadioItem value="suggest">
+                        {DICTIONARY_LABELS.agentSettings.suggest}
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem
+                        value="on_request"
+                        disabled={
+                          !canRaiseAgentSettings && dictionary.settings.agent_writes === 'suggest'
+                        }
+                      >
+                        {DICTIONARY_LABELS.agentSettings.onRequest}
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem
+                        value="add"
+                        disabled={
+                          !canRaiseAgentSettings && dictionary.settings.agent_writes !== 'add'
+                        }
+                      >
+                        {DICTIONARY_LABELS.agentSettings.add}
+                      </DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+              <label className="flex items-center gap-2 text-label">
+                <Checkbox
+                  checked={dictionary.settings.suggest_from_chats}
+                  disabled={
+                    !authority ||
+                    (!dictionary.settings.suggest_from_chats && !canRaiseAgentSettings)
+                  }
+                  onChange={(event) => {
+                    if (!authority || (event.target.checked && !canRaiseAgentSettings)) return;
+                    void dictionary.setSuggestFromChats(event.target.checked).then((result) => {
+                      if (!result.ok)
+                        toastError({ title: DICTIONARY_LABELS.title, msg: result.error.message });
+                    });
+                  }}
+                />
+                {DICTATION_ACTIONS.suggestFromChats}
+              </label>
+            </div>
+          </ReadableContent>
+        ) : null}
       </div>
 
       {termMode ? (

@@ -20,8 +20,10 @@ import {
   useSpeechModels,
 } from '../settings/models/speechModelStore';
 import { Button } from '../ui/button';
+import { Checkbox } from '../ui/Checkbox';
 import { DICTIONARY_LABELS } from '../dictionary/copy';
 import { openDictionaryPage } from '../dictionary/navigation';
+import { useDictionaryActivationChoice } from '../dictionary/activationChoice';
 import { Progress } from '../ui/progress';
 import {
   DICTATION_ACTIONS,
@@ -70,6 +72,7 @@ export interface SetupPopoverProps {
 
 export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: SetupPopoverProps) {
   const models = useSpeechModels();
+  const activation = useDictionaryActivationChoice(status);
   const place = dictationDaemonPlace(status);
   const model = setupModel(status);
   const where =
@@ -112,6 +115,26 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
           {refusal ?? failed}
         </p>
       )}
+      {activation.needsSave && !activation.saving ? (
+        <p className="br-dictation-setup__warning" role="alert">
+          {activation.activationFailed
+            ? DICTATION_LABELS.activationSaveFailed
+            : DICTATION_LABELS.activationChoicePending}
+          <Button
+            type="button"
+            size="xs"
+            variant="link"
+            onClick={() => void activation.retryActivation()}
+          >
+            {activation.activationFailed ? DICTATION_ACTIONS.retry : DICTATION_ACTIONS.saveChoice}
+          </Button>
+        </p>
+      ) : null}
+      {activation.savedChoiceDiffered ? (
+        <p className="br-dictation-setup__warning" role="status">
+          {DICTATION_LABELS.activationSavedChoiceDiffered}
+        </p>
+      ) : null}
       {status && !status.install.allowed && status.install.reason ? (
         <p className="br-dictation-setup__warning" role="status">
           {status.install.reason}
@@ -123,6 +146,20 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
           <Progress value={progress} label={installingText} />
         </div>
       )}
+      {status &&
+      (!hasUsableModel(status) || activation.needsSave) &&
+      status.policy.dictionary.allowed !== false &&
+      activation.showChoice ? (
+        <label className="block text-label" data-testid="dictation-setup-suggest">
+          <Checkbox
+            checked={activation.checked}
+            disabled={activation.disabled}
+            onChange={(event) => activation.setChecked(event.target.checked)}
+          />
+          {DICTATION_ACTIONS.suggestFromChats}
+          <span className="block text-supporting">{activation.help}</span>
+        </label>
+      ) : null}
       <div className="br-dictation-setup__actions">
         <Button
           type="button"
@@ -155,9 +192,13 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
           <Button
             type="button"
             size="sm"
-            disabled={pending || !status.install.allowed}
+            disabled={pending || !status.install.allowed || !activation.ready}
             aria-busy={pending || undefined}
-            onClick={() => void installSpeechModel(model.id)}
+            onClick={() => {
+              if (!activation.ready) return;
+              activation.startInstall(model.id, !hasUsableModel(status));
+              void installSpeechModel(model.id);
+            }}
           >
             {caution ? DICTATION_ACTIONS.installAnyway : DICTATION_ACTIONS.install}
           </Button>

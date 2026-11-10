@@ -195,6 +195,7 @@ pub enum Action {
     Settings {
         agent_writes: Option<AgentWrites>,
         learn_from_chats: Option<bool>,
+        suggest_from_chats: Option<bool>,
     },
     Clear {
         suggested_only: bool,
@@ -242,6 +243,7 @@ impl Action {
             Self::Settings {
                 agent_writes: None,
                 learn_from_chats: None,
+                suggest_from_chats: None,
             } => Kind::Read,
             Self::Remove { .. } | Self::Dismiss { .. } | Self::Clear { .. } => Kind::Delete,
             Self::Import { .. } => Kind::Import,
@@ -535,7 +537,16 @@ pub fn run(
         Action::Settings {
             agent_writes,
             learn_from_chats,
-        } => settings(store, facts, prompt, agent_writes, learn_from_chats, io),
+            suggest_from_chats,
+        } => settings(
+            store,
+            facts,
+            prompt,
+            agent_writes,
+            learn_from_chats,
+            suggest_from_chats,
+            io,
+        ),
         Action::Clear { suggested_only } => clear(store, prompt, suggested_only, io),
     };
     match outcome {
@@ -973,7 +984,10 @@ fn accept_or_dismiss(
         let mut done = Vec::new();
         let mut failures = Vec::new();
         for raw in ids {
-            let Some(id) = EntryId::parse(raw).filter(|id| file.find(id).is_some()) else {
+            let Some(id) = EntryId::parse(raw).filter(|id| {
+                file.find(id)
+                    .is_some_and(|entry| accept || entry.status == EntryStatus::Suggested)
+            }) else {
                 failures.push(format!("{raw}: {}", store::MSG_NOT_FOUND));
                 continue;
             };
@@ -1223,12 +1237,15 @@ fn settings(
     prompt: &mut dyn Prompter,
     agent_writes: Option<AgentWrites>,
     learn_from_chats: Option<bool>,
+    suggest_from_chats: Option<bool>,
     io: &mut Streams<'_>,
 ) -> Outcome {
     let current = store.view()?.settings().clone();
-    if agent_writes.is_some() || learn_from_chats.is_some() {
+    let current_suggest = biorouter::dictation::activation::suggest_from_chats();
+    if agent_writes.is_some() || learn_from_chats.is_some() || suggest_from_chats.is_some() {
         let raises = agent_writes.is_some_and(|mode| mode > current.agent_writes)
-            || (learn_from_chats == Some(true) && !current.learn_from_chats);
+            || (learn_from_chats == Some(true) && !current.learn_from_chats)
+            || (suggest_from_chats == Some(true) && !current_suggest);
         if raises {
             if let Some(reason) = facts.agent_writes.reason() {
                 return Err(Failure::refused(reason));
@@ -1247,9 +1264,18 @@ fn settings(
             }
             Ok(())
         })?;
+        if let Some(suggest) = suggest_from_chats {
+            biorouter::dictation::activation::activate(suggest)
+                .map_err(|error| Failure::failed(error.to_string()))?;
+        }
     }
     let settings = store.view()?.settings().clone();
     writeln!(io.out, "agent_writes: {}", settings.agent_writes.as_str())?;
+    writeln!(
+        io.out,
+        "suggest_from_chats: {}",
+        on_off(biorouter::dictation::activation::suggest_from_chats())
+    )?;
     writeln!(
         io.out,
         "learn_from_chats: {}",
@@ -1463,6 +1489,7 @@ mod tests {
             Action::Settings {
                 agent_writes: Some(AgentWrites::Suggest),
                 learn_from_chats: None,
+                suggest_from_chats: None,
             },
             Action::Clear {
                 suggested_only: false,
@@ -1968,11 +1995,12 @@ mod tests {
         let set = |mode: Option<AgentWrites>, learn: Option<bool>| Action::Settings {
             agent_writes: mode,
             learn_from_chats: learn,
+            suggest_from_chats: None,
         };
         let shown = go(&store, &piped(), set(None, None));
         assert_eq!(
             shown.out,
-            "agent_writes: on_request\nlearn_from_chats: off\n"
+            "agent_writes: on_request\nsuggest_from_chats: off\nlearn_from_chats: off\n"
         );
 
         let lowered = go(&store, &terminal(), set(Some(AgentWrites::Suggest), None));
@@ -2020,6 +2048,211 @@ mod tests {
             go(&store, &managed, set(Some(AgentWrites::OnRequest), None)).result,
             Err(Failure::refused(reason))
         );
+    }
+
+    /// PR-23: `settings --suggest-from-chats on` asks before it turns the `dictionary`
+    /// capability on, and a no changes nothing; turning on what is already on asks
+    /// nothing, and `off` asks nothing. Without a terminal and in an agent's shell either
+    /// value is refused before any question, and managed `dictionary_agent_writes: false`
+    /// refuses turning it on. Both values go through `activation.rs`, which writes this
+    /// process's one configuration file, so the test runs in a process of its own: the
+    /// test above reads the same switch as off.
+    #[test]
+    fn settings_ask_before_turning_chat_suggestions_on_and_never_before_turning_them_off() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        use biorouter::dictation::activation::suggest_from_chats;
+        let (_root, store) = fresh();
+        let set = |suggest: bool| Action::Settings {
+            agent_writes: None,
+            learn_from_chats: None,
+            suggest_from_chats: Some(suggest),
+        };
+        let printed = |suggest: &str| {
+            format!(
+                "agent_writes: on_request\nsuggest_from_chats: {suggest}\nlearn_from_chats: off\n"
+            )
+        };
+        assert!(
+            !suggest_from_chats(),
+            "a fresh configuration has the capability off"
+        );
+
+        let mut no = Script {
+            confirms: VecDeque::from([false]),
+            ..Script::default()
+        };
+        let declined = run_with(&store, &terminal(), &mut no, "", set(true));
+        assert_eq!(declined.result, Ok(()));
+        assert_eq!(no.asked, vec!["Change this setting?"]);
+        assert_eq!(declined.out, "Nothing was changed.\n");
+        assert!(!suggest_from_chats(), "a no leaves the capability off");
+
+        let mut yes = Script {
+            confirms: VecDeque::from([true]),
+            ..Script::default()
+        };
+        let raised = run_with(&store, &terminal(), &mut yes, "", set(true));
+        assert_eq!(raised.result, Ok(()));
+        assert_eq!(yes.asked, vec!["Change this setting?"]);
+        assert_eq!(raised.out, printed("on"));
+        assert!(suggest_from_chats(), "a yes turns the capability on");
+
+        let mut silent = Script::default();
+        let again = run_with(&store, &terminal(), &mut silent, "", set(true));
+        assert_eq!(again.result, Ok(()));
+        assert!(
+            silent.asked.is_empty(),
+            "turning on what is already on asks nothing: {:?}",
+            silent.asked
+        );
+        assert_eq!(again.out, printed("on"));
+
+        for (facts, sentence) in [
+            (piped(), MSG_DICTIONARY_TTY),
+            (agent(), MSG_DICTIONARY_AGENT),
+        ] {
+            for suggest in [false, true] {
+                let mut silent = Script::default();
+                let refused = run_with(&store, &facts, &mut silent, "", set(suggest));
+                assert_eq!(refused.result, Err(Failure::refused(sentence)), "{suggest}");
+                assert!(silent.asked.is_empty(), "{:?}", silent.asked);
+            }
+        }
+        assert!(
+            suggest_from_chats(),
+            "a refused command leaves the capability as it was"
+        );
+
+        let mut silent = Script::default();
+        let lowered = run_with(&store, &terminal(), &mut silent, "", set(false));
+        assert_eq!(lowered.result, Ok(()));
+        assert!(
+            silent.asked.is_empty(),
+            "off asks nothing: {:?}",
+            silent.asked
+        );
+        assert_eq!(lowered.out, printed("off"));
+        assert!(!suggest_from_chats(), "off turns the capability off");
+
+        let reason = "Your organization's policy keeps the agent out of the dictionary.";
+        let managed = Facts {
+            agent_writes: Rule::Forbidden(reason.into()),
+            ..terminal()
+        };
+        let mut silent = Script::default();
+        assert_eq!(
+            run_with(&store, &managed, &mut silent, "", set(true)).result,
+            Err(Failure::refused(reason))
+        );
+        assert!(silent.asked.is_empty(), "{:?}", silent.asked);
+        assert!(!suggest_from_chats());
+    }
+
+    /// PR-23 narrows `dismiss` to rows still suggested, as the route does: a row the
+    /// person added, a row the agent added active and unreviewed, an unknown id and text
+    /// that is no id each answer MSG-NOT-FOUND, word for word as an unknown id does, and
+    /// stay as they were, while the suggestion named in the same call is dismissed.
+    #[test]
+    fn dismiss_takes_only_suggested_rows_and_answers_any_other_id_as_not_found() {
+        let (_root, store) = fresh();
+        let created = |outcome: AddOutcome| match outcome {
+            AddOutcome::Created { id, .. } => id,
+            other => panic!("{other:?}"),
+        };
+        let (person, agent_row, suggestion) = store
+            .write(|file| {
+                let now = store::schema::now();
+                let person =
+                    file.add(NewTerm::person("EPAS1", EntryTier::Public), Reach::All, now)?;
+                let agent_row = file.add(
+                    NewTerm {
+                        source: EntrySource::Agent,
+                        ..NewTerm::person("PHD2", EntryTier::Public)
+                    },
+                    Reach::All,
+                    now,
+                )?;
+                let suggestion = file.add(
+                    NewTerm {
+                        source: EntrySource::Agent,
+                        status: EntryStatus::Suggested,
+                        ..NewTerm::person("SPOKE", EntryTier::Public)
+                    },
+                    Reach::All,
+                    now,
+                )?;
+                Ok((person, agent_row, suggestion))
+            })
+            .unwrap();
+        let (person, agent_row, suggestion) =
+            (created(person), created(agent_row), created(suggestion));
+        {
+            let view = store.view().unwrap();
+            let row = |id: &EntryId| view.entries().iter().find(|e| &e.id == id).unwrap();
+            assert_eq!(row(&person).status, EntryStatus::Active);
+            assert_eq!(row(&agent_row).status, EntryStatus::Active);
+            assert!(
+                !row(&agent_row).reviewed,
+                "a row `review` offers, though it is not a suggestion"
+            );
+            assert_eq!(row(&suggestion).status, EntryStatus::Suggested);
+        }
+        let unknown = EntryId::random().to_string();
+        let ids = vec![
+            person.to_string(),
+            agent_row.to_string(),
+            unknown.clone(),
+            "EPAS1".to_string(),
+            suggestion.to_string(),
+        ];
+        let run = go(&store, &terminal(), Action::Dismiss { ids });
+        let not_found = |raw: &str| format!("{raw}: {}", store::MSG_NOT_FOUND);
+        assert_eq!(
+            run.result,
+            Err(Failure::failed(
+                [
+                    not_found(person.as_str()),
+                    not_found(agent_row.as_str()),
+                    not_found(&unknown),
+                    not_found("EPAS1"),
+                ]
+                .join("\n")
+            ))
+        );
+        assert_eq!(run.out, "Dismissed SPOKE.\n");
+
+        let view = store.view().unwrap();
+        let left: Vec<(&str, EntryStatus, bool)> = view
+            .entries()
+            .iter()
+            .map(|e| (e.written.as_str(), e.status, e.reviewed))
+            .collect();
+        assert_eq!(
+            left,
+            [
+                ("EPAS1", EntryStatus::Active, true),
+                ("PHD2", EntryStatus::Active, false),
+            ]
+        );
+        assert!(view.file().tombstoned("spoke", EntryTier::Public));
+        assert!(!view.file().tombstoned("epas1", EntryTier::Public));
+        assert!(!view.file().tombstoned("phd2", EntryTier::Public));
+
+        let alone = go(
+            &store,
+            &terminal(),
+            Action::Dismiss {
+                ids: vec![person.to_string()],
+            },
+        );
+        assert_eq!(
+            alone.result,
+            Err(Failure::failed(not_found(person.as_str())))
+        );
+        assert!(alone.out.is_empty(), "{}", alone.out);
+        assert_eq!(store.view().unwrap().entries().len(), 2);
     }
 
     #[test]
@@ -2177,6 +2410,7 @@ mod tests {
             Action::Settings {
                 agent_writes: Some(AgentWrites::Add),
                 learn_from_chats: None,
+                suggest_from_chats: None,
             },
             Action::Clear {
                 suggested_only: false,

@@ -4087,6 +4087,7 @@ pub struct Agent {
     /// A tool that is absent from the tool list cannot be called; prose competing
     /// with an available tool loses.
     pub(super) subagent_tool_enabled: AtomicBool,
+    dictionary_learning: AtomicBool,
     /// T3-SH-4. The last model call this chat made was refused for its
     /// credentials, so the next turn rebuilds the provider from the row before
     /// it runs (`rebind_from_row`, the tier check included).
@@ -5374,6 +5375,7 @@ impl Agent {
             sub_workflows: Mutex::new(HashMap::new()),
             subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
+            dictionary_learning: AtomicBool::new(true),
             credentials_refused: AtomicBool::new(false),
             provider_failed_last_turn: AtomicBool::new(false),
             final_output_tool: Arc::new(Mutex::new(None)),
@@ -8737,6 +8739,18 @@ impl Agent {
                 )),
             );
         }
+        if tool_call.name.starts_with("dictionary__")
+            && (session.session_type != SessionType::User || !self.dictionary_learning_enabled())
+        {
+            return (
+                request_id,
+                Err(ErrorData::new(
+                    ErrorCode::INVALID_REQUEST,
+                    "The Dictionary capability is unavailable in this session.".to_string(),
+                    None,
+                )),
+            );
+        }
         // BR-71 §5: no workspace control, and no nesting, inside a delegation tree.
         if is_workspace_tool_refused_for(session.session_type, tool_call.name.as_ref()) {
             let message = if is_spawn_tool_call(tool_call.name.as_ref()) {
@@ -9426,6 +9440,14 @@ impl Agent {
         self.subagent_tool_enabled.store(enabled, Ordering::Relaxed);
     }
 
+    pub fn set_dictionary_learning(&self, enabled: bool) {
+        self.dictionary_learning.store(enabled, Ordering::Release);
+    }
+
+    pub fn dictionary_learning_enabled(&self) -> bool {
+        self.dictionary_learning.load(Ordering::Acquire)
+    }
+
     pub async fn subagents_enabled(&self, session_id: &str) -> bool {
         // An app that delegates through `consult(agent: …)` must not ALSO be
         // offered the generic `subagent` tool — see `subagent_tool_enabled`.
@@ -9698,6 +9720,23 @@ impl Agent {
             }
         }
         .unwrap_or_default();
+
+        if matches!(audience, ToolAudience::Model) {
+            let dictionary_allowed = self
+                .config
+                .session_manager
+                .get_session(session_id, false)
+                .await
+                .is_ok_and(|session| session.session_type == SessionType::User);
+            // An unreadable Crew registry fails closed, as dispatch does.
+            let crew_scoped = match crate::crew::manager() {
+                Ok(crew) => crew.is_scoped_session(session_id).await,
+                Err(_) => true,
+            };
+            if !dictionary_allowed || crew_scoped || !self.dictionary_learning_enabled() {
+                prefixed_tools.retain(|tool| !tool.name.starts_with("dictionary__"));
+            }
+        }
 
         // Revoking the injection is necessary but not sufficient. `subagent` is
         // one of the workspace extension's OWN tools now, so a user who enabled
@@ -20395,6 +20434,200 @@ mod tests {
         // mechanisms cannot both claim it and the refusal message stays
         // specific ("cannot create other subagents", not "workspace tools").
         assert!(!WORKSPACE_TOOL_NAMES.contains(&SUBAGENT_TOOL_NAME));
+    }
+
+    #[tokio::test]
+    async fn dictionary_learning_gate_hides_model_tools_and_refuses_direct_calls() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = sessions
+            .create_session(
+                temp.path().to_path_buf(),
+                "person".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions,
+            Arc::new(crate::config::permission::PermissionManager::new(
+                temp.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let target = crate::agents::extension_manager::resolve_bundled_extension("dictionary")
+            .expect("Dictionary is a bundled capability");
+        agent
+            .add_extension(target.into_config("dictionary gate test".into()))
+            .await
+            .unwrap();
+
+        assert!(agent.dictionary_learning_enabled());
+        let names = |tools: Vec<Tool>| {
+            tools
+                .into_iter()
+                .filter(|tool| tool.name.starts_with("dictionary__"))
+                .map(|tool| tool.name.to_string())
+                .collect::<HashSet<_>>()
+        };
+        let expected = HashSet::from([
+            "dictionary__add_terms".to_string(),
+            "dictionary__list_terms".to_string(),
+            "dictionary__remove_added_terms".to_string(),
+        ]);
+        assert_eq!(names(agent.list_tools(&session.id, None).await), expected);
+
+        agent.set_dictionary_learning(false);
+        assert!(!agent.dictionary_learning_enabled());
+        assert!(names(agent.list_tools(&session.id, None).await).is_empty());
+        assert_eq!(
+            names(
+                agent
+                    .list_tools_for_permission_settings(&session.id, None)
+                    .await
+            ),
+            expected,
+            "the permission editor still describes installed tools"
+        );
+        for name in &expected {
+            let call = CallToolRequestParams {
+                meta: None,
+                name: name.clone().into(),
+                arguments: Some(serde_json::Map::new()),
+                task: None,
+            };
+            let (_, result) = agent
+                .dispatch_tool_call(call, "request".into(), None, &session)
+                .await;
+            match result {
+                Err(error) => assert!(
+                    error.message.contains("unavailable in this session"),
+                    "{name}: {}",
+                    error.message
+                ),
+                Ok(_) => panic!("{name} bypassed the app/WebSocket gate"),
+            }
+        }
+
+        agent.set_dictionary_learning(true);
+        assert_eq!(names(agent.list_tools(&session.id, None).await), expected);
+    }
+
+    /// The Dictionary capability is a person's chat's alone. With the capability loaded
+    /// and learning on, the same agent offers the model its tools in a User chat, and in a
+    /// SubAgent, Scheduled, Hidden or Terminal session, and in a Crew scoped chat, it
+    /// offers none and refuses a direct `dictionary__add_terms`.
+    #[tokio::test]
+    async fn dictionary_tools_are_withheld_and_refused_outside_a_persons_own_chat() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session_of = |kind: SessionType| {
+            let sessions = Arc::clone(&sessions);
+            let dir = temp.path().to_path_buf();
+            async move {
+                sessions
+                    .create_session(dir, format!("{kind} chat"), kind)
+                    .await
+                    .unwrap()
+            }
+        };
+        let person = session_of(SessionType::User).await;
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&sessions),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                temp.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let target = crate::agents::extension_manager::resolve_bundled_extension("dictionary")
+            .expect("Dictionary is a bundled capability");
+        agent
+            .add_extension(target.into_config("dictionary session gate test".into()))
+            .await
+            .unwrap();
+        assert!(agent.dictionary_learning_enabled());
+        let dictionary_tools = |tools: Vec<Tool>| {
+            tools
+                .into_iter()
+                .filter(|tool| tool.name.starts_with("dictionary__"))
+                .map(|tool| tool.name.to_string())
+                .collect::<HashSet<_>>()
+        };
+        let expected = HashSet::from([
+            "dictionary__add_terms".to_string(),
+            "dictionary__list_terms".to_string(),
+            "dictionary__remove_added_terms".to_string(),
+        ]);
+        assert_eq!(
+            dictionary_tools(agent.list_tools(&person.id, None).await),
+            expected,
+            "a person's own chat is offered the capability"
+        );
+        let add_terms = || CallToolRequestParams {
+            meta: None,
+            name: "dictionary__add_terms".into(),
+            arguments: Some(
+                serde_json::json!({"terms": [{"written": "EPAS1"}], "requested_by_user": true})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            task: None,
+        };
+
+        for kind in [
+            SessionType::SubAgent,
+            SessionType::Scheduled,
+            SessionType::Hidden,
+            SessionType::Terminal,
+        ] {
+            let other = session_of(kind).await;
+            assert!(
+                dictionary_tools(agent.list_tools(&other.id, None).await).is_empty(),
+                "a {kind} session was offered dictionary tools"
+            );
+            let (_, result) = agent
+                .dispatch_tool_call(add_terms(), "request".into(), None, &other)
+                .await;
+            match result {
+                Err(error) => assert!(
+                    error
+                        .message
+                        .contains("The Dictionary capability is unavailable in this session."),
+                    "{kind}: {}",
+                    error.message
+                ),
+                Ok(_) => panic!("dictionary__add_terms ran in a {kind} session"),
+            }
+        }
+
+        let crew_chat = session_of(SessionType::User).await;
+        let crew = crate::crew::install_test_scope(&crew_chat.id, None).await;
+        let scoped_tools = dictionary_tools(agent.list_tools(&crew_chat.id, None).await);
+        let (_, scoped_result) = agent
+            .dispatch_tool_call(add_terms(), "request".into(), None, &crew_chat)
+            .await;
+        crate::crew::remove_test_scope(&crew, &crew_chat.id).await;
+        assert!(
+            scoped_tools.is_empty(),
+            "a Crew scoped chat was offered dictionary tools: {scoped_tools:?}"
+        );
+        assert!(
+            scoped_result.is_err(),
+            "dictionary__add_terms ran in a Crew scoped chat"
+        );
+        assert_eq!(
+            dictionary_tools(agent.list_tools(&crew_chat.id, None).await),
+            expected,
+            "the same chat without its Crew scope is offered the capability, so the scope \
+             was what withheld it"
+        );
     }
 
     /// The CALL SITE, not the predicate. `is_workspace_tool_refused_for` is a

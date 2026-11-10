@@ -38,6 +38,7 @@ export function entry(overrides: Partial<DictionaryEntryView> = {}): DictionaryE
 export function settings(overrides: Partial<DictionarySettings> = {}): DictionarySettings {
   const allowed = { allowed: true, reason: null };
   return {
+    suggest_from_chats: false,
     learn_from_chats: false,
     agent_writes: 'on_request',
     authority: {

@@ -428,15 +428,16 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
-                counts: c(1, 14, 1),
+                counts: c(1, 16, 1),
                 kind: SiteKind::Guard,
                 what: "`read_chat` (PR-16, O-35, O-36): the gate before a stamp reads the chat \
                        an add started in (`origin_session_id`) or an observation names, a \
                        refusal giving the unknown institutions for an add and a silent no op \
-                       for an observation. The fourteen refs are the MODULE qualifier: on this \
+                       for an observation. The sixteen refs are the MODULE qualifier: on this \
                        call, on `target_tier`, on `gate_dictionary_entry` in the router, and on \
-                       `http_caller` in each of the eleven handlers that resolve their caller; \
-                       the import is the `use` that brings the module in",
+                       `http_caller` in each of the thirteen handlers that resolve their \
+                       caller (PR-23 added the agent row Undo and the activation choice); the \
+                       import is the `use` that brings the module in",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
@@ -698,13 +699,15 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
-                counts: c(11, 0, 0),
+                counts: c(13, 0, 0),
                 kind: SiteKind::Guard,
                 what: "every `/dictionary/*` handler (PR-16, DD-37, DD-38), each resolving its \
                        caller once for the listing decision, the write rules, the stamp and \
                        private standing: the listing, add, edit, delete, tier change, the bulk \
-                       routes' shared reader, import, export, observations, and both halves of \
-                       the settings",
+                       routes' shared reader, import, export, observations, both halves of the \
+                       settings, and since PR-23 the agent row Undo \
+                       (`POST /dictionary/entries/{id}/undo-agent-add`) and the activation \
+                       choice (`POST /dictionary/activation`, DD-56)",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
@@ -1160,14 +1163,16 @@ const REGISTRY: &[Guard] = &[
         sites: &[
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
-                counts: c(11, 0, 0),
+                counts: c(12, 0, 0),
                 kind: SiteKind::Guard,
                 what: "every write and the export: add, edit, delete, the tier change (again \
                        after the gate, right before the tier proof is built), the bulk routes' \
-                       shared reader, import, export, observations, the settings change, and the \
+                       shared reader, import, export, observations, the settings change, the \
                        settings answer's `authority`, which asks once for managed writes and \
                        separately for deletion with the same caller proof and row reach, so \
-                       neither control is offered when its route would refuse",
+                       neither control is offered when its route would refuse, and the agent \
+                       row Undo (PR-23), which asks with the row's listed tier before the \
+                       store write",
             },
             Site {
                 file: SESSION_REACH,

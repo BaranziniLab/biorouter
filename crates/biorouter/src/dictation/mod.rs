@@ -14,6 +14,7 @@
 //! `local-dictation` feature still has this module; its status answers `no_engine` and
 //! every request answers [`MSG_NO_ENGINE`].
 
+pub mod activation;
 pub mod bias;
 pub mod file;
 pub mod paths;

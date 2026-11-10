@@ -31,6 +31,8 @@ import { useEffect, useSyncExternalStore } from 'react';
 import {
   acceptDictionarySuggestions,
   addDictionaryEntry,
+  activateDictionary,
+  changeDictionarySettings,
   changeDictionaryEntryTier,
   deleteDictionaryEntries,
   deleteDictionaryEntry,
@@ -41,9 +43,11 @@ import {
   importDictionary,
   keepDictionaryEntries,
   listDictionaryEntries,
+  undoAgentDictionaryAdd,
 } from '../../api';
 import type {
   DictionaryAddRequest,
+  DictionaryAgentWrites,
   DictionaryEditRequest,
   DictionaryEntryAnswer,
   DictionaryEntryList,
@@ -401,6 +405,15 @@ export function deleteTerm(id: string): Promise<Outcome<unknown>> {
   );
 }
 
+/** Undo a tool-added row only while that exact unreviewed revision still exists. */
+export function undoAgentAdd(id: string, expectedRev: number): Promise<Outcome<unknown>> {
+  return write(
+    (headers) =>
+      undoAgentDictionaryAdd({ path: { id }, body: { expected_rev: expectedRev }, headers }),
+    () => ({ removed: id })
+  );
+}
+
 /** Delete listed rows, 5,000 ids a request; answers how many were deleted. */
 export async function deleteTerms(ids: readonly string[]): Promise<Outcome<number>> {
   const headers = await userActionHeaders();
@@ -421,6 +434,18 @@ export async function deleteTerms(ids: readonly string[]): Promise<Outcome<numbe
   }
   await refreshDictionary();
   return outcome ?? { ok: true, status: 200, data: deleted };
+}
+
+export function setAgentWrites(
+  agentWrites: DictionaryAgentWrites
+): Promise<Outcome<DictionarySettings>> {
+  return write((headers) =>
+    changeDictionarySettings({ body: { agent_writes: agentWrites }, headers })
+  );
+}
+
+export function setSuggestFromChats(suggest: boolean): Promise<Outcome<DictionarySettings>> {
+  return write((headers) => activateDictionary({ body: { suggest_from_chats: suggest }, headers }));
 }
 
 export function acceptTerms(ids: readonly string[]): Promise<Outcome<{ accepted: number }>> {
@@ -548,6 +573,8 @@ export interface DictionaryHook extends DictionarySnapshot {
   accept: typeof acceptTerms;
   dismiss: typeof dismissTerms;
   keep: typeof keepTerms;
+  setAgentWrites: typeof setAgentWrites;
+  setSuggestFromChats: typeof setSuggestFromChats;
   importPlan: typeof planImport;
   importApply: typeof applyImport;
   exportFile: typeof exportTerms;
@@ -571,6 +598,8 @@ export function useDictionary(): DictionaryHook {
     accept: acceptTerms,
     dismiss: dismissTerms,
     keep: keepTerms,
+    setAgentWrites,
+    setSuggestFromChats,
     importPlan: planImport,
     importApply: applyImport,
     exportFile: exportTerms,

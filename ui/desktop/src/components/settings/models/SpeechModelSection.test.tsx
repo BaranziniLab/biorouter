@@ -19,6 +19,24 @@ import {
 import { managedPolicySentences } from '../../privacy/ManagedPolicyNote';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
+
+const activation = vi.hoisted(() => ({
+  ready: true,
+  checked: true,
+  disabled: false,
+  showChoice: true,
+  needsSave: false,
+  help: 'Terms from chats are suggested.',
+  setChecked: vi.fn(),
+  startInstall: vi.fn(),
+  activationFailed: false,
+  savedChoiceDiffered: false,
+  saving: false,
+  retryActivation: vi.fn(),
+}));
+vi.mock('../../dictionary/activationChoice', () => ({
+  useDictionaryActivationChoice: () => activation,
+}));
 import SpeechModelSection, { MIC_TEST_MS, meterPercent } from './SpeechModelSection';
 import {
   removeSpeechModel,
@@ -202,6 +220,12 @@ async function renderSection() {
 const row = (id: string) => screen.getByTestId(`speech-model-${id}`);
 
 beforeEach(() => {
+  activation.ready = true;
+  activation.activationFailed = false;
+  activation.savedChoiceDiffered = false;
+  activation.saving = false;
+  activation.needsSave = false;
+  activation.retryActivation.mockClear();
   resetSharedOriginNoticeForTests();
   window.localStorage.removeItem(DICTATION_VIEWER_KEY);
   capture.options = null;
@@ -279,6 +303,14 @@ describe('Speech models in Settings', () => {
 });
 
 describe('the model rows', () => {
+  it('keeps first Install disabled while the dictionary choice is loading', async () => {
+    activation.ready = false;
+    await renderSection();
+    expect(
+      within(row(TURBO)).getByRole('button', { name: 'Install Whisper large-v3-turbo (q5_0)' })
+    ).toBeDisabled();
+    expect(modelsApi.install).not.toHaveBeenCalled();
+  });
   it('offers Install with each model’s size, languages and the recommendation', async () => {
     await renderSection();
     expect(

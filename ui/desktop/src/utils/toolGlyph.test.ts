@@ -109,6 +109,9 @@ const REAL_TOOLS: Record<ToolGlyphKind, string[]> = {
   ],
   database: ['datasql__data_query', 'datasql__data_sources', 'datasql__data_table'],
   memory: [
+    'dictionary__add_terms',
+    'dictionary__list_terms',
+    'dictionary__remove_added_terms',
     'memory__remember_memory',
     'memory__retrieve_memories',
     'memory__remove_specific_memory',

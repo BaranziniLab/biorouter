@@ -1884,6 +1884,14 @@ export type DictionaryAccepted = {
 };
 
 /**
+ * The person's activation choice, separate from the store settings (DD-56).
+ */
+export type DictionaryActivationRequest = {
+    first_install?: boolean;
+    suggest_from_chats: boolean;
+};
+
+/**
  * `POST /dictionary/entries`.
  */
 export type DictionaryAddRequest = {
@@ -2179,6 +2187,7 @@ export type DictionarySettings = {
     agent_writes: DictionaryAgentWrites;
     authority: DictionaryAuthority;
     learn_from_chats: boolean;
+    suggest_from_chats: boolean;
 };
 
 /**
@@ -2206,6 +2215,10 @@ export type DictionaryTier = 'public' | 'private';
  */
 export type DictionaryTierRequest = {
     tier: DictionaryTier;
+};
+
+export type DictionaryUndoAgentAddRequest = {
+    expected_rev: number;
 };
 
 /**
@@ -11079,6 +11092,35 @@ export type FinishDictationStreamResponses = {
 
 export type FinishDictationStreamResponse = FinishDictationStreamResponses[keyof FinishDictationStreamResponses];
 
+export type ActivateDictionaryData = {
+    body: DictionaryActivationRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/activation';
+};
+
+export type ActivateDictionaryErrors = {
+    /**
+     * Missing proof or host setting refusal
+     */
+    403: DictionaryErrorBody;
+    /**
+     * The activation choice could not be saved
+     */
+    503: DictionaryErrorBody;
+};
+
+export type ActivateDictionaryError = ActivateDictionaryErrors[keyof ActivateDictionaryErrors];
+
+export type ActivateDictionaryResponses = {
+    /**
+     * The settings after activation
+     */
+    200: DictionarySettings;
+};
+
+export type ActivateDictionaryResponse = ActivateDictionaryResponses[keyof ActivateDictionaryResponses];
+
 export type ListDictionaryEntriesData = {
     body?: never;
     path?: never;
@@ -11329,6 +11371,52 @@ export type ChangeDictionaryEntryTierResponses = {
 };
 
 export type ChangeDictionaryEntryTierResponse = ChangeDictionaryEntryTierResponses[keyof ChangeDictionaryEntryTierResponses];
+
+export type UndoAgentDictionaryAddData = {
+    body: DictionaryUndoAgentAddRequest;
+    path: {
+        /**
+         * The agent row's id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/dictionary/entries/{id}/undo-agent-add';
+};
+
+export type UndoAgentDictionaryAddErrors = {
+    /**
+     * The caller is not authorized to remove the row
+     */
+    403: DictionaryErrorBody;
+    /**
+     * Missing or hidden row
+     */
+    404: DictionaryErrorBody;
+    /**
+     * The row changed and was preserved
+     */
+    412: DictionaryErrorBody;
+    /**
+     * The dictionary could not be written
+     */
+    500: DictionaryErrorBody;
+    /**
+     * The dictionary could not be read
+     */
+    503: DictionaryErrorBody;
+};
+
+export type UndoAgentDictionaryAddError = UndoAgentDictionaryAddErrors[keyof UndoAgentDictionaryAddErrors];
+
+export type UndoAgentDictionaryAddResponses = {
+    /**
+     * Removed the unchanged active, unreviewed agent row
+     */
+    204: void;
+};
+
+export type UndoAgentDictionaryAddResponse = UndoAgentDictionaryAddResponses[keyof UndoAgentDictionaryAddResponses];
 
 export type ExportDictionaryData = {
     body?: never;

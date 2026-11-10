@@ -6509,6 +6509,56 @@
         }
       }
     },
+    "/dictionary/activation": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "activate_dictionary",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryActivationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings after activation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionarySettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing proof or host setting refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The activation choice could not be saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dictionary/entries": {
       "get": {
         "tags": [
@@ -6939,6 +6989,90 @@
           },
           "409": {
             "description": "cap",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/entries/{id}/undo-agent-add": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "undo_agent_dictionary_add",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The agent row's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DictionaryUndoAgentAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Removed the unchanged active, unreviewed agent row"
+          },
+          "403": {
+            "description": "The caller is not authorized to remove the row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Missing or hidden row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The row changed and was preserved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The dictionary could not be written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The dictionary could not be read",
             "content": {
               "application/json": {
                 "schema": {
@@ -15057,6 +15191,22 @@
           }
         }
       },
+      "DictionaryActivationRequest": {
+        "type": "object",
+        "description": "The person's activation choice, separate from the store settings (DD-56).",
+        "required": [
+          "suggest_from_chats"
+        ],
+        "properties": {
+          "first_install": {
+            "type": "boolean"
+          },
+          "suggest_from_chats": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "DictionaryAddRequest": {
         "type": "object",
         "description": "`POST /dictionary/entries`.",
@@ -15745,6 +15895,7 @@
         "type": "object",
         "description": "200 from `GET` and `POST /dictionary/settings`. `suggest_from_chats` joins it with the\n`dictionary` capability (PR-23).",
         "required": [
+          "suggest_from_chats",
           "learn_from_chats",
           "agent_writes",
           "authority"
@@ -15757,6 +15908,9 @@
             "$ref": "#/components/schemas/DictionaryAuthority"
           },
           "learn_from_chats": {
+            "type": "boolean"
+          },
+          "suggest_from_chats": {
             "type": "boolean"
           }
         }
@@ -15816,6 +15970,20 @@
             "$ref": "#/components/schemas/DictionaryTier"
           }
         }
+      },
+      "DictionaryUndoAgentAddRequest": {
+        "type": "object",
+        "required": [
+          "expected_rev"
+        ],
+        "properties": {
+          "expected_rev": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "Direction": {
         "type": "string",

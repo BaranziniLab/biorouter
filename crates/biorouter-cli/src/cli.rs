@@ -1156,6 +1156,14 @@ enum DictationCommand {
         /// Install without asking (needed without a terminal)
         #[arg(short, long)]
         yes: bool,
+
+        /// Suggest dictionary words from chats after this verified install
+        #[arg(long, conflicts_with = "no_suggest_from_chats")]
+        suggest_from_chats: bool,
+
+        /// Leave chat suggestions off after this verified install
+        #[arg(long, conflicts_with = "suggest_from_chats")]
+        no_suggest_from_chats: bool,
     },
 
     /// Delete an installed speech model; removing the last one removes the voice
@@ -1410,6 +1418,11 @@ enum DictionaryCommand {
             value_parser = clap::builder::PossibleValuesParser::new(["on", "off"])
         )]
         learn_from_chats: Option<String>,
+
+        /// Let the agent suggest words it sees in your chats
+        #[arg(long = "suggest-from-chats", value_name = "ON|OFF",
+              value_parser = clap::builder::PossibleValuesParser::new(["on", "off"]))]
+        suggest_from_chats: Option<String>,
     },
 
     /// Delete every term, after you type the count
@@ -1482,11 +1495,13 @@ impl DictionaryCommand {
             Self::Settings {
                 agent_writes,
                 learn_from_chats,
+                suggest_from_chats,
             } => Action::Settings {
                 agent_writes: agent_writes
                     .as_deref()
                     .and_then(biorouter::security::dictionary_store::store::AgentWrites::parse),
                 learn_from_chats: learn_from_chats.map(|value| value == "on"),
+                suggest_from_chats: suggest_from_chats.map(|value| value == "on"),
             },
             Self::Clear { suggested_only } => Action::Clear { suggested_only },
         }
@@ -3612,6 +3627,9 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             extension_opts,
             model_opts,
         }) => {
+            biorouter::dictation::activation::set_process_surface(
+                biorouter::dictation::activation::Surface::Cli,
+            );
             handle_session_command(
                 command,
                 identifier,
@@ -3636,6 +3654,9 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             output_opts,
             model_opts,
         }) => {
+            biorouter::dictation::activation::set_process_surface(
+                biorouter::dictation::activation::Surface::Cli,
+            );
             handle_run_command(
                 input_opts,
                 identifier,
@@ -3678,13 +3699,22 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
                 from,
                 system,
                 yes,
+                suggest_from_chats,
+                no_suggest_from_chats,
             } => {
-                crate::commands::dictation::handle_install(
+                crate::commands::dictation::handle_install_with_choice(
                     crate::commands::dictation::InstallArgs {
                         model,
                         from,
                         system,
                         yes,
+                    },
+                    if suggest_from_chats {
+                        Some(true)
+                    } else if no_suggest_from_chats {
+                        Some(false)
+                    } else {
+                        None
                     },
                 )
                 .await

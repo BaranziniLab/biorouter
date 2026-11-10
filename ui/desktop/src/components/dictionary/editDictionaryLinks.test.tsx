@@ -8,6 +8,17 @@ import SpeechModelSection from '../settings/models/SpeechModelSection';
 import { DICTIONARY_LABELS } from './copy';
 import { DICTIONARY_ROUTE } from './navigation';
 
+const activationReads = vi.hoisted(() => ({
+  config: vi.fn(),
+  settings: vi.fn(),
+}));
+
+vi.mock('../../api', async () => ({
+  ...(await vi.importActual<typeof import('../../api')>('../../api')),
+  readAllConfig: activationReads.config,
+  getDictionarySettings: activationReads.settings,
+}));
+
 /**
  * The **Edit your dictionary** links (DD-67): the setup popover offers it once a model is
  * ready, and **Settings > Models > Speech models** always does unless managed policy turns the
@@ -19,6 +30,18 @@ const notInstalled = () =>
   speechStatus({ active_model: null }, { installed: false, recommended: true });
 
 beforeEach(() => {
+  activationReads.config.mockReset().mockResolvedValue({
+    data: { config: { dictation_dictionary_activation_version: 1 } },
+  });
+  activationReads.settings.mockReset().mockResolvedValue({
+    data: {
+      suggest_from_chats: false,
+      learn_from_chats: false,
+      agent_writes: 'on_request',
+      authority: { raise_settings: { allowed: false } },
+    },
+    response: { ok: true, status: 200 },
+  });
   Object.assign(window, {
     appConfig: { get: (key: string) => (key === 'BIOROUTER_LOCAL_BACKEND' ? true : undefined) },
   });

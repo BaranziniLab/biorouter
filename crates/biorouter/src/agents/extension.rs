@@ -1,5 +1,6 @@
 use crate::agents::chatrecall_extension;
 use crate::agents::code_execution_extension;
+use crate::agents::dictionary_extension;
 use crate::agents::extension_manager_extension;
 use crate::agents::skills_extension;
 use crate::agents::todo_extension;
@@ -138,6 +139,16 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 client_factory: |ctx| {
                     Box::new(code_execution_extension::CodeExecutionClient::new(ctx).unwrap())
                 },
+            },
+        );
+
+        map.insert(
+            crate::dictation::activation::EXTENSION_KEY,
+            PlatformExtensionDef {
+                name: dictionary_extension::EXTENSION_NAME,
+                description: "Suggest dictionary words from chats and add the terms you ask for",
+                default_enabled: false,
+                client_factory: |ctx| Box::new(dictionary_extension::DictionaryClient::new(ctx)),
             },
         );
 
@@ -940,7 +951,7 @@ mod tests {
     /// be made on purpose rather than noticed later.
     #[test]
     fn workspace_is_a_default_on_capability_granting_its_whole_surface() {
-        assert_eq!(PLATFORM_EXTENSIONS.len(), 7);
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 8);
         assert!(
             PLATFORM_EXTENSIONS["workspace"].default_enabled,
             "workspace is a capability now, so it ships on"
@@ -949,7 +960,7 @@ mod tests {
 
     #[test]
     fn platform_extension_defaults_match_capabilities() {
-        assert_eq!(PLATFORM_EXTENSIONS.len(), 7);
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 8);
         assert!(PLATFORM_EXTENSIONS["todo"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["extensionmanager"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["skills"].default_enabled);

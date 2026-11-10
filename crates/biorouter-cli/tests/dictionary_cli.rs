@@ -14,7 +14,9 @@
 //! * a store this version cannot read refuses `import` with MSG-DICTIONARY-FILE and
 //!   stays byte identical, and `list` prints nothing;
 //! * managed `dictionary: false` refuses `import` with the policy's sentence and still
-//!   exports.
+//!   exports;
+//! * `settings` prints its three settings without a terminal, and the refused
+//!   `--suggest-from-chats on` leaves the `dictionary` capability off (PR-23).
 
 #[path = "../src/test_sandbox.rs"]
 mod test_sandbox;
@@ -125,6 +127,8 @@ const WRITES: &[&[&str]] = &[
     &["privatize", "EPAS1"],
     &["settings", "--agent-writes", "add"],
     &["settings", "--learn-from-chats", "on"],
+    &["settings", "--suggest-from-chats", "on"],
+    &["settings", "--suggest-from-chats", "off"],
     &["clear"],
 ];
 
@@ -135,6 +139,18 @@ fn every_write_but_import_needs_a_terminal() {
         assert_refused(&run(root.path(), args, "", &[]), MSG_DICTIONARY_TTY);
     }
     assert!(!store_file(root.path()).exists(), "nothing was written");
+    assert_suggestions_off(root.path());
+}
+
+/// `--suggest-from-chats on` refused, the `dictionary` capability is still off.
+fn assert_suggestions_off(root: &Path) {
+    let output = run(root, &["settings"], "", &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("suggest_from_chats: off\n"),
+        "{}",
+        stdout(&output)
+    );
 }
 
 #[test]
@@ -149,6 +165,7 @@ fn every_write_is_refused_in_an_agent_shell() {
         );
     }
     assert!(!store_file(root.path()).exists(), "nothing was written");
+    assert_suggestions_off(root.path());
     // Reads still work there, public rows only.
     let output = run(root.path(), &["list"], "", &agent);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -387,6 +404,8 @@ fn managed_dictionary_off_refuses_import_and_still_exports() {
     assert!(stdout(&exported).contains("EPAS1"));
 }
 
+/// `settings` with no flag prints the three settings without a terminal; PR-23 added
+/// `suggest_from_chats`, the `dictionary` capability, which a fresh configuration has off.
 #[test]
 fn settings_print_without_a_terminal() {
     let root = sandbox();
@@ -394,6 +413,6 @@ fn settings_print_without_a_terminal() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stdout(&output),
-        "agent_writes: on_request\nlearn_from_chats: off\n"
+        "agent_writes: on_request\nsuggest_from_chats: off\nlearn_from_chats: off\n"
     );
 }

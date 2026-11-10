@@ -3372,6 +3372,8 @@ async fn configure_agent_for_connection(
     ui_bridge: &UiBridge,
     enable_consult: bool,
 ) -> CapabilityReport {
+    agent.set_dictionary_learning(false);
+    let _ = agent.remove_extension("dictionary").await;
     let Some(cfg) = manifest.agent.as_ref() else {
         return CapabilityReport::default();
     };
@@ -3970,6 +3972,8 @@ async fn configure_worker_agent(
     main_bridge: &UiBridge,
     main_provider: Option<&app_provider_bind::AppProvider>,
 ) {
+    agent.set_dictionary_learning(false);
+    let _ = agent.remove_extension("dictionary").await;
     // Issue #56, DR-21. Surfaced on the MAIN bridge (a worker has no page of its
     // own) and stamped with the profile, so a refused worker reads as a refusal
     // rather than as a worker that mysteriously has no model.
@@ -13359,14 +13363,17 @@ mod tests {
         /// The comment this replaces said "One site, so a second arming path
         /// cannot be added without the allow-list" — which describes the funnel
         /// and does nothing to hold it. `arm_extensions` is the only
-        /// `Agent::add_extension` call site in this file; a second one would
+        /// `Agent::add_extension` call site in this file's production code (the
+        /// `#[cfg(test)]` modules are left out, see `production_only`); a second one would
         /// bypass `manifest_extension_config` entirely, and nothing but this row
         /// would notice.
         #[test]
         fn an_app_arms_extensions_through_exactly_one_call_site() {
             // Split so this test's own text is not the match it counts.
             let needle = concat!("add_ext", "ension(");
-            let src = super::privacy_task24::code_only(include_str!("apps.rs"));
+            let src = super::privacy_task24::code_only(&super::privacy_task24::production_only(
+                include_str!("apps.rs"),
+            ));
             let sites: Vec<&str> = src
                 .lines()
                 .filter(|l| l.contains(needle))
@@ -13902,6 +13909,51 @@ mod tests {
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
                 .join("\n")
+        }
+
+        /// The production code of a file: every item gated by `#[cfg(test)]` is
+        /// dropped. A test may arm an extension directly to set up its
+        /// precondition (PR-23's app admission test does), and that is not a
+        /// production arming path.
+        ///
+        /// The file is rustfmt formatted, so a gated item that opens a block ends
+        /// at the first line that is exactly its own indentation followed by `}`.
+        /// Braces inside strings (a test here sends `b"{"`) do not move that line.
+        /// If a gated item ever ended elsewhere, its remaining lines would count
+        /// as production or what follows would be dropped; a census that expects
+        /// exactly one production site fails either way, so a mistake here cannot
+        /// turn into a pass.
+        pub(super) fn production_only(src: &str) -> String {
+            let mut kept = Vec::new();
+            let mut closing: Option<String> = None;
+            let mut gated = false;
+            for line in src.lines() {
+                if let Some(end) = closing.as_deref() {
+                    if line == end {
+                        closing = None;
+                    }
+                    continue;
+                }
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("#[cfg(test)]") {
+                    gated = true;
+                    continue;
+                }
+                if gated {
+                    if trimmed.starts_with("#[") {
+                        continue;
+                    }
+                    gated = false;
+                    if trimmed.ends_with('{') {
+                        let indent: String =
+                            line.chars().take_while(|ch| ch.is_whitespace()).collect();
+                        closing = Some(format!("{indent}}}"));
+                    }
+                    continue;
+                }
+                kept.push(line);
+            }
+            kept.join("\n")
         }
 
         /// Every frame the bridge has emitted since `attach`.
@@ -15196,7 +15248,7 @@ mod app_decision_tests {
 /// to pin that half.
 #[cfg(test)]
 mod opening_is_not_activity_app_tests {
-    use super::configure_agent;
+    use super::{configure_agent, configure_worker_agent};
     use biorouter::agents::{Agent, AgentConfig as BrAgentConfig};
     use biorouter::config::permission::PermissionManager;
     use biorouter::config::with_config_overrides;
@@ -15252,6 +15304,82 @@ mod opening_is_not_activity_app_tests {
             None,
             BioRouterMode::Auto,
         ))
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn app_main_without_agent_config_and_worker_with_user_sessions_hide_dictionary() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut no_agent_manifest = manifest();
+        no_agent_manifest.agent = None;
+
+        for (name, worker) in [("app-main", false), ("app-worker", true)] {
+            let session = state
+                .session_manager()
+                .create_session(dir.path().to_path_buf(), name.into(), SessionType::User)
+                .await
+                .unwrap();
+            let agent = state.get_agent(session.id.clone()).await.unwrap();
+            let dictionary =
+                biorouter::agents::extension_manager::resolve_bundled_extension("dictionary")
+                    .expect("Dictionary is bundled");
+            agent
+                .add_extension(dictionary.into_config("app admission test".into()))
+                .await
+                .unwrap();
+            assert!(agent.dictionary_learning_enabled());
+            assert!(
+                agent
+                    .list_tools(&session.id, None)
+                    .await
+                    .iter()
+                    .any(|tool| tool.name == "dictionary__add_terms"),
+                "the User session must start with an actual model-facing Dictionary tool"
+            );
+
+            if worker {
+                configure_worker_agent(
+                    &agent,
+                    &state,
+                    &session.id,
+                    &manifest(),
+                    "researcher",
+                    &AgentConfig::default(),
+                    &UiBridge::new(),
+                    None,
+                )
+                .await;
+            } else {
+                configure_agent(
+                    &agent,
+                    &state,
+                    &session.id,
+                    &no_agent_manifest,
+                    &UiBridge::new(),
+                    false,
+                )
+                .await;
+            }
+
+            assert!(!agent.dictionary_learning_enabled(), "{name}");
+            assert!(
+                !agent
+                    .list_extensions()
+                    .await
+                    .iter()
+                    .any(|extension| extension == "dictionary"),
+                "{name} must not retain Dictionary instructions"
+            );
+            assert!(
+                agent
+                    .list_tools(&session.id, None)
+                    .await
+                    .iter()
+                    .all(|tool| !tool.name.starts_with("dictionary__")),
+                "{name} must not give Dictionary tools to its model"
+            );
+        }
     }
 
     #[tokio::test]

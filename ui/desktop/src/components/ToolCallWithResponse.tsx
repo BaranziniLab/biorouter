@@ -36,9 +36,13 @@ import type { ArtifactSource } from './artifacts/artifactTypes';
 import { crossAffiliationOffer } from '../utils/crossAffiliation';
 import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
-import { stripHiddenCharacters } from '../utils/untrustedText';
+import { sanitizeUntrustedLabel, stripHiddenCharacters } from '../utils/untrustedText';
 import { TranscriptRow, TranscriptRowSection } from './TranscriptRow';
 import { InfoTip } from './ui/info-tip';
+import { Button } from './ui/button';
+import { acceptTerms, keepTerms, undoAgentAdd } from './dictionary/useDictionary';
+import { openDictionaryPage } from './dictionary/navigation';
+import { toastError } from '../toasts';
 import {
   FIGURE_COPY,
   FIGURE_NAMES,
@@ -512,6 +516,7 @@ function ToolCallWithResponseContent({
           {...{
             isCancelledMessage,
             sessionId,
+            toolRequestId: toolRequest.id,
             toolCall,
             toolResponse,
             providerExecution: providerExecutionOf(toolRequest, toolResponse),
@@ -554,6 +559,7 @@ interface ToolCallViewProps {
    * live session, where there is nothing to accept against.
    */
   sessionId?: string;
+  toolRequestId: string;
   toolCall: {
     name: string;
     arguments: Record<string, unknown>;
@@ -1419,6 +1425,7 @@ const getToolName = (toolCallName: string): string => {
 function ToolCallView({
   isCancelledMessage,
   sessionId,
+  toolRequestId,
   toolCall,
   toolResponse,
   notifications,
@@ -1499,6 +1506,54 @@ function ToolCallView({
     loadingStatus === 'success' && toolResponse?.toolResult
       ? getToolResultContent(toolResponse.toolResult)
       : [];
+  const dictionaryAddRows =
+    toolCall.name === 'dictionary__add_terms'
+      ? toolResults.flatMap((content) => {
+          if (!('text' in content) || typeof content.text !== 'string') return [];
+          try {
+            const value = JSON.parse(content.text) as {
+              dictionary_rows?: Array<{
+                id?: string;
+                rev?: number;
+                written?: string;
+                status?: string;
+                source?: string;
+                reviewed?: boolean;
+              }>;
+            };
+            return Array.isArray(value.dictionary_rows)
+              ? value.dictionary_rows.filter((row) => typeof row.id === 'string')
+              : [];
+          } catch {
+            return [];
+          }
+        })
+      : [];
+  const [settledDictionaryRows, setSettledDictionaryRows] = React.useState<ReadonlySet<string>>(
+    new Set()
+  );
+  const [busyDictionaryRow, setBusyDictionaryRow] = React.useState<string | null>(null);
+  const actOnDictionaryRow = (
+    id: string,
+    term: string,
+    action: 'accept' | 'keep' | 'undo',
+    rev?: number
+  ) => {
+    if (action === 'undo' && (!Number.isSafeInteger(rev) || (rev ?? 0) < 1)) return;
+    setBusyDictionaryRow(id);
+    const call =
+      action === 'accept'
+        ? acceptTerms([id])
+        : action === 'keep'
+          ? keepTerms([id])
+          : undoAgentAdd(id, rev!);
+    void call.then((outcome) => {
+      setBusyDictionaryRow(null);
+      if (outcome.ok) setSettledDictionaryRows((current) => new Set([...current, id]));
+      else
+        toastError({ title: term || TOOL_ROW_COPY.dictionaryFailed, msg: outcome.error.message });
+    });
+  };
 
   const logs = notifications
     ?.filter((notification) => {
@@ -1583,7 +1638,22 @@ function ToolCallView({
       );
   // A command that printed nothing answers with blank text. Drawn as is, that
   // was an "Output" label over nothing (V2-19); it says "No output" instead.
-  const visibleResults = listedResults.filter((result) => !isBlankTextResult(result));
+  const visibleResults = listedResults.filter((result) => {
+    if (isBlankTextResult(result)) return false;
+    if (
+      toolCall.name !== 'dictionary__add_terms' ||
+      !('text' in result) ||
+      typeof result.text !== 'string'
+    )
+      return true;
+    try {
+      return !Array.isArray(
+        (JSON.parse(result.text) as { dictionary_rows?: unknown }).dictionary_rows
+      );
+    } catch {
+      return true;
+    }
+  });
   const outputWasBlank = listedResults.length > 0 && visibleResults.length === 0;
   const showProgress = toolResults.length === 0 && progressEntries.length > 0;
   const hasBody =
@@ -1721,7 +1791,96 @@ function ToolCallView({
       onOpenChange={setOpenChoice}
       triggerClassName="br-tool-disclosure"
       trailing={
-        providerExecution === 'child' ? (
+        dictionaryAddRows.length > 0 ? (
+          <span
+            className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"
+            data-testid="dictionary-tool-actions"
+          >
+            {dictionaryAddRows.map((row) => {
+              const id = row.id;
+              if (!id || settledDictionaryRows.has(id)) return null;
+              const suggested = row.source === 'agent' && row.status === 'suggested';
+              const unreviewed =
+                row.source === 'agent' && row.status === 'active' && row.reviewed === false;
+              if (!suggested && !unreviewed) return null;
+              // The term the call recorded, drawn beside its own buttons and named in each, so
+              // a call that added two terms never reads "Keep Undo Keep Undo". The agent wrote
+              // it, so it is drawn as untrusted text. A row from before the rows carried it
+              // keeps the plain labels.
+              const term =
+                typeof row.written === 'string' ? sanitizeUntrustedLabel(row.written, 64) : '';
+              const named = (name: (value: string) => string) => (term ? name(term) : undefined);
+              return (
+                <span
+                  key={id}
+                  className="flex min-w-0 max-w-full items-center gap-1"
+                  data-dictionary-term={id}
+                >
+                  {term ? (
+                    <span
+                      className="min-w-0 truncate text-secondary text-text-default"
+                      data-testid="dictionary-tool-term"
+                    >
+                      {term}
+                    </span>
+                  ) : null}
+                  {suggested ? (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="link"
+                      aria-label={named(TOOL_ROW_COPY.dictionaryAddName)}
+                      data-dictionary-call-id={toolRequestId}
+                      data-dictionary-row-id={id}
+                      data-dictionary-action="accept"
+                      data-dictionary-rev={row.rev}
+                      disabled={busyDictionaryRow === id}
+                      onClick={() => actOnDictionaryRow(id, term, 'accept')}
+                    >
+                      {TOOL_ROW_COPY.dictionaryAdd}
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="link"
+                        aria-label={named(TOOL_ROW_COPY.dictionaryKeepName)}
+                        disabled={busyDictionaryRow === id}
+                        data-dictionary-call-id={toolRequestId}
+                        data-dictionary-row-id={id}
+                        data-dictionary-action="keep"
+                        data-dictionary-rev={row.rev}
+                        onClick={() => actOnDictionaryRow(id, term, 'keep')}
+                      >
+                        {TOOL_ROW_COPY.dictionaryKeep}
+                      </Button>
+                      {Number.isSafeInteger(row.rev) && (row.rev ?? 0) >= 1 ? (
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="link"
+                          aria-label={named(TOOL_ROW_COPY.dictionaryUndoName)}
+                          disabled={busyDictionaryRow === id}
+                          data-dictionary-call-id={toolRequestId}
+                          data-dictionary-row-id={id}
+                          data-dictionary-action="undo"
+                          data-dictionary-rev={row.rev}
+                          onClick={() => actOnDictionaryRow(id, term, 'undo', row.rev)}
+                        >
+                          {TOOL_ROW_COPY.dictionaryUndo}
+                        </Button>
+                      ) : null}
+                    </>
+                  )}
+                </span>
+              );
+            })}
+            <Button type="button" size="xs" variant="link" onClick={openDictionaryPage}>
+              {TOOL_ROW_COPY.dictionaryReview}
+            </Button>
+          </span>
+        ) : providerExecution === 'child' ? (
           <InfoTip label={TOOL_ROW_COPY.notGatedName} help={TOOL_ROW_COPY.notGatedHelp} />
         ) : undefined
       }

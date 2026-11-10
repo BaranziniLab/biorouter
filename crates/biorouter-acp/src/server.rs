@@ -384,6 +384,7 @@ impl BioRouterAcpAgent {
     /// WebSocket transport, where the peer is untrusted artifact content.
     pub fn deny_stdio_mcp(mut self) -> Self {
         self.allow_stdio_mcp = false;
+        self.agent.set_dictionary_learning(false);
         self
     }
 
@@ -1163,6 +1164,9 @@ where
 }
 
 pub async fn run(builtins: Vec<String>) -> Result<()> {
+    biorouter::dictation::activation::set_process_surface(
+        biorouter::dictation::activation::Surface::Acp,
+    );
     info!("listening on stdio");
 
     let outgoing = tokio::io::stdout().compat_write();
@@ -1291,6 +1295,12 @@ fn resolve_ws_token() -> String {
 /// The agent additionally refuses client-registered stdio MCP servers here
 /// (`deny_stdio_mcp`), so a token leak cannot escalate to process execution.
 pub async fn run_ws(builtins: Vec<String>, addr: String) -> Result<()> {
+    if builtins
+        .iter()
+        .any(|name| biorouter::dictation::activation::is_dictionary_name(name))
+    {
+        anyhow::bail!("The Dictionary capability is unavailable over ACP WebSocket.");
+    }
     use tokio_tungstenite::tungstenite::handshake::server::{
         ErrorResponse, Request, Response as HsResponse,
     };
@@ -1576,6 +1586,184 @@ print(\"hello, world\")
         expected: PermissionConfirmation,
     ) {
         assert_eq!(outcome_to_confirmation(&input), expected);
+    }
+
+    /// Runs a transport entry point (`run` or `run_ws`) with a provider value
+    /// that cannot be read as a provider name. Both resolve the provider before
+    /// they serve anything, so they stop at "No provider configured" without
+    /// reading the person's configured provider, touching a credential store or
+    /// serving stdio. The override is task local and never reaches the
+    /// environment. The caller boxes the entry point because its future is too
+    /// large for a test thread's stack in a debug build, and the timeout makes
+    /// a test fail rather than hang if an entry point ever got as far as
+    /// serving.
+    async fn run_entry_point_without_a_provider(
+        entry_point: std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>>>>,
+    ) -> Result<()> {
+        let scoped = biorouter::config::with_config_overrides(
+            HashMap::from([("BIOROUTER_PROVIDER".to_string(), "42".to_string())]),
+            entry_point,
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(60), scoped)
+            .await
+            .expect("the transport entry point kept running instead of returning")
+    }
+
+    const DICTIONARY_TOOLS: [&str; 3] = [
+        "dictionary__add_terms",
+        "dictionary__list_terms",
+        "dictionary__remove_added_terms",
+    ];
+
+    fn dictionary_tool_names(tools: Vec<rmcp::model::Tool>) -> std::collections::BTreeSet<String> {
+        tools
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .filter(|name| name.starts_with("dictionary__"))
+            .collect()
+    }
+
+    /// An ACP agent with the Dictionary capability loaded through the same
+    /// `--with-builtin` path `run` and `run_ws` use, on a provider that is
+    /// never called.
+    async fn acp_agent_with_the_dictionary_loaded(dir: &std::path::Path) -> BioRouterAcpAgent {
+        use biorouter::providers::api_client::{ApiClient, AuthMethod};
+        let api_client = ApiClient::new(
+            "http://127.0.0.1:1".to_string(),
+            AuthMethod::BearerToken("test-key".to_string()),
+        )
+        .unwrap();
+        let provider = Arc::new(biorouter::providers::openai::OpenAiProvider::new(
+            api_client,
+            biorouter::model::ModelConfig::new("gpt-5-nano").unwrap(),
+        ));
+        BioRouterAcpAgent::with_config(BioRouterAcpConfig {
+            provider,
+            builtins: vec!["dictionary".to_string()],
+            work_dir: dir.to_path_buf(),
+            data_dir: dir.to_path_buf(),
+            config_dir: dir.to_path_buf(),
+            biorouter_mode: biorouter::config::BioRouterMode::Auto,
+            extensions: Vec::new(),
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn open_acp_session(agent: &BioRouterAcpAgent, dir: &std::path::Path) -> String {
+        agent
+            .on_new_session(NewSessionRequest::new(dir))
+            .await
+            .expect("the ACP new session handler opens a chat")
+            .session_id
+            .0
+            .to_string()
+    }
+
+    /// PR-23: `run_ws` refuses `--with-builtin dictionary` by its normalised
+    /// name, also when other builtins come with it, before it builds an agent.
+    /// The last case is the control: without the Dictionary the same call
+    /// passes the check and stops later, at provider resolution, so the
+    /// refusal is about that one name.
+    #[tokio::test]
+    async fn acp_websocket_refuses_the_dictionary_builtin_by_name() {
+        for name in ["dictionary", "Dictionary", " dictionary "] {
+            let err = run_entry_point_without_a_provider(Box::pin(run_ws(
+                vec!["developer".to_string(), name.to_string()],
+                "127.0.0.1:0".to_string(),
+            )))
+            .await
+            .expect_err("run_ws must refuse the Dictionary builtin");
+            assert_eq!(
+                err.to_string(),
+                "The Dictionary capability is unavailable over ACP WebSocket.",
+                "builtin {name:?}"
+            );
+        }
+
+        let err = run_entry_point_without_a_provider(Box::pin(run_ws(
+            vec!["developer".to_string()],
+            "127.0.0.1:0".to_string(),
+        )))
+        .await
+        .expect_err("the unreadable provider stops run_ws before it serves");
+        assert!(
+            err.to_string().starts_with("No provider configured"),
+            "a builtin list without the Dictionary was refused for another reason: {err}"
+        );
+    }
+
+    /// PR-23: a `--ws` agent (`deny_stdio_mcp`) has dictionary learning turned
+    /// off, so even with the Dictionary extension loaded the model's roster in
+    /// an ACP chat has no `dictionary__` tool. The same agent without
+    /// `deny_stdio_mcp`, as stdio builds it, advertises all three, which shows
+    /// the WebSocket setup is what removes them.
+    #[tokio::test]
+    async fn an_acp_websocket_agent_offers_the_model_no_dictionary_tool() {
+        let expected: std::collections::BTreeSet<String> = DICTIONARY_TOOLS
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+
+        let stdio_dir = tempfile::tempdir().unwrap();
+        let stdio = acp_agent_with_the_dictionary_loaded(stdio_dir.path()).await;
+        let stdio_session = open_acp_session(&stdio, stdio_dir.path()).await;
+        assert!(stdio.agent.dictionary_learning_enabled());
+        assert_eq!(
+            dictionary_tool_names(stdio.agent.list_tools(&stdio_session, None).await),
+            expected,
+            "control: an ACP stdio agent with the Dictionary loaded offers its tools"
+        );
+
+        let ws_dir = tempfile::tempdir().unwrap();
+        let ws = acp_agent_with_the_dictionary_loaded(ws_dir.path())
+            .await
+            .deny_stdio_mcp();
+        let ws_session = open_acp_session(&ws, ws_dir.path()).await;
+        assert!(!ws.agent.dictionary_learning_enabled());
+        assert_eq!(
+            dictionary_tool_names(
+                ws.agent
+                    .list_tools_for_permission_settings(&ws_session, None)
+                    .await
+            ),
+            expected,
+            "premise: the Dictionary extension is installed on the WebSocket agent"
+        );
+        let offered = dictionary_tool_names(ws.agent.list_tools(&ws_session, None).await);
+        assert!(
+            offered.is_empty(),
+            "an ACP WebSocket chat offered the model dictionary tools: {offered:?}"
+        );
+    }
+
+    /// PR-23: ACP stdio always suggests. `run` marks the process as the ACP
+    /// surface before anything else, and from then on the activation module
+    /// reports suggest only for the whole process. The provider override stops
+    /// `run` right after that setup, before it serves stdio.
+    #[tokio::test]
+    async fn acp_stdio_setup_forces_suggest_only_for_the_process() {
+        use biorouter::dictation::activation::{
+            process_surface, suggest_only_for_process, Surface,
+        };
+        assert!(
+            !suggest_only_for_process(),
+            "premise: nothing in this test binary forced suggest only before `run`"
+        );
+
+        let err = run_entry_point_without_a_provider(Box::pin(run(Vec::new())))
+            .await
+            .expect_err("the unreadable provider stops run before it serves stdio");
+        assert!(
+            err.to_string().starts_with("No provider configured"),
+            "run stopped somewhere other than provider resolution: {err}"
+        );
+
+        assert_eq!(process_surface(), Surface::Acp);
+        assert!(
+            suggest_only_for_process(),
+            "after the ACP stdio setup the process must be suggest only"
+        );
     }
 }
 

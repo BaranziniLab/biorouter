@@ -1310,6 +1310,66 @@ pub async fn delete_dictionary_entry(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DictionaryUndoAgentAddRequest {
+    pub expected_rev: u64,
+}
+
+fn undo_agent_add_in(
+    file: &mut StoreFile,
+    id: &EntryId,
+    expected_rev: u64,
+) -> Result<(), StoreError> {
+    let row = file.find(id).ok_or(StoreError::NotFound)?;
+    if row.rev != expected_rev
+        || row.source != EntrySource::Agent
+        || row.status != EntryStatus::Active
+        || row.reviewed
+    {
+        return Err(StoreError::Stale {
+            current_rev: row.rev,
+        });
+    }
+    file.remove(id, store::schema::now()).map(|_| ())
+}
+
+#[utoipa::path(
+    post,
+    path = "/dictionary/entries/{id}/undo-agent-add",
+    params(("id" = String, Path, description = "The agent row's id")),
+    request_body = DictionaryUndoAgentAddRequest,
+    responses(
+        (status = 204, description = "Removed the unchanged active, unreviewed agent row"),
+        (status = 403, description = "The caller is not authorized to remove the row", body = DictionaryErrorBody),
+        (status = 412, description = "The row changed and was preserved", body = DictionaryErrorBody),
+        (status = 404, description = "Missing or hidden row", body = DictionaryErrorBody),
+        (status = 500, description = "The dictionary could not be written", body = DictionaryErrorBody),
+        (status = 503, description = "The dictionary could not be read", body = DictionaryErrorBody),
+    )
+)]
+pub async fn undo_agent_dictionary_add(
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Answer<StatusCode> {
+    let caller = session_reach::http_caller(&headers).await;
+    let request: DictionaryUndoAgentAddRequest = json_body(body, MAX_JSON_BYTES)?;
+    let id = parse_id(&id)?;
+    let view = on_store(|store| store.view()).await?;
+    let tier = listed_tier(&view, &id, &caller)?;
+    caller.authorizes_dictionary_write(&DictionaryWrite::Entries { private: false }, Some(tier))?;
+    on_store(move |store| {
+        store.write(|file| {
+            still_listed(file, &id, &caller, None)?;
+            undo_agent_add_in(file, &id, request.expected_rev)
+        })
+    })
+    .await?;
+    warm_after_write();
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST /dictionary/entries/{id}/tier`.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct DictionaryTierRequest {
@@ -1966,6 +2026,7 @@ pub struct DictionaryAuthority {
 /// `dictionary` capability (PR-23).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DictionarySettings {
+    pub suggest_from_chats: bool,
     pub learn_from_chats: bool,
     pub agent_writes: DictionaryAgentWrites,
     pub authority: DictionaryAuthority,
@@ -2019,6 +2080,7 @@ async fn settings_answer(caller: &HttpCaller) -> Answer<DictionarySettings> {
     let view = on_store(|store| store.view()).await?;
     let settings = view.settings();
     Ok(DictionarySettings {
+        suggest_from_chats: biorouter::dictation::activation::suggest_from_chats(),
         learn_from_chats: settings.learn_from_chats,
         agent_writes: settings.agent_writes.into(),
         authority: authority_of(caller),
@@ -2117,6 +2179,50 @@ pub async fn change_dictionary_settings(
     Ok(Json(settings_answer(&caller).await?))
 }
 
+/// The person's activation choice, separate from the store settings (DD-56).
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DictionaryActivationRequest {
+    pub suggest_from_chats: bool,
+    #[serde(default)]
+    pub first_install: bool,
+}
+
+#[utoipa::path(
+    post,
+    path = "/dictionary/activation",
+    request_body = DictionaryActivationRequest,
+    responses(
+        (status = 200, description = "The settings after activation", body = DictionarySettings),
+        (status = 403, description = "Missing proof or host setting refusal", body = DictionaryErrorBody),
+        (status = 503, description = "The activation choice could not be saved", body = DictionaryErrorBody),
+    )
+)]
+pub async fn activate_dictionary(
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Answer<Json<DictionarySettings>> {
+    let caller = session_reach::http_caller(&headers).await;
+    let request: DictionaryActivationRequest = json_body(body, MAX_JSON_BYTES)?;
+    let raising = (request.suggest_from_chats
+        && !biorouter::dictation::activation::suggest_from_chats())
+    .then(|| "--suggest-from-chats on".to_string());
+    admit_settings(&caller, raising)?;
+    let activate = if request.first_install {
+        biorouter::dictation::activation::activate_first_install
+    } else {
+        biorouter::dictation::activation::activate
+    };
+    activate(request.suggest_from_chats).map_err(|error| {
+        DictionaryError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "activation",
+            error.to_string(),
+        )
+    })?;
+    Ok(Json(settings_answer(&caller).await?))
+}
+
 // ── the router ───────────────────────────────────────────────────────────────────────
 
 /// Every route that names an entry. ⚠ Ungated by construction: the gate is applied to
@@ -2124,6 +2230,10 @@ pub async fn change_dictionary_settings(
 /// gated (`route_layer` wraps only the routes present when it is called).
 fn entry_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route(
+            "/dictionary/entries/{id}/undo-agent-add",
+            post(undo_agent_dictionary_add),
+        )
         .route(
             "/dictionary/entries/{id}",
             patch(edit_dictionary_entry).delete(delete_dictionary_entry),
@@ -2168,6 +2278,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
             post(post_dictionary_observations).layer(DefaultBodyLimit::max(MAX_JSON_BYTES)),
         )
         .route(
+            "/dictionary/activation",
+            post(activate_dictionary).layer(DefaultBodyLimit::max(MAX_JSON_BYTES)),
+        )
+        .route(
             "/dictionary/settings",
             get(get_dictionary_settings)
                 .post(change_dictionary_settings)
@@ -2186,6 +2300,42 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_tool_row_undo_preserves_a_reviewed_or_revised_agent_entry() {
+        let at = store::schema::now();
+        let new_file = || {
+            let mut file = StoreFile::default();
+            let mut term = NewTerm::person("EPAS1", EntryTier::Public);
+            term.source = EntrySource::Agent;
+            term.status = EntryStatus::Active;
+            let AddOutcome::Created { id, .. } = file.add(term, Reach::Public, at).unwrap() else {
+                panic!("the fixture term must be created");
+            };
+            let rev = file.find(&id).unwrap().rev;
+            (file, id, rev)
+        };
+
+        let (mut kept, id, rev) = new_file();
+        kept.accept(&id, at).unwrap();
+        assert!(matches!(
+            undo_agent_add_in(&mut kept, &id, rev),
+            Err(StoreError::Stale { .. })
+        ));
+        assert!(kept.find(&id).unwrap().reviewed);
+
+        let (mut revised, id, rev) = new_file();
+        revised.entries[0].rev += 1;
+        assert!(matches!(
+            undo_agent_add_in(&mut revised, &id, rev),
+            Err(StoreError::Stale { .. })
+        ));
+        assert!(revised.find(&id).is_some());
+
+        let (mut current, id, rev) = new_file();
+        undo_agent_add_in(&mut current, &id, rev).unwrap();
+        assert!(current.find(&id).is_none());
+    }
 
     /// The sentences these routes speak, as `docs/dictation/surfaces.md` writes them.
     #[test]
@@ -2273,6 +2423,119 @@ mod tests {
         assert_eq!(
             raised_option(&high, Some(AgentWrites::Suggest), Some(false)),
             None
+        );
+    }
+
+    /// One request to `/dictionary/settings` through this module's router, carrying the
+    /// person's proof.
+    async fn settings_request(
+        state: &Arc<AppState>,
+        method: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        use crate::routes::session::diverge_tests::TEST_USER_ACTION_KEY;
+        use tower::ServiceExt;
+
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri("/dictionary/settings")
+            .header("X-User-Action", TEST_USER_ACTION_KEY)
+            .header("content-type", "application/json");
+        let body = body.map_or_else(axum::body::Body::empty, |json| {
+            axum::body::Body::from(json.to_string())
+        });
+        let response = routes(Arc::clone(state))
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// PR-23, DD-56: `GET /dictionary/settings` carries the person's activation choice as
+    /// `suggest_from_chats`, and `POST /dictionary/settings` takes only `learn_from_chats`
+    /// and `agent_writes`. The request does not refuse a field it does not know, so a body
+    /// that also names `suggest_from_chats` is accepted (200), and the activation stays as
+    /// it was, in the answer, in the configuration and in its version marker: only
+    /// `POST /dictionary/activation` changes it.
+    #[tokio::test]
+    async fn settings_report_suggest_from_chats_and_the_settings_post_cannot_change_it() {
+        use biorouter::config::Config;
+        use biorouter::dictation::activation::{suggest_from_chats, ACTIVATION_VERSION_KEY};
+
+        crate::routes::session::diverge_tests::install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+
+        // The request type names exactly the two store settings.
+        let fields = serde_json::to_value(DictionarySettingsRequest::default()).unwrap();
+        let fields: BTreeSet<&str> = fields
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(fields, BTreeSet::from(["agent_writes", "learn_from_chats"]));
+
+        let activation = suggest_from_chats();
+        let marker = || {
+            Config::global()
+                .get_param::<u8>(ACTIVATION_VERSION_KEY)
+                .ok()
+        };
+        let marker_before = marker();
+
+        let (status, settings) = settings_request(&state, "GET", None).await;
+        assert_eq!(status, StatusCode::OK, "{settings}");
+        assert_eq!(
+            settings["suggest_from_chats"],
+            serde_json::json!(activation)
+        );
+        let learn = settings["learn_from_chats"]
+            .as_bool()
+            .expect("the settings carry learn_from_chats");
+        let agent_writes = settings["agent_writes"].clone();
+        assert!(agent_writes.is_string(), "{settings}");
+
+        for body in [
+            serde_json::json!({ "suggest_from_chats": !activation }),
+            serde_json::json!({ "suggest_from_chats": !activation, "learn_from_chats": learn }),
+        ] {
+            let (status, answer) = settings_request(&state, "POST", Some(body.clone())).await;
+            assert_eq!(status, StatusCode::OK, "{body}: {answer}");
+            assert_eq!(
+                answer["suggest_from_chats"],
+                serde_json::json!(activation),
+                "{body} changed the activation in the answer"
+            );
+            assert_eq!(
+                suggest_from_chats(),
+                activation,
+                "{body} changed the activation"
+            );
+            assert_eq!(
+                marker(),
+                marker_before,
+                "{body} wrote the activation marker"
+            );
+            assert_eq!(
+                answer["learn_from_chats"],
+                serde_json::json!(learn),
+                "{body}"
+            );
+            assert_eq!(answer["agent_writes"], agent_writes, "{body}");
+        }
+
+        let (status, settings) = settings_request(&state, "GET", None).await;
+        assert_eq!(status, StatusCode::OK, "{settings}");
+        assert_eq!(
+            settings["suggest_from_chats"],
+            serde_json::json!(activation)
         );
     }
 

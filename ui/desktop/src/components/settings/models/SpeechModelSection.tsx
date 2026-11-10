@@ -3,6 +3,7 @@ import { isBrowserSurface } from '../../../utils/surface';
 import { AlertTriangle } from '../../icons/app-icons';
 import { ManagedPolicyNote } from '../../privacy/ManagedPolicyNote';
 import { Button } from '../../ui/button';
+import { Checkbox } from '../../ui/Checkbox';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { Note } from '../../ui/note';
 import { Progress } from '../../ui/progress';
@@ -12,7 +13,7 @@ import { Skeleton } from '../../ui/skeleton';
 import { Spinner } from '../../ui/spinner';
 import { StatusDot } from '../../ui/status-dot';
 import { startCapture, type Capture } from '../../dictation/capture';
-import { DICTATION_ACTIONS, dictationMessage } from '../../dictation/copy';
+import { DICTATION_ACTIONS, DICTATION_LABELS, dictationMessage } from '../../dictation/copy';
 import type { DictationStatus } from '../../dictation/dictationApi';
 import { isDictationRunning, subscribeDictationRunning } from '../../dictation/dictationSession';
 import {
@@ -33,6 +34,7 @@ import {
 } from '../../dictation/sharedOriginGate';
 import { DICTIONARY_LABELS, dictionaryMessage } from '../../dictionary/copy';
 import { openDictionaryPage } from '../../dictionary/navigation';
+import { useDictionaryActivationChoice } from '../../dictionary/activationChoice';
 import { SettingSelect } from '../SettingSelect';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
@@ -161,6 +163,7 @@ function disclosure(status: DictationStatus): string {
 
 function SpeechModelRows({ status }: { status: DictationStatus }) {
   const models = useSpeechModels();
+  const activation = useDictionaryActivationChoice(status);
   const rows = useMemo(() => speechModelRows(status, models), [status, models]);
   const [confirmInstall, setConfirmInstall] = useState<{
     model: SpeechModel;
@@ -169,14 +172,19 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
   const [confirmRemove, setConfirmRemove] = useState<SpeechModel | null>(null);
   const sectionRefusal = sectionInstallRefusal(status);
   const enabled = status.policy.enabled.allowed;
+  const firstChoicePending = !activation.ready && !hasUsableModel(status);
 
   const install = useCallback(
     (model: SpeechModel) => {
+      if (firstChoicePending) return;
       const question = installQuestion(model, models.measured);
       if (question) setConfirmInstall({ model, question });
-      else void installSpeechModel(model.id);
+      else {
+        activation.startInstall(model.id, !hasUsableModel(status));
+        void installSpeechModel(model.id);
+      }
     },
-    [models.measured]
+    [models.measured, status, activation, firstChoicePending]
   );
 
   return (
@@ -185,6 +193,39 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
         {disclosure(status)}
       </Note>
       <ManagedPolicyNote policy={status.policy} className="mb-2" />
+      {(!hasUsableModel(status) || activation.needsSave) &&
+      status.policy.dictionary.allowed !== false &&
+      activation.showChoice ? (
+        <label className="block text-label" data-testid="speech-suggest-from-chats">
+          <Checkbox
+            checked={activation.checked}
+            disabled={activation.disabled}
+            onChange={(event) => activation.setChecked(event.target.checked)}
+          />
+          {DICTATION_ACTIONS.suggestFromChats}
+          <span className="block text-supporting">{activation.help}</span>
+        </label>
+      ) : null}
+      {activation.needsSave && !activation.saving ? (
+        <Note tone="warning" testId="speech-activation-save-failed" className="mb-2">
+          {activation.activationFailed
+            ? DICTATION_LABELS.activationSaveFailed
+            : DICTATION_LABELS.activationChoicePending}
+          <Button
+            type="button"
+            size="sm"
+            variant="link"
+            onClick={() => void activation.retryActivation()}
+          >
+            {activation.activationFailed ? DICTATION_ACTIONS.retry : DICTATION_ACTIONS.saveChoice}
+          </Button>
+        </Note>
+      ) : null}
+      {activation.savedChoiceDiffered ? (
+        <Note tone="neutral" testId="speech-activation-existing-choice" className="mb-2">
+          {DICTATION_LABELS.activationSavedChoiceDiffered}
+        </Note>
+      ) : null}
       {sectionRefusal ? (
         <Note tone="warning" icon={AlertTriangle} testId="speech-install-refusal" className="mb-2">
           {sectionRefusal}
@@ -196,6 +237,7 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
           key={row.model.id}
           row={row}
           showInstall={!sectionRefusal}
+          blockInstall={firstChoicePending}
           onInstall={install}
           onRemove={setConfirmRemove}
         />
@@ -218,7 +260,10 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
         onConfirm={() => {
           const model = confirmInstall?.model;
           setConfirmInstall(null);
-          if (model) void installSpeechModel(model.id);
+          if (model && !firstChoicePending) {
+            activation.startInstall(model.id, !hasUsableModel(status));
+            void installSpeechModel(model.id);
+          }
         }}
         onCancel={() => setConfirmInstall(null)}
       />
@@ -268,11 +313,13 @@ function factsOf(row: SpeechModelRow): { facts: string; warning: string | null }
 function SpeechModelRowView({
   row,
   showInstall,
+  blockInstall,
   onInstall,
   onRemove,
 }: {
   row: SpeechModelRow;
   showInstall: boolean;
+  blockInstall: boolean;
   onInstall: (model: SpeechModel) => void;
   onRemove: (model: SpeechModel) => void;
 }) {
@@ -280,7 +327,8 @@ function SpeechModelRowView({
   const use = () => void selectSpeechModel(model.id, model.display_name);
   const items: RowActionItem[] = [];
   if (row.canUse) items.push({ label: copy.use, onSelect: use });
-  if (row.canUpdate) items.push({ label: copy.update, onSelect: () => onInstall(model) });
+  if (row.canUpdate && !blockInstall)
+    items.push({ label: copy.update, onSelect: () => onInstall(model) });
   if (row.canRemove) {
     if (items.length > 0) items.push({ kind: 'separator' });
     items.push({ label: copy.remove, destructive: true, onSelect: () => onRemove(model) });
@@ -350,7 +398,7 @@ function SpeechModelRowView({
         variant="secondary"
         // The name follows the visible word, so what a screen reader says contains what it shows.
         aria-label={`${copy.install} ${model.display_name}`}
-        disabled={!row.canInstall}
+        disabled={!row.canInstall || blockInstall}
         onClick={() => onInstall(model)}
       >
         {row.pending === 'install' ? <Spinner /> : null}
@@ -364,6 +412,7 @@ function SpeechModelRowView({
         size="sm"
         variant="secondary"
         aria-label={`${copy.update} ${model.display_name}`}
+        disabled={blockInstall}
         onClick={() => onInstall(model)}
       >
         {copy.update}

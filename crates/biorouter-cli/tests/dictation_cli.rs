@@ -19,6 +19,12 @@
 //! * `use` refuses an unknown id, an uninstalled model, and a `.en` model while the
 //!   language is not English (MSG-LANGUAGE-EN);
 //! * `list --format json` rates every catalog model;
+//! * (PR-23, DD-56) `install --suggest-from-chats` and `--no-suggest-from-chats` decide the
+//!   `dictionary` capability at the first verified install, which writes the activation
+//!   marker whatever they say, and `--yes` alone leaves it off; a later install neither
+//!   asks again nor changes the choice; without a terminal and in an agent's shell
+//!   nothing is asked, and at a pseudo terminal the question comes first unless a flag
+//!   answers it;
 //! * `biorouter transcribe` (PR-12): `jfk.wav` with the `for-tests` model exits 3 with
 //!   `{schema: 1, error_code: "no_speech", message}`, from a file and from standard input;
 //!   generated silence exits 3 before any worker is needed; both hold in an agent's shell
@@ -287,6 +293,407 @@ fn from_installs_a_renamed_file_by_hash_and_reports_the_rest() {
         "{}",
         stderr(&none)
     );
+}
+
+/// The question `install` asks a person at a terminal (PR-23, DD-56).
+const SUGGEST_QUESTION: &str = "Suggest dictionary words from your chats?";
+/// The start of MSG-IMPORT-CONFIRM, the question `install --from` asks next.
+const IMPORT_QUESTION: &str = "Install the speech model files in";
+const ACTIVATION_MARKER: &str = "dictation_dictionary_activation_version";
+
+/// What `biorouter dictionary settings` under `root` says of the `dictionary`
+/// capability: `on` or `off`.
+fn suggestions(root: &Path) -> String {
+    let output = Command::new(biorouter())
+        .args(["dictionary", "settings"])
+        .env("BIOROUTER_PATH_ROOT", root)
+        .env("HOME", root.join("home"))
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        .env_remove("BIOROUTER_TERMINAL")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run biorouter");
+    assert!(output.status.success(), "{}", stderr(&output));
+    stdout(&output)
+        .lines()
+        .find_map(|line| line.strip_prefix("suggest_from_chats: "))
+        .unwrap_or_else(|| panic!("no suggest_from_chats line: {}", stdout(&output)))
+        .to_string()
+}
+
+/// The activation marker in `root`'s configuration file, or `None` when nothing wrote it.
+fn activation_marker(root: &Path) -> Option<u64> {
+    let file = root.join("config").join("config.yaml");
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => panic!("{}: {e}", file.display()),
+    };
+    let values: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+    values
+        .get(ACTIVATION_MARKER)
+        .map(|value| value.as_u64().expect("the marker is a number"))
+}
+
+/// Installs the detector fixture under `root` with `install --yes <flags> --from`, after
+/// deleting any copy an earlier install placed, so each call is a verified install.
+fn install_detector_with(root: &Path, flags: &[&str]) -> Output {
+    let _ = std::fs::remove_dir_all(models_dir(root));
+    let carried = root.join("carried-for-suggest");
+    std::fs::create_dir_all(&carried).unwrap();
+    std::fs::copy(detector_fixture(), carried.join("detector.bin")).unwrap();
+    let mut args = vec!["install", "--yes"];
+    args.extend_from_slice(flags);
+    args.extend(["--from", carried.to_str().unwrap()]);
+    let output = run(root, &args, &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{args:?}: {}",
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).contains(&format!("Installed {VAD_ID}")),
+        "a verified install: {}",
+        stdout(&output)
+    );
+    assert!(
+        !stderr(&output).contains(SUGGEST_QUESTION),
+        "{}",
+        stderr(&output)
+    );
+    output
+}
+
+/// PR-23, DD-56: `--suggest-from-chats` and `--no-suggest-from-chats` answer the question
+/// `install` asks at a terminal, and that answer is what the first verified install hands
+/// to `activation.rs`. The marker is written whatever the answer; the `dictionary`
+/// capability is on only after `--suggest-from-chats`, and `--yes` without either flag
+/// leaves it off. The two flags cannot be given together.
+#[test]
+fn the_suggest_flags_decide_the_dictionary_capability_at_the_first_verified_install() {
+    if !can_install() {
+        return;
+    }
+    for (flags, expected) in [
+        (&["--suggest-from-chats"][..], "on"),
+        (&["--no-suggest-from-chats"][..], "off"),
+        (&[][..], "off"),
+    ] {
+        let root = sandbox();
+        assert_eq!(
+            suggestions(root.path()),
+            "off",
+            "a fresh configuration has it off"
+        );
+        assert_eq!(activation_marker(root.path()), None);
+        install_detector_with(root.path(), flags);
+        assert_eq!(activation_marker(root.path()), Some(1), "{flags:?}");
+        assert_eq!(suggestions(root.path()), expected, "{flags:?}");
+    }
+
+    let root = sandbox();
+    let both = run(
+        root.path(),
+        &[
+            "install",
+            "--yes",
+            "--suggest-from-chats",
+            "--no-suggest-from-chats",
+            "--from",
+            detector_fixture().to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert_eq!(both.status.code(), Some(2), "{}", stderr(&both));
+    assert!(
+        stderr(&both).contains("cannot be used with"),
+        "{}",
+        stderr(&both)
+    );
+    assert!(!models_dir(root.path()).exists());
+    assert_eq!(activation_marker(root.path()), None);
+}
+
+/// DD-56: the question is the first verified install's alone. Once the marker records a
+/// choice a later install changes nothing: `--yes` alone leaves on a capability the first
+/// install turned on, and `--suggest-from-chats` leaves off one the first install left
+/// off ("a later off sticks"). Only the person's own switch changes it then.
+#[test]
+fn a_later_install_keeps_the_choice_the_first_install_made() {
+    if !can_install() {
+        return;
+    }
+    let on_first = sandbox();
+    install_detector_with(on_first.path(), &["--suggest-from-chats"]);
+    assert_eq!(suggestions(on_first.path()), "on");
+    install_detector_with(on_first.path(), &[]);
+    assert_eq!(
+        suggestions(on_first.path()),
+        "on",
+        "a later `install --yes` turned the capability off"
+    );
+    install_detector_with(on_first.path(), &["--no-suggest-from-chats"]);
+    assert_eq!(
+        suggestions(on_first.path()),
+        "on",
+        "a later install answered a question it no longer asks"
+    );
+    assert_eq!(activation_marker(on_first.path()), Some(1));
+
+    let off_first = sandbox();
+    install_detector_with(off_first.path(), &["--no-suggest-from-chats"]);
+    assert_eq!(suggestions(off_first.path()), "off");
+    install_detector_with(off_first.path(), &["--suggest-from-chats"]);
+    assert_eq!(
+        suggestions(off_first.path()),
+        "off",
+        "a later install turned the capability on"
+    );
+    assert_eq!(activation_marker(off_first.path()), Some(1));
+}
+
+/// PR-23, DD-56: under a managed `dictionary_agent_writes: false` a first install cannot
+/// turn the capability on, as `dictionary settings --suggest-from-chats on` cannot and the
+/// desktop does not show its box. The model still installs, the explicit flag is answered
+/// with a warning, and the capability stays off.
+#[test]
+fn a_managed_rule_against_agent_writes_keeps_the_capability_off_at_install() {
+    if !can_install() {
+        return;
+    }
+    let root = sandbox();
+    write_managed(root.path(), "  dictionary_agent_writes: false\n");
+    let output = install_detector_with(root.path(), &["--suggest-from-chats"]);
+    assert_eq!(suggestions(root.path()), "off", "{}", stderr(&output));
+    assert_eq!(activation_marker(root.path()), Some(1));
+    assert!(
+        !stderr(&output).trim().is_empty(),
+        "the refused flag is answered with the policy's reason"
+    );
+}
+
+/// PR-23: without a terminal `install` asks nothing, with or without a suggest flag, and
+/// stops for want of `--yes` before anything is installed; in an agent's shell it refuses
+/// before any question even with `--yes`. Neither writes the marker or turns the
+/// `dictionary` capability on.
+#[test]
+fn install_asks_nothing_about_suggestions_without_a_terminal_or_in_an_agent_shell() {
+    let root = sandbox();
+    let from = detector_fixture();
+    let from = from.to_str().unwrap();
+    for flags in [&[][..], &["--suggest-from-chats"][..]] {
+        let mut args = vec!["install"];
+        args.extend_from_slice(flags);
+        args.extend(["--from", from]);
+        let output = run(root.path(), &args, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert!(
+            !stderr(&output).contains(SUGGEST_QUESTION),
+            "{}",
+            stderr(&output)
+        );
+        if can_install() {
+            assert_eq!(
+                stderr(&output).trim(),
+                format!("Installing a speech model needs your confirmation at a terminal. To install without one, run: biorouter dictation install --yes --from {from}")
+            );
+        }
+
+        let mut args = vec!["install", "--yes"];
+        args.extend_from_slice(flags);
+        args.extend(["--from", from]);
+        assert_refused(
+            &run(root.path(), &args, &[("BIOROUTER_TERMINAL", "1")]),
+            MSG_INSTALL_SHELL,
+        );
+    }
+    assert!(!models_dir(root.path()).exists(), "nothing was installed");
+    assert_eq!(activation_marker(root.path()), None);
+    assert_eq!(suggestions(root.path()), "off");
+}
+
+/// How a run at a pseudo terminal ended.
+#[cfg(unix)]
+struct AtATerminal {
+    /// It showed one of the questions it was watched for, and was ended there unanswered.
+    asked: bool,
+    /// Its exit code, when it ended by itself.
+    code: Option<i32>,
+    /// Everything it wrote.
+    shown: String,
+}
+
+/// Runs `biorouter dictation <args>` under `root` with standard input, output and error on
+/// a pseudo terminal, so `prompt_can_run()` is true, as for a person at a terminal. The
+/// run is ended, unanswered, as soon as the terminal shows one of `questions`.
+#[cfg(unix)]
+fn dictation_at_a_terminal(
+    root: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    questions: &[&str],
+) -> AtATerminal {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let (mut master, mut slave) = (-1, -1);
+    // A wide window, so no question is cut or wrapped to fit.
+    let mut size = libc::winsize {
+        ws_row: 50,
+        ws_col: 400,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: openpty writes two new descriptors into `master` and `slave` and reads the
+    // window size from `size`, which outlives the call; the name and the terminal
+    // settings are not asked for.
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+    // SAFETY: both descriptors are open and owned by nothing else.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    let mut command = Command::new(biorouter());
+    command
+        .arg("dictation")
+        .args(args)
+        .env("BIOROUTER_PATH_ROOT", root)
+        .env("HOME", root.join("home"))
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        .env_remove("BIOROUTER_TERMINAL")
+        .env_remove("BIOROUTER_DICTATION_MODELS_DIR")
+        .env_remove("BIOROUTER_DICTATION_MODEL_MIRROR")
+        .env_remove("BIOROUTER_DICTATION_WORKER")
+        .stdin(Stdio::from(slave.try_clone().expect("a second descriptor")))
+        .stdout(Stdio::from(slave.try_clone().expect("a third descriptor")))
+        .stderr(Stdio::from(slave));
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().expect("run biorouter");
+    // The command holds this process's copies of the terminal's other end; dropping it
+    // closes them, so the terminal ends when the child does.
+    drop(command);
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let reader = {
+        let written = Arc::clone(&written);
+        std::thread::spawn(move || {
+            let mut terminal = std::fs::File::from(master);
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = terminal.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                written.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        })
+    };
+    let shown = || String::from_utf8_lossy(&written.lock().unwrap()).into_owned();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let (asked, code) = loop {
+        if let Some(status) = child.try_wait().expect("poll biorouter") {
+            break (false, status.code());
+        }
+        if questions.iter().any(|question| shown().contains(question)) {
+            child.kill().expect("end biorouter at its question");
+            child.wait().expect("reap biorouter");
+            break (true, None);
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "biorouter neither ended nor asked within two minutes; it showed:\n{}",
+                shown()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // Wait a little for the drain, never for ever.
+    let drained = Instant::now() + Duration::from_secs(2);
+    while !reader.is_finished() && Instant::now() < drained {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    AtATerminal {
+        asked,
+        code,
+        shown: shown(),
+    }
+}
+
+/// PR-23 at a pseudo terminal: with no flag the install's first question is "Suggest
+/// dictionary words from your chats?"; `--suggest-from-chats` answers it, so the install's
+/// own confirmation comes first; in an agent's shell the install refuses before any
+/// question; and once a first install recorded the choice, a later install does not ask
+/// again (DD-56). Each run is ended at its first question, so it installs nothing.
+#[cfg(unix)]
+#[test]
+fn at_a_terminal_install_asks_about_suggestions_only_until_a_choice_is_recorded() {
+    if !can_install() {
+        return;
+    }
+    let root = sandbox();
+    let from = detector_fixture();
+    let from = from.to_str().unwrap();
+    let questions = [SUGGEST_QUESTION, IMPORT_QUESTION];
+
+    let plain = dictation_at_a_terminal(root.path(), &["install", "--from", from], &[], &questions);
+    assert!(plain.asked, "{}", plain.shown);
+    assert!(plain.shown.contains(SUGGEST_QUESTION), "{}", plain.shown);
+    assert!(!plain.shown.contains(IMPORT_QUESTION), "{}", plain.shown);
+
+    let flagged = dictation_at_a_terminal(
+        root.path(),
+        &["install", "--suggest-from-chats", "--from", from],
+        &[],
+        &questions,
+    );
+    assert!(flagged.asked, "{}", flagged.shown);
+    assert!(flagged.shown.contains(IMPORT_QUESTION), "{}", flagged.shown);
+    assert!(
+        !flagged.shown.contains(SUGGEST_QUESTION),
+        "{}",
+        flagged.shown
+    );
+
+    let agent = dictation_at_a_terminal(
+        root.path(),
+        &["install", "--from", from],
+        &[("BIOROUTER_TERMINAL", "1")],
+        &questions,
+    );
+    assert!(!agent.asked, "{}", agent.shown);
+    assert_eq!(agent.code, Some(2), "{}", agent.shown);
+    assert!(agent.shown.contains(MSG_INSTALL_SHELL), "{}", agent.shown);
+
+    assert!(!models_dir(root.path()).exists(), "nothing was installed");
+    assert_eq!(activation_marker(root.path()), None);
+
+    install_detector_with(root.path(), &["--no-suggest-from-chats"]);
+    std::fs::remove_dir_all(models_dir(root.path())).unwrap();
+    let later = dictation_at_a_terminal(root.path(), &["install", "--from", from], &[], &questions);
+    assert!(later.asked, "{}", later.shown);
+    assert!(later.shown.contains(IMPORT_QUESTION), "{}", later.shown);
+    assert!(
+        !later.shown.contains(SUGGEST_QUESTION),
+        "a later install asked again: {}",
+        later.shown
+    );
+    assert_eq!(suggestions(root.path()), "off");
 }
 
 /// A managed policy in the sandbox: owned by this account and not group writable, as

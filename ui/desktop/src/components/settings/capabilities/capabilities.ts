@@ -99,6 +99,12 @@ export const CAPABILITIES: CapabilityMeta[] = [
     defaultEnabled: true,
   },
   {
+    key: 'dictionary',
+    label: 'Dictionary',
+    description: 'Suggest words from chats and add the terms you ask for.',
+    defaultEnabled: false,
+  },
+  {
     key: 'chatrecall',
     label: 'Chat Recall',
     description: 'Search past chats and load their summaries for context.',

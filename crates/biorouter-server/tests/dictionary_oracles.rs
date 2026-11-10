@@ -782,7 +782,16 @@ async fn rule_10_no_response_counts_what_it_withholds() {
     let settings = raw(&app, "GET", "/dictionary/settings", Caller::Public, None).await;
     let value: Value = serde_json::from_slice(&settings.body).unwrap();
     let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["learn_from_chats", "agent_writes", "authority"]);
+    // PR-23 (DD-56) adds the activation choice, a switch and not a count.
+    assert_eq!(
+        keys,
+        [
+            "suggest_from_chats",
+            "learn_from_chats",
+            "agent_writes",
+            "authority"
+        ]
+    );
 }
 
 /// Rule 11: ranking for a public scope reads only the `public` usage map, so its prompt
