@@ -591,8 +591,8 @@ fn local_withheld_notice(withheld: usize) -> String {
          a chat running on a private (institutional or self-hosted) model, and {verb} deliberately \
          left out of this prompt. A prompt is assembled before a model is bound, so it cannot \
          know which model will read it. Their categories, tags and contents are all absent here; \
-         do not guess at them and do not tell the user this project has no note on a subject on \
-         the strength of what you can see. If the current chat is itself on a private model it \
+         do not guess at them, and never claim this project has no note on a subject on the \
+         strength of what you can see. If the current chat is itself on a private model it \
          can read them with retrieve_memories(category=\"*\", is_global=false); on a public model \
          that call returns the rest and says how many it withheld, and the user would have to \
          move the chat to a private model (Settings > Models, or the model chip in the composer) \
