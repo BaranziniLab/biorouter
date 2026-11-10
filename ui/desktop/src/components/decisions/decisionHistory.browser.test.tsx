@@ -30,16 +30,21 @@ const SHEETS = ['decisionsPanel.css', 'probabilityBar.css']
 const TOTAL = 2000;
 const PANEL = { width: 480, height: 760 };
 
+/**
+ * Each page sets `window.SCENARIO` before the bundle runs: how many calls, the panel's size,
+ * the summary the filters read, and the filter the view opens with.
+ */
 const ENTRY = `
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { client } from '../../api/client.gen';
 import DecisionHistory from './DecisionHistory';
 
-const TOTAL = ${TOTAL};
+const SCENARIO = window.SCENARIO || {};
+const TOTAL = SCENARIO.total ?? ${TOTAL};
 const row = (i) => ({
   id: 'd' + i, sessionId: 's1',
-  createdAt: new Date(Date.UTC(2026, 10, 4, 10, 0, 0) - i * 1000).toISOString(),
+  createdAt: new Date(Date.now() - i * 1000).toISOString(),
   origin: 'tool', originId: 'call-1', label: 'decide', turnId: 't1', batchId: 'b1',
   chunkIndex: i, chunkId: 'note-' + String(i + 1).padStart(4, '0'),
   model: { provider: 'ollama_decision', model: 'tev1:0.8b' }, servedModel: null,
@@ -61,7 +66,9 @@ client.setConfig({
   fetch: async (request) => {
     const url = new URL(request.url);
     window.REQUESTS.push(url.pathname + url.search);
-    if (url.pathname.endsWith('/decisions/summary')) return json({ total: TOTAL, aggregates: [], recentTurns: [] });
+    if (url.pathname.endsWith('/decisions/summary')) {
+      return json(SCENARIO.summary ?? { total: TOTAL, aggregates: [], recentTurns: [] });
+    }
     const detail = url.pathname.match(/\\/decisions\\/(d\\d+)$/);
     if (detail) return json({ record: row(Number(detail[1].slice(1))), context: { text: 'Full note ' + detail[1] } });
     const start = Number(url.searchParams.get('before') || 0);
@@ -74,9 +81,10 @@ client.setConfig({
 });
 
 function Page() {
+  const panel = SCENARIO.panel ?? { width: ${PANEL.width}, height: ${PANEL.height} };
   return (
-    <div style={{ position: 'relative', width: '${PANEL.width}px', height: '${PANEL.height}px' }}>
-      <DecisionHistory sessionId="s1" filter={{}} filterKey={1} />
+    <div data-testid="panel" style={{ position: 'relative', width: panel.width + 'px', height: panel.height + 'px' }}>
+      <DecisionHistory sessionId="s1" filter={SCENARIO.filter ?? {}} filterKey={1} />
     </div>
   );
 }
@@ -169,6 +177,195 @@ describe('the decision history list over 2,000 calls, in a real layout engine', 
     await settledWithin(launched.close(), TEARDOWN_STEP_MS);
   }, 30_000);
 
+  /** A page with the whole stylesheet, running the bundle under `scenario`. */
+  async function openPage(
+    scenario: Record<string, unknown>,
+    viewport = { width: 1000, height: 900 },
+    dark = false
+  ) {
+    const tab = await browser!.newPage({ viewport });
+    tab.setDefaultTimeout(10_000);
+    await tab.setContent(
+      `<!doctype html><html class="${dark ? 'dark' : ''}"><head><style>${css}</style></head>` +
+        `<body style="margin:0;background:var(--background-default)"><div id="root"></div>` +
+        `<script>window.SCENARIO = ${JSON.stringify(scenario)};</script></body></html>`
+    );
+    await tab.addScriptTag({ content: script });
+    await tab.waitForSelector('[data-testid="decision-row"]');
+    return tab;
+  }
+
+  const TURNS = {
+    total: 10,
+    aggregates: [],
+    recentTurns: [
+      {
+        turnId: 'turn-a',
+        origin: 'tool',
+        originId: 'call-1',
+        label: 'decide',
+        count: 6,
+        passed: 2,
+        failed: 4,
+        errors: 0,
+        firstAt: new Date().toISOString(),
+        lastAt: new Date().toISOString(),
+        lastPassProbability: 0.2,
+      },
+      {
+        turnId: 'turn-b',
+        origin: 'tool',
+        originId: 'call-1',
+        label: 'decide',
+        count: 4,
+        passed: 1,
+        failed: 3,
+        errors: 0,
+        firstAt: new Date(Date.now() - 60_000).toISOString(),
+        lastAt: new Date(Date.now() - 60_000).toISOString(),
+        lastPassProbability: 0.2,
+      },
+    ],
+  };
+
+  it('hugs ten calls in a narrow panel: no empty band above the detail (A-5)', async () => {
+    if (!browser) return;
+    const tab = await openPage(
+      { total: 10, panel: { width: 600, height: 1200 } },
+      { width: 1000, height: 1400 }
+    );
+    await tab.waitForSelector('[data-testid="decision-detail"]');
+    const box = await tab.evaluate(() => {
+      const pane = document
+        .querySelector<HTMLElement>('.br-dh__list-pane')!
+        .getBoundingClientRect();
+      const detail = document.querySelector<HTMLElement>('.br-dh__detail')!.getBoundingClientRect();
+      return { height: pane.height, gap: detail.top - pane.bottom };
+    });
+    await tab.close();
+    expect(box.height).toBe(440);
+    expect(box.gap).toBeGreaterThanOrEqual(0);
+    expect(box.gap).toBeLessThanOrEqual(8);
+  }, 60_000);
+
+  it('keeps the Filters popover open while a turn is picked in its nested menu, and Escape closes one layer at a time', async () => {
+    if (!browser) return;
+    const tab = await openPage({ total: 10, summary: TURNS });
+    await tab.click('[data-testid="decision-filter-more"]');
+    await tab.waitForSelector('[data-testid="decision-filters-more"]');
+    await tab.click('[data-testid="decision-filter-turn"]');
+    await tab.click('[role="menuitemradio"]:nth-child(2)');
+    await tab.waitForFunction(() =>
+      (window as unknown as { REQUESTS: string[] }).REQUESTS.some((path) =>
+        path.includes('turnId=turn-a')
+      )
+    );
+    // The pick applied and the popover stayed open.
+    expect(await tab.isVisible('[data-testid="decision-filters-more"]')).toBe(true);
+    expect(await tab.textContent('[data-testid="decision-filter-more"]')).toContain(
+      'Filters: turn'
+    );
+
+    // Escape with the Turn menu open (by key) closes only the menu, back on the Turn chip.
+    await tab.focus('[data-testid="decision-filter-turn"]');
+    await tab.keyboard.press('Enter');
+    await tab.waitForSelector('[role="menu"]');
+    await tab.keyboard.press('Escape');
+    await tab.waitForSelector('[role="menu"]', { state: 'detached' });
+    const first = await tab.evaluate(() => ({
+      focus: document.activeElement?.getAttribute('data-testid'),
+      popover: !!document.querySelector('[data-testid="decision-filters-more"]'),
+    }));
+    expect(first).toEqual({ focus: 'decision-filter-turn', popover: true });
+    // A second Escape closes the popover, back on Filters.
+    await tab.keyboard.press('Escape');
+    await tab.waitForSelector('[data-testid="decision-filters-more"]', { state: 'detached' });
+    const second = await tab.evaluate(() => document.activeElement?.getAttribute('data-testid'));
+    await tab.close();
+    expect(second).toBe('decision-filter-more');
+  }, 60_000);
+
+  it('returns focus to the Turn chip when Escape closes a menu the pointer opened', async () => {
+    if (!browser) return;
+    const tab = await openPage({ total: 10, summary: TURNS });
+    await tab.click('[data-testid="decision-filter-more"]');
+    await tab.waitForSelector('[data-testid="decision-filters-more"]');
+    // Opened with the pointer: the trigger never takes focus (it opens on pointerdown). A pick
+    // first, so the second opening starts from wherever a pointer pick leaves focus.
+    await tab.click('[data-testid="decision-filter-turn"]');
+    await tab.click('[role="menuitemradio"]:nth-child(2)');
+    await tab.waitForSelector('[role="menu"]', { state: 'detached' });
+    await tab.click('[data-testid="decision-filter-turn"]');
+    await tab.waitForSelector('[role="menu"]');
+    await tab.hover('[role="menuitemradio"]:nth-child(1)');
+    await tab.keyboard.press('Escape');
+    await tab.waitForSelector('[role="menu"]', { state: 'detached' });
+    const state = await tab.evaluate(() => ({
+      focus: document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName,
+      popover: !!document.querySelector('[data-testid="decision-filters-more"]'),
+    }));
+    await tab.close();
+    expect(state).toEqual({ focus: 'decision-filter-turn', popover: true });
+  }, 60_000);
+
+  it('leaves focus alone when a pointer pick closes the Turn menu', async () => {
+    if (!browser) return;
+    const tab = await openPage({ total: 10, summary: TURNS });
+    await tab.click('[data-testid="decision-filter-more"]');
+    await tab.waitForSelector('[data-testid="decision-filters-more"]');
+    await tab.click('[data-testid="decision-filter-turn"]');
+    await tab.click('[role="menuitemradio"]:nth-child(2)');
+    await tab.waitForSelector('[role="menu"]', { state: 'detached' });
+    const focus = await tab.evaluate(
+      () => document.activeElement?.getAttribute('data-testid') ?? null
+    );
+    await tab.close();
+    // The shared pointer-pick rule: no focus ring is painted onto a chip the person only clicked.
+    expect(focus).not.toBe('decision-filter-turn');
+  }, 60_000);
+
+  it('in dark mode, rests the popover’s engaged chip and hovered field on the popover’s own strong step', async () => {
+    if (!browser) return;
+    const tab = await openPage(
+      { total: 10, summary: TURNS, filter: { origin: 'tool', turnId: 'turn-a' } },
+      { width: 1000, height: 900 },
+      true
+    );
+    await tab.click('[data-testid="decision-filter-more"]');
+    await tab.waitForSelector('[data-testid="decision-filters-more"]');
+    await tab.hover('[data-testid="decision-filter-min-p"]');
+    await tab.waitForTimeout(300);
+    const colours = await tab.evaluate(() => {
+      const probe = (host: Element) => {
+        const element = document.createElement('div');
+        element.style.background = 'var(--background-fill-strong)';
+        host.appendChild(element);
+        const value = getComputedStyle(element).backgroundColor;
+        element.remove();
+        return value;
+      };
+      const surface = document
+        .querySelector('[data-testid="decision-filters-more"]')!
+        .closest('.biorouter-popover-surface')!;
+      return {
+        popoverStep: probe(surface),
+        pageStep: probe(document.querySelector('[data-testid="decision-filters"]')!),
+        turnChip: getComputedStyle(document.querySelector('[data-testid="decision-filter-turn"]')!)
+          .backgroundColor,
+        sourceChip: getComputedStyle(
+          document.querySelector('[data-testid="decision-filter-source"]')!
+        ).backgroundColor,
+        field: getComputedStyle(document.querySelector('[data-testid="decision-filter-min-p"]')!)
+          .backgroundColor,
+      };
+    });
+    await tab.close();
+    expect(colours.popoverStep).not.toBe(colours.pageStep);
+    expect(colours.turnChip).toBe(colours.popoverStep);
+    expect(colours.sourceChip).toBe(colours.pageStep);
+    expect(colours.field).toBe(colours.popoverStep);
+  }, 60_000);
+
   it('scrolls to the 2,000th call a page at a time, drawing a bounded window of 44px rows', async () => {
     if (!browser) return;
     const tab = await browser.newPage({ viewport: { width: 1000, height: 900 } });
@@ -183,13 +380,21 @@ describe('the decision history list over 2,000 calls, in a real layout engine', 
     // A picture for a person reviewing the layout: `DECISIONS_SCREENSHOT_DIR=/tmp/x`.
     const shots = process.env.DECISIONS_SCREENSHOT_DIR;
     if (shots) {
+      await tab.click('[data-testid="decision-detail"] .biorouter-disclosure-trigger');
       await tab.waitForSelector(
-        '[data-testid="decision-context"] .br-dh-context__text:not([data-preview])'
+        '[data-testid="decision-context"] .br-dh-context__prose:not([data-preview])'
       );
       await tab.screenshot({
         path: `${shots}/decision-history.png`,
         clip: { x: 0, y: 0, ...PANEL },
       });
+      await tab.click('[data-testid="decision-filter-more"]');
+      await tab.waitForSelector('[data-testid="decision-filters-more"]');
+      await tab.screenshot({
+        path: `${shots}/decision-history-filters.png`,
+        clip: { x: 0, y: 0, ...PANEL },
+      });
+      await tab.keyboard.press('Escape');
     }
 
     const first = await tab.evaluate(() => {

@@ -102,17 +102,25 @@ describe('decision models in the transcript', () => {
   it('draws a turn’s decision calls as one marker line in place of the notice', () => {
     const { container } = show([userMessage, turnMarker]);
     const marker = screen.getByTestId('decision-turn-marker');
-    expect(marker).toHaveTextContent(
-      'Decision models: monitor Form reached 1,800 checks, last P 0.31'
-    );
+    expect(marker).toHaveTextContent('Monitor checked 1,800 times, quiet');
+    expect(marker).not.toHaveTextContent('Decision models');
     expect(screen.queryByText('Monitors checked 1800 times this turn')).toBeNull();
     // Two messages, two rows: 1,800 calls added one line, not 1,800.
     expect(container.querySelectorAll('[data-testid="message-container"]')).toHaveLength(2);
   });
 
-  it('hands the marker’s history link to the chat’s artifact panel', () => {
+  it('hands the marker’s history links to the chat’s artifact panel', () => {
     const { onOpenArtifact } = show([userMessage, turnMarker]);
-    fireEvent.click(screen.getByRole('button', { name: /Decision models/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Monitor checked 1,800 times, quiet' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open Form reached in the decision history' })
+    );
+    expect(onOpenArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'decisions',
+        filter: { turnId: 'turn-7', origin: 'monitor', originId: 'form' },
+      })
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Open this turn in the decision history' }));
     expect(onOpenArtifact).toHaveBeenCalledWith(
       expect.objectContaining({

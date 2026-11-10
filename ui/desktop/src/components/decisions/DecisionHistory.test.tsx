@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   parseDecisionDetail,
@@ -8,12 +9,15 @@ import {
 } from '../../utils/sessionDecisions';
 import { PreviewBar, PreviewBarScope } from '../artifacts/PreviewBar';
 import DecisionHistory, {
+  DECISION_HISTORY_COPY,
   DECISION_PAGE_SIZE,
   DECISION_ROW_HEIGHT,
   FOLLOW_INTERVAL_MS,
-  recordProbability,
+  filtersSetNouns,
+  rowProbability,
   visibleRange,
 } from './DecisionHistory';
+import { CALIBRATION_COPY } from './decisionWords';
 
 const mocks = vi.hoisted(() => ({ page: vi.fn(), detail: vi.fn(), summary: vi.fn() }));
 vi.mock('../../utils/sessionDecisions', async (original) => ({
@@ -113,6 +117,118 @@ beforeEach(() => {
   );
 });
 
+/** A monitor's call: one yes or no question, fired when P(yes) reaches 0.5. */
+function monitorWire(id: string, p: number, overrides: Record<string, unknown> = {}) {
+  const fired = p >= 0.5;
+  return {
+    ...wire(0),
+    id,
+    origin: 'monitor',
+    originId: 'no-haiku',
+    label: 'No haiku',
+    batchId: null,
+    chunkIndex: null,
+    chunkId: null,
+    questions: {
+      no_haiku: {
+        instructions: 'Has the agent written a haiku?',
+        kind: { binary: {} },
+        threshold: { yes: 0.5 },
+      },
+    },
+    decisions: [
+      {
+        ...wire(0).decisions[0],
+        question: 'no_haiku',
+        answer: { type: 'binary', value: fired },
+        probabilities: { yes: p, no: 1 - p },
+        passed: fired,
+        passProbability: p,
+      },
+    ],
+    outcome: fired ? 'passed' : 'failed',
+    ...overrides,
+  };
+}
+
+/** One call that asked two monitors at once: the daemon joins their names with ` + `. */
+function severalMonitorsWire() {
+  const base = monitorWire('m2', 0.9);
+  return {
+    ...base,
+    originId: 'shell-seen',
+    label: 'Shell seen + Needs a rest',
+    questions: {
+      shell_seen: {
+        instructions: 'Has the agent run a shell command?',
+        kind: { binary: {} },
+        threshold: { yes: 0.5 },
+      },
+      needs_rest: {
+        instructions: 'Is the agent repeating itself?',
+        kind: { binary: {} },
+        threshold: { yes: 0.5 },
+      },
+    },
+    decisions: [
+      { ...base.decisions[0], question: 'shell_seen', passed: true, passProbability: 0.9 },
+      {
+        ...base.decisions[0],
+        question: 'needs_rest',
+        answer: { type: 'binary', value: false },
+        probabilities: { yes: 0.1, no: 0.9 },
+        passed: false,
+        passProbability: 0.1,
+      },
+    ],
+    outcome: 'passed',
+  };
+}
+
+function gateWire(id: string, p: number) {
+  const base = monitorWire(id, p);
+  return {
+    ...base,
+    origin: 'gate',
+    originId: 'probe',
+    label: 'Probe write test',
+    questions: {
+      mars: {
+        instructions: 'Did the subagent report launching a rocket to Mars?',
+        kind: { binary: {} },
+        threshold: { yes: 0.9 },
+      },
+    },
+    decisions: [{ ...base.decisions[0], question: 'mars', passed: p >= 0.9 }],
+    outcome: p >= 0.9 ? 'passed' : 'failed',
+  };
+}
+
+/** The list answers `rows` as one page, and each detail by its record. */
+function serve(rows: Array<Record<string, unknown>>) {
+  mocks.page.mockImplementation(async () => ({
+    records: rows.map((row) => parseDecisionRecord(row)!),
+    nextCursor: null,
+    total: rows.length,
+  }));
+  mocks.detail.mockImplementation(async (_s: string, id: string) => {
+    const row = rows.find((entry) => entry.id === id);
+    return row ? parseDecisionDetail({ record: row, context: { text: `Context of ${id}` } }) : null;
+  });
+}
+
+function rowOf(id: string) {
+  return screen
+    .getAllByTestId('decision-row')
+    .find((row) => row.getAttribute('data-decision-id') === id)!;
+}
+
+async function openDetails() {
+  const detail = await screen.findByTestId('decision-detail');
+  fireEvent.click(within(detail).getByRole('button', { name: DECISION_HISTORY_COPY.details }));
+  return screen.findByTestId('decision-details');
+}
+
 describe('the window over the list', () => {
   it('draws only the rows in view, plus a margin', () => {
     expect(visibleRange(0, 440, 5000)).toEqual({ start: 0, end: 18 });
@@ -120,10 +236,95 @@ describe('the window over the list', () => {
     expect(visibleRange(44 * 4999, 440, 5000).end).toBe(5000);
     expect(visibleRange(0, 440, 0)).toEqual({ start: 0, end: 0 });
   });
+});
 
-  it('reads a row’s bar as its lowest pass probability', () => {
-    const record = parseDecisionRecord(wire(3))!;
-    expect(recordProbability(record)).toBe(0.95);
+describe('the probability a row names (R2)', () => {
+  it('is the watched outcome for a monitor or a gate, named by its threshold', () => {
+    expect(rowProbability(parseDecisionRecord(monitorWire('m', 0.01))!)).toEqual({
+      p: 0.01,
+      text: 'P(yes) 0.01',
+    });
+    expect(rowProbability(parseDecisionRecord(gateWire('g', 0.12))!)).toEqual({
+      p: 0.12,
+      text: 'P(yes) 0.12',
+    });
+  });
+
+  it('is the answer’s own for a decide call: P(no) beside a no, never P(yes)', () => {
+    // wire(1) answers no with P(no) 0.80 (P(yes) 0.20), outcome failed.
+    expect(rowProbability(parseDecisionRecord(wire(1))!)).toEqual({ p: 0.8, text: 'P(no) 0.80' });
+    expect(rowProbability(parseDecisionRecord(wire(0))!)).toEqual({
+      p: 0.95,
+      text: 'P(yes) 0.95',
+    });
+  });
+
+  it('is nothing for a call that asked several questions', () => {
+    expect(rowProbability(parseDecisionRecord(severalMonitorsWire())!)).toBeNull();
+  });
+});
+
+describe('the rows (R1)', () => {
+  it('says Fired or Quiet for a monitor, by shape too, and never Failed or a cross', async () => {
+    serve([monitorWire('m1', 0.98), monitorWire('m0', 0.01)]);
+    draw();
+    await screen.findAllByTestId('decision-row');
+    const fired = rowOf('m1');
+    const quiet = rowOf('m0');
+    expect(within(fired).getByTestId('decision-row-verdict')).toHaveTextContent('Fired');
+    expect(fired.querySelector('[data-glyph]')).toHaveAttribute('data-glyph', 'monitorFired');
+    expect(within(quiet).getByTestId('decision-row-verdict')).toHaveTextContent('Quiet');
+    expect(quiet.querySelector('[data-glyph]')).toHaveAttribute('data-glyph', 'monitorQuiet');
+    expect(quiet).toHaveAttribute(
+      'aria-label',
+      expect.stringMatching(/^Quiet, No haiku, P\(yes\) 0\.01, /)
+    );
+    expect(quiet).toHaveTextContent('P(yes) 0.01');
+    for (const row of [fired, quiet]) expect(row).not.toHaveTextContent('Failed');
+    // The model and the latency left the rows (they are under Details).
+    expect(quiet).not.toHaveTextContent('tev1');
+    expect(quiet).not.toHaveTextContent('22 ms');
+  });
+
+  it('titles a call that asked several monitors "2 monitors", the names on line 2, never with +', async () => {
+    serve([severalMonitorsWire()]);
+    draw();
+    const row = await screen.findByTestId('decision-row');
+    expect(row).toHaveTextContent('2 monitors');
+    expect(row).toHaveTextContent('Shell seen, Needs a rest');
+    expect(row).not.toHaveTextContent('+');
+    expect(within(row).getByTestId('decision-row-verdict')).toHaveTextContent('1 of 2 fired');
+    // Several questions: no bar and no number.
+    expect(row.querySelector('.br-pbar')).toBeNull();
+    expect(row).toHaveAttribute(
+      'aria-label',
+      expect.stringMatching(/^1 of 2 fired, 2 monitors: Shell seen, Needs a rest, /)
+    );
+  });
+
+  it('says Passed or Not passed for a gate', async () => {
+    serve([gateWire('g1', 0.95), gateWire('g0', 0.03)]);
+    draw();
+    await screen.findAllByTestId('decision-row');
+    expect(within(rowOf('g1')).getByTestId('decision-row-verdict')).toHaveTextContent('Passed');
+    expect(within(rowOf('g0')).getByTestId('decision-row-verdict')).toHaveTextContent('Not passed');
+    expect(rowOf('g0').querySelector('[data-glyph]')).toHaveAttribute(
+      'data-glyph',
+      'gateNotPassed'
+    );
+    expect(rowOf('g0')).toHaveTextContent('Probe write test');
+  });
+
+  it('shows a decide call’s answer, not a verdict: a no that missed its threshold is "No"', async () => {
+    serve([wire(1)]);
+    draw();
+    const row = await screen.findByTestId('decision-row');
+    expect(within(row).getByTestId('decision-row-verdict')).toHaveTextContent(/^No$/);
+    expect(row.querySelector('[data-glyph]')).toHaveAttribute('data-glyph', 'answer');
+    expect(row).toHaveTextContent('note-0002');
+    expect(row).toHaveTextContent('P(no) 0.80');
+    expect(row).not.toHaveTextContent('Failed');
+    expect(row).not.toHaveTextContent('P(yes)');
   });
 });
 
@@ -170,20 +371,51 @@ describe('DecisionHistory', () => {
     expect(within(list).getAllByTestId('decision-row').length).toBeLessThan(40);
   });
 
-  it('shows the selected call in full: its exact context, options with bars, threshold and calibration', async () => {
+  it('shows the question in plain words, the answer with its own probability and the threshold up front', async () => {
     draw();
     const detail = await screen.findByTestId('decision-detail');
     expect(detail).toHaveAttribute('data-decision-id', 'd0');
-    await waitFor(() =>
-      expect(screen.getByTestId('decision-context')).toHaveTextContent(
-        'Full note d0: 34F, RRMS dx 2019, EDSS 2.0'
-      )
-    );
-    expect(mocks.detail).toHaveBeenCalledWith('s1', 'd0', expect.any(AbortSignal));
+    // The title once, and a muted line with the kind and the time, never the title again.
+    expect(within(detail).getAllByText('note-0001')).toHaveLength(1);
+    expect(within(detail).getByTestId('decision-detail-sub')).toHaveTextContent(/^Decide call · /);
     const question = within(detail).getByTestId('decision-question');
-    expect(question).toHaveTextContent('Threshold P(yes) ≥ 0.90');
-    expect(question).toHaveTextContent('Passed');
-    const options = within(question).getAllByTestId('decision-option');
+    expect(within(question).getByTestId('decision-question-text')).toHaveTextContent(
+      'Does this note state the patient has multiple sclerosis?'
+    );
+    expect(within(question).getByTestId('decision-question-answer')).toHaveTextContent(
+      'Yes · P(yes) 0.95'
+    );
+    expect(within(question).getByTestId('decision-question-threshold')).toHaveTextContent(
+      'P(yes) 0.95 · threshold 0.90'
+    );
+    // Never the question's name, never mono, never the old Passed/Failed chip or "≥".
+    expect(detail).not.toHaveTextContent('has_ms');
+    expect(detail.querySelector('.br-dh-question__name')).toBeNull();
+    expect(detail.querySelector('.br-dh-chip')).toBeNull();
+    expect(detail).not.toHaveTextContent('≥');
+    // An answer-type call shows no verdict on its head line: the answer is item 4.
+    expect(within(detail).queryByTestId('decision-detail-verdict')).toBeNull();
+  });
+
+  it('keeps the bars, model, tier, latency, tokens, certainty, chunk and context under Details', async () => {
+    draw();
+    const detail = await screen.findByTestId('decision-detail');
+    for (const hidden of [
+      'tev1',
+      'Model tier',
+      '22 ms',
+      '400 in · 1 out',
+      'Certainty',
+      'not validated on your data',
+      'Chunk 1',
+    ]) {
+      expect(detail).not.toHaveTextContent(hidden);
+    }
+    expect(within(detail).queryAllByTestId('decision-option')).toHaveLength(0);
+    expect(screen.queryByTestId('decision-context')).toBeNull();
+
+    const details = await openDetails();
+    const options = within(details).getAllByTestId('decision-option');
     expect(options.map((option) => option.textContent)).toEqual([
       'YesYes: 0.95, threshold 0.90',
       'NoNo: 0.05',
@@ -191,20 +423,49 @@ describe('DecisionHistory', () => {
     // The threshold is marked on the yes bar only.
     expect(options[0].querySelector<HTMLElement>('.br-pbar__mark')?.style.left).toBe('90%');
     expect(options[1].querySelector('.br-pbar__mark')).toBeNull();
-    expect(question).toHaveTextContent('not validated on your data');
-    expect(detail).toHaveTextContent('tev1:0.8b (ollama_decision)');
+    // R3: the alias and where it runs, never the provider key.
+    expect(details).toHaveTextContent('tev1:0.8b · this computer');
+    expect(details).not.toHaveTextContent('ollama_decision');
     // The fact is the decision MODEL's tier: a public chat that used a local
-    // model reads "Model tier: Private", never a bare "Tier: Private" a reader
-    // could take for the chat's.
-    const tier = within(detail).getByText('Model tier');
+    // model reads "Model tier: Private", never a bare "Tier: Private".
+    const tier = within(details).getByText('Model tier');
     expect(tier.tagName).toBe('DT');
     expect(tier.nextElementSibling).toHaveTextContent('Private');
-    expect(within(detail).queryByText('Tier')).toBeNull();
-    expect(detail).toHaveTextContent('22 ms');
-    expect(detail).toHaveTextContent('400 in · 1 out');
+    expect(within(details).queryByText('Tier')).toBeNull();
+    expect(details).toHaveTextContent('22 ms');
+    expect(details).toHaveTextContent('400 in · 1 out');
+    const certainty = within(details).getByText('Certainty').closest('dt')!;
+    expect(certainty.nextElementSibling).toHaveTextContent(/^0\.60$/);
+    expect(within(certainty).getByRole('button', { name: 'About Certainty' })).toBeInTheDocument();
+    expect(details).not.toHaveTextContent('Concentration');
+    expect(details).toHaveTextContent("The decision model's own probabilities, not validated");
+    expect(details).toHaveTextContent('Chunk 1');
+    // Turn and batch ids are not facts any more (R6): only the raw JSON keeps them.
+    expect(within(details).queryByText('Batch')).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-context')).toHaveTextContent(
+        'Full note d0: 34F, RRMS dx 2019, EDSS 2.0'
+      )
+    );
+    // Prose is read in the sans face; only JSON is code.
+    expect(screen.getByTestId('decision-context').querySelector('.br-dh-context__text')).toBeNull();
+    expect(mocks.detail).toHaveBeenCalledWith('s1', 'd0', expect.any(AbortSignal));
   });
 
-  it('names a Baseten model by its alias in the rows and the detail, not by its slug', async () => {
+  it('shows the turn and batch ids only in the raw JSON', async () => {
+    serve([wire(0, { turnId: 'turn-7f3a9c', batchId: 'batch-1d2e3f' })]);
+    draw();
+    const detail = await screen.findByTestId('decision-detail');
+    const details = await openDetails();
+    expect(detail).not.toHaveTextContent('turn-7f3a9c');
+    expect(detail).not.toHaveTextContent('batch-1d2e3f');
+    await userEvent.click(within(details).getByRole('radio', { name: DECISION_HISTORY_COPY.raw }));
+    const raw = await screen.findByTestId('decision-raw');
+    expect(raw).toHaveTextContent('turn-7f3a9c');
+    expect(raw).toHaveTextContent('batch-1d2e3f');
+  });
+
+  it('names a Baseten model by its alias and place, never by its slug or key', async () => {
     const slug = 'decision-models/baseten-joey-2b-latest';
     const baseten = (index: number) => {
       const row = wire(index, {
@@ -214,48 +475,54 @@ describe('DecisionHistory', () => {
       });
       return { ...row, decisions: row.decisions.map((d) => ({ ...d, model: row.model })) };
     };
-    mocks.page.mockImplementation(async () => ({
-      records: [parseDecisionRecord(baseten(0))!],
-      nextCursor: null,
-      total: 1,
-    }));
-    mocks.detail.mockImplementation(async () =>
-      parseDecisionDetail({ record: baseten(0), context: { text: 'x' } })
-    );
+    serve([baseten(0)]);
     draw();
     const row = await screen.findByTestId('decision-row');
-    expect(row).toHaveTextContent('joey-1');
     expect(row).not.toHaveTextContent('baseten-joey-2b-latest');
-    const detail = await screen.findByTestId('decision-detail');
-    expect(detail).toHaveTextContent('joey-1 (baseten_decision)');
-    expect(detail).not.toHaveTextContent(slug);
+    const details = await openDetails();
+    expect(details).toHaveTextContent('joey-1 · Baseten');
+    expect(details).not.toHaveTextContent(slug);
+    expect(details).not.toHaveTextContent('baseten_decision');
+    expect(details).toHaveTextContent('Served byjoey-2b-0.3');
   });
 
-  it('says an uncalibrated call is uncalibrated, in words', async () => {
-    mocks.page.mockResolvedValue({
-      records: [
-        parseDecisionRecord(
-          wire(0, {
-            decisions: [
-              {
-                ...wire(0).decisions[0],
-                source: { kind: 'verbalized', reason: 'the backend returned no logprobs' },
-                calibrated: false,
-              },
-            ],
-          })
-        )!,
-      ],
-      nextCursor: null,
-      total: 1,
-    });
+  it('says an uncalibrated call is an estimate up front, with the exact sentence under Details', async () => {
+    serve([
+      wire(0, {
+        decisions: [
+          {
+            ...wire(0).decisions[0],
+            source: { kind: 'verbalized', reason: 'the backend returned no logprobs' },
+            calibrated: false,
+          },
+        ],
+      }),
+    ]);
     mocks.detail.mockResolvedValue(null);
     draw();
     const detail = await screen.findByTestId('decision-detail');
-    expect(detail).toHaveTextContent(
+    const estimate = within(detail).getByTestId('decision-estimate');
+    expect(estimate).toHaveTextContent(CALIBRATION_COPY.estimate);
+    expect(within(estimate).getByRole('button', { name: /About/ })).toBeInTheDocument();
+    expect(detail).not.toHaveTextContent('Uncalibrated: the model wrote this number itself');
+    const details = await openDetails();
+    expect(details).toHaveTextContent(
       'Uncalibrated: the model wrote this number itself (the backend returned no logprobs).'
     );
-    await waitFor(() => expect(detail).toHaveTextContent('This call is no longer in the log.'));
+    await waitFor(() => expect(details).toHaveTextContent('This call is no longer in the log.'));
+  });
+
+  it('keeps Details open and the What it saw / Raw JSON choice across rows', async () => {
+    draw();
+    const details = await openDetails();
+    await userEvent.click(within(details).getByRole('radio', { name: DECISION_HISTORY_COPY.raw }));
+    expect(await screen.findByTestId('decision-raw')).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByTestId('decision-list'), { key: 'ArrowDown' });
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-detail')).toHaveAttribute('data-decision-id', 'd1')
+    );
+    expect(screen.getByTestId('decision-details')).toBeInTheDocument();
+    expect(screen.getByTestId('decision-raw')).toBeInTheDocument();
   });
 
   it('moves the selection with the arrow keys and fetches that call', async () => {
@@ -299,6 +566,7 @@ describe('DecisionHistory', () => {
     await waitFor(() =>
       expect(mocks.detail).toHaveBeenCalledWith('s1', 'd0', expect.any(AbortSignal))
     );
+    await openDetails();
     const list = screen.getByTestId('decision-list');
     fireEvent.keyDown(list, { key: 'ArrowDown' });
     await waitFor(() =>
@@ -317,6 +585,7 @@ describe('DecisionHistory', () => {
     expect(mocks.page.mock.calls[0][1]).toMatchObject({ origin: 'tool', batchId: 'b1' });
     const chip = screen.getByTestId('decision-filter-batch');
     expect(chip).toHaveTextContent('This decide call only');
+    expect(chip).toHaveAccessibleName('Remove the filter: This decide call only');
     fireEvent.click(chip);
     await waitFor(() =>
       expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ origin: 'tool', batchId: null })
@@ -327,13 +596,15 @@ describe('DecisionHistory', () => {
     mocks.page.mockClear();
     draw({ origin: 'tool', batchId: 'b1' });
     await waitFor(() => expect(mocks.page).toHaveBeenCalled());
-    const source = within(screen.getByTestId('decision-filter-source')).getByRole('combobox');
-    fireEvent.keyDown(source, { key: 'ArrowDown' });
-    fireEvent.click(await screen.findByText('Any source'));
+    const source = screen.getByTestId('decision-filter-source');
+    expect(source).toHaveTextContent('Source: Decide calls');
+    await userEvent.click(source);
+    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Any source' }));
     await waitFor(() =>
       expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ origin: null, batchId: null })
     );
     expect(screen.queryByTestId('decision-filter-batch')).toBeNull();
+    expect(screen.getByTestId('decision-filter-source')).toHaveTextContent(/^Source$/);
   });
 
   it('opens with the filter it was given, and applies a new one from a later open', async () => {
@@ -359,7 +630,8 @@ describe('DecisionHistory', () => {
 
   /**
    * A decision card's link names its one call. The view asks for that call alone and for its
-   * detail at once, selects it, and lets it go as soon as the person sets a filter of their own.
+   * detail at once, selects it, says so in a chip, and lets it go as soon as the person sets a
+   * filter of their own.
    */
   it('opens on the one call a link names, selected, and lets it go once the person filters', async () => {
     mocks.page.mockImplementation(async (_s, filter: DecisionHistoryFilter, page) =>
@@ -376,9 +648,12 @@ describe('DecisionHistory', () => {
     expect(detail).toHaveAttribute('data-decision-id', 'd7');
     expect(mocks.page.mock.calls[0][1]).toMatchObject({ decisionId: 'd7', origin: 'tool' });
     expect(screen.getAllByTestId('decision-row')).toHaveLength(1);
+    expect(screen.getByTestId('decision-filter-call')).toHaveTextContent('This call only');
     expect(screen.getByTestId('decision-filter-clear')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('decision-filter-errors'));
+    // Outcome: Error or refused is the query "Errors only" used to be.
+    await userEvent.click(screen.getByTestId('decision-filter-outcome'));
+    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Error or refused' }));
     await waitFor(() =>
       expect(mocks.page.mock.lastCall?.[1]).toMatchObject({
         decisionId: null,
@@ -386,6 +661,18 @@ describe('DecisionHistory', () => {
         origin: 'tool',
         turnId: 't1',
       })
+    );
+    expect(screen.queryByTestId('decision-filter-call')).toBeNull();
+    expect(screen.getByTestId('decision-filter-outcome')).toHaveTextContent(
+      'Outcome: Error or refused'
+    );
+  });
+
+  it('lets the This call only chip go on its own', async () => {
+    draw({ decisionId: 'd7', origin: 'tool' });
+    fireEvent.click(await screen.findByTestId('decision-filter-call'));
+    await waitFor(() =>
+      expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ decisionId: null, origin: 'tool' })
     );
   });
 
@@ -405,8 +692,218 @@ describe('DecisionHistory', () => {
     mocks.page.mockRejectedValueOnce(new Error('offline'));
     draw();
     expect(await screen.findByText('Could not load decision calls.')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).toHaveClass('br-decision-link');
+    fireEvent.click(retry);
     await waitFor(() => expect(screen.getAllByTestId('decision-row').length).toBeGreaterThan(0));
+  });
+});
+
+describe('the filters (spec 1.2)', () => {
+  const summaryWith = (
+    aggregates: Array<Record<string, unknown>>,
+    recentTurns: Array<Record<string, unknown>> = []
+  ) =>
+    mocks.summary.mockResolvedValue({
+      data: { total: TOTAL, aggregates, recentTurns },
+      missing: false,
+    });
+
+  const aggregate = (origin: string, originId: string, label: string, count = 5) => ({
+    origin,
+    originId,
+    label,
+    count,
+    passed: 1,
+    failed: count - 1,
+    errors: 0,
+    lastAt: '2026-11-04T10:00:00Z',
+    lastAnswer: 'no',
+    lastPassProbability: 0.1,
+    model: null,
+  });
+
+  async function menuRows(testId: string) {
+    await userEvent.click(screen.getByTestId(testId));
+    const rows = screen.getAllByRole('menuitemradio').map((row) => row.textContent);
+    await userEvent.keyboard('{Escape}');
+    return rows;
+  }
+
+  it('offers only the sources this chat has, and only the outcome words its list shows', async () => {
+    summaryWith([
+      aggregate('monitor', 'no-haiku', 'No haiku'),
+      aggregate('gate', 'probe', 'Probe'),
+    ]);
+    const { unmount } = draw({ origin: 'monitor' });
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalled());
+    await waitFor(async () =>
+      expect(await menuRows('decision-filter-source')).toEqual([
+        'Any source',
+        'Monitors',
+        'Phase gates',
+      ])
+    );
+    expect(await menuRows('decision-filter-outcome')).toEqual([
+      'Any outcome',
+      'Fired',
+      'Quiet',
+      'Error or refused',
+    ]);
+    unmount();
+    draw({ origin: 'gate' });
+    expect(await menuRows('decision-filter-outcome')).toEqual([
+      'Any outcome',
+      'Passed',
+      'Not passed',
+      'Error or refused',
+    ]);
+  });
+
+  it('offers no threshold word to a decide call, and Error or refused to every source', async () => {
+    const { unmount } = draw({ origin: 'tool' });
+    expect(await menuRows('decision-filter-outcome')).toEqual(['Any outcome', 'Error or refused']);
+    unmount();
+    draw();
+    expect(await menuRows('decision-filter-outcome')).toEqual(['Any outcome', 'Error or refused']);
+  });
+
+  it('applies Fired as the wire’s passed, and resets Outcome for a source without that word', async () => {
+    summaryWith([
+      aggregate('monitor', 'no-haiku', 'No haiku'),
+      aggregate('tool', 'call-1', 'decide'),
+    ]);
+    draw({ origin: 'monitor' });
+    await userEvent.click(screen.getByTestId('decision-filter-outcome'));
+    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Fired' }));
+    await waitFor(() =>
+      expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ origin: 'monitor', outcome: 'passed' })
+    );
+    expect(screen.getByTestId('decision-filter-outcome')).toHaveTextContent('Outcome: Fired');
+    await userEvent.click(screen.getByTestId('decision-filter-source'));
+    await userEvent.click(screen.getByRole('menuitemradio', { name: 'Decide calls' }));
+    await waitFor(() =>
+      expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ origin: 'tool', outcome: null })
+    );
+    expect(screen.getByTestId('decision-filter-outcome')).toHaveTextContent(/^Outcome$/);
+  });
+
+  it('still says an outcome a link applied that the source lists no row for', async () => {
+    draw({ origin: 'tool', outcome: 'refused' });
+    expect(screen.getByTestId('decision-filter-outcome')).toHaveTextContent('Outcome: Refused');
+    expect(await menuRows('decision-filter-outcome')).toEqual([
+      'Any outcome',
+      'Error or refused',
+      'Refused',
+    ]);
+  });
+
+  it('names what the Filters chip holds, in field order', async () => {
+    expect(filtersSetNouns({ origin: 'monitor', originId: 'form', turnId: 't1' })).toEqual([
+      'monitor',
+      'turn',
+    ]);
+    expect(filtersSetNouns({ origin: 'tool', originId: 'call-1', minP: 0.2 })).toEqual([
+      'decide call',
+      'probability',
+    ]);
+    expect(filtersSetNouns({})).toEqual([]);
+    draw({ origin: 'monitor', originId: 'form', turnId: 't1' });
+    await screen.findAllByTestId('decision-row');
+    const chip = screen.getByTestId('decision-filter-more');
+    expect(chip).toHaveTextContent('Filters: monitor, turn');
+    expect(chip).toHaveAccessibleName('Filters, set: monitor, turn');
+    expect(chip).toHaveAttribute('data-engaged', 'true');
+  });
+
+  it('picks which monitor and which turn inside the Filters popover, by name and time, never by id', async () => {
+    summaryWith(
+      [
+        aggregate('monitor', 'no-haiku', 'No haiku', 5),
+        aggregate('monitor', 'shell', 'Done with shell', 3),
+      ],
+      [
+        {
+          turnId: 'turn-9f8e7d',
+          origin: 'monitor',
+          originId: 'no-haiku',
+          label: 'No haiku',
+          count: 10,
+          passed: 0,
+          failed: 10,
+          errors: 0,
+          firstAt: '2026-11-04T10:00:00Z',
+          lastAt: '2026-11-04T10:01:00Z',
+          lastPassProbability: 0.1,
+        },
+      ]
+    );
+    draw({ origin: 'monitor' });
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalled());
+    await userEvent.click(screen.getByTestId('decision-filter-more'));
+    const popover = await screen.findByTestId('decision-filters-more');
+    await waitFor(() =>
+      expect(within(popover).getByTestId('decision-filter-origin')).toBeInTheDocument()
+    );
+    await userEvent.click(within(popover).getByTestId('decision-filter-origin'));
+    expect(screen.getByRole('menuitemradio', { name: /Done with shell/ })).toHaveTextContent(
+      'Done with shell3 calls'
+    );
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /Done with shell/ }));
+    await waitFor(() =>
+      expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ origin: 'monitor', originId: 'shell' })
+    );
+    // Picking applies at once and leaves the popover open.
+    expect(screen.getByTestId('decision-filters-more')).toBeInTheDocument();
+    expect(screen.getByTestId('decision-filter-origin')).toHaveTextContent(
+      'Monitor: Done with shell'
+    );
+    await userEvent.click(screen.getByTestId('decision-filter-turn'));
+    const turn = screen.getAllByRole('menuitemradio')[1];
+    expect(turn).toHaveTextContent('10 calls');
+    expect(turn).not.toHaveTextContent('turn-9f8e7d');
+    await userEvent.click(turn);
+    await waitFor(() =>
+      expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ turnId: 'turn-9f8e7d' })
+    );
+    expect(screen.getByTestId('decision-filter-more')).toHaveTextContent('Filters: monitor, turn');
+  });
+
+  it('names an unknown turn or monitor in words, never by its id (R6)', async () => {
+    draw({ origin: 'monitor', originId: 'gone-monitor-id', turnId: 'turn-5a6b7c' });
+    await userEvent.click(screen.getByTestId('decision-filter-more'));
+    const popover = await screen.findByTestId('decision-filters-more');
+    expect(within(popover).getByTestId('decision-filter-origin')).toHaveTextContent(
+      "Monitor: Not in this chat's list"
+    );
+    expect(within(popover).getByTestId('decision-filter-turn')).toHaveTextContent(
+      'Turn: An earlier turn'
+    );
+    expect(document.body).not.toHaveTextContent('gone-monitor-id');
+    expect(document.body).not.toHaveTextContent('turn-5a6b7c');
+  });
+
+  it('applies the probability range as it is typed, not on blur (G-6)', async () => {
+    draw();
+    await waitFor(() => expect(mocks.page).toHaveBeenCalled());
+    await userEvent.click(screen.getByTestId('decision-filter-more'));
+    const lowest = await screen.findByRole('textbox', { name: 'Lowest probability' });
+    await userEvent.type(lowest, '0.5');
+    await waitFor(() => expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ minP: 0.5 }));
+    // "0." on the way to "0.5" applied 0 and left the field as typed.
+    expect(lowest).toHaveValue('0.5');
+    expect(lowest).toHaveFocus();
+    const highest = screen.getByRole('textbox', { name: 'Highest probability' });
+    await userEvent.type(highest, '0.2');
+    expect(await screen.findByText(DECISION_HISTORY_COPY.pRangeInvalid)).toBeInTheDocument();
+    // An invalid range applies nothing.
+    expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ minP: 0.5, maxP: null });
+    await userEvent.clear(highest);
+    await userEvent.type(highest, '0.9');
+    await waitFor(() =>
+      expect(mocks.page.mock.lastCall?.[1]).toMatchObject({ minP: 0.5, maxP: 0.9 })
+    );
+    expect(screen.getByTestId('decision-filter-more')).toHaveTextContent('Filters: probability');
   });
 });
 

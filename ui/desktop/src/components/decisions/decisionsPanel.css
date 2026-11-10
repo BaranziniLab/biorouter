@@ -27,52 +27,85 @@
   line-height: var(--text-secondary--line-height);
 }
 
-/* FILTERS: one row of selects that wraps, then "More filters". */
+/* FILTERS (history spec 1.2): one line of facet chips (`ui/facet-chip.tsx`, the
+   Knowledge graph strip's control), Source and Outcome up front, the rest behind
+   Filters; it wraps at a narrow panel, and nothing truncates mid-word. */
 .br-dh__filters {
   display: flex;
   flex: none;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 4px 12px;
+  align-items: center;
+  gap: 8px;
   padding: 8px 16px 4px;
 }
 
-.br-dh-filters {
+.br-dh-facet__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The Filters chip names what is set ("Filters: monitor, turn"), so it is capped. */
+.br-dh-facet--filters {
+  max-width: 220px;
+}
+
+.br-dh-facet__glyph,
+.br-dh-facet__chevron,
+.br-dh-facet__remove {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-muted);
+}
+
+.br-dh-facet__chevron {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.br-dh-facet__chevron[data-open] {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-dh-facet__chevron {
+    transition: none;
+  }
+}
+
+/* A chip that spans the Filters popover (Monitor, Turn). */
+.br-dh-facet--wide {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.br-dh-more {
   display: flex;
   min-width: 0;
-  flex: 1 1 auto;
   flex-direction: column;
+  align-items: stretch;
   gap: 4px;
 }
 
-.br-dh-filters__row {
+.br-dh-range {
   display: flex;
   min-width: 0;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 8px;
-}
-
-.br-dh-filter {
-  display: flex;
-  min-width: 0;
-  flex: 1 1 140px;
-  max-width: 220px;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
+  padding: 4px 2px 2px;
 }
 
-.br-dh-filter--range {
-  flex: 1 1 160px;
-}
-
-.br-dh-filter__label {
+.br-dh-range__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
   color: var(--text-muted);
 }
 
-.br-dh-range {
+.br-dh-range__fields {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -80,11 +113,19 @@
   font-size: var(--text-supporting);
 }
 
-.br-dh-range input {
+.br-dh-range__fields input {
   width: 64px;
   min-width: 0;
 }
 
+.br-dh-range__error {
+  margin: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-danger);
+}
+
+/* A checkbox row (the gate editor's and the Monitors dialog's). */
 .br-dh-check {
   display: inline-flex;
   min-height: 32px;
@@ -94,60 +135,35 @@
   font-size: var(--text-secondary);
 }
 
-.br-dh-filters__error {
-  margin: 0;
-  font-size: var(--text-supporting);
-  line-height: var(--text-supporting--line-height);
-  color: var(--text-danger);
-}
-
-.br-dh__clear {
-  min-height: 32px;
-}
-
-/* A filter no select shows (one decide call's batch), as a removable chip: a filled
-   control with a transparent edge, no resting outline. */
-.br-dh-chip {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px 0 10px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-element);
-  background-color: var(--br-control-ground, var(--background-fill));
-  color: var(--text-default);
+/* ONE LINK TO THE DECISION HISTORY (F-13), `DecisionHistoryLink.tsx`, and the other
+   link-styled buttons in this folder (Retry, Clear filters). `Button variant="link"`
+   supplies the accent ink and the underline on hover; this keeps it a line of
+   supporting text, start-aligned, with no box and no fill at any state, so it never
+   puts a wash on the transcript well. */
+.br-decision-link {
+  height: auto;
+  min-height: 24px;
+  padding-inline: 0;
+  align-self: flex-start;
   font-size: var(--text-secondary);
-  cursor: pointer;
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
 }
 
-.br-dh-chip:hover {
-  background-color: var(--br-control-hover, var(--background-fill-strong));
+.br-dh__filters .br-decision-link {
+  align-self: center;
 }
 
-.br-dh-chip svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  color: var(--text-muted);
+/* A turn marker's source line: the same button in quiet ink. */
+.br-decision-link--line {
+  color: var(--text-default);
+  text-align: start;
+  white-space: normal;
 }
 
-.br-dh-link {
-  padding: 0;
-  border: 0;
-  background: transparent;
+.br-decision-link--line:hover,
+.br-decision-link--line:focus-visible {
   color: var(--text-accent);
-  font: inherit;
-  font-size: var(--text-supporting);
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.br-dh-link:focus-visible {
-  outline: none;
-  border-radius: var(--radius-inner);
-  box-shadow: 0 0 0 2px var(--border-focus);
 }
 
 .br-dh-icon-button {
@@ -203,12 +219,15 @@
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
-/* THE SPLIT: the list over its detail in a narrow panel, beside it in a wide one. */
+/* THE SPLIT: the list over its detail in a narrow panel, beside it in a wide one.
+   A-5: narrow, the list HUGS its rows (`--br-dh-rows`, set inline to the loaded rows
+   plus one while a page waits) up to 40% of the window, so ten calls leave no empty
+   band above the detail and a thousand stop at 40vh. */
 .br-dh__split {
   display: grid;
   min-height: 0;
   flex: 1 1 auto;
-  grid-template-rows: minmax(160px, 42%) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 4px 8px 8px;
@@ -224,8 +243,16 @@
 .br-dh__list-pane {
   position: relative;
   display: flex;
-  min-height: 0;
+  height: min(calc(var(--br-dh-rows, 1) * 44px), 40vh);
+  min-height: 44px;
   flex-direction: column;
+}
+
+@container decision-history (min-width: 720px) {
+  .br-dh__list-pane {
+    height: auto;
+    min-height: 0;
+  }
 }
 
 .br-dh__detail {
@@ -296,6 +323,9 @@
   cursor: default;
 }
 
+/* A record's glyph, by SHAPE (R1, `RECORD_GLYPHS`); the ink only repeats it, in the
+   summary's audited tokens: fired and not passed accent, passed success, error and
+   refused warning, the rest (a quiet monitor's open eye, an answer's ring) muted. */
 .br-dh-row__glyph {
   display: inline-flex;
   width: 14px;
@@ -311,12 +341,15 @@
   height: 14px;
 }
 
-.br-dh-row[data-outcome='passed'] .br-dh-row__glyph {
+.br-dh-row__glyph[data-tone='accent'] {
+  color: var(--text-accent);
+}
+
+.br-dh-row__glyph[data-tone='success'] {
   color: var(--text-success);
 }
 
-.br-dh-row[data-outcome='error'] .br-dh-row__glyph,
-.br-dh-row[data-outcome='refused'] .br-dh-row__glyph {
+.br-dh-row__glyph[data-tone='warning'] {
   color: var(--text-warning);
 }
 
@@ -371,6 +404,7 @@
 .br-dh-row__p-value {
   min-width: 32px;
   text-align: end;
+  white-space: nowrap;
 }
 
 /* A bar that takes the option row's middle track. The bar itself is
@@ -380,7 +414,8 @@
   min-width: 48px;
 }
 
-/* THE DETAIL PANE. */
+/* THE DETAIL PANE: the title once, one muted line, the question in plain words, the
+   answer with its own probability, the threshold line; the rest under Details. */
 .br-dh-detail__body {
   display: flex;
   min-width: 0;
@@ -407,13 +442,19 @@
   white-space: nowrap;
 }
 
-.br-dh-detail__outcome,
+.br-dh-detail__outcome {
+  flex: none;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-default);
+}
+
 .br-dh-detail__sub,
 .br-dh-detail__note,
-.br-dh-detail__section-meta,
-.br-dh-question__instructions,
 .br-dh-question__threshold,
-.br-dh-question__calibration {
+.br-dh-question__owner,
+.br-dh-options__heading,
+.br-dh-saw__size {
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
   color: var(--text-muted);
@@ -422,10 +463,11 @@
 .br-dh-detail__sub,
 .br-dh-detail__note,
 .br-dh-detail__error,
-.br-dh-question__instructions,
+.br-dh-question__text,
 .br-dh-question__threshold,
 .br-dh-question__answer,
-.br-dh-question__calibration {
+.br-dh-question__owner,
+.br-dh-options__heading {
   margin: 0;
 }
 
@@ -436,88 +478,86 @@
   overflow-wrap: anywhere;
 }
 
-.br-dh-detail__section {
+/* Muted, not warning: an estimate is a property of the model, not a fault. */
+.br-dh-detail__estimate {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Question blocks sit on the pane's own ground, parted by space: a list of
+   sentences needs neither a fill nor a line. */
+.br-dh-questions {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 12px 0 0;
-  font-size: var(--text-supporting);
-  line-height: var(--text-supporting--line-height);
-  font-weight: 400;
-  color: var(--text-muted);
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
 }
 
 .br-dh-question {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   gap: 2px;
-  padding: 8px;
-  border-radius: var(--radius-element);
-  background-color: var(--background-fill);
 }
 
-.br-dh-question + .br-dh-question {
-  margin-top: 4px;
-}
-
-.br-dh-question__head {
+.br-dh-question__owner {
   display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-.br-dh-question__name {
+.br-dh-question__owner-name {
   min-width: 0;
   overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: var(--text-supporting);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.br-dh-question__owner-verdict {
+  flex: none;
+}
+
+.br-dh-question__text {
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-default);
+  overflow-wrap: anywhere;
+}
+
 .br-dh-question__answer {
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-dh-details {
+  margin-top: 4px;
+}
+
+.br-dh-details__body {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.br-dh-options-group {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
   gap: 2px;
 }
 
-.br-dh-question__answer strong {
-  font-weight: 500;
-}
-
-.br-dh-question__calibration:not([data-calibrated]) {
-  color: var(--text-warning);
-}
-
-.br-dh-chip {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-  font-size: var(--text-supporting);
-  line-height: var(--text-supporting--line-height);
-  color: var(--text-muted);
-}
-
-.br-dh-chip > svg {
-  width: 12px;
-  height: 12px;
-}
-
-.br-dh-chip[data-state='passed'] {
-  color: var(--text-success);
-}
-
-.br-dh-chip[data-state='failed'] {
-  color: var(--text-warning);
+.br-dh-options__heading {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .br-dh-options {
   display: flex;
-  margin: 4px 0;
+  margin: 0;
   padding: 0;
   flex-direction: column;
   gap: 2px;
@@ -548,26 +588,48 @@
   font-variant-numeric: tabular-nums;
 }
 
-.br-dh-facts {
+/* A facts list (label, value): the history's Details and the gate dialog's. */
+.br-decision-facts {
   display: grid;
-  margin: 8px 0 0;
+  margin: 0;
   gap: 2px 12px;
   grid-template-columns: max-content minmax(0, 1fr);
 }
 
-.br-dh-fact {
+.br-decision-fact {
   display: contents;
 }
 
-.br-dh-fact dt {
+.br-decision-fact dt {
   font-size: var(--text-supporting);
   line-height: 18px;
   color: var(--text-muted);
 }
 
-.br-dh-fact dd {
+.br-decision-fact__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.br-decision-fact dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+/* What it saw | Raw JSON: one switch, the size on the right, one well under it. */
+.br-dh-saw {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.br-dh-saw__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .br-dh-context {
@@ -579,6 +641,16 @@
   background-color: var(--background-well);
 }
 
+/* Prose and messages are read, so the sans body face; only JSON and the raw record
+   are code (the mono layer). */
+.br-dh-context__prose {
+  margin: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .br-dh-context__text {
   margin: 0;
   font-family: var(--font-mono);
@@ -588,7 +660,7 @@
   overflow-wrap: anywhere;
 }
 
-.br-dh-context__text[data-preview] {
+.br-dh-context__prose[data-preview] {
   color: var(--text-muted);
 }
 
@@ -619,16 +691,212 @@
   overflow-wrap: anywhere;
 }
 
-.br-dh-raw {
-  margin-top: 8px;
+/* THE PER-TURN MARKER's closed line (`DecisionTurnMarker.tsx`, F-19): one part per
+   kind of source, each a nowrap span, the spaces between them the only places the
+   line may break. The box is ONE line tall and hides the rest, so a part that does
+   not fit drops whole and a number is never cut; only the first part may shrink,
+   with an ellipsis, in a very narrow column. */
+.br-decision-marker__label {
+  display: block;
+  min-width: 0;
+  height: var(--text-secondary--line-height);
+  overflow: hidden;
+  white-space: normal;
 }
 
-.br-dh-raw .br-dh-context__text {
-  max-height: 320px;
-  overflow: auto;
-  padding: 8px;
-  border-radius: var(--radius-element);
-  background-color: var(--background-well);
+.br-decision-marker__part {
+  white-space: nowrap;
+}
+
+.br-decision-marker__part:first-child {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+
+/* The open marker: its source lines, then the turn's link on a line of its own. */
+.br-decision-marker__well {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  scroll-margin-block-end: 8px;
+}
+
+/* THE DECIDE CARD's well (`DecideToolSummary.tsx`, F-7): plain lines, the question
+   in default ink and its counts muted, the history link last. */
+.br-decide-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.br-decide-card__line,
+.br-decide-card__counts,
+.br-decide-card__more {
+  margin: 0;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.br-decide-card__estimate {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.br-decide-card__questions {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+}
+
+.br-decide-card__question {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.br-decide-card__text {
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-default);
+  overflow-wrap: anywhere;
+}
+
+.br-decide-card__errors {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+
+.br-decide-card__error {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-decide-card__error-count {
+  color: var(--text-default);
+}
+
+.br-decide-card__error-message {
+  min-width: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* THE PHASE GATE DIALOG (`PhaseGateDialog.tsx`, F-4, C-7): the status line and the
+   last check up front, the questions as a plain list on the dialog ground (no box
+   per question, so no fill sits on a fill), everything else under Details; Skip and
+   Pass in the footer, wrapping together at the dialog's 480px. */
+.br-gate-view,
+.br-gate-editor {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.br-gate-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.br-gate-status__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-default);
+}
+
+/* By shape (`GATE_STATE_ICONS`); the ink only repeats it, in the summary's tokens. */
+.br-gate-status__glyph {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-muted);
+}
+
+.br-gate-status__glyph[data-state='passed'] {
+  color: var(--text-success);
+}
+
+.br-gate-status__glyph[data-state='failed'] {
+  color: var(--text-accent);
+}
+
+.br-gate-status__glyph[data-state='blocked'] {
+  color: var(--text-warning);
+}
+
+.br-gate-note {
+  margin: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-gate-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.br-gate-field__label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.br-gate-questions {
+  display: flex;
+  margin: 0;
+  padding-inline-start: 18px;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-default);
+  list-style: disc;
+  overflow-wrap: anywhere;
+}
+
+/* The footer is ModalShell's wrapping, right-aligned row: the `⋯` holds the start of
+   the first line, and the two decisions stay one group, so when they do not fit
+   beside it they move to the next line together, right-aligned, never clipped. */
+.br-gate-footer__menu {
+  margin-inline-end: auto;
+}
+
+.br-gate-footer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-inline-start: auto;
 }
 
 /* THE MONITORS DIALOG. */

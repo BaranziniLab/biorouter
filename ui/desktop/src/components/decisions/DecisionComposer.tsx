@@ -1,25 +1,35 @@
 import './decisionsChat.css';
 import * as React from 'react';
-import { Plus, X } from '../icons/app-icons';
+import { Check, Plus, X } from '../icons/app-icons';
 import { Button } from '../ui/button';
+import { Disclosure } from '../ui/disclosure';
+import { InfoTip } from '../ui/info-tip';
 import { Input } from '../ui/input';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Select } from '../ui/Select';
-import {
-  questionToWire,
-  thresholdSummary,
-  type Question,
-  type Threshold,
-} from '../../utils/sessionDecisions';
+import { questionToWire, type Question, type Threshold } from '../../utils/sessionDecisions';
 import { fetchDecisionChatQuestion, saveDecisionChatQuestion } from './decisionChatApi';
+import { ruleInWords } from './decisionWords';
 
 export const DECISION_COMPOSER_COPY = {
   region: 'Decision question',
   question: 'Question',
-  questionPlaceholder: 'Does this note state the patient has multiple sclerosis?',
-  kind: 'Answer type',
+  /** By answer kind: an example that cannot be mistaken for a kept value (B-5). */
+  questionPlaceholder: {
+    binary: 'For example: Does this note mention a fever?',
+    choice: 'For example: Which MS course does this note describe?',
+    score: 'For example: How severe is the pain this note describes?',
+  },
+  options: 'Question options',
+  kind: 'Answer',
   kinds: { binary: 'Yes or no', choice: 'Choice', score: 'Score' },
-  options: 'Options',
+  /** The closed Question options' summary: what kind of answer, in words. */
+  kindSummary: {
+    binary: () => 'Yes or no',
+    choice: (n: number) => `Choice of ${n}`,
+    score: (n: number) => `Score, ${n} ${n === 1 ? 'level' : 'levels'}`,
+  },
+  optionsLabel: 'Options',
   option: (n: number) => `Option ${n}`,
   removeOption: (name: string) => `Remove option ${name}`,
   addOption: 'Add option',
@@ -28,24 +38,27 @@ export const DECISION_COMPOSER_COPY = {
   removeLevel: (name: string) => `Remove level ${name}`,
   addLevel: 'Add level',
   threshold: 'Threshold',
+  thresholdInfo: 'Optional. With a threshold, each answer shows whether it meets it.',
   thresholdPlaceholder: 'None',
+  thresholdOnWord: 'on',
   thresholdOn: 'Compared with',
   atLeast: (level: string) => `At least ${level}`,
+  /** The live sentence under a threshold: the card's own words, never a gate's. */
+  meetsSentence: (phrase: string) => `Meets the threshold ${phrase}.`,
   placeholder: 'Paste the text to decide on',
   draftNote:
-    'Decision model: start your message with a question line such as “Q: Is the form signed?”, then the text to decide on.',
-  saving: 'Saving the question…',
-  saved: 'The question is saved for this chat.',
+    'Start your message with a question line, such as “Q: Is the form signed?”, then paste the text.',
+  saving: 'Saving…',
+  saved: 'Saved',
   loading: 'Reading this chat’s question…',
   needsQuestion: 'Write the question to ask of each message.',
-  needsOptions: 'A choice needs 2 to 26 options, each with its own name.',
-  needsLevels: 'A score needs 1 to 10 levels, each with a label.',
-  badThreshold: 'The threshold is a probability from 0 to 1.',
-  keptRule: (rule: string) =>
-    `Passes when ${rule}, as set outside this panel. Clear the threshold to set a new one.`,
+  needsOptions: 'Name at least 2 different options.',
+  needsLevels: 'Give every level a label.',
+  badThreshold: 'The threshold is a number from 0 to 1.',
+  keptRule: (phrase: string) =>
+    `Meets the threshold ${phrase}, as set outside this chat. Clear the threshold to set a new one.`,
   refused: (message: string | null) =>
-    message ??
-    'Biorouter could not save the question. A “Q:” question line at the start of your message still works.',
+    message ?? 'Could not save the question. A “Q:” line at the start of your message still works.',
 } as const;
 
 /** The placeholder the composer's text box shows in a decision chat. */
@@ -202,8 +215,14 @@ export interface DecisionComposerProps {
  * `PUT /sessions/{id}/decision-chat`, with the user-action proof. A save happens
  * half a second after typing pauses and at once when a field loses focus, so a
  * question typed before the text is pasted is stored before the message is sent.
- * A question that is not complete is not saved, and the line under the fields
- * says what it still needs.
+ * A question that is not complete is not saved, and the status says what it
+ * still needs (nothing while the question is empty: the placeholder says it).
+ *
+ * Essentials up front (owner rule, F-8): the question line, with its status at
+ * the trailing end ("Saving…", "Saved"; a longer sentence takes its own line
+ * under it, in the same `role="status"` node). The kind of answer, the options
+ * or levels and the threshold sit behind "Question options", whose closed
+ * summary says them in words ("Yes or no · when P(yes) is at or above 0.85").
  */
 export function DecisionComposer({ sessionId }: DecisionComposerProps) {
   const [draft, setDraft] = React.useState<DecisionDraft>(emptyDraft);
@@ -295,24 +314,41 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
   if (!sessionId) {
     return (
       <div className="br-decision-composer" data-testid="decision-composer" data-draft="">
-        <p className="br-decision-composer__status">{DECISION_COMPOSER_COPY.draftNote}</p>
+        <p className="br-decision-composer__note">{DECISION_COMPOSER_COPY.draftNote}</p>
       </div>
     );
   }
 
   const verdict = questionFromDraft(draft);
-  const status =
+  // The one thing the status says, and how: a short state at the end of the question
+  // line, a longer sentence on its own line under it (the same node either way).
+  const problem = !verdict.ok && draft.instructions.trim() !== '' ? verdict.problem : null;
+  const status: { text: string; wide: boolean; danger: boolean; check: boolean } =
     save.status === 'loading'
-      ? DECISION_COMPOSER_COPY.loading
+      ? { text: DECISION_COMPOSER_COPY.loading, wide: false, danger: false, check: false }
       : !verdict.ok
-        ? verdict.problem
+        ? {
+            text: problem ?? '',
+            wide: problem !== null,
+            danger: problem === DECISION_COMPOSER_COPY.badThreshold,
+            check: false,
+          }
         : save.status === 'saving'
-          ? DECISION_COMPOSER_COPY.saving
+          ? { text: DECISION_COMPOSER_COPY.saving, wide: false, danger: false, check: false }
           : save.status === 'refused'
-            ? DECISION_COMPOSER_COPY.refused(save.message)
+            ? {
+                text: DECISION_COMPOSER_COPY.refused(save.message),
+                wide: true,
+                danger: true,
+                check: false,
+              }
             : save.status === 'saved' || lastSaved.current === wireKey(verdict.question)
-              ? DECISION_COMPOSER_COPY.saved
-              : '';
+              ? { text: DECISION_COMPOSER_COPY.saved, wide: false, danger: false, check: true }
+              : { text: '', wide: false, danger: false, check: false };
+  const thresholdInvalid =
+    draft.threshold.trim() !== '' &&
+    !verdict.ok &&
+    verdict.problem === DECISION_COMPOSER_COPY.badThreshold;
 
   const targets =
     draft.kind === 'choice'
@@ -337,18 +373,28 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
           null)
         : null;
 
-  // A stored rule these fields cannot show (below, or P(no)), said so the person
-  // does not read the threshold as P(yes) at or above it.
-  const kept = verdict.ok ? verdict.question.threshold : null;
-  const keptRule =
-    verdict.ok && kept && (kept.below || kept.type === 'no')
-      ? thresholdSummary(kept, verdict.question)
-      : null;
+  // The rule as words (never `≥` or `<`). A stored rule these fields cannot show
+  // (below, or P(no)) is said as kept, so the person does not read the threshold as
+  // P(yes) at or above it.
+  const rule = verdict.ok ? verdict.question.threshold : null;
+  const phrase = verdict.ok && rule ? ruleInWords(rule, verdict.question) : null;
+  const kept = rule && (rule.below || rule.type === 'no') ? phrase : null;
+  const summary = [
+    draft.kind === 'choice'
+      ? DECISION_COMPOSER_COPY.kindSummary.choice(draft.options.length)
+      : draft.kind === 'score'
+        ? DECISION_COMPOSER_COPY.kindSummary.score(draft.levels.length)
+        : DECISION_COMPOSER_COPY.kindSummary.binary(),
+    phrase,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   const entries = draft.kind === 'choice' ? draft.options : draft.levels;
   const listKey: 'options' | 'levels' = draft.kind === 'choice' ? 'options' : 'levels';
   const maxEntries = draft.kind === 'choice' ? 26 : 10;
   const minEntries = draft.kind === 'choice' ? 2 : 1;
+  const statusId = `${ids}-status`;
 
   return (
     <div
@@ -357,170 +403,210 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
       aria-label={DECISION_COMPOSER_COPY.region}
       data-testid="decision-composer"
     >
-      <div className="br-decision-composer__row">
+      <div className="br-decision-composer__line">
         <label htmlFor={`${ids}-question`} className="br-decision-composer__label">
           {DECISION_COMPOSER_COPY.question}
         </label>
-        <Input
+        {/* Unfilled, like the composer's own text box: the question is written in the same
+            card, in the same voice (a filled field read as a slab in dark mode, F-8). */}
+        <input
           id={`${ids}-question`}
+          type="text"
+          className="br-decision-composer__question"
           data-testid="decision-composer-question"
           value={draft.instructions}
-          placeholder={DECISION_COMPOSER_COPY.questionPlaceholder}
+          placeholder={DECISION_COMPOSER_COPY.questionPlaceholder[draft.kind]}
           disabled={!loaded}
+          aria-describedby={statusId}
           onChange={(event) => {
             const instructions = event.target.value;
             edit((current) => ({ ...current, instructions }));
           }}
           onBlur={onBlur}
         />
+        <span
+          id={statusId}
+          className="br-decision-composer__status"
+          role="status"
+          data-state={save.status}
+          data-wide={status.wide ? 'true' : undefined}
+          data-tone={status.danger ? 'danger' : undefined}
+          data-testid="decision-composer-status"
+        >
+          {status.check ? <Check aria-hidden /> : null}
+          {status.text}
+        </span>
       </div>
-      <div className="br-decision-composer__row br-decision-composer__row--controls">
-        <SegmentedControl<Kind>
-          aria-label={DECISION_COMPOSER_COPY.kind}
-          data-testid="decision-composer-kind"
-          disabled={!loaded}
-          value={draft.kind}
-          onValueChange={(kind) => edit((current) => ({ ...current, kind, target: '' }))}
-          options={[
-            { value: 'binary', label: DECISION_COMPOSER_COPY.kinds.binary },
-            { value: 'choice', label: DECISION_COMPOSER_COPY.kinds.choice },
-            { value: 'score', label: DECISION_COMPOSER_COPY.kinds.score },
-          ]}
-        />
-        <label htmlFor={`${ids}-threshold`} className="br-decision-composer__label">
-          {DECISION_COMPOSER_COPY.threshold}
-        </label>
-        <Input
-          id={`${ids}-threshold`}
-          machine
-          data-testid="decision-composer-threshold"
-          className="br-decision-composer__threshold"
-          type="number"
-          inputMode="decimal"
-          min={0}
-          max={1}
-          step={0.05}
-          value={draft.threshold}
-          placeholder={DECISION_COMPOSER_COPY.thresholdPlaceholder}
-          disabled={!loaded}
-          aria-invalid={
-            draft.threshold.trim() !== '' &&
-            !verdict.ok &&
-            verdict.problem === DECISION_COMPOSER_COPY.badThreshold
-          }
-          onChange={(event) => {
-            const threshold = event.target.value;
-            // Cleared, the stored rule goes with it: a new threshold is at or above, on yes.
-            edit((current) =>
-              threshold.trim() === ''
-                ? { ...current, threshold, below: false, binarySide: 'yes' }
-                : { ...current, threshold }
-            );
-          }}
-          onBlur={onBlur}
-        />
-        {draft.kind !== 'binary' && draft.threshold.trim() !== '' && targets.length > 0 && (
-          <div className="br-decision-composer__target">
-            <Select
-              aria-label={DECISION_COMPOSER_COPY.thresholdOn}
-              options={targets}
-              value={target}
-              isSearchable={false}
-              isDisabled={!loaded}
-              menuPlacement="auto"
-              menuPortalTarget={typeof document === 'undefined' ? undefined : document.body}
-              onChange={(value: unknown) => {
-                const picked = value as { value: string } | null;
-                if (picked) edit((current) => ({ ...current, target: picked.value }));
-              }}
-              onBlur={onBlur}
+      <Disclosure label={DECISION_COMPOSER_COPY.options} summary={summary}>
+        <div
+          className="br-decision-composer__options"
+          data-testid="decision-composer-options-panel"
+        >
+          <div className="br-decision-composer__field">
+            <span id={`${ids}-kind`} className="br-decision-composer__label">
+              {DECISION_COMPOSER_COPY.kind}
+            </span>
+            <SegmentedControl<Kind>
+              aria-labelledby={`${ids}-kind`}
+              data-testid="decision-composer-kind"
+              disabled={!loaded}
+              value={draft.kind}
+              onValueChange={(kind) => edit((current) => ({ ...current, kind, target: '' }))}
+              options={[
+                { value: 'binary', label: DECISION_COMPOSER_COPY.kinds.binary },
+                { value: 'choice', label: DECISION_COMPOSER_COPY.kinds.choice },
+                { value: 'score', label: DECISION_COMPOSER_COPY.kinds.score },
+              ]}
             />
           </div>
-        )}
-      </div>
-      {draft.kind !== 'binary' && (
-        <div className="br-decision-composer__entries" data-testid={`decision-composer-${listKey}`}>
-          <span className="br-decision-composer__label">
-            {draft.kind === 'choice'
-              ? DECISION_COMPOSER_COPY.options
-              : DECISION_COMPOSER_COPY.levels}
-          </span>
-          <ul className="br-decision-composer__list">
-            {entries.map((item, index) => {
-              const name =
-                draft.kind === 'choice'
-                  ? DECISION_COMPOSER_COPY.option(index + 1)
-                  : DECISION_COMPOSER_COPY.level(index + 1);
-              return (
-                <li key={item.id} className="br-decision-composer__entry">
-                  <Input
-                    aria-label={name}
-                    value={item.text}
-                    disabled={!loaded}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      edit((current) => ({
-                        ...current,
-                        [listKey]: current[listKey].map((other) =>
-                          other.id === item.id ? { ...other, text: value } : other
-                        ),
-                      }));
-                    }}
-                    onBlur={onBlur}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    shape="round"
-                    disabled={!loaded || entries.length <= minEntries}
-                    aria-label={
-                      draft.kind === 'choice'
-                        ? DECISION_COMPOSER_COPY.removeOption(item.text.trim() || name)
-                        : DECISION_COMPOSER_COPY.removeLevel(item.text.trim() || name)
-                    }
-                    onClick={() =>
-                      edit((current) => ({
-                        ...current,
-                        [listKey]: current[listKey].filter((other) => other.id !== item.id),
-                      }))
-                    }
-                  >
-                    <X aria-hidden />
-                  </Button>
-                </li>
-              );
-            })}
-          </ul>
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            disabled={!loaded || entries.length >= maxEntries}
-            onClick={() =>
-              edit((current) => ({ ...current, [listKey]: [...current[listKey], entry()] }))
-            }
-          >
-            <Plus aria-hidden />
-            {draft.kind === 'choice'
-              ? DECISION_COMPOSER_COPY.addOption
-              : DECISION_COMPOSER_COPY.addLevel}
-          </Button>
+          {draft.kind !== 'binary' && (
+            <div
+              className="br-decision-composer__entries"
+              data-testid={`decision-composer-${listKey}`}
+            >
+              <span className="br-decision-composer__label">
+                {draft.kind === 'choice'
+                  ? DECISION_COMPOSER_COPY.optionsLabel
+                  : DECISION_COMPOSER_COPY.levels}
+              </span>
+              <ul className="br-decision-composer__list">
+                {entries.map((item, index) => {
+                  const name =
+                    draft.kind === 'choice'
+                      ? DECISION_COMPOSER_COPY.option(index + 1)
+                      : DECISION_COMPOSER_COPY.level(index + 1);
+                  return (
+                    <li key={item.id} className="br-decision-composer__entry">
+                      <Input
+                        aria-label={name}
+                        placeholder={name}
+                        value={item.text}
+                        disabled={!loaded}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          edit((current) => ({
+                            ...current,
+                            [listKey]: current[listKey].map((other) =>
+                              other.id === item.id ? { ...other, text: value } : other
+                            ),
+                          }));
+                        }}
+                        onBlur={onBlur}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        shape="round"
+                        disabled={!loaded || entries.length <= minEntries}
+                        aria-label={
+                          draft.kind === 'choice'
+                            ? DECISION_COMPOSER_COPY.removeOption(item.text.trim() || name)
+                            : DECISION_COMPOSER_COPY.removeLevel(item.text.trim() || name)
+                        }
+                        onClick={() =>
+                          edit((current) => ({
+                            ...current,
+                            [listKey]: current[listKey].filter((other) => other.id !== item.id),
+                          }))
+                        }
+                      >
+                        <X aria-hidden />
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                disabled={!loaded || entries.length >= maxEntries}
+                onClick={() =>
+                  edit((current) => ({ ...current, [listKey]: [...current[listKey], entry()] }))
+                }
+              >
+                <Plus aria-hidden />
+                {draft.kind === 'choice'
+                  ? DECISION_COMPOSER_COPY.addOption
+                  : DECISION_COMPOSER_COPY.addLevel}
+              </Button>
+            </div>
+          )}
+          <div className="br-decision-composer__field">
+            <div className="br-decision-composer__threshold-row">
+              {/* The InfoTip is the label's next sibling, never inside it. */}
+              <span className="br-decision-composer__label-with-tip">
+                <label htmlFor={`${ids}-threshold`} className="br-decision-composer__label">
+                  {DECISION_COMPOSER_COPY.threshold}
+                </label>
+                <InfoTip
+                  label={DECISION_COMPOSER_COPY.threshold}
+                  help={DECISION_COMPOSER_COPY.thresholdInfo}
+                />
+              </span>
+              <Input
+                id={`${ids}-threshold`}
+                machine
+                data-testid="decision-composer-threshold"
+                className="br-decision-composer__threshold"
+                type="number"
+                inputMode="decimal"
+                min={0}
+                max={1}
+                step={0.05}
+                value={draft.threshold}
+                placeholder={DECISION_COMPOSER_COPY.thresholdPlaceholder}
+                disabled={!loaded}
+                aria-invalid={thresholdInvalid}
+                aria-describedby={thresholdInvalid ? statusId : undefined}
+                onChange={(event) => {
+                  const threshold = event.target.value;
+                  // Cleared, the stored rule goes with it: a new threshold is at or above, on yes.
+                  edit((current) =>
+                    threshold.trim() === ''
+                      ? { ...current, threshold, below: false, binarySide: 'yes' }
+                      : { ...current, threshold }
+                  );
+                }}
+                onBlur={onBlur}
+              />
+              {draft.kind !== 'binary' && draft.threshold.trim() !== '' && targets.length > 0 && (
+                <>
+                  <span className="br-decision-composer__label" aria-hidden>
+                    {DECISION_COMPOSER_COPY.thresholdOnWord}
+                  </span>
+                  <div className="br-decision-composer__target">
+                    <Select
+                      aria-label={DECISION_COMPOSER_COPY.thresholdOn}
+                      options={targets}
+                      value={target}
+                      isSearchable={false}
+                      isDisabled={!loaded}
+                      menuPlacement="auto"
+                      menuPortalTarget={typeof document === 'undefined' ? undefined : document.body}
+                      onChange={(value: unknown) => {
+                        const picked = value as { value: string } | null;
+                        if (picked) edit((current) => ({ ...current, target: picked.value }));
+                      }}
+                      onBlur={onBlur}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+            {kept ? (
+              <p className="br-decision-composer__note" data-testid="decision-composer-kept-rule">
+                {DECISION_COMPOSER_COPY.keptRule(kept)}
+              </p>
+            ) : phrase ? (
+              <p className="br-decision-composer__note" data-testid="decision-composer-meets">
+                {DECISION_COMPOSER_COPY.meetsSentence(phrase)}
+              </p>
+            ) : null}
+          </div>
         </div>
-      )}
-      {keptRule ? (
-        <p className="br-decision-composer__status" data-testid="decision-composer-kept-rule">
-          {DECISION_COMPOSER_COPY.keptRule(keptRule)}
-        </p>
-      ) : null}
-      <p
-        className="br-decision-composer__status"
-        role="status"
-        data-state={save.status}
-        data-testid="decision-composer-status"
-      >
-        {status}
-      </p>
+      </Disclosure>
     </div>
   );
 }

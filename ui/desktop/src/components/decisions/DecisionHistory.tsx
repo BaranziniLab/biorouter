@@ -5,46 +5,69 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import { AlertTriangle, Check, CircleIcon, Lock, RefreshCw, X } from '../icons/app-icons';
-import { Checkbox } from '../ui/Checkbox';
+import { ChevronDown, RefreshCw, SlidersHorizontal, X } from '../icons/app-icons';
+import { Button } from '../ui/button';
 import { Disclosure } from '../ui/disclosure';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
+import { FacetChip } from '../ui/facet-chip';
 import { InfoTip } from '../ui/info-tip';
 import { Input } from '../ui/input';
-import { Select } from '../ui/Select';
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
+import { SegmentedControl } from '../ui/segmented-control';
 import { PreviewBarActions, PreviewBarMeta, PreviewTip } from '../artifacts/PreviewBar';
 import { formatCount } from '../../utils/usageStats';
 import {
-  DECISION_ORIGINS,
-  DECISION_OUTCOMES,
-  ORIGIN_FILTER_NAMES,
-  OUTCOME_NAMES,
+  answerKey,
   answerProbability,
   calibrationText,
-  decisionModelLabel,
   fetchDecisionDetail,
   fetchDecisionPage,
   fetchDecisionSummary,
   formatLatency,
   formatProbability,
-  originLabel,
   outcomeLabel,
   readableAnswer,
   thresholdOnOption,
-  thresholdSummary,
   type Decision,
   type DecisionContext,
   type DecisionDetail,
   type DecisionHistoryFilter,
   type DecisionOrigin,
-  type DecisionOutcome,
   type DecisionRecord,
   type NamedQuestion,
   type SessionDecisionSummary,
 } from '../../utils/sessionDecisions';
 import { ProbabilityBar } from './ProbabilityBar';
+import {
+  CALIBRATION_COPY,
+  FILTER_CHIP_COPY,
+  OUTCOME_FILTER_OPTIONS,
+  RECORD_GLYPHS,
+  RECORD_GLYPH_TONES,
+  decisionModelDisplay,
+  formatDecisionTime,
+  namedProbability,
+  outcomeFilterChoice,
+  outcomeKeptFor,
+  recordGlyphState,
+  recordSubtitle,
+  recordTitle,
+  recordVerdict,
+  sourceFilterOptionsFor,
+  thresholdLine,
+  verdictWord,
+  watchedProbability,
+} from './decisionWords';
 import './decisionsPanel.css';
 
 /** Every list row is this tall (two lines). The list's windowing depends on it. */
@@ -59,25 +82,33 @@ const LOAD_AHEAD_ROWS = 20;
 export const DECISION_HISTORY_COPY = {
   listLabel: 'Decision calls',
   filtersLabel: 'Filter decision calls',
-  source: 'Source',
-  anySource: 'Any source',
-  origin: 'Criterion or call',
-  anyOrigin: 'Any',
+  source: FILTER_CHIP_COPY.source,
+  outcome: FILTER_CHIP_COPY.outcome,
+  filters: 'Filters',
+  /** The Filters chip once something inside it is set: `Filters: monitor, turn`. */
+  filtersSet: (nouns: string[]) => `Filters: ${nouns.join(', ')}`,
+  filtersSetName: (nouns: string[]) => `Filters, set: ${nouns.join(', ')}`,
   turn: 'Turn',
   anyTurn: 'Any turn',
-  outcome: 'Outcome',
-  anyOutcome: 'Any outcome',
-  errorsOnly: 'Errors only',
-  minP: 'Min P',
-  maxP: 'Max P',
+  earlierTurn: 'An earlier turn',
+  notListed: "Not in this chat's list",
+  pRange: 'Probability range',
+  pRangeHelp:
+    'The probability of the answer a threshold watches, such as P(yes) for a monitor that fires on yes. Calls with no threshold are left out.',
+  minP: 'Lowest probability',
+  maxP: 'Highest probability',
   pRangeInvalid: 'Use numbers from 0 to 1, the lower one first.',
-  moreFilters: 'More filters',
+  to: 'to',
   batchOnly: 'This decide call only',
-  removeBatch: 'Remove the filter: this decide call only',
+  removeBatch: 'Remove the filter: This decide call only',
+  callOnly: 'This call only',
+  removeCall: 'Remove the filter: This call only',
   clear: 'Clear filters',
   refresh: 'Refresh',
   showNew: (n: number) => `Show ${formatCount(n)} new`,
   calls: (n: number) => `${formatCount(n)} ${n === 1 ? 'call' : 'calls'}`,
+  callCount: (n: number) => `${formatCount(n)} ${n === 1 ? 'call' : 'calls'}`,
+  chunkCount: (n: number) => `${formatCount(n)} ${n === 1 ? 'chunk' : 'chunks'}`,
   loading: 'Loading decision calls',
   loadingMore: 'Loading more',
   loadFailed: 'Could not load decision calls.',
@@ -87,32 +118,50 @@ export const DECISION_HISTORY_COPY = {
   noSelection: 'Choose a call to see what it saw and how it answered.',
   detailFailed: 'Could not load this call.',
   detailMissing: 'This call is no longer in the log.',
+  details: 'Details',
+  show: 'Show',
   whatItSaw: 'What it saw',
+  raw: 'Raw JSON',
   contextTruncated: (kb: string) => `Cut to the first 64 KB of ${kb}.`,
   contextLoading: 'Loading the context',
   contextUnavailable: 'The stored context is not available.',
-  questions: 'Questions',
-  threshold: 'Threshold',
-  noThreshold: 'No threshold',
-  passed: 'Passed',
+  question: (n: number) => `Question ${n}`,
+  /** Kept for the decision chat card's test (DecisionCard.test.tsx reads it). */
   failed: 'Failed',
-  answer: 'Answer',
-  confidence: 'Concentration',
-  confidenceHelp: 'How concentrated the distribution is (0 even, 1 certain). Not P(answer).',
+  certainty: 'Certainty',
+  certaintyHelp:
+    'How sure the model is across all answers: 0 means every answer is equally likely, 1 means one answer holds all the probability. It is not the answer’s probability.',
   model: 'Model',
+  servedBy: 'Served by',
   /** The decision MODEL's tier, not the chat's: a public chat may use a local model. */
   tier: 'Model tier',
   latency: 'Latency',
   tokens: 'Tokens',
+  probabilities: 'Probabilities',
   chunk: 'Chunk',
-  batch: 'Batch',
-  turnId: 'Turn',
+  chunkNumber: (n: number) => `Chunk ${n}`,
   error: 'Error',
   privacyOff: 'Privacy tiers were off when this call ran.',
-  raw: 'Raw JSON',
   private: 'Private',
   public: 'Public',
   noAnswer: 'No answer',
+  /** The detail's muted line: the kind of call, never its title again. */
+  kind: {
+    monitor: 'Monitor',
+    monitors: 'Monitors',
+    gate: 'Phase gate',
+    tool: 'Decide call',
+    chat: 'Decision chat',
+    adhoc: 'Ad hoc call',
+  },
+  /** The which-one chip's noun per source, and the Filters chip's word for it. */
+  which: {
+    monitor: { noun: 'Monitor', any: 'Any monitor', set: 'monitor' },
+    gate: { noun: 'Phase gate', any: 'Any phase gate', set: 'gate' },
+    tool: { noun: 'Decide call', any: 'Any decide call', set: 'decide call' },
+    chat: { noun: 'Decision chat', any: 'Any decision chat', set: 'decision chat' },
+    adhoc: { noun: 'Ad hoc call', any: 'Any ad hoc call', set: 'ad hoc call' },
+  } satisfies Record<DecisionOrigin, { noun: string; any: string; set: string }>,
 };
 
 const copy = DECISION_HISTORY_COPY;
@@ -122,68 +171,91 @@ export const FOLLOW_INTERVAL_MS = 4000;
 /** Within this many pixels of the top, new calls reload the list in place. */
 const FOLLOW_TOP_SLACK_PX = 24;
 
-type Glyph = typeof CircleIcon;
-
-/** A call's outcome, by SHAPE (never by colour alone). */
-export const OUTCOME_ICONS: Record<DecisionOutcome, Glyph> = {
-  passed: Check,
-  failed: X,
-  decided: CircleIcon,
-  error: AlertTriangle,
-  refused: Lock,
-};
-
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-/** The probability a row's bar draws: the lowest pass probability, else P(first answer). */
-export function recordProbability(record: DecisionRecord): number | null {
-  const gated = record.decisions
-    .map((decision) => decision.passProbability)
-    .filter((p): p is number => p !== null);
-  if (gated.length > 0) return Math.min(...gated);
-  const first = record.decisions[0];
-  return first ? answerProbability(first) : null;
-}
-
-/** What a row leads with: the chunk it read, else its origin. */
-export function recordTitle(record: DecisionRecord): string {
-  if (record.chunkId) return record.chunkId;
-  if (record.chunkIndex !== null && record.origin === 'tool')
-    return `Chunk ${record.chunkIndex + 1}`;
-  return originLabel(record.origin, record.label);
-}
-
-/** The first question's answer, `+2` when more were asked. */
-export function recordAnswer(record: DecisionRecord): string {
-  if (record.outcome === 'error' || record.outcome === 'refused') {
-    return OUTCOME_NAMES[record.outcome];
-  }
-  const first = record.decisions[0];
-  if (!first) return copy.noAnswer;
-  const question = record.questions.find((entry) => entry.name === first.question);
-  const more = record.decisions.length - 1;
-  return `${readableAnswer(first, question)}${more > 0 ? ` +${more}` : ''}`;
-}
-
-const TIME = new Intl.DateTimeFormat(undefined, {
-  hour: 'numeric',
-  minute: '2-digit',
-  second: '2-digit',
-});
-const DAY_TIME = new Intl.DateTimeFormat(undefined, {
+const SHORT_TIME = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+const SHORT_DAY_TIME = new Intl.DateTimeFormat(undefined, {
   month: 'short',
   day: 'numeric',
   hour: 'numeric',
   minute: '2-digit',
 });
 
-/** Seconds today (calls come fast), the day and minute before. */
-export function formatDecisionTime(iso: string, now = new Date()): string {
+/** `1:26 PM` today, `Nov 4, 1:26 PM` before: a turn or a decide call in a menu. */
+export function formatShortTime(iso: string, now = new Date()): string {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return '';
-  return date.toDateString() === now.toDateString() ? TIME.format(date) : DAY_TIME.format(date);
+  return date.toDateString() === now.toDateString()
+    ? SHORT_TIME.format(date)
+    : SHORT_DAY_TIME.format(date);
+}
+
+/** The names a several-monitor call asked under (the daemon joins them with ` + `). */
+function labelNames(record: DecisionRecord): string[] {
+  return (record.label ?? '')
+    .split(' + ')
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+/** A monitor call that asked several monitors at once (`decisionWords`' own rule). */
+function isSeveralMonitors(record: DecisionRecord): boolean {
+  return (
+    record.origin === 'monitor' &&
+    Math.max(record.questions.length, record.decisions.length, labelNames(record).length) > 1
+  );
+}
+
+/** The question a decision answered, by name. */
+function questionOf(record: DecisionRecord, decision: Decision): NamedQuestion | null {
+  return record.questions.find((question) => question.name === decision.question) ?? null;
+}
+
+/**
+ * What a ONE-question row draws on its second line's right (R2): for a monitor or a
+ * gate the watched outcome's probability, named by the threshold (`P(yes) 0.12`);
+ * for a decide, chat or ad hoc call the answer's own probability (`P(no) 0.99`).
+ * `null` for a call that asked several questions, or answered nothing.
+ */
+export function rowProbability(record: DecisionRecord): { p: number; text: string } | null {
+  if (record.decisions.length !== 1 || record.questions.length > 1) return null;
+  const decision = record.decisions[0];
+  const question = questionOf(record, decision);
+  const watches = record.origin === 'monitor' || record.origin === 'gate';
+  if (watches && question?.threshold && decision.passProbability !== null) {
+    const text = watchedProbability(question.threshold, question, decision.passProbability);
+    if (text) return { p: decision.passProbability, text };
+  }
+  const p = answerProbability(decision);
+  const key = answerKey(decision.answer);
+  if (p === null || key === null) return null;
+  const text = namedProbability(outcomeLabel(question, key), p);
+  return text ? { p, text } : null;
+}
+
+/** The detail's muted line: `Monitor · 1:26:51 PM`, `Decide call · 1:37:24 PM`. */
+function kindWord(record: DecisionRecord): string {
+  if (record.origin === 'monitor') {
+    return isSeveralMonitors(record) ? copy.kind.monitors : copy.kind.monitor;
+  }
+  return copy.kind[record.origin];
+}
+
+/** A row's accessible name: verdict or answer, title, the named probability or the names, time. */
+function rowLabel(record: DecisionRecord): string {
+  const title = isSeveralMonitors(record)
+    ? `${recordTitle(record)}: ${labelNames(record).join(', ')}`
+    : recordTitle(record);
+  return [
+    recordVerdict(record),
+    title,
+    rowProbability(record)?.text ?? null,
+    formatDecisionTime(record.createdAt),
+  ]
+    .filter(Boolean)
+    .join(', ');
 }
 
 function formatBytes(bytes: number): string {
@@ -335,51 +407,8 @@ function useDecisionPages(sessionId: string, filter: DecisionHistoryFilter, relo
 }
 
 // ---------------------------------------------------------------------------
-// Filters
+// Filters (history spec 1.2): Source and Outcome up front, the rest behind Filters
 // ---------------------------------------------------------------------------
-
-interface SelectOption<T> {
-  value: T;
-  label: string;
-}
-
-const menuPortalTarget = typeof document === 'undefined' ? undefined : document.body;
-
-function FilterSelect<T extends string>({
-  id,
-  label,
-  value,
-  options,
-  onChange,
-  testId,
-}: {
-  id: string;
-  label: string;
-  value: T | null;
-  options: SelectOption<T | null>[];
-  onChange: (value: T | null) => void;
-  testId: string;
-}) {
-  const selected = options.find((option) => option.value === value) ?? options[0];
-  return (
-    <div className="br-dh-filter" data-testid={testId}>
-      <label htmlFor={id} className="br-dh-filter__label">
-        {label}
-      </label>
-      <Select
-        inputId={id}
-        options={options}
-        value={selected}
-        isSearchable={false}
-        menuPlacement="auto"
-        menuPortalTarget={menuPortalTarget}
-        onChange={(next: unknown) =>
-          onChange((next as SelectOption<T | null> | null)?.value ?? null)
-        }
-      />
-    </div>
-  );
-}
 
 function parseP(text: string): number | null | 'invalid' {
   const trimmed = text.trim();
@@ -388,7 +417,197 @@ function parseP(text: string): number | null | 'invalid' {
   return Number.isFinite(value) && value >= 0 && value <= 1 ? value : 'invalid';
 }
 
-function Filters({
+/** The chip's trailing chevron, turned while its surface is open. */
+function Chevron({ open }: { open?: boolean }) {
+  return (
+    <ChevronDown
+      aria-hidden="true"
+      className="br-dh-facet__chevron"
+      data-open={open || undefined}
+    />
+  );
+}
+
+interface MenuRow {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
+/**
+ * A facet chip that opens a DropdownMenu with one radio group: the chosen row carries
+ * the menu's trailing check. Radix menus are portalled DismissableLayer branches, so a
+ * pick inside one nested in the Filters popover is not a press outside the popover, and
+ * Escape closes only the topmost layer.
+ */
+function FacetMenu({
+  label,
+  name,
+  engaged,
+  value,
+  rows,
+  onPick,
+  testId,
+  wide,
+}: {
+  label: string;
+  name?: string;
+  engaged: boolean;
+  value: string;
+  rows: MenuRow[];
+  onPick: (value: string) => void;
+  testId: string;
+  wide?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const escaped = useRef(false);
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <FacetChip
+          ref={chipRef}
+          engaged={engaged}
+          aria-label={name}
+          className={wide ? 'br-dh-facet br-dh-facet--wide' : 'br-dh-facet'}
+          data-testid={testId}
+        >
+          <span className="br-dh-facet__label">{label}</span>
+          <Chevron open={open} />
+        </FacetChip>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        data-testid={`${testId}-menu`}
+        onEscapeKeyDown={() => {
+          escaped.current = true;
+        }}
+        // Escape always lands back on the chip, however the menu was opened: a menu opened
+        // with the pointer never focused its trigger, and nested in the Filters popover the
+        // default return could leave focus on the body, outside the popover still open.
+        onCloseAutoFocus={(event) => {
+          if (!escaped.current) return;
+          escaped.current = false;
+          event.preventDefault();
+          chipRef.current?.focus();
+        }}
+      >
+        <DropdownMenuRadioGroup value={value} onValueChange={onPick}>
+          {rows.map((row) => (
+            <DropdownMenuRadioItem key={row.value} value={row.value} hint={row.hint}>
+              <span className="min-w-0 flex-1 truncate">{row.label}</span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+const ANY = 'any';
+
+/** The origins the chat has calls from, by the summary's aggregates. */
+function presentOrigins(summary: SessionDecisionSummary | null): DecisionOrigin[] {
+  return [...new Set((summary?.aggregates ?? []).map((aggregate) => aggregate.origin))];
+}
+
+function SourceFacet({
+  filter,
+  summary,
+  onChange,
+}: {
+  filter: DecisionHistoryFilter;
+  summary: SessionDecisionSummary | null;
+  onChange: (next: DecisionHistoryFilter) => void;
+}) {
+  const options = sourceFilterOptionsFor(presentOrigins(summary), filter.origin ?? null);
+  const current = options.find((option) => option.origin === (filter.origin ?? null));
+  const engaged = !!filter.origin;
+  return (
+    <FacetMenu
+      label={
+        engaged && current ? FILTER_CHIP_COPY.engaged(copy.source, current.label) : copy.source
+      }
+      engaged={engaged}
+      value={filter.origin ?? ANY}
+      rows={options.map((option) => ({ value: option.origin ?? ANY, label: option.label }))}
+      testId="decision-filter-source"
+      onPick={(value) => {
+        const origin = value === ANY ? null : (value as DecisionOrigin);
+        if (origin === (filter.origin ?? null)) return;
+        const keep = outcomeKeptFor(origin, filter);
+        // A batch is one decide call, and the which-one pick belongs to the old source.
+        onChange({
+          ...filter,
+          origin,
+          originId: null,
+          batchId: null,
+          ...(keep ? {} : { outcome: null, errorsOnly: false }),
+        });
+      }}
+    />
+  );
+}
+
+const UNLISTED = 'unlisted';
+
+function OutcomeFacet({
+  filter,
+  onChange,
+}: {
+  filter: DecisionHistoryFilter;
+  onChange: (next: DecisionHistoryFilter) => void;
+}) {
+  const origin = filter.origin ?? null;
+  const options = OUTCOME_FILTER_OPTIONS(origin);
+  const choice = outcomeFilterChoice(origin, filter);
+  const rows: MenuRow[] = options.map((option) => ({ value: option.key, label: option.label }));
+  // An outcome a link brought that this source lists no row for: still said, still checked.
+  if (!choice.listed) rows.push({ value: UNLISTED, label: choice.label });
+  const value = choice.listed ? (choice.key ?? ANY) : UNLISTED;
+  const engaged = value !== ANY;
+  return (
+    <FacetMenu
+      label={engaged ? FILTER_CHIP_COPY.engaged(copy.outcome, choice.label) : copy.outcome}
+      engaged={engaged}
+      value={value}
+      rows={rows}
+      testId="decision-filter-outcome"
+      onPick={(picked) => {
+        const option = options.find((entry) => entry.key === picked);
+        if (option) onChange({ ...filter, ...option.filter });
+      }}
+    />
+  );
+}
+
+/** The nouns the Filters chip names, in field order: `monitor`, `turn`, `probability`. */
+export function filtersSetNouns(filter: DecisionHistoryFilter): string[] {
+  const nouns: string[] = [];
+  if (filter.originId) nouns.push(filter.origin ? copy.which[filter.origin].set : 'source');
+  if (filter.turnId) nouns.push('turn');
+  if (filter.minP != null || filter.maxP != null) nouns.push('probability');
+  return nouns;
+}
+
+function turnRows(summary: SessionDecisionSummary | null) {
+  const turns = new Map<string, { at: string; count: number }>();
+  for (const turn of summary?.recentTurns ?? []) {
+    const entry = turns.get(turn.turnId) ?? { at: turn.firstAt, count: 0 };
+    entry.count += turn.count;
+    if (turn.firstAt && (!entry.at || Date.parse(turn.firstAt) < Date.parse(entry.at))) {
+      entry.at = turn.firstAt;
+    }
+    turns.set(turn.turnId, entry);
+  }
+  return turns;
+}
+
+/**
+ * What the Filters popover holds: which monitor, gate or decide call; which turn; the
+ * probability range. Mounted only while the popover is open.
+ */
+function MoreFilters({
   filter,
   summary,
   onChange,
@@ -400,66 +619,25 @@ function Filters({
   const base = useId();
   const [minText, setMinText] = useState(filter.minP != null ? String(filter.minP) : '');
   const [maxText, setMaxText] = useState(filter.maxP != null ? String(filter.maxP) : '');
-  // A filter applied from outside (a summary row) resets the range fields.
-  const applied = `${filter.minP ?? ''}|${filter.maxP ?? ''}`;
-  const [seenApplied, setSeenApplied] = useState(applied);
-  if (seenApplied !== applied) {
-    setSeenApplied(applied);
-    setMinText(filter.minP != null ? String(filter.minP) : '');
-    setMaxText(filter.maxP != null ? String(filter.maxP) : '');
+  // A range applied from outside (Clear filters, a link) resets a field, unless the field
+  // already reads that value: "0." typed on the way to "0.5" applies 0 and must stay "0.".
+  const [seen, setSeen] = useState({ min: filter.minP ?? null, max: filter.maxP ?? null });
+  if (seen.min !== (filter.minP ?? null) || seen.max !== (filter.maxP ?? null)) {
+    setSeen({ min: filter.minP ?? null, max: filter.maxP ?? null });
+    if (parseP(minText) !== (filter.minP ?? null)) {
+      setMinText(filter.minP != null ? String(filter.minP) : '');
+    }
+    if (parseP(maxText) !== (filter.maxP ?? null)) {
+      setMaxText(filter.maxP != null ? String(filter.maxP) : '');
+    }
   }
   const min = parseP(minText);
   const max = parseP(maxText);
   const rangeInvalid =
     min === 'invalid' || max === 'invalid' || (min !== null && max !== null && min > max);
 
-  const originOptions: SelectOption<DecisionOrigin | null>[] = [
-    { value: null, label: copy.anySource },
-    ...DECISION_ORIGINS.map((origin) => ({ value: origin, label: ORIGIN_FILTER_NAMES[origin] })),
-  ];
-  const outcomeOptions: SelectOption<DecisionOutcome | null>[] = [
-    { value: null, label: copy.anyOutcome },
-    ...DECISION_OUTCOMES.map((outcome) => ({ value: outcome, label: OUTCOME_NAMES[outcome] })),
-  ];
-  // The criteria of the chosen source the summary knows (a monitor by name, a
-  // phase gate by its phase, a decide call by when it ran).
-  const criteria = (summary?.aggregates ?? []).filter(
-    (aggregate) => aggregate.origin === filter.origin && aggregate.originId
-  );
-  const criterionOptions: SelectOption<string | null>[] = [
-    { value: null, label: copy.anyOrigin },
-    ...criteria.map((aggregate) => ({
-      value: aggregate.originId!,
-      label:
-        aggregate.origin === 'tool'
-          ? `${originLabel('tool')} · ${formatDecisionTime(aggregate.lastAt)} (${formatCount(aggregate.count)})`
-          : `${originLabel(aggregate.origin, aggregate.label)} (${formatCount(aggregate.count)})`,
-    })),
-  ];
-  if (filter.originId && !criteria.some((aggregate) => aggregate.originId === filter.originId)) {
-    criterionOptions.push({ value: filter.originId, label: filter.originId });
-  }
-  const turns = new Map<string, { at: string; count: number }>();
-  for (const turn of summary?.recentTurns ?? []) {
-    const entry = turns.get(turn.turnId) ?? { at: turn.firstAt, count: 0 };
-    entry.count += turn.count;
-    if (turn.firstAt && (!entry.at || Date.parse(turn.firstAt) < Date.parse(entry.at))) {
-      entry.at = turn.firstAt;
-    }
-    turns.set(turn.turnId, entry);
-  }
-  const turnOptions: SelectOption<string | null>[] = [
-    { value: null, label: copy.anyTurn },
-    ...[...turns.entries()].map(([turnId, entry]) => ({
-      value: turnId,
-      label: `${formatDecisionTime(entry.at) || turnId} (${formatCount(entry.count)})`,
-    })),
-  ];
-  if (filter.turnId && !turns.has(filter.turnId)) {
-    turnOptions.push({ value: filter.turnId, label: filter.turnId });
-  }
-
-  const commitRange = (nextMin: string, nextMax: string) => {
+  // G-6: the range applies as it is typed, whenever both fields read a valid range.
+  const applyRange = (nextMin: string, nextMax: string) => {
     const lo = parseP(nextMin);
     const hi = parseP(nextMax);
     if (lo === 'invalid' || hi === 'invalid' || (lo !== null && hi !== null && lo > hi)) return;
@@ -467,134 +645,265 @@ function Filters({
     onChange({ ...filter, minP: lo, maxP: hi });
   };
 
-  const moreSet =
-    !!filter.turnId || !!filter.errorsOnly || filter.minP != null || filter.maxP != null;
+  const origin = filter.origin ?? null;
+  const which = origin ? copy.which[origin] : null;
+  const criteria = (summary?.aggregates ?? []).filter(
+    (aggregate) => aggregate.origin === origin && aggregate.originId
+  );
+  const showWhich = !!which && (criteria.length >= 2 || !!filter.originId);
+  const whichRows: MenuRow[] = which
+    ? [
+        { value: ANY, label: which.any },
+        ...criteria.map((aggregate) => ({
+          value: aggregate.originId!,
+          label:
+            aggregate.origin === 'tool'
+              ? formatShortTime(aggregate.lastAt) || which.noun
+              : aggregate.label || which.noun,
+          hint:
+            aggregate.origin === 'tool'
+              ? copy.chunkCount(aggregate.count)
+              : copy.callCount(aggregate.count),
+        })),
+      ]
+    : [];
+  const pickedCriterion = criteria.find((aggregate) => aggregate.originId === filter.originId);
+  if (filter.originId && !pickedCriterion) {
+    whichRows.push({ value: filter.originId, label: copy.notListed });
+  }
+  const whichLabel = !which
+    ? ''
+    : !filter.originId
+      ? which.noun
+      : FILTER_CHIP_COPY.engaged(
+          which.noun,
+          whichRows.find((row) => row.value === filter.originId)?.label ?? copy.notListed
+        );
+
+  const turns = turnRows(summary);
+  const turnOptions: MenuRow[] = [
+    { value: ANY, label: copy.anyTurn },
+    ...[...turns.entries()].map(([turnId, entry]) => ({
+      value: turnId,
+      label: formatShortTime(entry.at) || copy.earlierTurn,
+      hint: copy.callCount(entry.count),
+    })),
+  ];
+  if (filter.turnId && !turns.has(filter.turnId)) {
+    turnOptions.push({ value: filter.turnId, label: copy.earlierTurn });
+  }
+  const turnLabel = filter.turnId
+    ? FILTER_CHIP_COPY.engaged(
+        copy.turn,
+        turnOptions.find((row) => row.value === filter.turnId)?.label ?? copy.earlierTurn
+      )
+    : copy.turn;
 
   return (
-    <div className="br-dh-filters" role="group" aria-label={copy.filtersLabel}>
-      <div className="br-dh-filters__row">
-        <FilterSelect
-          id={`${base}-source`}
-          label={copy.source}
-          value={filter.origin ?? null}
-          options={originOptions}
-          testId="decision-filter-source"
-          // A batch is one decide call: another source cannot hold it.
-          onChange={(origin) => onChange({ ...filter, origin, originId: null, batchId: null })}
+    <div className="br-dh-more" data-testid="decision-filters-more">
+      {showWhich && which ? (
+        <FacetMenu
+          wide
+          label={whichLabel}
+          engaged={!!filter.originId}
+          value={filter.originId ?? ANY}
+          rows={whichRows}
+          testId="decision-filter-origin"
+          onPick={(value) =>
+            onChange({ ...filter, originId: value === ANY ? null : value, batchId: null })
+          }
         />
-        {filter.origin && criterionOptions.length > 1 ? (
-          <FilterSelect
-            id={`${base}-origin`}
-            label={copy.origin}
-            value={filter.originId ?? null}
-            options={criterionOptions}
-            testId="decision-filter-origin"
-            onChange={(originId) => onChange({ ...filter, originId, batchId: null })}
+      ) : null}
+      <FacetMenu
+        wide
+        label={turnLabel}
+        engaged={!!filter.turnId}
+        value={filter.turnId ?? ANY}
+        rows={turnOptions}
+        testId="decision-filter-turn"
+        onPick={(value) => onChange({ ...filter, turnId: value === ANY ? null : value })}
+      />
+      <div className="br-dh-range">
+        <span className="br-dh-range__label" id={`${base}-range`}>
+          {copy.pRange}
+          <InfoTip label={copy.pRange} help={copy.pRangeHelp} />
+        </span>
+        <span className="br-dh-range__fields" role="group" aria-labelledby={`${base}-range`}>
+          <Input
+            aria-label={copy.minP}
+            aria-describedby={rangeInvalid ? `${base}-range-error` : undefined}
+            aria-invalid={rangeInvalid || undefined}
+            inputMode="decimal"
+            placeholder="0"
+            value={minText}
+            data-testid="decision-filter-min-p"
+            onChange={(event) => {
+              setMinText(event.target.value);
+              applyRange(event.target.value, maxText);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') applyRange(minText, maxText);
+            }}
           />
-        ) : null}
-        {filter.batchId ? (
-          // No select names a batch, so the filter a decide card opened with is said here,
-          // where it can also be removed.
-          <button
-            type="button"
-            className="br-dh-chip"
-            aria-label={copy.removeBatch}
-            data-testid="decision-filter-batch"
-            onClick={() => onChange({ ...filter, batchId: null })}
-          >
-            <span>{copy.batchOnly}</span>
-            <X aria-hidden="true" />
-          </button>
-        ) : null}
-        <FilterSelect
-          id={`${base}-outcome`}
-          label={copy.outcome}
-          value={filter.outcome ?? null}
-          options={outcomeOptions}
-          testId="decision-filter-outcome"
-          onChange={(outcome) => onChange({ ...filter, outcome })}
-        />
-      </div>
-      <Disclosure label={copy.moreFilters} defaultOpen={moreSet} className="br-dh-filters__more">
-        <div className="br-dh-filters__row">
-          <FilterSelect
-            id={`${base}-turn`}
-            label={copy.turn}
-            value={filter.turnId ?? null}
-            options={turnOptions}
-            testId="decision-filter-turn"
-            onChange={(turnId) => onChange({ ...filter, turnId })}
+          <span aria-hidden="true">{copy.to}</span>
+          <Input
+            aria-label={copy.maxP}
+            aria-describedby={rangeInvalid ? `${base}-range-error` : undefined}
+            aria-invalid={rangeInvalid || undefined}
+            inputMode="decimal"
+            placeholder="1"
+            value={maxText}
+            data-testid="decision-filter-max-p"
+            onChange={(event) => {
+              setMaxText(event.target.value);
+              applyRange(minText, event.target.value);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') applyRange(minText, maxText);
+            }}
           />
-          <div className="br-dh-filter br-dh-filter--range">
-            <span className="br-dh-filter__label" id={`${base}-range`}>
-              P
-            </span>
-            <div className="br-dh-range">
-              <Input
-                aria-label={copy.minP}
-                aria-describedby={rangeInvalid ? `${base}-range-error` : undefined}
-                aria-invalid={rangeInvalid || undefined}
-                inputMode="decimal"
-                placeholder="0"
-                value={minText}
-                data-testid="decision-filter-min-p"
-                onChange={(event) => setMinText(event.target.value)}
-                onBlur={() => commitRange(minText, maxText)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') commitRange(minText, maxText);
-                }}
-              />
-              <span aria-hidden="true">to</span>
-              <Input
-                aria-label={copy.maxP}
-                aria-describedby={rangeInvalid ? `${base}-range-error` : undefined}
-                aria-invalid={rangeInvalid || undefined}
-                inputMode="decimal"
-                placeholder="1"
-                value={maxText}
-                data-testid="decision-filter-max-p"
-                onChange={(event) => setMaxText(event.target.value)}
-                onBlur={() => commitRange(minText, maxText)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') commitRange(minText, maxText);
-                }}
-              />
-            </div>
-          </div>
-          <label className="br-dh-check">
-            <Checkbox
-              checked={filter.errorsOnly === true}
-              data-testid="decision-filter-errors"
-              onChange={(event) => onChange({ ...filter, errorsOnly: event.target.checked })}
-            />
-            <span>{copy.errorsOnly}</span>
-          </label>
-        </div>
+        </span>
         {rangeInvalid ? (
-          <p className="br-dh-filters__error" id={`${base}-range-error`} role="alert">
+          <p className="br-dh-range__error" id={`${base}-range-error`} role="alert">
             {copy.pRangeInvalid}
           </p>
         ) : null}
-      </Disclosure>
+      </div>
+    </div>
+  );
+}
+
+function FiltersFacet({
+  filter,
+  summary,
+  onChange,
+}: {
+  filter: DecisionHistoryFilter;
+  summary: SessionDecisionSummary | null;
+  onChange: (next: DecisionHistoryFilter) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const nouns = filtersSetNouns(filter);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <FacetChip
+          engaged={nouns.length > 0}
+          aria-label={nouns.length > 0 ? copy.filtersSetName(nouns) : copy.filters}
+          // Kept while its popover is open (R8): `.br-surface-trigger` in main.css.
+          className="br-dh-facet br-dh-facet--filters br-surface-trigger"
+          data-testid="decision-filter-more"
+        >
+          <SlidersHorizontal aria-hidden="true" className="br-dh-facet__glyph" />
+          <span className="br-dh-facet__label">
+            {nouns.length > 0 ? copy.filtersSet(nouns) : copy.filters}
+          </span>
+          <Chevron open={open} />
+        </FacetChip>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="flex w-64 flex-col items-stretch gap-1 p-2">
+        <MoreFilters filter={filter} summary={summary} onChange={onChange} />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** A filter no chip names (a card's one batch or one call), engaged, with its own remove. */
+function RemovableChip({
+  label,
+  name,
+  onRemove,
+  testId,
+}: {
+  label: string;
+  name: string;
+  onRemove: () => void;
+  testId: string;
+}) {
+  return (
+    <FacetChip
+      engaged
+      aria-label={name}
+      className="br-dh-facet"
+      data-testid={testId}
+      onClick={onRemove}
+    >
+      <span className="br-dh-facet__label">{label}</span>
+      <X aria-hidden="true" className="br-dh-facet__remove" />
+    </FacetChip>
+  );
+}
+
+function Filters({
+  filter,
+  summary,
+  onChange,
+  onClear,
+}: {
+  filter: DecisionHistoryFilter;
+  summary: SessionDecisionSummary | null;
+  onChange: (next: DecisionHistoryFilter) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div
+      className="br-dh__filters"
+      role="group"
+      aria-label={copy.filtersLabel}
+      data-testid="decision-filters"
+    >
+      <SourceFacet filter={filter} summary={summary} onChange={onChange} />
+      <OutcomeFacet filter={filter} onChange={onChange} />
+      <FiltersFacet filter={filter} summary={summary} onChange={onChange} />
+      {filter.batchId ? (
+        <RemovableChip
+          label={copy.batchOnly}
+          name={copy.removeBatch}
+          testId="decision-filter-batch"
+          onRemove={() => onChange({ ...filter, batchId: null })}
+        />
+      ) : null}
+      {filter.decisionId ? (
+        <RemovableChip
+          label={copy.callOnly}
+          name={copy.removeCall}
+          testId="decision-filter-call"
+          onRemove={() => onChange({ ...filter, decisionId: null })}
+        />
+      ) : null}
+      {filterIsSet(filter) ? (
+        <Button
+          type="button"
+          variant="link"
+          size="xs"
+          className="br-decision-link br-dh__clear"
+          data-testid="decision-filter-clear"
+          onClick={onClear}
+        >
+          {copy.clear}
+        </Button>
+      ) : null}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Rows and the bar
+// Rows (R1: verdict words and glyph shapes; R2: the probability named)
 // ---------------------------------------------------------------------------
 
-function rowLabel(record: DecisionRecord, p: number | null): string {
-  return [
-    OUTCOME_NAMES[record.outcome],
-    recordTitle(record),
-    recordAnswer(record),
-    p !== null ? `P ${formatProbability(p)}` : null,
-    formatDecisionTime(record.createdAt),
-    formatLatency(record.latencyMs),
-  ]
-    .filter(Boolean)
-    .join(', ');
+function RecordGlyph({ record }: { record: DecisionRecord }) {
+  const state = recordGlyphState(record);
+  const Icon = RECORD_GLYPHS[state];
+  return (
+    <span
+      className="br-dh-row__glyph"
+      aria-hidden="true"
+      data-tone={RECORD_GLYPH_TONES[state]}
+      data-glyph={state}
+    >
+      <Icon />
+    </span>
+  );
 }
 
 function DecisionRow({
@@ -612,10 +921,7 @@ function DecisionRow({
   id: string;
   onSelect: (id: string) => void;
 }) {
-  const Icon = OUTCOME_ICONS[record.outcome];
-  const p = recordProbability(record);
-  const model = decisionModelLabel(record.model);
-  const latency = formatLatency(record.latencyMs);
+  const probability = rowProbability(record);
   return (
     <div
       id={id}
@@ -623,7 +929,7 @@ function DecisionRow({
       aria-selected={selected}
       aria-posinset={index + 1}
       aria-setsize={total}
-      aria-label={rowLabel(record, p)}
+      aria-label={rowLabel(record)}
       className="br-dh-row"
       data-outcome={record.outcome}
       data-selected={selected ? '' : undefined}
@@ -632,22 +938,22 @@ function DecisionRow({
       style={{ top: index * DECISION_ROW_HEIGHT }}
       onClick={() => onSelect(record.id)}
     >
-      <span className="br-dh-row__glyph" aria-hidden="true">
-        <Icon />
-      </span>
+      <RecordGlyph record={record} />
       <span className="br-dh-row__text" aria-hidden="true">
         <span className="br-dh-row__line">
           <span className="br-dh-row__title">{recordTitle(record)}</span>
-          <span className="br-dh-row__answer">{recordAnswer(record)}</span>
+          <span className="br-dh-row__answer" data-testid="decision-row-verdict">
+            {recordVerdict(record)}
+          </span>
         </span>
         <span className="br-dh-row__line br-dh-row__meta">
-          <span className="br-dh-row__when">
-            {[formatDecisionTime(record.createdAt), model, latency].filter(Boolean).join(' · ')}
-          </span>
-          <span className="br-dh-row__p">
-            <ProbabilityBar p={p} />
-            <span className="br-dh-row__p-value">{formatProbability(p)}</span>
-          </span>
+          <span className="br-dh-row__when">{recordSubtitle(record)}</span>
+          {probability ? (
+            <span className="br-dh-row__p">
+              <ProbabilityBar p={probability.p} />
+              <span className="br-dh-row__p-value">{probability.text}</span>
+            </span>
+          ) : null}
         </span>
       </span>
     </div>
@@ -660,9 +966,10 @@ function DecisionRow({
 
 function ContextView({ context }: { context: DecisionContext }) {
   if (context.type === 'text') {
-    return <pre className="br-dh-context__text">{context.text}</pre>;
+    return <p className="br-dh-context__prose">{context.text}</p>;
   }
   if (context.type === 'json') {
+    // JSON is code: the mono layer.
     return (
       <pre className="br-dh-context__text">
         {typeof context.value === 'string' ? context.value : JSON.stringify(context.value, null, 2)}
@@ -681,118 +988,149 @@ function ContextView({ context }: { context: DecisionContext }) {
   );
 }
 
-function QuestionBlock({
-  question,
-  decision,
-}: {
-  question: NamedQuestion | null;
-  decision: Decision | null;
-}) {
-  const name = question?.name ?? decision?.question ?? '';
-  const threshold = question?.threshold ?? null;
-  // The options in the question's order, with any the decision named that the
-  // question does not (a newer daemon's) after them.
+/** The option keys in the question's order, then any the decision named that it does not. */
+function optionKeys(question: NamedQuestion | null, decision: Decision): string[] {
   const keys: string[] = [];
   if (question?.kind.type === 'binary') keys.push('yes', 'no');
   else if (question?.kind.type === 'choice') keys.push(...question.kind.options.map((o) => o.name));
   else if (question?.kind.type === 'score')
     keys.push(...question.kind.levels.map((_, i) => String(i)));
-  for (const entry of decision?.probabilities ?? [])
-    if (!keys.includes(entry.key)) keys.push(entry.key);
-  const chosen = decision ? (decision.answer ? readableAnswer(decision, question) : null) : null;
-  const answerKeyName =
-    decision?.answer?.type === 'binary'
-      ? decision.answer.value
-        ? 'yes'
-        : 'no'
-      : decision?.answer?.type === 'choice'
-        ? decision.answer.option
-        : decision?.answer?.type === 'score'
-          ? String(decision.answer.level)
-          : null;
+  for (const entry of decision.probabilities) if (!keys.includes(entry.key)) keys.push(entry.key);
+  return keys;
+}
+
+/** One question's option bars, the threshold marked on the option it watches. */
+function OptionBars({
+  question,
+  decision,
+  heading,
+}: {
+  question: NamedQuestion | null;
+  decision: Decision;
+  heading: string | null;
+}) {
+  const threshold = question?.threshold ?? null;
+  const chosen = answerKey(decision.answer);
   return (
-    <section className="br-dh-question" data-testid="decision-question" data-question={name}>
-      <div className="br-dh-question__head">
-        <span className="br-dh-question__name">{name}</span>
-        {decision?.passed === true ? (
-          <span className="br-dh-chip" data-state="passed">
-            <Check aria-hidden="true" />
-            {copy.passed}
-          </span>
-        ) : decision?.passed === false ? (
-          <span className="br-dh-chip" data-state="failed">
-            <X aria-hidden="true" />
-            {copy.failed}
-          </span>
-        ) : null}
-      </div>
-      {question?.instructions ? (
-        <p className="br-dh-question__instructions">{question.instructions}</p>
-      ) : null}
-      <p className="br-dh-question__threshold">
-        {threshold
-          ? `${copy.threshold} ${thresholdSummary(threshold, question)}`
-          : copy.noThreshold}
-        {decision?.passProbability !== null && decision?.passProbability !== undefined
-          ? ` · P ${formatProbability(decision.passProbability)}`
-          : ''}
-      </p>
-      {chosen !== null ? (
-        <p className="br-dh-question__answer">
-          {copy.answer}: <strong className="font-semibold">{chosen}</strong>
-          {decision && answerProbability(decision) !== null
-            ? ` · P ${formatProbability(answerProbability(decision))}`
-            : ''}
-          {decision?.confidence !== null && decision?.confidence !== undefined ? (
-            <>
-              {` · ${copy.confidence} ${formatProbability(decision.confidence)}`}
-              <InfoTip label={copy.confidence} help={copy.confidenceHelp} />
-            </>
-          ) : null}
+    <div className="br-dh-options-group">
+      {heading ? <p className="br-dh-options__heading">{heading}</p> : null}
+      <ul className="br-dh-options" aria-label={heading ?? copy.probabilities}>
+        {optionKeys(question, decision).map((key) => {
+          const p = decision.probabilities.find((entry) => entry.key === key)?.p ?? 0;
+          const mark = thresholdOnOption(threshold, key);
+          const label = outcomeLabel(question, key);
+          return (
+            <li
+              key={key}
+              className="br-dh-option"
+              data-chosen={key === chosen ? '' : undefined}
+              data-testid="decision-option"
+            >
+              <span className="br-dh-option__label">{label}</span>
+              <ProbabilityBar p={p} threshold={mark} className="br-pbar--wide" />
+              <span className="br-dh-option__p">
+                <span className="sr-only">{`${label}: `}</span>
+                {formatProbability(p)}
+                {mark !== null ? (
+                  <span className="sr-only">{`, threshold ${formatProbability(mark)}`}</span>
+                ) : null}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+interface QuestionEntry {
+  question: NamedQuestion | null;
+  decision: Decision | null;
+}
+
+/** The questions in their order, then decisions no listed question names (a newer daemon's). */
+function questionEntries(record: DecisionRecord): QuestionEntry[] {
+  const names = new Set(record.questions.map((question) => question.name));
+  return [
+    ...record.questions.map((question) => ({
+      question,
+      decision: record.decisions.find((decision) => decision.question === question.name) ?? null,
+    })),
+    ...record.decisions
+      .filter((decision) => !names.has(decision.question))
+      .map((decision) => ({ question: null, decision })),
+  ];
+}
+
+/** The question in plain words: its text, else the monitor's or phase's name, else `Question 2`. */
+function questionText(record: DecisionRecord, entry: QuestionEntry, index: number): string {
+  const text = entry.question?.instructions?.trim();
+  if (text) return text;
+  const named =
+    (record.origin === 'monitor' && !isSeveralMonitors(record)) || record.origin === 'gate';
+  if (named && record.label?.trim()) return record.label.trim();
+  return copy.question(index + 1);
+}
+
+function QuestionBlock({
+  record,
+  entry,
+  index,
+  several,
+}: {
+  record: DecisionRecord;
+  entry: QuestionEntry;
+  index: number;
+  several: boolean;
+}) {
+  const { question, decision } = entry;
+  const names = labelNames(record);
+  // A several-question monitor or gate call: the block opens on whose question it is.
+  const owner =
+    several && record.origin === 'monitor' && names.length === record.questions.length
+      ? (names[index] ?? null)
+      : null;
+  const verdict =
+    several &&
+    decision &&
+    decision.passed !== null &&
+    (record.origin === 'monitor' || record.origin === 'gate')
+      ? verdictWord(record.origin, decision.passed ? 'passed' : 'failed')
+      : null;
+  const key = decision ? answerKey(decision.answer) : null;
+  const answerP = decision ? answerProbability(decision) : null;
+  const threshold = thresholdLine(question?.threshold, question, decision?.passProbability);
+  return (
+    <section className="br-dh-question" data-testid="decision-question">
+      {owner || verdict ? (
+        <p className="br-dh-question__owner">
+          <span className="br-dh-question__owner-name">{owner}</span>
+          {verdict ? <span className="br-dh-question__owner-verdict">{verdict}</span> : null}
         </p>
       ) : null}
-      {decision ? (
-        <ul className="br-dh-options" aria-label={`${name} options`}>
-          {keys.map((key) => {
-            const p = decision.probabilities.find((entry) => entry.key === key)?.p ?? 0;
-            const mark = thresholdOnOption(threshold, key);
-            const label = outcomeLabel(question, key);
-            return (
-              <li
-                key={key}
-                className="br-dh-option"
-                data-chosen={key === answerKeyName ? '' : undefined}
-                data-testid="decision-option"
-              >
-                <span className="br-dh-option__label">{label}</span>
-                <ProbabilityBar p={p} threshold={mark} className="br-pbar--wide" />
-                <span className="br-dh-option__p">
-                  <span className="sr-only">{`${label}: `}</span>
-                  {formatProbability(p)}
-                  {mark !== null ? (
-                    <span className="sr-only">{`, threshold ${formatProbability(mark)}`}</span>
-                  ) : null}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
+      <p className="br-dh-question__text" data-testid="decision-question-text">
+        {questionText(record, entry, index)}
+      </p>
+      {decision && decision.answer ? (
+        <p className="br-dh-question__answer" data-testid="decision-question-answer">
+          <strong className="font-semibold">{readableAnswer(decision, question)}</strong>
+          {key !== null && answerP !== null
+            ? ` · ${namedProbability(outcomeLabel(question, key), answerP)}`
+            : ''}
+        </p>
       ) : null}
-      {decision ? (
-        <p
-          className="br-dh-question__calibration"
-          data-calibrated={decision.calibrated ? '' : undefined}
-        >
-          {calibrationText(decision.source, decision.calibrated)}
+      {threshold ? (
+        <p className="br-dh-question__threshold" data-testid="decision-question-threshold">
+          {threshold}
         </p>
       ) : null}
     </section>
   );
 }
 
-function Fact({ label, children }: { label: string; children: ReactNode }) {
+function Fact({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
-    <div className="br-dh-fact">
+    <div className="br-decision-fact">
       <dt>{label}</dt>
       <dd>{children}</dd>
     </div>
@@ -805,41 +1143,74 @@ type DetailState =
   | { status: 'missing' }
   | { status: 'error' };
 
+export type DetailView = 'saw' | 'raw';
+
 function DecisionDetailPane({
   record,
   detail,
   onRetry,
+  detailsOpen,
+  onDetailsOpenChange,
+  view,
+  onViewChange,
 }: {
   record: DecisionRecord;
   detail: DetailState | undefined;
   onRetry: () => void;
+  detailsOpen: boolean;
+  onDetailsOpenChange: (open: boolean) => void;
+  view: DetailView;
+  onViewChange: (view: DetailView) => void;
 }) {
   const shown = detail?.status === 'ready' ? detail.detail.record : record;
-  const Icon = OUTCOME_ICONS[shown.outcome];
-  const model = shown.model ? `${decisionModelLabel(shown.model)} (${shown.model.provider})` : null;
+  const entries = questionEntries(shown);
+  const several = entries.length > 1;
+  const headVerdict =
+    shown.origin === 'monitor' ||
+    shown.origin === 'gate' ||
+    shown.outcome === 'error' ||
+    shown.outcome === 'refused'
+      ? recordVerdict(shown)
+      : null;
+  const uncalibrated =
+    shown.calibrated === false || shown.decisions.some((decision) => !decision.calibrated);
+  const model = decisionModelDisplay(shown.model, shown.tier);
   const tokens =
     shown.inputTokens !== null || shown.outputTokens !== null
       ? `${formatCount(shown.inputTokens ?? 0)} in · ${formatCount(shown.outputTokens ?? 0)} out`
       : null;
-  const questionNames = new Set(shown.questions.map((question) => question.name));
-  const orphanDecisions = shown.decisions.filter(
-    (decision) => !questionNames.has(decision.question)
-  );
+  const certainties = shown.decisions
+    .map((decision) => decision.confidence)
+    .filter((value): value is number => value !== null);
+  const calibrations = [
+    ...new Set(
+      shown.decisions.map((decision) => calibrationText(decision.source, decision.calibrated))
+    ),
+  ];
+  const chunk =
+    shown.origin === 'tool'
+      ? shown.chunkIndex !== null
+        ? copy.chunkNumber(shown.chunkIndex + 1)
+        : shown.chunkId
+      : null;
+  const rawJson =
+    detail?.status === 'ready'
+      ? JSON.stringify(detail.detail.raw ?? detail.detail.record, null, 2)
+      : JSON.stringify(shown, null, 2);
+
   return (
     <div className="br-dh-detail__body" data-testid="decision-detail" data-decision-id={shown.id}>
       <div className="br-dh-detail__head">
-        <span className="br-dh-row__glyph" aria-hidden="true">
-          <Icon />
-        </span>
+        <RecordGlyph record={shown} />
         <h3 className="br-dh-detail__title">{recordTitle(shown)}</h3>
-        <span className="br-dh-detail__outcome" data-outcome={shown.outcome}>
-          {OUTCOME_NAMES[shown.outcome]}
-        </span>
+        {headVerdict ? (
+          <span className="br-dh-detail__outcome" data-testid="decision-detail-verdict">
+            {headVerdict}
+          </span>
+        ) : null}
       </div>
-      <p className="br-dh-detail__sub">
-        {[originLabel(shown.origin, shown.label), formatDecisionTime(shown.createdAt)]
-          .filter(Boolean)
-          .join(' · ')}
+      <p className="br-dh-detail__sub" data-testid="decision-detail-sub">
+        {[kindWord(shown), formatDecisionTime(shown.createdAt)].filter(Boolean).join(' · ')}
       </p>
       {shown.error ? (
         <p className="br-dh-detail__error" role="note">
@@ -848,85 +1219,141 @@ function DecisionDetailPane({
       ) : null}
       {!shown.privacyEnforced ? <p className="br-dh-detail__note">{copy.privacyOff}</p> : null}
 
-      <h4 className="br-dh-detail__section">{copy.questions}</h4>
-      {shown.questions.map((question) => (
-        <QuestionBlock
-          key={question.name}
-          question={question}
-          decision={shown.decisions.find((decision) => decision.question === question.name) ?? null}
-        />
-      ))}
-      {orphanDecisions.map((decision) => (
-        <QuestionBlock key={decision.question} question={null} decision={decision} />
-      ))}
-
-      <dl className="br-dh-facts">
-        {model ? <Fact label={copy.model}>{model}</Fact> : null}
-        {shown.servedModel && shown.servedModel !== shown.model?.model ? (
-          <Fact label="Served by">{shown.servedModel}</Fact>
-        ) : null}
-        {shown.tier ? (
-          <Fact label={copy.tier}>{shown.tier === 'private' ? copy.private : copy.public}</Fact>
-        ) : null}
-        {formatLatency(shown.latencyMs) ? (
-          <Fact label={copy.latency}>{formatLatency(shown.latencyMs)}</Fact>
-        ) : null}
-        {tokens ? <Fact label={copy.tokens}>{tokens}</Fact> : null}
-        {shown.chunkId || shown.chunkIndex !== null ? (
-          <Fact label={copy.chunk}>
-            {[shown.chunkId, shown.chunkIndex !== null ? `#${shown.chunkIndex + 1}` : null]
-              .filter(Boolean)
-              .join(' ')}
-          </Fact>
-        ) : null}
-        {shown.batchId ? <Fact label={copy.batch}>{shown.batchId}</Fact> : null}
-        {shown.turnId ? <Fact label={copy.turnId}>{shown.turnId}</Fact> : null}
-      </dl>
-
-      <h4 className="br-dh-detail__section">
-        {copy.whatItSaw}
-        {shown.contextBytes > 0 ? (
-          <span className="br-dh-detail__section-meta">{formatBytes(shown.contextBytes)}</span>
-        ) : null}
-      </h4>
-      {shown.contextTruncated ? (
-        <p className="br-dh-detail__note">
-          {copy.contextTruncated(formatBytes(shown.contextBytes))}
-        </p>
-      ) : null}
-      <div className="br-dh-context" data-testid="decision-context">
-        {detail === undefined || detail.status === 'loading' ? (
-          <>
-            <pre className="br-dh-context__text" data-preview="">
-              {shown.contextPreview}
-            </pre>
-            <p className="br-dh-detail__note" aria-live="polite">
-              {copy.contextLoading}
-            </p>
-          </>
-        ) : detail.status === 'ready' && detail.detail.context ? (
-          <ContextView context={detail.detail.context} />
-        ) : detail.status === 'error' ? (
-          <p className="br-dh-detail__note" role="alert">
-            {copy.detailFailed}{' '}
-            <button type="button" className="br-dh-link" onClick={onRetry}>
-              {copy.retry}
-            </button>
-          </p>
-        ) : detail.status === 'missing' ? (
-          <p className="br-dh-detail__note">{copy.detailMissing}</p>
-        ) : (
-          <p className="br-dh-detail__note">{copy.contextUnavailable}</p>
-        )}
+      <div className="br-dh-questions">
+        {entries.map((entry, index) => (
+          <QuestionBlock
+            key={entry.question?.name ?? entry.decision?.question ?? index}
+            record={shown}
+            entry={entry}
+            index={index}
+            several={several}
+          />
+        ))}
       </div>
 
-      {detail?.status === 'ready' ? (
-        <Disclosure label={copy.raw} className="br-dh-raw">
-          <pre className="br-dh-context__text" data-testid="decision-raw">
-            {JSON.stringify(detail.detail.raw ?? detail.detail.record, null, 2)}
-          </pre>
-        </Disclosure>
+      {uncalibrated && shown.decisions.length > 0 ? (
+        <p className="br-dh-detail__note br-dh-detail__estimate" data-testid="decision-estimate">
+          {CALIBRATION_COPY.estimate}
+          <InfoTip label={copy.probabilities} help={CALIBRATION_COPY.estimateTip} />
+        </p>
       ) : null}
+
+      <Disclosure
+        label={copy.details}
+        open={detailsOpen}
+        onOpenChange={onDetailsOpenChange}
+        className="br-dh-details"
+      >
+        <div className="br-dh-details__body" data-testid="decision-details">
+          {entries.map((entry, index) =>
+            entry.decision ? (
+              <OptionBars
+                key={entry.question?.name ?? entry.decision.question}
+                question={entry.question}
+                decision={entry.decision}
+                heading={several ? questionText(shown, entry, index) : null}
+              />
+            ) : null
+          )}
+          <dl className="br-decision-facts">
+            {model ? <Fact label={copy.model}>{model}</Fact> : null}
+            {shown.servedModel && shown.servedModel !== shown.model?.model ? (
+              <Fact label={copy.servedBy}>{shown.servedModel}</Fact>
+            ) : null}
+            {shown.tier ? (
+              <Fact label={copy.tier}>{shown.tier === 'private' ? copy.private : copy.public}</Fact>
+            ) : null}
+            {formatLatency(shown.latencyMs) ? (
+              <Fact label={copy.latency}>{formatLatency(shown.latencyMs)}</Fact>
+            ) : null}
+            {tokens ? <Fact label={copy.tokens}>{tokens}</Fact> : null}
+            {certainties.length > 0 ? (
+              <Fact
+                label={
+                  <span className="br-decision-fact__label">
+                    {copy.certainty}
+                    <InfoTip label={copy.certainty} help={copy.certaintyHelp} />
+                  </span>
+                }
+              >
+                {certainties.map((value) => formatProbability(value)).join(' · ')}
+              </Fact>
+            ) : null}
+            {calibrations.length > 0 ? (
+              <Fact label={copy.probabilities}>{calibrations.join(' ')}</Fact>
+            ) : null}
+            {chunk ? <Fact label={copy.chunk}>{chunk}</Fact> : null}
+          </dl>
+
+          <div className="br-dh-saw">
+            <div className="br-dh-saw__bar">
+              <SegmentedControl
+                aria-label={copy.show}
+                value={view}
+                onValueChange={(next) => onViewChange(next as DetailView)}
+                options={[
+                  { value: 'saw', label: copy.whatItSaw },
+                  { value: 'raw', label: copy.raw },
+                ]}
+                data-testid="decision-detail-view"
+              />
+              {shown.contextBytes > 0 ? (
+                <span className="br-dh-saw__size">{formatBytes(shown.contextBytes)}</span>
+              ) : null}
+            </div>
+            {view === 'raw' ? (
+              <div className="br-dh-context biorouter-focus-region" tabIndex={0}>
+                <pre className="br-dh-context__text" data-testid="decision-raw">
+                  {rawJson}
+                </pre>
+              </div>
+            ) : (
+              <>
+                <div
+                  className="br-dh-context biorouter-focus-region"
+                  tabIndex={0}
+                  data-testid="decision-context"
+                >
+                  {detail === undefined || detail.status === 'loading' ? (
+                    <p className="br-dh-context__prose" data-preview="">
+                      {shown.contextPreview}
+                    </p>
+                  ) : detail.status === 'ready' && detail.detail.context ? (
+                    <ContextView context={detail.detail.context} />
+                  ) : null}
+                </div>
+                {shown.contextTruncated ? (
+                  <p className="br-dh-detail__note">
+                    {copy.contextTruncated(formatBytes(shown.contextBytes))}
+                  </p>
+                ) : null}
+                {detail === undefined || detail.status === 'loading' ? (
+                  <p className="br-dh-detail__note" aria-live="polite">
+                    {copy.contextLoading}
+                  </p>
+                ) : detail.status === 'error' ? (
+                  <p className="br-dh-detail__note" role="alert">
+                    {copy.detailFailed}{' '}
+                    <Button
+                      type="button"
+                      variant="link"
+                      size="xs"
+                      className="br-decision-link"
+                      onClick={onRetry}
+                    >
+                      {copy.retry}
+                    </Button>
+                  </p>
+                ) : detail.status === 'missing' ? (
+                  <p className="br-dh-detail__note">{copy.detailMissing}</p>
+                ) : !detail.detail.context ? (
+                  <p className="br-dh-detail__note">{copy.contextUnavailable}</p>
+                ) : null}
+              </>
+            )}
+          </div>
+        </div>
+      </Disclosure>
     </div>
   );
 }
@@ -949,14 +1376,16 @@ export interface DecisionHistoryProps {
  * tab of the artifact side panel (kind `decisions`), from the chat summary's
  * Decisions rows, a `decide` tool card or a turn's decision marker.
  *
- * Filters above (source, criterion, outcome; more: turn, probability range,
- * errors only), then a windowed list, newest first, that asks for the next page
- * as it nears the end, so a chat with thousands of calls draws only the rows in
- * view. Beside it (or under it, in a narrow panel) the selected call in full:
- * the exact context it was sent, its questions, each option's probability with
- * the threshold marked, whether it passed, whether its probabilities are
- * calibrated (said in words), the model and tier, latency and tokens, and the
- * raw JSON. Reads only, so it works the same in a `biorouter serve` browser.
+ * One filter line (Source and Outcome up front; which-one, turn and the
+ * probability range behind Filters), then a windowed list, newest first, that
+ * asks for the next page as it nears the end, so a chat with thousands of calls
+ * draws only the rows in view. Each row says Fired or Quiet for a monitor,
+ * Passed or Not passed for a gate, and the answer for every other call, with the
+ * probability named (R1, R2). Beside it (or under it, in a narrow panel) the
+ * selected call: the question in plain words, the answer and its own
+ * probability, the threshold line, and everything else (bars, model, tier,
+ * latency, tokens, certainty, what it saw, raw JSON) under Details (R7). Reads
+ * only, so it works the same in a `biorouter serve` browser.
  */
 export default function DecisionHistory({
   sessionId,
@@ -969,6 +1398,9 @@ export default function DecisionHistory({
   // Selection: the call a link named (a decision card's), else the newest row once
   // the list lands, kept while it stays listed.
   const [selectedId, setSelectedId] = useState<string | null>(initial.decisionId ?? null);
+  // Details and the What it saw / Raw JSON choice hold for the tab's life, across rows.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailView, setDetailView] = useState<DetailView>('saw');
   if (appliedKey !== filterKey) {
     setAppliedKey(filterKey);
     setFilter(normalizeFilter(initial));
@@ -1152,6 +1584,9 @@ export default function DecisionHistory({
   };
 
   const total = Math.max(state.total, records.length);
+  // The rows the narrow list hugs: those loaded, one more while a page waits, and one
+  // for a state line ("Loading", "No decision calls match") when there are none.
+  const listRows = records.length + (state.nextCursor ? 1 : 0);
   const filtered = filterIsSet(filter);
   const selected = selectedIndex >= 0 ? records[selectedIndex] : null;
 
@@ -1186,29 +1621,19 @@ export default function DecisionHistory({
           </button>
         </PreviewTip>
       </PreviewBarActions>
-      <div className="br-dh__filters">
-        {/* Keyed by the open, so a filter applied from outside also opens More
-            filters when it set one of them. */}
-        <Filters
-          key={appliedKey}
-          filter={filter}
-          summary={summary}
-          // A filter the person sets is browsing: the one call a link named lets go.
-          onChange={(next) => setFilter(normalizeFilter({ ...next, decisionId: null }))}
-        />
-        {filtered ? (
-          <button
-            type="button"
-            className="br-dh-link br-dh__clear"
-            data-testid="decision-filter-clear"
-            onClick={() => setFilter(normalizeFilter({}))}
-          >
-            {copy.clear}
-          </button>
-        ) : null}
-      </div>
+      <Filters
+        filter={filter}
+        summary={summary}
+        // A filter the person sets is browsing: the one call a link named lets go.
+        onChange={(next) => setFilter(normalizeFilter({ ...next, decisionId: null }))}
+        onClear={() => setFilter(normalizeFilter({}))}
+      />
       <div className="br-dh__split">
-        <div className="br-dh__list-pane">
+        <div
+          className="br-dh__list-pane"
+          // A-5: in a narrow panel the list hugs its rows (decisionsPanel.css).
+          style={{ '--br-dh-rows': Math.max(1, listRows) } as CSSProperties}
+        >
           <div
             ref={listRef}
             className="br-dh-list biorouter-focus-region"
@@ -1257,9 +1682,15 @@ export default function DecisionHistory({
           {state.error ? (
             <p className="br-dh__state" role="alert">
               {copy.loadFailed}{' '}
-              <button type="button" className="br-dh-link" onClick={retry}>
+              <Button
+                type="button"
+                variant="link"
+                size="xs"
+                className="br-decision-link"
+                onClick={retry}
+              >
                 {copy.retry}
-              </button>
+              </Button>
             </p>
           ) : null}
           {state.loaded && !state.error && records.length === 0 ? (
@@ -1271,6 +1702,10 @@ export default function DecisionHistory({
             <DecisionDetailPane
               record={selected}
               detail={details[selected.id]}
+              detailsOpen={detailsOpen}
+              onDetailsOpenChange={setDetailsOpen}
+              view={detailView}
+              onViewChange={setDetailView}
               onRetry={() => {
                 setDetails((current) => {
                   const next = { ...current };

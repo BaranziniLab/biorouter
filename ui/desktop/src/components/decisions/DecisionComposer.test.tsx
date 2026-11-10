@@ -37,6 +37,12 @@ async function ready() {
   await waitFor(() => expect(screen.getByTestId('decision-composer-question')).toBeEnabled());
 }
 
+/** The kind, the options and the threshold sit behind "Question options". */
+function openOptions() {
+  const trigger = screen.getByRole('button', { name: DECISION_COMPOSER_COPY.options });
+  if (trigger.getAttribute('aria-expanded') !== 'true') fireEvent.click(trigger);
+}
+
 describe('the decision composer', () => {
   it('reads the chat’s stored question, with the user-action proof', async () => {
     mocks.get.mockResolvedValue(
@@ -58,6 +64,11 @@ describe('the decision composer', () => {
     expect(screen.getByTestId('decision-composer-question')).toHaveValue(
       'Is an EDSS score stated?'
     );
+    // Closed, the summary says the kind and the rule in words.
+    expect(
+      screen.getByRole('button', { name: DECISION_COMPOSER_COPY.options })
+    ).toHaveAccessibleDescription('Choice of 3 · when P(yes) is at or above 0.70');
+    openOptions();
     expect(screen.getByRole('radio', { name: DECISION_COMPOSER_COPY.kinds.choice })).toBeChecked();
     expect(screen.getByLabelText('Option 3')).toHaveValue('unclear');
     expect(screen.getByTestId('decision-composer-threshold')).toHaveValue(0.7);
@@ -71,6 +82,7 @@ describe('the decision composer', () => {
   it('saves a typed question once typing pauses, with the proof', async () => {
     render(<DecisionComposer sessionId="chat-1" />);
     await ready();
+    openOptions();
     vi.useFakeTimers();
     fireEvent.change(screen.getByTestId('decision-composer-question'), {
       target: { value: 'Does this note state MS?' },
@@ -114,6 +126,7 @@ describe('the decision composer', () => {
   it('says what an incomplete question needs, and saves nothing', async () => {
     render(<DecisionComposer sessionId="chat-1" />);
     await ready();
+    openOptions();
     fireEvent.click(screen.getByRole('radio', { name: DECISION_COMPOSER_COPY.kinds.choice }));
     const field = screen.getByTestId('decision-composer-question');
     fireEvent.change(field, { target: { value: 'Which course?' } });
@@ -142,6 +155,12 @@ describe('the decision composer', () => {
         'Only the person at the keyboard may set this.'
       )
     );
+    // On its own line, in danger ink, and still the one status node.
+    const status = screen.getByTestId('decision-composer-status');
+    expect(status).toHaveAttribute('data-wide', 'true');
+    expect(status).toHaveAttribute('data-tone', 'danger');
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    expect(field).toHaveAccessibleDescription('Only the person at the keyboard may set this.');
   });
 
   it('names the prefix the daemon reads a question line by, with an example it accepts', () => {
@@ -176,6 +195,118 @@ describe('the decision composer', () => {
   });
 });
 
+describe('what the composer shows up front (F-8, B-5)', () => {
+  it('shows the question line and Question options, closed, and nothing else', async () => {
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    const trigger = screen.getByRole('button', { name: DECISION_COMPOSER_COPY.options });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).toHaveAccessibleDescription('Yes or no');
+    expect(screen.queryByTestId('decision-composer-kind')).toBeNull();
+    expect(screen.queryByTestId('decision-composer-threshold')).toBeNull();
+    // An empty question says nothing: its placeholder says what to write.
+    expect(screen.getByTestId('decision-composer-status')).toHaveTextContent(/^$/);
+  });
+
+  it('gives the question a real example by kind, never one that reads as a kept value', async () => {
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    const field = screen.getByTestId('decision-composer-question');
+    expect(field).toHaveAttribute('placeholder', 'For example: Does this note mention a fever?');
+    openOptions();
+    fireEvent.click(screen.getByRole('radio', { name: DECISION_COMPOSER_COPY.kinds.choice }));
+    expect(field).toHaveAttribute(
+      'placeholder',
+      'For example: Which MS course does this note describe?'
+    );
+    expect(screen.getByLabelText('Option 1')).toHaveAttribute('placeholder', 'Option 1');
+    expect(screen.getByLabelText('Option 2')).toHaveAttribute('placeholder', 'Option 2');
+    fireEvent.click(screen.getByRole('radio', { name: DECISION_COMPOSER_COPY.kinds.score }));
+    expect(field).toHaveAttribute(
+      'placeholder',
+      'For example: How severe is the pain this note describes?'
+    );
+    expect(screen.getByLabelText('Level 3')).toHaveAttribute('placeholder', 'Level 3');
+  });
+
+  it('says Saved on the question line, and the question is described by it', async () => {
+    mocks.get.mockResolvedValue(
+      stored({ instructions: 'Does this note mention a fever?', kind: { binary: {} } })
+    );
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    const status = screen.getByTestId('decision-composer-status');
+    expect(status).toHaveTextContent(/^Saved$/);
+    expect(status).not.toHaveAttribute('data-wide');
+    expect(status.querySelector('svg')).not.toBeNull();
+    expect(screen.getByTestId('decision-composer-question')).toHaveAccessibleDescription('Saved');
+    expect(status.parentElement).toBe(
+      screen.getByTestId('decision-composer-question').parentElement
+    );
+  });
+
+  it('says the rule in words under a threshold, in the card’s words', async () => {
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    fireEvent.change(screen.getByTestId('decision-composer-question'), {
+      target: { value: 'Does this note mention a fever?' },
+    });
+    openOptions();
+    fireEvent.change(screen.getByTestId('decision-composer-threshold'), {
+      target: { value: '0.85' },
+    });
+    expect(screen.getByTestId('decision-composer-meets')).toHaveTextContent(
+      'Meets the threshold when P(yes) is at or above 0.85.'
+    );
+    expect(screen.getByRole('button', { name: 'About Threshold' })).toHaveAccessibleDescription(
+      DECISION_COMPOSER_COPY.thresholdInfo
+    );
+    expect(screen.getByTestId('decision-composer').textContent).not.toMatch(/[≥<]/);
+  });
+
+  it('marks a threshold out of range in danger ink, on its own line', async () => {
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    fireEvent.change(screen.getByTestId('decision-composer-question'), {
+      target: { value: 'Is it signed?' },
+    });
+    openOptions();
+    const threshold = screen.getByTestId('decision-composer-threshold');
+    fireEvent.change(threshold, { target: { value: '1.5' } });
+    const status = screen.getByTestId('decision-composer-status');
+    expect(status).toHaveTextContent('The threshold is a number from 0 to 1.');
+    expect(status).toHaveAttribute('data-tone', 'danger');
+    expect(status).toHaveAttribute('data-wide', 'true');
+    expect(threshold).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('keeps the kept rule inside Question options', async () => {
+    mocks.get.mockResolvedValue(
+      stored({
+        instructions: 'Has the form been signed?',
+        kind: { binary: {} },
+        threshold: { below: { yes: 0.3 } },
+      })
+    );
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    expect(screen.queryByTestId('decision-composer-kept-rule')).toBeNull();
+    openOptions();
+    expect(screen.getByTestId('decision-composer-kept-rule')).toBeInTheDocument();
+  });
+
+  it('authors its geometry: an unfilled question, the card’s focus edge, hugging tracks', () => {
+    const css = readFileSync(join(__dirname, 'decisionsChat.css'), 'utf8');
+    expect(css).toMatch(
+      /\.biorouter-composer-card:has\(\.br-decision-composer input:focus\) \{\s*border-color: var\(--border-accent\);/
+    );
+    expect(css).toMatch(/\.br-decision-composer \.br-segmented \{\s*align-self: flex-start;/);
+    const question = css.match(/\n\.br-decision-composer__question \{([^}]*)\}/)?.[1];
+    expect(question).toMatch(/background: none;/);
+    expect(question).toMatch(/border: 1px solid transparent;/);
+  });
+});
+
 /**
  * A threshold set over HTTP or the CLI can pass below its value, or sit on P(no):
  * neither has a field here. Saving the question after an edit must not turn
@@ -207,8 +338,12 @@ describe('a stored rule the fields do not edit', () => {
     expect(screen.getByTestId('decision-composer-status')).toHaveTextContent(
       DECISION_COMPOSER_COPY.saved
     );
+    openOptions();
     expect(screen.getByTestId('decision-composer-kept-rule')).toHaveTextContent(
-      DECISION_COMPOSER_COPY.keptRule('P(yes) < 0.30')
+      DECISION_COMPOSER_COPY.keptRule('when P(yes) is below 0.30')
+    );
+    expect(screen.getByTestId('decision-composer-kept-rule')).toHaveTextContent(
+      'Meets the threshold when P(yes) is below 0.30, as set outside this chat.'
     );
     await editAndSave();
     expect(putQuestion().threshold).toEqual({ below: { yes: 0.3 } });
@@ -224,7 +359,10 @@ describe('a stored rule the fields do not edit', () => {
     );
     render(<DecisionComposer sessionId="chat-1" />);
     await ready();
-    expect(screen.getByTestId('decision-composer-kept-rule')).toHaveTextContent('P(no) ≥ 0.40');
+    openOptions();
+    expect(screen.getByTestId('decision-composer-kept-rule')).toHaveTextContent(
+      'when P(no) is at or above 0.40'
+    );
     await editAndSave();
     expect(putQuestion().threshold).toEqual({ no: 0.4 });
   });
@@ -252,6 +390,7 @@ describe('a stored rule the fields do not edit', () => {
     );
     render(<DecisionComposer sessionId="chat-1" />);
     await ready();
+    openOptions();
     const threshold = screen.getByTestId('decision-composer-threshold');
     fireEvent.change(threshold, { target: { value: '' } });
     fireEvent.change(threshold, { target: { value: '0.8' } });
