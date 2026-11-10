@@ -10,6 +10,9 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+pub mod job_status;
+pub mod poll_pacing;
+
 /// Inspector name used by the repetition guard; the agent keys the honest
 /// "repetition, not user decline" deny message off this.
 pub const REPETITION_INSPECTOR_NAME: &str = "repetition";
@@ -958,16 +961,15 @@ fn active_job_state(value: &Value) -> bool {
             .get(*key)
             .is_some_and(|id| id.as_str().is_some_and(|id| !id.is_empty()) || id.is_u64())
     });
+    // `phase` and the wider active vocabulary (`executing`, `streaming`, …) are
+    // what connectors such as cdwagent report; see `job_status`.
     has_id
-        && ["status", "state"].iter().any(|key| {
+        && ["status", "state", "phase"].iter().any(|key| {
             object
                 .get(*key)
                 .and_then(Value::as_str)
                 .is_some_and(|state| {
-                    matches!(
-                        state.to_ascii_lowercase().as_str(),
-                        "pending" | "queued" | "running" | "in_progress" | "in-progress"
-                    )
+                    job_status::state_word_activity(state) == job_status::JobActivity::Active
                 })
         })
 }
