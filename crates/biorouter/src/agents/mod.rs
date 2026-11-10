@@ -116,6 +116,9 @@ pub mod tool_errors;
 pub mod turn_abort;
 pub mod turn_guard;
 pub mod types;
+// Per-chat, default per-chat and monthly usage limits, enforced before every
+// model request (`docs/agent-loop/usage-limits.md`).
+pub mod usage_limit;
 pub mod vault_refs;
 // The `platform__manage_workflow` handler: the model's hand on the user's saved
 // workflows. An Agent tool rather than an extension because `generate` needs the

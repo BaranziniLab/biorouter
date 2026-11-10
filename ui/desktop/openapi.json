@@ -9836,6 +9836,116 @@
         ]
       }
     },
+    "/sessions/{session_id}/usage-limit": {
+      "get": {
+        "tags": [
+          "Usage"
+        ],
+        "operationId": "get_session_usage_limit",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose usage limit to read",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The chat's effective limit, its override, the defaults, the monthly limit, what was used and whether a limit is reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionUsageLimitResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Usage"
+        ],
+        "operationId": "put_session_usage_limit",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat whose usage limit to set",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSessionUsageLimitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The chat's usage limit as stored, in the shape `GET` answers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionUsageLimitResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session id, a body that could not be read or is invalid, or a subagent's chat; the body is the sentence that says why (plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused: the chat is out of this caller's reach, or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found (body = plain text)"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/sessions/{session_id}/user_workflow_values": {
       "put": {
         "tags": [
@@ -10321,6 +10431,53 @@
             }
           }
         }
+      }
+    },
+    "/usage/limits": {
+      "put": {
+        "tags": [
+          "Usage"
+        ],
+        "operationId": "put_usage_limits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUsageLimitsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The monthly and default per-chat limits as stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageLimitsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A body that could not be read or a limit that is not above 0 (plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Human user-action proof required: a model may not raise or lift a limit"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
       }
     },
     "/usage/report": {
@@ -12157,6 +12314,29 @@
           "workflow_version": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "ChatUsageLimitOverride": {
+        "type": "object",
+        "description": "The chat's own override, when it has one.",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "maxTokens": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "maxUsd": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "mode": {
+            "$ref": "#/components/schemas/UsageLimitMode"
           }
         }
       },
@@ -14998,6 +15178,29 @@
           "diverge",
           "edit"
         ]
+      },
+      "EffectiveChatLimit": {
+        "type": "object",
+        "description": "The per-chat limit in force for this chat.",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "maxTokens": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "maxUsd": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "source": {
+            "$ref": "#/components/schemas/UsageLimitSource"
+          }
+        }
       },
       "ElicitationResponseRequest": {
         "type": "object",
@@ -18717,9 +18920,24 @@
             "description": "Input tokens served from the prompt cache. `None` means at least one\ncontributing event predates cache accounting or did not report it.",
             "nullable": true
           },
+          "cost": {
+            "type": "number",
+            "format": "double",
+            "description": "Dollar cost of the group, priced on the server per request: cache\nbuckets at the cache rate and each request over a long-context\nthreshold at the model's long-context rate. `None` when the group is\nunpriced (or the rollup that built the row does not price).",
+            "nullable": true
+          },
+          "costIsPartial": {
+            "type": "boolean",
+            "description": "`true` when `cost` is a lower bound: part of the group is unpriced, its\ncounts are incomplete, or its cache tokens have no rate."
+          },
           "inputTokens": {
             "type": "integer",
             "format": "int64"
+          },
+          "longContextTurns": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Requests in the group priced at the model's long-context rate."
           },
           "modelId": {
             "type": "string",
@@ -18742,7 +18960,7 @@
           "turns": {
             "type": "integer",
             "format": "int64",
-            "description": "Number of billed turns attributed to this group."
+            "description": "Number of billed turns attributed to this group. Side calls (a stall\ncheck, a title) are billed in the tokens above but are not turns."
           }
         }
       },
@@ -22545,7 +22763,7 @@
       },
       "SessionModelUsageResponse": {
         "type": "object",
-        "description": "Per-model token breakdown for one session.",
+        "description": "Per-model token breakdown for one session. Each row carries its dollar\ncost priced on the server per request (cache rate and long-context tier\nincluded), so a client never prices the rollup flat itself.",
         "required": [
           "models"
         ],
@@ -22714,6 +22932,70 @@
           "terminal"
         ]
       },
+      "SessionUsageLimitResponse": {
+        "type": "object",
+        "required": [
+          "limit",
+          "defaults",
+          "monthly",
+          "used",
+          "paused",
+          "warn",
+          "chatDollarLimitInert",
+          "monthDollarLimitInert",
+          "billingSessionId"
+        ],
+        "properties": {
+          "billingSessionId": {
+            "type": "string",
+            "description": "The chat whose limit and spend this is: the chat itself, or a\nsubagent's parent."
+          },
+          "chatDollarLimitInert": {
+            "type": "boolean",
+            "description": "A per-chat dollar limit is set but nothing the chat used is priced, so\nit cannot fire."
+          },
+          "chatOverride": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatUsageLimitOverride"
+              }
+            ],
+            "nullable": true
+          },
+          "defaults": {
+            "$ref": "#/components/schemas/UsageLimitAmounts"
+          },
+          "limit": {
+            "$ref": "#/components/schemas/EffectiveChatLimit"
+          },
+          "monthDollarLimitInert": {
+            "type": "boolean",
+            "description": "A monthly dollar limit is set but nothing this month is priced, so it\ncannot fire."
+          },
+          "monthly": {
+            "$ref": "#/components/schemas/UsageLimitAmounts"
+          },
+          "paused": {
+            "type": "boolean",
+            "description": "A limit is reached: the chat makes no model request until it is raised\nor lifted (or, for the month, the next local month begins)."
+          },
+          "reason": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UsageLimitReason"
+              }
+            ],
+            "nullable": true
+          },
+          "used": {
+            "$ref": "#/components/schemas/UsageLimitUsed"
+          },
+          "warn": {
+            "type": "boolean",
+            "description": "A limit is at 80% or more and none is reached."
+          }
+        }
+      },
       "SessionsQuery": {
         "type": "object",
         "required": [
@@ -22799,6 +23081,32 @@
             "type": "string"
           }
         }
+      },
+      "SetSessionUsageLimitRequest": {
+        "type": "object",
+        "description": "Body of `PUT /sessions/{session_id}/usage-limit`.",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "maxTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "With `limit`: billed tokens this chat may use, a whole number above 0.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "maxUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "With `limit`: priced dollars this chat may use, above 0.",
+            "nullable": true
+          },
+          "mode": {
+            "$ref": "#/components/schemas/UsageLimitMode"
+          }
+        },
+        "additionalProperties": false
       },
       "SetSlashCommandRequest": {
         "type": "object",
@@ -24938,6 +25246,37 @@
           }
         }
       },
+      "UpdateUsageLimitsRequest": {
+        "type": "object",
+        "description": "Body of `PUT /usage/limits`. A field left out keeps what is stored, `null`\nmakes that limit unlimited, and a value above 0 sets it.",
+        "properties": {
+          "defaultSessionDollarLimit": {
+            "type": "number",
+            "format": "double",
+            "description": "Priced dollars per chat, for chats without their own limit.",
+            "nullable": true
+          },
+          "defaultSessionTokenLimit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Billed tokens per chat, for chats without their own limit.",
+            "nullable": true
+          },
+          "monthlyDollarLimit": {
+            "type": "number",
+            "format": "double",
+            "description": "Priced dollars per local calendar month, over every chat.",
+            "nullable": true
+          },
+          "monthlyTokenLimit": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Billed tokens per local calendar month, over every chat.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateWorkingDirRequest": {
         "type": "object",
         "required": [
@@ -24997,6 +25336,117 @@
           "model",
           "day_model"
         ]
+      },
+      "UsageLimitAmounts": {
+        "type": "object",
+        "description": "A pair of limits; `null` is unlimited on that axis.",
+        "properties": {
+          "maxTokens": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "maxUsd": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          }
+        }
+      },
+      "UsageLimitMode": {
+        "type": "string",
+        "description": "A write's mode: return to the default, lift every per-chat limit for this\nchat, or set this chat's own limit.",
+        "enum": [
+          "inherit",
+          "unlimited",
+          "limit"
+        ]
+      },
+      "UsageLimitReason": {
+        "type": "string",
+        "description": "Which limit is reached.",
+        "enum": [
+          "chat",
+          "month"
+        ]
+      },
+      "UsageLimitSource": {
+        "type": "string",
+        "description": "Where a chat's effective limit came from.",
+        "enum": [
+          "chat",
+          "default",
+          "none"
+        ]
+      },
+      "UsageLimitUsed": {
+        "type": "object",
+        "description": "What the chat (with its subagents) and the month have used.",
+        "required": [
+          "chatTokens",
+          "chatUsdComplete",
+          "monthTokens",
+          "monthUsdComplete",
+          "month"
+        ],
+        "properties": {
+          "chatTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "chatUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "`null` when no dollar limit is in force or nothing is priced.",
+            "nullable": true
+          },
+          "chatUsdComplete": {
+            "type": "boolean"
+          },
+          "month": {
+            "type": "string",
+            "description": "The local month the month figures cover, `YYYY-MM`."
+          },
+          "monthTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "monthUsd": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "monthUsdComplete": {
+            "type": "boolean"
+          }
+        }
+      },
+      "UsageLimitsResponse": {
+        "type": "object",
+        "description": "The configured limits, as stored after a write; `null` is unlimited.",
+        "properties": {
+          "defaultSessionDollarLimit": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "defaultSessionTokenLimit": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "monthlyDollarLimit": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "monthlyTokenLimit": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          }
+        }
       },
       "UsageReportResponse": {
         "type": "object",
@@ -25171,6 +25621,18 @@
           {
             "type": "object",
             "properties": {
+              "defaultSessionDollarLimit": {
+                "type": "number",
+                "format": "double",
+                "description": "Default per-chat dollar limit for chats without their own, or `null`.",
+                "nullable": true
+              },
+              "defaultSessionTokenLimit": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Default per-chat token limit for chats without their own, or `null`.",
+                "nullable": true
+              },
               "dollarPercent": {
                 "type": "number",
                 "format": "double",
