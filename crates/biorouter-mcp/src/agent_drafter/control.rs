@@ -3896,7 +3896,7 @@ impl AppControlServer {
         Some(if moved.is_empty() {
             format!(
                 "[readback] \"{}\" returned, but did NOT change any state pointer it declares it \
-                 writes ({}). Do not tell the user the change was applied; it was not. Say what \
+                 writes ({}). The change was not applied, so saying it was would be false. Say what \
                  happened, or try a different argument.",
                 decl.name,
                 decl.writes.join(", ")
