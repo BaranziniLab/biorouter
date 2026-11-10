@@ -66,6 +66,10 @@ vi.mock('./bottom_menu/ComposerFooter', () => ({
   ),
 }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
+vi.mock('./decisions/DecisionComposer', () => ({
+  DecisionComposer: () => <div data-testid="decision-composer-stub" />,
+  DECISION_CHAT_PLACEHOLDER: 'Ask the decision model',
+}));
 vi.mock('./MentionPopover', () => {
   const MentionPopoverMock = React.forwardRef(() => null);
   MentionPopoverMock.displayName = 'MentionPopoverMock';
@@ -189,6 +193,25 @@ describe('the composer is one card and one footer line', () => {
   it('tells the footer whether there is a chat, so Home shows no ring or cost', () => {
     renderComposer({ sessionId: null });
     expect(screen.getByTestId('composer-footer')).toHaveAttribute('data-session', 'none');
+  });
+});
+
+describe('a decision chat (B-3)', () => {
+  it('offers no + and no Tools: a decision model attaches nothing and calls no tools', () => {
+    renderComposer({ effectiveModel: { provider: 'ollama_decision', model: 'tev1:0.8b' } });
+    const controls = within(card()).getByTestId('chat-input-toolbar');
+    expect(within(controls).queryByTestId('composer-plus')).toBeNull();
+    expect(within(controls).queryByTestId('tools-chip-stub')).toBeNull();
+    // The model chip and Send stay.
+    expect(within(controls).getByTestId('model-chip-stub')).toBeInTheDocument();
+    expect(within(controls).getByRole('button', { name: COMPOSER_COPY.send.label })).toBeTruthy();
+  });
+
+  it('keeps both in an ordinary chat', () => {
+    renderComposer({ effectiveModel: { provider: 'versa_azure', model: 'gpt-5.6-sol' } });
+    const controls = within(card()).getByTestId('chat-input-toolbar');
+    expect(within(controls).getByTestId('composer-plus')).toBeInTheDocument();
+    expect(within(controls).getByTestId('tools-chip-stub')).toBeInTheDocument();
   });
 });
 

@@ -128,6 +128,9 @@ describe('computeNoticeCounts', () => {
     const counts = computeNoticeCounts([row('s1', 'private', null)]);
     expect(counts.privateByProvider).toEqual([{ provider: UNKNOWN_PROVIDER, count: 1 }]);
     expect(providerLabel(UNKNOWN_PROVIDER)).toBe('Provider not recorded');
+    // R3: a decision provider is named for where it runs, never by its key.
+    expect(providerLabel('ollama_decision')).toBe('Decision models on this computer');
+    expect(providerLabel('baseten_decision')).toBe('Decision models on Baseten');
   });
 
   it('fails closed on a tier it cannot read', () => {
@@ -180,6 +183,8 @@ describe('FirstRunPrivacyNotice', () => {
     const headline = await screen.findByTestId('notice-headline');
     expect(headline.textContent).toContain('2');
     expect(headline.textContent).toContain('7');
+    // It names its own scope, so its total is not read as Home's (E-10).
+    expect(headline.textContent).toContain('chats in your History are now marked private');
     // The chats it will not vouch for are stated, not buried.
     expect(screen.getByTestId('notice-unknown').textContent).toContain('2');
     // ...and it asked the daemon for the History population directly, rather

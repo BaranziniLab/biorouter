@@ -702,3 +702,12 @@ export function useKnowledge(): KnowledgeContextType {
   if (!ctx) throw new Error('useKnowledge must be used inside <KnowledgeProvider>');
   return ctx;
 }
+
+/**
+ * The knowledge context where there is one, `null` where there is not (a test, a
+ * surface mounted outside the provider). For a reader that only wants names,
+ * such as the chat summary's subagent peek, which must not throw.
+ */
+export function useOptionalKnowledge(): KnowledgeContextType | null {
+  return useContext(KnowledgeContext);
+}

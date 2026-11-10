@@ -30,6 +30,11 @@ const props = {
   todos: { items: [], loading: false, error: false, refresh: vi.fn() },
 };
 
+/** Open the statistics' Details disclosure (F-1: closed by default). */
+function openDetails() {
+  fireEvent.click(screen.getByRole('button', { name: summaryCopy.details }));
+}
+
 describe('compact chat summary', () => {
   it('does not flash a To do section while an empty summary refreshes', () => {
     render(<ChatSummary {...props} todos={{ ...props.todos, loading: true }} />);
@@ -39,6 +44,7 @@ describe('compact chat summary', () => {
 
   it('draws the statistics as label and value rows, and hides absent progress', () => {
     render(<ChatSummary {...props} />);
+    openDetails();
     expect(screen.getByText('6')).toHaveClass('br-summary__stat-value');
     expect(screen.getByText(summaryCopy.toolCalls).closest('dt')).toHaveClass(
       'br-summary__stat-label'
@@ -56,6 +62,7 @@ describe('compact chat summary', () => {
 
   it('explains Tokens in hover help that a screen reader also hears', () => {
     render(<ChatSummary {...props} />);
+    openDetails();
     expect(screen.getByText(summaryCopy.tokens)).toBeInTheDocument();
     const help = screen.getByRole('button', { name: `About ${summaryCopy.tokens}` });
     expect(help).toHaveAccessibleDescription(summaryCopy.tokensHelp);
@@ -65,6 +72,7 @@ describe('compact chat summary', () => {
 
   it('reads the code delta as words and draws it with a real minus sign', () => {
     render(<ChatSummary {...props} codeDelta={{ added: 120, removed: 8 }} />);
+    openDetails();
     expect(screen.getByText(summaryCopy.codeDelta(120, 8))).toHaveClass('sr-only');
     expect(screen.getByText('−8')).toHaveClass('text-text-danger');
     expect(screen.getByText('+120')).toHaveClass('text-text-success');
@@ -72,6 +80,7 @@ describe('compact chat summary', () => {
 
   it('mutes a count that is not a change, so a chat that touched no code shows no red', () => {
     const { rerender } = render(<ChatSummary {...props} codeDelta={{ added: 0, removed: 0 }} />);
+    openDetails();
     expect(screen.getByText('+0')).toHaveClass('text-text-muted');
     expect(screen.getByText('−0')).toHaveClass('text-text-muted');
     rerender(<ChatSummary {...props} codeDelta={{ added: 0, removed: 4 }} />);
@@ -90,6 +99,7 @@ describe('compact chat summary', () => {
         codeDelta={null}
       />
     );
+    openDetails();
     const values = () => screen.getAllByRole('definition');
     expect(values()).toHaveLength(4);
     for (const value of values()) {
@@ -119,14 +129,70 @@ describe('compact chat summary', () => {
     expect(dl).not.toHaveAttribute('aria-busy');
   });
 
-  it('parts the statistics from the list or from the refresh error that stands in for it', () => {
-    const { rerender } = render(<ChatSummary {...props} />);
-    const dl = () => screen.getByText(summaryCopy.toolCalls).closest('dl') as HTMLElement;
-    expect(dl()).not.toHaveAttribute('data-after-todos');
-    rerender(<ChatSummary {...props} todos={{ ...props.todos, error: true }} />);
-    expect(dl()).toHaveAttribute('data-after-todos', '');
-    rerender(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
-    expect(dl()).toHaveAttribute('data-after-todos', '');
+  it('keeps the statistics behind a closed Details whose summary is the token figure (F-1)', () => {
+    render(<ChatSummary {...props} />);
+    const trigger = screen.getByRole('button', { name: summaryCopy.details });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText(summaryCopy.toolCalls)).not.toBeInTheDocument();
+    // The closed summary is the token figure alone, read as the trigger's description.
+    expect(trigger).toHaveAccessibleDescription(summaryCopy.detailsSummary('211k'));
+    expect(summaryCopy.detailsSummary('211k')).toBe('211k tokens');
+    openDetails();
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(summaryCopy.toolCalls)).toBeInTheDocument();
+  });
+
+  it('draws no Details summary while Tokens is not known', () => {
+    render(<ChatSummary {...props} billedTokens={null} />);
+    expect(
+      screen.getByRole('button', { name: summaryCopy.details })
+    ).not.toHaveAccessibleDescription();
+  });
+
+  it('collapses To do by default when the chat has a phase plan, and keeps the count and bar', () => {
+    const plan = { title: 'Plan', goal: null, revision: 1, phases: [] };
+    render(
+      <ChatSummary
+        {...props}
+        todos={{ ...props.todos, items }}
+        subagents={{
+          data: { parentSessionId: 'chat', subagents: [], plan },
+          loading: false,
+          error: false,
+          refresh: vi.fn(),
+          onOpen: vi.fn(),
+        }}
+      />
+    );
+    const toggle = screen.getByTestId('summary-todo-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('list', { name: summaryCopy.todoListLabel })).toBeNull();
+    expect(toggle).toHaveTextContent('1 of 3');
+    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('list', { name: summaryCopy.todoListLabel })).toBeInTheDocument();
+  });
+
+  it('opens To do by default without a plan, and a close the person makes holds', () => {
+    const { rerender } = render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
+    const toggle = screen.getByTestId('summary-todo-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    rerender(<ChatSummary {...props} todos={{ ...props.todos, items: [...items] }} />);
+    expect(screen.getByTestId('summary-todo-toggle')).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('in a decision chat, holds Tokens only and offers no Make workflow (B-3)', () => {
+    render(<ChatSummary {...props} decisionChat />);
+    openDetails();
+    expect(screen.getByText(summaryCopy.tokens)).toBeInTheDocument();
+    expect(screen.queryByText(summaryCopy.toolCalls)).toBeNull();
+    expect(screen.queryByText(summaryCopy.artifacts)).toBeNull();
+    expect(screen.queryByText(summaryCopy.code)).toBeNull();
+    expect(screen.queryByRole('button', { name: summaryCopy.makeWorkflow })).toBeNull();
+    expect(screen.getByRole('button', { name: summaryCopy.diagnostics })).toBeInTheDocument();
   });
 
   it('labels a blocked step for assistive technology and indents an expanded one', () => {

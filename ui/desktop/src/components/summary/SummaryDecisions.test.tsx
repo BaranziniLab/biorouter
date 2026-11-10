@@ -5,7 +5,6 @@ import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   parseDecisionSettings,
-  parsePhaseGateSnapshot,
   parseSessionDecisionSummary,
   type DecisionSettings,
   type SessionDecisionSummary,
@@ -93,6 +92,38 @@ function draw(overrides: Partial<SummaryDecisionsData> = {}) {
   return { ...utils, onOpenHistory, onOpenMonitors, refresh };
 }
 
+const toggle = () => screen.getByTestId('summary-decisions-toggle');
+const openSection = () => {
+  if (toggle().getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle());
+};
+
+/** An aggregate for a call that asked several monitors at once (`a+b`). */
+const combined = (originId: string, count: number, errors = 0) => ({
+  origin: 'monitor',
+  originId,
+  label: originId,
+  count,
+  passed: count,
+  failed: 0,
+  errors,
+  lastAt: '2026-11-04T12:00:00Z',
+  lastAnswer: 'yes',
+  lastPassProbability: 0.99,
+});
+
+const one = (originId: string, count: number, p: number | null, errors = 0) => ({
+  origin: 'monitor',
+  originId,
+  label: originId,
+  count,
+  passed: 0,
+  failed: count,
+  errors,
+  lastAt: '2026-11-04T11:00:00Z',
+  lastAnswer: p === null ? null : 'no',
+  lastPassProbability: p,
+});
+
 describe('the Decisions section', () => {
   it('draws nothing while the chat has no decision calls and no monitors', () => {
     const { container } = draw({
@@ -110,264 +141,225 @@ describe('the Decisions section', () => {
         settings: settings([monitor()]),
       },
     });
+    expect(toggle()).toHaveTextContent('None fired');
+    openSection();
     const row = screen.getByTestId('decision-source-monitor:form');
-    expect(row).toHaveAttribute('data-state', 'armed');
+    expect(row).toHaveAttribute('data-state', 'pending');
     expect(row).toHaveTextContent('Not checked yet');
   });
 
-  it('aggregates 5,000 calls into one row per source, never one per call', () => {
-    draw({
-      gates: [
-        {
-          phaseId: 'verify',
-          title: 'Check the numbers',
-          gate: parsePhaseGateSnapshot({
-            threshold: 0.8,
-            attempts: 2,
-            maxAttempts: 3,
-            lastPassed: false,
-            lastMinP: 0.62,
-            blocked: false,
-          })!,
-        },
-      ],
-    });
+  it('aggregates 5,000 calls into one row per source, never one per call, and no gate rows', () => {
+    draw();
+    openSection();
     const section = screen.getByTestId('summary-decisions');
     const rows = within(section).getAllByRole('listitem');
-    expect(rows).toHaveLength(3);
-    expect(section.querySelectorAll('.br-decisions__row')).toHaveLength(3);
-    expect(within(section).getByText('5,000')).toBeInTheDocument();
+    // The monitor and every decide batch together; the gate is its phase's chip (F-1).
+    expect(rows).toHaveLength(2);
+    expect(screen.queryByTestId('decision-source-gate:verify')).toBeNull();
     const decide = screen.getByTestId('decision-source-tool');
-    expect(decide).toHaveTextContent('decide');
+    expect(decide).toHaveTextContent('Agent checks');
     expect(decide).toHaveTextContent('4,800');
-    expect(decide).toHaveTextContent('last yes · P 0.93 · 2 errors');
-    const gate = screen.getByTestId('decision-source-gate:verify');
-    expect(gate).toHaveAttribute('data-state', 'failed');
-    expect(gate).toHaveTextContent('0.62 < 0.80 · attempt 2 of 3');
-    // The monitor's state is a shape and a word, its bar marks its threshold.
+    expect(decide.getAttribute('aria-label')).toBe('Agent checks, 4,800 checks, 2 errors');
     const form = screen.getByTestId('decision-source-monitor:form');
-    expect(form).toHaveAttribute('data-state', 'armed');
-    expect(form.getAttribute('aria-label')).toMatch(/^Watching, Form reached, 180 calls/);
-    const mark = form.querySelector<HTMLElement>('.br-pbar__mark');
-    expect(mark?.style.left).toBe('85%');
-    expect(form.querySelector<HTMLElement>('.br-pbar__fill')?.style.width).toBe('31%');
+    expect(form).toHaveAttribute('data-state', 'quiet');
+    expect(form).toHaveTextContent('Quiet');
+    expect(form.getAttribute('aria-label')).toBe('Quiet, Form reached, checked 180 times');
   });
 
-  it('says a gate blocked by evaluation errors could not be evaluated, not that it ran out of attempts', () => {
-    const gate = (phaseId: string, attempts: number, lastPassed: boolean | null) => ({
-      phaseId,
-      title: phaseId,
-      gate: parsePhaseGateSnapshot({
-        threshold: 0.8,
-        attempts,
-        maxAttempts: 3,
-        lastPassed,
-        lastMinP: lastPassed === null ? null : 0.4,
-        blocked: true,
-      })!,
-    });
-    draw({ gates: [gate('errors', 0, null), gate('one', 1, false), gate('spent', 3, false)] });
-    // Two errors in a row block a gate and use no attempt.
-    const errors = screen.getByTestId('decision-source-gate:errors');
-    expect(errors).toHaveAttribute('data-state', 'blocked');
-    expect(errors).toHaveTextContent('blocked: could not be evaluated');
-    expect(errors).not.toHaveTextContent('attempts');
-    expect(screen.getByTestId('decision-source-gate:one')).toHaveTextContent(
-      'blocked: could not be evaluated'
-    );
-    // A gate that used every attempt says so.
-    expect(screen.getByTestId('decision-source-gate:spent')).toHaveTextContent(
-      'blocked after 3 attempts'
-    );
+  /** R1 and R2: no passed or failed for a monitor, and no probability beside an answer. */
+  it('never says Passed, Failed or a probability, and draws no bar', () => {
+    const { container } = draw({ fired: new Set(['form']) });
+    openSection();
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/\bPassed\b|\bFailed\b|\bP \d|P\(/);
+    expect(container.querySelector('.br-pbar, [role="meter"]')).toBeNull();
+    for (const row of container.querySelectorAll('.br-decisions__row')) {
+      expect(row.getAttribute('aria-label') ?? '').not.toMatch(/passed|failed/i);
+    }
+  });
+
+  it('marks a quiet monitor with an open eye, never a cross', () => {
+    draw();
+    openSection();
+    const glyph = screen
+      .getByTestId('decision-source-monitor:form')
+      .querySelector('.br-decisions__glyph svg');
+    expect(glyph?.getAttribute('class') ?? '').toMatch(/eye/);
+    expect(glyph?.getAttribute('class') ?? '').not.toMatch(/\bx\b|lucide-x/);
   });
 
   it('opens the decision history filtered to the row it came from', () => {
     const { onOpenHistory } = draw();
+    openSection();
     fireEvent.click(screen.getByTestId('decision-source-monitor:form'));
     expect(onOpenHistory).toHaveBeenLastCalledWith({ origin: 'monitor', originId: 'form' });
     fireEvent.click(screen.getByTestId('decision-source-tool'));
     expect(onOpenHistory).toHaveBeenLastCalledWith({ origin: 'tool', originId: null });
   });
 
-  it('opens the Monitors dialog from a plain button, and says how many are on', () => {
+  it('opens the Monitors dialog from a quiet icon button named Monitors, open or closed', () => {
     const { onOpenMonitors } = draw({
       data: {
         summary: heavySummary(),
         settings: settings([monitor(), monitor({ id: 'idle', name: 'Idle', enabled: false })]),
       },
     });
-    const button = screen.getByTestId('summary-decisions-monitors');
-    expect(button.tagName).toBe('BUTTON');
-    expect(button).toHaveTextContent('1 on');
+    const button = screen.getByRole('button', { name: 'Monitors' });
+    expect(button).toBe(screen.getByTestId('summary-decisions-monitors'));
+    expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(button).toHaveTextContent('');
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(button);
     expect(onOpenMonitors).toHaveBeenCalledTimes(1);
+    openSection();
     expect(screen.getByTestId('decision-source-monitor:idle')).toHaveAttribute('data-state', 'off');
+    expect(screen.getByTestId('decision-source-monitor:idle')).toHaveTextContent('Off');
+  });
+
+  it('draws no Monitors button in a decision chat', () => {
+    draw({ decisionChat: true });
+    expect(screen.queryByRole('button', { name: 'Monitors' })).toBeNull();
   });
 
   it('marks a monitor the newest turn marker says fired, and offers Retry after a failed read', () => {
     const { refresh } = draw({ fired: new Set(['form']), error: true });
-    expect(screen.getByTestId('decision-source-monitor:form')).toHaveAttribute(
-      'data-state',
-      'fired'
-    );
+    // A fire opens the section on its own.
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+    expect(toggle()).toHaveTextContent('1 fired');
+    const row = screen.getByTestId('decision-source-monitor:form');
+    expect(row).toHaveAttribute('data-state', 'fired');
+    expect(row).toHaveTextContent('Fired');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(refresh).toHaveBeenCalled();
   });
 });
 
-describe('a gate row and the person', () => {
-  const personGate = (
-    personDecision: 'pass' | 'skip' | null,
-    status: 'completed' | 'skipped' | 'in_progress'
-  ) => ({
-    phaseId: 'verify',
-    title: 'Check the numbers',
-    status,
-    gate: parsePhaseGateSnapshot({
-      threshold: 0.8,
-      attempts: 3,
-      maxAttempts: 3,
-      lastPassed: false,
-      lastMinP: 0.62,
-      blocked: false,
-      personDecision,
-    })!,
+describe('the closed line and when it opens (F-1)', () => {
+  const summary = (aggregates: Record<string, unknown>[], total = 10) =>
+    parseSessionDecisionSummary({ total, aggregates, recentTurns: [] })!;
+
+  it('is closed by default when nothing fired and nothing errored', () => {
+    draw({ data: { summary: summary([one('form', 4, 0.2)]), settings: settings([monitor()]) } });
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle()).toHaveTextContent('None fired');
+    expect(screen.queryByRole('list', { name: 'Decision sources' })).toBeNull();
   });
 
-  it('says the person passed or skipped the phase, before what the gate itself last said', () => {
-    const { rerender } = draw({ gates: [personGate('pass', 'completed')] });
-    const row = () => screen.getByTestId('decision-source-gate:verify');
-    expect(row()).toHaveTextContent('passed by you · 0.62 < 0.80 · attempt 3 of 3');
-    expect(row().getAttribute('aria-label')).toMatch(/, passed by you · 0\.62 < 0\.80/);
-    // The person's pass is the row's state, by shape and in its first word, as
-    // on the phase chip; the gate's own verdict stays in the words after it.
-    expect(row()).toHaveAttribute('data-state', 'passed');
-    expect(row().getAttribute('aria-label')).toMatch(/^Passed, Check the numbers, /);
-    const redraw = (gates: ReturnType<typeof personGate>[]) =>
-      rerender(
-        <SummaryDecisions
-          sessionId="s1"
-          data={{ summary: heavySummary(), settings: settings([monitor()]) }}
-          loading={false}
-          error={false}
-          refresh={() => {}}
-          onOpenHistory={() => {}}
-          onOpenMonitors={() => {}}
-          gates={gates}
-        />
-      );
-    redraw([personGate('skip', 'skipped')]);
-    expect(row()).toHaveTextContent('skipped by you · 0.62 < 0.80 · attempt 3 of 3');
-    expect(row()).toHaveAttribute('data-state', 'skipped');
-    expect(row().getAttribute('aria-label')).toMatch(/^Skipped, Check the numbers, /);
-    // Recorded while the phase's subagents still work: it stands.
-    redraw([personGate('pass', 'in_progress')]);
-    expect(row()).toHaveTextContent('your pass stands');
-    expect(row()).toHaveAttribute('data-state', 'passed');
-    redraw([personGate(null, 'in_progress')]);
-    expect(row()).not.toHaveTextContent(/by you|stands/);
-    expect(row()).toHaveTextContent('0.62 < 0.80 · attempt 3 of 3');
-    expect(row()).toHaveAttribute('data-state', 'failed');
-  });
-
-  it('says a phase that waits for the person is blocked, as its chip does', () => {
-    // The agent marked the phase blocked: the gate itself is not, and has an attempt left.
+  it('opens by default on an error, and says so', () => {
     draw({
-      gates: [
-        {
-          phaseId: 'verify',
-          title: 'Check the numbers',
-          status: 'blocked',
-          gate: parsePhaseGateSnapshot({
-            threshold: 0.8,
-            attempts: 2,
-            maxAttempts: 3,
-            lastPassed: false,
-            lastMinP: 0.62,
-            blocked: false,
-            needsPerson: true,
-          })!,
-        },
-      ],
+      data: { summary: summary([one('form', 4, null, 4)]), settings: settings([monitor()]) },
     });
-    const row = screen.getByTestId('decision-source-gate:verify');
-    expect(row).toHaveAttribute('data-state', 'blocked');
-    expect(row).toHaveTextContent('needs you · 0.62 < 0.80 · attempt 2 of 3');
-    expect(row.getAttribute('aria-label')).toMatch(/^Blocked, Check the numbers, /);
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+    expect(toggle()).toHaveTextContent('1 error');
+    expect(screen.getByTestId('decision-source-monitor:form')).toHaveTextContent('Error');
+  });
+
+  it('names both a fire and an error', () => {
+    draw({
+      fired: new Set(['form']),
+      data: {
+        summary: summary([one('form', 4, 0.9), one('idle', 2, null, 2)]),
+        settings: settings([monitor(), monitor({ id: 'idle', name: 'Idle' })]),
+      },
+    });
+    expect(toggle()).toHaveTextContent('1 fired · 1 error');
+  });
+
+  it('counts the checks when there are no monitors', () => {
+    draw({
+      data: {
+        summary: summary([
+          {
+            origin: 'tool',
+            originId: null,
+            label: 'decide',
+            count: 10,
+            passed: 5,
+            failed: 5,
+            errors: 0,
+            lastAt: '2026-11-04T10:00:00Z',
+            lastAnswer: 'yes',
+            lastPassProbability: 0.9,
+          },
+        ]),
+        settings: settings(),
+      },
+    });
+    expect(toggle()).toHaveTextContent('10 checks');
+  });
+
+  it('keeps a close the person made after a later fire', () => {
+    const data = { summary: summary([one('form', 4, 0.2)]), settings: settings([monitor()]) };
+    const { rerender } = draw({ data });
+    fireEvent.click(toggle());
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(toggle());
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+    rerender(
+      <SummaryDecisions
+        sessionId="s1"
+        data={data}
+        loading={false}
+        error={false}
+        refresh={() => {}}
+        onOpenHistory={() => {}}
+        onOpenMonitors={() => {}}
+        fired={new Set(['form'])}
+      />
+    );
+    expect(toggle()).toHaveTextContent('1 fired');
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
   });
 });
 
-describe('a gate’s row and its phase chip', () => {
-  const gateWire = {
-    threshold: 0.8,
-    questionCount: 1,
-    attempts: 3,
-    maxAttempts: 3,
-    lastPassed: false,
-    lastMinP: 0.62,
-    blocked: false,
-  };
+/** A-1 (major): one row per monitor that exists now, a combined call counted on each. */
+describe('monitor rows (A-1)', () => {
+  it('counts a call that asked A and B on both rows, and never draws an "A + B" row', () => {
+    const monitors = settings([
+      monitor({ id: 'a', name: 'Alpha' }),
+      monitor({ id: 'b', name: 'Beta' }),
+      monitor({ id: 'c', name: 'Gamma' }),
+    ]);
+    const { container } = draw({
+      data: {
+        summary: parseSessionDecisionSummary({
+          total: 9,
+          aggregates: [one('a', 2, 0.1), combined('a+b', 5), one('c', 2, 0.1)],
+          recentTurns: [],
+        })!,
+        settings: monitors,
+      },
+    });
+    openSection();
+    const rows = [...container.querySelectorAll('.br-decisions__row')];
+    expect(rows.map((row) => row.getAttribute('data-testid'))).toEqual([
+      'decision-source-monitor:a',
+      'decision-source-monitor:b',
+      'decision-source-monitor:c',
+    ]);
+    expect(container.textContent).not.toMatch(/\+/);
+    expect(screen.getByTestId('decision-source-monitor:a').getAttribute('aria-label')).toBe(
+      'Quiet, Alpha, checked 7 times'
+    );
+    expect(screen.getByTestId('decision-source-monitor:b').getAttribute('aria-label')).toBe(
+      'Quiet, Beta, checked 5 times'
+    );
+  });
 
-  it('name one gate by the same state, whatever the person did', () => {
-    const cases: Record<string, unknown>[] = [
-      {},
-      { personDecision: 'pass' },
-      { personDecision: 'skip' },
-      { needsPerson: true },
-      { blocked: true, needsPerson: true },
-      { lastPassed: true, lastMinP: 0.91 },
-    ];
-    for (const overrides of cases) {
-      const data = parseSessionSubagents(
-        wireSubagents([wireRow({ sessionId: 'c1', phaseId: 'verify' })], {
-          title: 'Plan',
-          goal: null,
-          revision: 1,
-          phases: [
-            wirePhase({
-              id: 'verify',
-              title: 'Check the numbers',
-              kind: 'verification',
-              status: 'in_progress',
-              agentIds: ['c1'],
-              gate: { ...gateWire, ...overrides },
-            }),
-          ],
-        })
-      )!;
-      // As BaseChat hands the plan's gates to the Decisions section.
-      const gates = data.plan!.phases.flatMap((phase) =>
-        phase.gate
-          ? [{ phaseId: phase.id, title: phase.title, gate: phase.gate, status: phase.status }]
-          : []
-      );
-      const { unmount } = render(
-        <>
-          <SummarySubagents
-            data={data}
-            loading={false}
-            error={false}
-            refresh={() => {}}
-            onOpen={() => {}}
-            onOpenGate={() => {}}
-          />
-          <SummaryDecisions
-            sessionId="s1"
-            data={{ summary: heavySummary(), settings: settings([monitor()]) }}
-            loading={false}
-            error={false}
-            refresh={() => {}}
-            onOpenHistory={() => {}}
-            onOpenMonitors={() => {}}
-            gates={gates}
-          />
-        </>
-      );
-      const chip = screen.getByTestId('phase-gate-verify').getAttribute('data-state');
-      const row = screen.getByTestId('decision-source-gate:verify').getAttribute('data-state');
-      expect(row, JSON.stringify(overrides)).toBe(chip);
-      unmount();
-    }
+  it('draws no row for a monitor that was removed; its checks stay in the history', () => {
+    draw({
+      data: {
+        summary: parseSessionDecisionSummary({
+          total: 6,
+          aggregates: [one('form', 2, 0.1), one('gone', 4, 0.1)],
+          recentTurns: [],
+        })!,
+        settings: settings([monitor()]),
+      },
+    });
+    openSection();
+    expect(screen.queryByTestId('decision-source-monitor:gone')).toBeNull();
+    expect(screen.getByTestId('decision-source-monitor:form')).toBeInTheDocument();
   });
 });
 
@@ -410,7 +402,10 @@ describe('a phase gate on its phase row', () => {
       />
     );
     const chip = screen.getByTestId('phase-gate-verify');
-    expect(chip).toHaveTextContent('Gate 0.62 < 0.80, attempt 2 of 3');
+    expect(chip).toHaveTextContent('Not passed');
+    expect(chip.getAttribute('aria-label')).toBe(
+      'Gate not passed · P(yes) 0.62 · threshold 0.80 · attempt 2 of 3, Check the numbers'
+    );
     expect(chip).toHaveAttribute('data-state', 'failed');
     fireEvent.click(chip);
     expect(onOpenGate).toHaveBeenCalledWith('verify');
@@ -507,10 +502,10 @@ describe('the chip opens the gate dialog', () => {
     );
     render(<Harness value={value} />);
     fireEvent.click(screen.getByTestId('phase-gate-research'));
+    // The dialog's own layout (facts under Details, history in its menu) is the
+    // decision package's to test; here, that the chip opened THIS gate's dialog.
     const dialog = screen.getByTestId('phase-gate-dialog');
-    expect(within(dialog).getByTestId('phase-gate-owner')).toHaveTextContent('Set by the agent');
     expect(within(dialog).getByTestId('phase-gate-status')).toHaveTextContent('Blocked: needs you');
-    expect(within(dialog).getByTestId('phase-gate-history')).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     expect(screen.queryByTestId('phase-gate-dialog')).toBeNull();
 
@@ -554,13 +549,21 @@ describe('the section keeps the summary’s rules', () => {
     }
   });
 
-  it('draws no line: every border it names is a reset', () => {
+  it('draws no line: every border it names is a reset, but the gate chip’s transparent one', () => {
     const borders = [...CSS.matchAll(/border(?:-top|-bottom|-left|-right)?\s*:\s*([^;]+);/g)];
-    for (const [, value] of borders) expect(['0', 'none'], value).toContain(value.trim());
+    for (const [, value] of borders)
+      expect(['0', 'none', '1px solid transparent'], value).toContain(value.trim());
+    // The one transparent border is the chip's, which forced colours draw (spec 3.3).
+    const chip = CSS.match(/\n\.br-agents__gate \{([^}]*)\}/)?.[1] ?? '';
+    expect(chip).toMatch(/border: 1px solid transparent;/);
+    expect([...CSS.matchAll(/1px solid transparent/g)]).toHaveLength(1);
   });
 
-  it('uses no Button primitive, so the summary card keeps its three', () => {
-    expect(TSX).not.toMatch(/<Button\b/);
-    expect(TSX).not.toMatch(/from '\.\.\/ui\/button'/);
+  it('uses the Button primitive only for the icon-only Monitors button, so no third type size', () => {
+    const buttons = TSX.match(/<Button\b[\s\S]*?>/g) ?? [];
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toMatch(/aria-label=\{copy\.monitors\}/);
+    expect(buttons[0]).toMatch(/size="xs"/);
+    expect(buttons[0]).toMatch(/shape="round"/);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   AlertCircle,
   Check,
@@ -8,11 +8,13 @@ import {
   Pipeline,
 } from './icons/app-icons';
 import { Button } from './ui/button';
+import { Disclosure } from './ui/disclosure';
 import { InfoTip } from './ui/info-tip';
 import { Progress } from './ui/progress';
 import { summaryCopy } from './summary/copy';
 import { SummarySubagents, type SummarySubagentsData } from './summary/SummarySubagents';
 import { SummaryDecisions, type SummaryDecisionsData } from './summary/SummaryDecisions';
+import { SummarySectionHeading, useSectionToggle } from './summary/SummarySectionHeading';
 import { prefersReducedMotion } from '../styles/motion';
 import { withDerivedActiveItem, type TodoItem, type TodoStatus } from '../utils/sessionTodos';
 import './summary/chatSummary.css';
@@ -127,6 +129,12 @@ export interface ChatSummaryProps {
    */
   decisions?: SummaryDecisionsData;
   hasWorkflow: boolean;
+  /**
+   * A decision chat (B-3): its model reads the chat and answers, and calls no
+   * tools and writes no files. Details then holds Tokens only, and the footer
+   * offers no Make workflow and Decisions no Monitors button.
+   */
+  decisionChat?: boolean;
   onWorkflow: () => void;
   onDiagnostics: () => void;
 }
@@ -149,6 +157,7 @@ export function ChatSummary({
   subagents,
   decisions,
   hasWorkflow,
+  decisionChat = false,
   onWorkflow,
   onDiagnostics,
 }: ChatSummaryProps) {
@@ -157,6 +166,10 @@ export function ChatSummary({
   // position (`withDerivedActiveItem`, the same rule the agent's copy uses).
   const items = useMemo(() => withDerivedActiveItem(todos.items), [todos.items]);
   const total = items.length;
+  // F-1: with a phase plan the Phases block is what the person opened the
+  // summary for, so To do starts collapsed; its count and bar stay on show.
+  const [todoOpen, setTodoOpen] = useSectionToggle(!subagents?.data?.plan);
+  const todoListId = useId();
   const completed = items.filter((item) => item.status === 'completed').length;
   const statsPending =
     toolCalls === null || billedTokens === null || artifacts === null || codeDelta === null;
@@ -224,17 +237,20 @@ export function ChatSummary({
             aria-busy={todos.loading || undefined}
             className="br-summary__section"
           >
-            <div className="br-summary__heading">
-              <h3 className="br-summary__label">{summaryCopy.todo}</h3>
-              {/* Visible "2 of 5"; announced "2 of 5 complete". */}
-              <span className="br-summary__count" aria-hidden="true">
-                {summaryCopy.todoCount(completed, total)}
-              </span>
+            {/* Visible "2 of 5"; announced "2 of 5 complete". */}
+            <SummarySectionHeading
+              label={summaryCopy.todo}
+              count={summaryCopy.todoCount(completed, total)}
+              open={todoOpen}
+              onOpenChange={setTodoOpen}
+              controls={todoListId}
+              testId="summary-todo-toggle"
+            >
               <span className="sr-only" aria-live="polite">
                 {summaryCopy.todoCount(completed, total)}
                 {summaryCopy.todoCountSuffix}
               </span>
-            </div>
+            </SummarySectionHeading>
             <Progress
               size="thin"
               className="br-summary__progress"
@@ -242,19 +258,25 @@ export function ChatSummary({
               max={total}
               label={summaryCopy.todoProgressLabel}
             />
-            <ol aria-label={summaryCopy.todoListLabel} className="br-summary__todos">
-              {items.map((item) => {
-                const isEntering = entering.has(item.id);
-                return (
-                  <TodoRow
-                    key={item.id}
-                    item={item}
-                    entering={isEntering}
-                    enterIndex={isEntering ? enterIndex++ : 0}
-                  />
-                );
-              })}
-            </ol>
+            {todoOpen ? (
+              <ol
+                id={todoListId}
+                aria-label={summaryCopy.todoListLabel}
+                className="br-summary__todos"
+              >
+                {items.map((item) => {
+                  const isEntering = entering.has(item.id);
+                  return (
+                    <TodoRow
+                      key={item.id}
+                      item={item}
+                      entering={isEntering}
+                      enterIndex={isEntering ? enterIndex++ : 0}
+                    />
+                  );
+                })}
+              </ol>
+            ) : null}
           </section>
         )}
         {todos.error && (
@@ -278,60 +300,75 @@ export function ChatSummary({
         {/* Decision-model activity, aggregated per source: never one row per
             call. Its rows and its Monitors action are plain buttons in its own
             module, for the same reason as the subagents'. */}
-        {decisions && <SummaryDecisions {...decisions} />}
-        <dl
-          aria-label={summaryCopy.statsLabel}
-          aria-busy={statsPending || undefined}
-          className="br-summary__stats"
-          // The 12px that parts the statistics from what sits above them: the
-          // to-do list, or the refresh error that stands in for it.
-          data-after-todos={total > 0 || todos.error ? '' : undefined}
+        {decisions && <SummaryDecisions {...decisions} decisionChat={decisionChat} />}
+        {/* F-1: the statistics are secondary, so they sit behind one Details
+            disclosure, closed by default, whose closed summary is the token
+            figure. A decision chat calls no tools and writes no files, so its
+            Details holds Tokens only (B-3). */}
+        <Disclosure
+          label={summaryCopy.details}
+          summary={billedTokens ? summaryCopy.detailsSummary(billedTokens) : undefined}
+          className="br-summary__details"
         >
-          <Stat label={summaryCopy.toolCalls}>{toolCalls}</Stat>
-          <Stat
-            label={
-              <>
-                <span>{summaryCopy.tokens}</span>
-                <InfoTip label={summaryCopy.tokens} help={summaryCopy.tokensHelp} />
-              </>
-            }
+          <dl
+            aria-label={summaryCopy.statsLabel}
+            aria-busy={statsPending || undefined}
+            className="br-summary__stats"
           >
-            {billedTokens}
-          </Stat>
-          <Stat label={summaryCopy.artifacts}>{artifacts}</Stat>
-          <Stat label={summaryCopy.code}>
-            {codeDelta && (
-              <>
-                <span className="sr-only">
-                  {summaryCopy.codeDelta(codeDelta.added, codeDelta.removed)}
-                </span>
-                {/* A count carries its colour only when it is a change: "+0"
-                    and "−0" are muted, so a chat that touched no code shows no
-                    red. */}
-                <span aria-hidden="true">
-                  <span className={codeDelta.added > 0 ? 'text-text-success' : 'text-text-muted'}>
-                    +{codeDelta.added.toLocaleString()}
-                  </span>{' '}
-                  <span className={codeDelta.removed > 0 ? 'text-text-danger' : 'text-text-muted'}>
-                    −{codeDelta.removed.toLocaleString()}
-                  </span>
-                </span>
-              </>
+            {!decisionChat && <Stat label={summaryCopy.toolCalls}>{toolCalls}</Stat>}
+            <Stat
+              label={
+                <>
+                  <span>{summaryCopy.tokens}</span>
+                  <InfoTip label={summaryCopy.tokens} help={summaryCopy.tokensHelp} />
+                </>
+              }
+            >
+              {billedTokens}
+            </Stat>
+            {!decisionChat && <Stat label={summaryCopy.artifacts}>{artifacts}</Stat>}
+            {!decisionChat && (
+              <Stat label={summaryCopy.code}>
+                {codeDelta && (
+                  <>
+                    <span className="sr-only">
+                      {summaryCopy.codeDelta(codeDelta.added, codeDelta.removed)}
+                    </span>
+                    {/* A count carries its colour only when it is a change: "+0"
+                      and "−0" are muted, so a chat that touched no code shows no
+                      red. */}
+                    <span aria-hidden="true">
+                      <span
+                        className={codeDelta.added > 0 ? 'text-text-success' : 'text-text-muted'}
+                      >
+                        +{codeDelta.added.toLocaleString()}
+                      </span>{' '}
+                      <span
+                        className={codeDelta.removed > 0 ? 'text-text-danger' : 'text-text-muted'}
+                      >
+                        −{codeDelta.removed.toLocaleString()}
+                      </span>
+                    </span>
+                  </>
+                )}
+              </Stat>
             )}
-          </Stat>
-        </dl>
+          </dl>
+        </Disclosure>
       </div>
       <div className="br-summary__footer">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="br-summary__action"
-          onClick={onWorkflow}
-        >
-          <Pipeline aria-hidden="true" />
-          <span>{hasWorkflow ? summaryCopy.workflow : summaryCopy.makeWorkflow}</span>
-        </Button>
+        {!decisionChat && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="br-summary__action"
+            onClick={onWorkflow}
+          >
+            <Pipeline aria-hidden="true" />
+            <span>{hasWorkflow ? summaryCopy.workflow : summaryCopy.makeWorkflow}</span>
+          </Button>
+        )}
         <Button
           type="button"
           variant="ghost"
