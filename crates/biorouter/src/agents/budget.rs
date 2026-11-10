@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::providers::base::ProviderUsage;
-use crate::providers::pricing::estimate_cost_usd;
+use crate::providers::pricing::request_cost;
 
 /// Fraction of a limit at which the user gets a one-time heads-up.
 pub const BUDGET_WARN_FRACTION: f64 = 0.8;
@@ -235,8 +235,11 @@ impl BudgetTracker {
         if self.limits.max_usd.is_none() {
             return;
         }
-        match estimate_cost_usd(provider, &usage.model, input, output) {
-            Some(cost) => self.usd += cost,
+        // One provider call is one request, so the long-context tier is judged
+        // on its prompt, and cached tokens bill at the cache rate. A turn whose
+        // cache tokens have no rate still counts its priced part.
+        match request_cost(provider, &usage.model, &usage.usage) {
+            Some(cost) => self.usd += cost.cost,
             None => self.priced = false,
         }
     }
@@ -481,6 +484,33 @@ mod tests {
             tracker.check_at(Duration::ZERO),
             BudgetAction::Exceeded(_)
         ));
+    }
+
+    #[test]
+    fn the_dollar_axis_prices_cache_and_the_long_context_tier() {
+        let mut tracker = BudgetTracker::new(ReplyBudget {
+            max_usd: Some(100.0),
+            ..Default::default()
+        });
+        // A 300k-token Sol prompt (100k fresh + 200k cached) and 1k output:
+        // over 272k, so $8 input, $0.80 cached, $30 output per million.
+        let long = ProviderUsage::new(
+            "gpt-5.6-sol-2026-07-09".to_string(),
+            Usage::new(Some(100_000), Some(1_000), Some(301_000)).with_cache(Some(200_000), None),
+        );
+        tracker.record_usage("versa_azure", &long);
+        let want = (100_000.0 * 8.0 + 200_000.0 * 0.80 + 1_000.0 * 30.0) / 1e6;
+        let usd = tracker.snapshot_at(Duration::ZERO).usd.unwrap();
+        assert!((usd - want).abs() < 1e-9, "want {want}, got {usd}");
+
+        // A 200k prompt bills the base rate.
+        let short = ProviderUsage::new(
+            "gpt-5.6-sol-2026-07-09".to_string(),
+            Usage::new(Some(200_000), Some(0), Some(200_000)),
+        );
+        tracker.record_usage("versa_azure", &short);
+        let usd = tracker.snapshot_at(Duration::ZERO).usd.unwrap();
+        assert!((usd - (want + 0.8)).abs() < 1e-9, "got {usd}");
     }
 
     #[test]

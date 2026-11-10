@@ -161,7 +161,7 @@ impl UsageDiagnostics {
         out.push_str("Per-model (this session):\n");
         for row in &self.per_model {
             out.push_str(&format!(
-                "  {} / {}: input={} output={} cache_read={} cache_creation={} total={} turns={}\n",
+                "  {} / {}: input={} output={} cache_read={} cache_creation={} total={} turns={} cost={}\n",
                 row.provider.as_deref().unwrap_or("unknown"),
                 row.model_id.as_deref().unwrap_or("unknown"),
                 row.input_tokens,
@@ -170,8 +170,10 @@ impl UsageDiagnostics {
                 opt_i64(row.cache_creation_tokens),
                 opt_i64(row.total_tokens),
                 row.turns,
+                row_cost_text(row),
             ));
         }
+        out.push_str(&session_cost_text(&self.per_model));
 
         out.push_str(&format!("\nMonth-to-date ({}):\n", self.month));
         out.push_str(&totals_text(&self.month_to_date));
@@ -179,6 +181,52 @@ impl UsageDiagnostics {
         out.push_str(&totals_text(&self.all_time));
         out
     }
+}
+
+/// One per-model row's server-priced cost.
+fn row_cost_text(row: &ModelUsageRow) -> String {
+    match row.cost {
+        None => "unpriced".to_string(),
+        Some(cost) => {
+            let mut text = format!("${cost:.4}");
+            if row.cost_is_partial {
+                text.push_str(" (lower bound)");
+            }
+            if row.long_context_turns > 0 {
+                text.push_str(&format!(
+                    " ({} at the long-context rate)",
+                    row.long_context_turns
+                ));
+            }
+            text
+        }
+    }
+}
+
+/// The session's cost: the sum of its per-model costs, priced per request
+/// (cache buckets and the long-context tier included), with what makes it a
+/// lower bound and how many requests paid a long-context rate.
+fn session_cost_text(per_model: &[ModelUsageRow]) -> String {
+    let priced: Vec<f64> = per_model.iter().filter_map(|row| row.cost).collect();
+    if priced.is_empty() {
+        return "Session cost: unpriced\n".to_string();
+    }
+    let total: f64 = priced.iter().sum();
+    let partial = per_model
+        .iter()
+        .any(|row| row.cost.is_none() || row.cost_is_partial);
+    let long_context: i64 = per_model.iter().map(|row| row.long_context_turns).sum();
+    let mut line = format!("Session cost: ${total:.4}");
+    if partial {
+        line.push_str(" (lower bound; part of the usage is unpriced or has no cache rate)");
+    }
+    if long_context > 0 {
+        line.push_str(&format!(
+            "; long-context tier applied to {long_context} request(s)"
+        ));
+    }
+    line.push('\n');
+    line
 }
 
 fn opt_i32(v: Option<i32>) -> String {
@@ -1613,5 +1661,59 @@ mod tests {
         assert!(text.contains("Accumulated session counters"));
         assert!(text.contains("cache_read=700"));
         assert!(text.contains("Month-to-date"));
+    }
+
+    #[tokio::test]
+    async fn usage_diagnostics_prints_the_session_cost_with_the_long_context_tier() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let session = sm
+            .create_session(temp.path().to_path_buf(), "diag".into(), SessionType::User)
+            .await
+            .unwrap();
+        // One Sol request over 272k and one under it.
+        for (key, input, cached) in [("long", 200_000, 100_000), ("short", 100_000, 0)] {
+            sm.apply_usage_event(UsageLedgerEntry {
+                event_key: key.to_string(),
+                session_id: session.id.clone(),
+                schedule_id: None,
+                current_total_tokens: Some(input + cached + 1_000),
+                current_input_tokens: Some(input),
+                current_output_tokens: Some(1_000),
+                billed_total_tokens: Some(i64::from(input + cached + 1_000)),
+                input_tokens: Some(input),
+                output_tokens: Some(1_000),
+                model_id: Some("gpt-5.6-sol-2026-07-09".to_string()),
+                provider: Some("versa_azure".to_string()),
+                cache_read_tokens: Some(cached),
+                cache_creation_tokens: Some(0),
+            })
+            .await
+            .unwrap();
+        }
+
+        let diag = UsageDiagnostics::collect(&sm, &session.id).await.unwrap();
+        let row = &diag.per_model[0];
+        // Long: 200k x $8 + 100k x $0.80 + 1k x $30; short: 100k x $4 + 1k x $20.
+        let want = (200_000.0 * 8.0
+            + 100_000.0 * 0.80
+            + 1_000.0 * 30.0
+            + 100_000.0 * 4.0
+            + 1_000.0 * 20.0)
+            / 1e6;
+        assert!((row.cost.unwrap() - want).abs() < 1e-9, "{:?}", row.cost);
+        assert!(!row.cost_is_partial);
+        assert_eq!(row.long_context_turns, 1);
+
+        let text = diag.to_text();
+        assert!(
+            text.contains(&format!("Session cost: ${want:.4}")),
+            "{text}"
+        );
+        assert!(
+            text.contains("long-context tier applied to 1 request(s)"),
+            "{text}"
+        );
+        assert!(text.contains("(1 at the long-context rate)"), "{text}");
     }
 }

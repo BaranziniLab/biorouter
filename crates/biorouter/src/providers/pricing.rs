@@ -65,6 +65,255 @@ pub struct TurnCost {
     /// `true` when this turn had cache tokens but the model has no cache pricing,
     /// so those tokens are **excluded** from `cost` (a lower bound, not exact).
     pub cache_excluded: bool,
+    /// `true` when the tokens were priced at the model's long-context rate
+    /// ([`LongContextTier`]).
+    pub long_context: bool,
+}
+
+/// A higher price a request pays when its prompt is larger than
+/// `threshold_prompt_tokens`. The prompt is the request's whole input: fresh
+/// input plus cache read plus cache write. Once over the threshold the WHOLE
+/// request bills at the multiplied rates, not only the tokens past it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LongContextTier {
+    pub threshold_prompt_tokens: i64,
+    pub input_multiplier: f64,
+    pub output_multiplier: f64,
+    pub cache_read_multiplier: f64,
+    pub cache_write_multiplier: f64,
+}
+
+impl LongContextTier {
+    /// Whether a request with this prompt size pays the tier.
+    pub fn applies_to_prompt(&self, prompt_tokens: i64) -> bool {
+        prompt_tokens > self.threshold_prompt_tokens
+    }
+
+    /// Whether requests in `band` ([`prompt_band`]) pay the tier. Exact
+    /// because every tier's threshold is one of [`LONG_CONTEXT_THRESHOLDS`]:
+    /// a band at or above the threshold holds only prompts above it, and a
+    /// band below it holds only prompts at or below it.
+    pub fn applies_to_band(&self, band: i64) -> bool {
+        band > 0 && band >= self.threshold_prompt_tokens
+    }
+
+    /// `pricing` at this tier's rates.
+    pub fn apply(&self, pricing: &ProviderModelPricing) -> ProviderModelPricing {
+        ProviderModelPricing {
+            input_token_cost: pricing.input_token_cost * self.input_multiplier,
+            output_token_cost: pricing.output_token_cost * self.output_multiplier,
+            cache_read_cost: pricing
+                .cache_read_cost
+                .map(|rate| rate * self.cache_read_multiplier),
+            cache_write_cost: pricing
+                .cache_write_cost
+                .map(|rate| rate * self.cache_write_multiplier),
+            currency: pricing.currency.clone(),
+            context_length: pricing.context_length,
+        }
+    }
+}
+
+/// Every threshold any [`LongContextTier`] uses, ascending. The usage ledger
+/// groups requests into bands at these sizes ([`prompt_band`]), so a tier with
+/// a threshold missing here would be priced wrong; a test checks every tier.
+pub const LONG_CONTEXT_THRESHOLDS: [i64; 2] = [200_000, 272_000];
+
+/// The largest threshold in [`LONG_CONTEXT_THRESHOLDS`] the prompt is above,
+/// or 0. The SQL twin is `prompt_band_sql!` in `session::session_manager`.
+pub fn prompt_band(prompt_tokens: i64) -> i64 {
+    LONG_CONTEXT_THRESHOLDS
+        .iter()
+        .rev()
+        .find(|threshold| prompt_tokens > **threshold)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// OpenAI's long-context column: prompts over 272K input tokens pay 2x input,
+/// 2x cached input and 1.5x output for the whole request. Source: OpenAI's
+/// pricing page ("Long context: >272K input tokens") and the GPT-5.6 Sol model
+/// page ("priced at 2x input and 1.5x output for the full request"), read
+/// 2026-11-10. Cache writes take the input multiplier, since they are billed
+/// as a multiple of the uncached input rate.
+const OPENAI_LONG_CONTEXT: LongContextTier = LongContextTier {
+    threshold_prompt_tokens: 272_000,
+    input_multiplier: 2.0,
+    output_multiplier: 1.5,
+    cache_read_multiplier: 2.0,
+    cache_write_multiplier: 2.0,
+};
+
+/// xAI's long-context tier for Grok 4.5-4.7, as [`xai_pricing`] documents it:
+/// $4/$12 instead of $2/$6 once a prompt reaches 200K tokens. "Reaches" is
+/// modelled as "is above", so a prompt of exactly 200,000 reads the base rate.
+const XAI_LONG_CONTEXT: LongContextTier = LongContextTier {
+    threshold_prompt_tokens: 200_000,
+    input_multiplier: 2.0,
+    output_multiplier: 2.0,
+    cache_read_multiplier: 2.0,
+    cache_write_multiplier: 2.0,
+};
+
+/// The GPT models OpenAI's price sheet gives a long-context column (read
+/// 2026-11-10). Every one bills cached input at 0.1x its input rate.
+/// `gpt-5.6` is OpenAI's alias for `gpt-5.6-sol`.
+const OPENAI_TIERED_GPT_MODELS: &[&str] = &[
+    "gpt-5.4",
+    "gpt-5.5",
+    "gpt-5.6",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-6-sol",
+    "gpt-6-astra",
+    "gpt-6-luna",
+];
+
+/// The providers that bill OpenAI's GPT models at OpenAI's list structure:
+/// OpenAI itself, Azure OpenAI and UCSF Versa's Azure gateway.
+fn bills_openai_list_structure(provider: &str) -> bool {
+    matches!(provider, "openai" | "azure_openai" | "versa_azure")
+}
+
+/// `model` without a trailing `-YYYY-MM-DD` deployment date, so Azure's dated
+/// deployment names (`gpt-5.6-sol-2026-07-09`) match their model.
+fn without_date_suffix(model: &str) -> &str {
+    let Some(split) = model.len().checked_sub(11) else {
+        return model;
+    };
+    let (Some(head), Some(tail)) = (model.get(..split), model.get(split..)) else {
+        return model;
+    };
+    let t = tail.as_bytes();
+    let dated = t[0] == b'-'
+        && t[5] == b'-'
+        && t[8] == b'-'
+        && [1, 2, 3, 4, 6, 7, 9, 10]
+            .iter()
+            .all(|&i| t[i].is_ascii_digit());
+    if dated && !head.is_empty() {
+        head
+    } else {
+        model
+    }
+}
+
+/// The tiered GPT model `model` names on an OpenAI-structured provider.
+fn openai_tiered_gpt(provider: &str, model: &str) -> Option<&'static str> {
+    if !bills_openai_list_structure(provider) {
+        return None;
+    }
+    let base = without_date_suffix(model);
+    OPENAI_TIERED_GPT_MODELS
+        .iter()
+        .find(|known| known.eq_ignore_ascii_case(base))
+        .copied()
+}
+
+/// The long-context tier `(provider, model)` bills, or `None` when it has a
+/// single rate (or the tier is not confirmed). Only tiers confirmed against a
+/// published price sheet are listed.
+pub fn long_context_tier(provider: &str, model: &str) -> Option<LongContextTier> {
+    let provider = provider.to_ascii_lowercase();
+    let model = model.to_ascii_lowercase();
+    if openai_tiered_gpt(&provider, &model).is_some() {
+        return Some(OPENAI_LONG_CONTEXT);
+    }
+    match (provider.as_str(), model.as_str()) {
+        ("xai" | "x-ai", "grok-4.7" | "grok-4.6" | "grok-4.5") => Some(XAI_LONG_CONTEXT),
+        _ => None,
+    }
+}
+
+/// Fill in OpenAI's published cache rates where the resolved price has none.
+/// The canonical catalog and provider metadata carry no cache rates, so every
+/// cached token of a GPT-5.4+ request was left out of its cost. Cache read is
+/// 0.1x input on every tiered model; cache write is 1.25x input on GPT-5.6
+/// (OpenAI's Sol model page; Azure lists $6.25 on $5, $2.50 on $2 and $0.25
+/// on $0.20 for Sol, Terra and Luna). OpenAI's usage reports no cache-write
+/// bucket today, so the write rate prices nothing until one appears.
+fn with_openai_cache_rates(
+    provider: &str,
+    model: &str,
+    mut pricing: ProviderModelPricing,
+) -> ProviderModelPricing {
+    let Some(base) = openai_tiered_gpt(provider, model) else {
+        return pricing;
+    };
+    if pricing.cache_read_cost.is_none() {
+        pricing.cache_read_cost = Some(pricing.input_token_cost * 0.1);
+    }
+    if pricing.cache_write_cost.is_none() && base.starts_with("gpt-5.6") {
+        pricing.cache_write_cost = Some(pricing.input_token_cost * 1.25);
+    }
+    pricing
+}
+
+/// The prompt size of one request from its disjoint buckets.
+pub fn prompt_tokens(input_tokens: i64, cache_read_tokens: i64, cache_creation_tokens: i64) -> i64 {
+    input_tokens.max(0) + cache_read_tokens.max(0) + cache_creation_tokens.max(0)
+}
+
+/// [`cost_with_pricing`] at the tier's rates when `long_context` is set and
+/// the model has a tier. `long_context` says every request behind the tokens
+/// was above the tier's threshold (one request, or one prompt band).
+pub fn cost_with_tier(
+    pricing: &ProviderModelPricing,
+    tier: Option<&LongContextTier>,
+    long_context: bool,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+) -> TurnCost {
+    match tier.filter(|_| long_context) {
+        Some(tier) => TurnCost {
+            long_context: true,
+            ..cost_with_pricing(
+                &tier.apply(pricing),
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            )
+        },
+        None => cost_with_pricing(
+            pricing,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+        ),
+    }
+}
+
+/// Dollar cost of ONE provider request, cache buckets and long-context tier
+/// included. `None` when the pair is unpriced. Sync, so it uses
+/// [`provider_model_pricing`] (the BR-35 budget and other sync callers).
+pub fn request_cost(
+    provider: &str,
+    model: &str,
+    usage: &crate::providers::base::Usage,
+) -> Option<TurnCost> {
+    let pricing = provider_model_pricing(provider, model)?;
+    let input = i64::from(usage.input_tokens.unwrap_or(0).max(0));
+    let output = i64::from(usage.output_tokens.unwrap_or(0).max(0));
+    let cache_read = i64::from(usage.cache_read_input_tokens.unwrap_or(0).max(0));
+    let cache_creation = i64::from(usage.cache_creation_input_tokens.unwrap_or(0).max(0));
+    let tier = long_context_tier(provider, model);
+    let long = tier.is_some_and(|tier| {
+        tier.applies_to_prompt(prompt_tokens(input, cache_read, cache_creation))
+    });
+    Some(cost_with_tier(
+        &pricing,
+        tier.as_ref(),
+        long,
+        input,
+        output,
+        cache_read,
+        cache_creation,
+    ))
 }
 
 /// Dollar cost of a turn (or a rollup of turns) for one `(provider, model)`,
@@ -95,6 +344,9 @@ pub fn model_cost(
 ///
 /// The buckets are the disjoint counts from `Usage`: `input_tokens` is fresh
 /// (non-cached) input, and `cache_read` / `cache_creation` are additive.
+///
+/// Flat: no long-context tier, because a rollup of many requests has no single
+/// prompt size. Price one request with [`request_cost`].
 pub fn model_cost_with_cache(
     provider: &str,
     model: &str,
@@ -140,6 +392,7 @@ pub fn cost_with_pricing(
     TurnCost {
         cost,
         cache_excluded,
+        long_context: false,
     }
 }
 
@@ -156,6 +409,7 @@ pub fn provider_model_pricing(provider: &str, model: &str) -> Option<ProviderMod
     }
 
     canonical_model_pricing(&provider, &model)
+        .map(|pricing| with_openai_cache_rates(&provider, &model, pricing))
 }
 
 pub async fn resolved_provider_model_pricing(
@@ -199,7 +453,11 @@ fn resolve_pricing_with_metadata(
     if let Some(pricing) =
         metadata.and_then(|metadata| pricing_from_provider_metadata(metadata, model))
     {
-        return Some(with_cache_rates_from(pricing, explicit.as_ref()));
+        return Some(with_openai_cache_rates(
+            provider,
+            model,
+            with_cache_rates_from(pricing, explicit.as_ref()),
+        ));
     }
 
     if explicit.is_some() {
@@ -207,6 +465,7 @@ fn resolve_pricing_with_metadata(
     }
 
     canonical_model_pricing(provider, model)
+        .map(|pricing| with_openai_cache_rates(provider, model, pricing))
 }
 
 /// Declarative metadata carries input and output rates but no cache rates,
@@ -747,8 +1006,8 @@ fn mistral_pricing(model: &str) -> Option<ProviderModelPricing> {
 }
 
 /// xAI bills a long-context tier once a prompt reaches 200K tokens (Grok
-/// 4.5-4.7: $4/$12 instead of $2/$6). This table holds the short-context rate,
-/// which is what almost every turn pays; a turn past 200K reads low.
+/// 4.5-4.7: $4/$12 instead of $2/$6). This table holds the short-context rate;
+/// [`long_context_tier`] carries the long one ([`XAI_LONG_CONTEXT`]).
 fn xai_pricing(model: &str) -> Option<ProviderModelPricing> {
     match model {
         // Grok 4.5 (2026-07-08), 4.6 (2026-08-12) and 4.7 (2026-09-21), the
@@ -774,9 +1033,9 @@ fn xai_pricing(model: &str) -> Option<ProviderModelPricing> {
 ///
 /// Priced by [`provider_model_pricing`] and nothing else: provider-specific
 /// overrides first, then the canonical model catalog, except for the providers
-/// [`blocks_fallback_pricing`] keeps off the catalog. Lives here so the
-/// per-reply dollar budget (BR-35) and the display paths can never disagree
-/// about what a turn cost.
+/// [`blocks_fallback_pricing`] keeps off the catalog. Input and output only:
+/// no cache buckets and no long-context tier. The per-reply dollar budget
+/// (BR-35) prices with [`request_cost`] instead, which has both.
 ///
 /// This used to fall back to the catalog on its own whenever
 /// `provider_model_pricing` said `None`. For an unblocked provider that lookup
@@ -1684,6 +1943,214 @@ mod tests {
                 "{provider}/{model} must not be priced on the async path"
             );
             assert!(estimate_cost_usd(provider, model, 1_000, 1).is_none());
+        }
+    }
+
+    fn usage_of(input: i32, output: i32, cache_read: i32) -> crate::providers::base::Usage {
+        crate::providers::base::Usage::new(Some(input), Some(output), Some(input + output))
+            .with_cache(Some(cache_read), None)
+    }
+
+    #[test]
+    fn a_long_sol_prompt_bills_the_whole_request_at_the_long_context_rate() {
+        // 300k fresh input, 1k output on Sol ($4/$20): over 272k, so $8/$30.
+        for (provider, model) in [
+            ("openai", "gpt-5.6-sol"),
+            ("openai", "gpt-5.6"),
+            ("azure_openai", "gpt-5.6-sol-2026-07-09"),
+            ("versa_azure", "gpt-5.6-sol-2026-07-09"),
+            ("versa_azure", "GPT-5.6-SOL-2026-07-09"),
+        ] {
+            let long = request_cost(provider, model, &usage_of(300_000, 1_000, 0)).unwrap();
+            assert!(long.long_context, "{provider}/{model}");
+            assert!(
+                (long.cost - (300_000.0 * 8.0 + 1_000.0 * 30.0) / 1e6).abs() < 1e-9,
+                "{provider}/{model}: {}",
+                long.cost
+            );
+
+            let short = request_cost(provider, model, &usage_of(200_000, 1_000, 0)).unwrap();
+            assert!(!short.long_context, "{provider}/{model}");
+            assert!(
+                (short.cost - (200_000.0 * 4.0 + 1_000.0 * 20.0) / 1e6).abs() < 1e-9,
+                "{provider}/{model}: {}",
+                short.cost
+            );
+        }
+    }
+
+    #[test]
+    fn cached_tokens_count_toward_the_prompt_and_bill_at_the_tier() {
+        // 100k fresh + 200k cached = a 300k prompt: long context. Cached input
+        // is $0.40 base, $0.80 long.
+        let cost = request_cost(
+            "versa_azure",
+            "gpt-5.6-sol-2026-07-09",
+            &usage_of(100_000, 0, 200_000),
+        )
+        .unwrap();
+        assert!(cost.long_context);
+        assert!(!cost.cache_excluded);
+        let want = (100_000.0 * 8.0 + 200_000.0 * 0.80) / 1e6;
+        assert!((cost.cost - want).abs() < 1e-9, "{}", cost.cost);
+
+        // Exactly at the threshold is the base rate.
+        let at = request_cost("openai", "gpt-6-sol", &usage_of(72_000, 0, 200_000)).unwrap();
+        assert!(!at.long_context);
+        let want = (72_000.0 * 2.0 + 200_000.0 * 0.20) / 1e6;
+        assert!((at.cost - want).abs() < 1e-9, "{}", at.cost);
+    }
+
+    #[test]
+    fn every_tiered_gpt_model_has_the_openai_tier_and_cache_rate() {
+        for model in OPENAI_TIERED_GPT_MODELS {
+            for provider in ["openai", "azure_openai", "versa_azure"] {
+                assert_eq!(
+                    long_context_tier(provider, model),
+                    Some(OPENAI_LONG_CONTEXT),
+                    "{provider}/{model}"
+                );
+                let pricing = provider_model_pricing(provider, model)
+                    .unwrap_or_else(|| panic!("{provider}/{model} must be priced"));
+                let read = pricing.cache_read_cost.expect("cache read rate");
+                assert!(
+                    (read - pricing.input_token_cost * 0.1).abs() < 1e-18,
+                    "{provider}/{model}"
+                );
+            }
+        }
+        // The dated Versa and Azure deployment names resolve too.
+        for (provider, model) in [
+            ("versa_azure", "gpt-5.6-terra-2026-07-09"),
+            ("versa_azure", "gpt-5.6-luna-2026-07-09"),
+            ("versa_azure", "gpt-5.5-2026-04-24"),
+            ("azure_openai", "gpt-6-astra-2026-09-03"),
+        ] {
+            assert!(
+                long_context_tier(provider, model).is_some(),
+                "{provider}/{model}"
+            );
+            assert!(
+                provider_model_pricing(provider, model)
+                    .and_then(|p| p.cache_read_cost)
+                    .is_some(),
+                "{provider}/{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn gpt_5_6_cache_writes_are_1_25x_and_others_have_none() {
+        let sol = provider_model_pricing("versa_azure", "gpt-5.6-sol-2026-07-09").unwrap();
+        assert!((sol.cache_read_cost.unwrap() - 0.40e-6).abs() < 1e-15);
+        assert!((sol.cache_write_cost.unwrap() - 5.0e-6).abs() < 1e-15);
+        let gpt6 = provider_model_pricing("openai", "gpt-6-sol").unwrap();
+        assert!((gpt6.cache_read_cost.unwrap() - 0.20e-6).abs() < 1e-15);
+        assert_eq!(gpt6.cache_write_cost, None);
+    }
+
+    #[test]
+    fn untiered_models_and_providers_keep_a_single_flat_rate() {
+        for (provider, model) in [
+            // Not in OpenAI's long-context table.
+            ("openai", "gpt-4o"),
+            ("versa_azure", "gpt-5.4-mini-2026-03-17"),
+            ("openai", "gpt-5.5-pro"),
+            // Same model through a provider whose pass-through is unconfirmed.
+            ("openrouter", "openai/gpt-5.6-sol"),
+            ("anthropic", "claude-opus-5-5"),
+            // A name that only contains a tiered one.
+            ("openai", "gpt-5.6-sol-mini"),
+        ] {
+            assert_eq!(
+                long_context_tier(provider, model),
+                None,
+                "{provider}/{model}"
+            );
+        }
+        // gpt-4o keeps no cache rate: its cached discount is not 0.1x.
+        assert_eq!(
+            provider_model_pricing("openai", "gpt-4o")
+                .unwrap()
+                .cache_read_cost,
+            None
+        );
+        // An unpriced pair stays unpriced however large the prompt.
+        assert!(request_cost("bedrock", "us.openai.gpt-6-sol", &usage_of(500_000, 1, 0)).is_none());
+    }
+
+    #[test]
+    fn xai_grok_bills_its_documented_200k_tier() {
+        let long = request_cost("xai", "grok-4.7", &usage_of(250_000, 1_000, 0)).unwrap();
+        assert!(long.long_context);
+        assert!((long.cost - (250_000.0 * 4.0 + 1_000.0 * 12.0) / 1e6).abs() < 1e-9);
+        let short = request_cost("xai", "grok-4.7", &usage_of(200_000, 1_000, 0)).unwrap();
+        assert!(!short.long_context);
+        assert_eq!(long_context_tier("xai", "grok-4.3"), None);
+    }
+
+    #[test]
+    fn every_tier_threshold_is_a_ledger_band() {
+        let mut tiers = vec![OPENAI_LONG_CONTEXT, XAI_LONG_CONTEXT];
+        tiers.extend(long_context_tier("openai", "gpt-6-sol"));
+        for tier in tiers {
+            assert!(
+                LONG_CONTEXT_THRESHOLDS.contains(&tier.threshold_prompt_tokens),
+                "{} is not a band",
+                tier.threshold_prompt_tokens
+            );
+            // Band and prompt agree on both sides of the threshold.
+            for prompt in [
+                0,
+                tier.threshold_prompt_tokens - 1,
+                tier.threshold_prompt_tokens,
+                tier.threshold_prompt_tokens + 1,
+                5_000_000,
+            ] {
+                assert_eq!(
+                    tier.applies_to_band(prompt_band(prompt)),
+                    tier.applies_to_prompt(prompt),
+                    "prompt {prompt}"
+                );
+            }
+        }
+        assert!(LONG_CONTEXT_THRESHOLDS.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn prompt_bands_split_at_each_threshold() {
+        assert_eq!(prompt_band(0), 0);
+        assert_eq!(prompt_band(200_000), 0);
+        assert_eq!(prompt_band(200_001), 200_000);
+        assert_eq!(prompt_band(272_000), 200_000);
+        assert_eq!(prompt_band(272_001), 272_000);
+        assert_eq!(prompt_band(1_000_000), 272_000);
+    }
+
+    #[test]
+    fn date_suffixes_are_stripped_only_when_they_are_dates() {
+        assert_eq!(without_date_suffix("gpt-5.6-sol-2026-07-09"), "gpt-5.6-sol");
+        assert_eq!(without_date_suffix("gpt-5.6-sol"), "gpt-5.6-sol");
+        assert_eq!(
+            without_date_suffix("gpt-5.6-sol-2026-07-xx"),
+            "gpt-5.6-sol-2026-07-xx"
+        );
+        assert_eq!(without_date_suffix("-2026-07-09"), "-2026-07-09");
+        assert_eq!(without_date_suffix("é"), "é");
+    }
+
+    #[tokio::test]
+    async fn openai_cache_rates_hold_on_the_async_path() {
+        for (provider, model) in [
+            ("openai", "gpt-5.6-sol"),
+            ("versa_azure", "gpt-5.6-sol-2026-07-09"),
+            ("azure_openai", "gpt-6-sol-2026-09-22"),
+        ] {
+            let sync = provider_model_pricing(provider, model).unwrap();
+            let resolved = resolved_provider_model_pricing(provider, model)
+                .await
+                .unwrap();
+            assert_eq!(sync, resolved, "{provider}/{model}");
         }
     }
 }

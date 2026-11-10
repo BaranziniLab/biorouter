@@ -1178,6 +1178,14 @@ pub trait Provider: Send + Sync {
                 &[],
             )
             .await?;
+        // Billed like any call; charged to the chat the caller scoped.
+        crate::session::session_manager::side_usage::record_side_call_usage(
+            None,
+            crate::session::session_manager::side_usage::SideCall::SessionName,
+            self.get_name(),
+            &result.1,
+        )
+        .await;
 
         let description = result
             .0

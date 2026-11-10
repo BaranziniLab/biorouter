@@ -1330,6 +1330,15 @@ fn apply_stream_event(
         ResponsesStreamEvent::ResponseFailed {
             error, response, ..
         } => {
+            // A failed generation is billed for what it consumed, and its
+            // `response.usage` says how much. Keep it so the reader can hand
+            // it on before the error.
+            if let Some(usage) = response
+                .as_ref()
+                .and_then(|response| failed_response_usage(response, state.model_name.as_deref()))
+            {
+                state.final_usage = Some(usage);
+            }
             let error = error
                 .or_else(|| response.and_then(|response| response.get("error").cloned()))
                 .unwrap_or(Value::Null);
@@ -1352,6 +1361,21 @@ fn apply_stream_event(
     }
 
     Ok(EventFlow::Continue)
+}
+
+/// The usage a `response.failed` frame's `response` carries, if it has any.
+fn failed_response_usage(response: &Value, model_name: Option<&str>) -> Option<ProviderUsage> {
+    let usage: ResponseUsage = serde_json::from_value(response.get("usage")?.clone()).ok()?;
+    let model = model_name
+        .map(str::to_string)
+        .or_else(|| response.get("model")?.as_str().map(str::to_string))
+        .unwrap_or_default();
+    Some(ProviderUsage {
+        usage: response_usage_to_usage(&usage),
+        model,
+        provider: None,
+        finish_reason: None,
+    })
 }
 
 /// Read an SSE stream from the Responses API into provider stream items.
@@ -1405,7 +1429,17 @@ where
                 event => {
                     // `?` must stand on its own here: `try_stream!` does not
                     // rewrite it inside a macro argument.
-                    let flow = apply_stream_event(event, &mut state)?;
+                    let flow = match apply_stream_event(event, &mut state) {
+                        Ok(flow) => flow,
+                        Err(error) => {
+                            // A `response.failed` with usage was billed: yield
+                            // the usage first, so the turn records it.
+                            if let Some(usage) = state.final_usage.take() {
+                                yield (None, Some(usage), None);
+                            }
+                            Err::<EventFlow, anyhow::Error>(error)?
+                        }
+                    };
                     if matches!(flow, EventFlow::Stop) {
                         break 'outer;
                     }
@@ -2359,6 +2393,36 @@ data: {"type":"error","error":{"code":"rate_limit_exceeded","message":"slow down
                 .is_some_and(|e| e.contains("Responses API error")),
             "an error frame must still fail, got {error:?}"
         );
+    }
+
+    /// A `response.failed` frame whose response carries usage was billed: the
+    /// usage is yielded before the error, so the turn records it.
+    #[tokio::test]
+    async fn a_failed_response_hands_on_its_usage_before_the_error() {
+        let lines = r#"
+data: {"type":"response.created","sequence_number":0,"response":{"id":"r","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.6-sol-2026-07-09","output":[]}}
+data: {"type":"response.failed","sequence_number":1,"response":{"id":"r","status":"failed","model":"gpt-5.6-sol-2026-07-09","error":{"code":"server_error","message":"boom"},"usage":{"input_tokens":300000,"output_tokens":120,"total_tokens":300120,"input_tokens_details":{"cached_tokens":100000}}}}
+"#;
+        let (_, usage, error) = drain_with_usage(lines).await;
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.contains("Responses API failed")),
+            "{error:?}"
+        );
+        let usage = usage.expect("the failed response's usage");
+        assert_eq!(usage.model, "gpt-5.6-sol-2026-07-09");
+        assert_eq!(usage.usage.input_tokens, Some(200_000));
+        assert_eq!(usage.usage.cache_read_input_tokens, Some(100_000));
+        assert_eq!(usage.usage.output_tokens, Some(120));
+
+        // No usage on the frame: nothing is invented.
+        let bare = r#"
+data: {"type":"response.failed","sequence_number":1,"response":{"id":"r","status":"failed","error":{"code":"server_error","message":"boom"}}}
+"#;
+        let (_, usage, error) = drain_with_usage(bare).await;
+        assert!(error.is_some());
+        assert!(usage.is_none());
     }
 
     /// The first error a stream of `lines` ends in, as the decoder raised it.
