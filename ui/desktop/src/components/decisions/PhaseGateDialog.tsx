@@ -1,18 +1,24 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { ModalShell } from '../ModalShell';
-import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/Checkbox';
+import { ConfirmationModal } from '../ui/ConfirmationModal';
+import { Disclosure } from '../ui/disclosure';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import { InfoTip } from '../ui/info-tip';
 import { Note } from '../ui/note';
+import { RowActionMenuItems, type RowActionItem } from '../ui/row-actions';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Select } from '../ui/Select';
 import { Slider } from '../ui/slider';
+import { useSurfaceTriggerHint } from '../ui/surfaceTriggerHint';
 import { Textarea } from '../ui/textarea';
-import { Plus, X } from '../icons/app-icons';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { MoreHorizontal, Plus, X } from '../icons/app-icons';
 import {
-  decisionModelLabel,
   fetchDecisionCatalog,
   formatProbability,
+  phaseGateState,
   type DecisionHistoryFilter,
   type DecisionModelEntry,
   type DecisionModelRef,
@@ -22,6 +28,7 @@ import {
 } from '../../utils/sessionDecisions';
 import {
   GATE_ATTEMPTS_MAX,
+  GATE_DEFAULT_ATTEMPTS,
   GATE_DEFAULT_THRESHOLD,
   GATE_QUESTIONS_MAX,
   decidePhaseGate,
@@ -45,21 +52,30 @@ import {
   type OrchestrationSnapshot,
   type PhaseSnapshot,
 } from '../../utils/sessionSubagents';
+import {
+  decisionModelKey,
+  decisionModelOptions,
+  formatDecisionModelOption,
+  isDecisionModelOptionDisabled,
+  type DecisionModelOption,
+} from './decisionModelOption';
+import { GATE_STATE_ICONS, decisionModelDisplay } from './decisionWords';
 import './decisionsPanel.css';
 
 export const PHASE_GATE_COPY = {
   title: 'Phase gate',
   addTitle: 'Add a phase gate',
+  editTitle: 'Edit gate',
   owner: {
-    agent: 'Set by the agent',
-    person: 'Set by you',
-    workflow: 'Set by the workflow',
+    agent: 'The agent',
+    person: 'You',
+    workflow: 'The workflow',
   } as Record<GateOwner, string>,
   status: {
     needsYou: 'Blocked: needs you',
     blocked: 'Blocked',
     passed: 'Passed',
-    failed: 'Failed',
+    failed: 'Not passed',
     pending: 'Not asked yet',
     completed: 'Completed',
     skipped: 'Skipped',
@@ -68,19 +84,33 @@ export const PHASE_GATE_COPY = {
     passStands: 'Your pass stands',
     skipStands: 'Your skip stands',
   },
+  statusHelp:
+    'Pass this phase counts it as passed and lets the agent complete it. Skip this phase lets the agent move on without it, and the phase is marked skipped.',
+  statusHelpLabel: 'Pass and Skip',
   attempts: (used: number, max: number) =>
     `${used} of ${max} ${max === 1 ? 'attempt' : 'attempts'} used`,
-  retried: (n: number) =>
-    n === 1 ? 'You gave it its attempts again once.' : `You gave it its attempts again ${n} times.`,
-  threshold: (t: string) => `Every question must reach P(yes) ${t}.`,
+  attemptsFact: (used: number, max: number) => `${used} of ${max} used`,
+  retried: (n: number) => `given again ${n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`}`,
+  threshold: (t: string) => `Every question must reach P(yes) ${t}`,
+  /** R2: the probability names its outcome, beside the threshold. */
+  lastCheck: (p: string, t: string) => `Lowest P(yes) ${p} · threshold ${t}`,
   questions: 'Questions',
   questionsUnknown: 'This Biorouter service does not list the questions.',
-  lastCheck: (p: string, t: string) => `Lowest P(yes) at the last check: ${p}, needs ${t}.`,
   lastError: (error: string) => `The last check decided nothing: ${error}`,
-  holds: (titles: string) => `Holds ${titles} until it passes or you pass or skip it.`,
-  model: (label: string) => `Decision model: ${label}`,
-  chatDefault: "the chat's decision model",
-  uncalibrated: 'Accepts uncalibrated probabilities.',
+  holds: (titles: string, many: boolean) =>
+    `${titles} ${many ? 'wait' : 'waits'} until this gate passes.`,
+  laterPhase: 'a later phase',
+  details: 'Details',
+  facts: {
+    threshold: 'Threshold',
+    lastCheck: 'Last check',
+    attempts: 'Attempts',
+    model: 'Model',
+    probabilities: 'Probabilities',
+    setBy: 'Set by',
+  },
+  chatDefault: "This chat's decision model",
+  uncalibrated: 'Accepts uncalibrated probabilities',
   needsPerson:
     'Only you can move this phase on now: pass it, skip it, give its gate its attempts again, or change or remove the gate.',
   blockedByErrors:
@@ -95,30 +125,45 @@ export const PHASE_GATE_COPY = {
   noGate: 'This phase has no gate. The agent can complete it without one.',
   gone: 'This phase is no longer in the plan.',
   pass: 'Pass this phase',
+  passTip: 'Counts the phase as passed, as if its gate had passed.',
   skip: 'Skip this phase',
+  skipTip: 'Lets the agent move on without this phase. It is marked skipped.',
+  more: 'More gate actions',
   retry: 'Try again',
   edit: 'Edit gate',
-  remove: 'Remove gate',
+  remove: 'Remove gate…',
   add: 'Add gate',
-  history: 'Show history',
+  history: 'Decision history',
   working: 'Working',
+  confirmRemove: {
+    title: 'Remove this gate?',
+    message: (phase: string) =>
+      `Its questions and attempts are discarded, and the agent can complete ${phase} without a check. You can add a new gate afterwards.`,
+    confirm: 'Remove gate',
+    cancel: 'Cancel',
+  },
   editor: {
-    about:
-      'A decision model answers these yes/no questions from the phase’s hand-off and its subagents’ results. The phase completes only when every answer reaches the threshold, and the phases after it wait until then.',
     replaces: 'Saving makes this gate yours and starts its attempts over.',
     questions: 'Questions',
+    questionsHelp:
+      "A decision model answers each question from the phase's hand-off and its subagents' results. The phase completes only when every answer reaches the threshold.",
     question: (n: number) => `Question ${n}`,
     addQuestion: 'Add a question',
     removeQuestion: (n: number) => `Remove question ${n}`,
     questionLimit: `A gate asks at most ${GATE_QUESTIONS_MAX} questions.`,
     threshold: 'Threshold',
-    thresholdHelp: 'The P(yes) every question must reach.',
+    thresholdHelp: 'The probability of yes each question must reach.',
+    /** R2: the helper names its outcome, in words. */
+    thresholdRule: (t: string) => `Passes when every question's P(yes) is at or above ${t}.`,
     thresholdLow:
       'Below 0.50 the gate passes answers the decision model leans against. That is your call to make.',
+    moreOptions: 'More options',
+    moreSummary: (attempts: number, model: string) =>
+      `${attempts} ${attempts === 1 ? 'attempt' : 'attempts'} · ${model}`,
     attempts: 'Attempts',
-    attemptsHelp: 'Failed checks allowed before the phase is blocked and waits for you.',
+    attemptsHelp: 'Checks that may fail before the phase is blocked and waits for you.',
     model: 'Model',
-    modelHelp: 'Only a private model may read a private chat.',
+    modelHelp: 'A private chat can use only a private model.',
     modelsFailed:
       'Could not load the decision models. The chat’s decision model can still be used.',
     allowUncalibrated: 'Accept uncalibrated probabilities',
@@ -127,10 +172,12 @@ export const PHASE_GATE_COPY = {
     save: 'Save gate',
     saving: 'Saving',
     cancel: 'Cancel',
-    private: 'Private',
-    public: 'Public',
-    local: 'this computer',
-    publicRefused: 'This chat is private, so a public model may not read it.',
+    /** A refusal that names a field inside More options says which, in words. */
+    refusalField: {
+      model: 'Model',
+      attempts: 'Attempts',
+      uncalibrated: 'Probabilities',
+    },
   },
 };
 
@@ -154,23 +201,73 @@ export function phaseGateStatus(
   return copy.status.pending;
 }
 
-/** `Write and Review`, `Write, Review and Ship`. */
+/**
+ * Whether the dialog needs the person now, so Pass is its primary button: the gate
+ * waits for them ("Blocked: needs you"), or errors blocked it with no attempt left.
+ * In every other state the footer has no primary: the safe course is to close.
+ */
+export function gateNeedsPerson(phase: Pick<PhaseSnapshot, 'status'>, gate: PhaseGateSnapshot) {
+  if (isClosedPhase(phase) || gate.personDecision !== null) return false;
+  return gate.needsPerson || (gate.blocked && gate.attempts >= gate.maxAttempts);
+}
+
+/** `Write`, `Write and Review`, `Write, Review and Ship`. */
 function joinTitles(titles: string[]): string {
   if (titles.length <= 1) return titles[0] ?? '';
   return `${titles.slice(0, -1).join(', ')} and ${titles[titles.length - 1]}`;
 }
 
-interface ModelOption {
-  value: string;
-  label: string;
-  model: DecisionModelRef | null;
-  reason: string | null;
+/**
+ * A gate's model as a person reads it (R3): `tev1:0.8b · this computer`, or "This
+ * chat's decision model" when it names none. `raw` is the snapshot's own spelling, shown
+ * only when it cannot be read as a model at all.
+ */
+function gateModelText(model: DecisionModelRef | null, raw: string | null): string {
+  if (model) return decisionModelDisplay(model, null) ?? copy.chatDefault;
+  return raw?.trim() || copy.chatDefault;
 }
 
 const menuPortalTarget = typeof document === 'undefined' ? undefined : document.body;
 
-function modelKey(model: Pick<DecisionModelRef, 'provider' | 'model'> | null): string {
-  return model ? `${model.provider}/${model.model}` : '';
+type RefusalField = 'model' | 'attempts' | 'uncalibrated';
+
+/**
+ * The field inside More options a refusal names, by the daemon's words, so the
+ * editor can open it and focus the field. `null` for a refusal about anything else.
+ */
+export function refusalField(message: string): RefusalField | null {
+  const text = message.toLowerCase();
+  if (/uncalibrated|calibrat/.test(text)) return 'uncalibrated';
+  if (/attempt/.test(text)) return 'attempts';
+  if (/\bmodel\b/.test(text)) return 'model';
+  return null;
+}
+
+/** `true` when the gate already uses a value inside More options. */
+function usesMoreOptions(draft: PhaseGateDraft): boolean {
+  return draft.maxAttempts !== GATE_DEFAULT_ATTEMPTS || !!draft.model || draft.allowUncalibrated;
+}
+
+function FieldLabel({
+  id,
+  htmlFor,
+  label,
+  help,
+}: {
+  id?: string;
+  htmlFor?: string;
+  label: string;
+  help?: string | null;
+}) {
+  const Tag = htmlFor ? 'label' : 'span';
+  return (
+    <span className="br-gate-field__label">
+      <Tag id={id} htmlFor={htmlFor} className="text-label text-text-default">
+        {label}
+      </Tag>
+      {help ? <InfoTip label={label} help={help} /> : null}
+    </span>
+  );
 }
 
 function GateEditor({
@@ -185,6 +282,10 @@ function GateEditor({
   replacing,
   scaleFor,
   opened,
+  moreOpen,
+  onMoreOpenChange,
+  focusField,
+  onFocused,
 }: {
   draft: PhaseGateDraft;
   onChange: (next: PhaseGateDraft) => void;
@@ -208,41 +309,47 @@ function GateEditor({
    * that row again, or going back to it, changes nothing the person did not choose.
    */
   opened: DecisionModelRef | null;
+  /** More options is controlled, so a refusal can open it before focusing a field. */
+  moreOpen: boolean;
+  onMoreOpenChange: (open: boolean) => void;
+  focusField: RefusalField | null;
+  onFocused: () => void;
 }) {
   const base = useId();
   const steps = gateThresholdSteps(scaleFor);
-  const options: ModelOption[] = [
-    { value: '', label: copy.chatDefault, model: null, reason: chatRefusal },
-    ...models.map((entry) => ({
-      value: modelKey(entry),
-      label: [
-        entry.displayName,
-        entry.tier === 'private'
-          ? copy.editor.private
-          : entry.tier === 'public'
-            ? copy.editor.public
-            : null,
-        entry.local ? copy.editor.local : null,
-      ]
-        .filter(Boolean)
-        .join(' · '),
-      model: { provider: entry.provider, model: entry.model, adapter: null },
-      // The daemon's own reason first (a tier, an institution, a Crew grant).
-      reason:
-        entry.unavailableReason ??
-        (chatTier === 'private' && entry.tier === 'public' ? copy.editor.publicRefused : null),
-    })),
-  ];
-  const selectedKey = modelKey(draft.model);
+  const options: DecisionModelOption[] = decisionModelOptions({ models, chatTier, chatRefusal });
+  const selectedKey = decisionModelKey(draft.model);
   if (draft.model && !options.some((option) => option.value === selectedKey)) {
+    const name = decisionModelDisplay(draft.model, null) ?? selectedKey;
     options.push({
       value: selectedKey,
-      label: decisionModelLabel(draft.model) ?? selectedKey,
+      label: name,
+      name,
+      secondary: null,
+      isPrivate: false,
       model: draft.model,
       reason: null,
     });
   }
   const selected = options.find((option) => option.value === selectedKey) ?? options[0];
+  const attemptsRef = useRef<HTMLDivElement | null>(null);
+  const uncalibratedRef = useRef<HTMLLabelElement | null>(null);
+
+  // A refusal named a field inside More options: it is open now, so focus the field.
+  useEffect(() => {
+    if (!focusField || !moreOpen) return;
+    const target =
+      focusField === 'model'
+        ? document.getElementById(`${base}-model`)
+        : focusField === 'attempts'
+          ? (attemptsRef.current?.querySelector<HTMLElement>(
+              '[role="radio"][aria-checked="true"]'
+            ) ?? attemptsRef.current?.querySelector<HTMLElement>('[role="radio"]'))
+          : uncalibratedRef.current?.querySelector<HTMLElement>('input');
+    target?.focus();
+    onFocused();
+  }, [focusField, moreOpen, base, onFocused]);
+
   const setQuestion = (index: number, question: string) =>
     onChange({
       ...draft,
@@ -250,14 +357,14 @@ function GateEditor({
     });
 
   return (
-    // A filled box, so the fields in it rest one step back: a fill never sits on a fill.
-    <div className="br-monitors__editor br-fill-surface" data-testid="phase-gate-editor">
-      <p className="br-monitors__note">{copy.editor.about}</p>
-      {replacing ? <p className="br-monitors__note">{copy.editor.replaces}</p> : null}
-      <div className="br-form-field flex min-w-0 flex-col gap-1.5">
-        <span className="text-label text-text-default" id={`${base}-questions`}>
-          {copy.editor.questions}
-        </span>
+    <div className="br-gate-editor" data-testid="phase-gate-editor">
+      {replacing ? <p className="br-gate-note">{copy.editor.replaces}</p> : null}
+      <div className="br-gate-field">
+        <FieldLabel
+          id={`${base}-questions`}
+          label={copy.editor.questions}
+          help={copy.editor.questionsHelp}
+        />
         <ol className="br-monitors__options" aria-labelledby={`${base}-questions`}>
           {draft.questions.map((entry, index) => (
             <li key={entry.name} className="flex min-w-0 flex-col gap-1">
@@ -322,14 +429,16 @@ function GateEditor({
             {copy.editor.addQuestion}
           </Button>
           {draft.questions.length >= GATE_QUESTIONS_MAX ? (
-            <p className="br-monitors__note">{copy.editor.questionLimit}</p>
+            <p className="br-gate-note">{copy.editor.questionLimit}</p>
           ) : null}
         </div>
       </div>
-      <div className="br-form-field flex min-w-0 flex-col gap-1.5">
-        <span className="text-label text-text-default" id={`${base}-threshold`}>
-          {copy.editor.threshold}
-        </span>
+      <div className="br-gate-field">
+        <FieldLabel
+          id={`${base}-threshold`}
+          label={copy.editor.threshold}
+          help={copy.editor.thresholdHelp}
+        />
         <div className="br-monitors__threshold">
           <Slider
             aria-labelledby={`${base}-threshold`}
@@ -349,78 +458,103 @@ function GateEditor({
             {formatProbability(draft.threshold)}
           </span>
         </div>
-        <p className="br-monitors__note" id={`${base}-threshold-help`}>
-          {draft.threshold < 0.5 ? copy.editor.thresholdLow : copy.editor.thresholdHelp}
+        <p
+          className="br-gate-note"
+          id={`${base}-threshold-help`}
+          data-testid="phase-gate-threshold-help"
+        >
+          {draft.threshold < 0.5
+            ? copy.editor.thresholdLow
+            : copy.editor.thresholdRule(formatProbability(draft.threshold))}
         </p>
       </div>
-      <div className="br-form-field flex min-w-0 flex-col gap-1.5">
-        <span className="text-label text-text-default" id={`${base}-attempts`}>
-          {copy.editor.attempts}
-        </span>
-        <SegmentedControl
-          aria-labelledby={`${base}-attempts`}
-          aria-describedby={`${base}-attempts-help`}
-          value={String(draft.maxAttempts)}
-          disabled={disabled}
-          data-testid="phase-gate-attempts"
-          options={Array.from({ length: GATE_ATTEMPTS_MAX }, (_, i) => ({
-            value: String(i + 1),
-            label: String(i + 1),
-          }))}
-          onValueChange={(value) => onChange({ ...draft, maxAttempts: Number(value) })}
-        />
-        <p className="br-monitors__note" id={`${base}-attempts-help`}>
-          {copy.editor.attemptsHelp}
-        </p>
-      </div>
-      <div className="br-form-field flex min-w-0 flex-col gap-1.5" data-testid="phase-gate-model">
-        <label htmlFor={`${base}-model`} className="text-label text-text-default">
-          {copy.editor.model}
-        </label>
-        <Select
-          inputId={`${base}-model`}
-          options={options}
-          value={selected}
-          isSearchable={false}
-          isDisabled={disabled}
-          menuPlacement="auto"
-          menuPortalTarget={menuPortalTarget}
-          isOptionDisabled={(raw: unknown) => !!(raw as ModelOption).reason}
-          formatOptionLabel={(raw: unknown) => {
-            const option = raw as ModelOption;
-            return (
-              <span className="flex min-w-0 flex-col">
-                <span className="truncate">{option.label}</span>
-                {option.reason ? (
-                  <span className="text-supporting text-text-muted">{option.reason}</span>
-                ) : null}
-              </span>
-            );
-          }}
-          onChange={(raw: unknown) =>
-            onChange({
-              ...draft,
-              model: gateModelPick((raw as ModelOption | null)?.model ?? null, opened),
-            })
-          }
-        />
-        {modelsFailed ? (
-          <p className="br-monitors__note" data-testid="phase-gate-models-error">
-            {copy.editor.modelsFailed}
-          </p>
-        ) : chatTier === 'private' ? (
-          <p className="br-monitors__note">{copy.editor.modelHelp}</p>
-        ) : null}
-      </div>
-      <label className="br-dh-check" data-testid="phase-gate-uncalibrated">
-        <Checkbox
-          checked={draft.allowUncalibrated}
-          disabled={disabled}
-          onChange={(event) => onChange({ ...draft, allowUncalibrated: event.target.checked })}
-        />
-        <span>{copy.editor.allowUncalibrated}</span>
-      </label>
-      <p className="br-monitors__note">{copy.editor.allowUncalibratedHelp}</p>
+      <Disclosure
+        label={copy.editor.moreOptions}
+        summary={copy.editor.moreSummary(draft.maxAttempts, gateModelText(draft.model, null))}
+        open={moreOpen}
+        onOpenChange={onMoreOpenChange}
+      >
+        <div className="br-gate-editor" data-testid="phase-gate-more-options">
+          <div className="br-gate-field">
+            <FieldLabel
+              id={`${base}-attempts`}
+              label={copy.editor.attempts}
+              help={copy.editor.attemptsHelp}
+            />
+            <div ref={attemptsRef}>
+              <SegmentedControl
+                aria-labelledby={`${base}-attempts`}
+                value={String(draft.maxAttempts)}
+                disabled={disabled}
+                data-testid="phase-gate-attempts"
+                options={Array.from({ length: GATE_ATTEMPTS_MAX }, (_, i) => ({
+                  value: String(i + 1),
+                  label: String(i + 1),
+                }))}
+                onValueChange={(value) => onChange({ ...draft, maxAttempts: Number(value) })}
+              />
+            </div>
+          </div>
+          <div className="br-gate-field" data-testid="phase-gate-model">
+            <FieldLabel
+              htmlFor={`${base}-model`}
+              label={copy.editor.model}
+              help={chatTier === 'private' ? copy.editor.modelHelp : null}
+            />
+            <Select
+              inputId={`${base}-model`}
+              options={options}
+              value={selected}
+              isSearchable={false}
+              isDisabled={disabled}
+              menuPlacement="auto"
+              menuPortalTarget={menuPortalTarget}
+              isOptionDisabled={isDecisionModelOptionDisabled}
+              formatOptionLabel={formatDecisionModelOption}
+              onChange={(raw: unknown) =>
+                onChange({
+                  ...draft,
+                  model: gateModelPick((raw as DecisionModelOption | null)?.model ?? null, opened),
+                })
+              }
+            />
+            {modelsFailed ? (
+              <p className="br-gate-note" data-testid="phase-gate-models-error">
+                {copy.editor.modelsFailed}
+              </p>
+            ) : null}
+          </div>
+          <span className="br-gate-field__label">
+            <label
+              className="br-dh-check"
+              data-testid="phase-gate-uncalibrated"
+              ref={uncalibratedRef}
+            >
+              <Checkbox
+                checked={draft.allowUncalibrated}
+                disabled={disabled}
+                onChange={(event) =>
+                  onChange({ ...draft, allowUncalibrated: event.target.checked })
+                }
+              />
+              <span>{copy.editor.allowUncalibrated}</span>
+            </label>
+            <InfoTip
+              label={copy.editor.allowUncalibrated}
+              help={copy.editor.allowUncalibratedHelp}
+            />
+          </span>
+        </div>
+      </Disclosure>
+    </div>
+  );
+}
+
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="br-decision-fact">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
     </div>
   );
 }
@@ -437,9 +571,12 @@ function GateFacts({
 }) {
   const closed = isClosedPhase(phase);
   const status = phaseGateStatus(phase, gate);
+  const notPassed = status === copy.status.failed;
+  const Icon = GATE_STATE_ICONS[phaseGateState(gate)];
   const threshold = formatProbability(gate.threshold);
+  // R6: a held phase id that matches no title reads "a later phase", never the id.
   const holds = gate.holds.map(
-    (id) => phases.find((candidate) => candidate.id === id)?.title ?? id
+    (id) => phases.find((candidate) => candidate.id === id)?.title ?? copy.laterPhase
   );
   const model = parseGateModel(gate.model);
   const exhausted = gate.attempts >= gate.maxAttempts && gate.lastPassed === false && gate.blocked;
@@ -458,14 +595,30 @@ function GateFacts({
       : !closed && gate.personDecision === 'skip'
         ? copy.standingSkip
         : null;
+  // The one number that explains a not-passed or blocked gate is up front.
+  const lastCheck =
+    gate.lastMinP !== null ? copy.lastCheck(formatProbability(gate.lastMinP), threshold) : null;
+  const lastCheckUpFront = lastCheck !== null && !closed && (notPassed || gate.blocked);
   return (
-    <div className="br-monitors" data-testid="phase-gate-facts">
-      <span className="flex flex-wrap items-center gap-2">
-        <Badge data-testid="phase-gate-owner">{copy.owner[gate.owner]}</Badge>
-        <span className="br-monitors__value" data-testid="phase-gate-status">
-          {status}
-        </span>
-      </span>
+    <div className="br-gate-view" data-testid="phase-gate-facts">
+      <div className="br-gate-status">
+        <p className="br-gate-status__line">
+          <Icon
+            aria-hidden="true"
+            className="br-gate-status__glyph"
+            data-state={phaseGateState(gate)}
+          />
+          <span data-testid="phase-gate-status">
+            {notPassed ? `${status} · ${copy.attempts(gate.attempts, gate.maxAttempts)}` : status}
+          </span>
+          {!closed ? <InfoTip label={copy.statusHelpLabel} help={copy.statusHelp} /> : null}
+        </p>
+        {lastCheckUpFront ? (
+          <p className="br-gate-note" data-testid="phase-gate-last-check">
+            {lastCheck}
+          </p>
+        ) : null}
+      </div>
       {needsNote ? (
         <Note tone="warning" role="status" testId="phase-gate-needs-person">
           {needsNote}
@@ -476,52 +629,108 @@ function GateFacts({
           {standingNote}
         </Note>
       ) : null}
-      {closed ? <p className="br-monitors__note">{copy.closed}</p> : null}
-      <p className="br-monitors__note" data-testid="phase-gate-attempts-used">
-        {[
-          copy.threshold(threshold),
-          copy.attempts(gate.attempts, gate.maxAttempts),
-          gate.retriesGranted > 0 ? copy.retried(gate.retriesGranted) : null,
-        ]
-          .filter(Boolean)
-          .join(' ')}
-      </p>
-      <section aria-label={copy.questions} className="flex min-w-0 flex-col gap-1.5">
-        <h3 className="text-label text-text-default">{copy.questions}</h3>
-        {gate.questions.length > 0 ? (
-          <ol className="br-monitors__list" data-testid="phase-gate-questions">
-            {gate.questions.map(({ name, question }) => (
-              <li key={name} className="br-monitors__item br-fill-surface">
-                <span className="br-monitors__item-text">
-                  <span className="br-monitors__value">{question}</span>
-                </span>
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p className="br-monitors__note">{copy.questionsUnknown}</p>
-        )}
-      </section>
-      {gate.lastMinP !== null ? (
-        <p className="br-monitors__note" data-testid="phase-gate-last-check">
-          {copy.lastCheck(formatProbability(gate.lastMinP), threshold)}
-        </p>
-      ) : null}
+      {closed ? <p className="br-gate-note">{copy.closed}</p> : null}
       {gate.lastError ? (
-        <p className="br-monitors__note" data-testid="phase-gate-last-error">
+        <p className="br-gate-note" data-testid="phase-gate-last-error">
           {copy.lastError(gate.lastError)}
         </p>
       ) : null}
-      {holds.length > 0 ? (
-        <p className="br-monitors__note" data-testid="phase-gate-holds">
-          {copy.holds(joinTitles(holds))}
+      <section aria-label={copy.questions} className="br-gate-field">
+        <h3 className="text-label text-text-default">{copy.questions}</h3>
+        {gate.questions.length > 0 ? (
+          <ul className="br-gate-questions" data-testid="phase-gate-questions">
+            {gate.questions.map(({ name, question }) => (
+              <li key={name}>{question}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="br-gate-note">{copy.questionsUnknown}</p>
+        )}
+      </section>
+      {!closed && holds.length > 0 ? (
+        <p className="br-gate-note" data-testid="phase-gate-holds">
+          {copy.holds(joinTitles(holds), holds.length > 1)}
         </p>
       ) : null}
-      <p className="br-monitors__note" data-testid="phase-gate-model-line">
-        {copy.model(model ? (decisionModelLabel(model) ?? gate.model ?? '') : copy.chatDefault)}
-        {gate.allowUncalibrated ? ` ${copy.uncalibrated}` : ''}
-      </p>
+      <Disclosure label={copy.details}>
+        <dl className="br-decision-facts" data-testid="phase-gate-details">
+          <Fact label={copy.facts.threshold}>{copy.threshold(threshold)}</Fact>
+          {lastCheck && !lastCheckUpFront ? (
+            <Fact label={copy.facts.lastCheck}>{lastCheck}</Fact>
+          ) : null}
+          <Fact label={copy.facts.attempts}>
+            <span data-testid="phase-gate-attempts-used">
+              {[
+                copy.attemptsFact(gate.attempts, gate.maxAttempts),
+                gate.retriesGranted > 0 ? copy.retried(gate.retriesGranted) : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </span>
+          </Fact>
+          <Fact label={copy.facts.model}>
+            <span data-testid="phase-gate-model-line">{gateModelText(model, gate.model)}</span>
+          </Fact>
+          {gate.allowUncalibrated ? (
+            <Fact label={copy.facts.probabilities}>{copy.uncalibrated}</Fact>
+          ) : null}
+          <Fact label={copy.facts.setBy}>
+            <span data-testid="phase-gate-owner">{copy.owner[gate.owner]}</span>
+          </Fact>
+        </dl>
+      </Disclosure>
     </div>
+  );
+}
+
+/**
+ * The gate's `⋯` in the footer: the page header's overflow recipe (`PageHeaderMenu`),
+ * a ghost round button with a label tooltip, kept while open (R8), and the shared
+ * `RowActionItem` rows, so the destructive look and the separator are the shared ones.
+ * Not `RowActions`: its cluster is invisible until a list row hosts a hover.
+ */
+function GateMenu({ items, disabled }: { items: RowActionItem[]; disabled: boolean }) {
+  const [open, setOpen] = useState(false);
+  const hint = useSurfaceTriggerHint(open);
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <Tooltip {...hint.tooltip}>
+        <TooltipTrigger asChild {...hint.trigger}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              shape="round"
+              aria-label={copy.more}
+              disabled={disabled}
+              data-testid="phase-gate-more"
+              className="br-surface-trigger br-gate-footer__menu"
+            >
+              <MoreHorizontal aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{copy.more}</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="start">
+        <RowActionMenuItems items={items} />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** A footer button with its label tooltip saying what it does. */
+function TipButton({ tip, children, ...props }: ComponentProps<typeof Button> & { tip: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {/* `data-variant` says which button is the footer's primary, to tests and probes. */}
+        <Button type="button" data-variant={props.variant ?? 'default'} {...props}>
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{tip}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -552,10 +761,17 @@ type Busy = PhaseGateChoice | 'remove' | 'save' | null;
 
 /**
  * A phase gate, and the person's controls over it (item C of the decision
- * supervision work): who set it, where it stands, what it asks and what it
- * holds, then Pass this phase, Skip this phase, Try again, Edit gate, Remove
- * gate and Show history. A phase without a gate opens on the editor ("Add
- * gate").
+ * supervision work; F-4, C-7, C-8). Up front: where the gate stands (with an InfoTip
+ * saying what Pass and Skip do), the last check for a gate that did not pass, the
+ * notes that say what the person can do, the questions and what the gate holds;
+ * the threshold, attempts, model and who set it under Details. The footer holds
+ * Skip this phase and Pass this phase (primary only when the person is needed) and a
+ * `⋯` with Try again, Edit gate, Decision history and Remove gate… (last,
+ * destructive, confirmed). A phase without a gate opens on the editor ("Add gate"),
+ * which edits in place with one Cancel.
+ *
+ * Focus rests on the dialog box after any open, so Enter passes nothing until the
+ * person moves to a button.
  *
  * Every gate binds the agent, whoever set it: the agent cannot change, skip or
  * remove it, and a gate that failed every attempt waits for the person. The
@@ -588,19 +804,25 @@ export function PhaseGateDialog({
   const [editing, setEditingDraft] = useState<PhaseGateDraft | null>(null);
   const [scaleFor, setScaleFor] = useState(GATE_DEFAULT_THRESHOLD);
   const [openedModel, setOpenedModel] = useState<DecisionModelRef | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [focusField, setFocusField] = useState<RefusalField | null>(null);
   // Starting an edit fixes the threshold scale for it (`GateEditor`'s `scaleFor`)
-  // and the model it began with (`opened`).
+  // and the model it began with (`opened`), and opens More options when the gate
+  // already uses a value inside it.
   const startEditing = (draft: PhaseGateDraft | null) => {
     if (draft) {
       setScaleFor(draft.threshold);
       setOpenedModel(draft.model);
+      setMoreOpen(usesMoreOptions(draft));
     }
+    setFocusField(null);
     setEditingDraft(draft);
   };
   const [showErrors, setShowErrors] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [outcome, setOutcome] = useState<{ message: string; applied: boolean } | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<DecisionModelEntry[]>([]);
   const [fetchedRefusal, setFetchedRefusal] = useState<string | null>(null);
   const [modelsFailed, setModelsFailed] = useState(false);
@@ -612,20 +834,24 @@ export function PhaseGateDialog({
   const chatRefusal = givenModels ? (givenChatRefusal ?? null) : fetchedRefusal;
   const phaseId = phase?.id ?? givenPhase?.id ?? '';
 
-  // Each open starts from what the side panel read; a phase with no gate opens the editor.
-  useEffect(() => {
-    if (!open) return;
-    setAnswered(null);
-    setOutcome(null);
-    setRefusal(null);
-    setShowErrors(false);
-    setBusy(null);
-    startEditing(
-      givenPhase && !givenPhase.gate && !isClosedPhase(givenPhase) ? newGateDraft() : null
-    );
-    // Only on open: a poll that re-reads the plan must not throw away a draft.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  // Each open starts from what the side panel read; a phase with no gate opens the
+  // editor. Done while rendering the open (not in an effect), so the dialog's first
+  // frame, and its open-focus decision, already show the right body.
+  const [seenOpen, setSeenOpen] = useState(false);
+  if (open !== seenOpen) {
+    setSeenOpen(open);
+    if (open) {
+      setAnswered(null);
+      setOutcome(null);
+      setRefusal(null);
+      setShowErrors(false);
+      setBusy(null);
+      setConfirmingRemove(false);
+      startEditing(
+        givenPhase && !givenPhase.gate && !isClosedPhase(givenPhase) ? newGateDraft() : null
+      );
+    }
+  }
 
   // A newer read of the plan replaces what the last write answered.
   useEffect(() => {
@@ -697,17 +923,55 @@ export function PhaseGateDialog({
     }
   };
 
+  // A refusal that names a field inside More options opens it and focuses the field,
+  // because a closed Disclosure unmounts its content: it can never point at a field the
+  // person cannot see.
+  const refusedField = editing && refusal ? refusalField(refusal) : null;
+  useEffect(() => {
+    if (!refusedField) return;
+    setMoreOpen(true);
+    setFocusField(refusedField);
+  }, [refusedField, refusal]);
+
   const closed = phase ? isClosedPhase(phase) : false;
   const working = busy !== null;
   const adding = editing !== null && !gate;
+  const primaryPass = phase && gate ? gateNeedsPerson(phase, gate) : false;
 
   const showHistory = () => {
     onOpenChange(false);
     onOpenHistory?.({ origin: 'gate', originId: phaseId });
   };
 
-  // Viewing a gate there is nothing to save, so no footer: the dialog's own × closes it.
-  const footer = editing ? (
+  const menuItems: RowActionItem[] = gate
+    ? [
+        ...(gate.attempts > 0 || gate.blocked
+          ? [{ label: copy.retry, onSelect: () => decide('retry'), testId: 'phase-gate-retry' }]
+          : []),
+        {
+          label: copy.edit,
+          testId: 'phase-gate-edit',
+          onSelect: () => {
+            setOutcome(null);
+            setRefusal(null);
+            setShowErrors(false);
+            startEditing(gateDraftFrom(gate));
+          },
+        },
+        ...(onOpenHistory
+          ? [{ label: copy.history, onSelect: showHistory, testId: 'phase-gate-history' }]
+          : []),
+        { kind: 'separator' as const },
+        {
+          label: copy.remove,
+          destructive: true,
+          testId: 'phase-gate-remove',
+          onSelect: () => setConfirmingRemove(true),
+        },
+      ]
+    : [];
+
+  const footer = !phase ? undefined : editing ? (
     <>
       <Button
         type="button"
@@ -733,7 +997,62 @@ export function PhaseGateDialog({
         {busy === 'save' ? copy.editor.saving : copy.editor.save}
       </Button>
     </>
-  ) : undefined;
+  ) : gate && !closed ? (
+    <>
+      <GateMenu items={menuItems} disabled={working} />
+      {/* The two decisions wrap TOGETHER onto the next line at a narrow width. */}
+      <span className="br-gate-footer__actions">
+        <TipButton
+          tip={copy.skipTip}
+          variant="secondary"
+          disabled={working}
+          aria-busy={busy === 'skip' || undefined}
+          data-testid="phase-gate-skip"
+          onClick={() => decide('skip')}
+        >
+          {busy === 'skip' ? copy.working : copy.skip}
+        </TipButton>
+        <TipButton
+          tip={copy.passTip}
+          variant={primaryPass ? 'default' : 'secondary'}
+          disabled={working}
+          aria-busy={busy === 'pass' || undefined}
+          data-testid="phase-gate-pass"
+          onClick={() => decide('pass')}
+        >
+          {busy === 'pass' ? copy.working : copy.pass}
+        </TipButton>
+      </span>
+    </>
+  ) : closed ? (
+    onOpenHistory ? (
+      <Button
+        type="button"
+        variant="secondary"
+        disabled={working}
+        data-testid="phase-gate-history"
+        onClick={showHistory}
+      >
+        {copy.history}
+      </Button>
+    ) : undefined
+  ) : (
+    <Button
+      type="button"
+      data-variant="default"
+      disabled={working}
+      data-testid="phase-gate-add"
+      onClick={() => {
+        setOutcome(null);
+        setRefusal(null);
+        startEditing(newGateDraft());
+      }}
+    >
+      {copy.add}
+    </Button>
+  );
+
+  const fieldWord = refusedField ? copy.editor.refusalField[refusedField] : null;
 
   return (
     <ModalShell
@@ -741,152 +1060,92 @@ export function PhaseGateDialog({
       onOpenChange={(next) => {
         if (!working) onOpenChange(next);
       }}
-      size="lg"
+      size="md"
       purpose={working ? 'required' : editing ? 'form' : 'info'}
-      title={adding ? copy.addTitle : copy.title}
+      title={adding ? copy.addTitle : editing ? copy.editTitle : copy.title}
       subtitle={phase?.title ?? givenPhase?.title}
       footer={footer}
       scrollBody
+      bodyClassName="flex flex-col gap-3 py-3"
       testId="phase-gate-dialog"
+      // C-8: the first button overrides a gate, so a KEY open rests on the box too (a
+      // pointer open already does). The editor keeps the default: its first stop is a
+      // textarea.
+      onOpenAutoFocus={
+        editing
+          ? undefined
+          : (event) => {
+              event.preventDefault();
+              const box =
+                event.currentTarget instanceof HTMLElement
+                  ? event.currentTarget
+                  : event.target instanceof HTMLElement
+                    ? event.target
+                    : null;
+              box?.focus({ preventScroll: true });
+            }
+      }
     >
-      <div className="br-monitors">
-        {!phase ? (
-          <p className="br-monitors__note" data-testid="phase-gate-gone">
-            {copy.gone}
-          </p>
-        ) : editing ? (
-          <GateEditor
-            draft={editing}
-            onChange={setEditingDraft}
-            errors={showErrors ? draftErrors : {}}
-            models={models}
-            modelsFailed={modelsFailed}
-            chatTier={chatTier}
-            chatRefusal={chatRefusal}
-            disabled={working}
-            replacing={!!gate}
-            scaleFor={scaleFor}
-            opened={openedModel}
-          />
-        ) : gate ? (
-          <GateFacts phase={phase} gate={gate} phases={phases} />
-        ) : (
-          <p className="br-monitors__note" data-testid="phase-gate-none">
-            {copy.noGate}
-          </p>
-        )}
-        {outcome ? (
-          <p
-            className="br-monitors__value"
-            role="status"
-            data-testid={outcome.applied ? 'phase-gate-applied' : 'phase-gate-standing'}
-          >
-            {outcome.message}
-          </p>
-        ) : null}
-        {refusal ? (
-          <p className="br-monitors__error" role="alert" data-testid="phase-gate-refusal">
-            {refusal}
-          </p>
-        ) : null}
-        {phase && !editing ? (
-          <div className="flex flex-wrap gap-2" data-testid="phase-gate-actions">
-            {gate && !closed ? (
-              <>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  disabled={working}
-                  aria-busy={busy === 'pass' || undefined}
-                  data-testid="phase-gate-pass"
-                  onClick={() => decide('pass')}
-                >
-                  {busy === 'pass' ? copy.working : copy.pass}
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  disabled={working}
-                  aria-busy={busy === 'skip' || undefined}
-                  data-testid="phase-gate-skip"
-                  onClick={() => decide('skip')}
-                >
-                  {busy === 'skip' ? copy.working : copy.skip}
-                </Button>
-                {gate.attempts > 0 || gate.blocked ? (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    disabled={working}
-                    aria-busy={busy === 'retry' || undefined}
-                    data-testid="phase-gate-retry"
-                    onClick={() => decide('retry')}
-                  >
-                    {busy === 'retry' ? copy.working : copy.retry}
-                  </Button>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={working}
-                  data-testid="phase-gate-edit"
-                  onClick={() => {
-                    setOutcome(null);
-                    setRefusal(null);
-                    setShowErrors(false);
-                    startEditing(gateDraftFrom(gate));
-                  }}
-                >
-                  {copy.edit}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={working}
-                  aria-busy={busy === 'remove' || undefined}
-                  data-testid="phase-gate-remove"
-                  onClick={() => void run('remove', () => removePhaseGate(sessionId, phaseId))}
-                >
-                  {busy === 'remove' ? copy.working : copy.remove}
-                </Button>
-              </>
-            ) : null}
-            {!gate && !closed ? (
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={working}
-                data-testid="phase-gate-add"
-                onClick={() => {
-                  setOutcome(null);
-                  setRefusal(null);
-                  startEditing(newGateDraft());
-                }}
-              >
-                {copy.add}
-              </Button>
-            ) : null}
-            {gate || closed ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={working}
-                data-testid="phase-gate-history"
-                onClick={showHistory}
-              >
-                {copy.history}
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+      {!phase ? (
+        <p className="br-gate-note" data-testid="phase-gate-gone">
+          {copy.gone}
+        </p>
+      ) : editing ? (
+        <GateEditor
+          draft={editing}
+          onChange={setEditingDraft}
+          errors={showErrors ? draftErrors : {}}
+          models={models}
+          modelsFailed={modelsFailed}
+          chatTier={chatTier}
+          chatRefusal={chatRefusal}
+          disabled={working}
+          replacing={!!gate}
+          scaleFor={scaleFor}
+          opened={openedModel}
+          moreOpen={moreOpen}
+          onMoreOpenChange={setMoreOpen}
+          focusField={focusField}
+          onFocused={() => setFocusField(null)}
+        />
+      ) : gate ? (
+        <GateFacts phase={phase} gate={gate} phases={phases} />
+      ) : (
+        <p className="br-gate-note" data-testid="phase-gate-none">
+          {copy.noGate}
+        </p>
+      )}
+      {outcome ? (
+        <Note
+          tone={outcome.applied ? 'success' : 'neutral'}
+          role="status"
+          testId={outcome.applied ? 'phase-gate-applied' : 'phase-gate-standing'}
+        >
+          {outcome.message}
+        </Note>
+      ) : null}
+      {refusal ? (
+        <Note tone="danger" role="alert" testId="phase-gate-refusal">
+          {fieldWord ? `${fieldWord}: ${refusal}` : refusal}
+        </Note>
+      ) : null}
+      {phase && gate ? (
+        <ConfirmationModal
+          isOpen={confirmingRemove}
+          title={copy.confirmRemove.title}
+          message={copy.confirmRemove.message(phase.title)}
+          confirmLabel={copy.confirmRemove.confirm}
+          cancelLabel={copy.confirmRemove.cancel}
+          confirmVariant="destructive"
+          isSubmitting={busy === 'remove'}
+          onCancel={() => setConfirmingRemove(false)}
+          onConfirm={() => {
+            void run('remove', () => removePhaseGate(sessionId, phaseId)).finally(() =>
+              setConfirmingRemove(false)
+            );
+          }}
+        />
+      ) : null}
     </ModalShell>
   );
 }

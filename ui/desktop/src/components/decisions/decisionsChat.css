@@ -22,7 +22,9 @@
 .br-decision-card {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  /* Three short lines by default (question, answer, Details): the facts behind
+     Details carry their own rhythm. */
+  gap: 8px;
   width: 100%;
   max-width: 560px;
   min-width: 0;
@@ -72,11 +74,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Passed or not, said with a word and a shape (a check or a cross). */
+/* Where the answer stands against its threshold: a word and a shape (a check, or
+   the neutral ring the decision history gives every answer), both muted. Never a
+   cross, never success or danger ink: either way it is an answer (B-4). */
 .br-decision-card__verdict {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  color: var(--text-muted);
   font-size: var(--text-secondary);
   line-height: var(--text-secondary--line-height);
 }
@@ -87,12 +92,48 @@
   flex: none;
 }
 
-.br-decision-card__verdict[data-passed='true'] {
-  color: var(--text-success);
+.br-decision-card__flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
-.br-decision-card__verdict[data-passed='false'] {
-  color: var(--text-muted);
+/* Details: the bars, the threshold in its record form, the model, the link. */
+.br-decision-card__details-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+/* One group per question when a record asked several, read apart by 12px of air
+   and no rule: the body's 8px gap plus 4px here. */
+.br-decision-card__group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.br-decision-card__group + .br-decision-card__group {
+  margin-block-start: 4px;
+}
+
+.br-decision-card__group-answer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  margin: 0;
+  color: var(--text-default);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-decision-card__group-answer > .br-decision-card__answer-p {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
 }
 
 /* THE BARS. One grid for every row, so the label, the track and the value line
@@ -326,29 +367,122 @@
 .br-decision-composer {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
   margin: 0 0 8px;
 }
 
-.br-decision-composer__row {
+/* Segmented controls hug their segments: the field stacks are columns, which would
+   stretch a three-segment track across the card (F-17). Never `fill`. */
+.br-decision-composer .br-segmented {
+  align-self: flex-start;
+}
+
+/* The question line: the label, the question filling the rest, and the status at
+   its trailing end. A long status (a refusal, an incomplete choice) wraps onto its
+   own full-width line under it: the same node, so one announcement. */
+.br-decision-composer__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.br-decision-composer__label {
+  flex: none;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+/* Unfilled, like the composer's own text box: no ground of its own, a transparent
+   edge, the body size and default ink, a muted placeholder. Its contrast is the
+   audited default and muted inks on the card's ground, in every family. */
+.br-decision-composer__question {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 2px 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--text-default);
+  font: inherit;
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  outline: none;
+}
+
+.br-decision-composer__question::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+.br-decision-composer__question:disabled {
+  opacity: 0.5;
+}
+
+/* Focus lights the card's edge as typing in the text box does (main.css keys that
+   edge on `textarea:focus` only). Unlayered, so it beats the card's border utility. */
+.biorouter-composer-card:has(.br-decision-composer input:focus) {
+  border-color: var(--border-accent);
+}
+
+.br-decision-composer__status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-decision-composer__status[data-wide='true'] {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+
+.br-decision-composer__status[data-tone='danger'] {
+  color: var(--text-danger);
+}
+
+/* "Saved" is a state, not evidence: muted, never success green. */
+.br-decision-composer__status > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.br-decision-composer__options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.br-decision-composer__field {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
 }
 
-.br-decision-composer__row--controls {
-  flex-direction: row;
+.br-decision-composer__threshold-row {
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
-.br-decision-composer__label {
-  color: var(--text-muted);
-  font-size: var(--text-supporting);
-  line-height: var(--text-supporting--line-height);
+.br-decision-composer__label-with-tip {
+  display: inline-flex;
+  align-items: center;
 }
 
 .br-decision-composer__threshold {
@@ -385,14 +519,10 @@
   min-width: 0;
 }
 
-.br-decision-composer__status {
-  min-height: 16px;
+.br-decision-composer__note {
   margin: 0;
   color: var(--text-muted);
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
-}
-
-.br-decision-composer[data-draft] .br-decision-composer__status {
-  min-height: 0;
+  overflow-wrap: anywhere;
 }

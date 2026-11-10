@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from '../ui/button';
+import { InfoTip } from '../ui/info-tip';
 import { Note } from '../ui/note';
 import { Progress } from '../ui/progress';
 import {
@@ -19,7 +20,13 @@ export const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
 
 /** The model named when the daemon offers none (`OLLAMA_DEFAULT_DECISION_MODEL`). */
 const DEFAULT_MODEL = 'tev1:0.8b';
-const DEFAULT_SIZE = 'about 1.5 GB';
+const DEFAULT_SIZE = '1.5 GB';
+
+/** `1.5 GB` from the offer's `about 1.5 GB`, so the help says "About" once. */
+function bareSize(size: string | null | undefined): string {
+  const trimmed = size?.trim().replace(/^about\s+/i, '') ?? '';
+  return trimmed || DEFAULT_SIZE;
+}
 
 /**
  * The panel's words. `here` is "this computer", or, in a `biorouter serve`
@@ -37,8 +44,11 @@ export const DECISION_INSTALL_COPY = {
       `This chat works under a Crew grant, so only a decision model on ${here} may read it, and none is installed.`,
     none: 'No decision model is installed and no Baseten key is set.',
   },
-  about: (model: string, size: string, here: string) =>
-    `${model} is a small decision model (${size}) that runs in Ollama on ${here}.`,
+  /**
+   * What the model is, as the help of the InfoTip after Install (its glyph is named
+   * "About {model}"): a download's size, never the only carrier of a consequence.
+   */
+  about: (size: string, here: string) => `About ${size}, runs in Ollama on ${here}.`,
   install: (model: string) => `Install ${model}`,
   installing: (model: string) => `Installing ${model}`,
   downloading: (model: string) => `Downloading ${model}…`,
@@ -341,23 +351,27 @@ export function DecisionModelInstall({
       </p>
     );
   } else {
+    // One primary action and one quiet glyph beside it: what the model is moves into
+    // the InfoTip, after the button (never inside it).
     body = (
-      <>
-        <p>{copy.about(model, offer?.approxSize || DEFAULT_SIZE, here)}</p>
-        <div>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={starting}
-            aria-busy={starting || undefined}
-            data-testid="decision-install-start"
-            onClick={() => void start()}
-          >
-            {copy.install(model)}
-          </Button>
-        </div>
-      </>
+      <div className="flex items-center">
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={starting}
+          aria-busy={starting || undefined}
+          data-testid="decision-install-start"
+          onClick={() => void start()}
+        >
+          {copy.install(model)}
+        </Button>
+        <InfoTip
+          label={model}
+          help={copy.about(bareSize(offer?.approxSize), here)}
+          data-testid="decision-install-about"
+        />
+      </div>
     );
   }
 

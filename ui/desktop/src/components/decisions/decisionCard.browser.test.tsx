@@ -92,6 +92,24 @@ choice.decisions[0].answer = {
   option: 'secondary progressive, with superimposed relapses since onset',
 };
 
+// Two questions asked of one message: one Details, a group per question.
+const pair = wireBinaryDetail().record;
+pair.questions = {
+  fever: { instructions: 'Does this note mention a fever?', kind: { binary: {} }, threshold: { yes: 0.85 } },
+  rash: { instructions: 'Does this note mention a rash?', kind: { binary: {} } },
+};
+pair.decisions = [
+  { ...pair.decisions[0], question: 'fever', probabilities: { yes: 0.97, no: 0.03 } },
+  {
+    ...pair.decisions[0],
+    question: 'rash',
+    answer: { type: 'binary', value: false },
+    probabilities: { yes: 0.12, no: 0.88 },
+    passed: null,
+    passProbability: null,
+  },
+];
+
 function App() {
   return (
     <div>
@@ -100,6 +118,9 @@ function App() {
       </div>
       <div id="choice" style={{ marginTop: 16 }}>
         <DecisionCardView record={parseDecisionRecord(choice)} sessionId="chat-1" onOpenArtifact={() => {}} />
+      </div>
+      <div id="pair" style={{ marginTop: 16 }}>
+        <DecisionCardView record={parseDecisionRecord(pair as never)} sessionId="chat-1" onOpenArtifact={() => {}} />
       </div>
     </div>
   );
@@ -171,7 +192,12 @@ describe('the decision card’s bars in a real layout engine', () => {
       `<!doctype html><html><head><style>${css}</style></head><body><div id="root"></div></body></html>`
     );
     await tab.addScriptTag({ content: script });
-    await tab.waitForSelector('#choice [data-testid="decision-card"]');
+    await tab.waitForSelector('#pair [data-testid="decision-card"]');
+    // The bars sit behind each card's Details (F-9): open them before measuring.
+    for (const root of ['#binary', '#choice', '#pair']) {
+      await tab.click(`${root} button[aria-expanded="false"]`);
+    }
+    await tab.waitForSelector('#pair [data-testid="decision-group"]');
     await tab.waitForTimeout(100);
     return tab;
   }
@@ -240,6 +266,43 @@ describe('the decision card’s bars in a real layout engine', () => {
       // Values right-aligned in one column, clear of the track.
       near(yes.value.right, no.value.right, 'value right edge');
       expect(yes.value.left).toBeGreaterThanOrEqual(yes.track.right);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('puts each question’s bars under its own question, in the headlines’ order', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const groups = await tab.evaluate(() =>
+        Array.from(document.querySelectorAll('#pair [data-testid="decision-group"]')).map(
+          (group) => {
+            const question = group.querySelector('.br-decision-card__question')!;
+            const bars = Array.from(group.querySelectorAll('[data-testid="decision-bar"]'));
+            return {
+              label: group.getAttribute('aria-label'),
+              questionBottom: question.getBoundingClientRect().bottom,
+              top: group.getBoundingClientRect().top,
+              bottom: group.getBoundingClientRect().bottom,
+              barTops: bars.map((bar) => bar.getBoundingClientRect().top),
+              barBottoms: bars.map((bar) => bar.getBoundingClientRect().bottom),
+            };
+          }
+        )
+      );
+      expect(groups.map((group) => group.label)).toEqual([
+        'Does this note mention a fever?',
+        'Does this note mention a rash?',
+      ]);
+      for (const group of groups) {
+        expect(group.barTops).toHaveLength(2);
+        for (const top of group.barTops) expect(top).toBeGreaterThanOrEqual(group.questionBottom);
+        for (const bottom of group.barBottoms) expect(bottom).toBeLessThanOrEqual(group.bottom + 1);
+      }
+      // The second group starts below the first one's last bar, 12px of air between them.
+      expect(groups[1].top).toBeGreaterThanOrEqual(Math.max(...groups[0].barBottoms));
+      near(groups[1].top - groups[0].bottom, 12, 'air between groups');
     } finally {
       await tab.close();
     }

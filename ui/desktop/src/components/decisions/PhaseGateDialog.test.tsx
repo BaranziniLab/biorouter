@@ -1,9 +1,16 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseDecisionModelEntries } from '../../utils/sessionDecisions';
 import { parseSessionSubagents, type PhaseSnapshot } from '../../utils/sessionSubagents';
 import { wirePhase, wireSubagents } from '../../utils/sessionSubagents.fixture';
-import { PHASE_GATE_COPY, PhaseGateDialog, type PhaseGateDialogProps } from './PhaseGateDialog';
+import {
+  PHASE_GATE_COPY,
+  PhaseGateDialog,
+  refusalField,
+  type PhaseGateDialogProps,
+} from './PhaseGateDialog';
+import { DECISION_MODEL_OPTION_COPY } from './decisionModelOption';
 
 /*
  * The generated client functions are watched where they are called from, so a
@@ -147,13 +154,43 @@ beforeEach(() => {
   api.headers.mockResolvedValue(PROOF);
 });
 
+/** Opens the footer's `⋯` and picks an item by its test id. */
+async function pickFromMenu(testId: string) {
+  await userEvent.click(screen.getByTestId('phase-gate-more'));
+  await userEvent.click(await screen.findByTestId(testId));
+}
+
+/** The menu's items, by their visible words, in order. */
+async function menuItems() {
+  await userEvent.click(screen.getByTestId('phase-gate-more'));
+  const items = (await screen.findAllByRole('menuitem')).map((item) => item.textContent);
+  await userEvent.keyboard('{Escape}');
+  return items;
+}
+
+function openDetails() {
+  fireEvent.click(
+    within(screen.getByTestId('phase-gate-facts')).getByRole('button', {
+      name: PHASE_GATE_COPY.details,
+    })
+  );
+  return screen.getByTestId('phase-gate-details');
+}
+
+function openMoreOptions() {
+  if (screen.queryByTestId('phase-gate-more-options')) return;
+  fireEvent.click(screen.getByRole('button', { name: PHASE_GATE_COPY.editor.moreOptions }));
+}
+
 describe('what the dialog says about a gate', () => {
-  it('names who set the gate: the agent, the person or the workflow', () => {
+  it('names who set the gate under Details: the agent, the person or the workflow', () => {
     const { rerender } = draw();
-    expect(screen.getByTestId('phase-gate-owner')).toHaveTextContent('Set by the agent');
+    expect(screen.queryByTestId('phase-gate-owner')).toBeNull();
+    openDetails();
+    expect(screen.getByTestId('phase-gate-owner')).toHaveTextContent('The agent');
     for (const [owner, words] of [
-      ['person', 'Set by you'],
-      ['workflow', 'Set by the workflow'],
+      ['person', 'You'],
+      ['workflow', 'The workflow'],
     ] as const) {
       const { phase, phases } = phaseOf({ ...GATE, owner });
       rerender(
@@ -170,30 +207,79 @@ describe('what the dialog says about a gate', () => {
     }
   });
 
-  it('shows the questions, the attempts, the phases it holds and the model', () => {
+  it('shows the status, the last check, the questions and what it holds up front; the rest under Details', () => {
     const { phase, phases } = phaseOf({
       ...GATE,
       attempts: 1,
+      maxAttempts: 2,
       lastPassed: false,
       lastMinP: 0.12,
       model: 'ollama_decision/tev1:0.8b',
     });
     draw({ phase, phases });
+    // R1: a gate that did not pass reads Not passed, never Failed.
+    expect(screen.getByTestId('phase-gate-status')).toHaveTextContent(
+      'Not passed · 1 of 2 attempts used'
+    );
+    expect(screen.getByTestId('phase-gate-dialog')).not.toHaveTextContent('Failed');
+    // R2: the probability is named, beside the threshold.
+    expect(screen.getByTestId('phase-gate-last-check')).toHaveTextContent(
+      /^Lowest P\(yes\) 0\.12 · threshold 0\.90$/
+    );
     expect(screen.getByTestId('phase-gate-questions')).toHaveTextContent(
       'Does the hand-off cite a paper published in 2031?'
     );
-    expect(screen.getByTestId('phase-gate-attempts-used')).toHaveTextContent(
-      'Every question must reach P(yes) 0.90. 1 of 1 attempt used'
-    );
-    expect(screen.getByTestId('phase-gate-last-check')).toHaveTextContent(
-      'Lowest P(yes) at the last check: 0.12, needs 0.90.'
-    );
     // By the phases' titles, not their ids.
-    expect(screen.getByTestId('phase-gate-holds')).toHaveTextContent('Holds Write and Review');
-    expect(screen.getByTestId('phase-gate-model-line')).toHaveTextContent(
-      'Decision model: tev1:0.8b'
+    expect(screen.getByTestId('phase-gate-holds')).toHaveTextContent(
+      'Write and Review wait until this gate passes.'
     );
-    expect(screen.getByTestId('phase-gate-status')).toHaveTextContent('Failed');
+    // What Pass and Skip do, in an InfoTip after the status.
+    expect(
+      within(screen.getByTestId('phase-gate-facts')).getByRole('button', {
+        name: `About ${PHASE_GATE_COPY.statusHelpLabel}`,
+      })
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('phase-gate-model-line')).toBeNull();
+    const details = openDetails();
+    expect(details).toHaveTextContent('ThresholdEvery question must reach P(yes) 0.90');
+    expect(screen.getByTestId('phase-gate-attempts-used')).toHaveTextContent(/^1 of 2 used$/);
+    // R3: the alias and where it runs, never the provider key.
+    expect(screen.getByTestId('phase-gate-model-line')).toHaveTextContent(
+      /^tev1:0\.8b · this computer$/
+    );
+    expect(details).not.toHaveTextContent('ollama_decision');
+    // Up front already: the last check is not repeated under Details.
+    expect(details).not.toHaveTextContent('Last check');
+  });
+
+  it('keeps a passed gate’s last check under Details, with the retries given', () => {
+    const { phase, phases } = phaseOf({
+      ...GATE,
+      attempts: 1,
+      lastPassed: true,
+      lastMinP: 0.95,
+      retriesGranted: 1,
+      allowUncalibrated: true,
+    });
+    draw({ phase, phases });
+    expect(screen.getByTestId('phase-gate-status')).toHaveTextContent(/^Passed$/);
+    expect(screen.queryByTestId('phase-gate-last-check')).toBeNull();
+    const details = openDetails();
+    expect(details).toHaveTextContent('Last checkLowest P(yes) 0.95 · threshold 0.90');
+    expect(screen.getByTestId('phase-gate-attempts-used')).toHaveTextContent(
+      '1 of 1 used · given again once'
+    );
+    expect(details).toHaveTextContent('Accepts uncalibrated probabilities');
+    expect(details).toHaveTextContent("ModelThis chat's decision model");
+  });
+
+  it('names a held phase it cannot find as "a later phase", never by its id', () => {
+    const { phase, phases } = phaseOf({ ...GATE, holds: ['write', 'phase-7f3a'] });
+    draw({ phase, phases });
+    expect(screen.getByTestId('phase-gate-holds')).toHaveTextContent(
+      'Write and a later phase wait until this gate passes.'
+    );
+    expect(screen.getByTestId('phase-gate-dialog')).not.toHaveTextContent('phase-7f3a');
   });
 
   it('says why the last check decided nothing', () => {
@@ -204,7 +290,7 @@ describe('what the dialog says about a gate', () => {
     );
   });
 
-  it('says a gate that failed every attempt waits for the person, and offers Try again', () => {
+  it('says a gate that failed every attempt waits for the person, and makes Pass primary', async () => {
     const { phase, phases } = phaseOf(
       { ...GATE, attempts: 1, lastPassed: false, lastMinP: 0.02, blocked: true, needsPerson: true },
       { status: 'in_progress' }
@@ -214,18 +300,72 @@ describe('what the dialog says about a gate', () => {
     expect(screen.getByTestId('phase-gate-needs-person')).toHaveTextContent(
       PHASE_GATE_COPY.needsPerson
     );
-    expect(screen.getByTestId('phase-gate-retry')).toHaveTextContent('Try again');
+    expect(screen.getByTestId('phase-gate-last-check')).toHaveTextContent(
+      'Lowest P(yes) 0.02 · threshold 0.90'
+    );
+    expect(screen.getByTestId('phase-gate-pass')).toHaveAttribute('data-variant', 'default');
+    expect(screen.getByTestId('phase-gate-skip')).toHaveAttribute('data-variant', 'secondary');
     expect(screen.getByTestId('phase-gate-pass')).toBeEnabled();
-    expect(screen.getByTestId('phase-gate-skip')).toBeEnabled();
+    expect(await menuItems()).toEqual([
+      PHASE_GATE_COPY.retry,
+      PHASE_GATE_COPY.edit,
+      PHASE_GATE_COPY.history,
+      PHASE_GATE_COPY.remove,
+    ]);
   });
 
-  it('offers Try again only once an attempt was used or the gate blocked', () => {
+  it('has no primary in the footer when the person is not needed', () => {
+    for (const gate of [
+      GATE,
+      { ...GATE, attempts: 1, maxAttempts: 2, lastPassed: false, lastMinP: 0.1 },
+      { ...GATE, attempts: 1, lastPassed: true },
+      { ...GATE, personDecision: 'pass' },
+    ]) {
+      const { phase, phases } = phaseOf(gate);
+      const { unmount } = draw({ phase, phases });
+      expect(screen.getByTestId('phase-gate-pass')).toHaveAttribute('data-variant', 'secondary');
+      expect(screen.getByTestId('phase-gate-skip')).toHaveAttribute('data-variant', 'secondary');
+      unmount();
+    }
+  });
+
+  it('puts Skip and Pass in the footer with tooltips saying what each does', async () => {
     draw();
-    expect(screen.queryByTestId('phase-gate-retry')).toBeNull();
+    // A focus the Tab key moved shows a label tooltip (Tooltip's Tab gate).
+    const tabTo = (element: HTMLElement) => {
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Tab' });
+      act(() => element.focus());
+    };
+    tabTo(screen.getByTestId('phase-gate-skip'));
+    expect((await screen.findAllByText(PHASE_GATE_COPY.skipTip)).length).toBeGreaterThan(0);
+    tabTo(screen.getByTestId('phase-gate-pass'));
+    expect((await screen.findAllByText(PHASE_GATE_COPY.passTip)).length).toBeGreaterThan(0);
+    // The body holds no buttons of its own any more.
+    expect(screen.queryByTestId('phase-gate-actions')).toBeNull();
+  });
+
+  it('offers Try again only once an attempt was used or the gate blocked', async () => {
+    draw();
+    expect(await menuItems()).toEqual([
+      PHASE_GATE_COPY.edit,
+      PHASE_GATE_COPY.history,
+      PHASE_GATE_COPY.remove,
+    ]);
     expect(screen.queryByTestId('phase-gate-needs-person')).toBeNull();
   });
 
-  it('shows a closed phase as passed or skipped by the person, with history and nothing else', () => {
+  it('renders the menu from the shared row-action items, Remove last and destructive', async () => {
+    draw();
+    await userEvent.click(screen.getByTestId('phase-gate-more'));
+    const remove = await screen.findByTestId('phase-gate-remove');
+    expect(remove).toHaveAttribute('data-variant', 'destructive');
+    const menu = remove.closest('[role="menu"]')!;
+    expect(menu.querySelector('[role="separator"]')).not.toBeNull();
+    const items = within(menu as HTMLElement).getAllByRole('menuitem');
+    expect(items[items.length - 1]).toBe(remove);
+  });
+
+  it('shows a closed phase as passed or skipped by the person, with Decision history alone', () => {
     const { phase, phases } = phaseOf(
       { ...GATE, personDecision: 'pass', holds: [] },
       { status: 'completed' }
@@ -233,8 +373,8 @@ describe('what the dialog says about a gate', () => {
     draw({ phase, phases });
     expect(screen.getByTestId('phase-gate-status')).toHaveTextContent('Passed by you');
     expect(screen.queryByTestId('phase-gate-pass')).toBeNull();
-    expect(screen.queryByTestId('phase-gate-edit')).toBeNull();
-    expect(screen.getByTestId('phase-gate-history')).toBeInTheDocument();
+    expect(screen.queryByTestId('phase-gate-more')).toBeNull();
+    expect(screen.getByTestId('phase-gate-history')).toHaveTextContent('Decision history');
   });
 });
 
@@ -252,6 +392,7 @@ describe('the person’s decisions', () => {
     expect(await screen.findByTestId('phase-gate-applied')).toHaveTextContent(
       'Phase "research" is completed: you passed its gate.'
     );
+    expect(screen.getByTestId('phase-gate-applied')).toHaveAttribute('role', 'status');
     expect(api.decide).toHaveBeenCalledTimes(1);
     expect(api.decide.mock.calls[0][0]).toMatchObject({
       path: { session_id: 's1', phase_id: 'research' },
@@ -289,7 +430,7 @@ describe('the person’s decisions', () => {
     );
   });
 
-  it('gives the gate its attempts again with Try again', async () => {
+  it('gives the gate its attempts again with Try again, from the menu', async () => {
     api.decide.mockResolvedValue(
       answered(
         'Phase "research"\'s gate has its 1 attempt again. The agent can complete the phase once more to ask it.',
@@ -304,7 +445,7 @@ describe('the person’s decisions', () => {
       needsPerson: true,
     });
     draw({ phase, phases });
-    fireEvent.click(screen.getByTestId('phase-gate-retry'));
+    await pickFromMenu('phase-gate-retry');
     expect(await screen.findByTestId('phase-gate-applied')).toHaveTextContent(
       'has its 1 attempt again'
     );
@@ -321,9 +462,11 @@ describe('the person’s decisions', () => {
     );
     const { onChanged } = draw();
     fireEvent.click(screen.getByTestId('phase-gate-pass'));
-    expect(await screen.findByTestId('phase-gate-refusal')).toHaveTextContent(
+    const refusal = await screen.findByTestId('phase-gate-refusal');
+    expect(refusal).toHaveTextContent(
       'Only the person at the keyboard may pass, skip or retry a phase gate.'
     );
+    expect(refusal).toHaveAttribute('role', 'alert');
     expect(onChanged).not.toHaveBeenCalled();
     expect(screen.getByTestId('phase-gate-status')).toHaveTextContent('Not asked yet');
 
@@ -347,7 +490,24 @@ describe('the person’s decisions', () => {
     );
   });
 
-  it('removes the gate with the proof, and the phase reads as ungated', async () => {
+  it('asks before removing the gate: Cancel removes nothing', async () => {
+    draw();
+    await pickFromMenu('phase-gate-remove');
+    const confirm = await screen.findByRole('dialog', {
+      name: PHASE_GATE_COPY.confirmRemove.title,
+    });
+    expect(confirm).toHaveTextContent(
+      'Its questions and attempts are discarded, and the agent can complete Research without a check.'
+    );
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: PHASE_GATE_COPY.confirmRemove.title })).toBeNull()
+    );
+    expect(api.remove).not.toHaveBeenCalled();
+    expect(screen.getByTestId('phase-gate-dialog')).toBeInTheDocument();
+  });
+
+  it('removes the gate with the proof once confirmed, and the phase reads as ungated', async () => {
     api.remove.mockResolvedValue(
       answered(
         'Phase "research" has no gate now: the agent can complete it without one.',
@@ -356,25 +516,50 @@ describe('the person’s decisions', () => {
       )
     );
     draw();
-    fireEvent.click(screen.getByTestId('phase-gate-remove'));
+    await pickFromMenu('phase-gate-remove');
+    const confirm = await screen.findByRole('dialog', {
+      name: PHASE_GATE_COPY.confirmRemove.title,
+    });
+    fireEvent.click(
+      within(confirm).getByRole('button', { name: PHASE_GATE_COPY.confirmRemove.confirm })
+    );
     expect(await screen.findByTestId('phase-gate-applied')).toHaveTextContent('has no gate now');
     expect(api.remove.mock.calls[0][0]).toMatchObject({
       path: { session_id: 's1', phase_id: 'research' },
       headers: PROOF,
     });
     expect(screen.getByTestId('phase-gate-none')).toBeInTheDocument();
-    expect(screen.getByTestId('phase-gate-add')).toBeInTheDocument();
+    expect(screen.getByTestId('phase-gate-add')).toHaveAttribute('data-variant', 'default');
   });
 
-  it('opens the gate’s decision history, closing itself first', () => {
+  it('opens the gate’s decision history from the menu, closing itself first', async () => {
     const { onOpenHistory, onOpenChange } = draw();
-    fireEvent.click(screen.getByTestId('phase-gate-history'));
+    await pickFromMenu('phase-gate-history');
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(onOpenHistory).toHaveBeenCalledWith({ origin: 'gate', originId: 'research' });
   });
 });
 
 describe('the editor', () => {
+  it('edits in place: a title of its own, the threshold in words, Cancel back to the gate', async () => {
+    draw();
+    await pickFromMenu('phase-gate-edit');
+    expect(screen.getByRole('dialog', { name: PHASE_GATE_COPY.editTitle })).toBeInTheDocument();
+    expect(screen.getByText(PHASE_GATE_COPY.editor.replaces)).toBeInTheDocument();
+    // R2: the helper names its outcome.
+    expect(screen.getByTestId('phase-gate-threshold-help')).toHaveTextContent(
+      "Passes when every question's P(yes) is at or above 0.90."
+    );
+    for (const label of [PHASE_GATE_COPY.editor.questions, PHASE_GATE_COPY.editor.threshold]) {
+      expect(screen.getByRole('button', { name: `About ${label}` })).toBeInTheDocument();
+    }
+    // The inner filled card is gone: the fields sit on the dialog ground.
+    expect(screen.getByTestId('phase-gate-editor')).not.toHaveClass('br-fill-surface');
+    fireEvent.click(screen.getByRole('button', { name: PHASE_GATE_COPY.editor.cancel }));
+    expect(screen.queryByTestId('phase-gate-editor')).toBeNull();
+    expect(screen.getByTestId('phase-gate-facts')).toBeInTheDocument();
+  });
+
   it('accepts a threshold under 0.50 from the person, and saves it with the proof', async () => {
     api.put.mockResolvedValue(
       answered(
@@ -388,7 +573,7 @@ describe('the editor', () => {
       )
     );
     draw();
-    fireEvent.click(screen.getByTestId('phase-gate-edit'));
+    await pickFromMenu('phase-gate-edit');
     expect(screen.getByTestId('phase-gate-question-0')).toHaveValue(
       'Does the hand-off cite a paper published in 2031?'
     );
@@ -400,6 +585,8 @@ describe('the editor', () => {
     for (let i = 0; i < 25; i += 1) fireEvent.keyDown(thresholdThumb(), { key: 'ArrowRight' });
     expect(thresholdThumb()).toHaveAttribute('aria-valuetext', '0.30');
     expect(screen.getByText(PHASE_GATE_COPY.editor.thresholdLow)).toBeInTheDocument();
+    // GATE has one attempt (not the default three): More options starts open.
+    expect(screen.getByTestId('phase-gate-more-options')).toBeInTheDocument();
     fireEvent.click(
       within(screen.getByTestId('phase-gate-attempts')).getByRole('radio', { name: '2' })
     );
@@ -418,32 +605,61 @@ describe('the editor', () => {
     });
     // Back on the gate, now the person's.
     expect(screen.queryByTestId('phase-gate-editor')).toBeNull();
-    expect(screen.getByTestId('phase-gate-owner')).toHaveTextContent('Set by you');
+    openDetails();
+    expect(screen.getByTestId('phase-gate-owner')).toHaveTextContent('You');
   });
 
   it('shows a 422 sentence inline and keeps the draft', async () => {
     api.put.mockResolvedValue(
       refused(
         422,
-        'Phase "research"\'s gate cannot be answered in this chat: the decision model is not available. Nothing was changed.'
+        'Phase "research"\'s gate cannot be answered in this chat: the questions could not be read. Nothing was changed.'
       )
     );
     draw();
-    fireEvent.click(screen.getByTestId('phase-gate-edit'));
+    await pickFromMenu('phase-gate-edit');
     fireEvent.change(screen.getByTestId('phase-gate-question-0'), {
       target: { value: 'Is every claim cited?' },
     });
     fireEvent.click(screen.getByTestId('phase-gate-save'));
     expect(await screen.findByTestId('phase-gate-refusal')).toHaveTextContent(
-      'cannot be answered in this chat'
+      /^Phase "research"'s gate cannot be answered in this chat/
     );
     expect(screen.getByTestId('phase-gate-editor')).toBeInTheDocument();
     expect(screen.getByTestId('phase-gate-question-0')).toHaveValue('Is every claim cited?');
   });
 
-  it('refuses an empty question before anything is sent', () => {
+  it('opens More options and focuses the model when a refusal names it', async () => {
+    api.put.mockResolvedValue(
+      refused(
+        422,
+        'Phase "research"\'s gate cannot be answered in this chat: the decision model is not available. Nothing was changed.'
+      )
+    );
+    const { phase, phases } = phaseOf({ ...GATE, maxAttempts: 3 });
+    draw({ phase, phases });
+    await pickFromMenu('phase-gate-edit');
+    // Three attempts and the chat's model: More options starts closed, with its summary.
+    expect(screen.queryByTestId('phase-gate-more-options')).toBeNull();
+    expect(screen.getByText("3 attempts · This chat's decision model")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('phase-gate-save'));
+    const refusal = await screen.findByTestId('phase-gate-refusal');
+    expect(refusal).toHaveTextContent(/^Model: Phase "research"'s gate cannot be answered/);
+    expect(await screen.findByTestId('phase-gate-more-options')).toBeInTheDocument();
+    const model = within(screen.getByTestId('phase-gate-model')).getByRole('combobox');
+    await waitFor(() => expect(model).toHaveFocus());
+  });
+
+  it('reads which field a refusal names', () => {
+    expect(refusalField('the decision model is not available')).toBe('model');
+    expect(refusalField('maxAttempts must be from 1 to 5')).toBe('attempts');
+    expect(refusalField('uncalibrated probabilities are not accepted here')).toBe('uncalibrated');
+    expect(refusalField('a question is empty')).toBeNull();
+  });
+
+  it('refuses an empty question before anything is sent', async () => {
     draw();
-    fireEvent.click(screen.getByTestId('phase-gate-edit'));
+    await pickFromMenu('phase-gate-edit');
     fireEvent.change(screen.getByTestId('phase-gate-question-0'), { target: { value: ' ' } });
     fireEvent.click(screen.getByTestId('phase-gate-save'));
     expect(screen.getByText('Write the question, or remove it.')).toBeInTheDocument();
@@ -453,7 +669,7 @@ describe('the editor', () => {
   it('adds up to eight questions, each with a name of its own', async () => {
     api.put.mockResolvedValue(answered('Phase "research" now has your gate.', true));
     draw();
-    fireEvent.click(screen.getByTestId('phase-gate-edit'));
+    await pickFromMenu('phase-gate-edit');
     for (let i = 0; i < 7; i += 1) fireEvent.click(screen.getByTestId('phase-gate-add-question'));
     expect(screen.getByTestId('phase-gate-add-question')).toBeDisabled();
     for (let i = 1; i < 8; i += 1) {
@@ -484,7 +700,7 @@ describe('the editor', () => {
       modelAdapter: 'logprob',
     });
     draw({ phase, phases });
-    fireEvent.click(screen.getByTestId('phase-gate-edit'));
+    await pickFromMenu('phase-gate-edit');
     fireEvent.change(screen.getByTestId('phase-gate-question-0'), {
       target: { value: 'Is every claim cited?' },
     });
@@ -506,7 +722,8 @@ describe('the editor', () => {
       modelAdapter: 'logprob',
     });
     draw({ phase, phases });
-    fireEvent.click(screen.getByTestId('phase-gate-edit'));
+    await pickFromMenu('phase-gate-edit');
+    openMoreOptions();
     const input = () => within(screen.getByTestId('phase-gate-model')).getByRole('combobox');
     const pick = async (label: string) => {
       fireEvent.keyDown(input(), { key: 'ArrowDown' });
@@ -515,8 +732,8 @@ describe('the editor', () => {
         .find(Boolean);
       fireEvent.click(row!);
     };
-    await pick(PHASE_GATE_COPY.chatDefault);
-    await pick('tev1:0.8b · Private · this computer');
+    await pick(DECISION_MODEL_OPTION_COPY.defaultModel);
+    await pick('tev1:0.8b');
     fireEvent.click(screen.getByTestId('phase-gate-save'));
     await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
     expect(api.put.mock.calls[0][0].body.model).toEqual({
@@ -526,18 +743,25 @@ describe('the editor', () => {
     });
   });
 
-  it('offers each decision model, a model this chat may not use disabled with the daemon’s reason', async () => {
+  it('offers each model by alias and place, a model this chat may not use disabled with its reason shown', async () => {
     draw({ chatTier: 'private' });
-    fireEvent.click(screen.getByTestId('phase-gate-edit'));
+    await pickFromMenu('phase-gate-edit');
+    openMoreOptions();
+    // In a private chat the label's InfoTip says only a private model may be used.
+    expect(
+      within(screen.getByTestId('phase-gate-model')).getByRole('button', { name: 'About Model' })
+    ).toBeInTheDocument();
     const input = within(screen.getByTestId('phase-gate-model')).getByRole('combobox');
     fireEvent.keyDown(input, { key: 'ArrowDown' });
-    const option = await screen.findByText('joey-1 · Public');
+    const option = await screen.findByText('joey-1');
     const row = option.closest('[role="option"]') ?? option.closest('[aria-disabled]');
     expect(row).toHaveAttribute('aria-disabled', 'true');
-    expect(
-      screen.getByText('This chat is private, so a public decision model may not read it.')
-    ).toBeInTheDocument();
-    expect(screen.getByText('tev1:0.8b · Private · this computer')).toBeInTheDocument();
+    // R4: the person's line, not the daemon's agent-facing sentence.
+    expect(row).toHaveTextContent(DECISION_MODEL_OPTION_COPY.publicRefused);
+    const local = (await screen.findByText('tev1:0.8b')).closest('[role="option"]')!;
+    expect(local).toHaveTextContent('this computer');
+    expect(local).not.toHaveTextContent('Private ·');
+    expect(document.body).not.toHaveTextContent('ollama_decision');
   });
 
   it('opens on the editor for a phase with no gate, and Cancel leaves with nothing set', () => {
@@ -547,6 +771,7 @@ describe('the editor', () => {
     expect(screen.getByTestId('phase-gate-editor')).toBeInTheDocument();
     // A new gate starts at the daemon's defaults: 0.80, three attempts.
     expect(thresholdThumb()).toHaveAttribute('aria-valuetext', '0.80');
+    openMoreOptions();
     expect(
       within(screen.getByTestId('phase-gate-attempts')).getByRole('radio', { name: '3' })
     ).toBeChecked();

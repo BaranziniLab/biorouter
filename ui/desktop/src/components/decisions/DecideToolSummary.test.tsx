@@ -1,13 +1,15 @@
 /**
  * The `decisions__decide` tool row, through the real ToolCallWithResponse: one
- * row per batch, its well holding the questions and the per-question counts, and
- * never the chunks or the per-chunk table (owner addendum A1).
+ * row per batch, its well holding the model, the questions in plain words and
+ * their counts (at most three), and never the chunks, the per-chunk table, the
+ * question names, the type, the threshold or the time (owner addendum A1, F-7).
  */
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import ToolCallWithResponse from '../ToolCallWithResponse';
 import type { ToolRequestMessageContent, ToolResponseMessageContent } from '../../types/message';
-import { DECIDE_TOOL_COPY, summarizeDecideCall } from './DecideToolSummary';
+import { DECIDE_TOOL_COPY, decideCallMeta, summarizeDecideCall } from './DecideToolSummary';
+import { CALIBRATION_COPY } from './decisionWords';
 import { wireDecideSummary } from './decisionFixtures';
 
 const CHUNKS = Array.from({ length: 600 }, (_, i) => ({
@@ -73,6 +75,29 @@ function show(
   return { ...view, onOpenArtifact };
 }
 
+/** The batch summary for ONE yes or no question. */
+function oneQuestion(overrides: Record<string, unknown> = {}) {
+  return {
+    ...SUMMARY,
+    chunks: 30,
+    decided: 30,
+    errors: 0,
+    errorGroups: [],
+    questions: [{ ...SUMMARY.questions[0], decided: 30, yes: 10, passed: 10, review: 0 }],
+    ...overrides,
+  };
+}
+
+const ONE_ARGS = {
+  questions: { has_ms: ARGS.questions.has_ms },
+  chunks: CHUNKS.slice(0, 30),
+};
+
+function openWell(container: HTMLElement) {
+  fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
+  return screen.getByTestId('decide-tool-summary');
+}
+
 describe('the decide tool row', () => {
   it('counts what it asks of how many chunks', () => {
     expect(summarizeDecideCall(ARGS)).toBe('Checking 600 chunks against 3 questions');
@@ -80,31 +105,63 @@ describe('the decide tool row', () => {
     expect(screen.getByText('Checking 600 chunks against 3 questions')).toBeInTheDocument();
   });
 
-  it('is one row once answered, with the errors in its meta', () => {
+  it('is one row once answered, with only the errors in its meta for several questions', () => {
     const { container } = show(true);
     expect(container.querySelectorAll('.br-transcript-row')).toHaveLength(1);
     expect(screen.getByText('Checked 600 chunks against 3 questions')).toBeInTheDocument();
     expect(container).toHaveTextContent('· 2 errors');
+    expect(container).not.toHaveTextContent('41 yes');
   });
 
-  it('opens onto the questions and per-question counts, never the chunks or the table', () => {
+  it('puts one yes or no question’s answer counts in the meta, which stays short', () => {
+    const wrap = (summary: Record<string, unknown>) => ({
+      status: 'success',
+      value: { content: [], structuredContent: summary },
+    });
+    expect(decideCallMeta(wrap(oneQuestion()))).toBe('10 yes');
+    expect(
+      decideCallMeta(
+        wrap({
+          ...SUMMARY,
+          questions: [SUMMARY.questions[0]],
+        })
+      )
+    ).toBe('41 yes, 6 to review, 2 errors');
+    // A choice says only its errors.
+    expect(decideCallMeta(wrap({ ...SUMMARY, questions: [SUMMARY.questions[2]] }))).toBe(
+      '2 errors'
+    );
+    expect(
+      decideCallMeta(wrap({ ...oneQuestion(), questions: [SUMMARY.questions[2]] }))
+    ).toBeNull();
+    const { container } = show(true, ONE_ARGS, oneQuestion());
+    expect(container).toHaveTextContent('Checked 30 chunks against 1 question · 10 yes');
+  });
+
+  it('opens onto the model, the questions in plain words and their counts, never the chunks', () => {
     const { container } = show(true);
-    fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
-    const well = screen.getByTestId('decide-tool-summary');
-    expect(well).toHaveTextContent('Does this note state the patient has multiple sclerosis?');
-    expect(well).toHaveTextContent('threshold 0.90');
+    const well = openWell(container);
     expect(screen.getByTestId('decide-tool-head')).toHaveTextContent(
-      '600 chunks · tev1:0.8b · 2 errors · 13 s'
+      /^tev1:0\.8b · this computer · 2 errors$/
     );
     const lines = screen.getByTestId('decide-tool-questions');
-    expect(lines).toHaveTextContent('has_msyes 41, 6 to review, max p 0.98');
-    // A review count of 0 says nothing.
-    expect(lines).toHaveTextContent('edss_statedyes 19, 17 passed, max p 0.91');
-    // A choice with a threshold has a review list too, not only a yes or no question.
     expect(lines).toHaveTextContent(
-      'courserrms 300, spms 200, none 98, 280 passed, 12 to review, max p 0.71'
+      'Does this note state the patient has multiple sclerosis?41 of 598 yes · 6 to review'
     );
-    expect(lines).not.toHaveTextContent('uncertain');
+    // A review count of 0 says nothing.
+    expect(lines).toHaveTextContent('Is an EDSS score stated?19 of 598 yes');
+    expect(lines).not.toHaveTextContent('19 of 598 yes ·');
+    // A choice: each answer's count in option order, then what is left to review.
+    expect(lines).toHaveTextContent(
+      'Which MS course is described?rrms 300 · spms 200 · none 98 · 12 to review'
+    );
+    // Off the card: the names, the type word, the threshold, the passed count, the time.
+    for (const gone of ['has_ms', 'edss_stated', 'threshold', 'yes or no', 'passed', '13 s']) {
+      expect(well).not.toHaveTextContent(gone);
+    }
+    expect(well).not.toHaveTextContent(/\d ms\b/);
+    expect(well).not.toHaveTextContent('Questions');
+    expect(well).not.toHaveTextContent('Result');
     // The distinct errors, with how many chunks each hit, not which ones.
     expect(screen.getByTestId('decide-tool-errors')).toHaveTextContent(
       '2 chunksThe decision model did not answer in 10 s'
@@ -115,37 +172,72 @@ describe('the decide tool row', () => {
     expect(container.textContent!.length).toBeLessThan(1200);
   });
 
-  it('shows a question written with `question` and no type as the choice the tool ran', () => {
-    // The tool reads `question` as the instructions and options as a choice.
+  it('says when fewer chunks were checked than sent, beyond the errors', () => {
+    const { container } = show(true, ONE_ARGS, oneQuestion({ chunks: 30, decided: 28 }));
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-head')).toHaveTextContent(
+      'tev1:0.8b · this computer · 28 of 30 chunks checked'
+    );
+  });
+
+  it('names at most three questions, and points to the history for the rest', () => {
+    const extra = (name: string, instructions: string) => ({
+      [name]: { instructions, type: 'yes_no', threshold: 0.5 },
+    });
+    const args = {
+      ...ARGS,
+      questions: {
+        ...ARGS.questions,
+        ...extra('dmt', 'Is the patient on a disease-modifying therapy?'),
+        ...extra('mri', 'Is a new MRI lesion reported?'),
+      },
+    };
+    const summary = {
+      ...SUMMARY,
+      questions: [
+        ...SUMMARY.questions,
+        { ...SUMMARY.questions[1], name: 'dmt', yes: 212 },
+        { ...SUMMARY.questions[1], name: 'mri', yes: 3 },
+      ],
+    };
+    const { container } = show(true, args, summary);
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-questions').querySelectorAll('li')).toHaveLength(3);
+    expect(screen.getByTestId('decide-tool-more')).toHaveTextContent(
+      '2 more questions in the decision history'
+    );
+    expect(screen.getByTestId('decide-tool-summary')).not.toHaveTextContent('disease-modifying');
+  });
+
+  it('says an uncalibrated batch is an estimate, with the reason in an InfoTip', () => {
+    const { container } = show(true, ARGS, { ...SUMMARY, calibrated: false });
+    openWell(container);
+    const estimate = screen.getByTestId('decide-tool-estimate');
+    expect(estimate).toHaveTextContent(CALIBRATION_COPY.estimate);
+    expect(within(estimate).getByRole('button', { name: /^About / })).toBeInTheDocument();
+  });
+
+  it('while it runs, names only the questions it asked: no counts and no link', () => {
     const args = {
       questions: {
-        course: {
-          question: 'Which MS course is described?',
-          options: { rrms: 'Relapsing-remitting', spms: 'Secondary progressive' },
-        },
-        rated: { question: 'How sure is the note?', type: 'rating', levels: ['low', 'high'] },
+        course: { question: 'Which MS course is described?', options: { rrms: 'RR', spms: 'SP' } },
       },
       chunks: CHUNKS,
     };
     const { container } = show(false, args);
-    fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
-    const well = screen.getByTestId('decide-tool-summary');
-    expect(well).toHaveTextContent('courseWhich MS course is described? · choice');
-    expect(well).toHaveTextContent('ratedHow sure is the note? · score');
-    expect(well).not.toHaveTextContent('yes or no');
+    const well = openWell(container);
+    // `question` is the tool's other name for the instructions.
+    expect(well).toHaveTextContent(/^Which MS course is described\?$/);
+    expect(screen.queryByRole('button', { name: DECIDE_TOOL_COPY.history })).toBeNull();
   });
 
-  it('takes each question’s type from the answered batch once there is one', () => {
-    // The arguments alone read as a yes or no; the daemon's summary, which is what ran, says choice.
-    const args = { questions: { course: { instructions: 'Which course?' } }, chunks: CHUNKS };
-    const { container } = show(true, args);
-    fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
-    expect(screen.getByTestId('decide-tool-summary')).toHaveTextContent(
-      'courseWhich course? · choice'
-    );
+  it('calls a question the call gave no text "Question 1", never by its name', () => {
+    const args = { questions: { course: { type: 'choice' } }, chunks: CHUNKS };
+    const { container } = show(false, args);
+    expect(openWell(container)).toHaveTextContent(/^Question 1$/);
   });
 
-  it('names a Baseten decision model by its alias in the head, not by its slug', () => {
+  it('names a Baseten decision model by its alias and place, not by its slug', () => {
     const summary = {
       ...SUMMARY,
       model: {
@@ -156,17 +248,22 @@ describe('the decide tool row', () => {
       tier: 'public',
     };
     const { container } = show(true, ARGS, summary);
-    fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
+    openWell(container);
     const head = screen.getByTestId('decide-tool-head');
-    expect(head).toHaveTextContent('600 chunks · joey-1 · 2 errors · 13 s');
+    expect(head).toHaveTextContent(/^joey-1 · Baseten · 2 errors$/);
     expect(head).not.toHaveTextContent('decision-models/');
-    expect(head).not.toHaveTextContent('baseten-joey-2b-latest');
+    expect(head).not.toHaveTextContent('baseten_decision');
   });
 
-  it('links to the batch in the decision history', () => {
+  it('ends with the one decision history link, opening this call', () => {
     const { container, onOpenArtifact } = show(true);
-    fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
-    fireEvent.click(screen.getByRole('button', { name: DECIDE_TOOL_COPY.history }));
+    const well = openWell(container);
+    const link = screen.getByRole('button', { name: DECIDE_TOOL_COPY.history });
+    expect(link).toHaveTextContent(/^Decision history$/);
+    expect(link).toHaveClass('br-decision-link');
+    // The last line of its block.
+    expect(well.lastElementChild).toBe(link);
+    fireEvent.click(link);
     expect(onOpenArtifact).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'decisions',
@@ -174,5 +271,24 @@ describe('the decide tool row', () => {
         filter: { origin: 'tool', batchId: 'batch-42' },
       })
     );
+  });
+});
+
+describe('opening the decide row at the end of the conversation (G-7)', () => {
+  it('scrolls the open card into view once the panel has opened', async () => {
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      const { container } = show(true);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      fireEvent.click(container.querySelector('button.br-tool-disclosure')!);
+      const card = screen.getByTestId('decide-tool-summary');
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1), { timeout: 2000 });
+      expect(scrollIntoView.mock.contexts[0]).toBe(card);
+      expect(scrollIntoView.mock.calls[0][0]).toMatchObject({ block: 'nearest' });
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
   });
 });
