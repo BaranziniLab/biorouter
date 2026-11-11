@@ -521,6 +521,10 @@ pub(crate) async fn run_complete_subagent_task_outcome(
     cancellation_token: Option<CancellationToken>,
 ) -> SubagentRunOutcome {
     let session_manager = config.session_manager.clone();
+    // What the child runs on, read before `task_config` moves into the run, and
+    // put on every result below so the parent never has to trust the child's
+    // own guess at its model.
+    let ran_on = Some(child_model_label(task_config.provider.as_ref()));
 
     // BR-71 reconciliation #2 — one token per run, addressable from everywhere:
     // a child of the parent-supplied token (parent-cancel still propagates to
@@ -540,10 +544,12 @@ pub(crate) async fn run_complete_subagent_task_outcome(
             Some(services) => match services.begin_turn(&session_id, run_token.clone()) {
                 Ok(lease) => Some(lease),
                 Err(conflict) => {
+                    let mut result = SubagentResult::from_error(format!(
+                        "subagent session is unexpectedly busy: {conflict}"
+                    ));
+                    result.model = ran_on;
                     return SubagentRunOutcome {
-                        result: SubagentResult::from_error(format!(
-                            "subagent session is unexpectedly busy: {conflict}"
-                        )),
+                        result,
                         cancelled: false,
                     };
                 }
@@ -611,6 +617,7 @@ pub(crate) async fn run_complete_subagent_task_outcome(
                 .as_ref()
                 .is_some_and(super::subagent_result::conversation_has_user_direct);
             result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
+            result.model = ran_on;
             return SubagentRunOutcome { result, cancelled };
         }
     };
@@ -643,7 +650,18 @@ pub(crate) async fn run_complete_subagent_task_outcome(
     );
     result.human_intervened = super::subagent_result::conversation_has_user_direct(&messages);
     result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
+    result.model = ran_on;
     SubagentRunOutcome { result, cancelled }
+}
+
+/// The provider and model a child runs on, as its result names them:
+/// `claude_code/claude-opus-5-5`.
+pub(crate) fn child_model_label(provider: &dyn crate::providers::base::Provider) -> String {
+    format!(
+        "{}/{}",
+        provider.get_name(),
+        provider.get_model_config().model_name
+    )
 }
 
 /// A short, human-readable label for the active-work view: the subagent's task
@@ -3496,6 +3514,8 @@ mod tests {
         assert_eq!(stop.name, "Task done");
         assert_eq!(stop.reason, MonitorStopReason::Fired);
         assert!(result.error.is_none());
+        // The harness names what the child ran on; the child never guesses it.
+        assert_eq!(result.model.as_deref(), Some("scripted/scripted-model"));
     }
 
     /// The child asks the decision models the chat that started it asks: a

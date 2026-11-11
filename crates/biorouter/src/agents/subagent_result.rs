@@ -305,6 +305,13 @@ pub struct SubagentResult {
     /// Token usage for the child's session, when available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<SubagentTokens>,
+    /// The provider and model the child really ran on, `provider/model`
+    /// (`claude_code/claude-opus-5-5`). Set by the harness from the child's
+    /// bound provider, never by the child: in a live 20-subagent swarm every
+    /// child guessed its own model ("GPT-5.1", "cannot verify"), and the parent
+    /// merging their results had nothing better to go on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// BR-71: the human typed into the child's tab during the run. Surfaced in
     /// the parent's tool result so it can weigh the summary.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -333,6 +340,7 @@ impl SubagentResult {
             question: None,
             artifacts: Vec::new(),
             tokens: None,
+            model: None,
             human_intervened: false,
             stopped_by_monitor: None,
             decisions: None,
@@ -437,6 +445,7 @@ impl SubagentResult {
             question: None,
             artifacts,
             tokens: None,
+            model: None,
             human_intervened: false,
             stopped_by_monitor: None,
             decisions: None,
@@ -522,6 +531,7 @@ impl SubagentResult {
             question,
             artifacts,
             tokens: None,
+            model: None,
             human_intervened: false,
             stopped_by_monitor: None,
             decisions: None,
@@ -603,6 +613,9 @@ impl SubagentResult {
 
     fn footer_line(&self) -> String {
         let mut parts = vec![format!("subagent {}", self.status.as_str())];
+        if let Some(model) = &self.model {
+            parts.push(format!("ran on {model}"));
+        }
         if !self.artifacts.is_empty() {
             let noun = if self.artifacts.len() == 1 {
                 "file"
@@ -819,6 +832,31 @@ fn artifact_path_from_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The model the harness recorded reaches the parent twice: as `model` in
+    /// the JSON envelope, and in the footer of the text the model reads.
+    #[test]
+    fn the_result_names_the_model_the_child_ran_on() {
+        let mut result = SubagentResult::from_conversation(
+            &Conversation::new_unvalidated(vec![Message::assistant().with_text("Done.")]),
+            None,
+            true,
+        );
+        assert!(serde_json::to_value(&result)
+            .unwrap()
+            .get("model")
+            .is_none());
+        result.model = Some("claude_code/claude-opus-5-5".to_string());
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["model"],
+            "claude_code/claude-opus-5-5"
+        );
+        let text = result.to_agent_text();
+        assert!(
+            text.ends_with("[subagent completed · ran on claude_code/claude-opus-5-5]"),
+            "{text}"
+        );
+    }
     use crate::conversation::message::Message;
     use rmcp::model::CallToolRequestParams;
     use serde_json::json;

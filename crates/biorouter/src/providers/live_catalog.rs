@@ -486,7 +486,7 @@ pub fn spawn_refresher() {
 }
 
 /// Baseten counts as configured once its key is saved, the same test the
-/// provider catalog uses (`routes::utils::keys_are_saved`). The key gates the
+/// provider catalog uses (`providers::readiness`'s `keys_are_saved`). The key gates the
 /// fetch and is never sent with it: the feed needs none. Named as a literal so
 /// `destination_keys`' scan can see and classify it.
 fn baseten_configured() -> bool {
