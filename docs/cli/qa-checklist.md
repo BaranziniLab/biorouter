@@ -212,9 +212,10 @@ Spot-checked:
 These are future work, not defects:
 
 - Image/file attachment (multimodal input) — GUI-only.
-- Voice dictation: local dictation is being built for the terminal and the desktop alike, so it
-  is not a GUI-only feature. Its manual checks per surface, including the interactive CLI, are in
-  [Dictation testing and release](../dictation/testing-and-release.md#the-manual-qa-checklist-per-surface).
+- Voice dictation: local dictation works in the terminal and the desktop alike, so it is not a
+  GUI-only feature. Its manual checks per surface, including the interactive CLI (S9), SSH and
+  containers (S10), noninteractive use (S11), CLI only servers (S8) and WSL (S19), are in the
+  [dictation test checklist](../releases/dictation-test-checklist.md).
 - Knowledge graph view, history/restore, `.brkb` export/import — server/GUI-only.
 - First-class secrets-management command (keys only via `configure` / per-extension `--secret`).
 - Tabs, chat groups and split panes, interactive MCP-UI resources, session-sharing tunnel,
@@ -225,5 +226,6 @@ These are future work, not defects:
 - [CLI command reference](command-reference.md) — the definition of every command and flag this checklist exercises.
 - [Diverge behaviour checklist](../desktop-ui/diverge-behavior-checklist.md) — the equivalent manual verification script on the desktop UI side.
 - [Llama Server model catalog QA checklist](../providers/llama-server/model-catalog-qa-checklist.md) — the per-model checklist for the bundled local-model provider.
+- [Dictation test checklist](../releases/dictation-test-checklist.md): the manual pass for local dictation on every surface, the terminal ones included.
 - [Managing sessions](../getting-started/managing-sessions.md) — background on the session storage the `session` items here exercise.
 - [Extensions, skills, and MCP agents](../extensions/extensions-and-skills-guide.md) — what the `extension` and `skill` subcommands install and how the pieces relate.

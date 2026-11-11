@@ -1887,12 +1887,19 @@ each for a different reason, and each looked like a working probe:
   Its presence is not evidence the model was offered it.
 - `POST /agent/call_tool` goes straight to `ExtensionManager::dispatch_tool_call`
   and never passes the `is_spawn_tool_call` check at `agent.rs:3847`, so a spawn
-  invoked that way is not refused whatever the mode. That route is user-initiated
-  (secret key + `X-User-Action`) and privacy **Gate C still applies** to it, so
-  the privacy barrier is intact — what is bypassed is the model-facing capability
-  gate, not a privacy one. Do not "fix" this by duplicating the gate into the
-  route without first deciding whether a user calling the tool deliberately
-  should be bound by a gate that exists to constrain the *model*.
+  invoked that way is not refused whatever the mode. That route asks only the
+  daemon secret, not `X-User-Action`; this line said it needed both until PR-33
+  of local dictation corrected it. A Crew-scoped chat is the one case that also
+  asks `session_reach` and Crew's tool grant (`call_tool` in `routes/agent.rs`).
+  It dispatches as `CallCapability::public_enforced()`, so privacy **Gate C still
+  applies** to it and the privacy barrier is intact, and
+  `call_tool_boundary_refusal` refuses managed-denied tools, tool access to global
+  memory and the session store, knowledge base deletes, and
+  `dictionary__add_terms` and `dictionary__remove_added_terms` before dispatch.
+  What is bypassed is the model-facing capability gate, not a privacy one. Do not
+  "fix" this by duplicating the gate into the route without first deciding
+  whether a caller who holds the secret and calls the tool deliberately should be
+  bound by a gate that exists to constrain the *model*.
 - Condition 2 reads `self.config.biorouter_mode`, a **snapshot taken when the
   Agent was constructed**. Flipping `BIOROUTER_MODE` through `/config/upsert` on
   a running daemon does not reach an agent that already exists, so a live-toggle
@@ -2143,16 +2150,100 @@ setup, open governance, deletion and full-access contract in
 
 ### Local dictation
 
-whisper.cpp is compiled into every default `biorouter` and `biorouterd` by
-`crates/biorouter-dictation/build.rs`; the plan and design are in [`docs/dictation/`](docs/dictation/).
-**The MSVC `test` leg builds the engine, not the `no_engine` stub (M-3).** The constant
-`MSVC_NATIVE = true` in that `build.rs` decides it; `false` would make every `*-windows-msvc` build
-answer `no_engine`. The `windows-latest` leg of `rust.yml`'s `test` job runs the engine's lib tests in
-"cargo test (workspace, lib + bins)" and the real `biorouterd` self test in "cargo test (dictation
-engine and worker roles)". Shipped Windows binaries are mingw, which `cross-build-nightly` and
-`windows-native-dictation` cover. PR-09 chose this before any dispatched run had built it (2026-11-05),
-as the plan prefers; flip the constant only when a dispatched run shows the MSVC build cannot be
-fixed, and record that here with the run id.
+whisper.cpp, vendored at `vendor/whisper.cpp/source/` (pin `4da27c41cebadb3cbbcd2563e9c7cbc8d84bdcad`),
+is compiled into every default `biorouter` and `biorouterd` by `crates/biorouter-dictation/build.rs`.
+Design and the record of what was built: [`docs/dictation/`](docs/dictation/README.md). The manual
+pass per surface and the dated measurement log:
+[`docs/releases/dictation-test-checklist.md`](docs/releases/dictation-test-checklist.md). No speech
+model ships in any artifact; a person installs one, checked against a SHA-256 pin compiled into the
+binary, from `BaranziniLab/biorouter-models`.
+
+- **The engine runs in a worker, never inside the daemon or an interactive CLI.** The running binary
+  starts itself again with the hidden first argument `__br-dictation-worker` (`WORKER_MARKER` in
+  `crates/biorouter-dictation/src/worker/mod.rs`) and a role: `engine`, `self-test`, or `capture`,
+  the terminal's microphone child, which only `biorouter` links (through
+  `crates/biorouter-dictation-capture`), so `biorouterd __br-dictation-worker capture` exits 2 (P-10).
+  `run_if_invoked()` sits in both `main()`s right after `complete_libnotify_init()` and before the
+  runtime, logging and configuration, so a worker never writes a log file, never reads `config.yaml`
+  and never moves the Windows legacy folder. The marker is not a clap subcommand and never shows in
+  `--help`. Exit codes: 2 a role this binary lacks, 20 an unsupported processor, 21 an unpinned file
+  handed to the self test, 22 a failed self test check, 65 a frame it cannot parse, 70 a panic.
+- **Build traps.** Rules that look optional and are not; most were found by a failure in the build
+  spike.
+  - `build.rs` panics on an Apple target when `MACOSX_DEPLOYMENT_TARGET` is unset. Unset, `cc`
+    compiled at the SDK version and the binary strongly imported a macOS 15 class, so dyld would
+    refuse the whole `biorouterd` on macOS 12 to 14, which no worker can isolate because it is the
+    same binary. The minimum OS guard is `.cargo/config.toml` (12.0) plus
+    `scripts/check-macos-deployment.sh` in `release.sh` and the macOS leg of `rust.yml`.
+  - CMake builds `Release` whatever the Cargo profile (`cmake::Config::profile("Release")`): the
+    `cmake` crate maps opt level 0 to Debug and `z` to MinSizeRel, so `just run-dev` and the
+    Dockerfile's `CARGO_PROFILE_RELEASE_OPT_LEVEL=z` would otherwise get an unoptimised engine.
+    `GGML_NATIVE=OFF` always, OpenMP off, static libstdc++ on Linux and mingw, no bindgen (the shim
+    is built with `cc`), and the vendored tree must be unchanged after the build (a metadata
+    snapshot in `build.rs`; `scripts/check-vendored-whisper-cpp.sh` checks the content hashes), so
+    a build step that writes into it fails. `scripts/check-dictation-build-prereqs.sh` (in `guards`) checks that the Docker
+    builder and hermit carry `cmake`, that the `Release` profile is set, and that `bindgen` arrives
+    only through `aws-lc-sys`.
+  - No pull request job links the Linux or Windows binaries: `cross-check` runs `cargo check`,
+    which compiles the C and C++ in both cross images but never links. A change to the engine, its
+    build or `vendor/whisper.cpp/` dispatches `rust.yml` before merge, which also runs
+    `cross-build-nightly` and `windows-native-dictation`, and links the green run.
+  - **The MSVC `test` leg builds the engine, not the `no_engine` stub (M-3).** The constant
+    `MSVC_NATIVE = true` in that `build.rs` decides it; `false` would make every `*-windows-msvc`
+    build answer `no_engine`. The `windows-latest` leg of `rust.yml`'s `test` job runs the engine's
+    lib tests in "cargo test (workspace, lib + bins)" and the real `biorouterd` self test in "cargo
+    test (dictation engine and worker roles)". Shipped Windows binaries are mingw, which
+    `cross-build-nightly` and `windows-native-dictation` cover. PR-09 chose this before any
+    dispatched run had built it (2026-11-05), as the plan prefers; flip the constant only when a
+    dispatched run shows the MSVC build cannot be fixed, and record that here with the run id.
+- **The `?no-inline` trap.** Vite inlines assets under 4,096 B as `data:` URLs, the PCM worklet
+  included, and the renderer's CSP blocks a `data:` or `blob:` worklet, so dictation dies on the
+  first click everywhere with `AbortError: Unable to load a worklet's module`. The import is
+  `./pcmCapture.worklet.js?url&no-inline`, and `vite.renderer.config.mts` also sets
+  `build.assetsInlineLimit` to a function that refuses `*.worklet.js`. Keep both: `frontend.yml`'s
+  `dictation-capture-electron` job builds with Vite's default limit as well and turns red when
+  `no-inline` is taken off the import.
+- **The fake permission switch trap.** Never pass `--use-fake-ui-for-media-stream` anywhere under
+  `ui/desktop/`; a source guard refuses it. With it, Electron skips the permission handler entirely
+  (zero handler calls, audio and video granted under a deny-all policy), so every permission test
+  passes while testing nothing. Fake audio is `BIOROUTER_TEST_FAKE_MIC_WAV` in an unpackaged app,
+  which adds `--use-fake-device-for-media-stream --use-file-for-fake-audio-capture=<wav>%noloop`,
+  plus `--disable-features=AudioServiceSandbox` on macOS, where the sandboxed audio service
+  otherwise cannot read the WAV and the track is silence (RMS 0). Fake audio is not a physical
+  microphone, and the checklist records the two apart.
+- **The dictionary tier rule.** `bias_set` in `crates/biorouter/src/dictation/bias.rs` is the only
+  producer of the entries recognition may use, and one value feeds the token prompt, the decoder
+  bonus and every correction step (DD-36); `eligible_entries_are_built_only_by_bias_set` pins its
+  constructor to that file. A private row shapes dictation only for a private target AND a caller
+  with private standing (the user action proof, a stated private `X-Caller-Provider`, or a person at
+  an interactive terminal), because Whisper copies its prompt into the transcript on silence. A
+  private row also carries the institutions of the chat it was written in, those behind the chat's
+  model and those whose connectors it touched (`sessions.session_affiliations`, O-35), and each one
+  is asked through `affiliation::gate_cross_affiliation_warning`, never by a hand comparison (P-16).
+  An unreadable record stores `{"institutions": []}`, which only a local model clears; a target
+  whose model is unstated (no live agent yet) gets only the private rows with no institution, which
+  the owner kept on 2026-11-10 (O-43). Crew, the clipboard and the app preview use public terms
+  unless the person includes private terms for one recording; ACP is public only. The `dictionary`
+  capability is off in a fresh configuration, and the workspace doors refuse it by name. The chat
+  extractor ships off (`LEARN_FROM_CHATS_DEFAULT = false` in
+  `crates/biorouter-dictation/src/store/schema.rs`), because its precision gate M-21 waits for the
+  owner's own labels (O-44). A row left out changes no field of a response. All of it is accident
+  prevention for cooperative actors: a shell can still read `dictionary.json`.
+- **Where the tests run.** Every dictation integration binary runs in `rust.yml`'s offline step,
+  with no line in its exclusion table; a test that needs a real model or the network is `#[ignore]`
+  in the same binary (`dictation_accuracy`, `model_download_live`, `dictation_extractor_precision`),
+  run by `dictation-accuracy.yml` or by hand. Keyless cases live in their own `*_no_user_key.rs`
+  binaries, because the user action digest is a process-global `OnceLock`. Engine tests in CI use
+  the CPU only; Metal is proved by `smoke_mac` and the checklist. The `serve` job drives Playwright
+  Chromium and Firefox with fake audio, the nginx prefix and the 413 halving;
+  `dictation-capture-electron` loads the worklet from `app.asar`; `cross-build-nightly` runs
+  `check-dictation-isa.sh` under `qemu-x86_64 -cpu Nehalem` and the glibc floor;
+  `windows-native-dictation` runs the shipped mingw binaries natively under a folder name with a
+  character outside ASCII (M-1). ⚠ The Jupyter AI persona's Python tests
+  (`integrations/jupyter-ai/tests/test_persona.py`, which pin the `BIOROUTER_ACP_CLIENT=jupyter-ai`
+  that keeps `/dictate` out of Jupyter AI) run in no workflow; checklist row S12.7 is their only
+  check. No accuracy figure about dictation goes into user documentation, release notes, the
+  announcement or the interface (DD-95).
 
 ### Communication Flow
 

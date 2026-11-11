@@ -248,6 +248,40 @@ workflows. Do not share sessions that contain patient data or other sensitive in
 whole display, not only the window you had in mind, so close or hide an EHR, imaging viewer or
 spreadsheet before you grant it.
 
+## Dictation and patient data
+
+Local dictation turns speech into text with a speech model that runs on the computer running
+Biorouter's service. No third party receives the audio: the cloud dictation route Biorouter
+inherited, which sent audio to OpenAI or ElevenLabs, was removed when local dictation arrived.
+Design and full rules: [dictation](../dictation/README.md).
+
+- **Where the audio goes.** In the desktop app it is transcribed on your own computer. In a
+  `biorouter serve` browser, in the Docker image and with an external backend it is transcribed
+  on that server, and Biorouter says so before the first recording. Treat that server as you would
+  any server that receives your typed messages.
+- **What is kept.** The audio stays in memory in Biorouter's processes and is never written to a
+  file, a log or a chat record. The terminal keeps a recording that failed to transcribe in memory
+  for at most five minutes, so `/dictate retry` can try again, and never writes it to disk. A
+  reverse proxy in front of `serve` is the operator's to configure: nginx's stock settings wrote
+  larger uploads to its own disk, and [browser access](../deployment/browser-access.md) names the
+  setting that keeps them in memory.
+- **Where the text goes.** The transcript goes into the composer and nowhere else, and it reaches
+  a model only when you press Send. Dictated text therefore follows the same provider guidance
+  as typed text: patient data belongs in a chat on a local or institution-managed model.
+- **Your dictionary.** The dictionary is one file per account, in `~/.config/biorouter/dictionary/`
+  on macOS and Linux, readable only by your account. Do not add names, record numbers or other
+  identifiers to it. Biorouter refuses addresses, file paths, digits alone and strings that look
+  like keys, and screens terms that arrive without you typing them, but it cannot recognize every
+  identifier. A term learned in a private chat shapes dictation only into chats on private models,
+  and a term that carries an institution only into that institution's models or a local model;
+  see [institutional affiliation](institutional-affiliation.md#a-private-dictionary-term). An agent
+  with a shell can still read the file.
+- **The clipboard.** Text from **Dictate to clipboard** can be read by any program on the
+  computer, can stay in clipboard history, and can sync to your other devices through Universal
+  Clipboard or the Windows cloud clipboard. `biorouter dictate --copy` on native Windows keeps the
+  text out of the cloud clipboard; the tray form in the app cannot. Avoid clipboard dictation for
+  patient data.
+
 ## Summary by data type
 
 | Data type | Recommended approach |
@@ -257,6 +291,7 @@ spreadsheet before you grant it.
 | Public / non-sensitive data | Any provider |
 | Proprietary unpublished research data | A local model or institution-managed — verify confidentiality requirements |
 | Anything visible on screen, once Biorouter Copilot is approved | Close or hide clinical and other sensitive windows first; the screenshot goes to whichever model the chat is bound to |
+| Dictated speech that mentions patients | Dictate into a chat on a local or institution-managed model, as for typed text; keep identifiers out of the dictionary and off the clipboard |
 
 **When in doubt: use a local model (Llama Server or Ollama) or check with your institution.**
 
@@ -290,3 +325,5 @@ Information Commons.
   session ever contained regulated data.
 - [Secret storage](secret-storage.md) — where the provider API keys behind these choices are
   held.
+- [Dictation](../dictation/README.md): where dictated audio is transcribed, what is kept, and how
+  private dictionary terms are kept out of public chats.

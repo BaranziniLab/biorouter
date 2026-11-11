@@ -13,13 +13,14 @@
   <li><strong>Home.</strong> A greeting, a card of your recent usage and a composer. The card's <strong>Overview</strong> tab shows chats, messages, tokens, active days, your streak and your favorite model, with a heatmap of the days you used Biorouter. Its <strong>Models</strong> tab shows usage by model. Choose 1y, 30d or 7d to change the period. Typing in the composer starts a new chat.</li>
   <li><strong>New chat.</strong> An empty chat in a new tab.</li>
   <li><strong>Crew.</strong> Your lab's shared workspace: channels, files and agent tasks. See <a href="#crew">Crew</a>.</li>
-  <li><strong>Components.</strong> A group holding the six rows below. It starts collapsed and stays the way you last left it.
+  <li><strong>Components.</strong> A group holding the seven rows below. It starts collapsed and stays the way you last left it; it opens once by itself after you install a speech model.
     <ul>
       <li><strong>Workflows.</strong> Saved recipes that start a chat with the same instructions, tools and model. See <a href="#workflows">Workflows and scheduling</a>.</li>
       <li><strong>Scheduler.</strong> Workflows set to run on a schedule, with each one's timing and last run.</li>
       <li><strong>Extensions.</strong> The tool servers the agent can use, each with an on and off switch, plus the BAAM marketplace and custom extensions. See <a href="#extensions">Extensions and skills</a>.</li>
       <li><strong>Skills.</strong> Instruction sets the agent loads when a task calls for one.</li>
       <li><strong>Knowledge.</strong> Knowledge bases the agent writes and reads. See <a href="#knowledge">Knowledge bases</a>.</li>
+      <li><strong>Dictionary.</strong> The words dictation should spell your way. See <a href="#app-dictation">Dictation</a>.</li>
       <li><strong>Built apps.</strong> Apps the agent built for you. This is the only place to delete one. See <a href="#apps">Built apps</a>.</li>
     </ul>
   </li>
@@ -50,6 +51,27 @@
   <li><strong>Diverge</strong> on a reply opens a new window holding a new chat with the full history up to that point. The original stays as it was.</li>
   <li>Select text in a reply, right click, and choose <strong>Ask about it</strong> or <strong>Quote it</strong> to put the passage in the composer as a quotation.</li>
 </ul>
+
+<h2 id="app-dictation">Dictation</h2>
+<div class="note"><p><strong>Next release.</strong> Local dictation arrives in the release after v1.94.1.</p></div>
+<p>Dictation turns your speech into text in the composer. It runs on this computer with a speech model you install once, and it spells your own terms the way your dictionary does. Nothing is sent until you press Send.</p>
+<ol class="steps">
+  <li><strong>Install a speech model</strong> Choose the microphone left of Send. The first time, it offers <strong>Install</strong> and <strong>Not now</strong>, and nothing downloads until you choose Install. Biorouter picks the model for your computer: <code>whisper-large-v3-turbo-q5_0</code> (574&nbsp;MB) on Apple silicon, <code>whisper-small.en-q8_0</code> (264&nbsp;MB) elsewhere. It comes from the Baranzini Lab's own repository on GitHub and is checked before use. <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong> installs, switches and removes models and shows the folder they live in.</li>
+  <li><strong>Dictate</strong> Choose the microphone, or press <kbd>Shift+Cmd+D</kbd>: a tap starts and stops a recording, and holding it records while you hold. The first time, macOS asks for the microphone. <kbd>Enter</kbd> stops and puts the text at the cursor; <kbd>Esc</kbd> throws the recording away. One <kbd>Cmd+Z</kbd> takes the dictated words back out.</li>
+  <li><strong>Check and send</strong> Read the text, fix anything, then press <kbd>Enter</kbd> to send. When you correct a dictated word the same way twice, Biorouter learns it for a term in your dictionary.</li>
+</ol>
+<p>The same microphone sits in the message editor, and in Crew's channel composer and <strong>Ask my agent</strong> box, where nothing is posted until you press Send.</p>
+<h3 id="app-dictation-dictionary">Your dictionary</h3>
+<p><strong>Dictionary</strong>, in the sidebar's Components group, lists the words dictation should spell your way, such as UCSF or EPAS1. Add one there with <strong>Add a term…</strong>, or right click a word in a chat and choose <strong>Add to Biorouter dictionary…</strong>. A term you add from a private chat is private unless you untick <strong>Only in private chats</strong>: it shapes dictation only into chats on private models, and never into a chat on another institution's model. See <a href="#privacy">Private and public</a>.</p>
+<p>At the first install, <strong>Suggest dictionary words from my chats</strong> lets the agent add terms in new chats. A term it adds goes live at once only when you asked for it, or answered the agent's offer of it; anything else waits under <strong>Suggested</strong> for you. Each term the agent added has <strong>Keep</strong> and <strong>Undo</strong>.</p>
+<h3 id="app-dictation-elsewhere">In the terminal, the browser and other apps</h3>
+<ul>
+  <li><strong>Terminal.</strong> <kbd>Ctrl+T</kbd> or <code>/dictate</code> in a chat, and <code>biorouter dictate</code> anywhere else. See <a href="#cli-dictate">Dictate</a>.</li>
+  <li><strong>Browser access.</strong> A <code>biorouter serve</code> browser has the same microphone. The audio is transcribed on the server, and models install there. Browsers offer the microphone only on <code>localhost</code> or an HTTPS address. See <a href="#cli-serve">Browser access</a>.</li>
+  <li><strong>Other apps.</strong> <strong>Dictate to clipboard</strong> in the tray menu records and copies the text for you to paste anywhere. It starts only after you turn on <strong>Dictate into other apps</strong> in <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong>, where you can also choose a keyboard shortcut for it; until then the tray item opens that setting.</li>
+  <li><strong>Built apps.</strong> In the preview of an app the agent built, click into one of its text fields and choose <strong>Dictate into this app</strong>, which appears while a field has focus. It works whether or not <strong>Dictate into other apps</strong> is on.</li>
+</ul>
+<div class="note"><p>Audio is never saved, and once a model is installed dictation needs no network. On a computer with no network, run <code>biorouter dictation urls</code> on a connected one, carry the files over and run <code>biorouter dictation install --from</code> with their folder. Processors without AVX2 cannot run local dictation, and Biorouter says so before any download.</p></div>
 
 <h2 id="app-models">Switching models</h2>
 <ol class="steps">
@@ -96,6 +118,7 @@
     <tr><td>Find next, find previous</td><td><kbd>Cmd+G</kbd>,&nbsp;<kbd>Shift+Cmd+G</kbd></td></tr>
     <tr><td>New line in the composer</td><td><kbd>Shift+Enter</kbd></td></tr>
     <tr><td>Add a message to the running turn</td><td><kbd>Cmd+Enter</kbd></td></tr>
+    <tr><td>Start or stop dictation in the composer; hold to talk</td><td><kbd>Shift+Cmd+D</kbd></td></tr>
     <tr><td>Bring back a message you sent earlier</td><td><kbd>Cmd+Up</kbd>,&nbsp;<kbd>Cmd+Down</kbd></td></tr>
     <tr><td>Settings, on macOS only</td><td><kbd>Cmd+,</kbd></td></tr>
     <tr><td>Bring the Biorouter window forward, from any app</td><td><kbd>Option+Cmd+G</kbd></td></tr>

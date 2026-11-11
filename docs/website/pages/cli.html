@@ -30,8 +30,22 @@ biorouter session --resume -n gwas-followup --history</code></pre>
     <tr><td><kbd>Up</kbd></td><td>Recall a message you sent earlier. <kbd>Down</kbd> goes back.</td></tr>
     <tr><td><kbd>PageUp</kbd></td><td>Scroll the conversation. <kbd>PageDown</kbd> scrolls back.</td></tr>
     <tr><td><kbd>/</kbd></td><td>List commands, skills, extensions and knowledge bases. <kbd>Tab</kbd> or <kbd>Enter</kbd> picks one.</td></tr>
+    <tr><td><kbd>Ctrl+T</kbd></td><td>Start or stop dictation. The text lands at the cursor and is not sent until you press <kbd>Enter</kbd>. <kbd>Esc</kbd> cancels the recording only.</td></tr>
   </tbody>
 </table></div>
+
+<h3 id="cli-dictate">Dictate</h3>
+<p>In the full screen chat, the classic prompt and a shared chat, press <kbd>Ctrl+T</kbd> or type <code>/dictate</code>. In <code>biorouter session attach</code>, <code>/dictate</code> asks <code>Send? [y/N]</code> before anything is sent. Outside a chat, <code>biorouter dictate</code> records, shows the text for you to check, then prints it, so nothing you have not read reaches another command. The first time, macOS asks for your terminal app, not for Biorouter. See <a href="#app-dictation">Dictation</a> for the model and your dictionary.</p>
+<pre>
+<code># Install the speech model suited to this computer
+biorouter dictation install
+
+# Dictate, then copy the text instead of printing it
+biorouter dictate --copy
+
+# Turn a recording into text on this computer
+biorouter transcribe memo.m4a</code></pre>
+<p>Over SSH there is no microphone to reach, so <code>biorouter dictate</code> says what works instead: <code>biorouter serve</code> on that computer with an SSH tunnel, dictating on your own computer and pasting, or copying a recording over and running <code>biorouter transcribe</code>.</p>
 
 <h3 id="cli-slash">Slash commands</h3>
 <p>The desktop app, the full screen chat and the classic prompt share these commands.</p>

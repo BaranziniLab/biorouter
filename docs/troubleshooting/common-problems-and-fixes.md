@@ -16,6 +16,7 @@ biorouter, like any system, may run into occasional issues. Use the contents bel
 - [Secrets and the system keyring](#secrets-and-the-system-keyring)
 - [Extensions and package runners](#extensions-and-package-runners)
 - [System permissions](#system-permissions)
+- [Dictation and the microphone](#dictation-and-the-microphone)
 - [Uninstalling biorouter or removing cached data](#uninstalling-biorouter-or-removing-cached-data)
 - [Getting further help](#getting-further-help)
 
@@ -462,6 +463,131 @@ sudo /Applications/Biorouter.app/Contents/MacOS/Biorouter
 1. Go to `System Settings` -> `Privacy & Security` -> `Files & Folders`.
 2. Grant biorouter access.
 
+## Dictation and the microphone
+
+Local dictation records only while you dictate, and each operating system decides who may use the
+microphone. Start with these two commands, which never open the microphone:
+
+```bash
+biorouter dictation status
+biorouter dictation devices
+```
+
+`status` says whether this build can dictate, whether the processor can run the engine, which
+speech model is installed and where, and what the terminal's microphone looks like; `biorouter
+doctor` prints the same lines in its **Dictation** section. `devices` lists the microphones the
+terminal can use. The full list of messages and what each means is in
+[dictation surfaces](../dictation/surfaces.md#message-catalog).
+
+### Microphone access on macOS, in the desktop app
+
+**Symptom:** the microphone shows "Microphone access is off for Biorouter. Turn it on in System
+Settings > Privacy & Security > Microphone, then restart Biorouter."
+
+**Fix:**
+
+1. Choose **Open settings** in that message, or open **System Settings > Privacy & Security >
+   Microphone** yourself.
+2. Turn on **Biorouter**.
+3. Quit and reopen Biorouter. macOS applies a changed microphone permission only after the app
+   restarts.
+
+If Biorouter is not in the list, reset its entry and click the microphone again, so macOS asks:
+
+```bash
+tccutil reset Microphone com.electron.biorouter
+```
+
+Two related messages:
+
+- "Your organization manages microphone access on this computer." Your organization's device
+  management decides it; ask your IT department.
+- "Biorouter could not open the microphone although macOS allows it. Restart Biorouter and try
+  again."
+
+### Microphone access on macOS, in a terminal
+
+In a terminal, macOS asks for the terminal app (Terminal, iTerm2, Ghostty, VS Code), not for
+Biorouter. The first `biorouter dictation test` or `biorouter dictate` makes it ask.
+
+**Symptom:** "macOS gave Biorouter only silence, which usually means \<terminal app> is not
+allowed to use the microphone." The message names your terminal app.
+
+**Fix:** turn on your terminal app in **System Settings > Privacy & Security > Microphone**, then
+quit and reopen the terminal app. If it is not listed, reset its entry with
+`tccutil reset Microphone <bundle id>` and try again. A terminal app that never asks cannot use the
+microphone on macOS at all: run Biorouter in Terminal, iTerm2, Ghostty or VS Code instead, or use
+**Dictate to clipboard** in the Biorouter app.
+
+Over SSH to a Mac there is no microphone at all: macOS lets only the logged in desktop session use
+it, and `biorouter dictate` says so and lists the routes that work.
+
+### Microphone access on Windows
+
+Windows has no per app prompt for desktop apps. One switch, **Let desktop apps access your
+microphone**, decides for the desktop app and for every terminal.
+
+**Symptom:** in the app, "Microphone access is off for Biorouter. Turn on “Let desktop apps access
+your microphone” in Settings > Privacy & security > Microphone." In a terminal, "Windows gave
+Biorouter only silence."
+
+**Fix:** choose **Open settings** in the app's message, or open **Settings > Privacy & security >
+Microphone**, and turn on **Let desktop apps access your microphone**.
+
+"The microphone is in use by another app, or the system blocked it." means another app holds the
+microphone for itself, as some call and recording apps do. Close that app, then try again.
+
+### Microphone on Linux
+
+Linux shows no permission prompt; the app and the terminal reach the microphone through
+PulseAudio or PipeWire.
+
+- "No microphone found. Connect one or make it the system default, then try again." Check
+  `biorouter dictation devices`, and pick the input in your desktop's sound settings.
+- "The microphone is in use by another app, or the system blocked it." Close the app that holds
+  it, or check that your sound server is running.
+- "No audio system is running here (no PulseAudio, PipeWire or ALSA capture device)." You are on
+  a server or a machine without a sound server. Over SSH, `biorouter dictate` lists the routes
+  that work from your own computer: `biorouter serve` with an SSH tunnel, `biorouter dictate --copy`
+  on your own computer and paste, or a recording copied over and transcribed with
+  `biorouter transcribe <file>`.
+
+For an audio setup Biorouter's own capture does not reach, `BIOROUTER_DICTATION_RECORDER` names a
+command that writes raw 16 bit, 16 kHz, mono samples to its standard output, for example
+`BIOROUTER_DICTATION_RECORDER="arecord -q -f S16_LE -r 16000 -c 1 -t raw"`.
+
+### Microphone in a browser on `biorouter serve`
+
+**Symptom:** "Allow the microphone for this site in your browser's site settings, then try again."
+
+**Fix:** open the site settings for the address `serve` printed and allow the microphone. Biorouter
+asks you once, before the first recording, to choose **Allow this time** unless you trust every
+page at that address, because a browser's permission covers the whole address.
+
+**Symptom:** "Dictation needs a secure address. Your browser blocks the microphone on
+http://\<host>."
+
+**Fix:** browsers offer the microphone only on `localhost` or HTTPS. Open Biorouter through an
+SSH tunnel (`ssh -N -L 8765:127.0.0.1:8765 <host>`, then the address `serve` printed, with its
+`?t=` part) or through an HTTPS address.
+
+### Dictation in WSL
+
+WSL2 delivers audio through WSLg's PulseAudio server. WSL1 has no audio.
+
+- "WSL delivers audio through WSLg's PulseAudio server. Install the PulseAudio client library
+  (`sudo apt install libpulse0`), then try again." Run that command inside WSL.
+- "This WSL has no audio, because WSLg is not available or is turned off." WSLg is missing, or
+  `guiApplications=false` is set in `.wslconfig`. Turn WSLg on, use the Biorouter app on Windows,
+  or run `biorouter serve` inside WSL and open the address it prints in a Windows browser
+  (`localhost` works in place of `127.0.0.1`).
+- "WSL1 has no audio. Use Biorouter on Windows, or WSL2 with WSLg."
+
+A speech model you already downloaded on the Windows side installs inside WSL with
+`biorouter dictation install --from /mnt/c/Users/<you>/Downloads/`; it is checked by hash. In WSL,
+`biorouter dictate --copy` copies through `powershell.exe Set-Clipboard`, which cannot keep the
+text out of Windows clipboard history, so `--copy --no-history` is refused there.
+
 ## Uninstalling biorouter or removing cached data
 
 You may need to uninstall biorouter or clear existing data before re-installing. biorouter stores data in different locations depending on your operating system. Secrets, such as API keys, are stored exclusively in the system keychain/keyring.
@@ -580,6 +706,8 @@ Still running into issues? [Open an issue on GitHub][github-issues] where the bi
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — provider setup, including Ollama and its current default models.
 - [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_DISABLE_KEYRING`, `BIOROUTER_TERMINAL`, lead/worker settings, and provider retry tuning.
 - [Secret storage](../security/secret-storage.md) — what biorouter puts in the system keychain and how the plaintext fallback works.
+- [Dictation surfaces](../dictation/surfaces.md#message-catalog): every dictation message, where it appears and what it means.
+- [Dictation test checklist](../releases/dictation-test-checklist.md): the microphone checks per operating system that a release passes.
 
 [github-issues]: https://github.com/BaranziniLab/biorouter/issues
 [installation]: ../getting-started/installation.md

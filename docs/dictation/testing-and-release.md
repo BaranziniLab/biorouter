@@ -1,10 +1,10 @@
 # Dictation testing and release
 
-> **What this is.** How local dictation is proved and shipped: the tests for each component and surface, the CI jobs that run them and the network each one may use, the release guards and packaging checks, the committed fixtures and their size budget, the accuracy gates on public recordings and synthetic speech, the manual checklist for every surface, and the measurements still to take.
-> **Status:** Current: the plan being built on branch `feat/local-dictation`, pull request by pull request in the order of the delivery plan
-> **Audience:** developers who write each pull request's tests and CI changes; the maintainer who cuts releases and runs the manual checklist; reviewers who check that a pull request carries its own gates.
+> **What this is.** How local dictation is proved and shipped: the tests for each component and surface, the CI jobs that run them and the network each one may use, the release guards and packaging checks, the committed fixtures and their size budget, the accuracy gates on public recordings and synthetic speech, and the definition of every measurement. The manual checklist for every surface and the dated measurement log are in the [dictation test checklist](../releases/dictation-test-checklist.md).
+> **Status:** Current: the record of local dictation as it was built on branch `feat/local-dictation`, PR-01 to PR-33 (PR-07 and PR-32 withdrawn), with every code pull request committed by 2026-11-10 and before the release that carries it. Design rationale and the measurements taken while building it are kept with their dates; "As built" notes say where the code differs from the design.
+> **Audience:** developers who maintain each component's tests and CI jobs; the maintainer who cuts releases and runs the [dictation test checklist](../releases/dictation-test-checklist.md); reviewers who check that a change carries its own gates.
 
-The [implementation plan](implementation-plan.md) decides what is built and in which order. This document decides how each piece is proved before it merges, before a release is published, and before version 1 is announced. Almost every test runs offline inside CI steps that exist today, with whisper.cpp's own empty test models and one committed speech clip. What CI cannot do (a real microphone, a macOS permission prompt, Safari, a person's terminal, a real proxy, a signed app on macOS 12) goes into a manual checklist with one section per surface. Accuracy is held by two tiers: a networked nightly job on public real speech, and a maintainer run on public recordings and synthetic speech, on Metal and on the CPU, before any release that changes the engine or a model pin. Biorouter records no real voices for evaluation (the owner's decision O-23, 2026-11-05), its tests and measurements use only PriMock57, the Fareez et al. 2022 interviews and synthetic voices (O-38), and no accuracy claim about the product ever goes into user documentation, release notes, the announcement or the interface (DD-95).
+The [implementation plan](implementation-plan.md) decides what is built and in which order. This document decides how each piece is proved before it merges, before a release is published, and before version 1 is announced. Almost every test runs offline inside CI steps that exist today, with whisper.cpp's own empty test models and one committed speech clip. What CI cannot do (a real microphone, a macOS permission prompt, Safari, a person's terminal, a real proxy, a signed app on macOS 12) is in the [dictation test checklist](../releases/dictation-test-checklist.md), one section per surface. Accuracy is held by two tiers: a networked nightly job on public real speech, and a maintainer run on public recordings and synthetic speech, on Metal and on the CPU, before any release that changes the engine or a model pin. Biorouter records no real voices for evaluation (the owner's decision O-23, 2026-11-05), its tests and measurements use only PriMock57, the Fareez et al. 2022 interviews and synthetic voices (O-38), and no accuracy claim about the product ever goes into user documentation, release notes, the announcement or the interface (DD-95).
 
 ## How to read this document
 
@@ -13,11 +13,11 @@ Load bearing claims carry the plan's labels:
 | Label | Meaning |
 |---|---|
 | [M] | Measured on real binaries, browsers or audio: on 2026-11-04 during this design, unless a date beside the label or in its sentence says when a pull request measured it |
-| [C] | Read in Biorouter's code at `main` (`52917f33e`, three commits after the v1.94.1 tag; the workspace version is 1.94.1); a line number is against `main` |
+| [C] | Read in Biorouter's code at `main` (`52917f33e`, three commits after the v1.94.1 tag; the workspace version is 1.94.1); a line number is against `main`. Citations added after a pull request landed name the file and symbol on `feat/local-dictation` at that pull request; the symbol is the anchor, not the line |
 | [R] | Reported by a third party's source, documentation or issue tracker, not measured here |
 | [I] | Inferred; where it matters, the measurement that would settle it is named |
 
-Identifiers follow the plan: R1 to R8 (the owner's requirements), S1 to S20 (surfaces), DD-1 onward (the [decision register](implementation-plan.md#decision-register), which is binding here), PR-01 to PR-33 and A-1 (pull requests, PR-07 and PR-32 withdrawn, and the owner's setup action), O-1 onward (owner decisions), MSG-… (message ids, whose exact text is in [surfaces](surfaces.md)), P-1 to P-16 (privacy invariants) and M-1 to M-22 (measurements still to take; M-9 and M-13 withdrawn). This document elaborates DD-3, DD-9 to DD-13, DD-17, DD-44, DD-50, the gate of DD-57, DD-94 and DD-95, every privacy invariant and every measurement.
+Identifiers follow the plan: R1 to R8 (the owner's requirements), S1 to S20 (surfaces), DD-1 onward (the [decision register](implementation-plan.md#decision-register), which is binding here), PR-01 to PR-33 and A-1 (pull requests, PR-07 and PR-32 withdrawn, and the owner's setup action), O-1 onward (owner decisions), MSG-… (message ids, whose exact text is in [surfaces](surfaces.md)), P-1 to P-16 (privacy invariants) and M-1 to M-22 (measurements, dated in the checklist's log; M-9 and M-13 withdrawn). This document elaborates DD-3, DD-9 to DD-13, DD-17, DD-44, DD-50, the gate of DD-57, DD-94 and DD-95, every privacy invariant and every measurement.
 
 Conventions used below:
 
@@ -281,13 +281,15 @@ Also in PR-15 and PR-16: `scripts/check-openapi-schema.sh` is clean after `just 
 | extractor through `Agent::reply` | `AgentInjection` provenance and SubAgent, Scheduled, Terminal, Crew scoped, app, ACP stdio and `--ws` sessions produce nothing; slash commands, tool output and assistant text produce nothing; a private chat produces a private suggestion; its `affiliation` is the bound provider's institutions united with the session's `session_affiliations`: `null` for a local model in a chat whose record is empty, `{ucsf}` for a local model in a chat whose record holds `ucsf` (P-16, O-35); a token `PiiDetector::scan` flags is skipped; `seen` counts once per session and a candidate is listed only at `seen ≥ 2`; at most 3 per message; the `/interrupt` admission path for a steer that is not a duplicate; no provider call (a provider double counts zero); a tracing capture holds no message text | PR-24 |
 | extractor budget | p99 under 50 ms with a 5,000 entry store and two writers; contention beyond the 50 ms `try_lock` budget drops the candidates | PR-24 |
 
-**The gate of DD-57 (M-21).** `learn_from_chats` ships on only if the extractor reaches precision 0.8 or more at `seen ≥ 2` on the person written messages of 200 of the owner's sessions. Those sessions are the owner's own chats and may hold patient data, so the run needs the owner's consent and someone's labeling time: the owner decided on 2026-11-05 (O-23) that it runs on the owner's machine, excluding sessions that used a private model or hold patient data. The run is local and nothing leaves the machine:
+**The gate of DD-57 (M-21).** `learn_from_chats` ships on only if the extractor reaches precision 0.8 or more at `seen ≥ 2` on the person written messages of 200 of the owner's sessions. Those sessions are the owner's own chats and may hold patient data, so the run needs the owner's consent and the owner's own labelling time (O-44, 2026-11-10): the owner decided on 2026-11-05 (O-23) that it runs on the owner's machine, excluding sessions that used a private model or hold patient data. The run is local and nothing leaves the machine:
 
 1. The owner copies `sessions.db` to a private folder with Biorouter closed.
 2. An `#[ignore]` test, `crates/biorouter/tests/dictation_extractor_precision.rs`, reads that copy (path in the test only variable `BIOROUTER_EXTRACTOR_EVAL_DB`), takes the 200 most recent sessions whose `privacy_tier` is public, so none that used a private model, leaves out every session the owner names as holding patient data, runs `extractor::candidates` over person written user messages only, applies `seen ≥ 2` across sessions, and writes one CSV row per listed candidate to a temporary folder outside the repository. A row holds the candidate token and its count, never the message around it.
-3. The owner, or a person the owner names, labels each row "would add" or "would not".
+3. The owner, and only the owner, labels each row "would add" or "would not" (O-44).
 4. Precision is the share labelled "would add". The PR-24 description records the date, the count of candidates and the precision, never a term.
-5. At 0.8 or more the default is on; otherwise PR-24 ships it off (`LEARN_FROM_CHATS_DEFAULT = false`), the Dictionary page shows **Also find terms in my messages automatically** off, and the reason is recorded in [dictionary](dictionary.md).
+5. At 0.8 or more the default is on; otherwise it stays off.
+
+M-21 was not run before PR-24 landed (`491246227`), so PR-24 ships it off (`LEARN_FROM_CHATS_DEFAULT = false`), the Dictionary page shows **Also find terms in my messages automatically** off with MSG-LEARN-FROM-CHATS-HELP, and the reason is recorded in [dictionary](dictionary.md#the-m-21-gate): the owner decided on 2026-11-10 that the run waits for the owner's own labels on candidate tokens from eligible chats (O-44). Steps 1 to 4 stay the procedure for a later run.
 
 On public text, a close variant of these candidate rules reached 74 % to 75 % precision at `seen ≥ 2`, and requiring a second sighting did not raise precision (it cut volume about six times) [M]. So the default most likely ships off unless the owner's own sessions do better [I].
 
@@ -381,9 +383,9 @@ None. The owner decided on 2026-11-05 that no microphone or dictation feature is
 
 | Test | Asserts | PR |
 |---|---|---|
-| audio block | an ACP prompt with `ContentBlock::Audio` yields MSG-ACP-NOTE in the turn and no audio reaches the agent; today the arm drops it silently [C `server.rs:428`] | PR-30 |
+| audio block | an ACP prompt with `ContentBlock::Audio` yields MSG-ACP-NOTE in the turn and no audio reaches the agent; in a prompt that also holds text the note is a text part in place of the clip, and a prompt that holds only audio is answered locally with the note and no model turn | PR-30 |
 | capabilities | `on_initialize` still advertises `audio(false)` [C `server.rs:755`] | PR-30 |
-| `/dictate` | at session start the server sends `AvailableCommandsUpdate` with a `/dictate` command; invoking it answers MSG-ACP-DICTATE and a provider double counts zero calls; when PR-30 has the Jupyter AI persona name itself at launch, a session it starts lists no `/dictate` (O-30) | PR-30 |
+| `/dictate` | after a new and a loaded session the server sends `AvailableCommandsUpdate` with a `/dictate` command; invoking it answers MSG-ACP-DICTATE and a provider double counts zero calls; a session the Jupyter AI persona starts (`BIOROUTER_ACP_CLIENT=jupyter-ai`) lists no `/dictate` (O-30, `client_hides_dictate`); the persona's own test, `integrations/jupyter-ai/tests/test_persona.py`, runs in no workflow | PR-30 |
 | `--ws` | a `--ws` agent loads no `dictionary`, and `--with-builtin dictionary` is refused there | PR-23, PR-30 |
 | stdio | ACP stdio offers the capability in suggest form only and runs no extractor; the tool answer appends MSG-TOOL-REVIEW-HINT | PR-23, PR-24 |
 
@@ -406,7 +408,7 @@ None. The owner decided on 2026-11-05 that no microphone or dictation feature is
 | notifications | carry counts only, never words (P-2) | PR-28 |
 | target | every request carries `target_kind: "external"`, so the daemon gives public scope unless the person chose **Include my private terms** (the tray item below **Dictate to clipboard**, or the preview button's context menu) and confirmed MSG-PRIVATE-TERMS for that recording; the global shortcut always records with public terms (P-5, O-8) | PR-28 |
 | who may start capture | no daemon route and no tool starts capture; only the tray, the person's shortcut or the preview button does (P-7) | PR-28 |
-| preview insert | **Dictate into this app** is absent while nothing in the preview is focused and present while an editable field is, starts with **Dictate into other apps** off (`WebPagePreview.dictation.test.tsx`), and is removed from PR-28 entirely if M-15 fails | PR-28 |
+| preview insert | **Dictate into this app** is absent while nothing in the preview is focused and present while an editable field is, starts with **Dictate into other apps** off (O-42; `WebPagePreview.dictation.test.tsx`), and is removed from PR-28 entirely if M-15 fails | PR-28 |
 | `anywhere.json` | only Electron main writes `<config>/dictation/anywhere.json`, and no `/config/upsert` key turns the global shortcut on, because the file is outside `config.yaml` (DD-88) | PR-28 |
 | CLI | the clipboard helper rows under [CLI capture and front ends](#cli-capture-and-front-ends) | PR-25 |
 
@@ -657,242 +659,21 @@ The split rule (ask for voice segments once 8 s are buffered; queue closed segme
 
 A red Tier 1 run on a default model's floor blocks `release.sh publish` through `require_dictation_accuracy`. A red result on anything else (a degraded copy, a per term table) is reported and blocks nothing. Tier 2's regression gate is checked by the maintainer before the draft is made. Its dated table goes into [speech model benchmarks](../research/voice-dictation/speech-model-benchmarks.md) and is not linked from the release notes, which carry no accuracy figure (DD-95).
 
-## The manual QA checklist per surface
+## The manual checklist
 
-PR-33 creates `docs/releases/dictation-test-checklist.md` and its row in the [releases index](../releases/README.md). It follows the shape of `docs/releases/privacy-and-workspace-test-checklist.md` [C]: every row says what to do, what should happen and what a failure looks like, because several of these fail by doing nothing visible. The "Voice dictation (Whisper)" line of the [CLI checklist](../cli/qa-checklist.md) calls dictation GUI only, which R8 contradicts [C]. PR-01 turns it into a pointer to a page that exists when PR-01 merges, this section of `docs/dictation/testing-and-release.md`, so the line never links a file that does not exist yet (`python3 scripts/docs-lint.py` reports such a link [C]); PR-33 points the line at the new checklist.
+The manual pass is [`docs/releases/dictation-test-checklist.md`](../releases/dictation-test-checklist.md), listed in the [releases index](../releases/README.md). It follows the shape of the [privacy and workspace test checklist](../releases/privacy-and-workspace-test-checklist.md): every row says what to do, what should happen, what a failure looks like and which CI job already holds its logic, because several of these fail by doing nothing visible. It holds only what a hosted runner cannot do: a real microphone, macOS permission prompts and denials, Safari, a person's terminal app and tmux, a real proxy, WSLg, GNOME and KDE Wayland clipboards, and a signed, notarized app on macOS 12. One section per surface, S1 to S20, each ends with a dated status line; S13's section states the owner's decision O-30 and holds no rows. Its measurement log records M-1 to M-22 with the date, the build, the machine, the result and who took it (O-29), and the latency measured while the pull requests were built, with each boundary kept apart.
 
-The checklist holds only what a hosted runner cannot do: a real microphone, macOS permission prompts and denials, Safari, a person's terminal app and tmux, a real proxy, WSLg, GNOME and KDE Wayland clipboards, and a signed, notarized app on macOS 12. A row that a CI job already covers names the job, so a reader knows the row checks the real device or account, not the logic.
+The rows moved there from this document on 2026-11-10, with three changes: S8.5 follows O-39 (AAC in M4A is read) and O-41 (Apple Lossless is refused, a default the owner has not confirmed); S15.2 and S15.3 follow O-42 (**Dictate into this app** is absent while nothing is focused, and works with **Dictate into other apps** off); S18.10 checks the review card's MSG-CLIPBOARD-FAILED. The checklist also holds the draft release notes for the first release that carries dictation.
 
-The file is laid out as follows:
+## Measurements
 
-1. The context header.
-2. **Before you start**: note the build (version, platform, architecture, signed, notarized); use an installed, signed build, never a dev build, except where a row says "dev app"; use a fresh OS account, or run `tccutil reset Microphone com.electron.biorouter`; configure two providers, one private (Llama Server, or a private Versa model) and one public; keep privacy tiers on; have a built in microphone and a Bluetooth headset; add `UCSF` and `EPAS1` as public entries and `EGLN1` from a private chat (so private); keep a short recording `memo.mp3` that says those terms (a phone's `memo.m4a` converts with `ffmpeg -i memo.m4a memo.mp3`; keep the M4A too, for S8.5).
-3. One section per surface, S1 to S20, each a table with the columns **#**, **Do this**, **Expect**, **Failure looks like** and **CI covers**; S13's section states the owner's decision O-30 and holds no rows.
-4. **Measurement log**: one row per M id with the date, the build, the machine, the result and who took it (O-29).
-
-The key rows of each section follow. Messages are quoted by id; their text is in [surfaces](surfaces.md).
-
-### S1 desktop app, macOS Apple Silicon
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S1.1 | On a fresh account, open a chat and click the microphone left of **Send**. | A muted microphone; the setup popover with MSG-SETUP, **Install**, **Not now**, **More in Settings**, and **Suggest dictionary words from my chats** ticked. Nothing downloads. | A download starts on the click; no microphone. | `DictationButton.test.tsx` |
-| S1.2 | In the packaged app, press **Install**; quit at about half; reopen and press **Install** again; then press **Show in Finder** in Settings. | Progress in the ring; the second install resumes; **Settings > Models > Speech models** shows `whisper-large-v3-turbo-q5_0` in use, the folder `~/.local/share/biorouter/dictation/models/` and the account; **Show in Finder** opens that folder; the Components group opens once and shows **Dictionary**; no toast. PR-18 ran the Settings half (install, quit, resume) in the dev app only, so this row is the packaged build's run of it. | The download restarts from zero; files elsewhere; Finder opens nothing; no **Dictionary** row. | installer tests, `dictationModelsFolder.test.ts` |
-| S1.3 | Click the microphone. | macOS asks with "Biorouter uses the microphone only while you dictate, and does not save the recording." | Electron's default text; no prompt and silence. | `forgeMacUsage.test.ts`, `cmd_verify` |
-| S1.4 | Allow, say "Ask SPOKE which drugs target EPAS1 at UCSF", click again; then press ⌘Z once. | The text appears at the caret with `EPAS1` and `UCSF` spelled as in the dictionary; nothing is sent; one ⌘Z removes exactly the dictated words. | Sent without Enter; inserted into another field; ⌘Z removes more or less. | Electron job, the dev app run |
-| S1.5 | Run `tccutil reset Microphone com.electron.biorouter`, relaunch, click, and choose Don't Allow. | MSG-MIC-DENIED-MAC; **Open settings** opens Privacy & Security > Microphone; after allowing and restarting, dictation works. Record the error name and the TCC log line (M-6). | A silent failure; a generic error; the wrong pane. | none |
-| S1.6 | Tap ⌘⇧D; hold it a second while speaking; press Escape during a recording; press Enter during a recording. | A tap toggles; a hold records while held; Escape discards; Enter stops and inserts and does not send. | Enter sends; Escape inserts. | `DictationButton.test.tsx` |
-| S1.7 | Record, then lock the screen. Record again and choose **Restart & update**. | The words land in the draft on lock; the update asks MSG-RESTART-BUSY. | Speech lost; a restart without asking. | none |
-| S1.8 | In a chat on the private provider, dictate "EGLN1", then switch the chat to the public model. In a chat on the public model, dictate "EGLN1". | MSG-PRIVATE-DRAFT-SWITCH, and **Switch anyway** proceeds (as built in PR-19, for an unsent chat on Home or a new tab; in a chat that exists, MSG-PRIVATE-DRAFT asks at the send). In the public chat the private entry never shapes the spelling. | No warning; a private entry shapes a public chat's dictation. | `ChatInput.dictation.test.tsx`, `ModelsBottomBar.privateDraft.test.tsx`, `bias.rs` |
-| S1.9 | On a macOS 12 virtual machine, launch the notarized build, install the Light model and dictate once; repeat on macOS 13. | The app starts and transcribes on Metal (M-4). | dyld refuses the app; the worker crashes. | `check-macos-deployment.sh` |
-| S1.10 | On a fresh account with the Components group collapsed, install a speech model (or put its files in the model folder and press **Rescan**); open **Dictionary**, add EPAS1 with **Add a term…**, and dictate a sentence with EPAS1 into a new chat. | The group opens once when the model is in use, with **Dictionary** after **Knowledge**; the term's row appears; the dictated text spells `EPAS1`, and the row then reads "1 use". Collapse the group and relaunch: it stays collapsed. | The group never opens, or opens at every launch; the term changes nothing. | `AppSidebar.test.tsx`, `DictionaryView.test.tsx`; recorded in the dev app on 2026-11-07 (PR-20) [M]: Rescan to "In use" 3.7 s, the row on screen 1 ms later; "… target E-PAS1." before the term, "… target EPAS1." after |
-| S1.11 | In a split with a public chat on the left (current) and a private chat on the right, right click a misspelled word, then a selected word, in the right pane's transcript; then do the same in a shared transcript. | The menu reads **Add to spelling dictionary** and **Add to Biorouter dictionary…**; the second opens the term dialog with the word and **Only in private chats** ticked in both places; the new row is private, with the right chat's institutions or MSG-ROW-PRIVATE-LOCAL for the shared transcript. | The old "Add to dictionary" label; the box unticked; a public row. | `contextMenu.test.ts`, `TermDialog.test.tsx` (not yet run by hand: PR-20's live check could not open Electron's native menu over CDP, and the background desktop control tool refuses right click menus, so this row needs a person or full screen control) |
-
-### S2 desktop app, macOS Intel
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S2.1 | On an Intel Mac with AVX2, fewer than 16 cores and no `bench` record, open the setup popover. | `whisper-small.en-q8_0` (264 MB) is the offered default; turbo is marked `too_slow`. | Turbo offered by default. | suitability tests |
-| S2.2 | In Settings press **Install** on turbo; after it installs, press **Use** and **Test speed**; remove turbo and press **Install** again. | Before the first install, MSG-TOO-SLOW-SETTINGS (no time exists yet; **Test speed** measures only the model in use); after the measurement, MSG-TURBO-CPU with the measured time when the factor is above 0.5, and no question when it is not (turbo is then rated by its record); **Install anyway** works each time. Record both models' real time factor at 4 and 8 threads (M-10). | Turbo installs without a warning. | `speechModelStore.test.ts` |
-| S2.3 | On Apple Silicon with macOS 15 or later, install the Intel build and dictate. | Dictation works under Rosetta. | Exit 20; a crash. | `smoke_mac` x64 |
-| S2.4 | On Apple Silicon with macOS 12 to 14 (any version before 15), open the Intel build's popover. | MSG-CPU-ROSETTA; no download offered. | A download, then a failure. | `src/cpu.rs` table |
-| S2.5 | On a processor without AVX2 (a 2013 Mac Pro, or a VM with a masked CPU model). | MSG-CPU, then MSG-CPU-DESKTOP, before any download. | A download, then a crash. | `check-dictation-isa.sh` |
-
-### S3 desktop app, Windows x64
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S3.1 | Install with `Biorouter-Setup-<ver>.exe` and install the model. | Files under `%LOCALAPPDATA%\UCSF\biorouter\data\dictation\models\`, the local data folder PR-06 adds (DD-19), not under `%APPDATA%\UCSF\biorouter\data\` (Roaming, where Biorouter's other data lives at `main` [C]) or `app-<version>`. | Files in Roaming or inside the app folder. | path agreement test |
-| S3.2 | Turn off "Let desktop apps access your microphone" and click. | MSG-MIC-DENIED-WIN; **Open settings** opens `ms-settings:privacy-microphone`. Record which `getMediaAccessStatus` value the switch produces on Windows 11 (`denied` or `restricted`). | Silence; a generic error. | `micErrors.test.ts` |
-| S3.3 | Let another app hold the microphone exclusively and click; later unplug a USB headset while recording. | MSG-MIC-BUSY; unplugging stops and inserts what was heard. | A hang; lost speech. | none |
-| S3.4 | Update through the installer; then run the zip build. | The model stays installed and in use in both. | The update removes the model. | none |
-| S3.5 | Use Ctrl+Shift+D; use the tray's **Dictate to clipboard** with the window minimized; then close the last window. | Both work while a window exists; MSG-WINDOW-OPEN under the switch; closing the last window quits. | The tray item does nothing while minimized. | `dictationAnywhere.test.ts` |
-| S3.6 | On an account whose name holds characters outside ASCII, install and dictate. | It works. | The model fails to load. | `windows-native-dictation` |
-
-### S4 desktop app, Linux deb and rpm
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S4.1 | Ubuntu 24.04 (PipeWire), Ubuntu 22.04 (PulseAudio), Fedora (rpm): install, install the model, dictate. | No OS prompt; text inserted. Record throughput on each (M-7). | Silence; dropped audio. | Electron job (macOS only) |
-| S4.2 | With no microphone; then with the microphone held by another app. | MSG-NO-DEVICE; MSG-MIC-BUSY. | A spinner that never ends. | `micErrors.test.ts` |
-| S4.3 | On GNOME Wayland open **Dictate into other apps**. | MSG-GNOME in place of the shortcut picker; the tray item works with the AppIndicator extension. | A shortcut that registers and never fires. | none |
-| S4.4 | As root run `biorouter dictation install --system`; remove the person's copy. | Status shows `location: system`; dictation works. | The system copy is not found. | lookup order tests |
-| S4.5 | Upgrade the package. | The model stays. | The upgrade removes it. | R6 guard |
-
-### S5 `biorouter serve`, browser on the same machine
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S5.1 | Start `biorouter serve` with no model. | The banner says "Dictation: no speech model; run `biorouter dictation install`". | No dictation line. | banner snapshots |
-| S5.2 | Open the URL in Chrome and install from Settings. | The text says the download goes to the server; MSG-DISCLOSE-HOST on first use; the model lands in the host account's folder; **Show in Finder** is absent. | "On this computer" wording; a Finder button. | `serve` job |
-| S5.3 | Dictate in Chrome, Firefox and Safari 27 at `http://127.0.0.1:8765`; deny once in each. | Text inserted; a denial shows MSG-MIC-BROWSER. Record Safari (M-8). | Safari never asks. | `serve` job (Chromium, Firefox) |
-| S5.4 | On **Dictionary**, open the menu of a private row; then open **Add** on a host whose operator's provider is public. | **Make public…** is disabled with MSG-DICTIONARY-HOST-TIER; **Only in private chats** is disabled with MSG-DICTIONARY-HOST-PRIVATE; raising **Agent's terms** is disabled with MSG-DICTIONARY-HOST-SETTINGS. | The click fails after the fact. | vitest |
-| S5.5 | Restart with `biorouter serve --no-dictation-install`. | Install refused with MSG-INSTALL-LOCKED; an installed model still works. | Install proceeds. | `dictation_no_user_key.rs` |
-| S5.6 | Press ⌘⇧D in the served composer in each browser. | Record whether the page receives the chord and which tap durations register (M-18). | n/a | none |
-
-### S6 `serve` behind an HTTPS reverse proxy or a JupyterHub prefix
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S6.1 | Behind nginx over HTTPS with HTTP/2 at `/user/<name>/biorouter/`, dictate. | MSG-SHARED-ORIGIN once before the first recording; the worklet loads; text inserted. | The microphone fails on the first click everywhere. | `serve` job (nginx prefix) |
-| S6.2 | Set `client_max_body_size 32k`, dictate; then set it to `128k`. | At 32k, MSG-413; at 128k, dictation works with smaller chunks. | A silent failure. | `serve` job (413 halving) |
-| S6.3 | Repeat S6.1 behind `configurable-http-proxy` and `jupyter-server-proxy`. | Record each proxy's result and the setting that keeps request bodies off its disk (M-17). | n/a | none |
-| S6.4 | Have four people dictate at once on one host. | All finish; MSG-SERVER-BUSY under load, then a retry; MSG-SERVER-MEMORY when memory is short. | A stream that never finishes. | `dictation_routes.rs` |
-| S6.5 | Two `serve` tabs in one browser while a reply streams, then dictate in the second. | Record PUT timings; MSG-WAIT appears if a PUT is held (M-5). | n/a | transport tests |
-| S6.6 | On an iPhone in Safari and an Android phone in Chrome, open the HTTPS `serve` address; dictate once, then deny once. | Text inserted; the denial shows MSG-MIC-BROWSER (M-8). | No prompt; a dead microphone. | none |
-
-### S7 `serve` at a plain HTTP network address
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S7.1 | Start `biorouter serve --host 0.0.0.0` and open `http://<LAN address>:8765`. | The existing refusal text, unchanged; the banner prints MSG-SERVE-TUNNEL, not a plain HTTP LAN URL. | A composer with a dead microphone; a LAN URL in the banner. | banner snapshots |
-| S7.2 | Run `ssh -N -L 8765:127.0.0.1:8765 <host>` and open the address `serve` printed, with its `?t=` part. | Dictation works as in S5. | n/a | none |
-| S7.3 | Behind a proxy that rewrites `Host` and serves plain HTTP. | The composer shows MSG-INSECURE and the microphone is unavailable. | A microphone that fails on click. | `dictationStore.test.ts` |
-
-### S8 CLI only Linux deb and rpm on a server
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S8.1 | On a server whose systemd unit runs as `biorouter`, run `sudo -u biorouter -H biorouter dictation install`. | `dictation status` shows account `biorouter` and `~biorouter/.local/share/biorouter/dictation/models/`. | The model installs under root. | package smoke |
-| S8.2 | Run `biorouter dictation install` as another user. | MSG-OTHER-ACCOUNT. | A model the service never sees. | none |
-| S8.3 | Run `sudo biorouter dictation install --system`. | `/var/lib/biorouter/dictation/models/`, folders 0755 and files 0644; the service finds it. | Files readable only by root. | none |
-| S8.4 | Run `biorouter dictate` on the server over SSH, then at its local console. | Over SSH: MSG-LINUX-NOAUDIO, then MSG-SSH-SERVICE when the `biorouter serve` service runs (MSG-SSH-ROUTES otherwise); at the console: MSG-LINUX-NOAUDIO, then MSG-LINUX-ROUTES; exit 2 and no device opened in both. | ALSA noise on the terminal; a recording of silence. | environment tests |
-| S8.5 | Run `biorouter transcribe memo.mp3`, then `biorouter transcribe memo.m4a`. | The text on stdout; then exit 1 with MSG-TRANSCRIBE-UNSUPPORTED and its `ffmpeg` line (DD-78 left M4A out). | n/a | `dictation_cli.rs` |
-| S8.6 | On a VM with a masked CPU model. | MSG-CPU-SERVER, then MSG-CPU-VM. Run the census command on lab hosts (M-11). | A crash with code 132. | `check-dictation-isa.sh` |
-
-### S9 interactive CLI on a local machine
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S9.1 | In the TUI press Ctrl+T, speak, press Enter. | `◌ Starting microphone…`, then `● REC` with the timer and level bars, then `◌ Transcribing`; the text at the cursor; not sent. | A literal `t` typed; the text sent. | `draw_input` snapshots |
-| S9.2 | Repeat in the classic REPL, the shared daemon prompt, and `biorouter session attach` with `/dictate`. | The REPL dictates instead of transposing; `attach` asks `Send? [y/N]` and defaults to No. | A transposition; an automatic send. | pseudo terminal test |
-| S9.3 | On macOS try Terminal, iTerm2, Ghostty, VS Code's terminal and tmux; deny in one. | The prompt names the terminal app; a denial shows MSG-TCC-ZERO naming it. Record tmux attribution. | Silence with no message. | controller tests |
-| S9.4 | On Windows try Windows Terminal and conhost with the privacy switch off. | MSG-WIN-ZERO. | Silence. | controller tests |
-| S9.5 | Run `biorouter dictation test --seconds 10` on macOS, Windows 11, Ubuntu 24.04 (PipeWire) and 22.04 (PulseAudio). | Frames within 2 % of wall time; the first frame in under 300 ms (M-7). | Dropped frames; a long start. | none |
-| S9.6 | Press Ctrl+C during a recording while a reply streams. | Only the dictation is cancelled. | The reply is cancelled. | `App` unit tests |
-| S9.7 | On macOS, dictate from a terminal app whose `Info.plist` lacks `NSMicrophoneUsageDescription`. | No prompt ever appears; MSG-TCC-ZERO with its sentence for a terminal that never asks. | Silence with no message. | controller tests |
-| S9.8 | Dictate with Ctrl+T in the desktop app's terminal dock. | It records; record which app the TCC prompt names. | n/a | none |
-
-### S10 CLI over SSH or in a container with no microphone
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S10.1 | `ssh <Linux host>`, then `biorouter dictate`, with and without a model installed there. | MSG-SSH-ROUTES (MSG-SSH-SERVICE when a `biorouter serve` runs there); exit 2; no device opened; no install prompt when no model is installed. | A recording of silence; an offer to download a model. | environment tests |
-| S10.2 | `ssh <Mac>`, then `biorouter dictate`. | MSG-SSH-MAC, then the routes. | A TCC prompt on the remote screen. | environment tests |
-| S10.3 | `docker run -it <image> dictate`. | MSG-CONTAINER. | ALSA noise. | package smoke |
-| S10.4 | Follow the tunnel route, opening the address `serve` printed with its `?t=` part; then run `biorouter dictionary export - \| ssh <host> biorouter dictionary import -`. | The laptop's browser dictates with the host's model and dictionary; the terms appear on the host. | n/a | CLI import tests |
-| S10.5 | Run `biorouter serve` in a VS Code Remote SSH terminal and in Cursor. | Record whether each forwards the port and opens a working address. | n/a | none |
-
-### S11 noninteractive CLI
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S11.1 | `biorouter transcribe memo.mp3 --format json`. | Schema 1 with `bias_scope: "public"`. | A count of entries in the output. | `dictation_cli.rs` |
-| S11.2 | `biorouter run -t "$(biorouter dictate)"`. | The dictated text is shown for review before `run` starts. | `run` starts with unreviewed text. | review test |
-| S11.3 | Ask the agent in a chat to run `biorouter dictate` in its shell. | MSG-AGENT-SHELL; exit 2. | A microphone opens. | `capture_consent_is_minted_in_one_file` |
-| S11.4 | Run `biorouter dictate < /dev/null` from a script. | MSG-NO-TTY; exit 2. | A recording starts. | environment tests |
-| S11.5 | `biorouter dictate \| biorouter crew send <channel> --input -`. | Reviewed on the terminal before anything is posted. | A post without review. | review test |
-| S11.6 | `biorouter crew ask <channel> "$(biorouter dictate)"`. | Reviewed on the terminal before the task starts. | A task starts with unreviewed text. | review test |
-
-### S12 ACP clients
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S12.1 | In Zed and in a JetBrains IDE (stdio), look at the agent chat. | No microphone and no dead control. | n/a | `on_initialize` test |
-| S12.2 | Send an audio block from any client that can. | MSG-ACP-NOTE in the turn. | The clip vanishes silently. | ACP audio test |
-| S12.3 | Use the tray's **Dictate to clipboard** (or `biorouter dictate --copy`) and paste into the editor. | The text pastes, with public terms unless the person chose **Include my private terms** (or `--private-terms`) and confirmed MSG-PRIVATE-TERMS. | Private terms without the confirmation. | `bias.rs` |
-| S12.4 | Ask the agent to add a dictionary term. | A suggestion, and the answer names `biorouter dictionary review`. | An active row. | capability tests |
-| S12.5 | Connect a `--ws` client. | No dictionary tools offered. | Tools offered. | ACP `--ws` test |
-| S12.6 | In Zed, open the agent's command list and run `/dictate`. | `/dictate` is listed and answers MSG-ACP-DICTATE without calling the provider. | No command; a model turn. | ACP `/dictate` test |
-| S12.7 | In JupyterLab, open Jupyter AI's chat with the Biorouter persona and its command list. | No `/dictate` and no dictation control (O-30). | `/dictate` listed. | the ACP persona test, when PR-30 names the persona; otherwise none |
-
-### S13 Jupyter AI persona chat
-
-Not offered, decided by the owner on 2026-11-05 (O-30): Biorouter builds no microphone or dictation feature for Jupyter and adds no control to Jupyter AI's chat. This section of the checklist states the ruling and holds no rows; DD-94 counts it as passed by that ruling.
-
-### S14 Crew
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S14.1 | In a channel composer, hover the microphone. | MSG-CREW-TIP. | No tooltip. | `check-crew-manual.mjs` |
-| S14.2 | Dictate "@agent summarize the thread". | The text in the box; nothing posted and no agent started until Enter. | An agent run starts. | Crew composer tests |
-| S14.3 | Dictate "EGLN1" in the box; then choose **Include my private terms** from the microphone's context menu, choose **Include** in MSG-PRIVATE-TERMS, and dictate it again. | The first time the private entry never shapes the spelling; the second time it may, for that recording only. | Private terms without the confirmation; the choice remembered. | `bias.rs`, Crew composer tests |
-| S14.4 | Use the **Ask my agent** box. | As S14.2. | As S14.2. | Crew composer tests |
-| S14.5 | Open Crew in a `serve` browser. | "Crew needs the Biorouter desktop app". | A dead microphone. | none |
-
-### S15 Agent Drafter apps
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S15.1 | Open a built app's page in a `serve` browser and call `getUserMedia` from its console in Chrome, Firefox and Safari. | Chrome refuses; record Firefox and Safari, the documented residual. | Chrome grants it. | `serve` job (Chromium) |
-| S15.2 | In the desktop preview, with **Dictate into other apps** off, click into an app's text field, then press **Dictate into this app**; repeat with the switch on. | The text lands in the field both times (M-15); if M-15 failed, the button is absent. | Text in the wrong place; nothing happens while the switch is off. | `dictationAnywhere.test.ts` (the switch only) |
-| S15.3 | Click outside every text field in the app. | **Dictate into this app** leaves the toolbar until a field has focus again; MSG-APPS is in the SDK reference (MSG-APPS-NO-PREVIEW if M-15 failed). | A disabled button, or one that does nothing. | `WebPagePreview.dictation.test.tsx` |
-| S15.4 | Open an exported app in a browser; use **Dictate to clipboard** and paste. | The text pastes. | n/a | none |
-
-### S16 Docker image
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S16.1 | Run the documented `docker run -p 127.0.0.1:8765:8765 …` command, open `http://127.0.0.1:8765/?t=<token>` as MSG-SERVE-CONTAINER in the banner says, install from Settings and dictate. | The model lands in the data volume; dictation works (M-16). | An insecure context; the model inside the container layer. | Docker workflow |
-| S16.2 | Recreate the container with the same volume. | The model is still installed. | A second download. | none |
-| S16.3 | Mount a model folder read only at `/var/lib/biorouter/dictation/models`. | Found as `location: system`. | Not found. | lookup order tests |
-| S16.4 | `docker run … <image> transcribe /data/memo.wav`. | The text. | n/a | Docker workflow |
-
-### S17 desktop app against an external backend
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S17.1 | In Settings > App > **Use external server**, point at a LAN `biorouterd` behind nginx over HTTPS with its **User Action Key**; dictate in a private chat. | MSG-DISCLOSE-REMOTE; dictation works with private terms. Record latency and upload timings (M-20). | "On this computer" wording. | external backend tests |
-| S17.2 | Remove the key. | MSG-REMOTE-NO-KEY; dictation goes on with public terms only (O-17); install disabled before the click. | Install fails after the click. | external backend tests |
-| S17.3 | Point at a plain `http:` backend. | MSG-REMOTE-HTTP once per URL; **Continue** proceeds. | A refusal; a warning every time. | external backend tests |
-| S17.4 | Stage a laptop managed policy with `dictation.capture: false`. | No microphone in any composer; the **Dictate into other apps** switch is disabled; Settings shows MSG-POLICY-CAPTURE; a page that calls `getUserMedia` gets `NotAllowedError`. | The backend's policy decides instead. | policy path test |
-| S17.5 | Point at a `biorouterd` older than local dictation. | MSG-REMOTE-OLD on the microphone and the **Dictionary** page; their controls disabled. | A dead microphone; a raw 404. | external backend tests |
-
-### S18 other applications (Dictate to clipboard)
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S18.1 | Turn on **Dictate into other apps**. | MSG-CLIPBOARD-EXPLAIN once; on macOS the microphone prompt. | No explanation. | `dictationAnywhere.test.ts` |
-| S18.2 | From the tray choose **Dictate to clipboard**, speak, choose **Stop and copy**, paste into TextEdit, Word or Notepad. | MSG-CLIPBOARD-COPIED; the text pastes; the notification shows counts only. | Words in the notification. | `dictationAnywhere.test.ts` |
-| S18.3 | Record silence. | MSG-CLIPBOARD-NOTHING; the clipboard is unchanged. | The clipboard is overwritten. | `dictationAnywhere.test.ts` |
-| S18.4 | Choose a shortcut another app holds. | MSG-SHORTCUT-TAKEN. | A shortcut that never fires. | `dictationAnywhere.test.ts` |
-| S18.5 | On native Windows with the cloud clipboard on, run `biorouter dictate --copy`. | The text does not reach another device. | It syncs. | clipboard helper tests |
-| S18.6 | With the packaged deb on Ubuntu 26.04 GNOME, Fedora and KDE Plasma 6 (X11 and Wayland), and on a Windows 11 laptop. | Record hidden window capture with a real microphone, clipboard focus and the KDE portal shortcut (M-12). | n/a | none |
-| S18.7 | `biorouter dictate --copy` over SSH with no display; then on a Linux desktop. | MSG-NO-CLIPBOARD and exit 5; MSG-CLIPBOARD-WAIT and a paste within 60 s works. | The text is lost when the CLI exits. | clipboard helper tests |
-| S18.8 | Turn off **Show in menu bar** in Settings > App, then open **Dictate into other apps**. | MSG-NO-TRAY; a shortcut is required. | A switch that starts nothing. | `dictationAnywhere.test.ts` |
-| S18.9 | On native Windows with the cloud clipboard on, use the tray's **Dictate to clipboard**. | MSG-CLIPBOARD-EXPLAIN was shown when the switch was turned on, and syncing to another device is expected: the desktop form cannot set the exclusion in Electron 39. | The switch turned on without MSG-CLIPBOARD-EXPLAIN. | `dictationAnywhere.test.ts` |
-
-### S19 WSL
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S19.1 | In WSL2 with WSLg and `libpulse0`, run `biorouter dictate`. | It records and transcribes. | Silence. | environment tests |
-| S19.2 | Remove `libpulse0`; run it again. | MSG-WSL2-NOPULSE. | A generic error. | environment tests |
-| S19.3 | In WSL1. | MSG-WSL1. | A hang. | environment tests |
-| S19.4 | `biorouter dictation install --from /mnt/c/Users/<you>/Downloads/`. | It installs by hash. | A second download. | `--from` tests |
-| S19.5 | `biorouter dictate --copy`, then paste in a Windows app. | The text pastes through `Set-Clipboard`. | n/a | clipboard helper tests |
-| S19.6 | Run `biorouter serve` in WSL and open the address it prints, with its `?t=` part, in a Windows browser (`localhost` in place of `127.0.0.1` works too). | Dictation works as in S5. | n/a | none |
-| S19.7 | In WSL2 with `guiApplications=false` in `.wslconfig`, run `biorouter dictate`. | MSG-WSL2-NOWSLG; exit 2. | A generic error. | environment tests |
-
-### S20 air gapped or offline hosts
-
-| # | Do this | Expect | Failure looks like | CI covers |
-|---|---|---|---|---|
-| S20.1 | With the network off, run `biorouter dictation install`. | MSG-OFFLINE. | A hang. | installer tests |
-| S20.2 | On a connected machine run `biorouter dictation urls`, download the files, carry them over and run `biorouter dictation install --from <dir>`. | Installed by hash, renamed files included; a wrong file gives MSG-HASH. | A renamed file refused. | `--from` tests |
-| S20.3 | On the desktop, copy the files into the model folder (**Show in Finder**) and press **Rescan**. | The model is listed as installed. | n/a | rescan route test |
-| S20.4 | Stage managed `model_downloads: false` with a `models_dir`. | Only that folder is used; nothing is offered for download. | A download starts. | `dictation_policy_routes.rs` |
-| S20.5 | Dictate with the network off while watching outgoing connections. | It works and nothing connects out. | Any connection attempt. | none |
-
-## Measurements still to take
-
-Each measurement is recorded with its date in the pull request that takes it, and copied into the checklist's measurement log by PR-33. Announcing v1 needs M-1 to M-8, M-10, M-12, M-15 to M-20 and M-22 (DD-94, O-29): M-1 to M-8, M-10, M-19 and M-22 by name, and the others because checklist rows S5.6, S6.3, S15.2, S16.1, S17.1 and S18.6 record them and every section must pass. M-11, M-14 and M-21 feed later decisions; M-9 and M-13 are withdrawn by the owner's decisions O-23 and O-30 (2026-11-05).
+Each measurement is defined here: what it is, how to take it, the earliest point it can be taken and what it blocks. Its results are dated in the checklist's [measurement log](../releases/dictation-test-checklist.md#measurement-log), where PR-33 copied the results the pull requests recorded; the results that used to sit in the rows below are there. Announcing v1 needs M-1 to M-8, M-10, M-12, M-15 to M-20 and M-22 (DD-94, O-29): M-1 to M-8, M-10, M-19 and M-22 by name, and the others because checklist rows S5.6, S6.3, S15.2, S16.1, S17.1 and S18.6 record them and every section must pass. M-11, M-14 and M-21 feed later decisions; M-9 and M-13 are withdrawn by the owner's decisions O-23 and O-30 (2026-11-05).
 
 | Id | Measurement | How | Earliest | Blocks |
 |---|---|---|---|---|
-| M-1 | Native Windows run of the static mingw worker | nightly `windows-native-dictation`, the package self test, a real model JFK run under a path outside ASCII. Recorded 2026-11-06: the dispatched `rust.yml` run 42280907734 at `78d5ca159` (PR-09 to PR-13) was green on every job, the native self test, `status --verbose`, and the `whisper-small.en-q8_0` install and JFK `transcribe` under `RUNNER_TEMP\dictation-José-m1` included; PR-09's own acceptance run was 42185126727, green after one rerun of an unrelated flake | the first nightly after PR-09 | announcing v1 |
+| M-1 | Native Windows run of the static mingw worker | nightly `windows-native-dictation`, the package self test, a real model JFK run under a path outside ASCII. Result dated 2026-11-06 in the [measurement log](../releases/dictation-test-checklist.md#measurement-log) | the first nightly after PR-09 | announcing v1 |
 | M-2 | Real x86 Linux (not Rosetta or qemu) | the self test and the JFK run in the `cross-build-nightly` bullseye container on a hosted amd64 runner; a real model run on a lab server | the first nightly after PR-09 | announcing v1 |
-| M-3 | The engine under MSVC (`/MD`) | the Windows `test` leg in PR-09. Decided in PR-09: the leg builds the engine (`MSVC_NATIVE = true` in `crates/biorouter-dictation/build.rs`), as `CLAUDE.md` records, and the runs named under M-1 were green with it | PR-09 | PR-09 merge (or the `no_engine` stub) |
+| M-3 | The engine under MSVC (`/MD`) | the Windows `test` leg in PR-09. Decided in PR-09 (`MSVC_NATIVE = true`, as `CLAUDE.md` records); the dated result is in the [measurement log](../releases/dictation-test-checklist.md#measurement-log) | PR-09 | PR-09 merge (or the `no_engine` stub) |
 | M-4 | A signed, notarized, engine linked app on macOS 12 and 13; Metal under the hardened runtime with the pinned entitlements; a first transcription | `release.sh mac-arm64`, a macOS 12 VM, checklist row S1.9. A follow up measurement found that Metal transcribed under the hardened runtime with `osx-sign`'s default entitlements, with none and with an empty set, cold shader compile included, on ad hoc signed copies [M]; the notarized app on macOS 12 and 13 is the unmeasured part | after PR-09 | the first app release that carries PR-09 |
 | M-5 | Connection pool: two windows and two `serve` tabs while a turn streams; then behind HTTP/2 nginx | real app, real provider, DevTools PUT timings; rows S6.5 and a desktop twin | after PR-19 and PR-21 | announcing v1 |
 | M-6 | The TCC denial's error name and message on a signed app | fresh user or VM, `tccutil reset`, `log stream --predicate 'subsystem == "com.apple.TCC"'`; row S1.5 | after PR-19 | announcing v1 |
@@ -905,13 +686,13 @@ Each measurement is recorded with its date in the pull request that takes it, an
 | M-13 | Withdrawn by the owner's decision O-30 (2026-11-05). It measured audio decoding for a Jupyter AI microphone, which is not built | none | none | nothing |
 | M-14 | `available_parallelism()` under a cgroup v2 quota; worker memory; four concurrent streams | a KubeSpawner pod; `bench` on a server; row S6.4 | after PR-15 | several decoder states in a later release |
 | M-15 | `webContents.insertText` into the focused field of an app preview `WebContentsView` after the main renderer took focus | the dev app with a built example app; row S15.2 | PR-28 | shipping **Dictate into this app** |
-| M-16 | Docker `serve` end to end | PR-31 acceptance; row S16.1 | PR-31 | the Docker documentation |
+| M-16 | Docker `serve` end to end, on the native image and on amd64 as separate proofs | PR-31 acceptance; row S16.1; the amd64 run through `docker-image.yml`, which can be dispatched only once it is on `main` | PR-31 | the Docker documentation |
 | M-17 | Proxies other than nginx (`configurable-http-proxy`, `jupyter-server-proxy`, `ingress-nginx`, Caddy, Traefik), and each one's setting that keeps request bodies off disk (P-1) | containers running the upload ladder of 64 KiB to 2 MiB; row S6.3 | after PR-21 | the proxy section of [browser access](../deployment/browser-access.md) |
 | M-18 | Whether browsers let a page prevent ⌘⇧D; tap durations on the chord | row S5.6 | after PR-21 | the tooltip on `serve`; the 500 ms threshold |
-| M-19 | Long dictation: 60 to 180 s of continuous real speech through the real streaming path; boundary word loss and Stop to text time on Metal and on an x86 CPU | `long_dictation_replays_in_real_time` with continuous PriMock57 doctor channels; that test is not built yet. PR-15 measured synthetic clips end to end only (60 s, 10 minutes and a live 120 s; the forced 25 s cuts left the text length unchanged), so boundary loss on real conversation is still open | after PR-15 | announcing v1 |
+| M-19 | Long dictation: 60 to 180 s of continuous real speech through the real streaming path; boundary word loss and Stop to text time on Metal and on an x86 CPU | `long_dictation_replays_in_real_time` with continuous PriMock57 doctor channels; that test is not built yet. PR-15's synthetic result, and what is still open, are in the [measurement log](../releases/dictation-test-checklist.md#measurement-log) | after PR-15 | announcing v1 |
 | M-20 | External backend: latency and uploads to a LAN `biorouterd` behind nginx | row S17.1 | PR-29 | announcing S17 |
-| M-21 | Extractor precision over the person written messages of 200 of the owner's sessions, offline and local | the procedure under [The capability and the extractor](#the-capability-and-the-extractor) | PR-24 | the default of `learn_from_chats` (on only at 0.8 or more at `seen ≥ 2`) |
-| M-22 | The DD-44 channel decision on public real speech and synthetic speech: no dictionary, token prompt, decoder bonus, both, and each with correction, on turbo and small.en; `temperature_inc` 0 against 0.2; timestamps on and off for small.en. Gene symbols on real speech are not measured: no licensed public recording of real speech with gene symbols exists, and the owner ruled out lab recordings (O-23) and MultiMed (O-38) | the maintainer runs an `#[ignore]` arms test in `crates/biorouter/tests/dictation_accuracy.rs` over the PriMock57 subset and a subset of the Fareez et al. 2022 interviews (CC0) that `scripts/dictation/fetch-fareez-subset.sh` builds on the maintainer's machine (PR-14), plus the synthetic dictation set, the synthetic nonspeech clips, the 75 synthetic probe clips and reversed speech; the rules in [The M-22 decision and its fallback](#the-m-22-decision-and-its-fallback-dd-44). Recorded 2026-11-06: the declared fallback ships, the token prompt alone, and `temperature_inc` 0.2 and timestamps on stay ([speech model benchmarks](../research/voice-dictation/speech-model-benchmarks.md#the-m-22-channel-decision-2026-11-06)) | after PR-14 | the DD-44 default; announcing v1 |
+| M-21 | Extractor precision over the person written messages of 200 of the owner's sessions, offline and local | the procedure under [The capability and the extractor](#the-capability-and-the-extractor), with candidate tokens labelled by the owner alone (O-44) | when the owner has labelled candidate tokens from eligible chats; not run before PR-24, which shipped the setting off (O-44) | the default of `learn_from_chats` (on only at 0.8 or more at `seen ≥ 2`); not an announcement gate |
+| M-22 | The DD-44 channel decision on public real speech and synthetic speech: no dictionary, token prompt, decoder bonus, both, and each with correction, on turbo and small.en; `temperature_inc` 0 against 0.2; timestamps on and off for small.en. Gene symbols on real speech are not measured: no licensed public recording of real speech with gene symbols exists, and the owner ruled out lab recordings (O-23) and MultiMed (O-38) | the maintainer runs an `#[ignore]` arms test in `crates/biorouter/tests/dictation_accuracy.rs` over the PriMock57 subset and a subset of the Fareez et al. 2022 interviews (CC0) that `scripts/dictation/fetch-fareez-subset.sh` builds on the maintainer's machine (PR-14), plus the synthetic dictation set, the synthetic nonspeech clips, the 75 synthetic probe clips and reversed speech; the rules in [The M-22 decision and its fallback](#the-m-22-decision-and-its-fallback-dd-44). The decision of 2026-11-06 is in the [measurement log](../releases/dictation-test-checklist.md#measurement-log), and its tables in [speech model benchmarks](../research/voice-dictation/speech-model-benchmarks.md#the-m-22-channel-decision-2026-11-06) | after PR-14 | the DD-44 default; announcing v1 |
 
 ## Release sequence and announcement
 
@@ -919,7 +700,7 @@ Each measurement is recorded with its date in the pull request that takes it, an
 
 An app release may carry any prefix of PR-01 to PR-33; PR-07 and PR-32 are withdrawn and never land. Nothing hides behind a release flag (DD-94), so what a release carries works, and its notes say so plainly without calling dictation finished. Releases keep exactly 11 assets; speech models never ship with an app release.
 
-Release notes items, by the first release that carries each pull request:
+No release had carried a dictation pull request by 2026-11-10: every one landed on `feat/local-dictation`, so the first release that carries any of them carries all of them, with the notes drafted in the [checklist](../releases/dictation-test-checklist.md#release-notes-draft). The table below is what those notes had to say, by pull request; the draft covers every row.
 
 | First release carrying | The notes say |
 |---|---|
@@ -928,7 +709,7 @@ Release notes items, by the first release that carries each pull request:
 | PR-04 | the macOS microphone prompt names Biorouter's purpose |
 | PR-09 | the measured growth of each binary; processors without AVX2, FMA, F16C and BMI2 cannot run local dictation, and Biorouter says so instead of crashing |
 | PR-10 | `biorouter dictation status` and the **Dictation** section of `biorouter doctor` |
-| PR-11 | speech models are optional and never downloaded on install or update; they come from `BaranziniLab/biorouter-models`, are checked against SHA-256 pins compiled into Biorouter, and install into Biorouter's own data folder; the `NOTICE` additions (whisper.cpp, miniaudio, speech models downloaded on request) |
+| PR-11 | speech models are optional and never downloaded on install or update; they come from `BaranziniLab/biorouter-models`, are checked against SHA-256 pins compiled into Biorouter, and install into Biorouter's own data folder; the `NOTICE` additions (whisper.cpp, miniaudio, speech models downloaded on request, and the English Speller Database word list that PR-14 added) |
 | PR-12 | `biorouter transcribe` turns audio files into text on this computer |
 | PR-13, PR-14 | the personal dictionary in the terminal, and its effect on `transcribe` |
 | PR-19, PR-20 | the microphone beside **Send** and the **Dictionary** page in the desktop app |
@@ -945,7 +726,7 @@ Version 1 is announced only when all of these hold (DD-94):
 3. A-1's releases pass `gh release verify-asset`, and `dictation-model-pins.yml` is green.
 4. Every section S1 to S20 of `docs/releases/dictation-test-checklist.md` other than S13 passes on its surface with a signed build of the release being announced; S13's section states the owner's decision O-30.
 
-PR-33 then updates the six documents of `docs/dictation/` from plan to record of what shipped, adds the checklist and its row in the [releases index](../releases/README.md), the rows in `docs/README.md` and `docs/organization.md`, the "What shipped" bullets in [privacy tiers](../security/privacy-tiers.md) (including the ACP harvesting residual), the affiliation of private dictionary rows in [institutional affiliation](../security/institutional-affiliation.md) (P-16), [data privacy and PHI](../security/data-privacy-and-phi.md), the [CLI README](../cli/README.md), [common problems and fixes](../troubleshooting/common-problems-and-fixes.md) (microphone permission on each OS, WSLg), a "Local dictation" block in `CLAUDE.md` (the worker marker, the build traps, the `?no-inline` trap, the fake permission switch trap, the minimum OS guard, the dictionary tier rule, where tests run, and the correction of the `/agent/call_tool` line), and `landing/docs.html`. Its acceptance is `scripts/verify-docs.sh`, `python3 scripts/docs-lint.py` and the retired name guard.
+On 2026-11-10 none of the four holds yet: condition 1 waits for the branch to merge, and conditions 2 to 4 for the checklist and its log. PR-33 updated the six documents of `docs/dictation/` from plan to record, and added the checklist and its row in the [releases index](../releases/README.md), the rows in `docs/README.md` and `docs/organization.md`, the "What shipped" bullets in [privacy tiers](../security/privacy-tiers.md) (including the ACP harvesting residual), the affiliation of private dictionary rows in [institutional affiliation](../security/institutional-affiliation.md) (P-16), [data privacy and PHI](../security/data-privacy-and-phi.md), the [CLI README](../cli/README.md), [common problems and fixes](../troubleshooting/common-problems-and-fixes.md) (microphone permission on each OS, WSLg), a "Local dictation" block in `CLAUDE.md` (the worker marker, the build traps, the `?no-inline` trap, the fake permission switch trap, the minimum OS guard, the dictionary tier rule, where tests run, and the correction of the `/agent/call_tool` line), and the website's Dictation sections (`docs/website/pages/app.html` and `cli.html`, assembled into `landing/docs.html`). Its acceptance is `scripts/verify-docs.sh`, `python3 scripts/docs-lint.py` and the retired name guard.
 
 The announcement says what dictation does and where it runs on each surface, that models are opt in with their sizes and folders, how private dictionary terms are kept out of public chats (as accident prevention for cooperative actors, never as security), and what waits for a later release, as listed in [surfaces](surfaces.md#what-waits-for-a-later-release): ACP audio blocks, `br.dictate()` in app pages, hold to talk in the terminal, a GNOME Wayland global shortcut, push to talk and synthetic paste for **Dictate to clipboard**, and an off machine engine. It carries no accuracy figure (DD-95).
 
@@ -969,7 +750,8 @@ The announcement says what dictation does and where it runs on each surface, tha
 - [Surfaces](surfaces.md): the behavior and the exact message text that each checklist section expects.
 - [Speech model benchmarks](../research/voice-dictation/speech-model-benchmarks.md): the measurements behind the floors, and where Tier 2's dated tables go.
 - [Releases](../releases/README.md): the release folder where the dictation checklist joins the existing checklists.
-- [CLI QA checklist](../cli/qa-checklist.md): the terminal checklist whose dictation line PR-01 points at this document and PR-33 at the new checklist.
+- [Dictation test checklist](../releases/dictation-test-checklist.md): the manual pass per surface, the dated measurement log and the draft release notes.
+- [CLI QA checklist](../cli/qa-checklist.md): the terminal checklist whose dictation line points at the dictation test checklist.
 - [Launching the dev GUI](../desktop-ui/launching-the-dev-gui.md): how to start the dev app from a shell for the Playwright runs, such as the one undo step check.
 - [Browser access](../deployment/browser-access.md): the `serve` deployment that the S5 to S7 rows and the proxy measurements exercise.
 - [Privacy tiers](../security/privacy-tiers.md): the tier rules that the privacy test suite holds, and where the shipped behavior is recorded.

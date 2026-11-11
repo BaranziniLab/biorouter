@@ -1,10 +1,10 @@
 # Dictation engine and models
 
 > **What this is.** The detailed design of the engine half of local dictation: the vendored whisper.cpp engine and the worker process that runs it, the native build and its platform floors, CPU and GPU backends, the speech model catalog, hosting the models in `BaranziniLab/biorouter-models`, installing and removing them on every OS and deployment, the administrator's switch, the daemon's `/dictation/*` routes, and the removal of the inherited cloud dictation.
-> **Status:** Current: the plan being built on branch `feat/local-dictation`, pull request by pull request in the order of the delivery plan
-> **Audience:** developers who build PR-01, PR-02, PR-05, PR-06, PR-08 to PR-12 and PR-15, the reviewers of those pull requests, and the owner, whose decisions O-1, O-2, O-17, O-35, O-37 and O-38 of 2026-11-05 and the plan's defaults O-11 to O-13 and O-25 to O-27 this document follows, and who performs A-1.
+> **Status:** Current: the record of local dictation as it was built on branch `feat/local-dictation`, PR-01 to PR-33 (PR-07 and PR-32 withdrawn), with every code pull request committed by 2026-11-10 and before the release that carries it. Design rationale and the measurements taken while building it are kept with their dates; "As built" notes say where the code differs from the design.
+> **Audience:** developers who maintain the engine, the worker, the model catalog and the `/dictation/*` routes (PR-01, PR-02, PR-05, PR-06, PR-08 to PR-12 and PR-15), reviewers of changes to them, and the owner, whose decisions O-1, O-2, O-17, O-35, O-37 and O-38 of 2026-11-05 and the plan's defaults O-11 to O-13 and O-25 to O-27 this document follows, and who performs A-1.
 
-The [implementation plan](implementation-plan.md) decides what dictation does and in what order it ships. This document says how the part between a buffer of 16 kHz audio and a corrected string is built: which code is vendored, how it is compiled into `biorouter` and `biorouterd`, how a worker process runs it, which models exist and where they come from, how a person installs one, and how the daemon accepts audio over HTTP. How the personal dictionary biases and corrects recognition is in [dictionary](dictionary.md). Capture, the buttons, and every sentence a person sees are in [surfaces](surfaces.md). Tests, CI jobs, release guards and the measurements still to take are in [testing and release](testing-and-release.md). Everything here targets `main` at `52917f33e` (v1.94.1).
+The [implementation plan](implementation-plan.md) decides what dictation does and in what order it ships. This document says how the part between a buffer of 16 kHz audio and a corrected string is built: which code is vendored, how it is compiled into `biorouter` and `biorouterd`, how a worker process runs it, which models exist and where they come from, how a person installs one, and how the daemon accepts audio over HTTP. How the personal dictionary biases and corrects recognition is in [dictionary](dictionary.md). Capture, the buttons, and every sentence a person sees are in [surfaces](surfaces.md). Tests, CI jobs, release guards and the definition of every measurement are in [testing and release](testing-and-release.md), and the dated results in the [dictation test checklist](../releases/dictation-test-checklist.md#measurement-log). The design targeted `main` at `52917f33e` (v1.94.1); "As built" notes record where the code differs.
 
 ## How to read this document
 
@@ -13,7 +13,7 @@ Load bearing claims carry a label:
 | Label | Meaning |
 |---|---|
 | [M] | Measured on 2026-11-04 during this design, on real binaries, builds or audio |
-| [C] | Read in Biorouter's code at `main` (`52917f33e`, three commits after the v1.94.1 tag; the workspace version is 1.94.1); a line number is against `main` |
+| [C] | Read in Biorouter's code at `main` (`52917f33e`, three commits after the v1.94.1 tag; the workspace version is 1.94.1); a line number is against `main`. Citations added after a pull request landed name the file and symbol on `feat/local-dictation` at that pull request; the symbol is the anchor, not the line |
 | [R] | Reported by a third party's source code, documentation or issue tracker (upstream whisper.cpp and the `cmake` crate included), not measured here |
 | [I] | Inferred; the text names the measurement that settles it when it matters |
 
@@ -25,7 +25,7 @@ Identifier schemes, all indexed in the plan:
 | S1 to S20 | The canonical surfaces |
 | DD-1 onward | Design decisions in the plan's decision register |
 | PR-01 to PR-33, A-1 | Pull requests in delivery order (PR-07 and PR-32 withdrawn), and the owner's one setup action |
-| M-1 onward | Measurements still to take (M-9 and M-13 withdrawn) ([testing and release](testing-and-release.md)) |
+| M-1 onward | Measurements (M-9 and M-13 withdrawn), defined in [testing and release](testing-and-release.md#measurements) and dated in the [checklist's log](../releases/dictation-test-checklist.md#measurement-log) |
 | O-1 onward | The owner's decisions of 2026-11-05 and the plan's defaults |
 | MSG-… | Exact text a person sees ([surfaces](surfaces.md), "Message catalog") |
 | P-1 to P-16 | Privacy invariants, each held by a named test |
@@ -624,7 +624,7 @@ add_subdirectory(${BR_WHISPER_SRC} whisper)
 
 ### The MSVC test leg
 
-The `rust.yml` `test` job runs on `windows-latest` with MSVC, while Biorouter ships mingw [C `rust.yml`]. PR-09 either builds the engine under MSVC or compiles a `target_env = "msvc"` stub that answers `no_engine`, and `CLAUDE.md` says which (M-3). Building it is preferred: a stub leaves native Windows execution of the engine untested on every pull request. `windows-latest` has CMake 4.4.5 [R], and `aws-lc-sys` 0.30.0, which already builds through the `cmake` crate [C `Cargo.lock`], runs that build with MSVC in the same job [R CI logs read by the design]. The extra time was estimated at 1.5 to 3 minutes per run on a job measured at 27.8 minutes [I].
+The `rust.yml` `test` job runs on `windows-latest` with MSVC, while Biorouter ships mingw [C `rust.yml`]. PR-09 builds the engine under MSVC (`MSVC_NATIVE = true` in `build.rs`), as `CLAUDE.md` records; the dispatched runs named under M-1 were green with it (M-3). The design weighed a `target_env = "msvc"` stub that answers `no_engine` and preferred building it: a stub leaves native Windows execution of the engine untested on every pull request. `windows-latest` has CMake 4.4.5 [R], and `aws-lc-sys` 0.30.0, which already builds through the `cmake` crate [C `Cargo.lock`], runs that build with MSVC in the same job [R CI logs read by the design]. The extra time was estimated at 1.5 to 3 minutes per run on a job measured at 27.8 minutes [I].
 
 Under `target_env = "msvc"`, `build.rs` changes four things:
 
@@ -656,7 +656,7 @@ With the variable set, rustc stamps `minos 12.0` and `cc` compiles C and C++ wit
 
 ### The Docker builder
 
-At `main` the builder is `rust:1.92-bookworm` with no `cmake`, it builds only `--package biorouter-cli`, it sets `CARGO_PROFILE_RELEASE_OPT_LEVEL=z`, LTO and one codegen unit, and the runtime stage is `debian:bookworm-slim` [C `Dockerfile`]. PR-09 adds `cmake` to the builder (rule 10). Rule 7 matters most here, because of `opt-level = "z"`; rule 2 matters too, because a Docker build is a native build on whatever machine runs it. With Debian's `cmake` 3.25.1 the engine built in 15 s and transcribed in `debian:bookworm-slim` on arm64, with `DT_NEEDED` of `libgcc_s`, `libm` and `libc` [M]. Without `GGML_CPU_ARM_ARCH`, Linux arm64 gets the NEON only baseline [M], so rule 2 sets `armv8.2-a+dotprod` and the CPU gate checks `dotprod`. PR-31 later builds `biorouter-server` and the web bundle into the image ([surfaces](surfaces.md)).
+At `main` the builder was `rust:1.92-bookworm` with no `cmake`, it built only `--package biorouter-cli`, it set `CARGO_PROFILE_RELEASE_OPT_LEVEL=z`, LTO and one codegen unit, and the runtime stage was `debian:bookworm-slim` [C `Dockerfile`]. PR-09 added `cmake` to the builder (rule 10). As PR-31 (`8c865d11d`) left the `Dockerfile`: the `rust:1.92-bookworm` builder installs `cmake` and builds `--package biorouter-cli --package biorouter-server` with the same release settings; a `node:24-bookworm` stage runs `npm ci && npm run build:web`; the `debian:bookworm-slim` runtime holds `biorouter` and `biorouterd` in `/usr/local/bin`, the web bundle at `/usr/share/biorouter/web`, and runs as the user `biorouter` with `EXPOSE 8765`. Rule 7 matters most here, because of `opt-level = "z"`; rule 2 matters too, because a Docker build is a native build on whatever machine runs it. With Debian's `cmake` 3.25.1 the engine built in 15 s and transcribed in `debian:bookworm-slim` on arm64, with `DT_NEEDED` of `libgcc_s`, `libm` and `libc` [M]. Without `GGML_CPU_ARM_ARCH`, Linux arm64 gets the NEON only baseline [M], so rule 2 sets `armv8.2-a+dotprod` and the CPU gate checks `dotprod`. How the image serves dictation is in [surfaces](surfaces.md#s16-docker-image); the native image gate of 2026-11-10 is in the [checklist](../releases/dictation-test-checklist.md#s16-docker-image).
 
 ### The `cross_windows` toolchain
 
@@ -970,7 +970,7 @@ The app trusts its compiled pins, never GitHub's reported digest at run time (DD
 
 License texts travel with the files (DD-18). They are release assets, they are compiled into the binary from `crates/biorouter-dictation/licenses/*.txt` with `include_str!`, and the installer writes them beside every installed file, so a model copied in with `--from` also carries its notice. The weights are MIT (OpenAI, 2022), the ggml conversions MIT (the ggml authors) and the detector MIT (Silero Team) [R].
 
-`NOTICE` gains three entries in the existing style [C `NOTICE`]: whisper.cpp (the engine compiled into `biorouter` and `biorouterd`, MIT, at the pinned commit), miniaudio (the capture code in `biorouter`, Unlicense or MIT No Attribution) and "Speech models downloaded on request" (the Whisper weights, their ggml conversions and the Silero detector, all MIT, hosted at `BaranziniLab/biorouter-models`). The existing llama.cpp entry says "build b9611" while the pin is `LLAMA_SERVER_BUILD = "b11429"` [C `NOTICE`, `llamacpp_sidecar.rs`]; PR-11 corrects it and adds a test that pins the `NOTICE` versions to the code constants. A license that is not permissive (CC BY NC, the NVIDIA Open Model License and similar) is never hosted as a default; a CC BY or Apache file added later carries its attribution and a change notice.
+`NOTICE` gained four entries in the existing style: whisper.cpp (the engine compiled into `biorouter` and `biorouterd`, MIT, at the pinned commit, PR-08), miniaudio (the capture code in `biorouter`, Unlicense or MIT No Attribution, inside the vendored tree), the English Speller Database word list (PR-14), and "Speech models downloaded on request" (the Whisper weights, their ggml conversions and the Silero detector, all MIT, hosted at `BaranziniLab/biorouter-models`, PR-11). At `main` the llama.cpp entry said "build b9611" while the pin was `LLAMA_SERVER_BUILD = "b11429"` [C `NOTICE`, `llamacpp_sidecar.rs`]; PR-11 corrected it to b11429, and a test in `crates/biorouter/src/dictation/mod.rs` pins the `NOTICE` versions to the code constants. A license that is not permissive (CC BY NC, the NVIDIA Open Model License and similar) is never hosted as a default; a CC BY or Apache file added later carries its attribution and a change notice.
 
 ### Mirrors and blocked networks
 
@@ -1517,9 +1517,9 @@ Tracing in the dictation routes and the service records, as built at PR-16, a st
 
 ## Removal of the inherited cloud dictation
 
-The inherited cloud dictation is a daemon route that forwards audio to OpenAI or ElevenLabs on the daemon secret alone. It is deleted in the first pull request, PR-01 (DD-89, O-10, decided by the owner on 2026-11-05). While it is merged, "audio is not sent anywhere else" is false, so no document may say that of a build before PR-01.
+The inherited cloud dictation was a daemon route that forwarded audio to OpenAI or ElevenLabs on the daemon secret alone. PR-01 (`268705b62`, 2026-11-05) deleted it (DD-89, O-10, decided by the owner on 2026-11-05). Before PR-01, "audio is not sent anywhere else" was false, so no document may say that of an earlier build.
 
-What is deleted:
+What was deleted:
 
 | Item | At `main` |
 |---|---|
@@ -1530,9 +1530,9 @@ What is deleted:
 | `VOICE_DICTATION_ELEVENLABS_ENABLED` | `ui/desktop/src/updates.ts:5` [C] |
 | The exclusions for the folder | `settingsVocabulary.test.ts`, `emphasisWeight.sourceGuard.test.ts` and `typeScale.test.ts` exclude `settings/dictation/` [C]; the exclusion goes with the folder |
 
-The route was never in the OpenAPI document [C], so the generated client does not change. The renderer clears `localStorage['dictation_settings']` once. Saved `ELEVENLABS_API_KEY` entries in the credential store are left alone, and the release notes say so; `OPENAI_API_KEY` is the OpenAI provider's own key and is not touched.
+The route was never in the OpenAPI document [C], so the generated client did not change. The renderer clears `localStorage['dictation_settings']` once. Saved `ELEVENLABS_API_KEY` entries in the credential store are left alone, and the release notes say so; `OPENAI_API_KEY` is the OpenAI provider's own key and is not touched.
 
-Documentation reworded in PR-01: the "Voice dictation (Whisper)" line of `docs/cli/qa-checklist.md`, which lists voice dictation as a desktop only feature [C], becomes a pointer to `docs/dictation/testing-and-release.md` (PR-33 retargets it to `docs/releases/dictation-test-checklist.md`); `docs/desktop-ui/settings-visual-vocabulary.md` and `docs/desktop-ui/shared-controls.md` stop describing the folder; the freeze lines in `docs/design/codex-simplicity-redesign/implementation-spec.md` are coordinated with the unmerged `feat/folder-access-hover-card` branch, which also edits that file.
+Documentation reworded in PR-01: the "Voice dictation (Whisper)" line of `docs/cli/qa-checklist.md`, which listed voice dictation as a desktop only feature [C], became a pointer to `docs/dictation/testing-and-release.md`, and PR-33 points it at `docs/releases/dictation-test-checklist.md`; `docs/desktop-ui/settings-visual-vocabulary.md` and `docs/desktop-ui/shared-controls.md` stop describing the folder; the freeze lines in `docs/design/codex-simplicity-redesign/implementation-spec.md` are coordinated with the unmerged `feat/folder-access-hover-card` branch, which also edits that file.
 
 Tests: a new `crates/biorouter-server/tests/no_cloud_audio_routes.rs` asserts that the three paths answer 404 through `routes::configure` and `check_token`, and a source scan fails on `api.openai.com/v1/audio` or `elevenlabs.io` under `crates/` and `ui/desktop/src`.
 
@@ -1564,7 +1564,8 @@ A follow up on the same day measured the worker lifecycle on Metal, the hardened
 - [Implementation plan](implementation-plan.md): the requirements, the decision register this document elaborates, the pull requests and the owner decisions.
 - [Dictionary](dictionary.md): the bias set, the token prompt, the decoder bonus and correction that the worker and the routes carry.
 - [Surfaces](surfaces.md): capture, the client side of the stream, the setup popover, Settings and the full message catalog.
-- [Testing and release](testing-and-release.md): every test named here, the CI jobs, the release guards and the measurements still to take.
+- [Testing and release](testing-and-release.md): every test named here, the CI jobs, the release guards and the definition of every measurement.
+- [Dictation test checklist](../releases/dictation-test-checklist.md): the manual pass per surface and the dated measurement log.
 - [Speech model benchmarks](../research/voice-dictation/speech-model-benchmarks.md): the measurements behind the engine choice, the catalog and the tiers.
 - [Dictation tools survey](../research/voice-dictation/dictation-tools-survey.md): how other dictation apps package engines and models, and what they ran into.
 - [Llama Server model catalog](../providers/llama-server/model-catalog.md): the compiled catalog precedent that `STT_MODEL_CATALOG` follows, and differs from on hashing.

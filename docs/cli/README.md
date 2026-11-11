@@ -8,8 +8,8 @@ Come here when you need to look up a command or flag, when you are learning the 
 
 | Document | What it covers |
 |---|---|
-| [biorouter CLI command reference](command-reference.md) | The reference for every `biorouter` subcommand and its flags, plus the slash commands, themes, and keyboard shortcuts available inside an interactive session. Current. |
-| [BioRouter CLI QA checklist](qa-checklist.md) | The end-to-end verification script for the CLI and its terminal UI: a per-surface checklist of things to exercise, the log of bugs found and fixed during the pass that produced it, and the GUI-parity gaps that pass identified. Current, but the pass records no date, version, or commit — re-confirm its `[verified]` marks against the build you are testing. |
+| [biorouter CLI command reference](command-reference.md) | The reference for every `biorouter` subcommand and its flags, plus the slash commands, themes, and keyboard shortcuts available inside an interactive session. It includes local dictation: `dictation` (install, list, use and remove speech models, `status`, `urls`, `devices`, `test`), `dictate`, `transcribe` and `dictionary`, and Ctrl+T and `/dictate` inside a session. Current. |
+| [BioRouter CLI QA checklist](qa-checklist.md) | The end-to-end verification script for the CLI and its terminal UI: a per-surface checklist of things to exercise, the log of bugs found and fixed during the pass that produced it, and the GUI-parity gaps that pass identified. Current, but the pass records no date, version, or commit, so re-confirm its `[verified]` marks against the build you are testing. Dictation's terminal checks live in the [dictation test checklist](../releases/dictation-test-checklist.md) (sections S8 to S11 and S19), which this checklist points to. |
 
 ## Related documentation
 
@@ -17,3 +17,4 @@ Come here when you need to look up a command or flag, when you are learning the 
 - [Environment variables](../configuration/environment-variables.md) — the per-invocation overrides for model, permission mode, and data directories that change what a CLI command does.
 - [Workflows](../workflows/README.md) — the reusable workflow files and scheduled jobs that the `workflow` and `schedule` subcommands load and run.
 - [Troubleshooting](../troubleshooting/README.md) — where to go when a command fails, and how to produce a diagnostics bundle for a bug report.
+- [Voice dictation](../dictation/README.md): how dictation works in the terminal, over SSH and on servers, which the `dictation`, `dictate`, `transcribe` and `dictionary` commands serve.
