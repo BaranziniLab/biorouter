@@ -2,7 +2,7 @@
 
 > **What this is.** How the desktop app shows a chat's decision-model activity: the Decisions
 > section of the Chat summary, the decision history view (a tab of the artifact side panel), the
-> Monitors dialog and its install panel, the gate chip on a phase row and the phase gate dialog it
+> Monitors dialog and its install panel, the gate mark on a phase's line and the phase gate dialog it
 > opens, the Supervision panel of a workflow, the `decide` card and the per-turn marker in the
 > transcript, a decision chat's composer and card, the Decision models line of the Usage panel, and
 > the per-chat count in History, and how each surface says when a decision model makes a chat
@@ -33,7 +33,7 @@ batch over 600 notes). The rule that follows, binding on every surface:
 | Surface | What it draws | Never |
 |---|---|---|
 | Chat summary | One row per source: each monitor that exists now, every `decide` call together, the decision chat | A row per call, a merged "A + B" row, a row for a removed monitor, a row for a gate |
-| Phase row | One gate chip: Gate, Passed, Not passed, Needs you, Blocked or Skipped | Rows for the gate's evaluations |
+| Phase line | One gate mark, a circle filled by state, with a word only when it wants a look (Needs you, Not passed, Blocked) | Rows for the gate's evaluations |
 | History (the chat list) | One count on the chat's own row | Child rows, or a count on a subagent run |
 | Decision history view | Every call, one row each, windowed and paged | |
 
@@ -105,14 +105,14 @@ history, the cards, the marker, the summary and the dialogs cannot drift apart:
 
 ## The Decisions section of the Chat summary
 
-`components/summary/SummaryDecisions.tsx`, drawn by `ChatSummary` between the subagents and the
-statistics, in the docked rail and in the header popover alike.
+`components/summary/SummaryDecisions.tsx`, drawn by `ChatSummary` between the Plan (or Agents)
+section and This chat, in the docked rail and in the header popover alike.
 
-- **One line by default.** The heading is a toggle (`summary/SummarySectionHeading.tsx`, drawn
-  like the roster's group toggle) with a short count: "1 fired", "1 fired · 1 error", "1 error",
+- **One line by default.** The heading is the summary's section heading
+  (`summary/SummarySectionHeading.tsx`: chevron, caps label, count) with a short count: "1 fired", "1 fired · 1 error", "1 error",
   "None fired" when the chat has monitors and none fired, or "10 checks" when it has none. The
   section opens on its own only when a monitor fired or a check errored; a blocked gate does not
-  open it, because its chip already says "Needs you" on the phase row. Once the person opens or
+  open it, because its gate already says "Needs you" on the phase's line. Once the person opens or
   closes it, that choice holds for as long as the summary stays mounted for the chat.
 - **Which rows exist** (`summary/summaryDecisionRows.ts`, which then reads the aggregates through
   the unchanged `decisionSourceRows`):
@@ -123,22 +123,26 @@ statistics, in the docked rail and in the header popover alike.
     copy on each row carries the call's count and errors, never its answer or probability, which
     one combined record cannot assign. No merged "A + B" row is ever drawn;
   - a removed monitor leaves no row, and its checks stay in the decision history;
-  - no gate rows: a gate's one place in the summary is its chip on its phase row;
+  - no gate rows: a gate's one place in the summary is its mark on its phase's line;
   - then one row for every `decide` call together ("Agent checks") and one for the decision
     chat's answers ("This chat's answers").
 
   A chat with 5,000 calls draws as many rows as it has sources.
-- **A row** is one 28px line: a glyph, the name, and one trailing word. No probability, no bar
-  and no call count (the count is in the row's accessible name and in the history).
+- **A row** is one 28px line: a circle, the name, and one trailing word. No probability, no bar
+  and no call count (the count is in the row's accessible name and in the history). The circle
+  is the agent grid's mark for decision-model work, the shape the roster draws for a subagent on
+  a decision model and for a phase gate ([the notation](chat-summary-rail.md#the-content),
+  `DECISION_STATE_MARKS` in `summary/agentGrid.ts`), filled by state so it never depends on
+  colour alone:
 
-  | Source | Glyph | Trailing |
+  | Source | Circle | Trailing |
   |---|---|---|
-  | Monitor whose last check fired | flag, accent ink | Fired |
-  | Monitor that was checked and did not fire | eye, muted (never a cross) | Quiet |
-  | Monitor never checked | open circle | Not checked yet |
-  | Monitor switched off | struck eye | Off |
-  | Monitor whose last check errored | warning | Error |
-  | Agent checks, This chat's answers | the decision mark | the count, or Error after a failed call |
+  | Monitor whose last check fired | half full, warning ink | Fired |
+  | Monitor that was checked and did not fire | solid, the calm finished sage (never the failed cross) | Quiet |
+  | Monitor never checked | hollow, muted | Not checked yet |
+  | Monitor switched off | hollow with a bar, muted | Off |
+  | Monitor whose last check errored | the cut cross, danger ink | Error |
+  | Agent checks, This chat's answers | solid, the finished sage, or the cut cross after a failed call | the count, or Error after a failed call |
 
   A monitor row's accessible name is its word, its name and "checked N times", plus the errors
   when there are any.
@@ -588,29 +592,31 @@ shows something only when `tev1:0.8b` is not installed or Ollama is not running.
 
 The panel's strings are `DECISION_INSTALL_COPY` in `DecisionModelInstall.tsx`.
 
-## The gate chip on a phase row
+## The gate mark on a phase's line
 
 A phase with a decision gate (`PhaseSnapshot.gate`, parsed tolerantly in
-`utils/sessionSubagents.ts`, so an older daemon's snapshot still parses) shows one chip at the end
-of its line in the summary's Phases section (`gateChipWords` in `summary/SummarySubagents.tsx`).
-The chip is one word and a glyph; its tooltip, which is also its accessible name, is the full
+`utils/sessionSubagents.ts`, so an older daemon's snapshot still parses) shows one mark at the end
+of its line in the summary's Plan section (`gateChipWords` in `summary/SummarySubagents.tsx`,
+`gateMarkKind` in `summary/agentGrid.ts`). A gate is decision-model work, so the mark is a circle
+of the agent grid's notation, filled by state; its word is drawn beside it, in the circle's ink,
+only when the gate wants a look. Its tooltip, which is also its accessible name, is the full
 sentence, with the probability named by its outcome:
 
-| State | Chip | Tooltip |
-|---|---|---|
-| not asked yet | Gate | "Gate not asked yet · threshold 0.80" |
-| passed | Passed | "Gate passed · P(yes) 0.91 · threshold 0.80" |
-| not passed, attempts left | Not passed | "Gate not passed · P(yes) 0.62 · threshold 0.80 · attempt 2 of 3" |
-| blocked, waiting for the person | Needs you (accent) | "Gate needs you: blocked after 3 attempts", or "…: could not be evaluated" |
-| blocked, nothing waits for the person | Blocked | "Gate blocked: blocked after 3 attempts", or "…: could not be evaluated" |
-| passed by the person | Passed | "Passed by you", or "Your pass stands until its subagents finish" |
-| skipped by the person | Skipped | "Skipped by you", or "Your skip stands until its subagents finish" |
+| State | Circle | Word | Tooltip |
+|---|---|---|---|
+| not asked yet | hollow | none | "Gate not asked yet · threshold 0.80" |
+| passed | solid | none | "Gate passed · P(yes) 0.91 · threshold 0.80" |
+| not passed, attempts left | cut cross, danger ink | Not passed | "Gate not passed · P(yes) 0.62 · threshold 0.80 · attempt 2 of 3" |
+| blocked, waiting for the person | half full, warning ink | Needs you | "Gate needs you: blocked after 3 attempts", or "…: could not be evaluated" |
+| blocked, nothing waits for the person | cut cross, danger ink | Blocked | "Gate blocked: blocked after 3 attempts", or "…: could not be evaluated" |
+| passed by the person | solid | none | "Passed by you", or "Your pass stands until its subagents finish" |
+| skipped by the person | hollow with a bar | none | "Skipped by you", or "Your skip stands until its subagents finish" |
 
 The reason "blocked after 3 attempts" is said only when the gate used every attempt. A gate blocked by
 evaluation errors in a row, which use no attempt (the model was refused, unreachable or too small
 for the text), reads "could not be evaluated", whatever attempts it had used before. Pressing the
-chip opens the phase gate dialog. A phase from a daemon before gates has no `gate` and draws no
-chip. The chip, the held line and "Add gate" are described with the rest of the rail in
+mark opens the phase gate dialog. A phase from a daemon before gates has no `gate` and draws no
+mark. The mark, the held line and "Add gate" are described with the rest of the rail in
 [the Chat summary rail](chat-summary-rail.md).
 
 ## The phase gate dialog

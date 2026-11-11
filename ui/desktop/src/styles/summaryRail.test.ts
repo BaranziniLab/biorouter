@@ -441,9 +441,10 @@ describe('the subagents keep the summary’s rules', () => {
 
   it('draws a phase as a band of the page ground, parted from the next by the card’s fill', () => {
     const band = agentsRule('.br-agents__phase');
-    // One step back from the filled card: a fill never sits on a fill.
+    // The control ground: the page ground in the filled card (a fill never sits on a
+    // fill), the fill in the popover, which is the page ground.
     expect(property(band, 'background-color')).toBe(
-      'var(--br-control-ground, var(--background-default))'
+      'var(--br-control-ground, var(--background-fill))'
     );
     expect(property(band, 'border-radius')).toBe('var(--radius-element)');
     expect(property(agentsRule('.br-agents__phase + .br-agents__phase'), 'margin-top')).toBe('4px');
