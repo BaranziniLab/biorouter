@@ -21965,7 +21965,7 @@
         ],
         "properties": {
           "host": {
-            "$ref": "#/components/schemas/biorouter.privacy.decision_axes.HostLabel"
+            "$ref": "#/components/schemas/HostLabel"
           },
           "kind": {
             "$ref": "#/components/schemas/PrivacyBasisKind"

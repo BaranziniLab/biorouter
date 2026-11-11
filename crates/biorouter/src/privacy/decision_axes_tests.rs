@@ -1658,5 +1658,7 @@ fn the_fold_counts_the_public_names_it_does_not_name() {
     let cause = axes.lowered_by().expect("lowered");
     assert_eq!(cause.source, NameSource::Default);
     assert_eq!(cause.others, 1);
-    assert!(public_standing_names(&inputs).iter().all(|name| name.others == 0));
+    assert!(public_standing_names(&inputs)
+        .iter()
+        .all(|name| name.others == 0));
 }

@@ -839,143 +839,154 @@ pub async fn write_locally(
     edit: GateEdit,
     confirm: &mut dyn super::decision_tier::ConfirmPublic,
 ) -> Result<LocalGateWrite> {
+    match edit {
+        GateEdit::Set { phase, spec } => {
+            set_gate_locally(service, store, session_id, phase, spec, confirm).await
+        }
+        GateEdit::Remove { phase } => remove_gate_locally(store, session_id, phase).await,
+        GateEdit::Decide { phase, choice } => {
+            orchestration_plan::person_gate_decision(&store.manager, session_id, &phase, choice)
+                .await
+                .map(|outcome| local_gate_write(outcome, None))
+                .map_err(|refusal| anyhow!("{}", refusal.message()))
+        }
+    }
+}
+
+/// The row and the decision session a gate write's tier check reads.
+async fn gate_tier_read(
+    store: &LocalStore,
+    session_id: &str,
+) -> Result<(biorouter::session::Session, DecisionSession)> {
+    let manager = &store.manager;
+    let row = manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|_| anyhow!("Session '{session_id}' not found."))?;
+    let session =
+        biorouter::decision::save::load_for_save(Arc::clone(manager), session_id, store.enforced)
+            .await?;
+    Ok((row, session))
+}
+
+/// [`write_locally`]'s set: checked, asked about when it makes the chat
+/// public, and written with its basis when it touches one.
+async fn set_gate_locally(
+    service: &DecisionService,
+    store: &LocalStore,
+    session_id: &str,
+    phase: String,
+    spec: PhaseGateSpec,
+    confirm: &mut dyn super::decision_tier::ConfirmPublic,
+) -> Result<LocalGateWrite> {
     use super::decision_tier::{cli_words, with_public_confirmation, SaveAttempt};
     use biorouter::decision::save::{LoweringConsent, NeedsPublicDecisionConfirmation};
     let manager = &store.manager;
-    let tier_read = || async {
-        let row = manager
-            .get_session(session_id, false)
-            .await
-            .map_err(|_| anyhow!("Session '{session_id}' not found."))?;
-        let session = biorouter::decision::save::load_for_save(
-            Arc::clone(manager),
-            session_id,
-            store.enforced,
+    let gate =
+        orchestration_plan::validate_person_gate(&phase, &spec).map_err(|e| anyhow!("{e}"))?;
+    let (row, mut session) = gate_tier_read(store, session_id).await?;
+    let now = chrono::Utc::now();
+    let predicted = predicted_plan(&row, |plan| {
+        orchestration_plan::apply_person_set_gate(plan, &phase, gate.clone(), now)
+    });
+    let change = with_public_confirmation(confirm, session_id, |accepted| {
+        let consent = if accepted {
+            LoweringConsent::Confirmed
+        } else {
+            LoweringConsent::Unconfirmed
+        };
+        let result = gate_tier_change(&session, &row, predicted.as_ref(), consent);
+        async move {
+            match result {
+                None => Ok(SaveAttempt::Saved(None)),
+                Some(Ok(change)) => Ok(SaveAttempt::Saved(Some(change))),
+                Some(Err(error)) => match error.downcast_ref::<NeedsPublicDecisionConfirmation>() {
+                    Some(needs) => Ok(SaveAttempt::NeedsConfirmation(cli_words(&needs.sentence))),
+                    None => Err(anyhow!("{}", cli_words(&error.to_string()))),
+                },
+            }
+        }
+    })
+    .await?;
+    session.lowered_after_save = change
+        .as_ref()
+        .is_some_and(|change: &biorouter::decision::save::TierChange| change.lowered_after_save);
+    if let Err(error) = service
+        .check_model_use(
+            &session,
+            gate.model.as_ref(),
+            &gate.questions,
+            ModelSource::Setting,
         )
-        .await?;
-        Ok::<_, anyhow::Error>((row, session))
-    };
-    let mut change = None;
-    let written = match edit {
-        GateEdit::Set { phase, spec } => {
-            let gate = orchestration_plan::validate_person_gate(&phase, &spec)
-                .map_err(|e| anyhow!("{e}"))?;
-            let (row, mut session) = tier_read().await?;
-            let now = chrono::Utc::now();
-            let predicted = predicted_plan(&row, |plan| {
-                orchestration_plan::apply_person_set_gate(plan, &phase, gate.clone(), now)
-            });
-            change = with_public_confirmation(confirm, session_id, |accepted| {
-                let consent = if accepted {
-                    LoweringConsent::Confirmed
-                } else {
-                    LoweringConsent::Unconfirmed
-                };
-                let result = gate_tier_change(&session, &row, predicted.as_ref(), consent);
-                async move {
-                    match result {
-                        None => Ok(SaveAttempt::Saved(None)),
-                        Some(Ok(change)) => Ok(SaveAttempt::Saved(Some(change))),
-                        Some(Err(error)) => {
-                            match error.downcast_ref::<NeedsPublicDecisionConfirmation>() {
-                                Some(needs) => {
-                                    Ok(SaveAttempt::NeedsConfirmation(cli_words(&needs.sentence)))
-                                }
-                                None => Err(anyhow!("{}", cli_words(&error.to_string()))),
-                            }
-                        }
-                    }
-                }
+        .await
+    {
+        bail!(
+            "The gate on phase \"{phase}\" cannot be answered in this chat. {}. Nothing \
+             was changed.",
+            without_full_stop(&super::decide::terminal_advice(&error.to_string()))
+        );
+    }
+    let written = match change.as_ref().filter(|change| {
+        !matches!(
+            change.basis,
+            biorouter::session::session_manager::BasisWrite::Keep
+        )
+    }) {
+        Some(with_basis) => {
+            let phase = phase.trim().to_string();
+            return write_gate_with_basis(manager, session_id, with_basis, move |current| {
+                orchestration_plan::apply_person_set_gate(current, &phase, gate, now)
             })
-            .await?;
-            session.lowered_after_save =
-                change
-                    .as_ref()
-                    .is_some_and(|change: &biorouter::decision::save::TierChange| {
-                        change.lowered_after_save
-                    });
-            if let Err(error) = service
-                .check_model_use(
-                    &session,
-                    gate.model.as_ref(),
-                    &gate.questions,
-                    ModelSource::Setting,
-                )
-                .await
-            {
-                bail!(
-                    "The gate on phase \"{phase}\" cannot be answered in this chat. {}. Nothing \
-                     was changed.",
-                    without_full_stop(&super::decide::terminal_advice(&error.to_string()))
-                );
-            }
-            match change.as_ref().filter(|change| {
-                !matches!(
-                    change.basis,
-                    biorouter::session::session_manager::BasisWrite::Keep
-                )
-            }) {
-                Some(with_basis) => {
-                    let phase = phase.trim().to_string();
-                    return write_gate_with_basis(
-                        manager,
-                        session_id,
-                        with_basis,
-                        move |current| {
-                            orchestration_plan::apply_person_set_gate(current, &phase, gate, now)
-                        },
-                    )
-                    .await
-                    .map(|outcome| local_gate_write(outcome, change.as_ref()));
-                }
-                None => {
-                    orchestration_plan::person_set_gate(manager, session_id, &phase, gate).await
-                }
-            }
+            .await
+            .map(|outcome| local_gate_write(outcome, change.as_ref()));
         }
-        GateEdit::Remove { phase } => {
-            let (row, session) = tier_read().await?;
-            let predicted = predicted_plan(&row, |plan| {
-                orchestration_plan::apply_person_remove_gate(plan, &phase)
-            });
-            // A removal is a raise (the safe direction): it needs no
-            // confirmation, and clears the basis when it leaves no public
-            // name standing.
-            change = match gate_tier_change(
-                &session,
-                &row,
-                predicted.as_ref(),
-                LoweringConsent::Unconfirmed,
-            ) {
-                None => None,
-                Some(Ok(change)) => Some(change),
-                Some(Err(error)) => bail!("{}", cli_words(&error.to_string())),
-            };
-            match change.as_ref().filter(|change| {
-                !matches!(
-                    change.basis,
-                    biorouter::session::session_manager::BasisWrite::Keep
-                )
-            }) {
-                Some(with_basis) => {
-                    let phase = phase.trim().to_string();
-                    return write_gate_with_basis(
-                        manager,
-                        session_id,
-                        with_basis,
-                        move |current| {
-                            orchestration_plan::apply_person_remove_gate(current, &phase)
-                        },
-                    )
-                    .await
-                    .map(|outcome| local_gate_write(outcome, change.as_ref()));
-                }
-                None => orchestration_plan::person_remove_gate(manager, session_id, &phase).await,
-            }
+        None => orchestration_plan::person_set_gate(manager, session_id, &phase, gate).await,
+    };
+    written
+        .map(|outcome| local_gate_write(outcome, change.as_ref()))
+        .map_err(|refusal| anyhow!("{}", refusal.message()))
+}
+
+/// [`write_locally`]'s removal. A removal is a raise (the safe direction): it
+/// needs no confirmation, and clears the basis when it leaves no public name
+/// standing.
+async fn remove_gate_locally(
+    store: &LocalStore,
+    session_id: &str,
+    phase: String,
+) -> Result<LocalGateWrite> {
+    use super::decision_tier::cli_words;
+    use biorouter::decision::save::LoweringConsent;
+    let manager = &store.manager;
+    let (row, session) = gate_tier_read(store, session_id).await?;
+    let predicted = predicted_plan(&row, |plan| {
+        orchestration_plan::apply_person_remove_gate(plan, &phase)
+    });
+    let change = match gate_tier_change(
+        &session,
+        &row,
+        predicted.as_ref(),
+        LoweringConsent::Unconfirmed,
+    ) {
+        None => None,
+        Some(Ok(change)) => Some(change),
+        Some(Err(error)) => bail!("{}", cli_words(&error.to_string())),
+    };
+    let written = match change.as_ref().filter(|change| {
+        !matches!(
+            change.basis,
+            biorouter::session::session_manager::BasisWrite::Keep
+        )
+    }) {
+        Some(with_basis) => {
+            let phase = phase.trim().to_string();
+            return write_gate_with_basis(manager, session_id, with_basis, move |current| {
+                orchestration_plan::apply_person_remove_gate(current, &phase)
+            })
+            .await
+            .map(|outcome| local_gate_write(outcome, change.as_ref()));
         }
-        GateEdit::Decide { phase, choice } => {
-            orchestration_plan::person_gate_decision(manager, session_id, &phase, choice).await
-        }
+        None => orchestration_plan::person_remove_gate(manager, session_id, &phase).await,
     };
     written
         .map(|outcome| local_gate_write(outcome, change.as_ref()))

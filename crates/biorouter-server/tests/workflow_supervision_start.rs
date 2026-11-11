@@ -499,7 +499,11 @@ async fn a_workflow_naming_a_public_decision_model_starts_a_versa_chat_public_on
     let started: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(started["tierEffect"], "becomesPublic", "{body}");
     let id = started["id"].as_str().unwrap().to_string();
-    let row = state.session_manager().get_session(&id, false).await.unwrap();
+    let row = state
+        .session_manager()
+        .get_session(&id, false)
+        .await
+        .unwrap();
     assert_eq!(row.privacy_tier, SessionClassification::Public);
     assert!(
         row.extension_data
@@ -597,7 +601,10 @@ async fn a_start_carries_the_chats_decision_models_before_its_first_message() {
         "This chat will be public: joey-1 runs on Baseten."
     );
     let id = started["id"].as_str().unwrap().to_string();
-    let agent = state.peek_agent(&id).await.expect("the start holds the chat's agent");
+    let agent = state
+        .peek_agent(&id)
+        .await
+        .expect("the start holds the chat's agent");
     assert_eq!(
         agent.provider().await.unwrap().tier(),
         ProviderTier::Public,

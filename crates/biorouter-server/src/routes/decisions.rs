@@ -154,14 +154,14 @@ use biorouter::decision::log::{
     self as decision_log, DecisionDetail, DecisionPage, DecisionQuery, InvalidDecisionQuery,
     SessionDecisionSummary, MAX_PAGE,
 };
-use biorouter::decision::settings::{
-    self as decision_settings, DecisionChatSettings, DecisionSettings, InvalidDecisionSettings,
-};
-use biorouter::decision::types::{validate_questions, DecisionKindTag};
 use biorouter::decision::save::{
     AfterSave, LoweringConsent, NeedsPublicDecisionConfirmation, PublicBasisNotEligible,
     PublicDecisionModelsNotAllowed, SaveDoor, TierChange, BECOMES_PUBLIC_INFO,
 };
+use biorouter::decision::settings::{
+    self as decision_settings, DecisionChatSettings, DecisionSettings, InvalidDecisionSettings,
+};
+use biorouter::decision::types::{validate_questions, DecisionKindTag};
 use biorouter::decision::{
     ChatEffect, ChunkOutcome, Decision, DecisionAdapter, DecisionChunk, DecisionContext,
     DecisionError, DecisionModelRef, DecisionOrigin, DecisionRequest, DecisionService,
@@ -169,11 +169,11 @@ use biorouter::decision::{
 };
 use biorouter::privacy::decision_axes::{Eligibility, TierEffect};
 use biorouter::privacy::{ProviderTier, SessionClassification};
-use biorouter::session::session_manager::{BasisWrite, BasisWriteOutcome};
 use biorouter::providers::decision::install::{
     DecisionInstallSnapshot, DecisionInstaller, InstallState, OllamaPlace, DEFAULT_INSTALL_MODEL,
 };
 use biorouter::session::session_manager::SessionType;
+use biorouter::session::session_manager::{BasisWrite, BasisWriteOutcome};
 use biorouter::session::Session;
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
@@ -1267,7 +1267,8 @@ async fn write_gate_with_basis<F>(
 where
     F: FnOnce(
             Option<orchestration_plan::OrchestrationPlan>,
-        ) -> Result<(orchestration_plan::OrchestrationPlan, PersonGateOutcome), GateWriteError>
+        )
+            -> Result<(orchestration_plan::OrchestrationPlan, PersonGateOutcome), GateWriteError>
         + Send,
 {
     use orchestration_plan::{plan_record, OrchestrationPlan, PLAN_STATE, PLAN_VERSION};
@@ -1314,20 +1315,23 @@ where
     match written {
         Ok(BasisWriteOutcome::Written(outcome)) => Ok(Ok(outcome)),
         Ok(BasisWriteOutcome::NotEligible) => {
-            let model = change
-                .public_names
-                .first()
-                .map_or_else(|| "a public decision model".to_string(), |name| name.model.clone());
+            let model = change.public_names.first().map_or_else(
+                || "a public decision model".to_string(),
+                |name| name.model.clone(),
+            );
             Err(plain(
                 StatusCode::CONFLICT,
                 biorouter::session::session_manager::public_basis_not_eligible_sentence(&model),
             ))
         }
-        Ok(BasisWriteOutcome::SessionNotFound) => {
-            Err(plain(StatusCode::NOT_FOUND, "There is no chat with that id."))
-        }
+        Ok(BasisWriteOutcome::SessionNotFound) => Err(plain(
+            StatusCode::NOT_FOUND,
+            "There is no chat with that id.",
+        )),
         Err(error) => Ok(Err(refused.unwrap_or_else(|| {
-            GateWriteError::Unreadable(format!("Could not change this chat's phase gates: {error}."))
+            GateWriteError::Unreadable(format!(
+                "Could not change this chat's phase gates: {error}."
+            ))
         }))),
     }
 }
@@ -1349,6 +1353,20 @@ fn gate_tier_change(
         AfterSave::Plan(Some(plan)),
         door,
     ))
+}
+
+/// The plan a person's set-gate write would store over `row`'s, or `None`
+/// when the transition itself refuses.
+fn predicted_set_gate(
+    row: &Session,
+    phase_id: &str,
+    gate: &orchestration_plan::PhaseGate,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<orchestration_plan::OrchestrationPlan> {
+    let records = biorouter::privacy::decision_axes::RowRecords::parse(&row.extension_data);
+    orchestration_plan::apply_person_set_gate(records.plan().cloned(), phase_id, gate.clone(), now)
+        .ok()
+        .map(|(plan, _)| plan)
 }
 
 /// `text` without the full stop it ends with, so it can sit inside a
@@ -2128,15 +2146,7 @@ pub async fn put_phase_gate(
     // decision models, so this write follows the settings save's tier rules
     // (design §3.6), worked out over the plan it would store.
     let now = chrono::Utc::now();
-    let records = biorouter::privacy::decision_axes::RowRecords::parse(&session.extension_data);
-    let predicted = orchestration_plan::apply_person_set_gate(
-        records.plan().cloned(),
-        &phase_id,
-        gate.clone(),
-        now,
-    )
-    .ok()
-    .map(|(plan, _)| plan);
+    let predicted = predicted_set_gate(&session, &phase_id, &gate, now);
     let door = SaveDoor::person("phase-gate", request_consent(&headers, accepted));
     let change = match gate_tier_change(&checked, &session, predicted.as_ref(), &door) {
         None => None,
@@ -2177,7 +2187,9 @@ pub async fn put_phase_gate(
                 &session_id,
                 change.basis.clone(),
                 change,
-                move |current| orchestration_plan::apply_person_set_gate(current, &phase, gate, now),
+                move |current| {
+                    orchestration_plan::apply_person_set_gate(current, &phase, gate, now)
+                },
             )
             .await
             {

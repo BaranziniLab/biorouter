@@ -17,8 +17,11 @@ use base64::Engine;
 use biorouter::agents::ExtensionConfig;
 use biorouter::config::resolve_extensions_for_new_session;
 use biorouter::config::{BioRouterMode, Config};
+use biorouter::decision::save::LoweringConsent;
+use biorouter::decision::settings::DecisionSettings;
 use biorouter::model::ModelConfig;
 use biorouter::permission::{grade_tool, SmartApproveConfig};
+use biorouter::privacy::decision_axes::TierEffect;
 use biorouter::privacy::refusal::PrivacyRefusal;
 use biorouter::privacy::{raise_needs_user_action, ProviderTier, SessionClassification};
 use biorouter::prompt_template::render_global_file;
@@ -27,9 +30,6 @@ use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session, SessionManager, WorkingDirUpdate};
 use biorouter::workflow::runtime::WORKFLOW_NOT_STARTED;
-use biorouter::decision::save::LoweringConsent;
-use biorouter::decision::settings::DecisionSettings;
-use biorouter::privacy::decision_axes::TierEffect;
 use biorouter::workflow::supervision::{
     self, SeedConsent, SeedRefusalKind, SeedTarget, SeedTargetKind,
 };
@@ -1407,7 +1407,16 @@ async fn start_new_chat(
     let mut saved_effect: Option<(TierEffect, Option<String>)> = None;
     if let Some(settings) = decision_settings {
         let enforced = biorouter::privacy::privacy_tiers_enabled();
-        let saved = match start_decision_settings(&state, &session.id, enforced, bound_tier, settings, &consent).await {
+        let saved = match start_decision_settings(
+            &state,
+            &session.id,
+            enforced,
+            bound_tier,
+            settings,
+            &consent,
+        )
+        .await
+        {
             Ok(saved) => saved,
             Err(error) => {
                 discard_failed_new_session(&state, &session.id).await;
@@ -1588,7 +1597,10 @@ fn start_save_refusal(
     }
     let status = if error.downcast_ref::<PublicBasisNotEligible>().is_some() {
         StatusCode::CONFLICT
-    } else if error.downcast_ref::<PublicDecisionModelsNotAllowed>().is_some() {
+    } else if error
+        .downcast_ref::<PublicDecisionModelsNotAllowed>()
+        .is_some()
+    {
         StatusCode::FORBIDDEN
     } else if error
         .downcast_ref::<biorouter::decision::UnusableDecisionSettings>()
@@ -2459,7 +2471,9 @@ async fn agent_add_extension(
         .unwrap_or(ProviderTier::Public);
     // DR-33 (design §3.9): the cause, when a decision model made this chat
     // public, off the SAME instance. Text only; it picks the refusal's words.
-    let lowered_by = bound.as_ref().and_then(|p| p.decision_lowered_by().cloned());
+    let lowered_by = bound
+        .as_ref()
+        .and_then(|p| p.decision_lowered_by().cloned());
     let extension_name = request.config.name();
     // Task 43 (DR-23): the config, not just its name — a renamed entry is
     // resolved through the install directory in its arguments. Task 48 (DR-26):
@@ -8271,8 +8285,8 @@ mod decision_lowered_route_tests {
     /// public still needs the proof for the same move.
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
-    async fn a_chat_made_public_by_a_decision_model_moves_between_private_models_without_the_proof(
-    ) {
+    async fn a_chat_made_public_by_a_decision_model_moves_between_private_models_without_the_proof()
+    {
         if !biorouter::privacy::privacy_tiers_enabled() {
             return;
         }
@@ -8287,9 +8301,7 @@ mod decision_lowered_route_tests {
         assert_eq!(agent.provider().await.unwrap().tier(), ProviderTier::Public);
         assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
 
-        let move_to_ollama = |id: &str| {
-            serde_json::json!({"session_id": id, "provider": "ollama", "model": "qwen3.8:27b"})
-        };
+        let move_to_ollama = |id: &str| serde_json::json!({"session_id": id, "provider": "ollama", "model": "qwen3.8:27b"});
         let (status, body) = post_without_proof(
             &state,
             "/agent/update_provider",
@@ -8336,7 +8348,10 @@ mod decision_lowered_route_tests {
             ),
             "{lowered}"
         );
-        assert!(!lowered.contains("public model, so the extension"), "{lowered}");
+        assert!(
+            !lowered.contains("public model, so the extension"),
+            "{lowered}"
+        );
         assert_eq!(
             add_extension_tier_refusal("OMOP".to_string(), None),
             PrivacyRefusal::PrivateExtensionOverHttp {
@@ -8350,7 +8365,8 @@ mod decision_lowered_route_tests {
     /// and the decision can never describe two bindings.
     #[test]
     fn the_add_extension_refusal_reads_its_cause_off_the_one_bound_instance() {
-        let handler = crate::routes::body_of(include_str!("agent.rs"), "async fn agent_add_extension");
+        let handler =
+            crate::routes::body_of(include_str!("agent.rs"), "async fn agent_add_extension");
         let squeezed: String = handler
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))

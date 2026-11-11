@@ -1298,7 +1298,9 @@ mod decision_supervision_contract_tests {
                 "/sessions/{session_id}/phase-gates/{phase_id}",
                 "put",
                 "workspace",
-                Some("PhaseGateSpec"),
+                // DR-33: the gate (`PhaseGateSpec`, flattened in) plus the
+                // person's confirmation of a lowering beside it.
+                Some("PhaseGateWrite"),
                 ("200", "PhaseGateResponse"),
             ),
             (

@@ -2555,7 +2555,13 @@ mod tests {
              monitor, or choose a model on this computer."
         );
         assert_eq!(
-            refuse_public_copies_on_private_children(&sm, &joey, None, &[public.clone()]).await,
+            refuse_public_copies_on_private_children(
+                &sm,
+                &joey,
+                None,
+                std::slice::from_ref(&public)
+            )
+            .await,
             Ok(())
         );
         assert_eq!(
@@ -2563,14 +2569,25 @@ mod tests {
             Ok(())
         );
         assert_eq!(
-            refuse_public_copies_on_private_children(&sm, &joey, Some(&joey), &[private.clone()])
-                .await,
+            refuse_public_copies_on_private_children(
+                &sm,
+                &joey,
+                Some(&joey),
+                std::slice::from_ref(&private)
+            )
+            .await,
             Ok(()),
             "only what the save changes is asked"
         );
         let local = of(vec![on("ollama_decision", "tev1:0.8b")]);
         assert_eq!(
-            refuse_public_copies_on_private_children(&sm, &local, None, &[private.clone()]).await,
+            refuse_public_copies_on_private_children(
+                &sm,
+                &local,
+                None,
+                std::slice::from_ref(&private)
+            )
+            .await,
             Ok(()),
             "a model on this computer may watch a private subagent"
         );

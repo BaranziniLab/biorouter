@@ -826,6 +826,19 @@ impl PrivateContentRead {
         }
     }
 
+    /// [`Self::ratchet_reader`] for a call [`ExtensionManager::private_content_probe`]
+    /// probed; a call it did not probe ratchets nothing.
+    async fn ratchet_probed(
+        probe: Option<(Self, Arc<crate::session::SessionManager>)>,
+        reader_session_id: &str,
+        result: &rmcp::model::CallToolResult,
+    ) -> Result<(), ErrorData> {
+        match probe {
+            Some((read, store)) => read.ratchet_reader(&store, reader_session_id, result).await,
+            None => Ok(()),
+        }
+    }
+
     async fn ratchet_reader(
         &self,
         session_manager: &crate::session::SessionManager,
@@ -860,8 +873,12 @@ fn dispatch_meta(
     cap: crate::privacy::CallCapability,
     client_name: &str,
     progress_token: Option<String>,
-    workspace_child_scope_only: bool,
+    extension_origin: ExtensionOrigin,
 ) -> McpMeta {
+    // An auto-injected supervision grant reads, closes and watches only the
+    // caller's direct children.
+    let workspace_child_scope_only =
+        client_name == "workspace" && extension_origin == ExtensionOrigin::AutoInjected;
     let mut meta =
         McpMeta::new(session_id, cap).with_workspace_child_scope_only(workspace_child_scope_only);
     if let Some(token) = progress_token {
@@ -3813,14 +3830,12 @@ impl ExtensionManager {
         // is what keeps the capability a value that was decided at admission
         // rather than something re-derived on the far side of the dispatch
         // semaphore, minutes later, against whatever provider is bound by then.
-        let workspace_child_scope_only =
-            client_name == "workspace" && extension_origin == ExtensionOrigin::AutoInjected;
         let mut meta = dispatch_meta(
             &session_id,
             cap,
             &client_name,
             progress_token,
-            workspace_child_scope_only,
+            extension_origin,
         );
         let diagnostics_enabled = apply_dispatch_admissions(
             &mut meta,
@@ -3830,8 +3845,7 @@ impl ExtensionManager {
         );
         // DR-33, design §2.6. Decided here, at admission, off the same sample.
         let private_content =
-            PrivateContentRead::for_call(&client_name, &tool_name, arguments.as_ref(), cap);
-        let reader_store = Arc::clone(&self.context.session_manager);
+            self.private_content_probe(&client_name, &tool_name, arguments.as_ref(), cap);
 
         let fut = async move {
             let _file_authority = file_admission;
@@ -3868,10 +3882,7 @@ impl ExtensionManager {
             );
             // Before the result is returned: a read of private content this
             // process cannot record is one it must not hand over.
-            if let Some(read) = private_content {
-                read.ratchet_reader(&reader_store, &session_id, &result)
-                    .await?;
-            }
+            PrivateContentRead::ratchet_probed(private_content, &session_id, &result).await?;
             Ok(result)
         };
 
@@ -3883,6 +3894,20 @@ impl ExtensionManager {
                 Some(Box::new(ReceiverStream::new(notifications_receiver)))
             },
         })
+    }
+
+    /// DR-33, design §2.6: whether this call's result may carry private
+    /// content, with the store its reader's ratchet writes to. Decided at
+    /// admission, off the call's own capability sample.
+    fn private_content_probe(
+        &self,
+        client_name: &str,
+        tool_name: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        cap: crate::privacy::CallCapability,
+    ) -> Option<(PrivateContentRead, Arc<crate::session::SessionManager>)> {
+        PrivateContentRead::for_call(client_name, tool_name, arguments, cap)
+            .map(|read| (read, Arc::clone(&self.context.session_manager)))
     }
 
     async fn authorize_dispatch_boundaries(

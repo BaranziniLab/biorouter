@@ -14,6 +14,7 @@ use axum::{
 };
 use biorouter::agents::ExtensionConfig;
 use biorouter::conversation::message::Message;
+use biorouter::privacy::decision_axes::HostLabel;
 use biorouter::privacy::declassify::{
     authenticate_declassification, declassify, is_crew_restricted, is_store_busy,
     DeclassifyOutcome, UserConfirmation, DECLASSIFY_CREW_RESTRICTED, DECLASSIFY_STORE_BUSY,
@@ -631,7 +632,7 @@ pub struct PrivacyBasis {
     /// record one.
     pub model: String,
     /// Where it runs, typed.
-    pub host: biorouter::privacy::decision_axes::HostLabel,
+    pub host: HostLabel,
     /// Where it runs, in words (`Baseten`, `this computer`), for "joey-1 ·
     /// Baseten".
     pub place: String,
@@ -4724,11 +4725,18 @@ mod privacy_basis_tests {
         assert_eq!(basis.kind, PrivacyBasisKind::DecisionModel);
         assert_eq!(basis.source, PrivacyBasisSource::Monitor);
         assert_eq!(
-            (basis.label.as_str(), basis.model.as_str(), basis.place.as_str()),
+            (
+                basis.label.as_str(),
+                basis.model.as_str(),
+                basis.place.as_str()
+            ),
             ("Done", "joey-1", "Baseten")
         );
         assert_eq!(basis.host, HostLabel::Baseten);
-        assert_eq!(basis.summary, "monitor \"Done\" uses joey-1, a Baseten model");
+        assert_eq!(
+            basis.summary,
+            "monitor \"Done\" uses joey-1, a Baseten model"
+        );
         let wire = serde_json::to_value(&basis).unwrap();
         assert_eq!(wire["kind"], "decisionModel");
         assert_eq!(wire["source"], "monitor");
@@ -4758,7 +4766,10 @@ mod privacy_basis_tests {
             privacy_basis: basis_for(&chat(Some("dr33-basis")), ProviderTier::Private),
         };
         let wire = serde_json::to_value(&detail).unwrap();
-        assert_eq!(wire["id"], "dr33-basis", "the session's own fields stay at the top");
+        assert_eq!(
+            wire["id"], "dr33-basis",
+            "the session's own fields stay at the top"
+        );
         assert_eq!(wire["privacyBasis"]["model"], "joey-1");
         let bare = serde_json::to_value(SessionDetail {
             session: chat(None),
