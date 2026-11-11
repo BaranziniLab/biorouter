@@ -1,0 +1,61 @@
+I would like you to carry out a complete clinical prediction study, from the database to the final report. 
+
+THE QUESTION
+How well can hospitalization be predicted in people with multiple sclerosis (MS) from what is recorded around their diagnosis? And how much do conditions suggested by a knowledge graph (SPOKE) add to conditions taken from the literature? An earlier version of this analysis used linear models on a yes/no outcome and a single 70:30 split; please use the methods below instead.
+
+WHAT I AM GIVING YOU
+Two connectors. UCSFOMOPAgent gives you read-only access to the UCSF de-identified OMOP database of patient records. SPOKEAgent lets you query SPOKE, a biomedical knowledge graph that links diseases, symptoms, genes and drugs.
+
+CHOOSING THE CONDITIONS
+The predictors include conditions that may influence hospitalization in MS. Please choose them yourself, from two sources:
+- the knowledge graph: look up multiple sclerosis in SPOKE and take the symptoms and diseases the graph links to it;
+- the literature: comorbidities that published studies associate with hospitalization or worse outcomes in MS. Name the studies you rely on.
+Keep the list manageable, about 50 conditions in all, and leave out anything that is rare in the records. For each condition, write down its source (SPOKE or literature), how SPOKE links it to MS or which study supports it, and the OMOP concept you map it to. A condition found in both sources counts as literature. Never send patient data to SPOKE: it only needs names of diseases and symptoms.
+
+WHO IS IN THE STUDY
+- People with a diagnosis of multiple sclerosis. The date of the first MS record is the index date.
+- They need at least 3 years of records before the index date and at least 5 years after it.
+
+WHAT TO PREDICT
+Any hospitalization between 1 and 3 years after the index date, and between 1 and 5 years. These are two separate yes/no outcomes.
+
+THE PREDICTORS
+Everything recorded from 3 years before to 1 year after the index date:
+- the conditions you chose, each as present or absent;
+- disease-modifying therapies, in two groups. High efficacy: natalizumab, ocrelizumab, ofatumumab, ublituximab, rituximab, alemtuzumab, cladribine, mitoxantrone. Low to moderate efficacy: the interferons beta, glatiramer, teriflunomide, the fumarates, fingolimod, siponimod, ozanimod, ponesimod;
+- age at diagnosis, sex, race and ethnicity.
+Please don't code categories as numbers, and don't replace a missing age with zero.
+
+THE MODELS
+Compare four models: logistic regression without penalty, elastic-net logistic regression, random forest and XGBoost. Don't use linear regression on the yes/no outcomes, and don't reweight or resample the classes.
+
+HOW TO VALIDATE
+Use repeated nested cross-validation: 5 outer folds repeated 5 times, with the model settings tuned in an inner 3-fold loop. Don't use a single split. Report, with 95% confidence intervals:
+- discrimination: AUROC, and the area under the precision-recall curve next to the event rate;
+- calibration: intercept, slope and a calibration curve;
+- sensitivity and specificity when the 20% of patients with the highest predicted risk are flagged, and at a threshold of 0.5.
+Also report the number of events per candidate predictor.
+
+KNOWLEDGE GRAPH VERSUS LITERATURE
+- Which predictors matter most? Use permutation importance, for single variables and for the four groups (SPOKE, literature, demographic, therapies).
+- Fit the elastic-net model with four sets of predictors: demographics and therapies alone; plus the SPOKE conditions; plus the literature conditions; and all together. Report the AUROC of each and the differences between them.
+
+THINGS TO KNOW ABOUT THIS DATABASE
+- Dates are shifted by up to a year for each patient, so intervals are exact but calendar years are approximate. Don't use anything dated after 31 January 2025, and ignore records with impossible dates.
+- One hospital stay is often stored as several consecutive records: merge them before counting hospitalizations, and ignore records that last more than a year.
+- Year of birth is capped at 1935 for the oldest patients: keep them, and say how many there are.
+- The database is large and shared: build each query around the MS patients, work in batches of patients, run long queries as background jobs, and try each query on one batch before running the rest.
+
+PRIVACY
+These are patient records. Reach the database only through the UCSFOMOPAgent tools, and the knowledge graph only through the SPOKEAgent tools. Keep anything with one row per person in the folder secure/ and never display it. Only aggregate results go into export/ and figures/, and any count from 1 to 10 is written "<11", making sure it cannot be recovered by subtraction. Before each checkpoint, check your own outputs against these rules.
+
+WHAT I WOULD LIKE AT THE END
+- Tables: how the cohort was selected; its characteristics; the events; the performance of each model; the list of conditions with its source, its support and how common each one is.
+- Figures: ROC curves, calibration curves, the most important predictors by source, and the comparison of the four sets of predictors.
+- A report (export/report.html) that someone who was not here can follow: what you did, what you found, what you could not do as asked, and the limitations.
+- A record of your work in logs/: the queries you ran, the choices I left to you and why you made them, and my replies word for word.
+
+CHECKPOINTS
+Stop and wait for me twice, each time with a short summary of the key numbers and where they come from:
+1. after you have chosen the conditions and built the cohort, the predictors and the outcomes, and before you fit any model. Show me the list of conditions with their sources;
+2. at the end, with the results, the figures and the report.

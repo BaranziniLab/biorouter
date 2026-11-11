@@ -1,0 +1,54 @@
+I would like you to carry out a complete study on your own, from the database to the final report: an external validation of the PREVENT equations at UCSF.
+
+THE QUESTION
+The American Heart Association PREVENT equations estimate the 10-year risk of total cardiovascular disease (CVD), atherosclerotic cardiovascular disease (ASCVD) and heart failure (HF) from routine measurements. How well do they predict these events in adults seen at UCSF? Please follow the design of a published validation in 30 US health systems (Khan et al., Circ Popul Health Outcomes 2026), so that your results can be set next to theirs.
+
+WHAT I AM GIVING YOU
+In the folder reference/ you will find that paper and its supplement, which describe the cohort, the outcome codes and the published results, and the supplement of the original PREVENT publication (Khan et al., Circulation 2024), which contains the coefficients of the equations. Read them first. Where this message and the paper differ, follow this message.
+
+WHO IS IN THE STUDY
+- Adults aged 30 to 79 with an outpatient serum creatinine measurement between 2013 and 2018. The first such measurement that is preceded by at least one year of records is the person's index date. They must also have at least one visit afterwards.
+- Exclude anyone with cardiovascular disease recorded on or before the index date: ischemic heart disease (ICD-9 410-414, ICD-10 I20-I25), heart failure (428, I50, and hypertensive or rheumatic heart disease with heart failure), cerebrovascular disease (430-438, I60-I69, G45), peripheral arterial disease (440.2, 440.3, 443.9, I70.2-I70.7, I73.9) and previous coronary revascularization (V45.81, V45.82, Z95.1, Z95.5, Z98.61). Also use the matching standard concepts, because older records often lack an ICD code.
+- Keep only people with every input the equations need, and with values inside the ranges PREVENT was built for: systolic blood pressure 90-200 mmHg, body-mass index 18.5-40, total cholesterol 130-320 mg/dL, HDL cholesterol 20-100 mg/dL, eGFR 15-140.
+
+WHAT PREVENT NEEDS
+Age, sex, systolic blood pressure, total and HDL cholesterol, body-mass index, eGFR (CKD-EPI 2021, from the index creatinine), diabetes, current smoking, blood-pressure treatment and statin use. Use the value closest to the index date: blood pressure within one year before it, cholesterol and body-mass index within three years. Diabetes means a diagnosis (ICD-9 250; ICD-10 E08-E11, E13), an HbA1c of 6.5% or more, or a glucose-lowering drug. Treatments count if prescribed in the year before the index date.
+
+WHAT COUNTS AS AN EVENT
+The first hospitalization after the index date with a diagnosis of myocardial infarction (410; I21, I22) or stroke (431, 432, 433.x1, 434.x1; I61-I63) for ASCVD, of heart failure (428; I50) for HF, and either of them for total CVD. Follow each person until the event, death, their last visit, the end of 2024, or 10 years, whichever comes first. Death before an event is a competing event, not an event.
+
+THE EQUATIONS
+Write the three 10-year base equations yourself, for women and for men, from the coefficients in the PREVENT supplement. Then check your code against the R package preventr (it is in rlib/) for every person it accepts: your risks and the package's should agree to the third decimal. Use the package only for this check, never as a source of code or coefficients.
+
+HOW TO MEASURE PERFORMANCE
+For each of the three outcomes, overall and in women and men:
+- discrimination: Harrell's C with its 95% confidence interval;
+- the observed 10-year risk, counting death as a competing event;
+- the ratio of observed to predicted risk;
+- the calibration slope, as in the reference study: the slope of observed against predicted risk across the ten tenths of predicted risk, with a bootstrap confidence interval.
+Set your results next to the published ones, which you will find in the paper. Repeat the analysis once without counting same-day hospital stays as events. Please don't recalibrate the equations or add analyses I have not asked for.
+
+THINGS TO KNOW ABOUT THIS DATABASE
+- Dates are shifted by up to a year for each patient, so intervals are exact but calendar years are approximate. Don't use anything dated after 31 January 2025.
+- One hospital stay is often stored as several consecutive records: merge them before counting hospitalizations, and ignore records that last more than a year.
+- There is no emergency department visit type, so "outpatient" means outside a hospital stay.
+- Year of birth is capped at 1935: leave those people out of the main analysis, since their real age is unknown.
+- Smoking is recorded almost only for smokers. Treat a person with no smoking record as a non-smoker, and report how many there are.
+- Weight and height have no units; use the recorded body-mass index.
+- The database is large and shared. About 200,000 people have a creatinine measurement in those years: build each query around that group, work in batches of patients, run long queries as background jobs, and try each query on one batch before running the rest.
+
+PRIVACY
+These are patient records. Reach the database only through the UCSFOMOPAgent tools. Keep anything with one row per person in the folder secure/ and never display it. Only aggregate results go into export/ and figures/, and any count from 1 to 10 is written "<11", making sure it cannot be recovered by subtraction. Before each checkpoint, check your own outputs against these rules.
+
+WHAT I WOULD LIKE AT THE END
+- Tables: how the cohort was selected, step by step; its characteristics; how many values were missing; the events; and the performance results with confidence intervals.
+- Figures: your estimates next to the published ones; observed against predicted risk by tenth; and your risks against the package's.
+- A report (export/report.html) that someone who was not here can follow: what you did, what you found, what you could not do as asked, and the limitations.
+- A record of your work in logs/: the queries you ran, the choices I left to you and why you made them, and my replies word for word.
+
+CHECKPOINTS
+Stop and wait for me twice, each time with a short summary of the key numbers and where they come from:
+1. after you have built the cohort and checked your equations against the package, and before you compute any performance result;
+2. at the end, with the results, the figures and the report.
+
+Thank you. Take it one step at a time.

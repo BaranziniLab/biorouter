@@ -1,0 +1,13 @@
+{
+  "name": "prevent-ucsf-risk-calculator",
+  "version": "0.2.4",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --format=iife --outfile=dist/app.js",
+    "start": "node serve.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0"
+  }
+}

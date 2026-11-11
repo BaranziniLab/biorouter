@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PREVENT UCSF Risk Calculator</title>
+  <!-- Biorouter injects its design tokens, the app configuration and dist/app.js when it serves this page. -->
+  <style>
+    :root {
+      color-scheme: light;
+      --page: var(--br-muted, #faf8f3); --card: var(--br-surface, #ffffff); --ink: var(--br-text, #2a2520); --ink-2: var(--br-text-muted, #7a736c);
+      --line: var(--br-border, #ece6d8); --line-2: var(--br-border-subtle, #e8e1d2); --coral: var(--br-coral, #cf6d47);
+      --r-card: var(--br-radius, 12px); --r-ctl: var(--br-radius-ctl, 6px);
+      /* outcome identity (Okabe-Ito), the same as the study's figures */
+      --c-total_cvd: #0072B2; --c-ascvd: #E69F00; --c-hf: #009E73; --good: #047857; --warn: #B45309;
+    }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: var(--page); color: var(--ink); font-family: var(--br-font, Arial, Helvetica, sans-serif); -webkit-font-smoothing: antialiased; }
+    .br-container { max-width: 1200px; margin: 0 auto; padding: 22px 24px 36px; }
+    h1, h2, h3 { font-family: var(--br-font-heading, var(--br-font, Arial, Helvetica, sans-serif)); color: var(--ink); letter-spacing: -0.01em; }
+    h2 { font-size: 15px; font-weight: 700; margin: 0 0 6px; } h3 { font-size: 13.5px; font-weight: 700; margin: 14px 0 4px; }
+    .subtle { color: var(--ink-2); margin: 0 0 10px; font-size: 13px; line-height: 1.45; }
+    .note, .muted { color: var(--ink-2); font-size: 12px; line-height: 1.45; } .note { margin: 8px 0 0; }
+    :focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
+    .br-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: 0 1px 2px rgba(32, 25, 15, .04); padding: 16px 18px; }
+    .br-output:empty, .br-run-status:empty { display: none; }
+
+    .masthead { display: flex; align-items: baseline; gap: 6px 18px; flex-wrap: wrap; margin: 0 0 14px; }
+    .masthead h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -0.02em; }
+    .masthead p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+    .entry { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1fr) minmax(0, 1.5fr); gap: 14px; align-items: stretch; }
+    .entry-card { display: flex; flex-direction: column; gap: 10px; }
+    .entry-card h2, .entry-card .subtle { margin: 0; }
+    .row-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+    .omop-row { display: grid; grid-template-columns: 1fr 150px; gap: 8px; }
+    .chat-log { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--page); }
+    .msg { max-width: 88%; padding: 7px 11px; border-radius: 12px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+    .msg.user { align-self: flex-end; background: var(--ink); color: var(--card); border-bottom-right-radius: 4px; }
+    .msg.agent { align-self: flex-start; background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; white-space: normal; }
+    .chat-input { display: flex; gap: 8px; align-items: stretch; }
+    .chat-input textarea { flex: 1; min-height: 38px; resize: vertical; font: inherit; }
+
+    .tabbar { position: sticky; top: 0; z-index: 10; display: flex; gap: 4px; flex-wrap: wrap; margin: 18px 0 14px; padding: 8px 0; background: var(--page); border-bottom: 1px solid var(--line); }
+    .tabbar .br-tab { background: transparent; color: var(--ink-2); border-radius: var(--r-ctl); }
+    .tabbar .br-tab:hover { background: var(--card); color: var(--ink); }
+    .tabbar .br-tab[aria-selected="true"] { background: var(--card); color: var(--ink); box-shadow: inset 0 -2px 0 var(--coral), 0 0 0 1px var(--line); }
+    .section { display: none; } .section.active { display: block; }
+    .layout { display: grid; grid-template-columns: minmax(340px, .9fr) minmax(420px, 1.1fr); gap: 14px; align-items: start; }
+    .stack { display: flex; flex-direction: column; gap: 14px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+    #cohortLoaded > .br-card, #cohortLoaded > .grid2 + .br-card { margin-top: 14px; }
+    .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px 14px; flex-wrap: wrap; margin-bottom: 8px; }
+    .card-head h2 { margin: 0; }
+    .keys { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--ink-2); }
+    .key { display: inline-flex; align-items: center; gap: 5px; }
+    .key-bar { width: 16px; height: 6px; border-radius: 3px; background: var(--ink-2); }
+    .key-band { width: 16px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--ink-2) 45%, transparent); }
+    .key-tick { width: 3px; height: 12px; border-radius: 1px; background: var(--coral); }
+
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+    .field { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+    .field-note { font-size: 11.5px; color: var(--ink-2); min-height: 15px; }
+    .field-note.warn { color: var(--warn); font-weight: 600; }
+    .br-input[aria-invalid="true"] { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
+    .toggle { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; }
+    .toggle input, .rule input { width: 17px; height: 17px; accent-color: var(--coral); }
+    .status { margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, var(--card)); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
+
+    /* risk cards with the twin-scale strip: bar = PREVENT, coral mark = Calibrated (MOCK) */
+    .risk-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .risk-card { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px 12px; background: var(--card); }
+    .risk-card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--series); }
+    .risk-name { font-weight: 700; font-size: 14px; }
+    .risk-plain { font-size: 12px; color: var(--ink-2); margin-bottom: 8px; min-height: 30px; }
+    .value-row { display: flex; flex-direction: column; gap: 1px; padding: 5px 0; }
+    .value-row + .value-row { border-top: 1px solid var(--line-2); }
+    .value-label { font-size: 10.5px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .08em; }
+    .value-right { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .value { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1.12; }
+    .value-row + .value-row .value { font-size: 19px; }
+    .delta { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+    .delta.down { color: var(--good); } .delta.up { color: var(--warn); }
+    .risk-pct { font-size: 12px; color: var(--ink-2); margin-top: 4px; }
+    .strip { position: relative; height: 6px; margin: 10px 0 3px; border-radius: 3px; background: var(--line-2); }
+    .strip-bar { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--series); }
+    .strip-band { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: color-mix(in srgb, var(--series) 45%, transparent); }
+    .strip-median { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background: var(--series); }
+    .strip-tick { position: absolute; top: -4px; bottom: -4px; width: 3px; margin-left: -1.5px; border-radius: 1px; background: var(--coral); box-shadow: 0 0 0 1.5px var(--card); }
+    .explain { font-size: 12.5px; line-height: 1.5; color: var(--ink-2); margin: 12px 0 0; }
+
+    .chart-frame { margin-top: 14px; padding: 12px 14px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); }
+    .chart-head p { margin-bottom: 4px; }
+    svg.chart { width: 100%; display: block; overflow: visible; }
+    svg .grid { stroke: var(--line); stroke-width: 1; }
+    svg .tick { fill: var(--ink-2); font-size: 11px; font-family: inherit; }
+    svg .bar { fill: var(--series); opacity: .4; } svg .bar:hover { opacity: .75; } svg .bar-patient { opacity: .85; }
+    svg .marker { stroke: var(--ink); stroke-width: 2; }
+    svg .marker-label { fill: var(--ink); font-size: 11.5px; font-weight: 700; font-family: inherit; }
+    svg .series { fill: none; stroke: var(--series); stroke-width: 2.5; stroke-linejoin: round; }
+    svg .series.dashed { stroke-dasharray: 6 5; stroke-width: 2; }
+    svg .hit { fill: transparent; } svg .hit:hover { fill: color-mix(in srgb, var(--ink) 15%, transparent); }
+    svg .ref-line { fill: none; stroke: var(--ink-2); stroke-width: 1.5; }
+    .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .lg-bar::before { content: ""; width: 12px; height: 12px; border-radius: 3px; background: var(--series); opacity: .55; }
+    .lg-marker::before { content: ""; width: 2px; height: 14px; background: var(--ink); }
+    .lg-line::before { content: ""; width: 22px; height: 0; border-top: 3px solid var(--series); }
+    .lg-solid::before { content: ""; width: 22px; height: 0; border-top: 2.5px solid var(--ink-2); }
+    .lg-dashed::before { content: ""; width: 22px; height: 0; border-top: 2px dashed var(--ink-2); }
+    .lg-ref::before { content: ""; width: 22px; height: 0; border-top: 2px solid var(--ink-2); }
+
+    .slider-row { display: flex; align-items: center; gap: 10px; }
+    .slider-row input { flex: 1; accent-color: var(--coral); }
+    .slider-val { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--ink-2); min-width: 92px; text-align: right; }
+    .presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+    .chip-btn { font-size: 12.5px; padding: 4px 10px; }
+    .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+    #scenarioLabel { font-weight: 600; color: var(--ink); }
+
+    .quiet-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+    .quiet-table th, .quiet-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line-2); vertical-align: top; }
+    .quiet-table th { font-weight: 600; color: var(--ink-2); font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+    .quiet-table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .quiet-table tr.changes td { font-size: 12px; color: var(--ink-2); }
+    .quiet-table tr.click { cursor: pointer; }
+    .quiet-table tr.click:hover, .quiet-table tr.click:focus { background: var(--page); outline: none; }
+    .rule { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; font-size: 13.5px; }
+    .rule input { margin-top: 2px; }
+    .origin { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); border-left: 3px solid var(--coral); background: var(--card); font-size: 13.5px; }
+    .toast { position: fixed; right: 18px; bottom: 18px; max-width: 420px; z-index: 50; padding: 10px 14px; border-radius: 10px; font-size: 13.5px; background: var(--ink); color: var(--card); box-shadow: 0 8px 24px rgba(0, 0, 0, .18); }
+    .about { max-width: 80ch; line-height: 1.55; } .about p { margin: 0 0 8px; font-size: 13.5px; }
+    .foot { display: flex; gap: 6px 14px; flex-wrap: wrap; align-items: center; margin-top: 26px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); }
+    .linklike { background: none; border: 0; padding: 0; color: var(--coral); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; font: inherit; }
+
+    @media (max-width: 1100px) { .entry { grid-template-columns: 1fr 1fr; } .entry-card.cohort-entry { grid-column: 1 / -1; } }
+    @media (max-width: 920px) { .layout, .grid2 { grid-template-columns: 1fr; } .risk-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 680px) { .entry { grid-template-columns: 1fr; } .entry-card.cohort-entry { grid-column: auto; } .form-grid, .omop-row { grid-template-columns: 1fr; } .br-container { padding: 16px; } }
+  </style>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <header class="masthead">
+      <h1>PREVENT UCSF Risk Calculator</h1>
+      <p>Ten-year risk of cardiovascular disease, ASCVD and heart failure, as published by the AHA, next to a calibrated value (MOCK parameters in this public version).</p>
+    </header>
+
+    <section class="entry" aria-label="Start">
+      <div class="br-card entry-card">
+        <h2>Patient</h2>
+        <p class="subtle">Type the 11 values from any source, or open the demo patient.</p>
+        <div class="row-buttons">
+          <button id="manualEntry" class="br-btn" type="button">Enter values</button>
+          <button id="demoPatient" class="br-btn br-btn--secondary" type="button">Demo patient</button>
+        </div>
+      </div>
+      <div class="br-card entry-card">
+        <h2>Patient from OMOP</h2>
+        <div class="omop-row">
+          <label class="br-field"><span class="br-label">person_id</span><input id="personId" class="br-input" type="password" autocomplete="off" placeholder="Entered privately" /></label>
+          <label class="br-field"><span class="br-label">As-of date</span><input id="asOfDate" class="br-input" type="date" value="2016-01-01" /></label>
+        </div>
+        <div class="row-buttons"><button id="loadOmop" class="br-btn" type="button">Load</button></div>
+        <p id="omopPrivacy" class="note" aria-live="polite"></p>
+      </div>
+      <div class="br-card entry-card cohort-entry">
+        <h2>Cohort</h2>
+        <p class="subtle">Describe who you want to study and why. The agent proposes the criteria and codes and shows the cohort size before anything runs.</p>
+        <div id="chatLog" class="chat-log" aria-live="polite" hidden></div>
+        <div class="chat-input">
+          <textarea id="cohortQuestion" class="br-textarea" rows="1" placeholder="e.g. adults aged 40-69 with type 2 diabetes and at least 3 UCSF visits, as of 2016-01-01"></textarea>
+          <button id="askCohort" class="br-btn" type="button">Send</button>
+        </div>
+        <div class="br-output" id="cohortOut" data-br-region="cohort_results"></div>
+        <div data-br-progress class="br-run-status"></div>
+        <div class="row-buttons"><button id="demoCohortTop" class="br-btn br-btn--secondary" type="button">Demo cohort</button></div>
+      </div>
+    </section>
+
+    <nav class="tabbar br-tabs" role="tablist" aria-label="Views">
+      <button class="br-tab" data-tab="patient" aria-selected="true">Patient</button>
+      <button class="br-tab" data-tab="cohortview">Cohort</button>
+      <button class="br-tab" data-tab="position">Position</button>
+      <button class="br-tab" data-tab="whatif">What if</button>
+      <button class="br-tab" data-tab="projection">Projection</button>
+      <button class="br-tab" data-tab="about">About</button>
+    </nav>
+
+    <section id="patient" class="section active">
+      <div id="patientOrigin" class="origin" hidden><span id="originText"></span><button id="backToCohort" class="br-btn br-btn--secondary" type="button">Back to the cohort</button></div>
+      <div class="layout">
+        <div id="patientForm" class="br-card">
+          <h2>Patient inputs</h2>
+          <p class="subtle">Edit any value; the risks update as you type.</p>
+          <div class="form-grid" id="fields"></div>
+          <div id="inputStatus" class="status" hidden></div>
+        </div>
+        <div class="stack">
+          <div class="br-card">
+            <div class="card-head"><h2>10-year risk</h2><span class="keys"><span class="key"><i class="key-bar"></i>PREVENT</span><span class="key"><i class="key-tick"></i>Calibrated (MOCK)</span><span class="key muted">scale 0–30%</span></span></div>
+            <div class="risk-grid" id="riskGrid"></div>
+            <p class="explain">MOCK DATA: the calibrated value uses illustrative parameters (about 80% of the PREVENT risk) and the reference cohort is simulated; neither comes from patient data. The patient's rank is the same on both scales.</p>
+            <div class="chart-frame">
+              <h3 id="miniTitle">Total CVD: position in the MOCK reference cohort</h3>
+              <svg id="miniPosition" class="chart" role="img" aria-label="Total CVD risk distribution of the MOCK reference cohort with the patient marked"></svg>
+              <div id="miniLegend"></div>
+            </div>
+          </div>
+          <div class="br-card">
+            <h2>Where each value comes from</h2>
+            <table class="quiet-table"><thead><tr><th>Input</th><th>Value</th><th>Source</th><th>Date</th></tr></thead><tbody id="sourceRows"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="position" class="section">
+      <div class="br-card">
+        <div class="br-row" style="justify-content:space-between; align-items:end; gap:12px; flex-wrap:wrap;">
+          <div><h2>Position in the MOCK reference cohort</h2>
+            <p class="subtle">Against 20,000 simulated adults aged 30–79 (MOCK data, not patients), or against the cohort in the Cohort tab. Hover a bar for its count.</p></div>
+          <label class="br-field" style="max-width:200px;"><span class="br-label">Compare with</span>
+            <select id="sexFilter" class="br-select"><option value="overall">All adults</option><option value="female">Women</option><option value="male">Men</option><option value="cohort" id="optCohort" hidden disabled>This cohort</option></select></label>
+        </div>
+        <div id="histograms"></div>
+      </div>
+    </section>
+
+    <section id="whatif" class="section">
+      <div class="layout">
+        <div class="br-card">
+          <h2>What if</h2>
+          <p class="subtle">Change the modifiable inputs; age and sex stay as entered.</p>
+          <div id="presets" class="presets"></div>
+          <p class="note" style="margin:0 0 12px">PREVENT is recomputed with the changed inputs. Statin use and blood-pressure treatment describe current treatment, not the effect of starting it; switching them on can raise the computed risk.</p>
+          <div id="scenarioControls" class="form-grid"></div>
+          <div class="actions">
+            <button id="resetScenario" class="br-btn br-btn--secondary" type="button">Reset to current</button>
+            <button id="saveScenario" class="br-btn" type="button">Save scenario</button>
+            <button id="clearScenarios" class="br-btn br-btn--secondary" type="button">Clear saved</button>
+          </div>
+          <div id="whatifStatus" class="status" hidden></div>
+        </div>
+        <div class="stack">
+          <div class="br-card">
+            <h2>Current → scenario</h2>
+            <p id="scenarioLabel" class="subtle"></p>
+            <div id="scenarioRisks" class="risk-grid"></div>
+            <p class="note">Change in percentage points (pp) and relative change.</p>
+          </div>
+          <div class="br-card">
+            <h2>Saved scenarios</h2>
+            <p id="savedHint" class="subtle"></p>
+            <table id="savedTable" class="quiet-table"></table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="cohortview" class="section">
+      <div id="cohortEmpty" class="br-card">
+        <h2>No cohort yet</h2>
+        <p class="subtle">Describe one under Cohort at the top, or send one from a Biorouter chat. PREVENT is then computed for every member.</p>
+        <div class="row-buttons"><button id="demoCohort" class="br-btn br-btn--secondary" type="button">Load demo cohort</button></div>
+      </div>
+      <div id="cohortLoaded" hidden>
+        <div class="grid2">
+          <div class="br-card"><h2 id="cohortName"></h2><p id="cohortPurpose" class="subtle"></p><table id="cohortMeta" class="quiet-table"></table></div>
+          <div class="br-card"><h2>Members</h2><table id="cohortCounts" class="quiet-table"></table>
+            <label class="rule" style="margin-top:12px"><input type="checkbox" id="showPatients" /><span><strong>Show individual patients</strong><br /><span class="muted">Off: no patient list, and counts from 1 to 10 shown as "&lt;11".</span></span></label></div>
+        </div>
+        <div class="br-card">
+          <div class="card-head"><h2>10-year risk in this cohort</h2><span class="keys"><span class="key"><i class="key-band"></i>PREVENT, interquartile range</span><span class="key"><i class="key-tick"></i>calibrated median (MOCK)</span><span class="key muted">scale 0–30%</span></span></div>
+          <div id="cohortRisk" class="risk-grid"></div>
+          <p class="explain">PREVENT is computed for every member from their own inputs. Predicted events are the sum of the members' 10-year risks.</p>
+        </div>
+        <div class="br-card">
+          <div class="br-row" style="justify-content:space-between; align-items:end; gap:12px; flex-wrap:wrap;">
+            <h2>Distribution compared with the MOCK reference cohort</h2>
+            <label class="br-field" style="max-width:200px;"><span class="br-label">Outcome</span><select id="cohortOutcome" class="br-select"><option value="total_cvd">Total CVD</option><option value="ascvd">ASCVD</option><option value="hf">Heart failure</option></select></label>
+          </div>
+          <svg id="cohortChart" class="chart" role="img" aria-label="Distribution of PREVENT risk in this cohort and in the MOCK reference cohort"></svg>
+          <div id="cohortLegend" class="legend"></div>
+        </div>
+        <div class="br-card"><h2>By sex and age</h2><p class="subtle">Median 10-year risk, PREVENT · calibrated (MOCK).</p><table id="cohortBreakdown" class="quiet-table"></table></div>
+        <div class="br-card">
+          <h2>What if, for the whole cohort</h2>
+          <p class="subtle">PREVENT recomputed with the inputs changed, only for the members each change applies to. No treatment effect is assumed.</p>
+          <div id="cohortRules"></div>
+          <table id="cohortScenario" class="quiet-table"></table>
+          <p id="cohortScenarioNote" class="note"></p>
+        </div>
+        <div id="patientListCard" class="br-card" hidden>
+          <h2>Patients</h2>
+          <p class="subtle">Sorted by total CVD risk. Select a row to open the patient; a missing input can then be filled in by hand.</p>
+          <table id="patientTable" class="quiet-table"></table>
+          <div class="actions"><button id="morePatients" class="br-btn br-btn--secondary" type="button">Show more</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="projection" class="section">
+      <div class="br-card">
+        <h2>Model projection by age</h2>
+        <p class="subtle">Age is advanced to 79, the upper limit of PREVENT, while every other input stays as entered. This is a model projection, not an observed or expected trajectory.</p>
+        <p id="projectionNote" class="status" style="color:var(--br-text-muted)" hidden></p>
+        <svg id="projectionChart" class="chart" style="height:300px" role="img" aria-label="Projected 10-year risks by age, PREVENT and Calibrated (MOCK)"></svg>
+        <div class="legend">
+          <span class="lg-line" style="--series:var(--c-total_cvd)">Total CVD</span>
+          <span class="lg-line" style="--series:var(--c-ascvd)">ASCVD</span>
+          <span class="lg-line" style="--series:var(--c-hf)">Heart failure</span>
+          <span class="lg-solid">PREVENT</span>
+          <span class="lg-dashed">Calibrated (MOCK)</span>
+        </div>
+        <table class="quiet-table" style="margin-top:12px;">
+          <thead><tr><th>Age</th><th>Total CVD (PREVENT · calibrated)</th><th>ASCVD (PREVENT · calibrated)</th><th>Heart failure (PREVENT · calibrated)</th></tr></thead>
+          <tbody id="projectionRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="about" class="section">
+      <div class="br-card about">
+        <h2>About this calculator</h2>
+        <p>PREVENT (American Heart Association, 2023) estimates the 10-year risk of total cardiovascular disease (heart attack, stroke or heart failure), atherosclerotic cardiovascular disease (heart attack or stroke) and heart failure in adults aged 30–79 without cardiovascular disease, from 11 routine measurements.</p>
+        <h3>Two scales</h3>
+        <p><em>PREVENT</em> is the published equation. <em>Calibrated (MOCK)</em> keeps its ranking and rescales it with a Cox-type transformation of the logit of the PREVENT risk. In this public version the parameters are MOCK values (about 80% of the PREVENT risk), not the UCSF recalibration, which is not distributed for privacy purposes. <span id="calibrationFacts"></span></p>
+        <h3>Inputs</h3>
+        <p>Age, sex, systolic blood pressure, total and HDL cholesterol, body-mass index, eGFR (CKD-EPI 2021), diabetes, current smoking, blood-pressure treatment and statin use. Values can be typed in from any source or loaded from UCSF OMOP with the rules of the validation study (time windows, units, codes); each value shows its source and date. PREVENT is computed only within its validated input ranges.</p>
+        <h3>Reference cohort</h3>
+        <p>MOCK data: 20,000 simulated adults aged 30–79 with plausible PREVENT inputs, included as aggregated counts. They are not patients and have no outcomes; the UCSF reference cohort of the case study is not distributed for privacy purposes.</p>
+        <h3>Cohorts</h3>
+        <p>A cohort studied in a Biorouter chat (skill "prevent-calculator-handoff") is sent to the app over a one-time local connection: PREVENT is computed for every member, with exclusions for missing or out-of-range inputs. Describing a cohort inside the app needs the UCSFOMOPAgent extension in the app's session, which Biorouter cannot attach yet when the app is opened from its exported launcher. The demo patient and the demo cohort are simulated, not patient data.</p>
+        <h3>Data and privacy</h3>
+        <p>OMOP is queried with your own UCSFOMOPAgent credentials; the app stores none. Patient values stay on this computer. When recording or sharing the screen, use the demo patient and keep individual patients hidden.</p>
+        <h3>Limitations</h3>
+        <p>One health system; de-identified, date-shifted data; the calibration is cause-specific and ignores the competing risk of death, so it slightly overstates risk; the projection holds every input but age fixed. For research use only, not for clinical decisions.</p>
+        <p class="note">Version 0.2.4. Built by Biorouter (Agent Drafter); repaired and extended afterwards by the study team (calibration, cohort view, design). This public version contains MOCK reference and calibration data only. See the package README.</p>
+      </div>
+    </section>
+
+    <footer class="foot"><span>For research use only; not for clinical decisions.</span><button class="linklike" type="button" data-goto="about">About this calculator</button></footer>
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
