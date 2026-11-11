@@ -3668,7 +3668,7 @@ fn judge_child(
 ) -> Result<(TaskConfig, ChildPrivacy)> {
     use crate::privacy::decision_axes;
     let parent_effective = parent.effective;
-    let parent_effective_affiliation = parent.effective_affiliation.clone();
+    let parent_effective_affiliation = parent.effective_affiliation;
     let parent_lowered_by = parent.lowered_by.clone();
     let parent_model = parent.model;
     let privacy_enforced = parent.privacy_enforced;

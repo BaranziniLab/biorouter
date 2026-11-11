@@ -289,8 +289,7 @@ async fn naming_the_refused_model_outright_is_still_refused() {
     }));
     let error = resolve(public_chat(), &named, None, LOOPBACK)
         .await
-        .err()
-        .expect("R4 refuses a named private child under a public chat");
+        .expect_err("R4 refuses a named private child under a public chat");
     assert!(
         error
             .downcast_ref::<crate::privacy::PrivacyRefusal>()

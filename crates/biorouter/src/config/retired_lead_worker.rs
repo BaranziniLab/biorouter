@@ -174,14 +174,14 @@ fn migrate_values(values: &mut Mapping) -> Option<LeadWorkerMigration> {
     let worker_already_set =
         text(values, WORKER_PROVIDER_KEY).is_some() || text(values, WORKER_MODEL_KEY).is_some();
     let worker = match (old_provider, old_model) {
-        (Some(provider), Some(model))
-            if !worker_already_set
-                && !(chat_provider.as_deref() == Some(provider.as_str())
-                    && model == lead_model) =>
-        {
-            set(values, WORKER_MODEL_KEY, &model);
-            set(values, WORKER_PROVIDER_KEY, &provider);
-            Some(DefaultWorker { provider, model })
+        (Some(provider), Some(model)) if !worker_already_set => {
+            let is_the_chat_model =
+                chat_provider.as_deref() == Some(provider.as_str()) && model == lead_model;
+            (!is_the_chat_model).then(|| {
+                set(values, WORKER_MODEL_KEY, &model);
+                set(values, WORKER_PROVIDER_KEY, &provider);
+                DefaultWorker { provider, model }
+            })
         }
         _ => None,
     };
