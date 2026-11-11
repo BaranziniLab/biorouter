@@ -151,8 +151,8 @@ function SourceRow({
  * opens the decision history filtered to that source.
  *
  * Monitors is a quiet icon button on the heading line (F-16), not in a decision
- * chat. Nothing at all is drawn while the chat has made no decision calls and
- * has no monitors.
+ * chat. Nothing at all is drawn while the chat has made no decision calls but a
+ * gate's and has no monitors.
  */
 export function SummaryDecisions({
   data,
@@ -165,10 +165,13 @@ export function SummaryDecisions({
 }: SummaryDecisionsData) {
   const summary = data?.summary ?? null;
   const settings = data?.settings ?? null;
-  const total = summary?.total ?? 0;
   const monitors = settings?.monitors ?? [];
-  const visible = total > 0 || monitors.length > 0;
   const rows = summaryDecisionRows(summary, settings, { fired });
+  // Drawn when it has a row to show or a monitor to speak of. Not on the
+  // summary's total alone: that counts a phase gate's checks, whose one place is
+  // their phase's chip, so a chat whose only decisions were a gate's read
+  // "Decisions  0 checks" beside "Gate checked once, passed" (R2-6).
+  const visible = rows.length > 0 || monitors.length > 0;
   const headline = decisionsHeadline(rows);
   const [open, setOpen] = useSectionToggle(headline.openByDefault);
   const listId = useId();

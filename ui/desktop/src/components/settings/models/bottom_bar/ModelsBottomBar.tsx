@@ -40,6 +40,9 @@ import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/discl
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { isDecisionProvider } from '../../../decisions/decisionWire';
+import { decisionModelPlace } from '../../../decisions/decisionWords';
+import { cn } from '../../../../utils';
+import { decisionModelLabel } from '../../../../utils/sessionDecisions';
 import { switchModelCopy } from '../copy';
 import { isBrowserSurface } from '../../../../utils/surface';
 import type {
@@ -683,9 +686,16 @@ export default function ModelsBottomBar({
   // Spec 3.7: the chip names the model the way a person says it, so the date
   // stamp comes off (`gpt-5.6-sol-2026-07-09` reads `gpt-5.6-sol`). The full id
   // stays in the tooltip, the menu and the accessible name.
-  const chipModelLabel = chipPair.role
-    ? `${friendlyModelName(displayModel)} (${chipPair.role})`
-    : friendlyModelName(displayModel);
+  // A decision model goes by its alias (R3): `joey-1`, never `decision-models/joey-1`.
+  const decisionAlias =
+    decisionChat && effectiveProvider && displayModel
+      ? decisionModelLabel({ provider: effectiveProvider, model: displayModel })
+      : null;
+  const chipModelLabel = decisionAlias
+    ? decisionAlias
+    : chipPair.role
+      ? `${friendlyModelName(displayModel)} (${chipPair.role})`
+      : friendlyModelName(displayModel);
   // A decision model has no reasoning effort to set: it answers in one step.
   const showEffort = !decisionChat && effort !== null && effort !== DEFAULT_REASONING_EFFORT;
   // The InfoTip's notes: where a choice here reaches, and the lead/worker pair.
@@ -697,7 +707,27 @@ export default function ModelsBottomBar({
   ]
     .filter(Boolean)
     .join(' ');
-  const providerLine = [shownProviderName, modelTierWords].filter(Boolean).join(' · ');
+  // R1-7 and R1-9: a decision model's line says where it runs, in the words every
+  // decision surface uses ("Runs on this computer", "Runs on Baseten"), and wraps
+  // rather than cutting off. A local model's affiliation ("On this machine") says
+  // the same thing again, so it is not added; an institutional one still is.
+  const decisionPlace = decisionChat
+    ? decisionModelPlace(effectiveProvider ?? '', { tier: boundTier })
+    : null;
+  const providerLine = (
+    decisionPlace
+      ? [switchModelCopy.decisionRunsOn(decisionPlace), modelTierWords]
+      : [shownProviderName, modelTierWords]
+  )
+    .filter(Boolean)
+    .join(' · ');
+  const lineAffiliationWords =
+    decisionPlace && affiliation?.kind === 'local' ? null : affiliationWords;
+  const lineModelName =
+    decisionChat && effectiveProvider && shownModelName
+      ? (decisionModelLabel({ provider: effectiveProvider, model: shownModelName }) ??
+        shownModelName)
+      : shownModelName;
   // DR-17 and §14.2, kept VISIBLE as one line (principle 2): the chat's tier,
   // then the standing disclosure the daemon serves for a non-private model.
   const showPrivacyBlock = Boolean(privacyLine || disclosureLine);
@@ -775,18 +805,25 @@ export default function ModelsBottomBar({
                 />
               )}
             </div>
-            <div className="mt-0.5 truncate text-label text-text-default">{shownModelName}</div>
+            <div className="mt-0.5 truncate text-label text-text-default">{lineModelName}</div>
             {providerLine && (
               <div
                 data-testid="model-provider-line"
-                className="flex min-w-0 items-center gap-1.5 text-supporting text-text-muted"
+                className={cn(
+                  'flex min-w-0 items-center gap-1.5 text-supporting text-text-muted',
+                  decisionPlace && 'flex-wrap'
+                )}
               >
-                <span className="min-w-0 truncate">{providerLine}</span>
-                {affiliationWords && (
+                <span
+                  className={cn('min-w-0', decisionPlace ? '[overflow-wrap:anywhere]' : 'truncate')}
+                >
+                  {providerLine}
+                </span>
+                {lineAffiliationWords && (
                   <>
                     <span aria-hidden="true">·</span>
                     <AffiliationBadge affiliation={affiliation} dense />
-                    <span className="min-w-0 truncate">{affiliationWords.label}</span>
+                    <span className="min-w-0 truncate">{lineAffiliationWords.label}</span>
                   </>
                 )}
               </div>

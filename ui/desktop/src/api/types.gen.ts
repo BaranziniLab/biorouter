@@ -2189,6 +2189,17 @@ export type DecisionTurnMarker = {
  * One origin's line in a per-turn transcript marker.
  */
 export type DecisionTurnMarkerItem = {
+    /**
+     * Calls that made them: a `decide` call is one however many chunks and
+     * models it asked (its batch), a monitor's or a gate's check one per row.
+     * One item holds every `decide` call of the turn, so this, not the
+     * number of items, is how many calls there were (R3-F3: three calls of
+     * 200 chunks read as "1 decide call"). 0 from a writer that predates it.
+     */
+    calls?: number;
+    /**
+     * Decisions (rows): one per chunk, per model in a vote.
+     */
     count: number;
     errors: number;
     failed: number;
@@ -7736,6 +7747,12 @@ export type ToolPreview = {
     folder: string;
     kind: 'folderAccess';
     onceDescendants: boolean;
+    /**
+     * Who asks, on the copy of the card shown in the conversation that
+     * delegated the work: the subagent's role, else its chat's name. Absent
+     * on the card's own home, where the asker is that chat's own agent.
+     */
+    requestedBy?: string | null;
 } | {
     command: string;
     kind: 'shell';

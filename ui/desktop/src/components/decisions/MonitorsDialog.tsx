@@ -1422,6 +1422,9 @@ export function MonitorsDialog({
 
   const startEdit = (monitor: MonitorCriterion | null) => {
     setUndo(null);
+    // R1-2: an earlier write's "Saved" (or "Removed") describes that write, not the
+    // editor opening now: it would read as if the new monitor were saved.
+    setStatus({ kind: 'idle' });
     setShowErrors(false);
     setEditorRefusal(null);
     setMoreOpen(monitor ? usesHiddenSettings(monitor) : false);
@@ -1834,10 +1837,12 @@ function MonitorRow({
             </InfoTip>
           ) : null}
         </div>
+        {/* Below the line (R1-3): above it, the peek covered the row's own name. */}
         <InfoTip
           label={copy.peekLabel(monitor.name)}
           help={monitorPeek(monitor, models)}
           id={peekId}
+          side="bottom"
           asChild
         >
           <span

@@ -18,6 +18,8 @@ import { InfoTip } from './ui/info-tip';
 import { PREVIEW_COPY, TOOL_ROW_COPY } from './toolCallCopy';
 import { folderAccessLifetime } from '../utils/folderAccessLifetime';
 import { PathSegments } from './ui/path-segments';
+import { Disclosure } from './ui/disclosure';
+import { FOLDER_ACCESS_COPY } from './folderAccessCopy';
 
 type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolConfirmation' }>;
 export type ToolConfirmationPreview = NonNullable<ToolConfirmationData['preview']>;
@@ -261,34 +263,50 @@ function ArgumentsPreview({ json, truncated }: { json: string; truncated: boolea
   );
 }
 
+type FolderAccessPreview = Extract<ToolPreview, { kind: 'folderAccess' }>;
+
+/**
+ * The exact folder and files a folder-access decision grants, and its terms.
+ *
+ * Exact on purpose: the card's question writes the folder as it was asked for,
+ * with `~`, and this is the decision's argument as the daemon resolved it,
+ * every character kept (a model chooses it). Sans, like every path the app
+ * shows a person (R9); a line breaks only after a separator (`PathSegments`,
+ * `.br-tool-preview-path`).
+ */
+export function FolderAccessDetails({ preview }: { preview: FolderAccessPreview }) {
+  return (
+    <div data-testid="folder-access-preview" className="space-y-2 text-body">
+      <p dir="ltr" data-path={preview.folder} className="br-tool-preview-path">
+        <PathSegments path={preview.folder} />
+      </p>
+      <p>{FOLDER_ACCESS_COPY.sessionGrant(preview.access, folderAccessLifetime())}</p>
+      <p>
+        {preview.onceDescendants
+          ? FOLDER_ACCESS_COPY.onceDescendants
+          : FOLDER_ACCESS_COPY.onceFiles}
+      </p>
+      <ul className="list-disc pl-5">
+        {preview.files.map((file) => (
+          <li dir="ltr" data-path={file} className="br-tool-preview-path" key={file}>
+            <PathSegments path={file} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** Render whatever the backend resolved this call into. */
 export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
   switch (preview.kind) {
     case 'folderAccess':
+      // R2-1: the question is the card's own line (`ToolCallConfirmation`); the
+      // exact paths and the grant's terms are what a careful reader opens.
       return (
-        <div data-testid="folder-access-preview" className="space-y-2 text-body">
-          {/* The folder is the exact argument of this decision, so it stays absolute and mono
-              (no `~`, unlike everywhere a folder is only read). It breaks after a separator,
-              never mid-name unless one name is wider than the card (`.br-tool-preview-path`). */}
-          <p dir="ltr" data-path={preview.folder} className="br-tool-preview-path font-mono">
-            <PathSegments path={preview.folder} />
-          </p>
-          <p>
-            {preview.access} access. A session grant includes subfolders. {folderAccessLifetime()}
-          </p>
-          <p>
-            {preview.onceDescendants
-              ? 'Allow once includes read-only analysis of this folder and its descendants for this operation:'
-              : 'Allow once applies only to these files in this operation:'}
-          </p>
-          <ul className="list-disc pl-5">
-            {preview.files.map((file) => (
-              <li dir="ltr" data-path={file} className="br-tool-preview-path font-mono" key={file}>
-                <PathSegments path={file} />
-              </li>
-            ))}
-          </ul>
-        </div>
+        <Disclosure label={FOLDER_ACCESS_COPY.details} className="text-body">
+          <FolderAccessDetails preview={preview} />
+        </Disclosure>
       );
     case 'shell':
       return (

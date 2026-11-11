@@ -112,6 +112,9 @@ export const PHASE_GATE_COPY = {
   },
   chatDefault: "This chat's decision model",
   uncalibrated: 'Accepts uncalibrated probabilities',
+  /** R2-7: the banner's one line; why it waits is in the tip beside it. */
+  waitingForYou: 'Waiting for you.',
+  waitingWhy: 'Why it waits',
   needsPerson:
     'Only you can move this phase on now: pass it, skip it, give its gate its attempts again, or change or remove the gate.',
   blockedByErrors:
@@ -192,7 +195,14 @@ export function phaseGateStatus(
   const closed = isClosedPhase(phase);
   if (closed && gate.personDecision === 'pass') return copy.status.passedByYou;
   if (closed && gate.personDecision === 'skip') return copy.status.skippedByYou;
-  if (closed) return phase.status === 'skipped' ? copy.status.skipped : copy.status.completed;
+  // R2-6: a closed phase reads as its gate did, in the side panel's words ("Passed"),
+  // never a word of its own; "Completed" is left only for a gate never asked.
+  if (closed) {
+    if (phase.status === 'skipped') return copy.status.skipped;
+    if (gate.lastPassed === true) return copy.status.passed;
+    if (gate.lastPassed === false) return copy.status.failed;
+    return copy.status.completed;
+  }
   if (gate.personDecision === 'pass') return copy.status.passStands;
   if (gate.personDecision === 'skip') return copy.status.skipStands;
   if (gate.needsPerson) return copy.status.needsYou;
@@ -629,8 +639,12 @@ function GateFacts({
         ) : null}
       </div>
       {needsNote ? (
+        // R2-7: one line up front; the full reason (and what each choice does) in a tip.
         <Note tone="warning" role="status" testId="phase-gate-needs-person">
-          {needsNote}
+          <span className="br-gate-waiting">
+            {copy.waitingForYou}
+            <InfoTip label={copy.waitingWhy} help={needsNote} />
+          </span>
         </Note>
       ) : null}
       {standingNote ? (
@@ -1035,9 +1049,10 @@ export function PhaseGateDialog({
       <GateMenu items={menuItems} disabled={working} />
       {/* The two decisions wrap TOGETHER onto the next line at a narrow width. */}
       <span className="br-gate-footer__actions">
+        {/* Quiet (R2-7, R7): Pass is the one decision the footer leads with. */}
         <TipButton
           tip={copy.skipTip}
-          variant="secondary"
+          variant="ghost"
           disabled={working}
           aria-busy={busy === 'skip' || undefined}
           data-testid="phase-gate-skip"

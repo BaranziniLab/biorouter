@@ -1,8 +1,9 @@
 /**
  * A folder-access approval's folder and files (`ToolCallPreview`, `folderAccess`).
  *
- * Everywhere a folder is only READ, the app writes it in sans from `~` (utils/folderPath.ts).
- * Here the folder is the exact argument of a security decision, so it stays absolute and mono.
+ * The card's own line writes the folder as asked, in sans from `~` (folderAccessCopy.ts). Under
+ * Details the folder and files are the exact argument of a security decision, so they stay
+ * absolute, every character kept; in sans since R2-1 (2026-11-10), like every path in the chrome.
  * What changed is how it wraps: `break-all` split a folder's name between any two letters; now a
  * line breaks only after a separator (each name and the separator after it are one atomic piece,
  * `PathSegments`) and `overflow-wrap: anywhere` is the last resort for one over-long name. The
@@ -12,7 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ToolCallPreview } from './ToolCallPreview';
 import type { ToolPreview } from '../api';
@@ -55,23 +56,39 @@ afterEach(() => {
   Object.defineProperty(window, 'appConfig', { configurable: true, value: saved });
 });
 
+/** The card, with its Details open: the exact paths live there (R2-1). */
+function renderOpen() {
+  const result = render(<ToolCallPreview preview={preview} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+  return result;
+}
+
 describe('the folder-access approval card', () => {
-  it('writes the folder and every file exactly as the call names them, in mono, never `~`', () => {
+  it('keeps the exact paths and the terms under a closed Details', () => {
     const { container } = render(<ToolCallPreview preview={preview} />);
+    expect(paths(container)).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Details' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    );
+  });
+
+  it('writes the folder and every file exactly as the call names them, in sans, never `~`', () => {
+    const { container } = renderOpen();
     const drawn = paths(container);
     expect(drawn.map((node) => node.dataset.path)).toEqual([FOLDER, ...FILES]);
     for (const node of drawn) {
       expect(node.textContent, 'the exact argument, nothing added or written as ~').toBe(
         node.dataset.path
       );
-      expect(node.className).toMatch(/\bfont-mono\b/);
+      expect(node.className).not.toMatch(/\bfont-mono\b/);
       expect(node.className).toMatch(/\bbr-tool-preview-path\b/);
       expect(node).toHaveAttribute('dir', 'ltr');
     }
   });
 
   it('has no break-all anywhere in it', () => {
-    const { container } = render(<ToolCallPreview preview={preview} />);
+    const { container } = renderOpen();
     const card = container.querySelector('[data-testid="folder-access-preview"]')!;
     for (const node of [card, ...card.querySelectorAll('*')]) {
       expect(node.getAttribute('class') ?? '').not.toMatch(/break-all/);
@@ -79,7 +96,7 @@ describe('the folder-access approval card', () => {
   });
 
   it('isolates each name and groups it with the separator after it, the leading one first', () => {
-    const { container } = render(<ToolCallPreview preview={preview} />);
+    const { container } = renderOpen();
     const [folder, , windows] = paths(container);
     const pieces = (path: Element) =>
       [...path.querySelectorAll('.br-path-piece')].map((piece) => piece.textContent);

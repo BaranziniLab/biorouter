@@ -37,6 +37,7 @@ import { switchModelCopy } from '../copy';
 import { isDecisionProvider } from '../../../decisions/decisionWire';
 import { DecisionModelInstall } from '../../../decisions/DecisionModelInstall';
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
+import { decisionModelPlace } from '../../../decisions/decisionWords';
 import './model-dialogs.css';
 import {
   llamacppStatus,
@@ -472,7 +473,22 @@ export const SwitchModelModal = ({
     () => readProviderAffiliation(activeProviders.find((row) => row.name === provider)),
     [activeProviders, provider]
   );
-  const selectedAffiliationWords = affiliationPresentation(selectedAffiliation);
+  /**
+   * R1-9: a decision provider says where it runs in one plain line, the same words
+   * for both ("Runs on this computer.", "Runs on Baseten."). A local model's
+   * affiliation said that too, as a privacy sentence, and Baseten (public) had none,
+   * so the two read differently for one kind of choice. An institutional
+   * affiliation is not where it runs, so it still shows beside the line.
+   */
+  const selectedDecisionPlace = useMemo(() => {
+    if (!provider || !isDecisionProvider(provider)) return null;
+    const row = activeProviders.find((entry) => entry.name === provider);
+    return decisionModelPlace(provider, { tier: readResolvedProviderTier(row) });
+  }, [activeProviders, provider]);
+  const selectedAffiliationWords =
+    selectedDecisionPlace && selectedAffiliation?.kind === 'local'
+      ? null
+      : affiliationPresentation(selectedAffiliation);
 
   // W2-PRV-7: the provider the selection would bind, and whether that makes a
   // public chat private (see PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP).
@@ -1300,6 +1316,14 @@ export const SwitchModelModal = ({
                   the badge is the one its InfoTip would say, so the badge
                   draws none here (`describedOnScreen`): say it once.
                 */}
+              {selectedDecisionPlace && (
+                <p
+                  data-testid="switch-model-decision-place"
+                  className="text-supporting text-text-muted [overflow-wrap:anywhere]"
+                >
+                  {`${switchModelCopy.decisionRunsOn(selectedDecisionPlace)}.`}
+                </p>
+              )}
               {selectedAffiliationWords && (
                 <div data-testid="switch-model-affiliation" className="flex items-start gap-2">
                   <AffiliationBadge

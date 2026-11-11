@@ -142,6 +142,14 @@ describe('compact chat summary', () => {
     expect(screen.getByText(summaryCopy.toolCalls)).toBeInTheDocument();
   });
 
+  // R2-4: a running subagent's tab read "Details  Tokens N/A".
+  it('draws no Details summary when there is no token figure', () => {
+    render(<ChatSummary {...props} billedTokens="N/A" />);
+    const trigger = screen.getByRole('button', { name: summaryCopy.details });
+    expect(trigger).not.toHaveAccessibleDescription();
+    expect(screen.queryByText(/N\/A/)).not.toBeInTheDocument();
+  });
+
   it('draws no Details summary while Tokens is not known', () => {
     render(<ChatSummary {...props} billedTokens={null} />);
     expect(

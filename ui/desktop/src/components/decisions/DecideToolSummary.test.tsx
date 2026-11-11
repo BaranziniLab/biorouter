@@ -10,6 +10,7 @@ import ToolCallWithResponse from '../ToolCallWithResponse';
 import type { ToolRequestMessageContent, ToolResponseMessageContent } from '../../types/message';
 import { DECIDE_TOOL_COPY, decideCallMeta, summarizeDecideCall } from './DecideToolSummary';
 import { CALIBRATION_COPY } from './decisionWords';
+import { PRIVATE_MARK_INK } from '../ui/PrivacyBadge';
 import { wireDecideSummary } from './decisionFixtures';
 
 const CHUNKS = Array.from({ length: 600 }, (_, i) => ({
@@ -146,14 +147,14 @@ describe('the decide tool row', () => {
     );
     const lines = screen.getByTestId('decide-tool-questions');
     expect(lines).toHaveTextContent(
-      'Does this note state the patient has multiple sclerosis?41 of 598 yes · 6 to review'
+      'Does this note state the patient has multiple sclerosis?41 yes · 557 no · 6 of them to review'
     );
     // A review count of 0 says nothing.
-    expect(lines).toHaveTextContent('Is an EDSS score stated?19 of 598 yes');
-    expect(lines).not.toHaveTextContent('19 of 598 yes ·');
-    // A choice: each answer's count in option order, then what is left to review.
+    expect(lines).toHaveTextContent('Is an EDSS score stated?19 yes · 579 no');
+    expect(lines).not.toHaveTextContent('579 no ·');
+    // A choice: each answer's count in option order, then the part of them left to review.
     expect(lines).toHaveTextContent(
-      'Which MS course is described?rrms 300 · spms 200 · none 98 · 12 to review'
+      'Which MS course is described?300 rrms · 200 spms · 98 none · 12 of them to review'
     );
     // Off the card: the names, the type word, the threshold, the passed count, the time.
     for (const gone of ['has_ms', 'edss_stated', 'threshold', 'yes or no', 'passed', '13 s']) {
@@ -253,6 +254,19 @@ describe('the decide tool row', () => {
     expect(head).toHaveTextContent(/^joey-1 · Baseten · 2 errors$/);
     expect(head).not.toHaveTextContent('decision-models/');
     expect(head).not.toHaveTextContent('baseten_decision');
+    expect(screen.queryByTestId('decide-tool-private')).toBeNull();
+  });
+
+  // R1-10 (live QA, 2026-11-10): the decide row named a private model with no mark,
+  // where the decision card, the composer chip and the summary roster draw the padlock.
+  it('marks a private model with the one padlock, in the shared ink, after its name', () => {
+    const { container } = show(true);
+    openWell(container);
+    const head = screen.getByTestId('decide-tool-head');
+    expect(head).toHaveTextContent(/^tev1:0\.8b · this computer · 2 errors$/);
+    const lock = within(head).getByRole('img', { name: DECIDE_TOOL_COPY.privateModel });
+    expect(lock.getAttribute('class')).toContain(PRIVATE_MARK_INK);
+    expect(lock.previousSibling?.textContent).toBe('tev1:0.8b · this computer');
   });
 
   it('ends with the one decision history link, opening this call', () => {
@@ -271,6 +285,111 @@ describe('the decide tool row', () => {
         filter: { origin: 'tool', batchId: 'batch-42' },
       })
     );
+  });
+});
+
+describe('counts that add up (R1-5, R3-F1)', () => {
+  const ONE_YES_NO = {
+    questions: { has_ms: ARGS.questions.has_ms },
+    chunks: CHUNKS.slice(0, 20),
+  };
+
+  it('shows the four answer groups as yes and no that add up, review said as part of them', () => {
+    // N1 is a yes to review: the old card read "yes 1 · no 19 · 4 to review", 24 for 20.
+    const summary = oneQuestion({
+      chunks: 20,
+      decided: 20,
+      questions: [
+        {
+          ...SUMMARY.questions[0],
+          decided: 20,
+          yes: 1,
+          passed: 1,
+          review: 4,
+          groups: {
+            yesConfident: 0,
+            yesReview: 1,
+            noReview: 3,
+            noConfident: 16,
+            passFrom: 0.9,
+            confidentFrom: 0.9,
+            reviewFrom: 0.2,
+          },
+        },
+      ],
+    });
+    const { container } = show(true, ONE_YES_NO, summary);
+    expect(container).toHaveTextContent('1 yes, 4 to review');
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-questions')).toHaveTextContent(
+      /1 yes · 19 no · 4 of them to review$/
+    );
+  });
+
+  it('reads a yes or no question sent as answer counts the same way', () => {
+    const summary = oneQuestion({
+      questions: [
+        {
+          ...SUMMARY.questions[0],
+          type: 'binary',
+          decided: 20,
+          yes: null,
+          review: 4,
+          answerCounts: { yes: 1, no: 19 },
+        },
+      ],
+    });
+    const { container } = show(true, ONE_YES_NO, summary);
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-questions')).toHaveTextContent(
+      /1 yes · 19 no · 4 of them to review$/
+    );
+  });
+
+  it('shows a vote of several models by its majority and how often the models agreed', () => {
+    const vote = {
+      kind: 'decide_vote',
+      batchId: 'batch-vote',
+      chunks: 20,
+      elapsedMs: 9000,
+      models: ['tev1:0.8b', 'clef-flash:latest', 'joey-1', 'elephant-1', 'mammoth-1'].map(
+        (label) => ({
+          model: { provider: 'baseten_decision', model: `decision-models/${label}` },
+          label,
+          tier: 'public',
+          decided: 20,
+          errors: 0,
+          error: null,
+        })
+      ),
+      questions: [
+        {
+          name: 'has_ms',
+          type: 'yes_no',
+          threshold: 0.9,
+          passOn: 'yes',
+          perModel: [{ yes: 6, no: 14 }],
+          majority: { yes: 7, no: 13 },
+          ties: 0,
+          compared: 20,
+          agreed: 19,
+          disagreements: [],
+          moreDisagreements: 0,
+          majorityIds: {},
+        },
+      ],
+    };
+    const { container } = show(true, ONE_YES_NO, vote);
+    expect(container).toHaveTextContent('7 yes by majority');
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-head')).toHaveTextContent(
+      'Vote of 5 models: tev1:0.8b, clef-flash:latest, joey-1, elephant-1, mammoth-1'
+    );
+    expect(screen.getByTestId('decide-tool-questions')).toHaveTextContent(
+      /Majority 7 yes · 13 no · the models agreed on 19 of 20$/
+    );
+    // No slug, ever.
+    expect(container).not.toHaveTextContent('decision-models/');
   });
 });
 

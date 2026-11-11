@@ -1,4 +1,5 @@
 import { ChatKindIcon } from '../chats/ChatKindIcon';
+import { plainExcerpt } from './plainExcerpt';
 import {
   FooterCardAction,
   FooterCardActions,
@@ -96,8 +97,10 @@ export function SubagentPeek({
   const knowledgeNames = row.knowledgeBases.map(
     (id) => knowledge?.bases.find((base) => base.id === id)?.name || knowledgeBaseWords(id)
   );
-  const result = row.resultLine
-    ? row.resultLine
+  // R2-5: plain words, never the answer's raw markdown (`plainExcerpt`).
+  const excerpt = plainExcerpt(row.resultLine);
+  const result = excerpt
+    ? excerpt
     : isActiveStatus(row.status)
       ? summaryCopy.agents.working
       : copy.noResult;

@@ -124,7 +124,9 @@ describe("BaseChat — a subagent's composer in a browser", () => {
     const filter = /const transcriptMessages = useMemo\(([\s\S]*?)\);/.exec(source);
     expect(filter, 'BaseChat no longer filters the transcript it draws').not.toBeNull();
     expect(filter![1]).toMatch(/isSubagentTab/);
-    expect(filter![1]).toMatch(/provenance\?\.kind !== 'spawn_context'/);
+    // The spawn record and the synthetic "Begin." prompt (R2-4); the helper's own
+    // test (subagent/subagentTranscript.test.ts) pins what each drop is.
+    expect(filter![1]).toMatch(/subagentTranscript\(messages\)/);
     expect(source).toMatch(/const isSubagentTab = subagentChatKind === 'subagent';/);
   });
 });

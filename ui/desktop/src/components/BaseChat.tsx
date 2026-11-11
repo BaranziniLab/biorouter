@@ -148,6 +148,9 @@ import {
 import { SubagentComposerSlot } from './subagent/SubagentComposerSlot';
 import { composerSlotMode, subagentComposerKind } from './subagent/subagentReadOnly';
 import { SubagentTabHeader } from './subagent/SubagentTabHeader';
+import { subagentTranscript } from './subagent/subagentTranscript';
+import { FolderRequesterContext } from './folderAccessCopy';
+import { subagentRoleOf } from './sessions/historyRow';
 import { extractKnowledgeBases, useSubagentSession } from './subagent/useSubagentSession';
 import { isDecisionProvider } from './decisions/decisionWire';
 import { useChatGroups } from '../contexts/ChatGroupsContext';
@@ -2721,44 +2724,48 @@ function BaseChatContent({
   // record (1,774 words in QA). Only the view drops it: the saved chat and its
   // exports keep it.
   const isSubagentTab = subagentChatKind === 'subagent';
+  // R2-4: the synthetic "Begin." prompt goes too (`subagentTranscript`).
   const transcriptMessages = useMemo(
-    () =>
-      isSubagentTab
-        ? messages.filter((message) => message.metadata?.provenance?.kind !== 'spawn_context')
-        : messages,
+    () => (isSubagentTab ? subagentTranscript(messages) : messages),
     [isSubagentTab, messages]
   );
+  // R2-1: on a subagent's tab its folder cards say which subagent asks.
+  const folderRequester = isSubagentTab
+    ? (subagentRoleOf(session?.extension_data) ?? session?.name ?? null)
+    : null;
   const transcriptList = useMemo(
     () => (
-      <ProgressiveMessageList
-        messages={transcriptMessages}
-        chat={{ sessionId }}
-        toolCallNotifications={toolCallNotifications}
-        isUserMessage={isUserRow}
-        isStreamingMessage={chatState !== ChatState.Idle}
-        chatState={chatState}
-        turnStartedAt={turnStartedAt}
-        lastMessageAt={lastMessageAt}
-        pendingSteer={pendingSteer}
-        steerRecoveries={steerRecoveries}
-        onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
-        canStopTurn={!subagentTabReadOnly}
-        onRenderingComplete={handleRenderingComplete}
-        onMessageUpdate={heldMessageUpdate}
-        // Finding 5.1 (the PR author's own follow-up).
-        // `ElicitationRequest` resolves a waiting tool
-        // through the daemon's human-action endpoint,
-        // and it lives INSIDE the transcript, so removing
-        // the composer never reached it.
-        // `BioRouterMessage` renders the form only when it
-        // is handed a submit callback, so withholding the
-        // callback withholds the control rather than
-        // leaving a Submit that 403s.
-        submitElicitationResponse={subagentTabReadOnly ? undefined : submitElicitationResponse}
-        onOpenArtifact={openArtifactFromTranscript}
-        onRunInTerminal={handleRunInTerminal}
-        workingDir={sessionWorkingDir}
-      />
+      <FolderRequesterContext.Provider value={folderRequester}>
+        <ProgressiveMessageList
+          messages={transcriptMessages}
+          chat={{ sessionId }}
+          toolCallNotifications={toolCallNotifications}
+          isUserMessage={isUserRow}
+          isStreamingMessage={chatState !== ChatState.Idle}
+          chatState={chatState}
+          turnStartedAt={turnStartedAt}
+          lastMessageAt={lastMessageAt}
+          pendingSteer={pendingSteer}
+          steerRecoveries={steerRecoveries}
+          onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
+          canStopTurn={!subagentTabReadOnly}
+          onRenderingComplete={handleRenderingComplete}
+          onMessageUpdate={heldMessageUpdate}
+          // Finding 5.1 (the PR author's own follow-up).
+          // `ElicitationRequest` resolves a waiting tool
+          // through the daemon's human-action endpoint,
+          // and it lives INSIDE the transcript, so removing
+          // the composer never reached it.
+          // `BioRouterMessage` renders the form only when it
+          // is handed a submit callback, so withholding the
+          // callback withholds the control rather than
+          // leaving a Submit that 403s.
+          submitElicitationResponse={subagentTabReadOnly ? undefined : submitElicitationResponse}
+          onOpenArtifact={openArtifactFromTranscript}
+          onRunInTerminal={handleRunInTerminal}
+          workingDir={sessionWorkingDir}
+        />
+      </FolderRequesterContext.Provider>
     ),
     [
       transcriptMessages,
@@ -2777,6 +2784,7 @@ function BaseChatContent({
       openArtifactFromTranscript,
       handleRunInTerminal,
       sessionWorkingDir,
+      folderRequester,
     ]
   );
 
