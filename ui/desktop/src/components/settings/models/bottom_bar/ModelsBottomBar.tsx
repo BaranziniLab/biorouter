@@ -40,7 +40,7 @@ import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/discl
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { isDecisionProvider } from '../../../decisions/decisionWire';
-import { TIER_EFFECT_COPY, decisionModelPlace } from '../../../decisions/decisionWords';
+import { decisionModelPlace, privacyBasisChipLine } from '../../../decisions/decisionWords';
 import { cn } from '../../../../utils';
 import { decisionModelLabel, type PrivacyBasis } from '../../../../utils/sessionDecisions';
 import { switchModelCopy } from '../copy';
@@ -620,7 +620,7 @@ export default function ModelsBottomBar({
       ? 'Private chat. Biorouter only lets private models, decision models included, read it.'
       : privacyTier === 'public'
         ? privacyBasis
-          ? `Public chat. ${TIER_EFFECT_COPY.chipLine}`
+          ? privacyBasisChipLine(privacyBasis)
           : 'Public chat'
         : null;
 

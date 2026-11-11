@@ -1,3 +1,4 @@
+import { friendlyModelName } from '../bottom_menu/modelLabel';
 import { MonitorsDialog } from './MonitorsDialog';
 import { chatModelKey, type DraftDecisionSettings } from './draftDecisionSettings';
 import type { DecisionSettings } from '../../utils/sessionDecisions';
@@ -28,12 +29,14 @@ export function DraftMonitorsDialog({
   onOpenChange: (open: boolean) => void;
   provider: string | null;
   model: string | null;
-  /** The chat model in words, for the tip. */
+  /** The chat model in words, for the tip; shortened as the model chip shortens it. */
   chatModelName?: string | null;
   draft: DraftDecisionSettings | null;
   onDraftChange: (draft: DraftDecisionSettings | null) => void;
 }) {
   const key = chatModelKey(provider, model);
+  // The chip's own name for it (M1-3): `gpt-5.5`, never `gpt-5.5-2026-04-24`.
+  const named = chatModelName ?? model;
   return (
     <MonitorsDialog
       open={open}
@@ -43,7 +46,7 @@ export function DraftMonitorsDialog({
       // reasons and `chatEffect` say what each model would do to it.
       chatTier="public"
       settings={draft?.settings ?? NO_SETTINGS}
-      chatModelName={chatModelName ?? model}
+      chatModelName={named ? friendlyModelName(named) : null}
       draft={{
         chat: provider && model ? { boundProvider: provider, boundModel: model } : null,
         accepted: key !== null && draft?.acceptedFor === key,

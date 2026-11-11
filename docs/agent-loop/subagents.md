@@ -85,7 +85,7 @@ The flag tracks **messages you sent**, so it is Steer that sets it, not Stop. Pr
 A subagent can be watched by decision-model monitors like any chat, and they can come from the chat that started it as well as from its own tab:
 
 - **Yours, on the parent.** Tick "Also watch the subagents this chat starts" on a monitor of the parent chat (`--subagents` with `biorouter session monitors`), and every subagent it starts gets a copy. Saving the parent's monitors again updates the copies on the subagents still running.
-- **The agent's.** The parent agent can give a subagent monitors when it spawns it (the `subagent` tool's `monitors` field), through a phase of its plan, or later with `workspace_monitor`. They are yes/no questions that stop or steer the subagent, at most 4 per subagent within the chat's 8. The agent may change or remove only the monitors it set, never yours.
+- **The agent's.** The parent agent can give a subagent monitors when it spawns it (the `subagent` tool's `monitors` field), through a phase of its plan, or later with `workspace_monitor` (which also reaches the parent's own chat when `session_id` is left out). They are yes/no questions that stop or steer the subagent, at most 4 per subagent within the chat's 8. The agent may change or remove only the monitors it set, never yours.
 - **Yours, on the subagent.** Open its tab and use its Monitors dialog, or `biorouter session monitors <subagent id>`. You may change or remove any of its monitors, the agent's included; in the app, editing one of the agent's makes it yours.
 - **A sub-workflow's.** A subagent spawned from a sub-workflow that declares `decision_settings` starts with its monitors, as yours.
 

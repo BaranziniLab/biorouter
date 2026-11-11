@@ -119,8 +119,8 @@ const INSTRUCTIONS: &str = indoc! {r#"
       instead of pointing at Settings.
     - workspace_close: close its tab (tab), cancel its turn (turn), or stop its
       agent (agent).
-    - workspace_monitor: add, list or remove monitors that stop or steer a
-      subagent you spawned.
+    - workspace_monitor: add, list or remove monitors that stop or steer this
+      chat or a subagent you spawned.
     - workspace_watch: wait until one of several conversations finishes. Use it
       after starting background work; never poll workspace_read_conversation.
       A shortened completed result is not collected; follow the exact read call
@@ -730,8 +730,9 @@ struct WorkspaceCloseParams {
 struct WorkspaceMonitorParams {
     /// "list", "add" (`monitors`) or "remove" (`ids`).
     action: String,
-    /// A subagent this chat spawned.
-    session_id: String,
+    /// A subagent this chat spawned; omit for this chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
     /// For "add": 1 to 4 monitors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     monitors: Option<Vec<crate::decision::settings::MonitorSpec>>,
@@ -745,10 +746,10 @@ struct WorkspaceMonitorParams {
 /// the caps (4 set by an agent, 8 in all) and ownership are refusals that
 /// explain themselves at call time.
 const MONITOR_DESCRIPTION: &str = concat!(
-    "Add, list or remove decision-model monitors on a subagent this chat spawned: yes/no ",
-    "questions about its newest messages that stop or steer it when the answer reaches a ",
-    "threshold. You may change or remove only monitors you set; a running subagent applies a ",
-    "change from its next check."
+    "Add, list or remove decision-model monitors on this chat or a subagent it spawned: yes/no ",
+    "questions about the newest messages that stop or steer it when the answer reaches a ",
+    "threshold. You may change or remove only monitors you set; a change applies from the ",
+    "next check."
 );
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -2137,6 +2138,34 @@ impl WorkspaceClient {
         } else {
             Err(crate::privacy::refusal::workspace_out_of_reach())
         }
+    }
+
+    /// [`Self::refuse_unless_direct_subagent_child`] for `workspace_monitor`,
+    /// whose refusal says what is true for the caller asking.
+    ///
+    /// A public-capability caller keeps the one out-of-reach sentence: it may
+    /// not learn whether a private chat exists, so "not your subagent" and
+    /// "private" must read alike. A caller that may read every chat (a
+    /// private one, or any caller with the master switch off) learns nothing
+    /// from a plainer answer, and the out-of-reach sentence would tell it
+    /// "this chat is running on a public model", which is false (live QA
+    /// M3-1, 2026-11-11).
+    async fn refuse_unless_direct_subagent_child_for(
+        &self,
+        cap: crate::privacy::CallCapability,
+        caller_session_id: &str,
+        target_session_id: &str,
+    ) -> Result<(), String> {
+        if self
+            .is_direct_subagent_child(caller_session_id, target_session_id)
+            .await
+        {
+            return Ok(());
+        }
+        if cap.enforced() && !cap.tier().is_private() {
+            return Err(crate::privacy::refusal::workspace_out_of_reach());
+        }
+        Err(monitor_target_not_reached(target_session_id))
     }
 
     async fn refuse_unless_direct_subagent_child(
@@ -6816,16 +6845,19 @@ impl WorkspaceClient {
         })
     }
 
-    /// `workspace_monitor`: decision-model monitors on a subagent this chat
-    /// spawned.
+    /// `workspace_monitor`: decision-model monitors on this chat or a subagent
+    /// it spawned.
     ///
     /// The gates run in order, before anything about the target is read. The
-    /// target must be the caller's DIRECT subagent, read from the durable
-    /// parent link and asked whatever `workspace_child_scope_only` says,
-    /// because a monitor stops or steers another agent's work and only the
-    /// chat that delegated it answers for that work. Then §7: `list` reads
-    /// the target, `add` and `remove` write it. One sentence answers every
-    /// refusal, so the answers say nothing about a chat out of reach.
+    /// target is the caller's own chat (no `session_id`, or its own id: DR-33,
+    /// design S29, so an agent asked to monitor itself reaches the tier check
+    /// and is told why it may not lower its chat) or the caller's DIRECT
+    /// subagent, read from the durable parent link and asked whatever
+    /// `workspace_child_scope_only` says, because a monitor stops or steers
+    /// another agent's work and only the chat that delegated it answers for
+    /// that work. Then §7: `list` reads the target, `add` and `remove` write
+    /// it. A public caller gets one sentence for every refusal, so the answers
+    /// say nothing about a chat out of reach.
     ///
     /// An `add` from a private-capability chat into a public subagent is a
     /// first crossing: the monitors' names and questions reach the subagent's
@@ -6849,23 +6881,30 @@ impl WorkspaceClient {
         // raw arguments the inspector asked it with (see `handle_send_prompt`).
         let raw_arguments = arguments.clone();
         let args: WorkspaceMonitorParams = parse_args(arguments)?;
-        let target = args.session_id.trim();
+        // No `session_id` is this chat (DR-33, design S29: an agent putting a
+        // monitor on itself reaches the tier check and is told why it may
+        // not lower its chat, rather than being told it cannot reach it).
+        let target = args.session_id.as_deref().map(str::trim).unwrap_or(caller);
         let action = args.action.trim().to_ascii_lowercase();
-        self.refuse_unless_direct_subagent_child(caller, target)
-            .await?;
+        let own = target == caller;
+        if !own {
+            self.refuse_unless_direct_subagent_child_for(cap, caller, target)
+                .await?;
+        }
         let written_tier = if action == "list" {
             self.refuse_unless_visible(cap, target).await?;
             None
         } else {
             self.refuse_unless_writable(cap, target).await?
         };
+        let whom = MonitoredChat::of(target, own);
         let text = match action.as_str() {
-            "list" => return self.list_monitors(caller, target).await,
+            "list" => return self.list_monitors(caller, &whom).await,
             "add" => {
                 let added = self
                     .add_monitors(
                         caller,
-                        target,
+                        &whom,
                         cap.enforced(),
                         args.monitors.unwrap_or_default(),
                     )
@@ -6890,7 +6929,7 @@ impl WorkspaceClient {
                 added
             }
             "remove" => {
-                self.remove_monitors(caller, target, cap.enforced(), args.ids.unwrap_or_default())
+                self.remove_monitors(caller, &whom, cap.enforced(), args.ids.unwrap_or_default())
                     .await?
             }
             other => {
@@ -6904,14 +6943,20 @@ impl WorkspaceClient {
 
     /// `workspace_monitor action:"list"`: every monitor on the subagent, who
     /// set it and what it does.
-    async fn list_monitors(&self, caller: &str, target: &str) -> Result<CallToolResult, String> {
+    async fn list_monitors(
+        &self,
+        caller: &str,
+        whom: &MonitoredChat<'_>,
+    ) -> Result<CallToolResult, String> {
+        let target = whom.id;
+        let subject = whom.subject_capitalized();
         let settings = crate::decision::settings::load(&self.context.session_manager, target)
             .await
-            .map_err(|e| format!("Subagent {target}'s monitors could not be read: {e}"))?;
+            .map_err(|e| format!("{subject}'s monitors could not be read: {e}"))?;
         let mut lines = vec![match settings.monitors.len() {
-            0 => format!("Subagent {target} has no monitors."),
-            1 => format!("Subagent {target} has 1 monitor:"),
-            n => format!("Subagent {target} has {n} monitors:"),
+            0 => format!("{subject} has no monitors."),
+            1 => format!("{subject} has 1 monitor:"),
+            n => format!("{subject} has {n} monitors:"),
         }];
         let mut rows = Vec::with_capacity(settings.monitors.len());
         for monitor in &settings.monitors {
@@ -6921,7 +6966,7 @@ impl WorkspaceClient {
                 monitor.name,
                 monitor.id,
                 if monitor.enabled { "" } else { ", turned off" },
-                monitor_rule_words(monitor, None)
+                monitor_rule_words(monitor, None, whom.object())
             ));
             let mut row = serde_json::to_value(monitor).unwrap_or_else(|_| json!({}));
             if let Some(fields) = row.as_object_mut() {
@@ -6962,11 +7007,13 @@ impl WorkspaceClient {
     async fn add_monitors(
         &self,
         caller: &str,
-        target: &str,
+        whom: &MonitoredChat<'_>,
         enforced: bool,
         specs: Vec<crate::decision::settings::MonitorSpec>,
     ) -> Result<String, String> {
         use crate::decision::settings::{self, AgentEdit, MAX_AGENT_MONITORS};
+
+        let target = whom.id;
 
         if specs.is_empty() || specs.len() > MAX_AGENT_MONITORS {
             return Err(format!(
@@ -7010,19 +7057,21 @@ impl WorkspaceClient {
             .await
             .map_err(|e| {
                 format!(
-                    "Subagent {target} could not be read, so its monitors could not be checked \
-                     ({e}). Nothing was changed."
+                    "{} could not be read, so its monitors could not be checked ({e}). Nothing \
+                     was changed.",
+                    whom.subject_capitalized()
                 )
             })?
             .with_bound_model_tier(bound)
             .with_lowered_after_save(lowered_after_save);
         for criterion in &criteria {
-            self.check_monitor_model(&session, criterion)
+            self.check_monitor_model(&session, criterion, whom)
                 .await
                 .map_err(|reason| {
                     format!(
-                        "Monitor '{}' cannot run on subagent {target}: {}. Nothing was changed.",
+                        "Monitor '{}' cannot run on {}: {}. Nothing was changed.",
                         criterion.name,
+                        whom.subject(),
                         as_clause(&reason)
                     )
                 })?;
@@ -7044,16 +7093,18 @@ impl WorkspaceClient {
             .iter()
             .map(|criterion| {
                 format!(
-                    "Monitor '{}' is on subagent {target}, set by you: it {}.",
+                    "Monitor '{}' is on {}, set by you: it {}.",
                     criterion.name,
-                    monitor_rule_words(criterion, default_label.as_deref())
+                    whom.subject(),
+                    monitor_rule_words(criterion, default_label.as_deref(), whom.object())
                 )
             })
             .collect();
-        lines.push(if criteria.len() == 1 {
-            "A running subagent applies it from its next check.".to_string()
-        } else {
-            "A running subagent applies them from its next check.".to_string()
+        lines.push(match (whom.own, criteria.len() == 1) {
+            (false, true) => "A running subagent applies it from its next check.".to_string(),
+            (false, false) => "A running subagent applies them from its next check.".to_string(),
+            (true, true) => "It applies from this chat's next check.".to_string(),
+            (true, false) => "They apply from this chat's next check.".to_string(),
         });
         Ok(lines.join(" "))
     }
@@ -7066,14 +7117,20 @@ impl WorkspaceClient {
         &self,
         session: &crate::decision::DecisionSession,
         criterion: &crate::decision::settings::MonitorCriterion,
+        whom: &MonitoredChat<'_>,
     ) -> Result<(), String> {
         if let Some(wanted) = &criterion.model {
             let listed = self.decision_service.models_for(Some(session)).await;
             if !listed.iter().any(|(entry, _)| entry.answers_to(wanted)) {
                 return Err(format!(
-                    "{} is not a decision model this subagent can use. Call decision_models to \
-                     list the ones it can.",
-                    wanted.label()
+                    "{} is not a decision model {} can use. Call decision_models to list the \
+                     ones it can.",
+                    wanted.label(),
+                    if whom.own {
+                        "this chat"
+                    } else {
+                        "this subagent"
+                    }
                 ));
             }
         }
@@ -7095,11 +7152,13 @@ impl WorkspaceClient {
     async fn remove_monitors(
         &self,
         caller: &str,
-        target: &str,
+        whom: &MonitoredChat<'_>,
         enforced: bool,
         ids: Vec<String>,
     ) -> Result<String, String> {
         use crate::decision::settings::{self, AgentEdit};
+
+        let target = whom.id;
 
         let ids: Vec<String> = ids
             .iter()
@@ -7133,16 +7192,21 @@ impl WorkspaceClient {
         )
         .await?;
         let named: Vec<String> = ids.iter().map(|id| format!("`{id}`")).collect();
+        let it = if ids.len() == 1 { "it" } else { "them" };
         Ok(format!(
-            "Removed {} {} from subagent {target}. A running subagent stops checking {} from its \
-             next check.",
+            "Removed {} {} from {}. {}",
             if ids.len() == 1 {
                 "monitor"
             } else {
                 "monitors"
             },
             named.join(", "),
-            if ids.len() == 1 { "it" } else { "them" }
+            whom.subject(),
+            if whom.own {
+                format!("This chat stops checking {it} from its next check.")
+            } else {
+                format!("A running subagent stops checking {it} from its next check.")
+            }
         ))
     }
 
@@ -7318,6 +7382,17 @@ fn as_clause(text: &str) -> &str {
 }
 
 /// `why` as a refusal that ends in "Nothing was changed.".
+/// `workspace_monitor`'s refusal of a chat that is neither this one nor a
+/// subagent this one spawned, for a caller that may read every chat
+/// ([`WorkspaceClient::refuse_unless_direct_subagent_child_for`]).
+fn monitor_target_not_reached(target: &str) -> String {
+    format!(
+        "Chat {target} is not this chat or a subagent this chat spawned, or there is no chat \
+         with that id. workspace_monitor sets monitors only on this chat (omit session_id) and \
+         on its own subagents. Nothing was read and nothing was changed."
+    )
+}
+
 fn with_nothing_changed(why: &str) -> String {
     let why = why.trim_end();
     if why.ends_with("Nothing was changed.") {
@@ -7345,6 +7420,47 @@ fn ask_for_install(error: &crate::decision::DecisionError) -> String {
 
 /// Who set `monitor`, as the caller reads it: a short key for the
 /// structured listing and the phrase for the text.
+/// The chat a `workspace_monitor` call acts on, for the words its replies
+/// use: this chat itself (no `session_id`, or the caller's own), or a direct
+/// subagent of it.
+struct MonitoredChat<'a> {
+    id: &'a str,
+    own: bool,
+}
+
+impl<'a> MonitoredChat<'a> {
+    fn of(id: &'a str, own: bool) -> Self {
+        Self { id, own }
+    }
+
+    /// "this chat" or "subagent <id>", mid-sentence.
+    fn subject(&self) -> String {
+        if self.own {
+            "this chat".to_string()
+        } else {
+            format!("subagent {}", self.id)
+        }
+    }
+
+    /// [`Self::subject`] opening a sentence.
+    fn subject_capitalized(&self) -> String {
+        if self.own {
+            "This chat".to_string()
+        } else {
+            format!("Subagent {}", self.id)
+        }
+    }
+
+    /// What a stop or steer monitor acts on: "this chat" or "the subagent".
+    fn object(&self) -> &'static str {
+        if self.own {
+            "this chat"
+        } else {
+            "the subagent"
+        }
+    }
+}
+
 fn monitor_owner(
     monitor: &crate::decision::settings::MonitorCriterion,
     caller: &str,
@@ -7373,14 +7489,15 @@ fn monitor_owner(
 fn monitor_rule_words(
     monitor: &crate::decision::settings::MonitorCriterion,
     default_label: Option<&str>,
+    whom: &str,
 ) -> String {
     use crate::decision::settings::{MonitorAction, MonitorDirection, MonitorTiming};
     use crate::decision::DecisionKind;
 
     let does = match monitor.action {
-        MonitorAction::Stop => "stops the subagent",
-        MonitorAction::Steer => "steers the subagent",
-        MonitorAction::Notify => "posts a notice",
+        MonitorAction::Stop => format!("stops {whom}"),
+        MonitorAction::Steer => format!("steers {whom}"),
+        MonitorAction::Notify => "posts a notice".to_string(),
     };
     let watched = match (
         &monitor.question.kind,
@@ -19303,6 +19420,188 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(listed.is_error, Some(false), "{}", result_text(&listed));
+    }
+
+    /// Live QA M3-1 (DR-33, design S29): an agent in a private chat that puts
+    /// a public monitor on ITS OWN chat reaches the tier check and is told why
+    /// it may not (only the person can change whether the chat is private),
+    /// not that the chat is out of reach "on a public model". A private
+    /// monitor on itself lands, by its id or with `session_id` omitted, and
+    /// the replies say "this chat".
+    #[tokio::test]
+    async fn workspace_monitor_reaches_its_own_chat_and_refuses_lowering_it() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        make_private(&c, &parent).await;
+        let cap =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+
+        let refused = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "add", "session_id": parent,
+                    "monitors": [off_task(Some("baseten_decision/joey-1"))] }),
+        )
+        .await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            !text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "{text}"
+        );
+        assert!(
+            !text.contains("public model, and the two answers"),
+            "{text}"
+        );
+        assert!(
+            text.contains("This chat is private, so joey-1, a Baseten model, can't read it."),
+            "{text}"
+        );
+        assert!(
+            text.contains("which only the person can choose") && text.contains("do not retry"),
+            "{text}"
+        );
+        assert!(text.ends_with("Nothing was changed."), "{text}");
+        assert!(stored_monitors(&c, &parent).await.is_empty());
+
+        // With no session_id: this chat.
+        let added = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "add", "monitors": [off_task(Some("test_decision/tev1"))] }),
+        )
+        .await;
+        let text = result_text(&added);
+        assert_eq!(added.is_error, Some(false), "{text}");
+        assert_eq!(
+            text,
+            "Monitor 'Off task' is on this chat, set by you: it stops this chat when P(yes) \
+             reaches 0.80, checked after each of its steps with test_decision/tev1. It applies \
+             from this chat's next check."
+        );
+        assert_eq!(stored_monitors(&c, &parent).await.len(), 1);
+
+        let listed = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "list", "session_id": parent }),
+        )
+        .await;
+        let text = result_text(&listed);
+        assert!(text.starts_with("This chat has 1 monitor:"), "{text}");
+
+        let removed = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "remove", "ids": ["off-task"] }),
+        )
+        .await;
+        let text = result_text(&removed);
+        assert_eq!(removed.is_error, Some(false), "{text}");
+        assert!(
+            text.starts_with("Removed monitor `off-task` from this chat."),
+            "{text}"
+        );
+        assert!(stored_monitors(&c, &parent).await.is_empty());
+    }
+
+    /// The self-target path skips the direct-child check, so it is also open
+    /// to the auto-injected delegation grant (`workspace_child_scope_only`).
+    /// That widening is deliberate and narrow: the tier check still runs, so
+    /// such a caller can no more lower its private chat than any other
+    /// caller, and a private monitor on itself only narrows its own work. It
+    /// still reaches no chat beyond itself and its direct subagents.
+    #[tokio::test]
+    async fn a_child_scope_only_grant_on_its_own_chat_still_cannot_lower_it() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        make_private(&c, &parent).await;
+        let cap =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        let call = |args: serde_json::Value| {
+            let c = &c;
+            let parent = parent.clone();
+            async move {
+                let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+                c.call_tool(
+                    "workspace_monitor",
+                    Some(args),
+                    crate::agents::mcp_client::McpMeta::new(parent, cap)
+                        .with_workspace_child_scope_only(true),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        for args in [
+            json!({ "action": "add", "monitors": [off_task(Some("baseten_decision/joey-1"))] }),
+            json!({ "action": "add", "session_id": parent,
+                    "monitors": [off_task(Some("baseten_decision/joey-1"))] }),
+        ] {
+            let refused = call(args).await;
+            let text = result_text(&refused);
+            assert_eq!(refused.is_error, Some(true), "{text}");
+            assert!(
+                text.contains("This chat is private, so joey-1, a Baseten model, can't read it.")
+                    && text.contains("which only the person can choose"),
+                "{text}"
+            );
+            assert!(stored_monitors(&c, &parent).await.is_empty());
+        }
+        assert!(
+            c.context
+                .session_manager
+                .get_session(&parent, false)
+                .await
+                .unwrap()
+                .privacy_tier
+                == crate::privacy::SessionClassification::Private,
+            "the chat stays private"
+        );
+
+        let added = call(json!({ "action": "add",
+                                 "monitors": [off_task(Some("test_decision/tev1"))] }))
+        .await;
+        assert_eq!(added.is_error, Some(false), "{}", result_text(&added));
+        assert_eq!(stored_monitors(&c, &parent).await.len(), 1);
+    }
+
+    /// A private caller's refusal for a chat that is not its own or its
+    /// subagent says so, rather than claiming it runs on a public model; a
+    /// public caller keeps the one out-of-reach sentence
+    /// (`workspace_monitor_reaches_only_direct_children`).
+    #[tokio::test]
+    async fn workspace_monitor_tells_a_private_caller_the_true_reason() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        make_private(&c, &parent).await;
+        let peer = c
+            .context
+            .session_manager
+            .create_session(
+                std::env::temp_dir(),
+                "peer".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        let cap =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        let refused = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "list", "session_id": peer }),
+        )
+        .await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(text.contains(&monitor_target_not_reached(&peer)), "{text}");
+        assert!(!text.contains("public model"), "{text}");
     }
 
     /// A person's monitor on the subagent is never the agent's to change:

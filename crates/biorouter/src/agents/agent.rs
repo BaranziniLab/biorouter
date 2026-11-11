@@ -22719,6 +22719,31 @@ mod tests {
             monitor_reach.contains(&crate::privacy::refusal::workspace_out_of_reach()),
             "{monitor_reach}"
         );
+        // The handler also takes the caller's own chat (DR-33, live QA M3-1);
+        // the bridge does not: it still demands a direct child, so a coding
+        // agent cannot put a monitor on its own chat, by its id or with
+        // `session_id` left out.
+        let own_reach = dispatch
+            .enforce_child_supervision_scope(&parent_id, &monitor_call(&parent_id))
+            .await
+            .expect_err("the bridge holds workspace_monitor to direct children");
+        assert!(
+            own_reach.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "{own_reach}"
+        );
+        let unnamed = dispatch
+            .enforce_child_supervision_scope(
+                &parent_id,
+                &CallToolRequestParams {
+                    name: "workspace__workspace_monitor".into(),
+                    arguments: Some(object!({ "action": "list" })),
+                    meta: None,
+                    task: None,
+                },
+            )
+            .await
+            .expect_err("the bridge needs a session_id for workspace_monitor");
+        assert!(unnamed.contains("requires session_id"), "{unnamed}");
 
         let target_agent = Arc::new(Agent::with_config(AgentConfig::new(
             Arc::clone(&agent.config.session_manager),

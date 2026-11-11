@@ -7,6 +7,7 @@ import {
   parseDecisionSettings,
   type DecisionSettings,
 } from '../../utils/sessionDecisions';
+import { DraftMonitorsDialog } from './DraftMonitorsDialog';
 import { MonitorsDialog } from './MonitorsDialog';
 
 /**
@@ -289,5 +290,117 @@ describe('draft mode, before the chat’s first message', () => {
       boundProvider: 'versa_azure',
       boundModel: 'gpt-5.5',
     });
+  });
+});
+
+/** Open the default decision model's select and pick the row whose name starts with `name`. */
+async function pickDefault(name: string) {
+  const input = within(screen.getByTestId('monitors-default-model')).getByRole('combobox');
+  fireEvent.keyDown(input, { key: 'ArrowDown' });
+  const rows = await screen.findAllByTestId('decision-model-option');
+  fireEvent.click(rows.find((row) => row.textContent?.startsWith(name))!);
+}
+
+describe('the chat’s default decision model (M1-1)', () => {
+  it('is one select at the top, chosen automatically until a model is picked', async () => {
+    draw({ defaultModel: null, monitors: [] });
+    await ready();
+    const field = screen.getByTestId('monitors-default-model');
+    expect(field).toHaveTextContent('Decision model for this chat');
+    expect(field).toHaveTextContent('Chosen automatically');
+    const input = within(field).getByRole('combobox');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    const rows = await screen.findAllByTestId('decision-model-option');
+    const joey = rows.find((row) => row.textContent?.startsWith('joey-1'))!;
+    expect(joey).toHaveTextContent('Baseten · Makes this chat public');
+  });
+
+  it('a private pick is saved at once with the monitors as stored, and asks nothing', async () => {
+    draw(monitorOn('tev1:0.8b', true));
+    await ready();
+    await pickDefault('tev1:0.8b');
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    const [, sent, flags] = mocks.save.mock.calls[0] as [string, DecisionSettings, unknown];
+    expect(sent.defaultModel).toMatchObject({ provider: 'ollama_decision', model: 'tev1:0.8b' });
+    expect(sent.monitors.map((monitor) => monitor.id)).toEqual(['done']);
+    expect(flags).toEqual({ acceptPublicDecisionModels: false });
+    expect(screen.queryByTestId('monitors-public-confirm')).toBeNull();
+  });
+
+  it('a pick that makes the chat public is asked about under the select, then sent with the answer', async () => {
+    mocks.save.mockRejectedValueOnce(new PublicDecisionConfirmationError(QUESTION));
+    draw({ defaultModel: null, monitors: [] });
+    await ready();
+    await pickDefault('joey-1');
+    const field = screen.getByTestId('monitors-default-model');
+    const asking = await within(field).findByTestId('monitors-public-confirm');
+    expect(asking).toHaveTextContent('This chat will be public: joey-1 runs on Baseten.');
+    fireEvent.click(within(asking).getByTestId('monitors-public-accept'));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(2));
+    expect(mocks.save.mock.calls[1][2]).toEqual({ acceptPublicDecisionModels: true });
+    expect((mocks.save.mock.calls[1][1] as DecisionSettings).defaultModel).toMatchObject({
+      provider: 'baseten_decision',
+      model: 'joey-1',
+    });
+  });
+
+  it('“Chosen automatically” clears a stored default', async () => {
+    draw({
+      defaultModel: { provider: 'ollama_decision', model: 'tev1:0.8b', adapter: null },
+      monitors: [],
+    });
+    await ready();
+    await pickDefault('Chosen automatically');
+    await waitFor(() => expect(mocks.save).toHaveBeenCalledTimes(1));
+    expect((mocks.save.mock.calls[0][1] as DecisionSettings).defaultModel).toBeNull();
+  });
+
+  it('in draft mode it is held for the first message, after the same question', async () => {
+    const onChange = vi.fn();
+    render(
+      <MonitorsDialog
+        open
+        onOpenChange={vi.fn()}
+        sessionId=""
+        chatTier="public"
+        settings={{ defaultModel: null, monitors: [] }}
+        models={MODELS}
+        draft={{ chat: { boundProvider: 'versa_azure', boundModel: 'gpt-5.5' }, onChange }}
+      />
+    );
+    await pickDefault('joey-1');
+    const asking = await screen.findByTestId('monitors-public-confirm');
+    expect(asking).toHaveTextContent('This chat will be public: joey-1 runs on Baseten.');
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('monitors-public-accept'));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(onChange.mock.calls[0][0].defaultModel).toMatchObject({
+      provider: 'baseten_decision',
+      model: 'joey-1',
+    });
+    expect(onChange.mock.calls[0][1]).toBe(true);
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
+});
+
+describe('the draft dialog’s tip (M1-3)', () => {
+  it('names the chat model as the chip does, without its date', async () => {
+    render(
+      <DraftMonitorsDialog
+        open
+        onOpenChange={vi.fn()}
+        provider="versa_azure"
+        model="gpt-5.5-2026-04-24"
+        draft={null}
+        onDraftChange={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(mocks.catalog).toHaveBeenCalled());
+    await pickDefault('joey-1');
+    const asking = await screen.findByTestId('monitors-public-confirm');
+    const tip = within(asking).getByRole('button', { name: 'About Why this chat will be public' });
+    expect(tip).toHaveAccessibleDescription(/so gpt-5\.5 keeps answering/);
+    expect(tip.getAttribute('aria-describedby')).toBeTruthy();
+    expect(asking.textContent).not.toContain('2026-04-24');
   });
 });

@@ -153,7 +153,7 @@ describe('the model and effort chip', () => {
     expect(chip.getAttribute('aria-label')).not.toContain('..');
   });
 
-  it('on a chat its decision models made public, says so after the chat’s tier (DR-33)', async () => {
+  it('on a chat its decision models made public, names which one after the chat’s tier (DR-33, M1-2)', async () => {
     render(
       <ModelsBottomBar
         sessionId="s1"
@@ -173,7 +173,7 @@ describe('the model and effort chip', () => {
     const chip = await screen.findByTestId('model-chip');
     await waitFor(() =>
       expect(chip).toHaveAccessibleName(
-        /Public chat\. This chat is public because of its decision models\. Effort: Normal$/
+        /Public chat: monitor "Done" uses joey-1 · Baseten\. Effort: Normal$/
       )
     );
   });

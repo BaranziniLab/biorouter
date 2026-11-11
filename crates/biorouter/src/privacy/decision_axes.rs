@@ -109,12 +109,20 @@ pub struct PublicBasis {
 }
 
 impl PublicBasis {
+    /// `models` is kept in order with each model once: two sources naming one
+    /// model (a monitor and a gate both on `joey-1`) are one accepted model
+    /// (live QA M3-5).
     pub fn new(
         session_id: impl Into<String>,
         by: BasisAuthor,
         door: impl Into<String>,
         models: Vec<String>,
     ) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        let models = models
+            .into_iter()
+            .filter(|model| seen.insert(model.clone()))
+            .collect();
         Self {
             session_id: session_id.into(),
             by,
@@ -262,6 +270,21 @@ fn is_zero(count: &usize) -> bool {
 }
 
 impl LoweredBy {
+    /// The model as a person or an agent reads it: a Baseten model by its
+    /// alias (`joey-1`, never `decision-models/baseten-joey-2b-latest`), any
+    /// other by its id. `model` keeps what was stored, which a command line
+    /// or a record may need; every sentence names this (live QA 2026-11-11:
+    /// "This chat stays public: decision-models/baseten-joey-2b-latest runs
+    /// on Baseten").
+    pub fn model_name(&self) -> String {
+        match self.host {
+            HostLabel::Baseten => {
+                crate::providers::decision::catalog::baseten_display_name(&self.model)
+            }
+            _ => self.model.clone(),
+        }
+    }
+
     /// The subject, for a person: `monitor "Done" uses joey-1, a Baseten model`,
     /// and, when the fold counted more, `…, and 2 other public decision models`.
     pub fn person_phrase(&self) -> String {
@@ -276,24 +299,33 @@ impl LoweredBy {
     fn one_person_phrase(&self) -> String {
         let noun = self.host.model_noun();
         match self.source {
-            NameSource::Default => format!("its default decision model is {}, {noun}", self.model),
+            NameSource::Default => format!(
+                "its default decision model is {}, {noun}",
+                self.model_name()
+            ),
             NameSource::Monitor => {
-                format!("monitor \"{}\" uses {}, {noun}", self.label, self.model)
+                format!(
+                    "monitor \"{}\" uses {}, {noun}",
+                    self.label,
+                    self.model_name()
+                )
             }
             NameSource::Gate => format!(
                 "the gate on phase \"{}\" uses {}, {noun}",
-                self.label, self.model
+                self.label,
+                self.model_name()
             ),
             NameSource::PhaseMonitor => format!(
                 "subagent monitor \"{}\" uses {}, {noun}",
-                self.label, self.model
+                self.label,
+                self.model_name()
             ),
             NameSource::Parent if self.model.is_empty() => {
                 "it is part of the work of a public chat".to_string()
             }
             NameSource::Parent => format!(
                 "it is part of the work of a chat that is public because it uses {}, {noun}",
-                self.model
+                self.model_name()
             ),
         }
     }
@@ -311,22 +343,30 @@ impl LoweredBy {
     fn one_agent_phrase(&self) -> String {
         let place = self.host.place();
         match self.source {
-            NameSource::Default => format!("default decision model, {} on {place}", self.model),
-            NameSource::Monitor => format!("monitor \"{}\", {} on {place}", self.label, self.model),
+            NameSource::Default => {
+                format!("default decision model, {} on {place}", self.model_name())
+            }
+            NameSource::Monitor => format!(
+                "monitor \"{}\", {} on {place}",
+                self.label,
+                self.model_name()
+            ),
             NameSource::Gate => format!(
                 "gate on phase \"{}\", {} on {place}",
-                self.label, self.model
+                self.label,
+                self.model_name()
             ),
             NameSource::PhaseMonitor => format!(
                 "subagent monitor \"{}\", {} on {place}",
-                self.label, self.model
+                self.label,
+                self.model_name()
             ),
             NameSource::Parent if self.model.is_empty() => {
                 "the public chat that started this one".to_string()
             }
             NameSource::Parent => format!(
                 "the public chat that started this one, {} on {place}",
-                self.model
+                self.model_name()
             ),
         }
     }

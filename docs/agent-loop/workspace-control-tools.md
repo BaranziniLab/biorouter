@@ -56,7 +56,7 @@ This page uses the bare names for readability.
 | `workspace_close` | `tab` is a stated no-op; `turn` and `agent` refuse |
 | `workspace_open` | `session_id` form reports the session with no tab; `new` refuses |
 | `workspace_orchestrate` | Works: it reads and writes only the caller's own session row |
-| `workspace_monitor` | Works: it reads and writes the subagent's monitors in the session store |
+| `workspace_monitor` | Works: it reads and writes this chat's or the subagent's monitors in the session store |
 | `subagent` | Works, headless (no tab) |
 
 ## One worked sequence
@@ -584,30 +584,30 @@ Only when the user asks for a multi-phase or workflow-style run, or a plan with 
 
 ## `workspace_monitor`
 
-Decision-model monitors on a subagent this chat spawned: list them, put new ones on it, or take off the ones this chat's agent set. It is in the auto-injected delegation grant beside `subagent`, and reachable over the coding-agent tool bridge, where it is held to direct children. Unlike `subagent` and `workspace_orchestrate`, it is not stripped when the delegation gate closes, because it reaches only children that already exist. A subagent is refused it. The full account of monitors on subagents is in [Decision models](decision-models.md#monitors-on-subagents).
+Decision-model monitors on this chat (leave out `session_id`, or pass this chat's own id) or on a subagent this chat spawned: list them, put new ones on it, or take off the ones this chat's agent set. It is in the auto-injected delegation grant beside `subagent`, and reachable over the coding-agent tool bridge, where it is held to direct children only: the bridge's preflight demands a `session_id` naming a direct child, so a coding agent cannot reach its own chat's monitors. Unlike `subagent` and `workspace_orchestrate`, it is not stripped when the delegation gate closes, because it reaches only this chat and children that already exist. A subagent is refused it. The full account of monitors on subagents is in [Decision models](decision-models.md#monitors-on-subagents).
 
 ### Arguments
 
 | Name | Type | Used by | Meaning |
 |---|---|---|---|
 | `action` | string | all | `list`, `add` or `remove`. Required. |
-| `session_id` | string | all | The subagent: a conversation this chat spawned. |
+| `session_id` | string | all | Optional. A subagent this chat spawned; leave it out (or pass this chat's own id) for this chat. |
 | `monitors` | object[] | `add` | 1 to 4 monitors: `name`, optional `id`, `question` (yes/no), `watch` (`yes` or `no`), `threshold`, `action` (`stop` or `steer`), `timing` (`each_step` or `turn_end`), optional `model` as `provider/model`, `consecutive`, `on_error`, `max_checks`. Naming the id of a monitor this chat set replaces it. |
 | `ids` | string[] | `remove` | The ids of monitors this chat set, as `list` shows them. |
 
 ### Gates, in order
 
-1. **Direct child only.** The target must be the caller's direct subagent, read from the durable parent link whatever the grant's child scope says. Any other target gets the one out-of-reach sentence the privacy matrix gives, so the answer says nothing about a chat out of reach.
+1. **This chat or a direct child.** The target is the caller's own chat, or its direct subagent, read from the durable parent link whatever the grant's child scope says. The own-chat target skips the parent-link check, for the auto-injected child-scope grant too; that widening is deliberate (DR-33, live QA M3-1), because every add still meets the tier check in gate 4, so an agent can put only a monitor its chat's tier allows on itself, and a stop or steer on itself only narrows its own work. Any other target gets, for a public caller, the one out-of-reach sentence the privacy matrix gives, so the answer says nothing about a chat out of reach; a caller that may read every chat is told plainly that the chat is neither this one nor its subagent.
 2. **Reach.** `list` needs read reach; `add` and `remove` need write reach.
 3. **First crossing.** An `add` from a chat on a model inside the institution into a public subagent is a first crossing: the person sees the lock card with each monitor shown as "add monitor 'Name' (id x): question", in every permission mode, once per (chat, subagent) pair, and the pair shares its ledger with `workspace_send_prompt` and `workspace_set_tools`. From inside `execute_code` such a call is refused, with the advice to call `workspace_monitor` directly instead. `list` and `remove` never ask.
-4. **The model.** Each monitor's model is checked against the subagent's chat, the way a saved monitor is, with nothing of the chat sent ([What a save checks](decision-models.md#what-a-save-checks)).
+4. **The model.** Each monitor's model is checked against the target chat, the way a saved monitor is, with nothing of the chat sent ([What a save checks](decision-models.md#what-a-save-checks)). A public model on a private chat, this chat included, is refused with DR-33's agent sentence: "This chat is private, so joey-1, a Baseten model, can't read it. This would change whether this chat is private, … which only the person can choose. … tell the person; do not retry."
 5. **Ownership and limits.** `settings::apply_agent_edit` writes all or nothing: a subagent holds at most 4 monitors set by an agent within 8 in all, and a change to a monitor the person set, or another chat's agent set, is refused.
 
 ### Returns
 
-- **`add`**: "Monitor 'Off task' is on subagent 20261106_2, set by you: it stops the subagent when P(yes) reaches 0.80, checked after each of its steps with ollama_decision/tev1:0.8b. A running subagent applies it from its next check." The clause follows the monitor: "steers the subagent", P(no) for a `watch: no` monitor, "checked once, when its turn is about to end" for `turn_end`, and "{model} (its default decision model)" for one that names no model.
-- **`remove`**: "Removed monitor `off-task` from subagent 20261106_2. A running subagent stops checking it from its next check."
-- **`list`**: "Subagent 20261106_2 has 2 monitors:", then one line each ("- 'Off task' (`off-task`), set by you: it …", with ", turned off" when it is off), the subagent's default decision model, and "You may change or remove only the monitors set by you; tell the person if one of theirs should change." Each line names its owner: "set by you", "set by another chat's agent", "set by the person through this chat's monitors that also watch subagents" (or "through another chat's monitors"), or "set by the person".
+- **`add`**: "Monitor 'Off task' is on subagent 20261106_2, set by you: it stops the subagent when P(yes) reaches 0.80, checked after each of its steps with ollama_decision/tev1:0.8b. A running subagent applies it from its next check." On this chat: "Monitor 'Off task' is on this chat, set by you: it stops this chat when … It applies from this chat's next check." The clause follows the monitor: "steers the subagent", P(no) for a `watch: no` monitor, "checked once, when its turn is about to end" for `turn_end`, and "{model} (its default decision model)" for one that names no model.
+- **`remove`**: "Removed monitor `off-task` from subagent 20261106_2. A running subagent stops checking it from its next check." On this chat: "Removed monitor `off-task` from this chat. This chat stops checking it from its next check."
+- **`list`**: "Subagent 20261106_2 has 2 monitors:" ("This chat has 2 monitors:" on this chat), then one line each ("- 'Off task' (`off-task`), set by you: it …", with ", turned off" when it is off), the subagent's default decision model, and "You may change or remove only the monitors set by you; tell the person if one of theirs should change." Each line names its owner: "set by you", "set by another chat's agent", "set by the person through this chat's monitors that also watch subagents" (or "through another chat's monitors"), or "set by the person".
 
 `structured_content` is `{kind: "workspace_monitor", sessionId, defaultModel, monitors}`, each monitor its stored record plus `owner` (`you`, `another_agent`, `person_from_this_chat`, `person_from_another_chat` or `person`), `ownerPhrase` and `yours`.
 
@@ -620,7 +620,7 @@ Decision-model monitors on a subagent this chat spawned: list them, put new ones
 
 ### When to reach for it
 
-When a subagent's work needs a decision model watching it: a stop on a risk, or a steer back to the task. The parent can set the same monitors at spawn with the `subagent` tool's `monitors` field.
+When a subagent's work, or this chat's own, needs a decision model watching it: a stop on a risk, or a steer back to the task. The parent can set the same monitors at spawn with the `subagent` tool's `monitors` field.
 
 ---
 

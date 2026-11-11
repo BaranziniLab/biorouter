@@ -2365,13 +2365,26 @@ fn blocked_gate_guidance(gate: &PhaseGateSnapshot, held_by: Option<&str>) -> Str
     }
 }
 
-/// A gate's state in a few words: "2 questions at P(yes) >= 0.80, 1 of 3
-/// attempts used, last not passed (lowest P(yes) 0.42), set by the agent,
-/// holds verify". A gate "passed" or was "not passed" (R1, live QA
-/// 2026-11-10), never "failed", which a person reads as an error.
+/// A gate's state in a few words: "2 questions at P(yes) >= 0.80 with
+/// joey-1 · Baseten, 1 of 3 attempts used, last not passed (lowest P(yes)
+/// 0.42), set by the agent, holds verify". A gate "passed" or was "not
+/// passed" (R1, live QA 2026-11-10), never "failed", which a person reads as
+/// an error. A gate that names its decision model says which, as a person
+/// reads it (TRIAGE R3, live QA M2-4), so the plan shows which model will
+/// read the chat; one that names none runs on the chat's default.
 pub fn gate_words(gate: &PhaseGateSnapshot) -> String {
+    let model = gate
+        .model
+        .as_deref()
+        .map(
+            |label| match crate::decision::DecisionModelRef::parse(label) {
+                Some(model) => format!(" with {}", crate::decision::monitor::model_phrase(&model)),
+                None => format!(" with {label}"),
+            },
+        )
+        .unwrap_or_default();
     let mut words = format!(
-        "{} question{} at P(yes) >= {:.2}, {} of {} attempts used",
+        "{} question{} at P(yes) >= {:.2}{model}, {} of {} attempts used",
         gate.question_count,
         if gate.question_count == 1 { "" } else { "s" },
         gate.threshold,
@@ -7006,6 +7019,51 @@ mod tests {
         let unnamed = gate_for(None);
         assert_eq!(unnamed["model"], serde_json::Value::Null);
         assert_eq!(unnamed["modelAdapter"], serde_json::Value::Null);
+    }
+
+    /// Live QA M2-4: a gate that names its decision model says which, as a
+    /// person reads it, so the plan card shows which model will read the
+    /// chat. One that names none says nothing more (it runs on the default).
+    #[test]
+    fn the_plan_text_names_a_gates_decision_model() {
+        let plan = held_plan();
+        let snapshot = snapshot_of(&plan, &[]);
+        let mut gate = snapshot
+            .phases
+            .iter()
+            .find_map(|phase| phase.gate.clone())
+            .expect("the held plan has a gate");
+        gate.model = None;
+        assert!(
+            gate_words(&gate).starts_with("2 questions at P(yes) >= 0.80, 0 of 3 attempts used"),
+            "{}",
+            gate_words(&gate)
+        );
+        gate.model = Some("baseten_decision/joey-1".to_string());
+        assert!(
+            gate_words(&gate).starts_with(
+                "2 questions at P(yes) >= 0.80 with joey-1 · Baseten, 0 of 3 attempts used"
+            ),
+            "{}",
+            gate_words(&gate)
+        );
+        // Stored by its slug, it is still named by its alias.
+        gate.model = Some("baseten_decision/decision-models/baseten-joey-2b-latest".to_string());
+        assert!(
+            gate_words(&gate).starts_with(
+                "2 questions at P(yes) >= 0.80 with joey-1 · Baseten, 0 of 3 attempts used"
+            ),
+            "{}",
+            gate_words(&gate)
+        );
+        gate.model = Some("test_decision/tev1".to_string());
+        assert!(
+            gate_words(&gate).starts_with(
+                "2 questions at P(yes) >= 0.80 with test_decision/tev1, 0 of 3 attempts used"
+            ),
+            "{}",
+            gate_words(&gate)
+        );
     }
 
     #[test]

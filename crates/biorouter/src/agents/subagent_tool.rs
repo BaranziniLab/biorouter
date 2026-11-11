@@ -1716,7 +1716,25 @@ async fn check_child_monitors(
             // The default the child's monitors run on: the parent's, else the
             // sub-workflow's.
             .with_chat_default_model(Ok(child.default_model.clone()));
+    // DR-33 (live QA M3-2): a public model named for a private chat's child
+    // is refused in the sentence every agent door gives (the child is born
+    // private, so only the person could change that), before the usability
+    // check would refuse it in the older words.
+    let private_parent = enforced && session.classification.is_private();
+    let public_on_private = |model: Option<&crate::decision::DecisionModelRef>| {
+        model
+            .filter(|_| private_parent)
+            .and_then(crate::decision::save::agent_public_model_on_private_chat)
+    };
     if let Some(default) = &workflow_default {
+        if let Some(reason) = public_on_private(Some(default)) {
+            return Err(spawn_refusal(format!(
+                "The sub-workflow's default decision model {} could not be put on the subagent: \
+                 {} Nothing was started.",
+                default.label(),
+                as_sentence(&reason)
+            )));
+        }
         let no_questions = indexmap::IndexMap::new();
         service
             .check_model_use(&session, Some(default), &no_questions, ModelSource::Setting)
@@ -1738,6 +1756,9 @@ async fn check_child_monitors(
                 as_sentence(&cause)
             ))
         };
+        if let Some(reason) = public_on_private(monitor.model.as_ref()) {
+            return Err(cannot(reason));
+        }
         let source = match monitor.set_by {
             MonitorOwner::Agent => ModelSource::Named,
             MonitorOwner::Person => ModelSource::Setting,
@@ -9050,6 +9071,36 @@ mod tests {
             .expect_err("five monitors are refused");
         assert!(refused.message.contains("at most 4"), "{}", refused.message);
         assert_eq!(fx.subagent_rows().await, 0);
+    }
+
+    /// DR-33 (live QA M3-2): a public decision model named for a private
+    /// chat's child is refused in the sentence every agent door gives (the
+    /// child is born private, and only the person can change that), not in
+    /// the older usability words, and nothing is created.
+    #[tokio::test]
+    async fn a_public_monitor_from_a_private_chat_gets_the_agent_sentence() {
+        let fx = spawn_fixture(SessionClassification::Private).await;
+
+        let refused = fx
+            .spawn(
+                json!({
+                    "instructions": "Repair the tab handling in the lexer.",
+                    "visible": false,
+                    "monitors": [off_task_monitor("baseten_decision/joey-1")],
+                }),
+                HashMap::new(),
+            )
+            .await
+            .expect_err("a public monitor on a private chat's child is refused");
+        assert_eq!(
+            refused.message,
+            "Monitor 'Off task' could not be put on the subagent: this chat is private, so \
+             joey-1, a Baseten model, can't read it. This would change whether this chat is \
+             private, or needs a model a private chat can't use, which only the person can \
+             choose. Name a private decision model (decision_models lists them), or tell the \
+             person; do not retry. Nothing was started."
+        );
+        assert_eq!(fx.subagent_rows().await, 0, "no SubAgent row");
     }
 
     /// The person's monitor set to also watch subagents is copied onto the

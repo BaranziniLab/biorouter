@@ -208,8 +208,6 @@ export const TIER_EFFECT_COPY = {
   workflowQuestion: (models: string) =>
     `This workflow uses ${models}, so this chat will be public.`,
   workflowConfirm: 'Start it',
-  /** The model chip's extra line on a chat its decision models made public. */
-  chipLine: 'This chat is public because of its decision models.',
   /** The model switch, on a chat its decision models keep public. */
   switchStaysPublic: (models: string) =>
     `This chat stays public: its decision models include ${models}.`,
@@ -332,6 +330,18 @@ export function privacyBasisTip(basis: PrivacyBasisWords): string {
   const reason = basisReason(basis);
   if (!reason) return "Public: it is part of a public chat's work.";
   return `Public: ${reason}. A chat is as private as its least private model, so it can't use private extensions, knowledge bases or chats.`;
+}
+
+/**
+ * The model chip's privacy line on a chat a decision model made public, naming
+ * the reason where the person looks (live QA M1-2, M2-3: a chat in the tab strip
+ * has no pill, so the chip's tip is the one place the reason shows): "Public chat:
+ * monitor "Done" uses joey-1 · Baseten." For a subagent of a public chat: "Public
+ * chat: it is part of a public chat's work."
+ */
+export function privacyBasisChipLine(basis: PrivacyBasisWords): string {
+  const reason = basisReason(basis);
+  return `Public chat: ${reason ?? "it is part of a public chat's work"}.`;
 }
 
 // ---------------------------------------------------------------------------

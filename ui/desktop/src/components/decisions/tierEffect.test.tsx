@@ -3,6 +3,7 @@ import type { DecisionModelEntry, MonitorCriterion } from '../../utils/sessionDe
 import {
   TIER_EFFECT_COPY,
   declassifyDecisionLines,
+  privacyBasisChipLine,
   privacyBasisTip,
   publicModelsList,
   publicModelsSentence,
@@ -113,6 +114,18 @@ describe('a chat a decision model made public, said where the chat says its tier
     );
     expect(privacyBasisTip({ source: 'parent', label: 'p', model: '', place: '' })).toBe(
       "Public: it is part of a public chat's work."
+    );
+  });
+
+  it('the model chip’s line names the reason too, since a tabbed chat has no pill (M1-2)', () => {
+    expect(
+      privacyBasisChipLine({ source: 'gate', label: 'Draft', model: 'joey-1', place: 'Baseten' })
+    ).toBe('Public chat: the gate on phase "Draft" uses joey-1 · Baseten.');
+    expect(
+      privacyBasisChipLine({ source: 'default', label: '', model: 'joey-1', place: 'Baseten' })
+    ).toBe('Public chat: its default decision model is joey-1 · Baseten.');
+    expect(privacyBasisChipLine({ source: 'parent', label: 'p', model: '', place: '' })).toBe(
+      "Public chat: it is part of a public chat's work."
     );
   });
 

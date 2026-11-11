@@ -670,7 +670,7 @@ impl From<&biorouter::privacy::decision_axes::LoweredBy> for PrivacyBasis {
                 NameSource::Parent => PrivacyBasisSource::Parent,
             },
             label: cause.label.clone(),
-            model: cause.model.clone(),
+            model: cause.model_name(),
             host: cause.host.clone(),
             place: cause.host.place(),
             summary: cause.person_phrase(),
