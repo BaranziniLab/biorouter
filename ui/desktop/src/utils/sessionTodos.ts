@@ -10,6 +10,11 @@ export type TodoItem = {
   status: TodoStatus;
   /** Set when the item was expanded out of another; nesting is one level deep. */
   parent?: string;
+  /**
+   * Set by `withDerivedActiveItem` on the row that reads `in_progress` only
+   * because it is the first open item; never stored.
+   */
+  derived?: boolean;
 };
 
 function isTodoStatus(value: unknown): value is TodoStatus {
@@ -82,6 +87,46 @@ export function sessionTodoItems(extensionData: unknown): TodoItem[] {
 }
 
 /**
+ * The checklist as it should READ: the stored items, with the current item
+ * marked `in_progress` when the agent did not mark one.
+ *
+ * The agent no longer spends a request to say "starting #4"; finishing #3 is
+ * enough, and #4 is current by position. This is the same rule as
+ * `TodoState::derived_active_index` in `session/extension_data.rs`, which the
+ * model's own copy of the checklist uses: no item explicitly `in_progress`,
+ * then the first `pending` item that is not a grouping row with unfinished
+ * steps. A `blocked` item is skipped, since nobody is working on it.
+ *
+ * The derived row carries `derived: true`; the stored status is unchanged.
+ */
+export function withDerivedActiveItem(items: readonly TodoItem[]): TodoItem[] {
+  if (items.some((item) => item.status === 'in_progress')) return [...items];
+  const index = items.findIndex(
+    (item) =>
+      item.status === 'pending' &&
+      !items.some((child) => child.parent === item.id && child.status !== 'completed')
+  );
+  return items.map((item, position) =>
+    position === index ? { ...item, status: 'in_progress', derived: true } : item
+  );
+}
+
+/**
+ * The argument the backend adds to its workhorse tools' schemas
+ * (`todo_extension::TODO_SIDECAR_FIELD`) so checklist progress rides on a real
+ * call. The agent strips it before the tool runs and applies it to the
+ * checklist afterwards, so a request carrying one changed the persisted list
+ * without any `todo__*` request in the transcript.
+ */
+const TODO_SIDECAR_FIELD = 'todo';
+
+function carriesTodoSidecar(call: Record<string, unknown> | undefined): boolean {
+  const args = record(call?.arguments);
+  const sidecar = args?.[TODO_SIDECAR_FIELD];
+  return sidecar !== undefined && sidecar !== null && sidecar !== '';
+}
+
+/**
  * The four tools that mutate the persisted checklist. `todo__plan_write` moves
  * the prose plan, not the checklist, so it is deliberately absent.
  *
@@ -145,19 +190,28 @@ function executedTodoMutations(resultValue: unknown): number {
   }).length;
 }
 
-/** Only acknowledged mutations invalidate the persisted checklist, never proposed arguments. */
+/**
+ * Only acknowledged mutations invalidate the persisted checklist, never proposed arguments.
+ *
+ * A request carrying the ride-along `todo` field counts once ANY response for it
+ * exists, success or failure: the agent applies the field after the call is
+ * dispatched whatever the tool answered, so a failed script can still have
+ * moved the checklist. A refetch that finds nothing changed costs one metadata
+ * read.
+ */
 export function todoMutationRevision(messages: readonly Message[]): string {
   const requests = new Set<string>();
+  const sidecars = new Set<string>();
   const completed = new Set<string>();
   for (const message of messages) {
     for (const content of message.content) {
       if (content.type === 'toolRequest') {
         const call = record(content.toolCall.value);
-        if (
-          content.toolCall.status === 'success' &&
-          TODO_MUTATION_TOOLS.includes(String(call?.name))
-        ) {
+        if (content.toolCall.status !== 'success') continue;
+        if (TODO_MUTATION_TOOLS.includes(String(call?.name))) {
           requests.add(content.id);
+        } else if (carriesTodoSidecar(call)) {
+          sidecars.add(content.id);
         }
       }
     }
@@ -179,6 +233,7 @@ export function todoMutationRevision(messages: readonly Message[]): string {
       // without reading both.
       const executed = executedTodoMutations(content.toolResult.value);
       if (executed > 0) completed.add(JSON.stringify([content.id, executed]));
+      if (sidecars.has(content.id)) completed.add(JSON.stringify([content.id, 'todo']));
       if (!requests.has(content.id)) continue;
       const result = record(content.toolResult.value);
       if (

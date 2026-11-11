@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   AlertCircle,
   Check,
@@ -14,7 +14,7 @@ import { summaryCopy } from './summary/copy';
 import { SummarySubagents, type SummarySubagentsData } from './summary/SummarySubagents';
 import { SummaryDecisions, type SummaryDecisionsData } from './summary/SummaryDecisions';
 import { prefersReducedMotion } from '../styles/motion';
-import type { TodoItem, TodoStatus } from '../utils/sessionTodos';
+import { withDerivedActiveItem, type TodoItem, type TodoStatus } from '../utils/sessionTodos';
 import './summary/chatSummary.css';
 
 /**
@@ -82,6 +82,7 @@ function TodoRow({
     <li
       className={animateIn ? 'br-summary__todo br-enter' : 'br-summary__todo'}
       data-status={item.status}
+      data-derived={item.derived ? '' : undefined}
       data-nested={item.parent !== undefined ? '' : undefined}
       data-todo-id={item.id}
       style={style}
@@ -151,8 +152,12 @@ export function ChatSummary({
   onWorkflow,
   onDiagnostics,
 }: ChatSummaryProps) {
-  const total = todos.items.length;
-  const completed = todos.items.filter((item) => item.status === 'completed').length;
+  // The current item reads as running although the agent never marked it so:
+  // it now reports only what is done, and the next open item is current by
+  // position (`withDerivedActiveItem`, the same rule the agent's copy uses).
+  const items = useMemo(() => withDerivedActiveItem(todos.items), [todos.items]);
+  const total = items.length;
+  const completed = items.filter((item) => item.status === 'completed').length;
   const statsPending =
     toolCalls === null || billedTokens === null || artifacts === null || codeDelta === null;
 
@@ -161,25 +166,25 @@ export function ChatSummary({
   // list has answered: either it has rows, or its first refresh has finished.
   const baselineRef = useRef<Set<string> | null>(null);
   if (baselineRef.current === null && (total > 0 || !todos.loading)) {
-    baselineRef.current = new Set(todos.items.map((item) => item.id));
+    baselineRef.current = new Set(items.map((item) => item.id));
   }
   const baseline = baselineRef.current;
   const entering = new Set<string>();
   if (baseline) {
-    for (const item of todos.items) {
+    for (const item of items) {
       if (!baseline.has(item.id) && entering.size < MAX_ANIMATED_ROWS) entering.add(item.id);
     }
   }
   useEffect(() => {
     if (!baselineRef.current) return;
-    for (const item of todos.items) baselineRef.current.add(item.id);
-  }, [todos.items]);
+    for (const item of items) baselineRef.current.add(item.id);
+  }, [items]);
 
   // Keep the running step in view, smoothly unless motion is reduced or the
   // pointer is over the summary (a list must not scroll under a reading cursor).
   const bodyRef = useRef<HTMLDivElement>(null);
   const pointerInsideRef = useRef(false);
-  const runningId = todos.items.find((item) => item.status === 'in_progress')?.id;
+  const runningId = items.find((item) => item.status === 'in_progress')?.id;
   const firstScrollRef = useRef(true);
   useEffect(() => {
     if (!runningId) return;
@@ -238,7 +243,7 @@ export function ChatSummary({
               label={summaryCopy.todoProgressLabel}
             />
             <ol aria-label={summaryCopy.todoListLabel} className="br-summary__todos">
-              {todos.items.map((item) => {
+              {items.map((item) => {
                 const isEntering = entering.has(item.id);
                 return (
                   <TodoRow

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../api';
-import { sessionTodoItems, todoMutationRevision } from './sessionTodos';
+import { sessionTodoItems, todoMutationRevision, withDerivedActiveItem } from './sessionTodos';
 import { scriptedTodoExchange } from './scriptedTodoExchange.fixture';
 
 export function todoExchange(
@@ -199,5 +199,115 @@ describe('acknowledged To Do changes a script ran as sub-calls', () => {
 
   it('ignores a run that recorded no checklist sub-calls at all', () => {
     expect(todoMutationRevision(scriptedTodoExchange('run-1', []))).toBe('[]');
+  });
+});
+
+function sidecarExchange(
+  id: string,
+  options: { name?: string; todo?: unknown; refused?: boolean; pending?: boolean } = {}
+): Message[] {
+  return [
+    {
+      role: 'assistant',
+      created: 0,
+      metadata: { agentVisible: true, userVisible: true },
+      content: [
+        {
+          type: 'toolRequest',
+          id,
+          toolCall: {
+            status: 'success',
+            value: {
+              name: options.name ?? 'code_execution__execute_code',
+              arguments: { code: 'record_result(1)', todo: options.todo },
+            },
+          },
+        },
+        ...(options.pending
+          ? []
+          : [
+              {
+                type: 'toolResponse',
+                id,
+                toolResult: {
+                  status: options.refused ? 'error' : 'success',
+                  value: { content: [], isError: options.refused ?? false },
+                },
+              },
+            ]),
+      ],
+    },
+  ] as Message[];
+}
+
+describe('checklist progress that rode on a real call', () => {
+  const empty = todoMutationRevision([]);
+
+  it('moves the revision once the call carrying a todo field has answered', () => {
+    const done = todoMutationRevision(sidecarExchange('a', { todo: { done: [2, 3] } }));
+    expect(done).not.toBe(empty);
+    // A second call with its own sidecar moves it again.
+    expect(
+      todoMutationRevision([
+        ...sidecarExchange('a', { todo: { done: [2, 3] } }),
+        ...sidecarExchange('b', { name: 'developer__shell', todo: '{"done":[4]}' }),
+      ])
+    ).not.toBe(done);
+  });
+
+  it('counts a failed call too, because the field is applied whatever the tool answered', () => {
+    expect(
+      todoMutationRevision(sidecarExchange('a', { todo: { done: [1] }, refused: true }))
+    ).not.toBe(empty);
+  });
+
+  it('waits for the answer and ignores a call without the field', () => {
+    expect(todoMutationRevision(sidecarExchange('a', { todo: { done: [1] }, pending: true }))).toBe(
+      empty
+    );
+    expect(todoMutationRevision(sidecarExchange('a'))).toBe(empty);
+    expect(todoMutationRevision(sidecarExchange('a', { todo: null }))).toBe(empty);
+  });
+});
+
+describe('the derived current item', () => {
+  it('marks the first open, unblocked item in progress when none is', () => {
+    const items = [
+      { id: '1', text: 'a', status: 'completed' as const },
+      { id: '2', text: 'b', status: 'blocked' as const },
+      { id: '3', text: 'c', status: 'pending' as const },
+      { id: '4', text: 'd', status: 'pending' as const },
+    ];
+    const read = withDerivedActiveItem(items);
+    expect(read[2]).toEqual({ id: '3', text: 'c', status: 'in_progress', derived: true });
+    expect(read[3].status).toBe('pending');
+    // The stored list is not touched.
+    expect(items[2].status).toBe('pending');
+  });
+
+  it('leaves an explicit in-progress item alone and derives nothing', () => {
+    const items = [
+      { id: '1', text: 'a', status: 'pending' as const },
+      { id: '2', text: 'b', status: 'in_progress' as const },
+    ];
+    expect(withDerivedActiveItem(items)).toEqual(items);
+  });
+
+  it('skips a grouping row while its steps are open, then returns to it', () => {
+    const items = [
+      { id: '1', text: 'coarse', status: 'pending' as const },
+      { id: '3', text: 'step', status: 'pending' as const, parent: '1' },
+      { id: '2', text: 'later', status: 'pending' as const },
+    ];
+    expect(withDerivedActiveItem(items).find((item) => item.derived)?.id).toBe('3');
+    const stepsDone = items.map((item) =>
+      item.id === '3' ? { ...item, status: 'completed' as const } : item
+    );
+    expect(withDerivedActiveItem(stepsDone).find((item) => item.derived)?.id).toBe('1');
+    expect(
+      withDerivedActiveItem([{ id: '1', text: 'x', status: 'completed' as const }]).some(
+        (item) => item.derived
+      )
+    ).toBe(false);
   });
 });
