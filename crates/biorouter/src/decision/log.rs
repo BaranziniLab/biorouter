@@ -227,7 +227,15 @@ pub struct DecisionTurnMarkerItem {
     pub origin: DecisionOrigin,
     pub origin_id: Option<String>,
     pub label: String,
+    /// Decisions (rows): one per chunk, per model in a vote.
     pub count: u64,
+    /// Calls that made them: a `decide` call is one however many chunks and
+    /// models it asked (its batch), a monitor's or a gate's check one per row.
+    /// One item holds every `decide` call of the turn, so this, not the
+    /// number of items, is how many calls there were (R3-F3: three calls of
+    /// 200 chunks read as "1 decide call"). 0 from a writer that predates it.
+    #[serde(default)]
+    pub calls: u64,
     pub passed: u64,
     pub failed: u64,
     pub errors: u64,
@@ -1072,13 +1080,16 @@ const RECENT_TURN_SUMMARIES: &str = concat!(
       ORDER BY turn_last DESC, turn_id DESC, first_at ASC, origin, origin_id"
 );
 
-/// One turn's calls, each source's aggregated.
+/// One turn's calls, each source's aggregated. `calls` counts each source's
+/// first row of every call: a call is its batch (a `decide` call's chunks and
+/// models share one), and a row with no batch is a call of its own.
 const TURN_MARKER: &str = concat!(
-    "SELECT origin, origin_id, label, pass_probability, n, passed, failed, errors \
+    "SELECT origin, origin_id, label, pass_probability, n, calls, passed, failed, errors \
        FROM (SELECT origin, ",
     source_origin_id!(""),
     " AS origin_id, label, pass_probability, created_at, \
                     COUNT(*) OVER g AS n, \
+                    SUM(call_rn = 1) OVER g AS calls, \
                     SUM(outcome = 'passed') OVER g AS passed, \
                     SUM(outcome = 'failed') OVER g AS failed, \
                     SUM(outcome IN ('error', 'refused')) OVER g AS errors, \
@@ -1086,8 +1097,11 @@ const TURN_MARKER: &str = concat!(
                     ROW_NUMBER() OVER (PARTITION BY origin, ",
     source_key!(""),
     " ORDER BY created_at DESC, id DESC) AS rn \
-               FROM decisions \
-              WHERE session_id = ?1 AND turn_id = ?2 \
+               FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY origin, ",
+    source_key!(""),
+    ", COALESCE(batch_id, id) ORDER BY created_at, id) AS call_rn \
+                       FROM decisions \
+                      WHERE session_id = ?1 AND turn_id = ?2) \
              WINDOW g AS (PARTITION BY origin, ",
     source_key!(""),
     ")) \
@@ -1200,6 +1214,7 @@ pub async fn turn_marker(
             Ok(DecisionTurnMarkerItem {
                 label: label.unwrap_or_else(|| default_label(origin, origin_id.as_deref())),
                 count: count(row.try_get("n")?),
+                calls: count(row.try_get("calls")?),
                 passed: count(row.try_get("passed")?),
                 failed: count(row.try_get("failed")?),
                 errors: count(row.try_get("errors")?),
@@ -2073,6 +2088,14 @@ mod tests {
             (tool_items[0].count, tool_items[0].origin_id.clone()),
             (4, None)
         );
+        // R3-F3: the one item still says how many calls made its rows: two
+        // batches of two in t1, one in t2.
+        assert_eq!(tool_items[0].calls, 2);
+        let t2 = turn_marker(&sm, &id, "t2").await.unwrap();
+        assert_eq!((t2.items[0].count, t2.items[0].calls), (2, 1));
+        // A gate's check carries no batch: each row is a call.
+        let t0 = turn_marker(&sm, &id, "t0").await.unwrap();
+        assert!(t0.items.iter().all(|item| item.calls == item.count));
 
         let batch = list(
             &sm,

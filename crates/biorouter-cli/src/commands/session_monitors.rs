@@ -141,9 +141,9 @@ pub struct AddMonitor {
     /// When to ask: after every iteration of the agent loop, or once as a turn ends.
     #[arg(long, value_enum, default_value_t = TimingArg::PostIteration)]
     pub timing: TimingArg,
-    /// The decision model, `provider/model`. Without it the chat's default
-    /// decision model is used.
-    #[arg(long, value_name = "PROVIDER/MODEL")]
+    /// The decision model, by its name (tev1:0.8b, joey-1) or as
+    /// provider/model. Without it the chat's default decision model is used.
+    #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
     /// For a choice question: one option, `name` or `name=description`. Repeat it.
     #[arg(long = "choice", value_name = "NAME[=DESCRIPTION]", value_parser = parse_choice)]
@@ -911,7 +911,11 @@ pub async fn handle_session_monitors(
             }
             return Ok(());
         }
-        MonitorsCommand::Add(add) => MonitorEdit::Add(add),
+        MonitorsCommand::Add(mut add) => {
+            // A bare model name is spelled out as `decide --model` takes it.
+            add.model = super::decide::spell_model_option(add.model).await?;
+            MonitorEdit::Add(add)
+        }
         MonitorsCommand::Remove { monitor } => MonitorEdit::Remove(monitor),
     };
     let message = match (source, local) {

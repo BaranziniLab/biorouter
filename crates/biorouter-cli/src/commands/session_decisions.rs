@@ -301,7 +301,7 @@ fn last_probability(origin: DecisionOrigin, p: f64) -> String {
     }
 }
 
-/// The text of one origin's marker line: `Monitor Form reached: 18 checks this
+/// The text of one origin's marker line: `Monitor 'Form reached': 18 checks this
 /// turn · 18 quiet · last P 0.31`. Whether a monitor acted is in its counts
 /// ("fired"), so the line says it once.
 pub fn marker_text(item: &DecisionTurnMarkerItem) -> String {
@@ -318,8 +318,12 @@ pub fn marker_text(item: &DecisionTurnMarkerItem) -> String {
     let title = origin_title(item.origin);
     let label = clip(&item.label, 40);
     // The decide tool's label is usually its own name: say it once.
+    // R3-F6: a monitor's or a gate's name in single quotes, as its notice
+    // and the run's stop line give it.
     let named = if label.is_empty() || label.eq_ignore_ascii_case(title) {
         title.to_string()
+    } else if matches!(item.origin, DecisionOrigin::Monitor | DecisionOrigin::Gate) {
+        format!("{title} '{label}'")
     } else {
         format!("{title} {label}")
     };
@@ -1184,6 +1188,7 @@ pub(crate) mod tests {
                 origin_id: Some("build".into()),
                 label: "\x1b[2JBuild\x07".into(),
                 count: 1,
+                calls: 1,
                 passed: 1,
                 failed: 0,
                 errors: 0,

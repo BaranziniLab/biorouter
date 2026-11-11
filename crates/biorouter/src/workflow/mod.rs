@@ -514,7 +514,9 @@ impl Workflow {
     }
 
     pub fn to_yaml(&self) -> Result<String> {
-        let workflow_yaml = serde_yaml::to_string(self)
+        let value = serde_yaml::to_value(self)
+            .map_err(|err| anyhow::anyhow!("Failed to serialize workflow: {}", err))?;
+        let workflow_yaml = serde_yaml::to_string(&untagged(value))
             .map_err(|err| anyhow::anyhow!("Failed to serialize workflow: {}", err))?;
         let formatted_workflow_yaml =
             reformat_fields_with_multiline_values(&workflow_yaml, &["prompt", "instructions"]);
@@ -700,6 +702,32 @@ impl WorkflowBuilder {
             decision_settings: self.decision_settings,
             orchestration_plan: self.orchestration_plan,
         })
+    }
+}
+
+/// `value` with every YAML tag written as the one-key map serde reads the
+/// same enum from: a question's kind as `{binary: {}}`, not `!binary {}`
+/// (R2-8). serde_yaml writes an enum variant that carries data as a tag, which
+/// a person editing the file, and most other YAML tools, do not expect; the
+/// schema reference writes the map form.
+fn untagged(value: serde_yaml::Value) -> serde_yaml::Value {
+    use serde_yaml::Value;
+    match value {
+        Value::Tagged(tagged) => {
+            let tagged = *tagged;
+            let name = tagged.tag.to_string();
+            let name = name.strip_prefix('!').unwrap_or(&name).to_string();
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(Value::String(name), untagged(tagged.value));
+            Value::Mapping(map)
+        }
+        Value::Mapping(map) => Value::Mapping(
+            map.into_iter()
+                .map(|(key, value)| (key, untagged(value)))
+                .collect(),
+        ),
+        Value::Sequence(items) => Value::Sequence(items.into_iter().map(untagged).collect()),
+        other => other,
     }
 }
 

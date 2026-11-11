@@ -1270,8 +1270,10 @@ async fn a_servers_over_window_refusal_reads_as_the_size_error() {
         .await
         .expect("a batch");
     let error = outcomes[0].error.as_deref().expect("the chunk fails");
+    // The server's 2,503 prompt tokens, said in the unit decision_models uses
+    // (R3-F2): before the margin's factor and less the questions' share.
     assert!(
-        error.starts_with("Chunk `note-0003` is about 2503 tokens")
+        error.starts_with("Chunk `note-0003` is about ")
             && error
                 .contains("`tev1:0.8b` takes beside these questions (its window is 2048 tokens)"),
         "{error}"
@@ -1287,8 +1289,8 @@ async fn a_servers_over_window_refusal_reads_as_the_size_error() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&single, DecisionError::TooLarge { chunk, tokens: 2503, limit: 2048, .. }
-            if chunk == "The text"),
+        matches!(&single, DecisionError::TooLarge { chunk, tokens, usable, limit: 2048, .. }
+            if chunk == "The text" && *tokens > *usable && *usable < 1_669),
         "{single:?}"
     );
 }
@@ -1319,10 +1321,11 @@ async fn basetens_over_window_refusal_reads_as_the_size_error() {
         matches!(
             err,
             DecisionError::TooLarge {
-                tokens: 16094,
+                tokens,
+                usable,
                 limit: 16000,
                 ..
-            }
+            } if tokens > usable && usable < 13_478
         ),
         "{err:?}"
     );

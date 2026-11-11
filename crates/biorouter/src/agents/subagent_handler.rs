@@ -3655,6 +3655,7 @@ mod tests {
                     origin_id: Some(label.into()),
                     label: label.into(),
                     count: 2,
+                    calls: 2,
                     passed: 0,
                     failed: 0,
                     errors: 0,

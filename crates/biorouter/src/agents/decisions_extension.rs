@@ -57,7 +57,8 @@ use crate::decision::{
 };
 use crate::privacy::ProviderTier;
 use crate::providers::decision::catalog::{
-    choice_option_limit, decision_model_display_label, OLLAMA_DECISION_PROVIDER,
+    choice_option_limit, decision_model_display_label, decision_model_short_name,
+    OLLAMA_DECISION_PROVIDER,
 };
 use crate::providers::decision::system_one::OLLAMA_MAX_REQUEST_BYTES;
 
@@ -154,12 +155,11 @@ const DECIDE_DESCRIPTION: &str = concat!(
     "Privacy: a private chat can use only private decision models (on this computer or at ",
     "the user's institution); a public one is refused before anything is sent.\n",
     "The result summarises each question (passes, highest probability, passing ids, ids to ",
-    "review) under a batch id. Every call, with the text it read, is in the chat's decision ",
-    "history."
+    "review). Every call, with the text it read, is in the chat's decision history."
 );
 
 const DECISION_MODELS_DESCRIPTION: &str = concat!(
-    "List the decision models `decide` can use: each one's provider/model name, tier ",
+    "List the decision models `decide` can use: each one's name (the one `model` takes), tier ",
     "(private or public), whether it runs on this computer, how it produces probabilities, ",
     "the question types it takes, its window in tokens and how much text one chunk can carry ",
     "on it (in characters of prose and of numbers), and which model decide uses here when ",
@@ -1027,8 +1027,9 @@ pub fn render_summary(
     let model = match (&summary.model, summary.tier) {
         (Some(model), Some(tier)) => format!(
             " with {} ({}{})",
-            // A Baseten model by its alias, which `model` also takes.
-            decision_model_display_label(model),
+            // By its bare name, a Baseten model's alias, which `model` also
+            // takes, so the agent has no provider slug to repeat (R3-F8).
+            decision_model_short_name(model),
             tier_word(tier),
             match summary.calibrated {
                 Some(false) => ", uncalibrated",
@@ -1039,7 +1040,7 @@ pub fn render_summary(
     };
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let mut text = format!(
-        "decide: {} chunk{} x {} question{}{model} in {:.1} s: {} decided, {} failed. Batch {}.",
+        "decide: {} chunk{} x {} question{}{model} in {:.1} s: {} decided, {} failed.",
         summary.chunks,
         plural(summary.chunks),
         questions.len(),
@@ -1047,7 +1048,6 @@ pub fn render_summary(
         summary.elapsed_ms as f64 / 1000.0,
         summary.decided,
         summary.errors,
-        summary.batch_id,
     );
     for question in &summary.questions {
         text.push_str(&question_paragraph(question, summary.chunks));
@@ -1074,13 +1074,15 @@ pub fn render_summary(
              probability fell outside the offered answers): treat them as rough.",
         );
     }
-    text.push_str(&format!(
-        "\nEvery call, with the exact text it read, is in this chat's decision history (batch \
-         {}). A chunk listed under review is unresolved, not a no: read it before you report \
-         it, or report it as unresolved. A decision model can also be confidently wrong, so \
-         check a few passes.",
-        summary.batch_id
-    ));
+    // R1-8: the batch id stays in the structured result, where the desktop
+    // links the call's history; no tool takes it, and a model that reads it
+    // repeats it to the person.
+    text.push_str(
+        "\nEvery call, with the exact text it read, is in this chat's decision history. A chunk \
+         listed under review is unresolved, not a no: read it before you report it, or report \
+         it as unresolved. A decision model can also be confidently wrong, so check a few \
+         passes.",
+    );
     text
 }
 
@@ -1227,10 +1229,11 @@ impl DecisionsClient {
         );
         let outcomes = tokio::select! {
             _ = cancel.cancelled() => {
-                return Err(format!(
+                return Err(
                     "The decide call was cancelled. Chunks already answered are in the \
-                     decision history (batch {batch_id})."
-                ));
+                     decision history."
+                        .to_string(),
+                );
             }
             result = run => result.map_err(|e| e.to_string())?,
         };
@@ -1301,10 +1304,11 @@ impl DecisionsClient {
             );
             let outcomes = tokio::select! {
                 _ = cancel.cancelled() => {
-                    return Err(format!(
+                    return Err(
                         "The decide call was cancelled. Chunks already answered are in the \
-                         decision history (batch {batch_id})."
-                    ));
+                         decision history."
+                            .to_string(),
+                    );
                 }
                 result = run => result.map_err(|e| e.to_string()),
             };
@@ -1408,6 +1412,21 @@ pub(crate) async fn resolve_model_name(
         return Err(reason.clone());
     }
     Ok(entry.model_ref())
+}
+
+/// The listed model `wanted` names, for a surface that resolves a name
+/// before it has a chat (`biorouter decide --model`, R3-F4): by
+/// provider/model first, else by a bare model id or alias that exactly one
+/// listed model answers to, the rule [`resolve_model_name`] applies for the
+/// agent's `decide` and a phase gate. `Ok(None)` when nothing listed answers
+/// to it; `Err` holds the provider/model spellings of every listed model a
+/// bare name matched, when it matched more than one. Whether the model may
+/// read a chat is left to the service, which refuses it with its reason.
+pub fn listed_model_named(
+    listed: &[(DecisionModelEntry, Option<String>)],
+    wanted: &str,
+) -> Result<Option<DecisionModelRef>, Vec<String>> {
+    find_named(listed, wanted).map(|hit| hit.map(|(entry, _)| entry.model_ref()))
 }
 
 /// `models`, when the call names them: 2 to 5, and never with `model`.
@@ -1536,6 +1555,24 @@ impl ModelRow {
     }
 }
 
+/// How `decision_models` names a model (R3-F8): by its alias or bare name
+/// (`joey-1`, `tev1:0.8b`), which `decide`'s `model` takes, so the agent has
+/// no provider slug to repeat to the person. Only a name that more than one
+/// listed model answers to is given as provider/model, the spelling `model`
+/// then needs.
+fn listed_name(row: &ModelRow, rows: &[ModelRow]) -> String {
+    let short = &row.display_name;
+    let shared = rows
+        .iter()
+        .filter(|other| &other.display_name == short || &other.model == short)
+        .count();
+    if shared > 1 || short.trim().is_empty() {
+        row.name.clone()
+    } else {
+        short.clone()
+    }
+}
+
 /// The models as the model reads them: those this chat may use first.
 pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
     if rows.is_empty() {
@@ -1556,11 +1593,7 @@ pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
     let (available, unavailable): (Vec<&ModelRow>, Vec<&ModelRow>) =
         rows.iter().partition(|row| row.available);
     for row in available.iter().chain(unavailable.iter()) {
-        let name = if row.display_name != row.model {
-            format!("{} ({})", row.name, row.display_name)
-        } else {
-            row.name.clone()
-        };
+        let name = listed_name(row, rows);
         let options = if row.max_choice_options < MAX_CHOICE_OPTIONS
             && row.kinds.iter().any(|kind| kind == "choice")
         {
@@ -1602,13 +1635,13 @@ pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
         let default = rows.iter().find(|row| row.default && row.available);
         text.push_str(&match default {
             Some(row) => format!(
-                "\nName one in decide's `model` as provider/model or by its name; left out, \
-                 decide uses {} here, so size chunks for it.",
-                row.name
+                "\nName one in decide's `model` as listed here; left out, decide uses {} here, \
+                 so size chunks for it.",
+                listed_name(row, rows)
             ),
-            None => "\nName one in decide's `model` as provider/model or by its name, or leave \
-                     `model` out for this chat's default decision model, else the configured \
-                     default, else the first model this chat may use."
+            None => "\nName one in decide's `model` as listed here, or leave `model` out for this \
+                     chat's default decision model, else the configured default, else the first \
+                     model this chat may use."
                 .to_string(),
         });
     }
@@ -2183,10 +2216,7 @@ mod tests {
             error_groups: Vec::new(),
         };
         let text = render_summary(&summary, &IndexMap::new(), &[]);
-        assert!(
-            text.contains(" with baseten_decision/joey-1 (public)"),
-            "{text}"
-        );
+        assert!(text.contains(" with joey-1 (public)"), "{text}");
         assert!(!text.contains("decision-models/"), "{text}");
         let unknown = DecideSummary {
             model: Some(DecisionModelRef::new(
@@ -2197,7 +2227,7 @@ mod tests {
         };
         let text = render_summary(&unknown, &IndexMap::new(), &[]);
         assert!(
-            text.contains(" with baseten_decision/baseten-newer-4b-latest (public)"),
+            text.contains(" with baseten-newer-4b-latest (public)"),
             "an unknown slug loses only its prefix: {text}"
         );
         assert_eq!(summary.model.map(|m| m.model).as_deref(), Some(slug));
@@ -2271,7 +2301,12 @@ mod tests {
         let summary: DecideSummary =
             serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
         assert_eq!(summary.kind, "decide_batch");
-        assert!(body.contains(&summary.batch_id));
+        assert!(
+            !body.contains(&summary.batch_id)
+                && !body.contains("Batch")
+                && !body.contains("batch "),
+            "R1-8: the batch id stays out of the text the model reads: {body}"
+        );
         assert_eq!(summary.chunks, 200);
         assert_eq!(summary.errors, 4);
         assert_eq!(summary.error_groups.len(), 1);
@@ -2778,8 +2813,10 @@ mod tests {
         assert_eq!(result.is_error, Some(false));
         let body = text(&result);
         assert!(body.starts_with("This chat is private"), "{body}");
-        let tev1 = body.find("test_decision/tev1").unwrap();
-        let cloud = body.find("test_decision/cloud").unwrap();
+        // R3-F8: a model is listed by the name `model` takes, no provider slug.
+        assert!(!body.contains("test_decision/"), "{body}");
+        let tev1 = body.find("\n- tev1: ").unwrap();
+        let cloud = body.find("\n- cloud: ").unwrap();
         assert!(tev1 < cloud, "usable models come first: {body}");
         assert!(body.contains("Not available to this chat"), "{body}");
         // The listing says what the desktop and the CLI say: calibrated is
@@ -2814,10 +2851,45 @@ mod tests {
             )),
             "{body}"
         );
-        assert!(
-            body.contains("left out, decide uses test_decision/tev1 here"),
-            "{body}"
+        assert!(body.contains("left out, decide uses tev1 here"), "{body}");
+    }
+
+    /// R3-F8: a Baseten model is listed by its alias, never its slug, and a
+    /// bare name two providers share keeps provider/model, the spelling
+    /// `model` then needs.
+    #[test]
+    fn decision_models_lists_aliases_and_keeps_a_slug_only_when_it_is_needed() {
+        let joey = DecisionModelEntry {
+            provider: "baseten_decision".into(),
+            model: "decision-models/baseten-joey-2b-latest".into(),
+            display_name: "joey-1".into(),
+            ..entry("x", ProviderTier::Public, false, DecisionAdapter::SystemOne)
+        };
+        let local = entry(
+            "tev1:0.8b",
+            ProviderTier::Private,
+            true,
+            DecisionAdapter::SystemOne,
         );
+        let twin = DecisionModelEntry {
+            provider: "other_decision".into(),
+            ..local.clone()
+        };
+        let rows = |entries: Vec<DecisionModelEntry>| -> Vec<ModelRow> {
+            entries
+                .iter()
+                .map(|entry| ModelRow::from_entry(entry, None))
+                .collect()
+        };
+        let text = render_models(&rows(vec![joey.clone(), local.clone()]), false);
+        assert!(text.contains("\n- joey-1: public"), "{text}");
+        assert!(text.contains("\n- tev1:0.8b: private"), "{text}");
+        assert!(!text.contains("decision-models/"), "{text}");
+        assert!(!text.contains("baseten_decision"), "{text}");
+        let text = render_models(&rows(vec![joey, local, twin]), false);
+        assert!(text.contains("\n- test_decision/tev1:0.8b: "), "{text}");
+        assert!(text.contains("\n- other_decision/tev1:0.8b: "), "{text}");
+        assert!(text.contains("\n- joey-1: "), "{text}");
     }
 
     /// W3: a batch in which every chunk was refused still names the model it
@@ -2853,10 +2925,7 @@ mod tests {
         let group = &summary.error_groups[0];
         assert_eq!(group.chunk_ids.len() + group.more, 12);
         let body = text(&result);
-        assert!(
-            body.contains(" with test_decision/tiny (private)"),
-            "{body}"
-        );
+        assert!(body.contains(" with tiny (private)"), "{body}");
         assert!(body.contains("Failed (12 chunks)"), "{body}");
     }
 

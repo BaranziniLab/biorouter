@@ -1841,6 +1841,7 @@ mod tests {
             origin_id: None,
             label: label.to_string(),
             count,
+            calls: count,
             passed: 0,
             failed: count,
             errors: 0,
@@ -1868,7 +1869,7 @@ mod tests {
         // and the fired flag is not said a second time after its counts.
         assert_eq!(
             lines[0],
-            "◇ Monitor Form reached: 18 checks this turn · 18 quiet"
+            "◇ Monitor 'Form reached': 18 checks this turn · 18 quiet"
         );
         assert!(!lines[1].contains("fired"), "{}", lines[1]);
         assert!(!lines.join(" ").contains("failed"), "{lines:?}");

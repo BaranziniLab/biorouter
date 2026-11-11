@@ -786,6 +786,24 @@ mod tests {
         assert!(!prompt.contains("raw %}"), "{prompt}");
     }
 
+    /// R2-8: a drafted workflow had 13 parameters, most of them its own plan's
+    /// phases, gate question and threshold restated, though the plan is saved
+    /// with the workflow. The generator is told to keep parameters few and to
+    /// leave the plan, gates and monitors to the saved settings.
+    #[tokio::test]
+    async fn the_workflow_prompt_keeps_parameters_few_and_the_plan_out_of_them() {
+        let prompt = PromptManager::new().get_workflow_prompt().await;
+        assert!(prompt.contains("never more than five"), "{prompt}");
+        assert!(
+            prompt.contains("they are saved with the workflow as they are"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("make no parameter for their phases, gate questions, thresholds"),
+            "{prompt}"
+        );
+    }
+
     #[test]
     fn test_build_system_prompt_sanitizes_override() {
         let mut manager = PromptManager::new();

@@ -85,6 +85,11 @@ pub enum ToolPreview {
         descendants: bool,
         once_descendants: bool,
         action_id: String,
+        /// Who asks, on the copy of the card shown in the conversation that
+        /// delegated the work: the subagent's role, else its chat's name. Absent
+        /// on the card's own home, where the asker is that chat's own agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requested_by: Option<String>,
     },
     /// A command that will be handed to a shell verbatim.
     #[serde(rename_all = "camelCase")]

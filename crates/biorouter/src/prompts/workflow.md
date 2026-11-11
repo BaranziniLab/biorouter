@@ -10,7 +10,7 @@ Reply with _VALID_ JSON and nothing else. Keys:
 - `instructions` — 1-2 paragraphs of standing instruction to the assistant. Say how to do the work, what output format is expected, and any non-standard tool the task depends on. Do not narrate what happened here.
 - `activities` — 3-5 very short example prompts (a few words each) a user could click to start.
 - `prompt` — OPTIONAL, and the difference between a workflow that can run unattended and one that cannot. The opening message that starts the work. Include it when the workflow has a clear job to do on each run; omit it when the user should say what they want first. Use `{{ parameter_key }}` to refer to a parameter.
-- `parameters` — OPTIONAL. The values that change between runs. Reference them from `prompt` and `instructions` as `{{ key }}`. Each is an object with:
+- `parameters` — OPTIONAL. The few values a person would change on the next run (the input file, the subject, a date): usually one to three, never more than five. A setting that stays the same from run to run is written into the text, not made a parameter. Reference them from `prompt` and `instructions` as `{{ key }}`. Each is an object with:
   - `key` — snake_case identifier.
   - `input_type` — one of `string`, `number`, `boolean`, `date`, `file`, `select`.
   - `requirement` — `required`, `optional`, or `user_prompt` (ask the user each run).
@@ -20,6 +20,8 @@ Reply with _VALID_ JSON and nothing else. Keys:
 - `skills` — OPTIONAL. Exact names of skills this conversation clearly used or needed. Use `[]` when none are required; do not guess.
 
 Leave a key out rather than inventing a value for it. An empty `parameters` list is better than parameters nobody will fill in.
+
+If this conversation declared a phase plan, phase gates or decision monitors, they are saved with the workflow as they are, and the next run starts with them in place. Do not restate them in `instructions` or `prompt`, and make no parameter for their phases, gate questions, thresholds or models: say only what the work is.
 
 Example — a conversation that ended up pulling a gene's disease associations out of SPOKE and writing them up:
 

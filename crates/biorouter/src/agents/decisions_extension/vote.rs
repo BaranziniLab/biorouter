@@ -354,14 +354,13 @@ pub fn render_vote(
         .collect::<Vec<_>>()
         .join(", ");
     let mut text = format!(
-        "decide: {} chunk{} x {} question{}, a vote of {} models ({models}) in {:.1} s. Batch {}.",
+        "decide: {} chunk{} x {} question{}, a vote of {} models ({models}) in {:.1} s.",
         summary.chunks,
         plural(summary.chunks),
         questions.len(),
         plural(questions.len()),
         summary.models.len(),
         summary.elapsed_ms as f64 / 1000.0,
-        summary.batch_id,
     );
     let per_chunk =
         summary.chunks <= PER_CHUNK_LINES && summary.chunks * questions.len() <= PER_CHUNK_CELLS;
@@ -375,11 +374,11 @@ pub fn render_vote(
             text.push_str(&chunk_line(summary, questions, runs, chunk_id));
         }
     }
-    text.push_str(&format!(
-        "\nEvery model's answer for every chunk is in this chat's decision history (batch {}). \
-         A tie or a disagreement is unresolved: read those chunks before you report them.",
-        summary.batch_id
-    ));
+    // R1-8: the batch id stays in the structured result only.
+    text.push_str(
+        "\nEvery model's answer for every chunk is in this chat's decision history. A tie or a \
+         disagreement is unresolved: read those chunks before you report them.",
+    );
     text
 }
 

@@ -877,7 +877,7 @@ fn explain_refuses_what_run_refuses_and_says_what_a_monitor_does() {
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     assert!(
         stdout.contains(
-            "Monitor \"Off task\": after each iteration, asks the chat's default decision \
+            "Monitor 'Off task': after each iteration, asks the chat's default decision \
              model \"Has the agent stopped screening?\"; when P(yes) ≥ 0.80, it stops the turn"
         ),
         "{stdout}"

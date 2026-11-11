@@ -479,6 +479,7 @@ mod tests {
                     origin_id: Some("form-reached".into()),
                     label: "Form reached".into(),
                     count: 18,
+                    calls: 18,
                     passed: 0,
                     failed: 18,
                     errors: 0,
@@ -490,6 +491,7 @@ mod tests {
                     origin_id: Some("call_1".into()),
                     label: "decide".into(),
                     count: 600,
+                    calls: 3,
                     passed: 41,
                     failed: 557,
                     errors: 2,
@@ -501,6 +503,7 @@ mod tests {
                     origin_id: Some("done".into()),
                     label: "Task done".into(),
                     count: 3,
+                    calls: 3,
                     passed: 1,
                     failed: 2,
                     errors: 0,
@@ -518,7 +521,7 @@ mod tests {
         // R1: a monitor's checks fire or stay quiet; nothing reads "failed".
         assert_eq!(
             lines[0],
-            "◇ Monitor Form reached: 18 checks this turn · 18 quiet · last P 0.31"
+            "◇ Monitor 'Form reached': 18 checks this turn · 18 quiet · last P 0.31"
         );
         assert_eq!(
             lines[1],
@@ -526,7 +529,7 @@ mod tests {
         );
         assert_eq!(
             lines[2],
-            "◇ Monitor Task done: 3 checks this turn · 1 fired · 2 quiet · last P 0.91"
+            "◇ Monitor 'Task done': 3 checks this turn · 1 fired · 2 quiet · last P 0.91"
         );
         let styled = marker_lines(&marker());
         assert_eq!(

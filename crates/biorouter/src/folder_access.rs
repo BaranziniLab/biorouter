@@ -1639,6 +1639,31 @@ mod delegation_tests {
             id,
             "one card, two surfaces, one id"
         );
+        // R2-1: the parent's copy says which subagent asks (no spawn role was
+        // recorded, so its chat's name); the child's own copy names nobody.
+        let requester = |session: &str| {
+            PendingUserActions::global()
+                .pending_cards_for_session(session)
+                .into_iter()
+                .flat_map(|message| message.content)
+                .find_map(|content| match content {
+                    MessageContent::ActionRequired(action) => match action.data {
+                        ActionRequiredData::ToolConfirmation {
+                            preview:
+                                Some(crate::conversation::tool_preview::ToolPreview::FolderAccess {
+                                    requested_by,
+                                    ..
+                                }),
+                            ..
+                        } => Some(requested_by),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .expect("a folder card")
+        };
+        assert_eq!(requester(&parent).as_deref(), Some("child"));
+        assert_eq!(requester(&child), None);
         assert_eq!(
             tree.answer(
                 &parent,

@@ -62,7 +62,8 @@ fn carry_on(session_id: &str, no_session: bool) -> String {
 /// The line for a run whose turn the monitor named `monitor` stopped.
 pub fn monitor_stopped(monitor: &str, session_id: &str, no_session: bool) -> SupervisionStopped {
     SupervisionStopped(format!(
-        "Monitor \"{}\" stopped this run (exit status {EXIT_CODE}). {}",
+        // R3-F6: a monitor's name in single quotes, as its notice gives it.
+        "Monitor '{}' stopped this run (exit status {EXIT_CODE}). {}",
         clip(monitor, 60),
         carry_on(session_id, no_session)
     ))
@@ -228,7 +229,7 @@ mod tests {
     fn a_run_a_monitor_stopped_says_so_and_how_to_carry_on() {
         let line = monitor_stopped("Reading notes", "20261110_5", false).to_string();
         assert!(
-            line.starts_with("Monitor \"Reading notes\" stopped this run (exit status 3)."),
+            line.starts_with("Monitor 'Reading notes' stopped this run (exit status 3)."),
             "{line}"
         );
         assert!(
