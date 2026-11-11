@@ -344,6 +344,8 @@ const APP_SWITCHES: Array<[string, string]> = [
   ['Prevent sleep while running', 'false'],
   ['Never open tabs automatically', 'true'],
   ['Privacy tiers', 'true'],
+  // PR-29: Settings > App > Server, off until a person points the app at another daemon.
+  ['Use external server', 'false'],
 ];
 
 describe('the first frames of a Settings tab switch, in a real browser (V4-R7-2)', () => {
