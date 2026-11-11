@@ -97,14 +97,23 @@ function SegmentedControlInner<T extends string>(
   // The value last asked for (or shown), so a change both Radix and the arrow handling ask for is
   // asked for once; and whether an arrow key moved focus that has not landed yet.
   const requested = React.useRef(value);
+  const shown = React.useRef(value);
   const arrowPending = React.useRef(false);
   React.useLayoutEffect(() => {
+    shown.current = value;
     requested.current = value;
   }, [value]);
   const change = (next: T) => {
     if (next === requested.current) return;
     requested.current = next;
     onValueChange(next);
+    // The two asks this guard merges (Radix's and the arrow handling's) come in one
+    // synchronous burst, so the guard ends with it. Held longer, a change the parent
+    // did not take (its value never moves, so the effect above never runs) swallowed
+    // every later press of that segment.
+    queueMicrotask(() => {
+      if (requested.current === next) requested.current = shown.current;
+    });
   };
 
   const setTrackRef = React.useCallback(

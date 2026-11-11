@@ -219,6 +219,14 @@
   flex: 1 1 auto;
 }
 
+/* The phase's "1 of 1" never gives way: beside a gate chip at the rail's
+   narrowest it wrapped to three lines ("1" / "of" / "1", R2-5). The title is
+   what gives way, with its ellipsis. */
+.br-agents__phase-toggle .br-summary__count {
+  flex: none;
+  white-space: nowrap;
+}
+
 .br-agents__phase-line > .br-agents__phase-toggle[data-static] {
   flex: 1 1 auto;
 }

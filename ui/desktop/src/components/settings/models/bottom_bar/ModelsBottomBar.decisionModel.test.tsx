@@ -128,6 +128,44 @@ describe('the model chip of a decision chat', () => {
     expect(screen.queryByTestId('non-private-model-chip-note')).toBeNull();
   });
 
+  // R1-7, R1-9: the line said "Ollama decision models · Private model · On this
+  // machine" and was cut with an ellipsis. It now says where the model runs, in the
+  // words every decision surface uses, and wraps.
+  it('says where a decision model runs, in full, without repeating it as an affiliation', async () => {
+    mocks.getProviders.mockResolvedValue([
+      { ...row('ollama_decision', 'private'), affiliation: { kind: 'local', institutions: [] } },
+      row('baseten_decision', 'public'),
+    ]);
+    const { unmount } = render(
+      <ModelsBottomBar
+        sessionId="chat-5"
+        privacyTier="private"
+        effectiveModel={{ provider: 'ollama_decision', model: 'tev1:0.8b' }}
+        setView={vi.fn()}
+      />
+    );
+    await openMenu();
+    const line = await screen.findByTestId('model-provider-line');
+    await screen.findByText(/Runs on this computer · Private model/);
+    expect(line).toHaveTextContent(/^Runs on this computer · Private model$/);
+    expect(line).not.toHaveTextContent('On this machine');
+    expect(line.querySelector('.truncate')).toBeNull();
+    unmount();
+
+    render(
+      <ModelsBottomBar
+        sessionId="chat-6"
+        privacyTier="public"
+        effectiveModel={{ provider: 'baseten_decision', model: 'decision-models/joey-1' }}
+        setView={vi.fn()}
+      />
+    );
+    await openMenu();
+    await screen.findByText(/Runs on Baseten · Public model/);
+    expect(screen.getAllByText('joey-1')).toHaveLength(2); // the chip and the menu
+    expect(screen.queryByText('decision-models/joey-1')).toBeNull();
+  });
+
   it('keeps Effort, Lead and worker and the disclosure for a chat model', async () => {
     render(
       <ModelsBottomBar

@@ -130,6 +130,40 @@ describe('SegmentedControl', () => {
     expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'true');
   });
 
+  // R1-1 hazard: a parent that does not take a change re-renders nothing, so the
+  // guard that asks a change once kept believing it had been asked, and every later
+  // press of that segment was swallowed.
+  it('asks again for a change the parent dropped once', async () => {
+    const user = userEvent.setup();
+    const asked: Mode[] = [];
+    function DropsTheFirst() {
+      const [value, setValue] = useState<Mode>('light');
+      const [dropped, setDropped] = useState(false);
+      return (
+        <SegmentedControl
+          aria-label="Theme"
+          options={OPTIONS}
+          value={value}
+          onValueChange={(next) => {
+            asked.push(next);
+            if (!dropped) {
+              // Not taken this time, and nothing this control renders changes.
+              queueMicrotask(() => setDropped(true));
+              return;
+            }
+            setValue(next);
+          }}
+        />
+      );
+    }
+    render(<DropsTheFirst />);
+    await user.click(screen.getByRole('radio', { name: 'Dark' }));
+    expect(screen.getByRole('radio', { name: 'Light' })).toHaveAttribute('aria-checked', 'true');
+    await user.click(screen.getByRole('radio', { name: 'Dark' }));
+    expect(asked).toEqual(['dark', 'dark']);
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('draws one thumb, unplaced until measured (jsdom measures 0), and never accent', () => {
     render(<Controlled />);
     const thumbs = document.querySelectorAll('[data-slot="segmented-thumb"]');

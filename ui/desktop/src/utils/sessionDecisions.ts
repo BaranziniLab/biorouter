@@ -235,6 +235,11 @@ export interface DecisionTurnMarkerItem {
   errors: number;
   lastPassProbability: number | null;
   fired: boolean;
+  /**
+   * How many calls made this item's rows (R3-F3: three `decide` calls on one
+   * question are one item). Absent from an older daemon, which sent an item per call.
+   */
+  calls?: number;
 }
 
 export interface DecisionTurnMarker {
@@ -888,6 +893,7 @@ export function parseDecisionTurnMarker(value: unknown): DecisionTurnMarker | nu
           errors: count(item.errors),
           lastPassProbability: probability(item.lastPassProbability),
           fired: item.fired === true,
+          ...(item.calls === undefined ? {} : { calls: Math.max(1, count(item.calls)) }),
         },
       ];
     }

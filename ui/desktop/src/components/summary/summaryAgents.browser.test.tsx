@@ -59,7 +59,9 @@ const rows = Array.from({ length: params.agents }, (_, i) => ({
   totalTokens: 123456,
   messageCount: 12,
   toolCallCount: 30,
-  resultLine: null,
+  resultLine: params.markdownResult
+    ? '| Patient | sodium (Na) | potassium (K) | creatinine |'
+    : null,
 }));
 const plan = params.plan
   ? {
@@ -70,6 +72,10 @@ const plan = params.plan
         { id: 'plan', title: 'Plan the search strategy and the inclusion criteria', kind: 'plan',
           status: 'completed', dependsOn: [], agentIds: rows.slice(0, 4).map((r) => r.sessionId),
           counts: { total: 4, done: 4, running: 0, blocked: 0, failed: 0, quiet: 0 },
+          gate: params.gate
+            ? { threshold: 0.8, questionCount: 2, attempts: 1, maxAttempts: 3, lastPassed: true,
+                lastMinP: 0.9, questions: { values_listed: 'Are the values listed?' } }
+            : null,
           handoff: null, startedAt: null, finishedAt: null },
         { id: 'research', title: 'Read the trials', kind: 'research', status: 'in_progress',
           dependsOn: ['plan'], agentIds: rows.slice(4).map((r) => r.sessionId),
@@ -245,7 +251,13 @@ describe('the subagents in the summary card, in a real layout engine', () => {
     await settledWithin(launched.close(), TEARDOWN_STEP_MS);
   }, 30_000);
 
-  async function mount(params: { agents: number; plan?: boolean; model?: string }): Promise<{
+  async function mount(params: {
+    agents: number;
+    plan?: boolean;
+    model?: string;
+    gate?: boolean;
+    markdownResult?: boolean;
+  }): Promise<{
     tab: Page;
     measured: Measured;
   }> {
@@ -449,6 +461,49 @@ describe('the subagents in the summary card, in a real layout engine', () => {
       expect(measured.pageScrollWidth).toBeLessThanOrEqual(measured.viewport);
     } finally {
       await tab.close();
+    }
+  });
+
+  // R2-5: beside a gate chip, "1 of 1" broke into "1" / "of" / "1" at the rail's width, and a
+  // result that began with a markdown table drew its pipes.
+  it('keeps a gated phase to one line and a result line to plain words', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const { tab } = await mount({ agents: 6, plan: true, gate: true, markdownResult: true });
+    try {
+      const phase = await tab.evaluate(() => {
+        const toggle = document.querySelector<HTMLElement>(
+          "[data-phase-id='plan'] .br-agents__phase-toggle"
+        )!;
+        const count = toggle.querySelector<HTMLElement>('.br-summary__count')!;
+        const range = document.createRange();
+        range.selectNodeContents(count);
+        const lines = new Set(
+          [...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top))
+        ).size;
+        return {
+          gate: Boolean(document.querySelector("[data-testid='phase-gate-plan']")),
+          height: toggle.getBoundingClientRect().height,
+          text: count.textContent,
+          lines,
+        };
+      });
+      expect(phase.gate, 'the instrument: the phase has its gate chip').toBe(true);
+      expect(phase.text).toBe('4 of 4');
+      expect(phase.lines).toBe(1);
+      expect(phase.height).toBe(28);
+    } finally {
+      await tab.close();
+    }
+    // Four rows are comfortable, and the blocked one (the fourth) shows its result line.
+    const comfortable = await mount({ agents: 4, markdownResult: true });
+    try {
+      const lines = await comfortable.tab.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>('.br-agents__meta')].map((m) => m.textContent)
+      );
+      expect(lines.join(' // ')).toContain('Patient · sodium (Na)');
+      expect(lines.some((line) => line?.includes('|'))).toBe(false);
+    } finally {
+      await comfortable.tab.close();
     }
   });
 });

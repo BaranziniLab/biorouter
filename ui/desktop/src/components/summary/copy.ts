@@ -33,8 +33,13 @@ export const summaryCopy = {
   statsLabel: 'Chat statistics',
   /** The disclosure the statistics sit behind (F-1). */
   details: 'Details',
-  /** Its closed summary: the token figure alone, "392k tokens" (or "Tokens N/A"). */
-  detailsSummary: (tokens: string) => (tokens === 'N/A' ? 'Tokens N/A' : `${tokens} tokens`),
+  /**
+   * Its closed summary: the token figure alone, "392k tokens". Nothing when there
+   * is no figure ("N/A": a model with no certified total, such as a running
+   * subagent's): "Tokens N/A" beside Details read as a fault (R2-4). The open
+   * Tokens row still says N/A, with its help.
+   */
+  detailsSummary: (tokens: string) => (tokens === 'N/A' ? '' : `${tokens} tokens`),
   toolCalls: 'Tool calls',
   tokens: 'Tokens',
   tokensHelp:

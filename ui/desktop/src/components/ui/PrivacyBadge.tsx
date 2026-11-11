@@ -116,6 +116,17 @@ const TIER: Record<
 };
 
 /**
+ * The ink of the padlock wherever it stands beside a name: the composer's model
+ * chip (dense), the chat header's pill, the summary's roster rows
+ * (`.br-agents__lock`) and a decision model's meta line. One shape and ONE ink
+ * (R1-10, 2026-11-10): the chip drew it in default ink, the roster and the
+ * decision card in muted, so "private" read as two marks. Muted, because accent
+ * is kept for what needs the person (F-16), and the shape, not a colour, carries
+ * the meaning. The pill's word keeps its own ink; only the glyph is shared.
+ */
+export const PRIVATE_MARK_INK = 'text-text-muted';
+
+/**
  * The tier indicator (issue #56, R10).
  *
  * Private is the marked state; Public is the quiet state. A badge on absolutely
@@ -222,9 +233,10 @@ export function PrivacyBadge({
         // thing squeezed away. Both belong here, not in each caller: an
         // indicator whose whole job is to be seen cannot delegate being visible.
         //
-        // The ink is the token the pill's Private state uses, so the two forms
-        // cannot drift apart in colour any more than they can in shape.
-        className={cn('inline-block shrink-0 text-text-default', className)}
+        // The ink is `PRIVATE_MARK_INK`, the one the pill's padlock and every
+        // other lock beside a name use, so the forms cannot drift apart in colour
+        // any more than they can in shape.
+        className={cn('inline-block shrink-0', PRIVATE_MARK_INK, className)}
       >
         {/* `block`, so the wrapper is exactly 12×12 — an inline svg sits on the
             text baseline and drags a descender's worth of empty space under it,
@@ -270,7 +282,7 @@ export function PrivacyBadge({
         className
       )}
     >
-      {spec.glyph ? <Lock className="h-3 w-3" aria-hidden="true" /> : null}
+      {spec.glyph ? <Lock className={cn('h-3 w-3', PRIVATE_MARK_INK)} aria-hidden="true" /> : null}
       {spec.label}
       {off ? <span className="text-text-muted">&nbsp;(enforcement off)</span> : null}
     </Badge>

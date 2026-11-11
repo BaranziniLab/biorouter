@@ -850,6 +850,13 @@
   color: var(--text-warning);
 }
 
+/* "Waiting for you." and its tip on one line (R2-7). */
+.br-gate-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .br-gate-note {
   margin: 0;
   font-size: var(--text-supporting);

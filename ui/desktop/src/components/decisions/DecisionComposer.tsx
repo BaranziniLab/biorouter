@@ -193,6 +193,31 @@ const wireKey = (question: Question) => JSON.stringify(questionToWire(question))
 /** How long typing pauses before the question is saved. */
 export const DECISION_COMPOSER_SAVE_DELAY_MS = 500;
 
+/** The longest a send waits for the question's save before it goes anyway. */
+export const DECISION_QUESTION_SETTLE_MAX_MS = 3000;
+
+/** Each mounted composer's "save now and wait", by chat. */
+const settlers = new Map<string, () => Promise<void>>();
+
+/**
+ * R1-6: save the decision chat's question now, if one is typed and not yet stored,
+ * and resolve once the save (or one already in flight) has answered, or after
+ * {@link DECISION_QUESTION_SETTLE_MAX_MS}. A send in a decision chat awaits this
+ * first: a question typed and then sent within the half-second the save waits for
+ * (or while its PUT is still in flight) otherwise reached the daemon after the
+ * message, which then had no question to answer. Resolves at once when no composer
+ * for the chat is mounted. Never rejects.
+ */
+export function settleDecisionQuestion(sessionId: string | null | undefined): Promise<void> {
+  const settle = sessionId ? settlers.get(sessionId) : undefined;
+  if (!settle) return Promise.resolve();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cap = new Promise<void>((done) => {
+    timer = setTimeout(done, DECISION_QUESTION_SETTLE_MAX_MS);
+  });
+  return Promise.race([settle().catch(() => undefined), cap]).finally(() => clearTimeout(timer));
+}
+
 type SaveState =
   | { status: 'loading' }
   | { status: 'idle' }
@@ -229,6 +254,8 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
   const [save, setSave] = React.useState<SaveState>({ status: sessionId ? 'loading' : 'idle' });
   const lastSaved = React.useRef<string | null>(null);
   const timer = React.useRef<number | null>(null);
+  /** The save in flight, so a settle that finds nothing new to save still waits for it. */
+  const inflight = React.useRef<Promise<void> | null>(null);
   const draftRef = React.useRef(draft);
   draftRef.current = draft;
   const loaded = save.status !== 'loading';
@@ -264,22 +291,44 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
     const verdict = questionFromDraft(draftRef.current);
     if (!verdict.ok) return;
     const json = wireKey(verdict.question);
-    if (json === lastSaved.current) return;
+    if (json === lastSaved.current) {
+      // Stored, or being stored: wait for that save rather than start another.
+      await inflight.current;
+      return;
+    }
     lastSaved.current = json;
     setSave({ status: 'saving' });
-    try {
-      const result = await saveDecisionChatQuestion(sessionId, verdict.question);
-      if (result.ok) {
-        setSave({ status: 'saved' });
-      } else {
+    const run = (async () => {
+      try {
+        const result = await saveDecisionChatQuestion(sessionId, verdict.question);
+        if (result.ok) {
+          setSave({ status: 'saved' });
+        } else {
+          lastSaved.current = null;
+          setSave({ status: 'refused', message: result.message });
+        }
+      } catch {
         lastSaved.current = null;
-        setSave({ status: 'refused', message: result.message });
+        setSave({ status: 'refused', message: null });
       }
-    } catch {
-      lastSaved.current = null;
-      setSave({ status: 'refused', message: null });
+    })();
+    inflight.current = run;
+    try {
+      await run;
+    } finally {
+      if (inflight.current === run) inflight.current = null;
     }
   }, [sessionId]);
+
+  // A send awaits this chat's question (`settleDecisionQuestion`).
+  React.useEffect(() => {
+    if (!sessionId) return;
+    const settle = () => flush();
+    settlers.set(sessionId, settle);
+    return () => {
+      if (settlers.get(sessionId) === settle) settlers.delete(sessionId);
+    };
+  }, [sessionId, flush]);
 
   // A save waiting when the composer goes (the chat closes, the model changes)
   // still happens.

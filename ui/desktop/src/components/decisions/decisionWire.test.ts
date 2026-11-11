@@ -100,6 +100,8 @@ describe('a turn marker’s closed line (F-19)', () => {
       '2 decide calls read 630 chunks',
     ]);
     expect(texts(decide({ count: 12000 }))).toEqual(['1 decide call read 12,000 chunks']);
+    // R3-F3: three calls on one question are one item that says how many calls made it.
+    expect(texts(decide({ count: 600, calls: 3 }))).toEqual(['3 decide calls read 600 chunks']);
   });
 
   it('says a gate passed or did not, and counts several', () => {
@@ -243,6 +245,8 @@ describe('a decide batch summary', () => {
           review: 6,
           maxP: 0.98,
           answerCounts: [],
+          groups: null,
+          vote: null,
         },
         {
           name: 'edss_stated',
@@ -254,6 +258,8 @@ describe('a decide batch summary', () => {
           review: 0,
           maxP: 0.91,
           answerCounts: [],
+          groups: null,
+          vote: null,
         },
         {
           name: 'course',
@@ -269,9 +275,103 @@ describe('a decide batch summary', () => {
             { answer: 'spms', count: 200 },
             { answer: 'none', count: 98 },
           ],
+          groups: null,
+          vote: null,
         },
       ],
       errorGroups: [{ message: 'The decision model did not answer in 10 s', chunks: 2 }],
+      voteModels: null,
+    });
+  });
+
+  it('reads the four answer groups that add up to the chunks decided (G-3)', () => {
+    const wire = wireDecideSummary();
+    const parsed = parseDecideBatchSummary({
+      status: 'success',
+      value: {
+        content: [],
+        structuredContent: {
+          ...wire,
+          questions: [
+            {
+              ...wire.questions[0],
+              groups: {
+                yesConfident: 38,
+                yesReview: 3,
+                noReview: 3,
+                noConfident: 554,
+                passFrom: 0.9,
+                confidentFrom: 0.9,
+                reviewFrom: 0.2,
+              },
+            },
+          ],
+        },
+      },
+    });
+    expect(parsed?.questions[0].groups).toEqual({
+      yesConfident: 38,
+      yesReview: 3,
+      noReview: 3,
+      noConfident: 554,
+    });
+  });
+
+  it('reads a vote of several models: its models by label, the majority and the agreement (G-1)', () => {
+    const parsed = parseDecideBatchSummary({
+      status: 'success',
+      value: {
+        content: [],
+        structuredContent: {
+          kind: 'decide_vote',
+          batchId: 'batch-vote',
+          chunks: 20,
+          elapsedMs: 900,
+          models: [
+            {
+              model: { provider: 'ollama_decision', model: 'tev1:0.8b' },
+              label: 'tev1:0.8b',
+              tier: 'private',
+              decided: 20,
+              errors: 0,
+              error: null,
+            },
+            {
+              model: { provider: 'baseten_decision', model: 'decision-models/baseten-joey' },
+              label: 'joey-1',
+              tier: 'public',
+              decided: 0,
+              errors: 20,
+              error: 'Baseten did not answer.',
+            },
+          ],
+          questions: [
+            {
+              name: 'has_ms',
+              type: 'yes_no',
+              threshold: null,
+              perModel: [{ yes: 7, no: 13 }, {}],
+              majority: { yes: 7, no: 12 },
+              ties: 1,
+              compared: 20,
+              agreed: 18,
+            },
+          ],
+        },
+      },
+    });
+    expect(parsed?.voteModels).toEqual([
+      { label: 'tev1:0.8b', decided: 20, errors: 0, error: null },
+      { label: 'joey-1', decided: 0, errors: 20, error: 'Baseten did not answer.' },
+    ]);
+    expect(parsed?.questions[0].vote).toEqual({
+      majority: [
+        { answer: 'yes', count: 7 },
+        { answer: 'no', count: 12 },
+      ],
+      ties: 1,
+      compared: 20,
+      agreed: 18,
     });
   });
 

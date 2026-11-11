@@ -7,6 +7,7 @@ import { wirePhase, wireSubagents } from '../../utils/sessionSubagents.fixture';
 import {
   PHASE_GATE_COPY,
   PhaseGateDialog,
+  phaseGateStatus,
   refusalField,
   type PhaseGateDialogProps,
 } from './PhaseGateDialog';
@@ -302,14 +303,20 @@ describe('what the dialog says about a gate', () => {
     );
     draw({ phase, phases });
     expect(screen.getByTestId('phase-gate-status')).toHaveTextContent('Blocked: needs you');
-    expect(screen.getByTestId('phase-gate-needs-person')).toHaveTextContent(
+    // R2-7: one short line; the reason is the tip beside it.
+    const note = screen.getByTestId('phase-gate-needs-person');
+    expect(note.querySelector('.br-gate-waiting')?.firstChild?.textContent).toBe(
+      PHASE_GATE_COPY.waitingForYou
+    );
+    expect(within(note).getByRole('button', { name: /Why it waits/ })).toHaveAccessibleDescription(
       PHASE_GATE_COPY.needsPerson
     );
     expect(screen.getByTestId('phase-gate-last-check')).toHaveTextContent(
       'Lowest P(yes) 0.02 · threshold 0.90'
     );
     expect(screen.getByTestId('phase-gate-pass')).toHaveAttribute('data-variant', 'default');
-    expect(screen.getByTestId('phase-gate-skip')).toHaveAttribute('data-variant', 'secondary');
+    // Skip is quiet (R2-7): never a filled button beside the primary.
+    expect(screen.getByTestId('phase-gate-skip')).toHaveAttribute('data-variant', 'ghost');
     expect(screen.getByTestId('phase-gate-pass')).toBeEnabled();
     expect(await menuItems()).toEqual([
       PHASE_GATE_COPY.retry,
@@ -329,7 +336,7 @@ describe('what the dialog says about a gate', () => {
       const { phase, phases } = phaseOf(gate);
       const { unmount } = draw({ phase, phases });
       expect(screen.getByTestId('phase-gate-pass')).toHaveAttribute('data-variant', 'secondary');
-      expect(screen.getByTestId('phase-gate-skip')).toHaveAttribute('data-variant', 'secondary');
+      expect(screen.getByTestId('phase-gate-skip')).toHaveAttribute('data-variant', 'ghost');
       unmount();
     }
   });
@@ -368,6 +375,16 @@ describe('what the dialog says about a gate', () => {
     expect(menu.querySelector('[role="separator"]')).not.toBeNull();
     const items = within(menu as HTMLElement).getAllByRole('menuitem');
     expect(items[items.length - 1]).toBe(remove);
+  });
+
+  it('says Passed for a phase its gate passed, as the side panel’s chip does (R2-6)', () => {
+    const { phase, phases } = phaseOf(
+      { ...GATE, attempts: 1, lastPassed: true, lastMinP: 0.95, holds: [] },
+      { status: 'completed' }
+    );
+    draw({ phase, phases });
+    expect(screen.getByTestId('phase-gate-status')).toHaveTextContent(/^Passed$/);
+    expect(phaseGateStatus(phase, phase.gate!)).toBe(PHASE_GATE_COPY.status.passed);
   });
 
   it('shows a closed phase as passed or skipped by the person, with Decision history alone', () => {

@@ -5,7 +5,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 
 vi.mock('./ConfigContext', () => ({
   useConfig: () => ({
@@ -35,8 +35,16 @@ vi.mock('./bottom_menu/ComposerFooter', () => ({
   ComposerFooter: () => <div data-testid="composer-footer" />,
 }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
+// Records whether the `/` and `@` list is open, which is all these tests read of it.
+const mentionList = vi.hoisted(() => ({ open: false, slash: false }));
 vi.mock('./MentionPopover', () => {
-  const MentionPopoverMock = React.forwardRef(() => null);
+  const MentionPopoverMock = React.forwardRef(
+    (props: { isOpen: boolean; isSlashCommand: boolean }, _ref) => {
+      mentionList.open = props.isOpen;
+      mentionList.slash = props.isSlashCommand;
+      return null;
+    }
+  );
   MentionPopoverMock.displayName = 'MentionPopoverMock';
   return { default: MentionPopoverMock };
 });
@@ -60,6 +68,8 @@ import { DECISION_CHAT_PLACEHOLDER } from './decisions/DecisionComposer';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mentionList.open = false;
+  mentionList.slash = false;
   model.provider = 'ollama_decision';
   model.name = 'tev1:0.8b';
   Object.assign(window, {
@@ -121,5 +131,26 @@ describe('the composer of a decision chat', () => {
       'placeholder',
       COMPOSER_COPY.placeholderEmpty
     );
+  });
+
+  // R1-4: the `/` list offered skills and extensions, none of which a decision
+  // model can use; `/compact` only says there is nothing to compact.
+  it('opens no `/` or `@` list in a decision chat', () => {
+    renderComposer();
+    const text = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    for (const typed of ['/', '/comp', '@']) {
+      fireEvent.change(text, { target: { value: typed, selectionStart: typed.length } });
+      expect(mentionList.open).toBe(false);
+    }
+  });
+
+  it('still opens the `/` list in any other chat', () => {
+    model.provider = 'versa_azure';
+    model.name = 'gpt-5.6-sol';
+    renderComposer();
+    const text = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.change(text, { target: { value: '/', selectionStart: 1 } });
+    expect(mentionList.open).toBe(true);
+    expect(mentionList.slash).toBe(true);
   });
 });

@@ -89,7 +89,11 @@ import {
   subscribeQueuedOfferReturns,
   type QueuedMessage,
 } from '../utils/composerQueues';
-import { DecisionComposer, DECISION_CHAT_PLACEHOLDER } from './decisions/DecisionComposer';
+import {
+  DecisionComposer,
+  DECISION_CHAT_PLACEHOLDER,
+  settleDecisionQuestion,
+} from './decisions/DecisionComposer';
 import { isDecisionProvider } from './decisions/decisionWire';
 
 /**
@@ -601,6 +605,12 @@ export default function ChatInput({
   // nothing while the chat loads (V2-R4-1, round 5): until the row lands there is
   // no binding, and the lookup meanwhile measures the model for new chats.
   const contextModel = contextWindowModelKey(effectiveModel, currentProvider, currentModel);
+  /**
+   * The chat's main model is a decision model: there is no LLM loop, each message
+   * is the state the chat's question is asked of, and the reply is one decision
+   * card. The question is set above the text box (`DecisionComposer`).
+   */
+  const decisionChat = isDecisionProvider(effectiveModel?.provider ?? currentProvider);
   const [tokenLimitModel, setTokenLimitModel] = useState<string | null>(null);
   // V2-R8-3. This composer's lasting identity: the same from an empty chat to
   // the chat its first message starts. That message REMOUNTS the composer
@@ -1771,6 +1781,14 @@ export default function ChatInput({
     cursorPosition: number,
     textArea: HTMLTextAreaElement
   ) => {
+    // A decision chat offers no `/` or `@` list (R1-4): a decision model reads
+    // the text and nothing else, so no skill, extension, knowledge base, file or
+    // command in either list does anything there (`/compact` only answers that
+    // there is nothing to compact, and it still does when typed out).
+    if (decisionChat) {
+      setMentionPopover((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+      return;
+    }
     const beforeCursor = text.slice(0, cursorPosition);
     const lastAtIndex = beforeCursor.lastIndexOf('@');
     let lastSlashIndex = -1;
@@ -2323,13 +2341,6 @@ export default function ChatInput({
     effectiveModel?.provider ?? currentProvider
   );
 
-  /**
-   * The chat's main model is a decision model: there is no LLM loop, each message
-   * is the state the chat's question is asked of, and the reply is one decision
-   * card. The question is set above the text box (`DecisionComposer`).
-   */
-  const decisionChat = isDecisionProvider(effectiveModel?.provider ?? currentProvider);
-
   // Why a chat whose Crew access lapsed cannot send, for Enter to say instead of doing nothing.
   const crewHold = useCrewComposerHold(sessionId);
 
@@ -2439,11 +2450,15 @@ export default function ChatInput({
           LocalMessageStorage.addMessage(nonImageFilePaths.join(' '));
         }
 
-        const submitted = handleSubmit(
-          new CustomEvent('submit', {
-            detail: { value: textToSend, attachments: imageAttachments },
-          }) as unknown as React.FormEvent
-        );
+        const submitEvent = new CustomEvent('submit', {
+          detail: { value: textToSend, attachments: imageAttachments },
+        }) as unknown as React.FormEvent;
+        // R1-6: in a decision chat the message waits for the question typed just
+        // before it to be stored, or the daemon gets a message with no question.
+        // The composer still clears at once; a refusal hands the text back below.
+        const submitted = decisionChat
+          ? settleDecisionQuestion(sessionId).then(() => handleSubmit(submitEvent))
+          : handleSubmit(submitEvent);
 
         // The composer wipes itself a few lines below, synchronously, before the
         // submit has said whether it took the message. When it did NOT — a
@@ -2524,6 +2539,7 @@ export default function ChatInput({
       canSendDroppedFileAsPath,
       canUploadDroppedImage,
       currentModelSupportsVision,
+      decisionChat,
       displayValue,
       diverge,
       draftKey,
@@ -2573,7 +2589,7 @@ export default function ChatInput({
       return;
     }
     // If mention popover is open, handle arrow keys and enter
-    if (mentionPopover.isOpen && mentionPopoverRef.current) {
+    if (mentionPopover.isOpen && !decisionChat && mentionPopoverRef.current) {
       if (evt.key === 'ArrowDown') {
         evt.preventDefault();
         const displayFiles = mentionPopoverRef.current.getDisplayFiles();
@@ -3288,7 +3304,7 @@ export default function ChatInput({
 
       <MentionPopover
         ref={mentionPopoverRef}
-        isOpen={mentionPopover.isOpen}
+        isOpen={mentionPopover.isOpen && !decisionChat}
         isSlashCommand={mentionPopover.isSlashCommand}
         onClose={() => setMentionPopover((prev) => ({ ...prev, isOpen: false }))}
         onSelect={handleMentionItemSelect}

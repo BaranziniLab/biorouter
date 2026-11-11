@@ -7,6 +7,7 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from 'react';
+import { plainExcerpt } from './plainExcerpt';
 import {
   AlertCircle,
   ArrowRight,
@@ -161,7 +162,9 @@ export function subagentLine(row: SubagentRow): string {
     case 'unknown':
       return SUBAGENT_STATUS_WORDS.unknown;
     default:
-      return row.resultLine || SUBAGENT_STATUS_WORDS[row.status];
+      // R2-5: a plain one-line excerpt; a result that begins with a markdown
+      // table read "| Patient | sodium (Na) | …".
+      return plainExcerpt(row.resultLine) || SUBAGENT_STATUS_WORDS[row.status];
   }
 }
 

@@ -258,6 +258,79 @@ describe('the Monitors dialog in a real layout engine', () => {
     }
   });
 
+  it('opens a row’s peek below its line, clear of the row’s own name (R1-3)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      await tab.hover('[data-monitor-id="c"] [data-testid="monitor-line"]');
+      await tab.waitForSelector('[data-radix-popper-content-wrapper] [data-side]');
+      // The popper mounts before it is placed (its first frame sits above the
+      // viewport), so measure only once it has been positioned.
+      await tab.waitForFunction(() => {
+        const peek = document.querySelector('[data-radix-popper-content-wrapper] [data-side]');
+        return peek !== null && peek.getBoundingClientRect().top > 0;
+      });
+      const boxes = await tab.evaluate(() => {
+        const rect = (node: Element) => node.getBoundingClientRect().toJSON() as DOMRect;
+        const row = document.querySelector('[data-monitor-id="c"]')!;
+        return {
+          side: document
+            .querySelector('[data-radix-popper-content-wrapper] [data-side]')!
+            .getAttribute('data-side'),
+          peek: rect(document.querySelector('[data-radix-popper-content-wrapper] [data-side]')!),
+          name: rect(row.querySelector('.br-monitors__row-name')!),
+          line: rect(row.querySelector('[data-testid="monitor-line"]')!),
+        };
+      });
+      expect(boxes.side).toBe('bottom');
+      expect(boxes.peek.top).toBeGreaterThanOrEqual(boxes.line.bottom);
+      expect(boxes.peek.top).toBeGreaterThan(boxes.name.bottom);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('switches Fires when to Below by pointer and by keyboard (R1-1)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      await tab.click('[data-testid="monitor-add"]');
+      await tab.getByRole('button', { name: 'More options' }).click();
+      // As the report had it: Stop the turn, with Stop only once on.
+      await tab.getByRole('radio', { name: 'Stop the turn' }).click();
+      await tab.getByRole('checkbox', { name: 'Stop only once' }).check();
+      await tab.click('[data-testid="monitor-model"] [class*="control"]');
+      await tab.getByText('tev1:0.8b', { exact: false }).first().click();
+      // A press on the slider first (it leaves the slider's pointer capture behind it).
+      await tab.click('[data-testid="monitor-threshold"]');
+      const sentence = tab.locator('[data-testid="monitor-fires-sentence"]');
+      await expect
+        .poll(() => sentence.textContent())
+        .toMatch(/^Fires when P\(yes\) is at or above 0\.\d\d\.$/);
+      const below = tab.getByRole('radio', { name: 'Below' });
+      await below.click();
+      await expect.poll(() => below.getAttribute('aria-checked')).toBe('true');
+      await expect
+        .poll(() => sentence.textContent())
+        .toMatch(/^Fires when P\(yes\) is below 0\.\d\d\.$/);
+      // And back, by keyboard: the focused segment's arrow key chooses its neighbour.
+      await below.focus();
+      await tab.keyboard.press('ArrowLeft');
+      await expect
+        .poll(() => tab.getByRole('radio', { name: 'At or above' }).getAttribute('aria-checked'))
+        .toBe('true');
+      await expect
+        .poll(() => sentence.textContent())
+        .toMatch(/^Fires when P\(yes\) is at or above 0\.\d\d\.$/);
+      await tab.keyboard.press('ArrowRight');
+      await expect
+        .poll(() => sentence.textContent())
+        .toMatch(/^Fires when P\(yes\) is below 0\.\d\d\.$/);
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('keeps the header’s × in place and enabled through a row toggle', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();

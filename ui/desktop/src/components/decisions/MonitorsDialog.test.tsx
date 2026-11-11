@@ -382,6 +382,13 @@ describe('a monitor row', () => {
     expect(toggle).toHaveAccessibleDescription(
       `Stop the turn · when P(yes) is at or above 0.85 ${peek}`
     );
+    // R1-3: the peek opens below its line, so it never covers the row's own name.
+    fireEvent.click(within(item).getByTestId('monitor-line'));
+    await waitFor(() => {
+      const content = document.querySelector('[data-radix-popper-content-wrapper] [data-side]');
+      expect(content).not.toBeNull();
+      expect(content).toHaveAttribute('data-side', 'bottom');
+    });
   });
 
   it('says a peek in plain sentences', () => {
@@ -532,6 +539,11 @@ describe('each change applies when it is made', () => {
     await waitFor(() =>
       expect(document.activeElement).toHaveAccessibleName('More actions for Task achieved')
     );
+    // R1-2: a new editor is not "Saved"; the earlier write's status goes with it.
+    fireEvent.click(screen.getByTestId('monitor-add'));
+    expect(screen.getByTestId('monitor-editor')).toBeInTheDocument();
+    expect(screen.getByTestId('monitors-status')).toHaveTextContent(/^$/);
+    expect(screen.getByTestId('monitors-status')).toHaveAttribute('data-state', 'idle');
   });
 
   it('shows what is missing inline and writes nothing', async () => {

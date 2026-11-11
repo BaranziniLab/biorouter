@@ -238,6 +238,31 @@ describe('the closed line and when it opens (F-1)', () => {
   const summary = (aggregates: Record<string, unknown>[], total = 10) =>
     parseSessionDecisionSummary({ total, aggregates, recentTurns: [] })!;
 
+  // R2-6: a gate's checks are its phase chip's, so a chat whose only decisions
+  // were a gate's read "Decisions  0 checks" beside "Gate checked once, passed".
+  it('draws nothing when the only checks were a phase gate’s and there are no monitors', () => {
+    const gateOnly = summary(
+      [
+        {
+          origin: 'gate',
+          originId: 'collect',
+          label: 'Collect',
+          count: 1,
+          passed: 1,
+          failed: 0,
+          errors: 0,
+          lastAt: '2026-11-10T10:00:00Z',
+          lastAnswer: 'yes',
+          lastPassProbability: 0.97,
+        },
+      ],
+      1
+    );
+    draw({ data: { summary: gateOnly, settings: settings([]) } });
+    expect(screen.queryByTestId('summary-decisions')).toBeNull();
+    expect(screen.queryByText(/0 checks/)).toBeNull();
+  });
+
   it('is closed by default when nothing fired and nothing errored', () => {
     draw({ data: { summary: summary([one('form', 4, 0.2)]), settings: settings([monitor()]) } });
     expect(toggle()).toHaveAttribute('aria-expanded', 'false');
@@ -466,6 +491,9 @@ describe('the chip opens the gate dialog', () => {
           phase={phase}
           phases={value?.plan?.phases}
           models={[]}
+          // The chat's default model, instead of the editor's own
+          // `GET /sessions/{id}/decision-settings` read (056503ba9).
+          defaultModel={null}
         />
       </>
     );

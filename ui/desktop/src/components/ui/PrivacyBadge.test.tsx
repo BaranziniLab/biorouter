@@ -4,7 +4,7 @@ import type { ReactElement } from 'react';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PrivacyBadge } from './PrivacyBadge';
+import { PrivacyBadge, PRIVATE_MARK_INK } from './PrivacyBadge';
 import type { SessionClassification } from '../../api';
 
 /**
@@ -135,6 +135,17 @@ describe('PrivacyBadge', () => {
     expect(el.className).toContain('text-text-default');
     expect(el.className).not.toContain('text-text-muted');
     expect(el.querySelector('svg')).not.toBeNull();
+  });
+
+  // R1-10: the chip's padlock was default ink while the roster's and the
+  // decision card's were muted, so one fact wore two marks.
+  it('draws the padlock in one muted ink in both forms, whatever the word wears', () => {
+    const pill = badgeOf(<PrivacyBadge tier="private" />)!;
+    const dense = badgeOf(<PrivacyBadge tier="private" dense />)!;
+    expect(PRIVATE_MARK_INK).toBe('text-text-muted');
+    expect(pill.querySelector('svg')!.getAttribute('class')).toContain(PRIVATE_MARK_INK);
+    expect(dense.className).toContain(PRIVATE_MARK_INK);
+    expect(dense.className).not.toContain('text-text-default');
   });
 
   it('paints Public as the quiet state: same fill, quiet ink, no glyph, no outline', () => {
@@ -286,7 +297,7 @@ describe('PrivacyBadge', () => {
     const mark = badgeOf(<PrivacyBadge tier="private" dense />)!;
     expect(mark.getAttribute('data-privacy')).toBe('private');
     expect(mark.textContent).toBe('');
-    expect(mark.className).toContain('text-text-default');
+    expect(mark.className).toContain('text-text-muted');
     // Shape alone carries the meaning at this size, so the mark owes an
     // accessible name. A bare <span> maps to role `generic`, which takes none —
     // `title` by itself would leave it both unannounced and (on an <svg>, where

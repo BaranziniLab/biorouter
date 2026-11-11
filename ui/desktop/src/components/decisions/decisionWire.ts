@@ -174,7 +174,12 @@ export function markerParts(marker: DecisionTurnMarker): MarkerPart[] {
         break;
       }
       case 'tool':
-        text = `${pluralize(items.length, 'decide call')} read ${pluralize(checks, 'chunk')}`;
+        // R3-F3: an item is a question, not a call; the daemon says how many calls
+        // made it (an older daemon sent an item per call, so 1 each).
+        text = `${pluralize(
+          items.reduce((total, item) => total + (item.calls ?? 1), 0),
+          'decide call'
+        )} read ${pluralize(checks, 'chunk')}`;
         break;
       case 'gate': {
         const several = items.length > 1;
@@ -316,6 +321,44 @@ export interface DecideQuestionSummary {
   maxP: number | null;
   /** choice and score: how many chunks gave each answer, in option order. */
   answerCounts: Array<{ answer: string; count: number }>;
+  /**
+   * G-3: the answered chunks in four groups that do not overlap and add up to
+   * `decided` (`AnswerGroups`), for a question with a pass. `null` from an older
+   * daemon, or for a choice or score with no threshold.
+   */
+  groups: DecideAnswerGroups | null;
+  /** A vote of several models (`decide` with `models`): the majority and the agreement. */
+  vote: DecideQuestionVote | null;
+}
+
+/** `AnswerGroups`: a yes is a pass, a no everything else; review is both middles. */
+export interface DecideAnswerGroups {
+  yesConfident: number;
+  yesReview: number;
+  noReview: number;
+  noConfident: number;
+}
+
+/** `VoteQuestion`, as far as a row draws it. */
+export interface DecideQuestionVote {
+  /** How many chunks have each answer as their majority, in the daemon's order. */
+  majority: Array<{ answer: string; count: number }>;
+  /** Chunks whose answers tied. */
+  ties: number;
+  /** Chunks at least two models answered. */
+  compared: number;
+  /** Of those, chunks every answering model gave the same answer. */
+  agreed: number;
+}
+
+/** One model of a vote (`VoteModel`). */
+export interface DecideVoteModel {
+  /** The name a person reads (an alias for a Baseten model). */
+  label: string;
+  decided: number;
+  errors: number;
+  /** Why this model answered nothing, when it did not. */
+  error: string | null;
 }
 
 /** One distinct error in a batch, and how many chunks it hit (never which ones here). */
@@ -339,6 +382,8 @@ export interface DecideBatchSummary {
   elapsedMs: number | null;
   questions: DecideQuestionSummary[];
   errorGroups: DecideErrorGroup[];
+  /** The models of a vote, in the order they were asked; `null` for one model's batch. */
+  voteModels: DecideVoteModel[] | null;
 }
 
 const optionalCount = (value: unknown): number | null => {
@@ -346,11 +391,43 @@ const optionalCount = (value: unknown): number | null => {
   return n !== null && n >= 0 ? Math.floor(n) : null;
 };
 
+/** An ordered `{answer: count}` object as a list, dropping what is not a count. */
+function countsOf(value: unknown): Array<{ answer: string; count: number }> {
+  const counts = record(value);
+  return counts
+    ? Object.entries(counts).flatMap(([answer, n]) => {
+        const parsed = optionalCount(n);
+        return parsed === null ? [] : [{ answer, count: parsed }];
+      })
+    : [];
+}
+
+function groupsOf(value: unknown): DecideAnswerGroups | null {
+  const groups = record(value);
+  if (!groups) return null;
+  const yesConfident = optionalCount(groups.yesConfident);
+  const yesReview = optionalCount(groups.yesReview);
+  const noReview = optionalCount(groups.noReview);
+  const noConfident = optionalCount(groups.noConfident);
+  return yesConfident === null || yesReview === null || noReview === null || noConfident === null
+    ? null
+    : { yesConfident, yesReview, noReview, noConfident };
+}
+
+function voteOf(question: Record<string, unknown>): DecideQuestionVote | null {
+  if (!record(question.majority)) return null;
+  return {
+    majority: countsOf(question.majority),
+    ties: count(question.ties),
+    compared: count(question.compared),
+    agreed: count(question.agreed),
+  };
+}
+
 function questionSummaryOf(value: unknown): DecideQuestionSummary | null {
   const question = record(value);
   const name = text(question?.name);
   if (!question || !name) return null;
-  const counts = record(question.answerCounts);
   return {
     name,
     kind: text(question.type) ?? 'yes_no',
@@ -360,13 +437,30 @@ function questionSummaryOf(value: unknown): DecideQuestionSummary | null {
     yes: optionalCount(question.yes),
     review: optionalCount(question.review),
     maxP: probability(question.maxP),
-    answerCounts: counts
-      ? Object.entries(counts).flatMap(([answer, n]) => {
-          const parsed = optionalCount(n);
-          return parsed === null ? [] : [{ answer, count: parsed }];
-        })
-      : [],
+    answerCounts: countsOf(question.answerCounts),
+    groups: groupsOf(question.groups),
+    vote: voteOf(question),
   };
+}
+
+function voteModelsOf(value: unknown): DecideVoteModel[] {
+  return Array.isArray(value)
+    ? value.flatMap((entry): DecideVoteModel[] => {
+        const model = record(entry);
+        if (!model) return [];
+        const ref = record(model.model);
+        const label = text(model.label) ?? text(ref?.model);
+        if (!label) return [];
+        return [
+          {
+            label,
+            decided: count(model.decided),
+            errors: count(model.errors),
+            error: text(model.error),
+          },
+        ];
+      })
+    : [];
 }
 
 function modelOf(value: unknown): DecideBatchSummary['model'] {
@@ -395,6 +489,8 @@ function batchSummaryOf(value: unknown): DecideBatchSummary | null {
         return [{ message, chunks: listed + count(group.more) }];
       })
     : [];
+  // G-1: a vote of several models (`VoteSummary`, kind `decide_vote`) has no one model.
+  const vote = summary.kind === 'decide_vote' || Array.isArray(summary.models);
   return {
     batchId,
     chunks: optionalCount(summary.chunks),
@@ -406,6 +502,7 @@ function batchSummaryOf(value: unknown): DecideBatchSummary | null {
     elapsedMs: optionalCount(summary.elapsedMs),
     questions,
     errorGroups,
+    voteModels: vote ? voteModelsOf(summary.models) : null,
   };
 }
 

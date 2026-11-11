@@ -8,6 +8,7 @@ import {
   DECISION_COMPOSER_SAVE_DELAY_MS,
   questionFromDraft,
   emptyDraft,
+  settleDecisionQuestion,
 } from './DecisionComposer';
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), headers: vi.fn() }));
@@ -192,6 +193,51 @@ describe('the decision composer', () => {
       DECISION_COMPOSER_COPY.draftNote
     );
     expect(mocks.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('a send waits for the question (R1-6)', () => {
+  it('saves a question typed moments before Send, and resolves only once it is stored', async () => {
+    let answer!: (value: unknown) => void;
+    mocks.put.mockImplementation(() => new Promise((done) => (answer = done)));
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    // Typed, and sent before the half-second save wait ran out: nothing stored yet.
+    fireEvent.change(screen.getByTestId('decision-composer-question'), {
+      target: { value: 'Does this note mention a fever?' },
+    });
+    expect(mocks.put).not.toHaveBeenCalled();
+    let settled = false;
+    let send!: Promise<unknown>;
+    act(() => {
+      send = settleDecisionQuestion('chat-1').then(() => (settled = true));
+    });
+    await waitFor(() => expect(mocks.put).toHaveBeenCalledTimes(1));
+    expect(mocks.put.mock.calls[0][0].body.question.instructions).toBe(
+      'Does this note mention a fever?'
+    );
+    // The PUT is still in flight: the send still waits.
+    await act(() => Promise.resolve());
+    expect(settled).toBe(false);
+    // A second settle (a blur, then Send) joins the same save, never a second PUT.
+    let again!: Promise<void>;
+    act(() => {
+      again = settleDecisionQuestion('chat-1');
+    });
+    answer({ data: {}, error: undefined, response: { status: 200 } });
+    await act(() => send);
+    await act(() => again);
+    expect(settled).toBe(true);
+    expect(mocks.put).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves at once for a chat with no composer, or nothing new to save', async () => {
+    await expect(settleDecisionQuestion('no-such-chat')).resolves.toBeUndefined();
+    await expect(settleDecisionQuestion(null)).resolves.toBeUndefined();
+    render(<DecisionComposer sessionId="chat-1" />);
+    await ready();
+    await act(() => settleDecisionQuestion('chat-1'));
+    expect(mocks.put).not.toHaveBeenCalled();
   });
 });
 
