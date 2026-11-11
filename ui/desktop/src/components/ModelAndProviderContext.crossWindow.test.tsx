@@ -601,7 +601,7 @@ describe('F3 — the pin still outranks a stale row', () => {
     );
     await expectChip(
       'window 2',
-      `${CHIP[PRIVATE.model]}. Private chat. Biorouter only lets a private model open it.`
+      `${CHIP[PRIVATE.model]}. Private chat. Biorouter only lets private models, decision models included, read it.`
     );
 
     fireEvent.click(inWindow('window 1').getByRole('button', { name: /to Claude Code/ }));
@@ -609,7 +609,7 @@ describe('F3 — the pin still outranks a stale row', () => {
     await expectChip('window 1', CHIP[PUBLIC.model]);
 
     expect(chipIn('window 2')).toHaveAccessibleName(
-      `${CHIP[PRIVATE.model]}. Private chat. Biorouter only lets a private model open it.`
+      `${CHIP[PRIVATE.model]}. Private chat. Biorouter only lets private models, decision models included, read it.`
     );
     expect(chipIn('window 2')).not.toHaveAccessibleName(new RegExp(CODEX.model));
     expect(chipIn('window 2')).not.toHaveAccessibleName(new RegExp(PUBLIC.model));

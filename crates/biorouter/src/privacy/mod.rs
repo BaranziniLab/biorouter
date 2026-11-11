@@ -23,6 +23,8 @@ pub mod capability;
 pub mod config_keys;
 // The (caller, target) state behind `visibility::requires_first_crossing_approval`.
 pub mod crossing;
+// DR-33: a chat's decision models count toward its tier.
+pub mod decision_axes;
 pub mod declassify;
 pub mod disclosure;
 #[cfg(test)]

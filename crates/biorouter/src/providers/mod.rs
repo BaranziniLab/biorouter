@@ -18,6 +18,8 @@ pub mod codex;
 pub mod coding_agent;
 pub mod databricks;
 pub mod decision;
+// DR-33: the slot's wrapper that folds a chat's decision models into its tier.
+pub mod decision_bound;
 pub mod destination_keys;
 pub mod embedding;
 pub mod errors;

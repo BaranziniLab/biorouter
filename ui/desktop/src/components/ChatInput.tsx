@@ -95,6 +95,7 @@ import {
   settleDecisionQuestion,
 } from './decisions/DecisionComposer';
 import { isDecisionProvider } from './decisions/decisionWire';
+import type { PrivacyBasis } from '../utils/sessionDecisions';
 
 /**
  * Queued messages as a draft, for a composer with no chat to keep a queue for.
@@ -407,10 +408,10 @@ interface ChatInputProps {
    */
   autoFocus?: boolean;
   /**
-   * Open this chat's decision monitors (BaseChat's `MonitorsDialog`), from the
-   * `+` menu. The menu offers it only while the composer names a chat
-   * (`sessionId`): a chat that has not been created has nothing to attach a
-   * monitor to.
+   * Open this chat's decision monitors (`MonitorsDialog`), from the `+` menu.
+   * Before the chat exists (Home, a blank chat) the caller opens the dialog in
+   * draft mode, and the draft starts with the chat's first message (DR-33,
+   * design §4). Absent, the menu offers no row.
    */
   onOpenDecisionMonitors?: () => void;
   /**
@@ -420,6 +421,11 @@ interface ChatInputProps {
    * stays in the transcript after the limit is raised.
    */
   usageLimitNoticeKey?: string;
+  /**
+   * DR-33: why this chat is public when a decision model made it so (the daemon's
+   * `privacyBasis`, read by `BaseChat`), for the model chip's tip and its switch.
+   */
+  privacyBasis?: PrivacyBasis | null;
 }
 
 export default function ChatInput({
@@ -457,6 +463,7 @@ export default function ChatInput({
   autoFocus = true,
   onOpenDecisionMonitors,
   usageLimitNoticeKey,
+  privacyBasis,
 }: ChatInputProps) {
   const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
@@ -3243,7 +3250,7 @@ export default function ChatInput({
               <ComposerPlusMenu
                 onAttachFiles={attachPickedFiles}
                 onInsertTrigger={insertTrigger}
-                onOpenDecisionMonitors={sessionId ? onOpenDecisionMonitors : undefined}
+                onOpenDecisionMonitors={onOpenDecisionMonitors}
               />
               <ToolsChip
                 sessionId={sessionId}
@@ -3263,6 +3270,7 @@ export default function ChatInput({
               }
               effectiveModel={effectiveModel}
               privacyTier={sessionPrivacyTier}
+              privacyBasis={privacyBasis}
               setView={setView}
               handOffKey={handOffKey}
             />

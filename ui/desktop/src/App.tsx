@@ -68,6 +68,8 @@ import { startChatFailureNotice } from './utils/startChatFailure';
 import { dismissScreenToasts, toastError } from './toasts';
 import { getInitialWorkingDir } from './utils/workingDir';
 import { deliverLauncherMessage } from './utils/launcherMessage';
+import { usePublicDecisionConfirm } from './components/decisions/usePublicDecisionConfirm';
+import { isPublicChatDeclined } from './utils/sessionDecisions';
 import { ChatStreamProvider } from './hooks/chatStreamStore';
 import { AppTooltipLayer } from './components/ui/AppTooltipLayer';
 
@@ -116,6 +118,9 @@ const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) =>
   const routeState = (location.state as PairRouteState) || {};
   const [searchParams] = useSearchParams();
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  // DR-33: a workflow whose decision models make the chat public asks first.
+  const { confirm: confirmPublicWorkflow, dialog: publicWorkflowDialog } =
+    usePublicDecisionConfirm('workflow');
 
   const resumeSessionId = searchParams.get('resumeSessionId') ?? undefined;
   const workflowId = searchParams.get('workflowId') ?? undefined;
@@ -162,14 +167,19 @@ const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) =>
             workflowId,
             workflowDeeplink: workflowDeeplinkFromConfig,
             allExtensions: extensionsList,
+            confirmPublicDecisionModels: confirmPublicWorkflow,
           });
           navigate(`/pair?resumeSessionId=${newSession.id}`, {
             replace: true,
             state: { resumeSessionId: newSession.id, initialMessage, initialAttachments },
           });
         } catch (error) {
-          console.error('Failed to create session:', error);
-          toastError(startChatFailureNotice(error, { kept: false }));
+          // Declined at "This workflow uses joey-1 · Baseten, so this chat will be
+          // public": nothing failed, so nothing is reported; Home, as below.
+          if (!isPublicChatDeclined(error)) {
+            console.error('Failed to create session:', error);
+            toastError(startChatFailureNotice(error, { kept: false }));
+          }
           // Leave. Every input this effect keys on is still true after a
           // failure, so staying would re-run it the moment `isCreatingSession`
           // drops — a `POST /agent/start` loop for as long as the refusal
@@ -192,9 +202,15 @@ const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) =>
     isCreatingSession,
     extensionsList,
     navigate,
+    confirmPublicWorkflow,
   ]);
 
-  return <ChatGroupsShell onChatChange={setChat} />;
+  return (
+    <>
+      <ChatGroupsShell onChatChange={setChat} />
+      {publicWorkflowDialog}
+    </>
+  );
 };
 
 const SettingsRoute = () => {

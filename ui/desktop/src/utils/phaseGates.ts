@@ -8,10 +8,14 @@ import type { SliderStep } from '../components/ui/slider';
 import {
   decisionModelRefToWire,
   formatProbability,
+  parsePublicDecisionConfirmation,
+  parseTierEffect,
   refusalText,
   type DecisionAdapter,
   type DecisionModelRef,
+  type DecisionTierEffect,
   type PhaseGateSnapshot,
+  type PublicDecisionConfirmation,
 } from './sessionDecisions';
 import { parseOrchestrationSnapshot, type OrchestrationSnapshot } from './sessionSubagents';
 import { userActionHeaders } from './userAction';
@@ -64,6 +68,10 @@ export type PhaseGateResult =
       applied: boolean;
       /** The plan after the write, as this caller may see it; `null` when it could not be read back. */
       plan: OrchestrationSnapshot | null;
+      /** What a set did to the chat's tier (DR-33); `null` when the answer does not say. */
+      tierEffect?: DecisionTierEffect | null;
+      /** The daemon's line for it, or `null` when there is nothing to say. */
+      tierEffectLine?: string | null;
     }
   | {
       ok: false;
@@ -71,6 +79,12 @@ export type PhaseGateResult =
       status: number | null;
       /** The daemon's sentence, or one of ours when it sent none. */
       message: string;
+      /**
+       * DR-33: the gate's model would make the chat public and the person has not
+       * said so yet (409 `needsPublicDecisionConfirmation`). Nothing was changed;
+       * ask, then set again with `acceptPublicDecisionModels`.
+       */
+      confirmation?: PublicDecisionConfirmation;
     };
 
 export const PHASE_GATE_REQUEST_COPY = {
@@ -85,6 +99,10 @@ type ClientResult = { data?: unknown; error?: unknown; response?: Response };
 function settle(result: ClientResult): PhaseGateResult {
   const status = result.response?.status ?? null;
   if (result.error !== undefined || result.data === undefined) {
+    const confirmation = status === 409 ? parsePublicDecisionConfirmation(result.error) : null;
+    if (confirmation) {
+      return { ok: false, status, message: confirmation.message, confirmation };
+    }
     const sentence = refusalText(result.error);
     return {
       ok: false,
@@ -112,6 +130,7 @@ function settle(result: ClientResult): PhaseGateResult {
     applied: body.applied !== false,
     plan:
       body.plan === null || body.plan === undefined ? null : parseOrchestrationSnapshot(body.plan),
+    ...parseTierEffect(body),
   };
 }
 
@@ -132,12 +151,18 @@ async function send(request: (headers: Record<string, string>) => Promise<unknow
 export function setPhaseGate(
   sessionId: string,
   phaseId: string,
-  draft: PhaseGateDraft
+  draft: PhaseGateDraft,
+  options: { acceptPublicDecisionModels?: boolean } = {}
 ): Promise<PhaseGateResult> {
+  // `acceptPublicDecisionModels` is the person's answer to "This chat will be
+  // public: …" (DR-33), sent only after the dialog showed that line.
+  const body: PhaseGateSpec & { acceptPublicDecisionModels?: boolean } =
+    phaseGateDraftToWire(draft);
+  if (options.acceptPublicDecisionModels) body.acceptPublicDecisionModels = true;
   return send((headers) =>
     putPhaseGate({
       path: { session_id: sessionId, phase_id: phaseId },
-      body: phaseGateDraftToWire(draft),
+      body,
       headers,
     })
   );

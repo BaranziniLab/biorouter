@@ -18,7 +18,7 @@ use biorouter::privacy::declassify::{
     authenticate_declassification, declassify, is_crew_restricted, is_store_busy,
     DeclassifyOutcome, UserConfirmation, DECLASSIFY_CREW_RESTRICTED, DECLASSIFY_STORE_BUSY,
 };
-use biorouter::privacy::SessionClassification;
+use biorouter::privacy::{ProviderTier, SessionClassification};
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
     ActivityWindow, CrewContextRefusal, ModelUsageRow, SessionInsights, SidebarCursor,
@@ -613,6 +613,119 @@ async fn list_sidebar_sessions(
     }))
 }
 
+/// Why a chat is public when its own language model is private (DR-33,
+/// design §5): the decision model it names, as the daemon computed it, so no
+/// renderer recomputes the fold. Present only on the single-session read, and
+/// only when a decision model (or a public parent's ceiling) is what made the
+/// chat public; a listing row shows its lock and nothing more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivacyBasis {
+    /// Always `decisionModel` today.
+    pub kind: PrivacyBasisKind,
+    /// Which standing name lowered the chat.
+    pub source: PrivacyBasisSource,
+    /// The monitor's name, the phase's title, or the parent chat's id.
+    pub label: String,
+    /// The model's own name (`joey-1`); empty for a parent ceiling that did not
+    /// record one.
+    pub model: String,
+    /// Where it runs, typed.
+    pub host: biorouter::privacy::decision_axes::HostLabel,
+    /// Where it runs, in words (`Baseten`, `this computer`), for "joey-1 ·
+    /// Baseten".
+    pub place: String,
+    /// The reason as one clause for a person: `monitor "Done" uses joey-1, a
+    /// Baseten model`.
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum PrivacyBasisKind {
+    DecisionModel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum PrivacyBasisSource {
+    Default,
+    Monitor,
+    Gate,
+    PhaseMonitor,
+    Parent,
+}
+
+impl From<&biorouter::privacy::decision_axes::LoweredBy> for PrivacyBasis {
+    fn from(cause: &biorouter::privacy::decision_axes::LoweredBy) -> Self {
+        use biorouter::privacy::decision_axes::NameSource;
+        Self {
+            kind: PrivacyBasisKind::DecisionModel,
+            source: match cause.source {
+                NameSource::Default => PrivacyBasisSource::Default,
+                NameSource::Monitor => PrivacyBasisSource::Monitor,
+                NameSource::Gate => PrivacyBasisSource::Gate,
+                NameSource::PhaseMonitor => PrivacyBasisSource::PhaseMonitor,
+                NameSource::Parent => PrivacyBasisSource::Parent,
+            },
+            label: cause.label.clone(),
+            model: cause.model.clone(),
+            host: cause.host.clone(),
+            place: cause.host.place(),
+            summary: cause.person_phrase(),
+        }
+    }
+}
+
+/// `GET /sessions/{session_id}`'s answer: the session, and why it is public
+/// when a decision model made it so.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDetail {
+    #[serde(flatten)]
+    pub session: Session,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privacy_basis: Option<PrivacyBasis>,
+}
+
+/// The chat's [`PrivacyBasis`], or `None` when nothing but its own model sets
+/// its tier.
+///
+/// The fold is the row's ([`biorouter::privacy::decision_axes::from_row`]),
+/// which is inert on a Private chat and on a public name without a person's
+/// basis, so it names a cause only when one is standing. It is shown only when
+/// it actually lowered a private model: on Claude Code a chat is public
+/// whatever it names, and saying "because of joey-1" there would be false.
+/// The bound model is the held agent's own (unwrapped) when this daemon holds
+/// one, otherwise the tier the row declares for it
+/// (`decision::save::row_bound_model_tier`, what the save checks read). Text only:
+/// no gate reads it. With the master switch off nothing is said.
+async fn privacy_basis(state: &AppState, session: &Session) -> Option<PrivacyBasis> {
+    if !biorouter::privacy::privacy_tiers_enabled() || session.privacy_tier.is_private() {
+        return None;
+    }
+    let held = match state.peek_agent(&session.id).await {
+        Some(agent) => agent.bound_model_provider().await.map(|bound| bound.tier()),
+        None => None,
+    };
+    // Off the row, the declaration the save checks use for a chat this
+    // daemon does not hold, so the two never disagree about the bound model.
+    let bound = match held {
+        Some(tier) => tier,
+        None => biorouter::decision::save::row_bound_model_tier(session, true).await?,
+    };
+    basis_for(session, bound)
+}
+
+/// [`privacy_basis`] once the bound model's tier is known: the row's fold,
+/// named only when it lowers that model.
+fn basis_for(session: &Session, bound_model_tier: ProviderTier) -> Option<PrivacyBasis> {
+    let axes = biorouter::privacy::decision_axes::from_row(session);
+    let cause = axes.lowered_by()?;
+    axes.lowers(bound_model_tier)
+        .then(|| PrivacyBasis::from(cause))
+}
+
 #[derive(Default, Deserialize)]
 struct SessionReadQuery {
     #[serde(default)]
@@ -627,7 +740,9 @@ struct SessionReadQuery {
         ("metadata_only" = Option<bool>, Query, description = "Omit conversation history when only session metadata is needed")
     ),
     responses(
-        (status = 200, description = "Session history retrieved successfully", body = Session),
+        (status = 200, description = "Session history retrieved successfully, with \
+                                      `privacyBasis` when a decision model the chat names is what \
+                                      made it public (DR-33)", body = SessionDetail),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
                                       the named chat is private (or absent, and an unproven caller \
@@ -670,7 +785,12 @@ async fn get_session(
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    Json(session).into_response()
+    let privacy_basis = privacy_basis(&state, &session).await;
+    Json(SessionDetail {
+        session,
+        privacy_basis,
+    })
+    .into_response()
 }
 #[utoipa::path(
     get,
@@ -4544,5 +4664,107 @@ mod delete_session_tests {
             "the deleted session's turn kept running, writing into a session that \
              no longer exists"
         );
+    }
+}
+
+#[cfg(test)]
+mod privacy_basis_tests {
+    //! DR-33 (design §5): the single-session read says which decision model made
+    //! a chat public, and says nothing when nothing did.
+    use super::*;
+    use biorouter::decision::settings::{DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION};
+    use biorouter::privacy::decision_axes::{
+        BasisAuthor, HostLabel, PublicBasis, PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION,
+    };
+
+    /// A Public user chat whose monitor "Done" runs joey-1 on Baseten, with
+    /// the person's basis when `basis` names it.
+    fn chat(basis_for_id: Option<&str>) -> Session {
+        let mut row = Session {
+            id: "dr33-basis".to_string(),
+            session_type: SessionType::User,
+            ..Session::default()
+        };
+        row.extension_data.set_extension_state(
+            DECISION_SETTINGS_STATE,
+            DECISION_SETTINGS_VERSION,
+            serde_json::json!({
+                "defaultModel": null,
+                "monitors": [{
+                    "id": "done",
+                    "name": "Done",
+                    "question": {"instructions": "Is the task done?", "kind": {"binary": {}}},
+                    "model": {"provider": "baseten_decision", "model": "joey-1"},
+                    "threshold": 0.8,
+                    "option": null,
+                    "rearmBelow": null
+                }]
+            }),
+        );
+        if let Some(id) = basis_for_id {
+            row.extension_data.set_extension_state(
+                PUBLIC_BASIS_STATE,
+                PUBLIC_BASIS_VERSION,
+                serde_json::to_value(PublicBasis::new(
+                    id,
+                    BasisAuthor::Person,
+                    "decision-settings",
+                    vec![],
+                ))
+                .unwrap(),
+            );
+        }
+        row
+    }
+
+    #[test]
+    fn a_chat_a_decision_model_made_public_says_which() {
+        let basis = basis_for(&chat(Some("dr33-basis")), ProviderTier::Private)
+            .expect("a Versa chat lowered by its Baseten monitor names it");
+        assert_eq!(basis.kind, PrivacyBasisKind::DecisionModel);
+        assert_eq!(basis.source, PrivacyBasisSource::Monitor);
+        assert_eq!(
+            (basis.label.as_str(), basis.model.as_str(), basis.place.as_str()),
+            ("Done", "joey-1", "Baseten")
+        );
+        assert_eq!(basis.host, HostLabel::Baseten);
+        assert_eq!(basis.summary, "monitor \"Done\" uses joey-1, a Baseten model");
+        let wire = serde_json::to_value(&basis).unwrap();
+        assert_eq!(wire["kind"], "decisionModel");
+        assert_eq!(wire["source"], "monitor");
+    }
+
+    #[test]
+    fn nothing_is_said_where_a_decision_model_did_not_lower_the_chat() {
+        // On a public model the chat is public whatever it names.
+        assert_eq!(
+            basis_for(&chat(Some("dr33-basis")), ProviderTier::Public),
+            None
+        );
+        // No person's basis: the public name is inert.
+        assert_eq!(basis_for(&chat(None), ProviderTier::Private), None);
+        // A basis written for another chat is not this chat's.
+        assert_eq!(basis_for(&chat(Some("other")), ProviderTier::Private), None);
+        // A Private chat's public names lower nothing.
+        let mut private = chat(Some("dr33-basis"));
+        private.privacy_tier = SessionClassification::Private;
+        assert_eq!(basis_for(&private, ProviderTier::Private), None);
+    }
+
+    #[test]
+    fn the_single_session_read_carries_the_basis_beside_the_session() {
+        let detail = SessionDetail {
+            session: chat(Some("dr33-basis")),
+            privacy_basis: basis_for(&chat(Some("dr33-basis")), ProviderTier::Private),
+        };
+        let wire = serde_json::to_value(&detail).unwrap();
+        assert_eq!(wire["id"], "dr33-basis", "the session's own fields stay at the top");
+        assert_eq!(wire["privacyBasis"]["model"], "joey-1");
+        let bare = serde_json::to_value(SessionDetail {
+            session: chat(None),
+            privacy_basis: None,
+        })
+        .unwrap();
+        assert!(bare.get("privacyBasis").is_none());
     }
 }

@@ -12,10 +12,10 @@
 //! | `GET /sessions/{id}/decisions/summary` | [`session_reach`] |
 //! | `GET /sessions/{id}/decisions/{decision_id}` | [`session_reach`] |
 //! | `GET /sessions/{id}/decision-settings` | [`session_reach`] |
-//! | `PUT /sessions/{id}/decision-settings` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one, then the save check (422) |
+//! | `PUT /sessions/{id}/decision-settings` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one, then the save check (422), then the tier effect (409 to confirm a lowering, 403 SD-16) |
 //! | `GET /sessions/{id}/decision-chat` | [`session_reach`] |
 //! | `PUT /sessions/{id}/decision-chat` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one, then the save check (422) |
-//! | `PUT /sessions/{id}/phase-gates/{phase_id}` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one, then the gate's model check (422) |
+//! | `PUT /sessions/{id}/phase-gates/{phase_id}` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one, then the tier effect (422, 409 to confirm a lowering, 403 SD-16), then the gate's model check (422) |
 //! | `DELETE /sessions/{id}/phase-gates/{phase_id}` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one |
 //! | `POST /sessions/{id}/phase-gates/{phase_id}/decision` | [`session_reach`], then the user-action proof on a keyed daemon, then the subagent rule on a keyless one |
 //!
@@ -28,11 +28,15 @@
 //! # Status codes of the writes
 //!
 //! 400 is a request that cannot be read or is out of bounds; 403 is the reach
-//! gate, the proof or the subagent rule, and nothing else, because `biorouter
-//! session monitors` reads any 403 as a missing user-action key; 404 is no
-//! such chat, plan or phase; 409 is a conflict with what is stored (a closed
-//! phase, no gate, an unreadable plan, another install running, an Ollama
-//! elsewhere); 422 is a valid request whose model cannot run for this chat now
+//! gate, the proof or the subagent rule, and on a daemon that holds no
+//! user-action key SD-16's refusal of a lowering (always with its sentence,
+//! never empty, so `biorouter session monitors` does not read it as a missing
+//! key); 404 is no such chat, plan or phase; 409 is a conflict with what is
+//! stored (a closed phase, no gate, an unreadable plan, another install
+//! running, an Ollama elsewhere, a chat that started while it was being made
+//! public) or a lowering the person has not confirmed
+//! (`needsPublicDecisionConfirmation`, a JSON body); 422 is a valid request
+//! whose model cannot run for this chat now
 //! (not there, cannot take the question, will not load, or refused by the
 //! chat's privacy tier, an institution or a Crew grant); 503 is an Ollama that
 //! is not running.
@@ -98,6 +102,36 @@
 //! ([`PHASE_GATES_NEED_USER`] when it is missing), and the same subagent rule.
 //! The agent's own tool has no such action.
 //!
+//! # Making a chat public by a decision model (DR-33)
+//!
+//! A chat is as private as its least private model, its standing decision
+//! models included (`biorouter::privacy::decision_axes`). So a settings or
+//! gate write can change whether a chat is private, and each write computes
+//! that before it stores anything ([`biorouter::decision::save::tier_change`],
+//! with the tier of the language model the chat is bound to, never the
+//! slot's). A write that would make a chat on a private model public
+//! (`becomesPublic`) is a lowering, and only the person may perform it:
+//!
+//! - on a daemon that holds a user-action key, the write already carries the
+//!   proof, and it must also say `acceptPublicDecisionModels: true` in its
+//!   body, which a client sends only after showing the person the effect
+//!   line; without it the answer is 409 `needsPublicDecisionConfirmation`
+//!   with that line, and nothing is saved;
+//! - on a daemon that holds none, a lowering is refused 403 (SD-16) unless
+//!   its operator started it with `biorouter serve
+//!   --allow-public-decision-models`, which is pinned at launch
+//!   (`biorouter_server::launch::allows_public_decision_models`); with it, the
+//!   flag is still required.
+//!
+//! The person's acceptance is written as `public_basis.v1` in the same
+//! statement as the settings or the plan, which checks again that the chat
+//! holds no message (or was declassified by the person); a first message that
+//! raced the write is a 409. After an admitted lowering the chat's agent, when
+//! this daemon holds it, takes the lowered tier at once
+//! (`Agent::lower_decision_axes`, lower-only). A removal that makes the chat
+//! private again needs no flag and takes effect at its next message. Each
+//! answer says what the write did (`tierEffect`, `tierEffectLine`).
+//!
 //! [`session_reach`]: crate::routes::session_reach::session_reach
 
 use std::sync::Arc;
@@ -124,12 +158,18 @@ use biorouter::decision::settings::{
     self as decision_settings, DecisionChatSettings, DecisionSettings, InvalidDecisionSettings,
 };
 use biorouter::decision::types::{validate_questions, DecisionKindTag};
-use biorouter::decision::{
-    ChunkOutcome, Decision, DecisionAdapter, DecisionChunk, DecisionContext, DecisionError,
-    DecisionModelRef, DecisionOrigin, DecisionRequest, DecisionService, DecisionSession,
-    LiveClassification, ModelSource, UnusableDecisionSettings,
+use biorouter::decision::save::{
+    AfterSave, LoweringConsent, NeedsPublicDecisionConfirmation, PublicBasisNotEligible,
+    PublicDecisionModelsNotAllowed, SaveDoor, TierChange, BECOMES_PUBLIC_INFO,
 };
+use biorouter::decision::{
+    ChatEffect, ChunkOutcome, Decision, DecisionAdapter, DecisionChunk, DecisionContext,
+    DecisionError, DecisionModelRef, DecisionOrigin, DecisionRequest, DecisionService,
+    DecisionSession, LiveClassification, ModelSource, UnusableDecisionSettings,
+};
+use biorouter::privacy::decision_axes::{Eligibility, TierEffect};
 use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::session::session_manager::{BasisWrite, BasisWriteOutcome};
 use biorouter::providers::decision::install::{
     DecisionInstallSnapshot, DecisionInstaller, InstallState, OllamaPlace, DEFAULT_INSTALL_MODEL,
 };
@@ -191,6 +231,26 @@ pub(crate) const WORKFLOW_SUPERVISION_NEED_USER: &str = "Starting a workflow tha
      from the person at the keyboard. No chat was created. Ask the user to start the workflow \
      in the app.";
 
+/// SD-16 (`docs/deployment/serve-decisions.md`): what a write that would make
+/// a chat public by a decision model is refused with on a daemon that holds no
+/// user-action key, when its operator did not allow it at launch.
+pub const PUBLIC_DECISION_MODELS_NOT_ALLOWED: &str = "This server can't make a chat public by a \
+     decision model; the person who runs it can allow that with `biorouter serve \
+     --allow-public-decision-models`. Nothing was saved.";
+
+/// SD-16 as a picker row's reason, shown before the person reaches for the
+/// model (SD-8: a control that can never work says so first).
+pub const PUBLIC_DECISION_MODELS_NOT_ALLOWED_ROW: &str =
+    "This server doesn't allow public decision models in a private chat.";
+
+/// The code a 409 that asks the person to confirm a lowering carries.
+pub const NEEDS_PUBLIC_DECISION_CONFIRMATION: &str = "needsPublicDecisionConfirmation";
+
+/// The body key a write that may make a chat public carries beside its
+/// record. The records refuse keys they do not have, so it is taken out of
+/// the body before the record is read.
+const ACCEPT_PUBLIC_DECISION_MODELS: &str = "acceptPublicDecisionModels";
+
 /// The refusal of a phase id that is not one: what `PUT`, `DELETE` and
 /// `POST …/decision` under `/phase-gates/` answer before reading anything else.
 const NOT_A_PHASE_ID: &str =
@@ -234,6 +294,14 @@ pub struct DecisionModelInfo {
     /// tier, or an institution the model does not cover), or `null` when it
     /// may. Always `null` when no chat was named.
     pub unavailable_reason: Option<String>,
+    /// What choosing this model would do to the chat's tier: `makesPublic`
+    /// for a public model on a chat bound to a private model that may still
+    /// be made public (design §5), which a picker shows as "Makes this chat
+    /// public" and confirms at Save. `null` when it moves nothing. Worked out
+    /// for the named chat, or for a draft (`boundProvider`/`boundModel` with
+    /// no `sessionId`).
+    #[serde(default)]
+    pub chat_effect: Option<ChatEffect>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -257,6 +325,74 @@ pub struct DecisionModelsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct DecisionModelsQuery {
     pub session_id: Option<String>,
+    /// A chat not started yet (the composer's draft): the provider it will be
+    /// bound to. With `boundModel` and no `sessionId`, `chatEffect` is worked
+    /// out as for an empty chat bound to that model.
+    pub bound_provider: Option<String>,
+    pub bound_model: Option<String>,
+}
+
+/// `PUT /sessions/{id}/decision-settings`'s body: the settings record, and the
+/// person's confirmation of a lowering beside it.
+// Schema only: the handler reads the flag with `split_acceptance` and the
+// record with its own strict reader, so this type is never built.
+#[allow(dead_code)]
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionSettingsWrite {
+    #[serde(flatten)]
+    pub settings: DecisionSettings,
+    /// The person saw "This chat will be public: …" and accepted it. Needed,
+    /// with the user-action proof, for a save that makes a chat on a private
+    /// model public by a decision model; ignored by any other save.
+    #[serde(default)]
+    pub accept_public_decision_models: bool,
+}
+
+/// `PUT /sessions/{id}/phase-gates/{phase_id}`'s body: the gate, and the
+/// person's confirmation of a lowering beside it.
+// Schema only: the handler reads the flag with `split_acceptance` and the
+// record with its own strict reader, so this type is never built.
+#[allow(dead_code)]
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseGateWrite {
+    #[serde(flatten)]
+    pub gate: PhaseGateSpec,
+    /// As [`DecisionSettingsWrite::accept_public_decision_models`].
+    #[serde(default)]
+    pub accept_public_decision_models: bool,
+}
+
+/// What a decision-settings save stored, and what it did to the chat's tier.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionSettingsSaved {
+    #[serde(flatten)]
+    pub settings: DecisionSettings,
+    /// `becomesPublic`, `staysPublic`, `becomesPrivateAtNextMessage` or
+    /// `none` (a refused save is not answered with this body).
+    pub tier_effect: TierEffect,
+    /// The line to show for it ("This chat will be public: joey-1 runs on
+    /// Baseten."), absent when there is nothing to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier_effect_line: Option<String>,
+}
+
+/// The 409 a write answers when it would make the chat public by a decision
+/// model and did not carry the person's confirmation. Nothing was saved.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicDecisionConfirmation {
+    /// Always `needsPublicDecisionConfirmation`.
+    pub code: String,
+    /// The effect line, as the question to ask: "This chat will be public:
+    /// joey-1 runs on Baseten."
+    pub message: String,
+    /// The InfoTip beside it.
+    pub info: String,
+    /// The public models, as `provider/model`.
+    pub models: Vec<String>,
 }
 
 /// An ad hoc decision: questions over one state (`context`) or over a batch of
@@ -314,6 +450,13 @@ pub struct DecisionChatResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PhaseGateResponse {
+    /// What the write did to the chat's tier (DR-33). `none` for a gate that
+    /// names no public decision model.
+    #[serde(default = "no_tier_effect")]
+    pub tier_effect: TierEffect,
+    /// The line to show for it, absent when there is nothing to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_effect_line: Option<String>,
     /// The sentence the person reads: what changed and what happens next.
     pub message: String,
     /// `false` when a pass or skip was recorded but cannot close the phase
@@ -794,16 +937,22 @@ async fn chat_session(
 /// no daemon reads), so a save right after a restart is refused what the
 /// same save with the agent loaded is refused. An agent is never made here
 /// to ask.
+///
+/// DR-33: the LANGUAGE model's tier, unwrapped through the decision-bound
+/// wrapper the agent's slot holds when the chat names decision models
+/// ([`biorouter::agents::Agent::bound_model_tier`]). The slot's own tier is
+/// what the chat may reach, which a Baseten monitor has already lowered; the
+/// save asks what model the chat runs on.
 async fn bound_tier(state: &AppState, session: &Session, enforced: bool) -> Option<ProviderTier> {
     if !enforced || session.privacy_tier.is_private() {
         return None;
     }
     if let Some(agent) = state.peek_agent(&session.id).await {
-        if let Ok(provider) = agent.provider().await {
-            return Some(provider.tier());
+        if agent.bound_model_provider().await.is_some() {
+            return Some(agent.bound_model_tier().await);
         }
     }
-    biorouter::decision::save::row_bound_tier(session, enforced).await
+    biorouter::decision::save::row_bound_model_tier(session, enforced).await
 }
 
 /// The chat as the save-time checks see it: [`chat_session`] with the tier
@@ -816,13 +965,168 @@ async fn checked_session(
     let bound = bound_tier(state, session, enforced).await;
     Ok(chat_session(state, &session.id, enforced)
         .await?
-        .with_bound_tier(bound))
+        .with_bound_model_tier(bound)
+        .with_row_tier_context(session))
+}
+
+/// What a write that may make a chat public by a decision model may do, from
+/// who sent it and whether the person confirmed it (DR-33, SD-16). Pure, so
+/// every corner is tested.
+///
+/// - The person's proof and the flag: confirmed. The proof without it: the
+///   save asks first (409).
+/// - A daemon that holds no key: refused (SD-16) unless the operator allowed
+///   it at launch, and then the flag is still needed.
+/// - An unproven caller on a keyed daemon never gets here (the proof check
+///   refused it); it is unconfirmed, the stricter reading.
+fn lowering_consent(
+    proof: UserActionProof,
+    keyless_allowed: bool,
+    accepted: bool,
+) -> LoweringConsent {
+    match proof {
+        UserActionProof::NoKeyInstalled if !keyless_allowed => {
+            LoweringConsent::NotAllowedHere(PUBLIC_DECISION_MODELS_NOT_ALLOWED.to_string())
+        }
+        UserActionProof::Proven | UserActionProof::NoKeyInstalled if accepted => {
+            LoweringConsent::Confirmed
+        }
+        _ => LoweringConsent::Unconfirmed,
+    }
+}
+
+/// [`lowering_consent`] for this request, with SD-16's launch pin.
+pub(crate) fn request_consent(headers: &HeaderMap, accepted: bool) -> LoweringConsent {
+    lowering_consent(
+        user_action_proof(headers),
+        biorouter_server::launch::allows_public_decision_models(),
+        accepted,
+    )
+}
+
+/// Take [`ACCEPT_PUBLIC_DECISION_MODELS`] out of a write's body, which must be
+/// a JSON object for the record anyway, and return the rest with the flag.
+/// The flag must be a boolean when present.
+///
+/// A body without the flag is returned byte for byte, so the record's strict
+/// reader sees exactly what was sent. A body with it is rebuilt from its
+/// top-level members in order, duplicates kept, so a key the record has twice
+/// is still refused by the record's own reader.
+fn split_acceptance(body: &[u8], what: &str) -> Result<(Vec<u8>, bool), String> {
+    let Ok(OrderedMembers(members)) = serde_json::from_slice::<OrderedMembers>(body) else {
+        // Not an object: leave the record's own reader to say what is wrong.
+        return Ok((body.to_vec(), false));
+    };
+    if !members
+        .iter()
+        .any(|(key, _)| key == ACCEPT_PUBLIC_DECISION_MODELS)
+    {
+        return Ok((body.to_vec(), false));
+    }
+    let mut accepted = false;
+    let mut rest = Vec::with_capacity(body.len());
+    rest.push(b'{');
+    let mut first = true;
+    for (key, value) in members {
+        if key == ACCEPT_PUBLIC_DECISION_MODELS {
+            accepted = match value {
+                Value::Null => accepted,
+                Value::Bool(flag) => flag,
+                _ => {
+                    return Err(format!(
+                        "The {what} could not be read: `{ACCEPT_PUBLIC_DECISION_MODELS}` must be \
+                         true or false."
+                    ))
+                }
+            };
+            continue;
+        }
+        if !first {
+            rest.push(b',');
+        }
+        first = false;
+        rest.extend(serde_json::to_vec(&key).map_err(|error| error.to_string())?);
+        rest.push(b':');
+        rest.extend(serde_json::to_vec(&value).map_err(|error| error.to_string())?);
+    }
+    rest.push(b'}');
+    Ok((rest, accepted))
+}
+
+/// A JSON object's top-level members in order, a repeated key kept as often
+/// as it was written.
+struct OrderedMembers(Vec<(String, Value)>);
+
+impl<'de> Deserialize<'de> for OrderedMembers {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Members;
+        impl<'de> serde::de::Visitor<'de> for Members {
+            type Value = OrderedMembers;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<OrderedMembers, A::Error> {
+                let mut members = Vec::new();
+                while let Some(member) = map.next_entry::<String, Value>()? {
+                    members.push(member);
+                }
+                Ok(OrderedMembers(members))
+            }
+        }
+        deserializer.deserialize_map(Members)
+    }
+}
+
+/// After a write that made the chat public by a decision model: the chat's
+/// agent, when this daemon holds one, takes the lowered tier now, so a door
+/// that reads its slot (`/agent/add_extension`, `workspace_set_tools`) stops
+/// admitting private reach before the first message. Lower-only; a raise
+/// waits for the next turn.
+pub(crate) async fn lower_held_agent(state: &AppState, session_id: &str) {
+    let Some(agent) = state.peek_agent(session_id).await else {
+        return;
+    };
+    match state.session_manager().get_session(session_id, false).await {
+        Ok(row) => {
+            agent.lower_decision_axes(&row).await;
+        }
+        Err(error) => tracing::warn!(
+            session_id,
+            "a chat made public by a decision model could not be re-read for its agent: {error}"
+        ),
+    }
+}
+
+/// The tier effect a write answers with by default.
+fn no_tier_effect() -> TierEffect {
+    TierEffect::None
 }
 
 /// What a checked save answers when it stores nothing: 422 with the sentence
 /// for settings that are valid but cannot run for this chat now, 400 with the
 /// sentence for settings that are not valid, 500 for anything else.
 fn save_error_response(error: anyhow::Error) -> Response {
+    if let Some(confirm) = error.downcast_ref::<NeedsPublicDecisionConfirmation>() {
+        return (
+            StatusCode::CONFLICT,
+            Json(PublicDecisionConfirmation {
+                code: NEEDS_PUBLIC_DECISION_CONFIRMATION.to_string(),
+                message: confirm.sentence.clone(),
+                info: BECOMES_PUBLIC_INFO.to_string(),
+                models: confirm.models.clone(),
+            }),
+        )
+            .into_response();
+    }
+    if let Some(started) = error.downcast_ref::<PublicBasisNotEligible>() {
+        return plain(StatusCode::CONFLICT, started.0.clone());
+    }
+    if let Some(refused) = error.downcast_ref::<PublicDecisionModelsNotAllowed>() {
+        return plain(StatusCode::FORBIDDEN, refused.0.clone());
+    }
     if let Some(unusable) = error.downcast_ref::<UnusableDecisionSettings>() {
         return plain(StatusCode::UNPROCESSABLE_ENTITY, unusable.0.clone());
     }
@@ -918,8 +1222,21 @@ async fn gate_response(
     headers: &HeaderMap,
     written: Result<PersonGateOutcome, GateWriteError>,
 ) -> Response {
+    gate_response_with(state, session_id, headers, written, None).await
+}
+
+/// [`gate_response`] with what the write did to the chat's tier.
+async fn gate_response_with(
+    state: &Arc<AppState>,
+    session_id: &str,
+    headers: &HeaderMap,
+    written: Result<PersonGateOutcome, GateWriteError>,
+    change: Option<&TierChange>,
+) -> Response {
     match written {
         Ok(outcome) => Json(PhaseGateResponse {
+            tier_effect: change.map_or(TierEffect::None, |change| change.effect),
+            tier_effect_line: change.and_then(TierChange::effect_line),
             message: outcome.message,
             applied: outcome.applied,
             plan: visible_plan(state, session_id, headers).await,
@@ -927,6 +1244,111 @@ async fn gate_response(
         .into_response(),
         Err(error) => plain(gate_error_status(&error), error.message()),
     }
+}
+
+/// A person's gate write whose tier change touches `public_basis.v1`: the
+/// plan and the basis in ONE statement ([`SessionManager::write_public_basis`]),
+/// which checks again that a lowered chat holds no message. `apply` is the
+/// same pure transition `orchestration_plan::person_set_gate` and
+/// `person_remove_gate` run, over the plan as stored inside that statement.
+/// A write that keeps the basis goes through those functions instead.
+///
+/// `Err` is the answer: the transition's own refusal, or 409 when a first
+/// message raced a lowering.
+///
+/// [`SessionManager::write_public_basis`]: biorouter::session::SessionManager::write_public_basis
+async fn write_gate_with_basis<F>(
+    state: &AppState,
+    session_id: &str,
+    basis: BasisWrite,
+    change: &TierChange,
+    apply: F,
+) -> Result<Result<PersonGateOutcome, GateWriteError>, Response>
+where
+    F: FnOnce(
+            Option<orchestration_plan::OrchestrationPlan>,
+        ) -> Result<(orchestration_plan::OrchestrationPlan, PersonGateOutcome), GateWriteError>
+        + Send,
+{
+    use orchestration_plan::{plan_record, OrchestrationPlan, PLAN_STATE, PLAN_VERSION};
+    let mut refused: Option<GateWriteError> = None;
+    let slot = &mut refused;
+    let written = state
+        .session_manager()
+        .write_public_basis(session_id, basis, move |data| {
+            let stored = data.get_extension_state(PLAN_STATE, PLAN_VERSION).cloned();
+            // The revision every plan write bumps, as `mutate_plan` does; the
+            // field is the crate's own, so it is read and written on the
+            // stored form.
+            let previous_revision = stored
+                .as_ref()
+                .and_then(|value| value.get("revision"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let current = stored
+                .map(serde_json::from_value::<OrchestrationPlan>)
+                .transpose()
+                .map_err(|error| {
+                    let refusal = GateWriteError::Unreadable(format!(
+                        "Could not change this chat's phase gates: this chat's orchestration \
+                         plan was written in a form this build cannot read ({error}); nothing \
+                         was changed."
+                    ));
+                    let sentence = refusal.message();
+                    *slot = Some(refusal);
+                    anyhow::anyhow!(sentence)
+                })?;
+            let (next, outcome) = apply(current).map_err(|refusal| {
+                let sentence = refusal.message();
+                *slot = Some(refusal);
+                anyhow::anyhow!(sentence)
+            })?;
+            let mut record = plan_record(&next);
+            if let Some(object) = record.as_object_mut() {
+                object.insert("revision".to_string(), Value::from(previous_revision + 1));
+            }
+            data.set_extension_state(PLAN_STATE, PLAN_VERSION, record);
+            Ok(outcome)
+        })
+        .await;
+    match written {
+        Ok(BasisWriteOutcome::Written(outcome)) => Ok(Ok(outcome)),
+        Ok(BasisWriteOutcome::NotEligible) => {
+            let model = change
+                .public_names
+                .first()
+                .map_or_else(|| "a public decision model".to_string(), |name| name.model.clone());
+            Err(plain(
+                StatusCode::CONFLICT,
+                biorouter::session::session_manager::public_basis_not_eligible_sentence(&model),
+            ))
+        }
+        Ok(BasisWriteOutcome::SessionNotFound) => {
+            Err(plain(StatusCode::NOT_FOUND, "There is no chat with that id."))
+        }
+        Err(error) => Ok(Err(refused.unwrap_or_else(|| {
+            GateWriteError::Unreadable(format!("Could not change this chat's phase gates: {error}."))
+        }))),
+    }
+}
+
+/// What a person's gate write does to the chat's tier, worked out over the
+/// plan the write would store (`predicted`). `None` when the transition
+/// itself refuses (the write below then answers with that refusal, as it
+/// always has) or nothing could be predicted.
+fn gate_tier_change(
+    checked: &DecisionSession,
+    row: &Session,
+    predicted: Option<&orchestration_plan::OrchestrationPlan>,
+    door: &SaveDoor<'_>,
+) -> Option<anyhow::Result<TierChange>> {
+    let plan = predicted?;
+    Some(biorouter::decision::save::tier_change(
+        checked,
+        row,
+        AfterSave::Plan(Some(plan)),
+        door,
+    ))
 }
 
 /// `text` without the full stop it ends with, so it can sit inside a
@@ -995,7 +1417,11 @@ fn decide_note(session: Option<&DecisionSession>, decisions: &[&Decision]) -> Op
     tag = "decisions",
     params(
         ("sessionId" = Option<String>, Query, description = "A chat to work out \
-          `unavailableReason` for. Gated like every route that names a chat")
+          `unavailableReason` and `chatEffect` for. Gated like every route that names a chat"),
+        ("boundProvider" = Option<String>, Query, description = "With `boundModel` and no \
+          `sessionId`: a chat not started yet that will be bound to this provider, for \
+          `chatEffect` (the composer's draft)"),
+        ("boundModel" = Option<String>, Query, description = "The draft's model")
     ),
     responses(
         (status = 200, description = "The decision models available now, local first, each \
@@ -1015,38 +1441,61 @@ pub async fn list_decision_models(
     Query(query): Query<DecisionModelsQuery>,
     headers: HeaderMap,
 ) -> Response {
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
     let session = match &query.session_id {
         Some(id) => {
-            if let Err(refusal) = reach_chat(&routes.state, id, &headers).await {
-                return refusal;
-            }
-            let enforced = biorouter::privacy::privacy_tiers_enabled();
-            match chat_session(&routes.state, id, enforced).await {
+            let row = match reach_chat(&routes.state, id, &headers).await {
+                Ok(row) => row,
+                Err(refusal) => return refusal,
+            };
+            match checked_session(&routes.state, &row, enforced).await {
                 Ok(session) => Some(session),
                 Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
             }
         }
         None => None,
     };
+    // A chat not started yet: what each model would do to it once it is,
+    // bound to the model the composer holds (design §4). It names no chat, so
+    // nothing is gated and no chat's reasons are worked out.
+    let draft = match (&session, &query.bound_provider, &query.bound_model) {
+        (None, Some(provider), Some(model)) => Some(draft_session(provider, model, enforced).await),
+        _ => None,
+    };
     let session_unavailable_reason = match &session {
         Some(session) => routes.service.session_refusal(session).await,
         None => None,
     };
+    // SD-16, said on the row before the person reaches for it (SD-8).
+    let lowering_refused = matches!(
+        request_consent(&headers, true),
+        LoweringConsent::NotAllowedHere(_)
+    );
+    let effect_of = session.as_ref().or(draft.as_ref());
     let models = routes
         .service
         .models_for(session.as_ref())
         .await
         .into_iter()
-        .map(|(entry, unavailable_reason)| DecisionModelInfo {
-            provider: entry.provider,
-            model: entry.model,
-            display_name: entry.display_name,
-            context_tokens: entry.context_tokens,
-            kinds: entry.kinds,
-            tier: entry.tier,
-            adapter: entry.adapter,
-            local: entry.local,
-            unavailable_reason,
+        .map(|(entry, unavailable_reason)| {
+            let chat_effect =
+                effect_of.and_then(|chat| biorouter::decision::chat_effect(chat, &entry));
+            let unavailable_reason = unavailable_reason.or_else(|| {
+                (lowering_refused && chat_effect == Some(ChatEffect::MakesPublic))
+                    .then(|| PUBLIC_DECISION_MODELS_NOT_ALLOWED_ROW.to_string())
+            });
+            DecisionModelInfo {
+                provider: entry.provider,
+                model: entry.model,
+                display_name: entry.display_name,
+                context_tokens: entry.context_tokens,
+                kinds: entry.kinds,
+                tier: entry.tier,
+                adapter: entry.adapter,
+                local: entry.local,
+                unavailable_reason,
+                chat_effect,
+            }
         })
         .collect();
     Json(DecisionModelsResponse {
@@ -1055,6 +1504,26 @@ pub async fn list_decision_models(
         session_unavailable_reason,
     })
     .into_response()
+}
+
+/// The chat a draft listing works `chatEffect` out for: a brand-new, empty,
+/// Public chat bound to `provider`/`model`, whose bound tier is declared as
+/// the offline save declares a row's (`row_bound_model_tier`). Built only to
+/// predict; never stored, never sent anything.
+async fn draft_session(provider: &str, model: &str, enforced: bool) -> DecisionSession {
+    let row = Session {
+        provider_name: Some(provider.trim().to_string()),
+        model_config: biorouter::model::ModelConfig::new(model.trim()).ok(),
+        ..Session::default()
+    };
+    let bound = biorouter::decision::save::row_bound_model_tier(&row, enforced).await;
+    let mut draft = DecisionSession::new("draft", SessionClassification::Public, enforced)
+        .with_bound_model_tier(bound);
+    draft.tier_context = Some(biorouter::decision::SaveTierContext {
+        eligibility: Eligibility::Empty,
+        lowered_now: false,
+    });
+    draft
 }
 
 #[utoipa::path(
@@ -1364,9 +1833,10 @@ pub async fn get_decision_settings(
     params(
         ("session_id" = String, Path, description = "The chat whose decision settings to replace")
     ),
-    request_body = DecisionSettings,
+    request_body = DecisionSettingsWrite,
     responses(
-        (status = 200, description = "The settings as stored", body = DecisionSettings),
+        (status = 200, description = "The settings as stored, with what the save did to the \
+                                      chat's privacy tier", body = DecisionSettingsSaved),
         (status = 400, description = "Invalid session id, or settings that could not be read or \
                                       are invalid; the body is the sentence that says why (plain \
                                       text)"),
@@ -1376,12 +1846,22 @@ pub async fn get_decision_settings(
                                       /sessions/{session_id}` gives), or, on a daemon that holds \
                                       a user-action key, the request carried no proof it came \
                                       from the person at the keyboard, or, on a daemon that \
-                                      holds none, the chat is a subagent's (body = plain text)"),
+                                      holds none, the chat is a subagent's, or the save would \
+                                      make the chat public by a decision model and the daemon's \
+                                      operator did not allow that (SD-16) (body = plain text)"),
         (status = 404, description = "Session not found (body = plain text)"),
+        (status = 409, description = "The save would make this chat, which runs on a private \
+                                      model, public by a decision model, and the body did not \
+                                      say `acceptPublicDecisionModels: true` (body = \
+                                      PublicDecisionConfirmation, JSON); or the chat started \
+                                      while it was being made public (body = plain text). \
+                                      Nothing was saved", body = PublicDecisionConfirmation),
         (status = 422, description = "What this save turns on could not run for this chat now: \
                                       the model is not available, cannot take the question, or \
                                       the chat's privacy tier, an institution or a Crew grant \
-                                      refuses it. Nothing was saved (body = plain text)"),
+                                      refuses it; or the chat holds messages a private model \
+                                      may have produced, so it can no longer be made public by \
+                                      a decision model. Nothing was saved (body = plain text)"),
         (status = 500, description = "Internal server error")
     ),
     security(("api_key" = []))
@@ -1399,7 +1879,11 @@ pub async fn put_decision_settings(
     if let Some(refusal) = write_refusal(&session, &headers) {
         return refusal;
     }
-    let settings: DecisionSettings = match read_settings_body(&body, "decision settings") {
+    let (record, accepted) = match split_acceptance(&body, "decision settings") {
+        Ok(split) => split,
+        Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
+    };
+    let settings: DecisionSettings = match read_settings_body(&record, "decision settings") {
         Ok(settings) => settings,
         Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
     };
@@ -1415,25 +1899,39 @@ pub async fn put_decision_settings(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let manager = routes.state.session_manager();
-    let stored = match biorouter::decision::save_checked(
+    // The subagents running now: a monitor that also watches them is copied
+    // onto them, so the save is refused when one is private and the copy's
+    // model is public (design §3.5).
+    let live = live_children(&session_id);
+    let door = SaveDoor::person("decision-settings", request_consent(&headers, accepted))
+        .with_live_children(&live);
+    let saved = match biorouter::decision::save::save_checked_by(
         routes.service,
         manager,
         &checked,
         settings,
+        &door,
     )
     .await
     {
-        Ok(stored) => stored,
+        Ok(saved) => saved,
         Err(error) => return save_error_response(error),
     };
+    if saved.lowered() {
+        lower_held_agent(&routes.state, &session_id).await;
+    }
     // A monitor that also watches the subagents this chat starts reaches the
     // ones running now as well as the next one. A child that cannot take its
     // copies is warned about by `sync_inherited` and does not fail the save.
-    let live = live_children(&session_id);
     if !live.is_empty() {
-        decision_settings::sync_inherited(manager, &session_id, &stored, &live).await;
+        decision_settings::sync_inherited(manager, &session_id, &saved.settings, &live).await;
     }
-    Json(stored).into_response()
+    Json(DecisionSettingsSaved {
+        settings: saved.settings,
+        tier_effect: saved.tier_effect,
+        tier_effect_line: saved.effect_line,
+    })
+    .into_response()
 }
 
 #[utoipa::path(
@@ -1554,10 +2052,11 @@ pub async fn put_decision_chat(
         ("session_id" = String, Path, description = "The chat whose plan holds the phase"),
         ("phase_id" = String, Path, description = "The phase to gate")
     ),
-    request_body = PhaseGateSpec,
+    request_body = PhaseGateWrite,
     responses(
         (status = 200, description = "The gate is the person's now and its attempts start over; \
-                                      the plan as this caller may see it", body = PhaseGateResponse),
+                                      the plan as this caller may see it, and what the write did \
+                                      to the chat's privacy tier", body = PhaseGateResponse),
         (status = 400, description = "Invalid session or phase id, or a gate that could not be \
                                       read or is invalid; the body is the sentence that says why \
                                       (plain text)"),
@@ -1567,11 +2066,19 @@ pub async fn put_decision_chat(
                                       /sessions/{session_id}` gives), or, on a daemon that holds \
                                       a user-action key, the request carried no proof it came \
                                       from the person at the keyboard, or, on a daemon that \
-                                      holds none, the chat is a subagent's (body = plain text)"),
+                                      holds none, the chat is a subagent's, or the gate would \
+                                      make the chat public by a decision model and the \
+                                      daemon's operator did not allow that (SD-16) (body = \
+                                      plain text)"),
         (status = 404, description = "No such chat, the chat has no orchestration plan, or the \
                                       plan has no such phase (body = plain text)"),
         (status = 409, description = "The phase is completed or skipped, or the plan could not be \
-                                      read or written. Nothing was changed (body = plain text)"),
+                                      read or written (body = plain text); or the gate's model \
+                                      would make this chat, which runs on a private model, \
+                                      public, and the body did not say \
+                                      `acceptPublicDecisionModels: true` (body = \
+                                      PublicDecisionConfirmation, JSON). Nothing was changed",
+                       body = PublicDecisionConfirmation),
         (status = 422, description = "The gate's decision model cannot answer it in this chat \
                                       now: not available, cannot take yes/no questions, will not \
                                       load, or refused by the chat's privacy tier, an \
@@ -1597,7 +2104,11 @@ pub async fn put_phase_gate(
     if !valid_phase_id(&phase_id) {
         return plain(StatusCode::BAD_REQUEST, NOT_A_PHASE_ID);
     }
-    let spec: PhaseGateSpec = match read_settings_body(&body, "phase gate") {
+    let (record, accepted) = match split_acceptance(&body, "phase gate") {
+        Ok(split) => split,
+        Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
+    };
+    let spec: PhaseGateSpec = match read_settings_body(&record, "phase gate") {
         Ok(spec) => spec,
         Err(sentence) => return plain(StatusCode::BAD_REQUEST, sentence),
     };
@@ -1609,10 +2120,32 @@ pub async fn put_phase_gate(
     // sending nothing of the chat. A phase gate reads the chat it belongs
     // to, at that chat's tier.
     let enforced = biorouter::privacy::privacy_tiers_enabled();
-    let checked = match checked_session(&routes.state, &session, enforced).await {
+    let mut checked = match checked_session(&routes.state, &session, enforced).await {
         Ok(checked) => checked,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    // DR-33: a gate's model on an open phase is one of the chat's standing
+    // decision models, so this write follows the settings save's tier rules
+    // (design §3.6), worked out over the plan it would store.
+    let now = chrono::Utc::now();
+    let records = biorouter::privacy::decision_axes::RowRecords::parse(&session.extension_data);
+    let predicted = orchestration_plan::apply_person_set_gate(
+        records.plan().cloned(),
+        &phase_id,
+        gate.clone(),
+        now,
+    )
+    .ok()
+    .map(|(plan, _)| plan);
+    let door = SaveDoor::person("phase-gate", request_consent(&headers, accepted));
+    let change = match gate_tier_change(&checked, &session, predicted.as_ref(), &door) {
+        None => None,
+        Some(Ok(change)) => Some(change),
+        Some(Err(error)) => return save_error_response(error),
+    };
+    checked.lowered_after_save = change
+        .as_ref()
+        .is_some_and(|change| change.lowered_after_save);
     if let Err(error) = routes
         .service
         .check_model_use(
@@ -1632,14 +2165,43 @@ pub async fn put_phase_gate(
             ),
         );
     }
-    let written = orchestration_plan::person_set_gate(
-        routes.state.session_manager(),
+    let manager = routes.state.session_manager();
+    let written = match change
+        .as_ref()
+        .filter(|change| !matches!(change.basis, BasisWrite::Keep))
+    {
+        Some(change) => {
+            let phase = phase_id.trim().to_string();
+            match write_gate_with_basis(
+                &routes.state,
+                &session_id,
+                change.basis.clone(),
+                change,
+                move |current| orchestration_plan::apply_person_set_gate(current, &phase, gate, now),
+            )
+            .await
+            {
+                Ok(written) => written,
+                Err(answer) => return answer,
+            }
+        }
+        None => orchestration_plan::person_set_gate(manager, &session_id, &phase_id, gate).await,
+    };
+    if written.is_ok()
+        && change
+            .as_ref()
+            .is_some_and(|change| change.effect == TierEffect::BecomesPublic)
+    {
+        lower_held_agent(&routes.state, &session_id).await;
+    }
+    gate_response_with(
+        &routes.state,
         &session_id,
-        &phase_id,
-        gate,
+        &headers,
+        written,
+        change.as_ref(),
     )
-    .await;
-    gate_response(&routes.state, &session_id, &headers, written).await
+    .await
 }
 
 #[utoipa::path(
@@ -1685,13 +2247,63 @@ pub async fn delete_phase_gate(
     if !valid_phase_id(&phase_id) {
         return plain(StatusCode::BAD_REQUEST, NOT_A_PHASE_ID);
     }
-    let written = orchestration_plan::person_remove_gate(
-        routes.state.session_manager(),
+    // DR-33: removing the last public gate of a chat its decision models made
+    // public makes it private at its next message, and clears the person's
+    // basis in the same statement, so adding the model back after that
+    // message is a first lowering again (design §2.4, §3.10). A removal is the
+    // safe direction: no flag, no opt-in.
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    let checked = match checked_session(&routes.state, &session, enforced).await {
+        Ok(checked) => checked,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let records = biorouter::privacy::decision_axes::RowRecords::parse(&session.extension_data);
+    let predicted =
+        orchestration_plan::apply_person_remove_gate(records.plan().cloned(), &phase_id)
+            .ok()
+            .map(|(plan, _)| plan);
+    let door = SaveDoor::person("phase-gate", LoweringConsent::Unconfirmed);
+    let change = match gate_tier_change(&checked, &session, predicted.as_ref(), &door) {
+        None => None,
+        Some(Ok(change)) => Some(change),
+        Some(Err(error)) => return save_error_response(error),
+    };
+    let written = match change
+        .as_ref()
+        .filter(|change| !matches!(change.basis, BasisWrite::Keep))
+    {
+        Some(change) => {
+            let phase = phase_id.trim().to_string();
+            match write_gate_with_basis(
+                &routes.state,
+                &session_id,
+                change.basis.clone(),
+                change,
+                move |current| orchestration_plan::apply_person_remove_gate(current, &phase),
+            )
+            .await
+            {
+                Ok(written) => written,
+                Err(answer) => return answer,
+            }
+        }
+        None => {
+            orchestration_plan::person_remove_gate(
+                routes.state.session_manager(),
+                &session_id,
+                &phase_id,
+            )
+            .await
+        }
+    };
+    gate_response_with(
+        &routes.state,
         &session_id,
-        &phase_id,
+        &headers,
+        written,
+        change.as_ref(),
     )
-    .await;
-    gate_response(&routes.state, &session_id, &headers, written).await
+    .await
 }
 
 #[utoipa::path(

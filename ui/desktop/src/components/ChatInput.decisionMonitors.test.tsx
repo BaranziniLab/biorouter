@@ -1,8 +1,10 @@
 /**
  * The first monitor's way in. The summary's Decisions section is drawn only once
  * a chat has a decision call or a monitor, so the composer's `+` menu carries a
- * "Decision monitors…" row that opens the chat's Monitors dialog. A chat that has
- * not been created yet has nothing to attach a monitor to, so the row is absent.
+ * "Decision monitors…" row that opens the chat's Monitors dialog. Before the chat
+ * exists it opens the dialog in draft mode (DR-33, design §4): monitors set then
+ * start with the chat, which is how a chat on a private model gets a public
+ * decision model. It was absent there until the mixed-tier ruling.
  */
 import React from 'react';
 import { readFileSync } from 'node:fs';
@@ -116,14 +118,12 @@ describe("the composer's + menu: decision monitors", () => {
     expect(screen.queryByRole('menuitem', { name: COMPOSER_COPY.plus.attachFile })).toBeNull();
   });
 
-  it('is absent while the chat has not been created', async () => {
+  it('is offered before the chat has been created, for the draft (DR-33)', async () => {
     const onOpen = vi.fn();
     renderComposer(null, onOpen);
-    await openPlusMenu();
-    expect(
-      screen.queryByRole('menuitem', { name: COMPOSER_COPY.plus.decisionMonitors })
-    ).toBeNull();
-    expect(onOpen).not.toHaveBeenCalled();
+    const user = await openPlusMenu();
+    await user.click(screen.getByRole('menuitem', { name: COMPOSER_COPY.plus.decisionMonitors }));
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
   it('is absent where nothing can open the dialog (Home)', async () => {
@@ -137,14 +137,16 @@ describe("the composer's + menu: decision monitors", () => {
   /**
    * BaseChat owns the Monitors dialog (mounted at chat level so the summary
    * popover closing cannot take it down), so the composer's row must reach that
-   * one dialog, and only once the chat exists. jsdom cannot mount BaseChat whole,
-   * so the wiring is pinned at its source.
+   * one dialog; before the chat exists, the draft dialog beside it, and never both.
+   * jsdom cannot mount BaseChat whole, so the wiring is pinned at its source.
    */
-  it("is wired to BaseChat's one Monitors dialog, only for a chat that exists", () => {
+  it("is wired to BaseChat's Monitors dialog, or its draft before the chat exists", () => {
     const source = readFileSync(join(__dirname, 'BaseChat.tsx'), 'utf8');
-    expect(source).toMatch(/onOpenDecisionMonitors=\{sessionId \? openMonitors : undefined\}/);
+    expect(source).toMatch(/onOpenDecisionMonitors=\{openMonitors\}/);
     expect(source).toMatch(
       /const openMonitors = useCallback\(\(\) => \{[^}]*setMonitorsOpen\(true\)/
     );
+    expect(source).toMatch(/\{!sessionId \? \(\s*<DraftMonitorsDialog\s+open=\{monitorsOpen\}/);
+    expect(source).toMatch(/<MonitorsDialog\s+open=\{monitorsOpen && !!sessionId\}/);
   });
 });

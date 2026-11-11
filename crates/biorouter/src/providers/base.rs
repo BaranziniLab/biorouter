@@ -875,6 +875,25 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// DR-33: the language model this instance wraps, when it is the
+    /// decision-bound wrapper (`providers::decision_bound`) that folds a chat's
+    /// decision models into its tier. `None` for every real provider.
+    ///
+    /// Every reader that asks "what model is this chat bound to" (Gate A's
+    /// incoming side, DR-16's comparators, the save checks, spawn's R4) unwraps
+    /// through this; only the readers that ask "what may this chat reach" read
+    /// [`Self::tier`] off the wrapper. No downcasting anywhere.
+    fn decision_bound_inner(&self) -> Option<std::sync::Arc<dyn Provider>> {
+        None
+    }
+
+    /// DR-33: the decision model that made this chat less private than its
+    /// language model, when one did. `Some` only on the wrapper, and only while
+    /// its axes lowered the tier. Text for a refusal; it decides nothing.
+    fn decision_lowered_by(&self) -> Option<&crate::privacy::decision_axes::LoweredBy> {
+        None
+    }
+
     /// Whether this **instance** drives a child agent that must call back in over
     /// MCP to use Biorouter's tools.
     ///

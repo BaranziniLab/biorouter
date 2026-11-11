@@ -83,6 +83,143 @@ async fn an_unbound_provider_samples_public_and_states_no_affiliation() {
 }
 
 // ---------------------------------------------------------------------------
+// DR-33 — the decision-bound wrapper reaches the sampler through the slot.
+// ---------------------------------------------------------------------------
+
+struct Versa;
+
+#[async_trait::async_trait]
+impl biorouter::providers::base::Provider for Versa {
+    fn metadata() -> biorouter::providers::base::ProviderMetadata {
+        biorouter::providers::base::ProviderMetadata::empty()
+    }
+    fn get_name(&self) -> &str {
+        "versa_azure"
+    }
+    fn tier(&self) -> ProviderTier {
+        ProviderTier::Private
+    }
+    fn affiliation(&self) -> Option<biorouter::privacy::ModelAffiliation> {
+        Some(biorouter::privacy::ModelAffiliation::institution(
+            biorouter::privacy::affiliation::InstitutionId::new("ucsf"),
+        ))
+    }
+    async fn complete_with_model(
+        &self,
+        _model_config: &biorouter::model::ModelConfig,
+        _system: &str,
+        _messages: &[biorouter::conversation::message::Message],
+        _tools: &[rmcp::model::Tool],
+    ) -> Result<
+        (
+            biorouter::conversation::message::Message,
+            biorouter::providers::base::ProviderUsage,
+        ),
+        biorouter::providers::errors::ProviderError,
+    > {
+        unreachable!("nothing here completes")
+    }
+    fn get_model_config(&self) -> biorouter::model::ModelConfig {
+        biorouter::model::ModelConfig::new_or_fail("gpt-5.5")
+    }
+}
+
+/// Design §7.2: the wrapper reaches every sampler through the slot, with no
+/// sampler argument and no census change. A Versa chat with an accepted
+/// Baseten default samples Public, with no affiliation, and says a decision
+/// model did it; the same Versa provider with nothing named samples as before.
+#[tokio::test]
+async fn a_slot_lowered_by_a_decision_model_samples_public_and_says_so() {
+    use biorouter::decision::settings::DecisionSettings;
+    use biorouter::decision::DecisionModelRef;
+    use biorouter::privacy::decision_axes::{self, AxesInputs, BasisAuthor, PublicBasis};
+    use biorouter::privacy::SessionClassification;
+    use biorouter::providers::decision_bound::DecisionBoundProvider;
+    use biorouter::session::SessionType;
+
+    let settings = DecisionSettings {
+        default_model: Some(DecisionModelRef::new("baseten_decision", "joey-1")),
+        monitors: vec![],
+    };
+    let basis = PublicBasis::new("chat", BasisAuthor::Person, "test", vec![]);
+    let axes = decision_axes::fold(&AxesInputs {
+        session_id: "chat",
+        classification: SessionClassification::Public,
+        session_type: SessionType::User,
+        parent_session_id: None,
+        settings: decision_axes::SettingsInput::Parsed(&settings),
+        plan: None,
+        basis: Some(&basis),
+        ceiling: None,
+    });
+    let lowered: SharedProvider = std::sync::Arc::new(tokio::sync::Mutex::new(Some(
+        DecisionBoundProvider::bind(std::sync::Arc::new(Versa), axes),
+    )));
+    let cap = CallCapability::sample(&lowered).await;
+    assert_eq!(cap.tier(), ProviderTier::Public);
+    assert_eq!(cap.affiliation(), None);
+    assert!(cap.lowered_by_decision());
+
+    let plain: SharedProvider =
+        std::sync::Arc::new(tokio::sync::Mutex::new(Some(std::sync::Arc::new(Versa))));
+    let cap = CallCapability::sample(&plain).await;
+    assert_eq!(cap.tier(), ProviderTier::Private);
+    assert!(cap.affiliation().is_some());
+    assert!(!cap.lowered_by_decision());
+    assert!(!CallCapability::public_enforced().lowered_by_decision());
+}
+
+/// Design §7.2's added assertion: `lowered_by_decision` is SET only inside
+/// `sample` (and the `cfg(test)` constructor that says so). A second
+/// production constructor that set it would let a capability claim a decision
+/// model lowered it without having read the slot.
+#[test]
+fn lowered_by_decision_is_set_only_inside_sample() {
+    let path = workspace_root().join("crates/biorouter/src/privacy/capability.rs");
+    let src = std::fs::read_to_string(&path).expect("capability.rs is readable");
+    let production = src
+        .split("\n#[cfg(test)]\nmod tests {")
+        .next()
+        .expect("capability.rs has a production region");
+    let fn_name =
+        regex::Regex::new(r"^\s*(?:pub(?:\([a-z]+\))? )?(?:const )?(?:async )?fn ([a-z_]+)")
+            .unwrap();
+    let mut current_fn = String::new();
+    let mut setters = Vec::new();
+    let mut sample_reads_the_slot = false;
+    for line in production.lines() {
+        if let Some(caps) = fn_name.captures(line) {
+            current_fn = caps[1].to_string();
+        }
+        let code = line.trim();
+        if current_fn == "sample" && code.contains("decision_lowered_by().is_some()") {
+            sample_reads_the_slot = true;
+        }
+        if code.starts_with("//") || !code.starts_with("lowered_by_decision") {
+            continue;
+        }
+        // The field declaration and the explicit `false` are not setters.
+        if code == "lowered_by_decision: false," || code == "lowered_by_decision: bool," {
+            continue;
+        }
+        let sanctioned = (current_fn == "sample" && code == "lowered_by_decision,")
+            || (current_fn == "for_test_lowered_by_decision"
+                && code == "lowered_by_decision: true,");
+        if !sanctioned {
+            setters.push(format!("{current_fn}: {code}"));
+        }
+    }
+    assert!(
+        setters.is_empty(),
+        "`lowered_by_decision` is set outside `CallCapability::sample`: {setters:?}"
+    );
+    assert!(
+        sample_reads_the_slot,
+        "`sample` no longer reads the flag off the slot in the same lock as the tier"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Task 51 — the Phase 6 audit.
 // ---------------------------------------------------------------------------
 

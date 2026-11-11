@@ -40,9 +40,9 @@ import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/discl
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { isDecisionProvider } from '../../../decisions/decisionWire';
-import { decisionModelPlace } from '../../../decisions/decisionWords';
+import { TIER_EFFECT_COPY, decisionModelPlace } from '../../../decisions/decisionWords';
 import { cn } from '../../../../utils';
-import { decisionModelLabel } from '../../../../utils/sessionDecisions';
+import { decisionModelLabel, type PrivacyBasis } from '../../../../utils/sessionDecisions';
 import { switchModelCopy } from '../copy';
 import { isBrowserSurface } from '../../../../utils/surface';
 import type {
@@ -195,6 +195,12 @@ interface ModelsBottomBarProps {
    */
   privacyTier?: SessionClassification;
   /**
+   * DR-33: why this public chat is public when a decision model made it so (the
+   * daemon's `privacyBasis`, read by the chat). The chip's tip gains one line, and
+   * the model switch says the chat stays public.
+   */
+  privacyBasis?: PrivacyBasis | null;
+  /**
    * Issue #56 / F2 — what THIS chat actually runs on: the session row's own
    * provider and model (`restore_provider_from_session` binds exactly those),
    * or the one a turn reported when the privacy barrier repaired the binding
@@ -235,6 +241,7 @@ export default function ModelsBottomBar({
   alerts = [],
   hideAlertPopover = false,
   privacyTier,
+  privacyBasis = null,
   effectiveModel,
   reasoningScope,
   handOffKey,
@@ -610,9 +617,11 @@ export default function ModelsBottomBar({
   // there is room for it: the tooltip and the dropdown header.
   const privacyLine =
     privacyTier === 'private'
-      ? 'Private chat. Biorouter only lets a private model open it.'
+      ? 'Private chat. Biorouter only lets private models, decision models included, read it.'
       : privacyTier === 'public'
-        ? 'Public chat'
+        ? privacyBasis
+          ? `Public chat. ${TIER_EFFECT_COPY.chipLine}`
+          : 'Public chat'
         : null;
 
   // The MODEL's tier, in the model's own words. Every surface below states
@@ -912,6 +921,7 @@ export default function ModelsBottomBar({
         <SwitchModelModal
           sessionId={sessionId}
           privacyTier={privacyTier}
+          privacyBasis={privacyBasis}
           initialProvider={effectiveModel?.provider}
           initialModel={effectiveModel?.model}
           setView={setView}

@@ -751,6 +751,42 @@ async fn declassify_in_one_transaction(
     .execute(&mut *tx)
     .await?;
 
+    // DR-33 (design §3.11): three writes to `extension_data`, none to the
+    // classification, in the same transaction. A public name stored on a
+    // Private chat was inert (the inert rule); the moment the chat is Public it
+    // would go live over a transcript that may hold private-extension results.
+    // So every enabled monitor whose model is public is DISABLED (not deleted),
+    // a public default is cleared, a note says so, and the basis and ceiling are
+    // removed. Gates have no paused state and are left as they are; the
+    // confirmation lists them ([`decision_models_turned_off`]).
+    //
+    // A blob this build cannot parse is left untouched rather than rewritten:
+    // the classification change must not erase state it cannot see, and such a
+    // record lowers nothing (doubt never lowers).
+    let raw_data: Option<String> =
+        sqlx::query_scalar("SELECT extension_data FROM sessions WHERE id = ?1")
+            .bind(session_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if let Some(raw_data) = raw_data {
+        if let Ok(mut data) =
+            serde_json::from_str::<crate::session::extension_data::ExtensionData>(&raw_data)
+        {
+            let before = data.extension_states.clone();
+            crate::privacy::decision_axes::turn_off_public_names(
+                &mut data,
+                crate::privacy::decision_axes::DECLASSIFIED_NOTICE,
+            );
+            if data.extension_states != before {
+                sqlx::query("UPDATE sessions SET extension_data = ?2 WHERE id = ?1")
+                    .bind(session_id)
+                    .bind(serde_json::to_string(&data)?)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+    }
+
     tx.commit().await?;
     tracing::info!(
         session_id,
@@ -759,6 +795,23 @@ async fn declassify_in_one_transaction(
     );
     Ok(DeclassifyOutcome::Declassified)
 }
+
+/// DR-33 (design §3.11): what declassifying `row` would turn off, for the
+/// confirmation to name before the person agrees: the monitors whose model is
+/// public (they will be disabled), a public default (it will be cleared), and
+/// the open phases whose gate model is public (listed; a gate has no paused
+/// state). [`crate::privacy::decision_axes::PublicNamesOff::confirmation_sentence`]
+/// is the sentence. The declassify dialog also carries one InfoTip line,
+/// [`AFTER_DECLASSIFY_DECISION_TIP`].
+pub fn decision_models_turned_off(
+    row: &crate::session::session_manager::Session,
+) -> crate::privacy::decision_axes::PublicNamesOff {
+    crate::privacy::decision_axes::public_names_off_preview(&row.extension_data)
+}
+
+/// The declassify dialog's InfoTip line about decision models (design §3.11).
+pub const AFTER_DECLASSIFY_DECISION_TIP: &str =
+    "After this, a public decision model you choose can read the whole chat.";
 
 /// Declassify through the real writer, for tests that live in **other** modules.
 ///
@@ -2136,5 +2189,126 @@ mod tests {
                 row.updated_at
             );
         }
+    }
+
+    /// DR-33 (design §3.11): a public decision model stored on a Private chat
+    /// is inert; declassifying the chat must not bring it to life over a
+    /// transcript that may hold private content. Its monitors are disabled, a
+    /// public default is cleared, the basis is removed, a note says so, and the
+    /// confirmation listed it all first.
+    #[tokio::test]
+    async fn declassifying_turns_public_decision_models_off_and_says_so_first() {
+        use crate::decision::settings::{
+            DecisionSettings, DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION,
+        };
+        use crate::privacy::decision_axes::{
+            self, BasisAuthor, DecisionNotice, PublicBasis, DECISION_NOTICE_STATE,
+            DECISION_NOTICE_VERSION,
+        };
+        use crate::session::session_manager::{BasisWrite, BasisWriteOutcome};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let s = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "mixed".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        // Lowered while empty (a basis and a Baseten monitor), then it took a
+        // message and was ratcheted Private (its public name went inert).
+        let basis = PublicBasis::new(&s.id, BasisAuthor::Person, "test", vec![]);
+        let written = sm
+            .write_public_basis(&s.id, BasisWrite::Set(basis), |data| {
+                data.set_extension_state(
+                    DECISION_SETTINGS_STATE,
+                    DECISION_SETTINGS_VERSION,
+                    serde_json::json!({
+                        "defaultModel": { "provider": "baseten_decision", "model": "joey-1" },
+                        "monitors": [{
+                            "id": "done",
+                            "name": "Done",
+                            "question": { "instructions": "Done?", "kind": { "binary": {} } },
+                            "model": { "provider": "baseten_decision", "model": "joey-1" },
+                            "threshold": 0.8,
+                            "option": null,
+                            "rearmBelow": null,
+                        }],
+                    }),
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(written, BasisWriteOutcome::Written(()));
+        sm.add_message(
+            &s.id,
+            &crate::conversation::message::Message::user().with_text("patient MRN 12345"),
+        )
+        .await
+        .unwrap();
+        sm.update(&s.id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        let before = sm.get_session(&s.id, false).await.unwrap();
+        assert!(
+            decision_axes::from_row(&before).is_identity(),
+            "inert while Private"
+        );
+
+        let listed = decision_models_turned_off(&before);
+        let sentence = listed
+            .confirmation_sentence()
+            .expect("the dialog names them");
+        assert!(sentence.contains("Monitor \"Done\""), "{sentence}");
+        assert!(sentence.contains("will be cleared"), "{sentence}");
+
+        assert_eq!(
+            declassify_for_test(&sm, &s.id).await.unwrap(),
+            DeclassifyOutcome::Declassified
+        );
+        let after = sm.get_session(&s.id, false).await.unwrap();
+        assert_eq!(after.privacy_tier, SessionClassification::Public);
+        assert!(
+            decision_axes::from_row(&after).is_identity(),
+            "a public decision model went live the moment the chat became public"
+        );
+        let settings: DecisionSettings = serde_json::from_value(
+            after
+                .extension_data
+                .get_extension_state(DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(settings.default_model, None);
+        assert_eq!(
+            settings.monitors.len(),
+            1,
+            "a monitor was deleted rather than disabled"
+        );
+        assert!(!settings.monitors[0].enabled);
+        let note: DecisionNotice = serde_json::from_value(
+            after
+                .extension_data
+                .get_extension_state(DECISION_NOTICE_STATE, DECISION_NOTICE_VERSION)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            note.text,
+            crate::privacy::decision_axes::DECLASSIFIED_NOTICE
+        );
+        // The basis went with it: turning the monitor back on is a first
+        // lowering again, admitted because the person declassified the chat.
+        assert_eq!(
+            decision_axes::eligibility(&after),
+            decision_axes::Eligibility::Declassified
+        );
     }
 }

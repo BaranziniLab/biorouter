@@ -153,6 +153,17 @@ import { FolderRequesterContext } from './folderAccessCopy';
 import { subagentRoleOf } from './sessions/historyRow';
 import { extractKnowledgeBases, useSubagentSession } from './subagent/useSubagentSession';
 import { isDecisionProvider } from './decisions/decisionWire';
+import { DraftMonitorsDialog } from './decisions/DraftMonitorsDialog';
+import {
+  chatModelKey,
+  draftStartFields,
+  useDraftDecisionSettings,
+  type DraftDecisionSettings,
+} from './decisions/draftDecisionSettings';
+import { usePublicDecisionConfirm } from './decisions/usePublicDecisionConfirm';
+import { isPublicChatDeclined, type DecisionSettings } from '../utils/sessionDecisions';
+import { usePrivacyBasis } from './privacy/usePrivacyBasis';
+import { privacyBasisTip } from './decisions/decisionWords';
 import { useChatGroups } from '../contexts/ChatGroupsContext';
 
 // How long after the agent last worked a render failure is still treated as part
@@ -947,7 +958,37 @@ export async function heldModelMayBeSent(
   return (await readAcknowledgement()) !== false;
 }
 
+/**
+ * DR-33 (design §4) — what a blank chat's start carries for the monitors drafted
+ * before its first message: `decisionSettings`, `acceptPublicDecisionModels` only
+ * while the person's acceptance names the model the chat starts on, and, with a
+ * held pick, that model itself, so the daemon works out what the draft does to the
+ * chat's tier against the model it will run on rather than the app-wide one the
+ * start would otherwise bind (the held pick is bound again afterwards, a no-op).
+ * Nothing for no draft, so a start without one is the request it always was.
+ */
+export function draftDecisionStartOptions(
+  draft: DraftDecisionSettings | null,
+  held: Model | null,
+  appWide: { provider: string | null; model: string | null }
+): {
+  decisionSettings?: DecisionSettings;
+  acceptPublicDecisionModels?: boolean;
+  provider?: string;
+  model?: string;
+} {
+  const startsOn = held
+    ? chatModelKey(held.provider, held.name)
+    : chatModelKey(appWide.provider, appWide.model);
+  const fields = draftStartFields(draft, startsOn);
+  if (!fields) return {};
+  return held ? { ...fields, provider: held.provider, model: held.name } : fields;
+}
+
 export function handleCreateSessionError(err: unknown): false {
+  // DR-33: the person said no to "This chat will be public". Nothing went wrong,
+  // so nothing is reported; the message goes back to the composer all the same.
+  if (isPublicChatDeclined(err)) return false;
   toastError(startChatFailureNotice(err, { kept: true }));
   return false;
 }
@@ -1459,10 +1500,17 @@ function BaseChatContent({
   // pick outlives a tab switch and the trip to the provider catalog ("Use other
   // provider"), whose model step holds the pick under the same tab.
   const [pendingChatModel, setPendingChatModel] = useHeldChatModel(terminalKey);
-  const { changeModel } = useModelAndProvider();
+  const { changeModel, currentProvider, currentModel } = useModelAndProvider();
+  // DR-33 (design §4): monitors set before the first message, held under this
+  // chat's tab beside the held model, and sent with the start that creates it.
+  const [draftDecisions, setDraftDecisions] = useDraftDecisionSettings(terminalKey);
+  const publicDecisionConfirm = usePublicDecisionConfirm('send');
   useEffect(() => {
-    if (sessionId) setPendingChatModel(null);
-  }, [sessionId, setPendingChatModel]);
+    if (sessionId) {
+      setPendingChatModel(null);
+      setDraftDecisions(null);
+    }
+  }, [sessionId, setPendingChatModel, setDraftDecisions]);
   const pendingChatModelScope = useMemo(
     () => (sessionId ? null : { choose: setPendingChatModel, tabId: terminalKey }),
     [sessionId, setPendingChatModel, terminalKey]
@@ -2005,6 +2053,11 @@ function BaseChatContent({
           resolveNewSessionWorkingDir(pendingWorkingDir, getInitialWorkingDir()),
           {
             allExtensions: extensionsList,
+            ...draftDecisionStartOptions(draftDecisions, chosenModel, {
+              provider: currentProvider,
+              model: currentModel,
+            }),
+            confirmPublicDecisionModels: publicDecisionConfirm.confirm,
           }
         );
         firstSend.created(newSession.id);
@@ -2507,6 +2560,13 @@ function BaseChatContent({
     turnRunning: !chatLoading && summaryActive && isRunningState(chatState),
   });
   const [monitorsOpen, setMonitorsOpen] = useState(false);
+  // DR-33: why this chat is public when a decision model made it so, read again
+  // whenever its decision settings move (the daemon computes it; nothing here folds).
+  const privacyBasis = usePrivacyBasis(
+    sessionId,
+    session?.privacy_tier,
+    sessionDecisions.data?.settings ?? null
+  );
   const openDecisionHistory = useCallback(
     (filter: DecisionHistoryFilter) => {
       // The popover belongs to the chat; the history opens beside it.
@@ -2952,7 +3012,9 @@ function BaseChatContent({
             autoFocus={autoFocusComposer}
             // The first monitor's way in: the summary's Decisions section is
             // drawn only once the chat has decision calls or monitors.
-            onOpenDecisionMonitors={sessionId ? openMonitors : undefined}
+            // Before the first message the dialog opens in draft mode (DR-33).
+            onOpenDecisionMonitors={openMonitors}
+            privacyBasis={privacyBasis}
             {...customChatInputProps}
           />
         </PendingChatModelContext.Provider>
@@ -3165,6 +3227,7 @@ function BaseChatContent({
                       // Undefined until the session loads — the pill stays
                       // silent rather than asserting Public (issue #56).
                       privacyTier={session?.privacy_tier}
+                      privacyHelp={privacyBasis ? privacyBasisTip(privacyBasis) : undefined}
                       // DR-26's third axis. Null for a public model — which has
                       // no affiliation — and null until the provider row loads.
                       affiliation={boundAffiliation}
@@ -3357,8 +3420,21 @@ function BaseChatContent({
           {/* The chat's monitors. Mounted here, not inside the summary: the
               popover form of the summary unmounts when it closes, and the
               dialog would go with it. */}
+          {/* Before the first message: the draft the start will carry (DR-33). */}
+          {!sessionId ? (
+            <DraftMonitorsDialog
+              open={monitorsOpen}
+              onOpenChange={setMonitorsOpen}
+              provider={pendingChatModel?.provider ?? currentProvider}
+              model={pendingChatModel?.name ?? currentModel}
+              chatModelName={pendingChatModel?.alias ?? pendingChatModel?.name ?? currentModel}
+              draft={draftDecisions}
+              onDraftChange={setDraftDecisions}
+            />
+          ) : null}
+          {publicDecisionConfirm.dialog}
           <MonitorsDialog
-            open={monitorsOpen}
+            open={monitorsOpen && !!sessionId}
             onOpenChange={setMonitorsOpen}
             sessionId={sessionId}
             chatTier={

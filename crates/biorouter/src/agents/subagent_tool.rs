@@ -1752,6 +1752,49 @@ async fn check_child_monitors(
     Ok(())
 }
 
+/// DR-33, design §3.4 item 1: the copies of the parent's "also watch" monitors,
+/// checked against the classification the child is BORN with.
+///
+/// [`check_child_monitors`] does not ask the copies (they are the person's, and
+/// a copy whose model went away is not a reason to refuse every spawn), and it
+/// asks the rest against the PARENT. Neither catches a copy whose model is
+/// public on a child born Private: a public name the parent holds inert (saved
+/// while tiers were off, or carried in from an older row) would be copied onto
+/// a child where Gate H refuses every one of its checks. Only the privacy
+/// question is asked here, from the name's declaration, so nothing is sent and
+/// a model that merely went away still spawns. A model-less copy resolves to the
+/// child's default when it has one; with none it follows the tier and is fine.
+/// A name whose tier cannot be told (`declared_name` is `None`) is left to Gate
+/// H: doubt never refuses here.
+fn stranded_copy_refusal(
+    monitors: Option<&DecisionSettings>,
+    birth: crate::privacy::SessionClassification,
+) -> Option<String> {
+    if !birth.is_private() {
+        return None;
+    }
+    let settings = monitors?;
+    settings
+        .monitors
+        .iter()
+        .filter(|monitor| monitor.enabled && monitor.inherited_from.is_some())
+        .find_map(|monitor| {
+            let model = monitor.model.as_ref().or(settings.default_model.as_ref())?;
+            let declared = crate::privacy::decision_axes::declared_name(model)?;
+            (!declared.tier.is_private()).then(|| {
+                format!(
+                    "Monitor '{}' could not be put on the subagent: the subagent starts private, \
+                     so {}, {}, can't read it. Only the person can change this monitor: tell \
+                     them it needs a model on this computer, or \"Also watch subagents\" turned \
+                     off. Nothing was started.",
+                    monitor.name.trim(),
+                    model.label(),
+                    declared.host.model_noun()
+                )
+            })
+        })
+}
+
 /// A spawn refused before anything exists, with the sentence the agent reads.
 fn spawn_refusal(message: String) -> ErrorData {
     ErrorData {
@@ -1963,14 +2006,16 @@ async fn start_background_child(
     // Issue #56: resolve the child's provider and tier BEFORE creating its
     // row. A refusal must not leave a durable `SubAgent` session behind, and
     // this path runs the whole stretch in a detached `tokio::spawn`.
-    let task_config = overridden_task_config(task_config, params).await?;
-    let session = create_subagent_session(
+    let (task_config, child_privacy) = overridden_task_config(task_config, params).await?;
+    let session = create_subagent_session_under(
         &config,
         working_dir,
         &task_config.parent_session_id,
         params,
         task_config.privacy_tier,
         task_config.provider.as_ref(),
+        &child_privacy,
+        monitors.as_ref(),
     )
     .await?;
     // Stored before anything can run it: the handle registered below makes
@@ -1994,6 +2039,7 @@ async fn start_background_child(
         session.id,
         inflight,
         max_pending,
+        &child_privacy,
     )
     .await;
     if let Some(note) = monitors_line {
@@ -2138,15 +2184,17 @@ async fn run_blocking_child(
     // first would leave a tab open — and one of the four cap slots claimed until
     // the guard drops — for a child that never runs a turn. The override never
     // touches `parent_session_id`, so it reads the same either way.
-    let task_config = overridden_task_config(task_config, &params).await?;
+    let (task_config, child_privacy) = overridden_task_config(task_config, &params).await?;
 
-    let session = create_subagent_session(
+    let session = create_subagent_session_under(
         &config,
         working_dir,
         &task_config.parent_session_id,
         &params,
         task_config.privacy_tier,
         task_config.provider.as_ref(),
+        &child_privacy,
+        monitors.as_ref(),
     )
     .await?;
 
@@ -2174,7 +2222,7 @@ async fn run_blocking_child(
         announce_subagent_tab(&session.id, &task_config.parent_session_id, &params).await;
     let visibility_note = visibility.parent_note(&session.id);
     // Taken before `task_config` is moved into the run below.
-    let privacy_note = dropped_extension_note(&task_config.dropped_private_extensions);
+    let privacy_note = child_privacy.dropped_note(&task_config.dropped_private_extensions);
     let affiliation_note =
         cross_affiliation_drop_note(&task_config.dropped_cross_affiliation_extensions);
 
@@ -2287,6 +2335,7 @@ pub(crate) fn subagent_session_label(params: &SubagentParams) -> String {
 /// `persist_spawn_context` runs, the parent id is already durable from here and
 /// a configured agent is one line from its first turn, so the same failure is
 /// no longer worth the run. See the matching note at that call site.
+#[cfg(test)]
 async fn create_subagent_session(
     config: &AgentConfig,
     working_dir: PathBuf,
@@ -2294,6 +2343,46 @@ async fn create_subagent_session(
     params: &SubagentParams,
     privacy_tier: crate::privacy::SessionClassification,
     provider: &dyn crate::providers::base::Provider,
+) -> Result<crate::session::Session, ErrorData> {
+    create_subagent_session_under(
+        config,
+        working_dir,
+        parent_session_id,
+        params,
+        privacy_tier,
+        provider,
+        &ChildPrivacy::default(),
+        None,
+    )
+    .await
+}
+
+/// Create the child's row (the doc above, on the test shorthand
+/// `create_subagent_session`, describes the stamp), stamped with what the spawn
+/// decided ([`ChildPrivacy`]).
+///
+/// DR-33, design §3.4: when the parent's effective tier was Public the row
+/// carries `privacy_ceiling.v1`, written in the SAME statement as its parent
+/// link and its classification, so the child's first bind already folds it
+/// and no reader ever sees the row without it. A ceiling on a child born
+/// Private (a Private-classified parent, only reachable with tiers off) would
+/// be invalid where it lands, so it is not written.
+///
+/// `monitors` are the settings `resolve_child_monitors` built. The copies of
+/// the parent's "also watch" monitors are checked here, against the child's
+/// classification at birth, before any row exists: a copy whose model is
+/// public would be stranded on a Private child, where every one of its checks
+/// is refused (design §3.4 item 1).
+#[allow(clippy::too_many_arguments)]
+async fn create_subagent_session_under(
+    config: &AgentConfig,
+    working_dir: PathBuf,
+    parent_session_id: &str,
+    params: &SubagentParams,
+    privacy_tier: crate::privacy::SessionClassification,
+    provider: &dyn crate::providers::base::Provider,
+    child_privacy: &ChildPrivacy,
+    monitors: Option<&DecisionSettings>,
 ) -> Result<crate::session::Session, ErrorData> {
     let internal = |e: &dyn std::fmt::Display| ErrorData {
         code: ErrorCode::INTERNAL_ERROR,
@@ -2306,6 +2395,15 @@ async fn create_subagent_session(
     // taken from `task_config`, because this is the statement that writes the
     // row. See [`parent_classification`] for why it is ungated.
     let privacy_tier = privacy_tier.max(parent_classification(config, parent_session_id).await);
+    if crate::privacy::privacy_tiers_enabled() {
+        if let Some(refusal) = stranded_copy_refusal(monitors, privacy_tier) {
+            return Err(spawn_refusal(refusal));
+        }
+    }
+    let ceiling = child_privacy
+        .ceiling
+        .as_ref()
+        .filter(|_| !privacy_tier.is_private());
 
     let mut session = config
         .session_manager
@@ -2317,9 +2415,14 @@ async fn create_subagent_session(
         .await
         .map_err(|e| internal(&e))?;
 
-    config
-        .session_manager
-        .update(&session.id)
+    let mut update = config.session_manager.update(&session.id);
+    if let Some(ceiling) = ceiling {
+        ceiling
+            .stamp(&mut session.extension_data)
+            .map_err(|e| internal(&e))?;
+        update = update.extension_data(session.extension_data.clone());
+    }
+    update
         .parent_session_id(Some(parent_session_id.to_string()))
         // Issue #56 §8.2: the child's classification is stamped in the SAME
         // statement as its parent link, and the capability half of
@@ -2528,8 +2631,8 @@ fn cross_affiliation_drop_note(dropped: &[(String, String)]) -> Option<String> {
 async fn overridden_task_config(
     task_config: TaskConfig,
     params: &SubagentParams,
-) -> Result<TaskConfig, ErrorData> {
-    apply_settings_overrides(task_config, params)
+) -> Result<(TaskConfig, ChildPrivacy), ErrorData> {
+    resolve_child_privacy(task_config, params)
         .await
         .map_err(|e| ErrorData {
             code: ErrorCode::INVALID_PARAMS,
@@ -2552,6 +2655,7 @@ async fn overridden_task_config(
 /// non-blocking channel send so a tab that did not open can be reported instead
 /// of assumed. Nothing else here waits — the run itself is still detached, and
 /// this still returns before the child's first turn.
+#[allow(clippy::too_many_arguments)]
 async fn spawn_background_subagent(
     config: AgentConfig,
     workflow: Workflow,
@@ -2560,6 +2664,7 @@ async fn spawn_background_subagent(
     child_session_id: String,
     inflight: InflightGuard,
     max_pending: usize,
+    child_privacy: &ChildPrivacy,
 ) -> CallToolResult {
     let summary = params.summary;
     let title = background_title(&workflow);
@@ -2579,7 +2684,7 @@ async fn spawn_background_subagent(
     let (visibility, visible_guard) =
         announce_subagent_tab(&child_session_id, &task_config.parent_session_id, params).await;
     // Taken before `task_config` moves into the detached task below.
-    let privacy_note = dropped_extension_note(&task_config.dropped_private_extensions);
+    let privacy_note = child_privacy.dropped_note(&task_config.dropped_private_extensions);
     let affiliation_note =
         cross_affiliation_drop_note(&task_config.dropped_cross_affiliation_extensions);
 
@@ -3002,9 +3107,15 @@ fn narrow_child_extensions_by_name(task_config: &mut TaskConfig, params: &Subage
 /// Apply the tier and affiliation partitions to the already name-narrowed set.
 /// Both decisions consume the same resolved classification for each extension;
 /// resolving twice could partition one entry on inconsistent metadata.
+///
+/// `child_tier` and `child_affiliation` are the child's EFFECTIVE values (DR-33,
+/// design §3.4 item 6): its own model folded with the public ceiling of a
+/// parent that was public by a decision model, so a Versa child of such a
+/// parent drops private extensions like any public child.
 fn filter_child_extensions(
     task_config: &mut TaskConfig,
     child_tier: crate::privacy::ProviderTier,
+    child_affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
     privacy_enforced: bool,
 ) {
     let mut kept = Vec::new();
@@ -3022,7 +3133,7 @@ fn filter_child_extensions(
         if let Some(warning) = crate::privacy::affiliation::gate_cross_affiliation_warning(
             privacy_enforced,
             child_tier,
-            task_config.provider.affiliation(),
+            child_affiliation,
             &name,
             &class,
         ) {
@@ -3036,17 +3147,89 @@ fn filter_child_extensions(
     task_config.dropped_cross_affiliation_extensions = dropped_cross_affiliation;
 }
 
+/// What a spawn decided about the child's privacy beyond its `TaskConfig`
+/// (DR-33, design §3.4): the public ceiling its row is stamped with when its
+/// parent's effective tier was Public, and whether that ceiling is what makes
+/// the child public (its own model being private), which picks the drop note.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ChildPrivacy {
+    /// `privacy_ceiling.v1`, written in the statement that sets the child's
+    /// classification. `None` when the parent's effective tier was Private.
+    pub(crate) ceiling: Option<crate::privacy::decision_axes::PrivacyCeiling>,
+    /// `true` when the child's own model is private and the ceiling makes it
+    /// public: the drop note then names the parent's decision model rather
+    /// than claiming the subagent runs on a public model.
+    pub(crate) public_by_ceiling: bool,
+}
+
+impl ChildPrivacy {
+    /// The note the parent reads about private extensions the child was not
+    /// given.
+    fn dropped_note(&self, dropped: &[String]) -> Option<String> {
+        if self.public_by_ceiling {
+            let cause = self
+                .ceiling
+                .as_ref()
+                .and_then(|ceiling| ceiling.lowered_by.as_ref());
+            crate::privacy::refusal::decision_drop_note(dropped, cause)
+        } else {
+            dropped_extension_note(dropped)
+        }
+    }
+}
+
 /// Resolve the child's provider, classification, and extensions before its row
 /// exists. Every privacy decision shares one master-toggle read. Explicit
 /// provider moves require the same affiliation; inheriting composite children
 /// retain the parent's folded capability while receiving independent state.
 pub async fn apply_settings_overrides(
-    mut task_config: TaskConfig,
+    task_config: TaskConfig,
     params: &SubagentParams,
 ) -> Result<TaskConfig> {
+    Ok(resolve_child_privacy(task_config, params).await?.0)
+}
+
+/// [`apply_settings_overrides`], also returning what the child's row must carry
+/// ([`ChildPrivacy`]). DR-33, design §3.4: **a child runs at its parent's
+/// effective tier at the moment of the spawn.**
+///
+/// The parent's slot holds the decision-bound wrapper when the parent names
+/// decision models, so its `tier()` is the parent's EFFECTIVE tier (`E_p`), and
+/// the wrapper's inner provider is the parent's MODEL (`P_model`). Four values,
+/// and which check compares which is the whole design:
+///
+/// * **R4** (a child must not gain private reach): the child's model against
+///   the parent's model. It asks about the reach the child's own model brings.
+///   So a Public-provider parent (Claude Code) still refuses a Versa child, and
+///   a Versa parent made public by a Baseten monitor may keep Versa for its
+///   child.
+/// * **DR-19** (a private chat's work must not go to a public model) and
+///   **DR-31** (affiliation never changes across a spawn): the child's effective
+///   tier and affiliation against the parent's. They ask about the chats.
+///
+/// The child's effective value is its model folded with the ceiling, through
+/// [`crate::privacy::decision_axes::fold`], the one rule the slot itself uses
+/// once the child's row carries the ceiling. The child's own decision settings
+/// are not folded here and need not be: a child holds no `public_basis.v1`, so
+/// its public names lower nothing, and private names are the identity.
+pub(crate) async fn resolve_child_privacy(
+    mut task_config: TaskConfig,
+    params: &SubagentParams,
+) -> Result<(TaskConfig, ChildPrivacy)> {
+    use crate::privacy::decision_axes;
+
     // Sample the parent before an override can replace its provider instance.
-    let parent_cap = task_config.provider.tier();
-    let parent_affiliation = task_config.provider.affiliation();
+    // `E_p`: the slot's value, the decision-bound wrapper's when there is one.
+    let parent_effective = task_config.provider.tier();
+    let parent_effective_affiliation = task_config.provider.affiliation();
+    let parent_lowered_by = task_config.provider.decision_lowered_by().cloned();
+    // `P_model`: the parent's model alone. The child is handed the inner
+    // provider, never the wrapper, so the parent's axes never ride into it
+    // (`update_provider` unwraps anyway; this keeps the override below and the
+    // composite fork working on the real instance).
+    task_config.provider =
+        crate::providers::decision_bound::unwrap_decision_bound(task_config.provider);
+    let parent_model = task_config.provider.tier();
     let privacy_enforced = crate::privacy::privacy_tiers_enabled();
 
     apply_provider_override_and_composite_fork(&mut task_config, params.settings.as_ref()).await?;
@@ -3060,22 +3243,56 @@ pub async fn apply_settings_overrides(
     }
 
     // Judge the constructed instance: the factory can return a composite under
-    // the requested provider name.
-    let child_tier = task_config.provider.tier();
-    let child_affiliation = task_config.provider.affiliation();
+    // the requested provider name. `C_model`.
+    let child_model = task_config.provider.tier();
+    let child_model_affiliation = task_config.provider.affiliation();
 
     // R4: a public-capability parent cannot gain private reach through a child.
-    if privacy_enforced && child_tier.is_private() && !parent_cap.is_private() {
-        return Err(crate::privacy::PrivacyRefusal::spawn_upgrade(child_tier).into());
+    // Models on both sides (design §3.4): a parent public only because of a
+    // decision model still runs a private model, and may keep it for its child.
+    if privacy_enforced && child_model.is_private() && !parent_model.is_private() {
+        return Err(crate::privacy::PrivacyRefusal::spawn_upgrade(child_model).into());
     }
+
+    // The ceiling: a parent whose effective tier is Public passes it on, so the
+    // child is part of a public chat's work whatever its own model is.
+    //
+    // ⚠ Only with tiers on. With them off R4 does not refuse a public parent's
+    // private child, and a ceiling there would stamp a row Public that runs a
+    // private model: a lower classification than its content, which public
+    // readers could then see (finding 11's rule, that the switch disables
+    // enforcement and never classification). With tiers off no basis is ever
+    // written, so no parent is public by a decision model and nothing is lost.
+    let parent_id = task_config.parent_session_id.clone();
+    let ceiling = (privacy_enforced && !parent_effective.is_private())
+        .then(|| decision_axes::PrivacyCeiling::public_from(parent_id.as_str(), parent_lowered_by));
+    let child_axes = decision_axes::fold(&decision_axes::AxesInputs {
+        // The child's row does not exist yet. Nothing below reads the id: a
+        // child has no basis for it to name.
+        session_id: "",
+        // Born Public whenever a ceiling exists (the parent's classification is
+        // Public whenever its effective tier is, with tiers on).
+        classification: crate::privacy::SessionClassification::Public,
+        session_type: crate::session::session_manager::SessionType::SubAgent,
+        parent_session_id: Some(parent_id.as_str()),
+        settings: decision_axes::SettingsInput::Absent,
+        plan: None,
+        basis: None,
+        ceiling: ceiling.as_ref(),
+    });
+    let (child_tier, child_affiliation) = child_axes.apply(child_model, child_model_affiliation);
+
     // DR-19: the model cannot disclose a private prompt through a public child.
-    if privacy_enforced && !child_tier.is_private() && parent_cap.is_private() {
+    // Effective tiers on both sides.
+    if privacy_enforced && !child_tier.is_private() && parent_effective.is_private() {
         return Err(crate::privacy::PrivacyRefusal::spawn_downgrade(child_tier).into());
     }
-    // DR-31 requires affiliation equality in both directions.
-    if privacy_enforced && child_affiliation != parent_affiliation {
+    // DR-31 requires affiliation equality in both directions, on the effective
+    // values: a Public-ceilinged child has no affiliation, like its Public
+    // parent, so an inherit spawn from a lowered parent is not refused here.
+    if privacy_enforced && child_affiliation != parent_effective_affiliation {
         return Err(crate::privacy::PrivacyRefusal::spawn_affiliation(
-            parent_affiliation,
+            parent_effective_affiliation,
             child_affiliation,
         )
         .into());
@@ -3084,9 +3301,21 @@ pub async fn apply_settings_overrides(
     // CLASSIFICATION its row is born with.
     task_config.privacy_tier = crate::privacy::floor(child_tier);
     narrow_child_extensions_by_name(&mut task_config, params);
-    filter_child_extensions(&mut task_config, child_tier, privacy_enforced);
+    filter_child_extensions(
+        &mut task_config,
+        child_tier,
+        child_affiliation,
+        privacy_enforced,
+    );
 
-    Ok(task_config)
+    let public_by_ceiling = child_axes.lowers(child_model);
+    Ok((
+        task_config,
+        ChildPrivacy {
+            ceiling,
+            public_by_ceiling,
+        },
+    ))
 }
 
 /// Hold **every** concurrency permit until the returned vector is dropped, so a
@@ -3344,7 +3573,7 @@ mod tests {
         let request = serde_json::json!({"extensions": ["UCSFOMOPAGENT"]});
         narrow_child_extensions_by_name(&mut task, &serde_json::from_value(request).unwrap());
         assert_eq!(task.extensions.len(), 1);
-        filter_child_extensions(&mut task, ProviderTier::Public, true);
+        filter_child_extensions(&mut task, ProviderTier::Public, None, true);
         assert!(task.extensions.is_empty());
         assert_eq!(task.dropped_private_extensions, ["ucsfomopagent"]);
     }
@@ -9484,3 +9713,8 @@ decision_settings:
         assert!(description.contains("`monitors`"), "{description}");
     }
 }
+
+/// DR-33, design §3.4: spawning under a parent a decision model made public.
+#[cfg(test)]
+#[path = "subagent_tool_decision_tests.rs"]
+mod decision_tier_spawn_tests;

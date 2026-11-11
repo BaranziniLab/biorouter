@@ -219,14 +219,37 @@ pub struct DecisionSession {
     /// chat's settings could not be read; a call that names no model is then
     /// refused rather than sent where that default may have ruled out.
     pub chat_default_model: Result<Option<DecisionModelRef>, String>,
-    /// The capability tier of the chat model the chat is bound to now, when
-    /// the caller knows it. Read ONLY by the save-time checks
-    /// ([`DecisionService::check_model_use`]), never by a decision: a chat
-    /// still Public but bound to a private model becomes private at its first
-    /// turn, so a public decision model saved for it now would be refused at
-    /// every turn. It compares capability with capability and never crosses
-    /// into classification (no `privacy::floor`).
-    pub bound_tier: Option<ProviderTier>,
+    /// The tier of the language model the chat is bound to now, unwrapped
+    /// through any decision-bound wrapper (`Agent::bound_model_tier`, or
+    /// offline the row's declaration, `super::save::row_bound_model_tier`),
+    /// when the caller knows it. Never the slot's folded tier (design §2.1).
+    /// Read ONLY by the save-time checks ([`DecisionService::check_model_use`],
+    /// [`DecisionService::models_for`]'s rows, [`chat_effect`]), never by a
+    /// decision: a chat still Public but bound to a private model becomes
+    /// private at its first message unless a person makes it public by naming
+    /// a decision model before then (DR-33). It compares capability with
+    /// capability and never crosses into classification (no `privacy::floor`).
+    pub bound_model_tier: Option<ProviderTier>,
+    /// Whether a person may still make this chat public by naming a decision
+    /// model, and whether its decision models already do, as the door read
+    /// the row ([`Self::with_row_tier_context`]). `None` when the door did not
+    /// read it: then nothing is predicted from it.
+    pub tier_context: Option<SaveTierContext>,
+    /// Set by the save itself ([`super::save`]) when the chat will be public
+    /// after the save because of its decision models (the save's effect is
+    /// `becomesPublic` or `staysPublic`), so a public model it resolves is not
+    /// refused as one the chat could not read after its first message.
+    pub lowered_after_save: bool,
+}
+
+/// What a door read about whether a chat's decision models may make it, or
+/// already make it, public (DR-33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveTierContext {
+    /// Whether a person may still lower it (design §1.8).
+    pub eligibility: crate::privacy::decision_axes::Eligibility,
+    /// Whether its standing decision models make it public now.
+    pub lowered_now: bool,
 }
 
 impl std::fmt::Debug for DecisionSession {
@@ -237,7 +260,8 @@ impl std::fmt::Debug for DecisionSession {
             .field("enforced", &self.enforced)
             .field("origin", &self.origin)
             .field("live", &self.live.is_some())
-            .field("bound_tier", &self.bound_tier)
+            .field("bound_model_tier", &self.bound_model_tier)
+            .field("tier_context", &self.tier_context)
             .finish_non_exhaustive()
     }
 }
@@ -259,14 +283,42 @@ impl DecisionSession {
             origin_label: None,
             live: None,
             chat_default_model: Ok(None),
-            bound_tier: None,
+            bound_model_tier: None,
+            tier_context: None,
+            lowered_after_save: false,
         }
     }
 
-    /// The tier of the chat model the chat is bound to, for the save-time
-    /// checks only (see [`Self::bound_tier`]).
-    pub fn with_bound_tier(mut self, tier: Option<ProviderTier>) -> Self {
-        self.bound_tier = tier;
+    /// The tier of the language model the chat is bound to, for the save-time
+    /// checks only (see [`Self::bound_model_tier`]).
+    pub fn with_bound_model_tier(mut self, tier: Option<ProviderTier>) -> Self {
+        self.bound_model_tier = tier;
+        self
+    }
+
+    /// [`Self::with_bound_model_tier`], under the name the doors used before
+    /// the field was renamed. The value must be the INNER model's tier
+    /// (`Agent::bound_model_tier`), never the slot's.
+    pub fn with_bound_tier(self, tier: Option<ProviderTier>) -> Self {
+        self.with_bound_model_tier(tier)
+    }
+
+    /// The row's eligibility and whether its decision models lower it now
+    /// ([`Self::tier_context`]), read off `row` as stored. Needs
+    /// [`Self::bound_model_tier`] set first, since "lowered" is relative to
+    /// the bound model.
+    pub fn with_row_tier_context(mut self, row: &crate::session::Session) -> Self {
+        let bound = self.bound_model_tier.unwrap_or(ProviderTier::Public);
+        self.tier_context = Some(SaveTierContext {
+            eligibility: crate::privacy::decision_axes::eligibility(row),
+            lowered_now: crate::privacy::decision_axes::from_row(row).lowers(bound),
+        });
+        self
+    }
+
+    /// See [`Self::lowered_after_save`]. For the save doors in this crate.
+    pub(crate) fn with_lowered_after_save(mut self, lowered: bool) -> Self {
+        self.lowered_after_save = lowered;
         self
     }
 
@@ -760,6 +812,9 @@ impl DecisionService {
                             .err()
                             .map(|error| error.to_string())
                         })
+                    })
+                    .or_else(|| {
+                        session.and_then(|session| becoming_private_reason(session, entry.tier))
                     })
                     .or_else(|| entry.load_refusal.clone());
                 (entry, reason)
@@ -1827,7 +1882,8 @@ impl DecisionService {
     /// could run now, by every check a decision makes before it sends: the
     /// chat's Crew grant, the model's resolution (named, the chat's default,
     /// the configured default, the automatic choice), the chat's bound model
-    /// ([`DecisionSession::bound_tier`]), Gate H and affiliation with the
+    /// ([`DecisionSession::bound_model_tier`], [`refuse_unlowered_resolution`]),
+    /// Gate H and affiliation with the
     /// workspace's gate, the question kinds, and the server's own refusal to
     /// load the model. Opening an Ollama model asks its server's `/api/show`
     /// with the model's name only; nothing of the chat is sent.
@@ -1860,7 +1916,7 @@ impl DecisionService {
             return Err(DecisionError::Refused(reason));
         }
         let model = self.resolve(Some(session), wanted).await?;
-        refuse_by_bound_tier(session, model.as_ref(), source)?;
+        refuse_unlowered_resolution(session, wanted.is_none(), model.as_ref(), source)?;
         self.check_privacy(session, model.as_ref(), source).await?;
         let model_ref = model.model_ref();
         let load_refusal = self
@@ -2064,27 +2120,107 @@ fn as_sentence(text: &str) -> String {
 }
 
 /// The save-time rule for a chat bound to a private model while it is still
-/// Public: its first turn makes it private, and then a public decision model
-/// is refused at every call, so it is refused now. Capability against
-/// capability, under the master switch as the caller sampled it.
-fn refuse_by_bound_tier(
+/// Public, narrowed by DR-33 (design §1.2): a public decision model the save
+/// would run on is refused when the chat will NOT be public after the save
+/// ([`DecisionSession::lowered_after_save`]), because its first message then
+/// makes it private and the model is refused at every call after that.
+///
+/// It no longer refuses a public model the person names on an empty chat:
+/// that save makes the chat public (its tier effect is `becomesPublic`), which
+/// the door asks the person to confirm. What it still refuses:
+///
+/// - a model the save RESOLVED rather than named (`resolved`: a monitor or
+///   gate with no model on a chat with no default, so the configured default
+///   or the automatic choice), since the configured default never lowers a
+///   chat (§1.2, §3.13);
+/// - a named model whose adapter is public but whose provider does not
+///   declare it public (an Ollama model renamed from a cloud model), which
+///   the fold counts as doubt and so never lowers (§1.5).
+///
+/// Capability against capability, under the master switch as the caller
+/// sampled it. A Private chat is Gate H's.
+fn refuse_unlowered_resolution(
     session: &DecisionSession,
+    resolved: bool,
     model: &dyn DecisionModel,
     source: ModelSource,
 ) -> DecisionResult<()> {
-    if session.enforced
-        && session.bound_tier == Some(ProviderTier::Private)
-        && !session.classification.is_private()
-        && model.tier() == ProviderTier::Public
+    if !session.enforced
+        || session.bound_model_tier != Some(ProviderTier::Private)
+        || session.classification.is_private()
+        || session.lowered_after_save
+        || model.tier() != ProviderTier::Public
     {
-        return Err(DecisionError::Refused(format!(
-            "This chat runs on a private model, so it becomes private at its first turn, and \
-             `{}` is a public model a private chat cannot use. {}.",
-            model.display_name(),
-            source.advice_text()
-        )));
+        return Ok(());
     }
-    Ok(())
+    let name = model.display_name();
+    Err(DecisionError::Refused(if resolved {
+        format!(
+            "This chat runs on a private model, so it becomes private at its first message, and \
+             `{name}`, the decision model it would use with none named, could not read it then. \
+             Choose a decision model that runs on this computer for it, or choose `{name}` for \
+             this chat before its first message."
+        )
+    } else {
+        format!(
+            "This chat runs on a private model, so it becomes private at its first message, and \
+             `{name}` is a public model a private chat cannot use. {}.",
+            source.advice_text()
+        )
+    }))
+}
+
+/// The reason a picker row gives for a public decision model on a chat that
+/// is Public now, bound to a private model, not made public by its decision
+/// models, and no longer eligible to be (design §1.8, §5): it has messages,
+/// so it becomes private at its next one and the model could not read it.
+pub const PUBLIC_MODEL_ON_A_CHAT_BECOMING_PRIVATE: &str =
+    "Public model: it can't read a private chat. Start a new chat and choose this model before \
+     its first message, or make this chat public from History.";
+
+/// [`PUBLIC_MODEL_ON_A_CHAT_BECOMING_PRIVATE`] for `tier`'s row, when it
+/// applies. Needs the door's [`DecisionSession::tier_context`].
+fn becoming_private_reason(session: &DecisionSession, tier: ProviderTier) -> Option<String> {
+    let context = session.tier_context?;
+    (session.enforced
+        && session.bound_model_tier == Some(ProviderTier::Private)
+        && !session.classification.is_private()
+        && tier == ProviderTier::Public
+        && !context.lowered_now
+        && !context.eligibility.is_eligible())
+    .then(|| PUBLIC_MODEL_ON_A_CHAT_BECOMING_PRIVATE.to_string())
+}
+
+/// What choosing a listed decision model would do to the chat's tier, for a
+/// picker row (`DecisionModelInfo.chatEffect`, design §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatEffect {
+    /// The chat is bound to a private model and may still be made public, and
+    /// this model is public: choosing it makes the chat public (asked for at
+    /// Save).
+    MakesPublic,
+}
+
+/// [`ChatEffect`] for `entry` on `session`, or `None` when choosing it moves
+/// nothing. Computed from the provider's declaration, the same one the fold
+/// uses ([`crate::privacy::decision_axes::declared_name`]), so a row that
+/// says "Makes this chat public" is one whose save has that effect. Needs the
+/// door's [`DecisionSession::tier_context`]; with none, nothing is predicted.
+pub fn chat_effect(session: &DecisionSession, entry: &DecisionModelEntry) -> Option<ChatEffect> {
+    let context = session.tier_context?;
+    let declared_public = crate::privacy::decision_axes::declared_name(&DecisionModelRef::new(
+        entry.provider.clone(),
+        entry.model.clone(),
+    ))
+    .is_some_and(|declared| !declared.tier.is_private());
+    (session.enforced
+        && session.bound_model_tier == Some(ProviderTier::Private)
+        && !session.classification.is_private()
+        && declared_public
+        && !context.lowered_now
+        && context.eligibility.is_eligible())
+    .then_some(ChatEffect::MakesPublic)
 }
 
 /// One call's answer, its latency in milliseconds, and the request's place in
@@ -5749,11 +5885,17 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
-    /// A chat still Public but bound to a private model becomes private at
-    /// its first turn, so a public decision model is refused at save. A
-    /// decision itself never reads the bound tier.
+    /// DR-33 (design §1.2): on a chat still Public but bound to a private
+    /// model, the check refuses a public model only when the chat will not be
+    /// public after the save. A save that makes it public
+    /// (`lowered_after_save`, set by `decision::save` from the tier effect)
+    /// may name one. A model the save resolves (no model, no chat default:
+    /// the configured default or the automatic choice) never lowers the chat,
+    /// so it is refused with its own sentence. A decision itself never reads
+    /// the bound tier.
     #[tokio::test]
-    async fn a_fresh_chat_bound_to_a_private_model_refuses_a_public_decision_model_at_save() {
+    async fn a_fresh_chat_bound_to_a_private_model_refuses_a_public_model_only_when_the_save_does_not_make_it_public(
+    ) {
         let (svc, calls) = service(
             vec![
                 entry("cloud", ProviderTier::Public, false),
@@ -5761,7 +5903,7 @@ mod tests {
             ],
             Duration::ZERO,
         );
-        let fresh = public_chat("bound-private").with_bound_tier(Some(ProviderTier::Private));
+        let fresh = public_chat("bound-private").with_bound_model_tier(Some(ProviderTier::Private));
         let cloud = settings_of(
             None,
             vec![monitor(serde_json::json!({"model": named("cloud")}))],
@@ -5769,15 +5911,24 @@ mod tests {
         assert_eq!(
             svc.check_settings(&fresh, &cloud, None).await.unwrap_err(),
             "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
-             model, so it becomes private at its first turn, and `cloud` is a public model a \
-             private chat cannot use. Choose a decision model that runs on this computer."
+             model, so it becomes private at its first message, and `cloud` is a public model a \
+             private chat cannot use. Choose a decision model that runs on this computer.",
+            "a public model the save does not make standing (here a provider the fold does not \
+             know) is refused"
+        );
+        let lowered = fresh.clone().with_lowered_after_save(true);
+        assert_eq!(
+            svc.check_settings(&lowered, &cloud, None).await,
+            Ok(()),
+            "a save that makes the chat public may name a public model"
         );
         let local = settings_of(
             None,
             vec![monitor(serde_json::json!({"model": named("local")}))],
         );
         assert_eq!(svc.check_settings(&fresh, &local, None).await, Ok(()));
-        let bound_public = public_chat("bound-public").with_bound_tier(Some(ProviderTier::Public));
+        let bound_public =
+            public_chat("bound-public").with_bound_model_tier(Some(ProviderTier::Public));
         assert_eq!(
             svc.check_settings(&bound_public, &cloud, None).await,
             Ok(())
@@ -5785,11 +5936,38 @@ mod tests {
         let unknown = public_chat("bound-unknown");
         assert_eq!(svc.check_settings(&unknown, &cloud, None).await, Ok(()));
         let off = DecisionSession::new("bound-off", SessionClassification::Public, false)
-            .with_bound_tier(Some(ProviderTier::Private));
+            .with_bound_model_tier(Some(ProviderTier::Private));
         assert_eq!(
             svc.check_settings(&off, &cloud, None).await,
             Ok(()),
             "the master switch as sampled"
+        );
+
+        // A monitor with no model on a chat with no default resolves to the
+        // configured default, which never lowers a chat, so it is refused;
+        // but a save that makes the chat public through another name leaves
+        // the chat public for every model it resolves too.
+        let (resolving, _) = service(
+            vec![entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let resolving =
+            resolving.with_default_model(Some(DecisionModelRef::new("test_decision", "cloud")));
+        let modelless = settings_of(None, vec![monitor(serde_json::json!({}))]);
+        assert_eq!(
+            resolving
+                .check_settings(&fresh, &modelless, None)
+                .await
+                .unwrap_err(),
+            "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
+             model, so it becomes private at its first message, and `cloud`, the decision model \
+             it would use with none named, could not read it then. Choose a decision model that \
+             runs on this computer for it, or choose `cloud` for this chat before its first \
+             message."
+        );
+        assert_eq!(
+            resolving.check_settings(&lowered, &modelless, None).await,
+            Ok(())
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         // A decision does not read it.
@@ -5801,6 +5979,58 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A picker row (design §5): on an eligible Public chat bound to a
+    /// private model, a public model is offered with "makes this chat
+    /// public"; on one that has started (not eligible, not lowered) it is
+    /// disabled with the reason; with no context read, nothing is predicted.
+    #[tokio::test]
+    async fn picker_rows_say_which_public_models_would_make_the_chat_public() {
+        use crate::privacy::decision_axes::Eligibility;
+        let mut joey = entry("joey-1", ProviderTier::Public, false);
+        joey.provider = crate::providers::decision::catalog::BASETEN_DECISION_PROVIDER.into();
+        let (svc, _) = service(vec![joey.clone()], Duration::ZERO);
+        let bound = public_chat("rows").with_bound_model_tier(Some(ProviderTier::Private));
+        let context = |eligibility, lowered_now| {
+            let mut chat = bound.clone();
+            chat.tier_context = Some(SaveTierContext {
+                eligibility,
+                lowered_now,
+            });
+            chat
+        };
+
+        let empty = context(Eligibility::Empty, false);
+        assert_eq!(chat_effect(&empty, &joey), Some(ChatEffect::MakesPublic));
+        assert_eq!(svc.models_for(Some(&empty)).await[0].1, None);
+
+        let started = context(Eligibility::NotEligible, false);
+        assert_eq!(chat_effect(&started, &joey), None);
+        assert_eq!(
+            svc.models_for(Some(&started)).await[0].1.as_deref(),
+            Some(PUBLIC_MODEL_ON_A_CHAT_BECOMING_PRIVATE)
+        );
+
+        let lowered = context(Eligibility::AlreadyLowered, true);
+        assert_eq!(chat_effect(&lowered, &joey), None, "it is public already");
+        assert_eq!(svc.models_for(Some(&lowered)).await[0].1, None);
+
+        assert_eq!(
+            chat_effect(&bound, &joey),
+            None,
+            "no context, no prediction"
+        );
+        assert_eq!(svc.models_for(Some(&bound)).await[0].1, None);
+
+        let mut public_model = context(Eligibility::Empty, false);
+        public_model.bound_model_tier = Some(ProviderTier::Public);
+        assert_eq!(chat_effect(&public_model, &joey), None);
+
+        let mut off = context(Eligibility::NotEligible, false);
+        off.enforced = false;
+        assert_eq!(chat_effect(&off, &joey), None);
+        assert_eq!(svc.models_for(Some(&off)).await[0].1, None);
     }
 
     #[tokio::test]

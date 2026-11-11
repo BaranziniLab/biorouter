@@ -289,10 +289,30 @@ this section is the ledger.
   decision adapter is not a `Provider`, so the check is
   `privacy::alt_provider::assert_alt_tier_allowed`: Gate H's downward half, keyed on the tier the
   adapter declares.
-  - **A private chat never reaches a public decision model.** Baseten's decision models are
-    Public with no affiliation, as its chat provider is, so every private chat is refused them. So
-    is an Ollama decision model on a host that is not this computer, and an Ollama cloud tag. A
-    refused decision is logged as `refused`, and nothing is sent.
+  - **A chat is as private as its least private model, decision models included
+    ([DR-33](privacy-tiers-execution-plan.md#dr-33-a-chats-decision-models-count-toward-its-tier-and-its-least-private-model-sets-it),
+    2026-11-10).** A chat's standing decision models (its default decision model, its enabled
+    monitors, the gates and phase monitors of its open phases) count toward its capability beside
+    its bound provider, so a Versa chat whose person chose joey-1 on Baseten before its first
+    message is a public chat, and a Versa chat that names only tev1:0.8b on this computer stays
+    private. A public name counts only while the chat is classified Public and holds
+    `public_basis.v1`, the record a person's confirmed save writes on a chat with no message (or
+    one the person declassified), through `SessionManager::write_public_basis`, the one writer.
+    Without that record, or on a Private chat, a public name is inert: it is not counted, Gate H
+    refuses it, and a monitor refused for that reason is switched off for the chat rather than
+    allowed to stop every turn. No agent may move a chat's tier this way, and a daemon with no
+    user-action key refuses it unless its operator allowed it
+    ([SD-16](../deployment/serve-decisions.md#sd-16-a-keyless-daemon-makes-no-chat-public-by-a-decision-model-unless-its-operator-allows-it)).
+    The fold lives in `crates/biorouter/src/privacy/decision_axes.rs` and reaches every gate
+    through the `DecisionBoundProvider` (`providers/decision_bound.rs`) that
+    `Agent::install_bound_provider` puts in the session's slot. The cells, the doors and the
+    rules are in [§4.1](#41-the-mixed-configuration-worked-through) and DR-33.
+  - **A chat classified Private never reaches a public decision model.** Baseten's decision
+    models are Public with no affiliation, as its chat provider is, so every chat classified
+    Private is refused them. So is an Ollama decision model on a host that is not this computer,
+    and an Ollama cloud tag. A refused decision is logged as `refused`, and nothing is sent. DR-33
+    changes when a chat becomes private, never what a private chat may do: Versa plus Baseten works
+    because the classification stays Public, not because this rule was relaxed.
     When models are listed but this rule rules out every one for a chat, the automatic choice is
     refused too, as a named public model is, rather than reported as no model. The refusal's
     advice follows where the model came from. When a monitor, a gate or the `decide` call named
@@ -358,10 +378,15 @@ this section is the ledger.
     table. `GET /decisions/models?sessionId=` gives, for
     each model, the sentence the gate would refuse it with (Gate H's, affiliation's or the Crew
     rule's), so a picker can explain a public model in a private chat before the person picks
-    it. The gate is asked again before every call
+    it, and a `chatEffect` of `makesPublic` for a public model whose choice would make the chat
+    public (DR-33); `boundProvider` and `boundModel` with no `sessionId` answer the same for a
+    chat not started yet. Every settings, gate and start write answers with its `tierEffect`
+    (`becomesPublic`, `staysPublic`, `becomesPrivateAtNextMessage` or `none`) and the line to show
+    for it. The gate is asked again before every call
     whatever a setting names.
   - **The census** (`crates/biorouter/tests/privacy_guard_wiring.rs`) counts the one
-    `assert_alt_tier_allowed` call and the routes' one `session_reach` call.
+    `assert_alt_tier_allowed` call and the routes' one `session_reach` call, and
+    `DECISION_AXES_SITES` counts every place the DR-33 fold is computed.
 
   The service builds on Albert Lee's prototype in PR #469, which first re-checked privacy before
   every Baseten System One call.
@@ -875,6 +900,32 @@ classification(S) = max   over { floor(capability) at each turn S has ever run,
                     domain: events over time.  Monotone accumulator.  STORED.
 ```
 
+> **Amended by [DR-33](privacy-tiers-execution-plan.md#dr-33-a-chats-decision-models-count-toward-its-tier-and-its-least-private-model-sets-it)
+> (2026-11-10).** Capability now also counts the decision models a chat names, and a subagent's
+> ceiling:
+>
+> ```
+> basis(S)      = public_basis.v1 is present, parses, names S, and classification(S) is Public
+> D(S)          = least over { declared tier of each standing decision name of S }
+>                 a public name included only if basis(S)                 empty set: identity
+> C(S)          = privacy_ceiling.v1's tier, valid only on the subagent it was written for
+> capability(S) = least( components of the provider bound to S,
+>                        D(S) and C(S)   only while classification(S) is Public )
+> ```
+>
+> The classification is read only to **drop** inputs (the inert rule): on a chat classified
+> Private no public name, ceiling or basis is folded, so its capability is exactly the provider's,
+> and every gate's outcome on a Private chat is what it was before DR-33. It never adds an input
+> and never raises anything. Gate H is what justifies it: a model Gate H refuses on every request
+> is not one of the chat's models. The fold is `privacy::decision_axes::from_row`, a pure function
+> of the row (no I/O, no flag read, the one config read is `OLLAMA_HOST`), and the third
+> clause of the invariant below is new with it: **no public decision model ever reads content
+> produced while the chat's capability was Private.** The property test
+> `the_invariants_hold_for_every_sequence_up_to_the_exhaustive_depth` in
+> `privacy/decision_axes_tests.rs` checks all three over every sequence of binds, saves, removals,
+> turns, private calls and reads, spawns, declassifications, branches and switch flips, to depth
+> 5, plus a seeded walk of long sequences.
+
 Capability has no memory. Classification has no reference to live state. The independence is
 enforced three ways:
 
@@ -898,8 +949,13 @@ enforced three ways:
    There is no `From`/`Into`. A single `Ord`-derived tier would be simpler and would invite
    `max()` where `least()` belongs.
 
-2. **Storage level.** Capability is `Agent::capability_tier()`, a method reading
-   `self.provider.lock().await.tier()`. No field, no column, no cache that can go stale.
+2. **Storage level.** Capability is the tier of the provider instance in the session's slot,
+   read at each site (`provider.tier()`, or the sampled `CallCapability`). No field, no column.
+   When the chat names decision models that instance is the `DecisionBoundProvider` wrapper, whose
+   `tier()` is the fold. ⚠ This item and §9.1 used to name `Agent::capability_tier()`; that method
+   does not exist and never did. Readers that ask which model the chat is bound to (the save
+   checks, DR-16's raise comparators, Gate A's incoming side, spawn's R4) read
+   `Agent::bound_model_tier()`, the inner provider's tier, never the slot's.
 
 3. **Scope level.** Of the five gates, exactly one reads both (Gate A/B, the bind). Gate C reads
    capability and `extension.tier`. Gate D reads capability and the *target's* classification,
@@ -930,6 +986,31 @@ it is the reason `tier()` is an instance method rather than a lookup on `get_nam
 `providers/lead_worker.rs:332-334`), which would badge a private-lead/public-worker session Private
 — the exact inverse of R2.
 
+**Versa plus a Baseten decision model (DR-33).** The person chose joey-1 on Baseten for an empty
+Versa chat and confirmed "This chat will be public: joey-1 runs on Baseten."
+`tier = least(Private, Public) = Public`.
+
+- Capability is **Public**: the chat cannot call a private MCP server, read a private knowledge
+  base or recall a private chat.
+- Classification does **not** ratchet, because `floor(Public) = Public`. The chat's content is
+  read by a hosted decision model at every check, so there is nothing left on that axis to
+  protect.
+- Marking it Private would make Gate H refuse every Baseten decision from its first turn, which
+  is the configuration the owner asked for.
+
+The other cells: Versa with tev1:0.8b on this computer is Private, exactly as before; a chat on
+Claude Code or Codex is Public whatever it names; Ollama on this computer with joey-1, confirmed,
+is Public. A chat may be made public this way only while it holds no message, or after the person
+declassified it from History, because otherwise naming a public model would be a second
+declassification door. The save that does it writes `public_basis.v1` in the statement that checks
+that, and a Versa chat that already has messages is refused with "Nothing was saved: this chat
+already has messages on a private model, so it becomes private at its next message and joey-1 ·
+Baseten couldn't read it. Start a new chat and choose joey-1 before its first message, or make
+this chat public from History." Removing the last public name makes the chat private at its next
+message, and the basis goes with it. The doors and their answers are in
+[DR-33](privacy-tiers-execution-plan.md#dr-33-a-chats-decision-models-count-toward-its-tier-and-its-least-private-model-sets-it)
+and the [decision-model guide](../agent-loop/decision-models.md#privacy).
+
 ### 4.2 The residual state
 
 `classification = Private, capability = Public` is representable but unreachable through any legal
@@ -939,6 +1020,13 @@ state both properties hold at once: the session cannot run a turn until repaired
 *and* it stays invisible to every public reader, because Gate D keys on the target's classification
 against the caller's capability, independent of the target's own capability. A corrupted private
 session cannot leak while it is broken.
+
+**A public decision name on a Private chat, or one without a basis, is not this state (DR-33).**
+It can arise from a name saved while the master switch was off, an older row, an import, a gate
+that closed, or a chat opened under `biorouter web`, whose shared agent never folds. The name is
+inert, so it never lowers capability and Gate B has nothing to repair. Gate H refuses it at every
+request, and a monitor refused for that reason is switched off for the chat with one notice rather
+than allowed, with `onError: pause`, to stop every turn.
 
 ---
 
@@ -1002,6 +1090,18 @@ construction.
 **Composites.** `providers::create` intercepts *before* the registry lookup when
 `BIOROUTER_LEAD_MODEL` is set (`factory.rs:139-149`), so `create("ollama", …)` can hand back a
 composite whose lead is `anthropic`. Tier must always be read off the **constructed instance**.
+
+**Decision models a chat names (DR-33).** A decision model is not a `Provider`, but the ones a
+chat names are models it runs on, so they count toward its capability. A name's tier is declared
+without a network call (`decision_axes::declared_name`, through
+`providers::decision::chat::declared_axes`): `baseten_decision` is Public with no affiliation;
+`ollama_decision` is Public for a cloud tag, and otherwise follows `self_hosted_tier(OLLAMA_HOST)`,
+so a loopback host is Private and Local and any other host is Public. A provider it does not know,
+or an `OLLAMA_HOST` that does not resolve, is doubt and is not counted. An Ollama model renamed from
+a cloud model with `ollama cp` declares Private here and Public when its adapter opens, so it lowers
+nothing and Gate H refuses it per call. The configured `BIOROUTER_DECISION_PROVIDER` and
+`BIOROUTER_DECISION_MODEL`, and the automatic choice, are resolved inside the chat's classification
+and never set it.
 
 ### 5.2 Sessions
 
@@ -1134,6 +1234,26 @@ So classification moves at the two moments content actually appears:
 
 `Agent::update_provider` keeps **only** the refusal.
 
+> **Amended by DR-33 (2026-11-10): Gate B floors the folded capability, and reads of private
+> content are a third trigger.** The turn ratchet's input is `floor(capability(S))`, the tier of
+> the `DecisionBoundProvider` Gate B installs from the row it holds, in place of the bare
+> provider's tier; its reason is still `turn:<provider>`. A fold can lag the row on a Public chat
+> (a lowering written by the CLI while another daemon holds the chat's agent), so every permit of
+> private content into a chat now ratchets the **reader** before the result is returned, through
+> one helper, `raise_reader_privacy` in `extension_manager.rs`, which writes the same monotone
+> `raise_privacy` update Gate C's ratchet on a private dispatch does:
+>
+> | Site | Reason recorded |
+> |---|---|
+> | A `chatrecall` load, search or recent listing that returned a Private chat (`chatrecall_extension.rs`) | `read:<target id>` |
+> | `workspace_read_conversation` of a Private chat (`workspace_inspector.rs`) | `read:<target id>` |
+> | A knowledge read of a private base: the knowledge server marks the result `_meta.privateContent`, and `dispatch_tool_call` ratchets the caller beside the ratchet for a private extension | `kb:<base id>` |
+>
+> On every state reachable before DR-33 these change nothing, because a reader with Private capability
+> was already classified Private after Gate B. A row that cannot be read is doubt, and doubt
+> ratchets. With the master switch off as sampled, nothing ratchets. A `read:` or `kb:` reason is
+> not `turn:*`, so declassifying such a chat takes the strong control (§12.4).
+
 ### 6.2 Persisted so it cannot be reversed
 
 The session update builder emits plain `col = ?` through its `add_update!` macro
@@ -1168,6 +1288,8 @@ deliberately no builder setter that accepts `Public`.
 ### 6.4 What deliberately does not raise it
 
 - A mixed lead/worker composite (`least = Public`, so `floor(Public) = Public`). Flagged for ruling.
+- A public decision name beside a private model, on a chat a person made public by naming it
+  (DR-33): the folded capability is Public, so `floor(Public) = Public`.
 - A private MCP call from a public-capability session — Gate C refuses, so there is no "it
   happened, now ratchet" path.
 - Reading a public session into a private one. Upward flow is safe.
@@ -1341,6 +1463,39 @@ something other than what was asked for (the `BIOROUTER_LEAD_MODEL` intercept), 
 string — and `versa_azure`, `versa_bedrock`, `ollama`, `llamacpp` and every declarative provider
 are `allows_unlisted_models`, so an arbitrary model string is accepted. Both are harmless because
 the tier is a property of the instance and never of the model id.
+
+**Amended by DR-33: a child runs at its parent's effective tier at the moment of the spawn.** A
+parent made public by a decision model holds a private model under a Public capability, so the
+spawn (`apply_settings_overrides` in `agents/subagent_tool.rs`) takes four values: the parent's
+model (`P_model`, the inner provider), the parent's effective tier and affiliation (`E_p`, the
+wrapper's), the child's own model (`C_model`), and the child's effective tier and affiliation
+(`E_c`, its model folded with the ceiling it is about to carry). Each check compares the pair it is
+about:
+
+| Check | Compares | Why |
+|---|---|---|
+| R4, a child must not gain private reach | `C_model` against `P_model` | It asks about the reach the child's own model brings |
+| DR-19, a private chat's work must not go to a public model | `E_c` against `E_p` | It asks about the chats |
+| DR-31, affiliation never changes across a spawn | `E_c` affiliation against `E_p` affiliation | A public child has none, like its public parent |
+
+| Parent | Child | Verdict |
+|---|---|---|
+| Public by a decision model (Versa plus joey-1, confirmed) | Inherits Versa, or any model no more private | ✓, stamped `privacy_ceiling.v1 = { tier: public, fromSession: <parent>, loweredBy }`, born Public |
+| Public by a decision model | Overrides to a public model | ✓, ceiling stamped, so removing names on the child can never raise it |
+| Public by its own model (Claude Code) | Overrides to Versa | ✗, as before (R4). A test pins it, so nobody fixes the rows above by weakening R4 |
+| Private | Inherits, or a private override | ✓, as before; no ceiling |
+| Private | A public override, or a public monitor or default | ✗, as before |
+
+The ceiling is written in the statement that creates the child and sets its classification, and is
+valid only while the row is a SubAgent whose parent is the ceiling's `fromSession`; branches,
+copies and imports strip it. `task_config.privacy_tier` stays `floor(E_c)`, so the `floor` census
+is unchanged, and the extension filter takes `E_c`: a public parent's Versa child drops private
+extensions, with a note that names the parent's decision model rather than claiming the child runs
+on a public model. The copies of the parent's "also watch" monitors are now checked too, against
+the child's classification at birth, so a public copy is never carried onto a Private child. A
+parent that later becomes Private does not raise its running children; every payload it then sends
+into a child born under its ceiling asks for the first crossing approval again
+(`crossing::needs_disclosure_to`), rather than once per pair.
 
 ### 8.3 Agent Drafter workers violate R5 today
 
@@ -2682,6 +2837,23 @@ The session row keeps `privacy_reason = 'declassified_by_user'`, so History show
 **"Public — made public by you on 27 Jul 2026"** permanently. A declassified session must never be
 indistinguishable from one that was always public.
 
+**Decision models in the same transaction (DR-33).** Without this, a public decision name left on
+a Private chat would go live the moment the chat became Public, over a transcript that may hold
+private extension results. So `privacy::declassify` also writes, inside its transaction and never
+to the classification:
+
+- every enabled monitor whose model is public is **disabled**, not deleted, and a public default
+  decision model is cleared, with a note stored as `decision_notice.v1`;
+- `public_basis.v1` and `privacy_ceiling.v1` are removed;
+- gates are left alone (a gate has no paused state), and open phases whose gate model is public
+  are listed instead.
+
+A settings record that does not parse is left as it is. The desktop's declassify dialog names the
+monitors and the default it turns off before the person agrees ("Monitor "Done" uses joey-1 ·
+Baseten and will be turned off."), with the InfoTip "After this, a public decision model you
+choose can read the whole chat." `declassify::decision_models_turned_off` gives the same list to
+any other surface.
+
 ### 12.6 After declassification, and bulk
 
 The chat is genuinely public: its bound provider is left exactly as it was (a public chat may run a
@@ -2689,6 +2861,13 @@ private model — that direction was never restricted), nothing is re-indexed, n
 If a private model later runs a turn on it, the ratchet fires again and the user may declassify
 again. That is deliberate — declassification is an assertion about the contents *as they stood*,
 not a permanent exemption.
+
+**Amended by DR-33.** A declassified chat is eligible to be made public by a decision model: the
+person may turn a public monitor back on, or name a public model, before the chat's next message,
+and the save writes `public_basis.v1` as on an empty chat. After that, a private model's next turn
+does not ratchet the chat again, because its capability is Public; the chat is then public for its
+whole transcript, by the person's choice twice over. Without such a save, the next turn on a
+private model ratchets it as above.
 
 ⚠ **SUPERSEDED by R18: bulk is now the general case.** The operator ruled that *"each
 declassification action can declassify multiple chats (in batch) if the user so wants it"* — one

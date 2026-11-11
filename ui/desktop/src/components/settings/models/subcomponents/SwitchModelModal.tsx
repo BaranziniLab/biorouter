@@ -37,7 +37,8 @@ import { switchModelCopy } from '../copy';
 import { isDecisionProvider } from '../../../decisions/decisionWire';
 import { DecisionModelInstall } from '../../../decisions/DecisionModelInstall';
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
-import { decisionModelPlace } from '../../../decisions/decisionWords';
+import { TIER_EFFECT_COPY, decisionModelPlace } from '../../../decisions/decisionWords';
+import type { PrivacyBasis } from '../../../../utils/sessionDecisions';
 import './model-dialogs.css';
 import {
   llamacppStatus,
@@ -138,6 +139,22 @@ export const PUBLIC_MODEL_IN_PRIVATE_CHAT =
  */
 export const PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP =
   "After your next message this chat becomes private. Public models can't be used in it again unless you make it public from History.";
+
+/**
+ * DR-33 (design §5): the switch's tip on a chat a decision model keeps public,
+ * "This chat stays public: its decision models include joey-1 · Baseten.", or,
+ * on a subagent its public parent's ceiling keeps public, "This chat stays
+ * public: it is part of a public chat's work." (no model of its own changes
+ * that, so "becomes private" would be wrong there). `null` when nothing but
+ * the chat's own model decides.
+ */
+export function privacyBasisKeepsPublic(basis: PrivacyBasis | null | undefined): string | null {
+  if (!basis) return null;
+  if (basis.source === 'parent') return TIER_EFFECT_COPY.switchStaysPublicParent;
+  if (!basis.model) return null;
+  const model = [basis.model, basis.place].filter(Boolean).join(' · ');
+  return TIER_EFFECT_COPY.switchStaysPublic(model);
+}
 
 /**
  * A provider row in the picker. `unavailableReason` is set for a provider the
@@ -344,6 +361,12 @@ type SwitchModelModalProps = {
    * for, so "Use other provider" can name that chat to the catalog it opens.
    */
   unsentChatTabId?: string;
+  /**
+   * DR-33: a decision model is why this public chat stays public (the daemon's
+   * `privacyBasis`). A switch to a private model then keeps it public, and the
+   * tip says so in place of "After your next message this chat becomes private".
+   */
+  privacyBasis?: PrivacyBasis | null;
 };
 export const SwitchModelModal = ({
   sessionId,
@@ -356,6 +379,7 @@ export const SwitchModelModal = ({
   privacyTier,
   onChooseForUnsentChat,
   unsentChatTabId,
+  privacyBasis = null,
 }: SwitchModelModalProps) => {
   const { getProviders, getProviderModels, read, upsert } = useConfig();
   const { changeModel, currentModel, currentProvider } = useModelAndProvider();
@@ -497,6 +521,9 @@ export const SwitchModelModal = ({
     !!sessionId &&
     privacyTier === 'public' &&
     activeProviders.find((row) => row.name === selectedProviderName)?.metadata.tier === 'private';
+  // DR-33: a chat its decision models made public stays public on a private model.
+  const becomesPrivateTip =
+    privacyBasisKeepsPublic(privacyBasis) ?? PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP;
 
   /**
    * SD-1, at the one place every model picker in the app ends up.
@@ -1226,7 +1253,7 @@ export const SwitchModelModal = ({
                 data-testid="switch-model-becomes-private"
                 className="text-supporting text-text-muted [overflow-wrap:anywhere]"
               >
-                {PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP}
+                {becomesPrivateTip}
               </p>
             )}
           </div>
@@ -1341,7 +1368,7 @@ export const SwitchModelModal = ({
                   data-testid="switch-model-becomes-private"
                   className="text-supporting text-text-muted [overflow-wrap:anywhere]"
                 >
-                  {PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP}
+                  {becomesPrivateTip}
                 </p>
               )}
             </div>

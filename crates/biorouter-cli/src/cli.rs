@@ -147,6 +147,32 @@ pub struct SessionOptions {
         long_help = "Set a limit on how many turns (iterations) the agent can take without asking for user input to continue. Use 0 for unlimited turns (the default). Existing loop detection and Stop still apply."
     )]
     pub max_turns: Option<u32>,
+
+    #[arg(
+        long = "decision-model",
+        value_name = "MODEL",
+        help = "The chat's default decision model, set before its first message",
+        long_help = "The chat's default decision model, by its name (tev1:0.8b, joey-1) or as provider/model, set before the chat's first message. A chat is as private as its least private model: a public decision model (such as joey-1 on Baseten) makes a chat on a private model public, which asks for a confirmation typed at this terminal; without a terminal nothing is set and the chat does not start."
+    )]
+    pub decision_model: Option<String>,
+
+    #[arg(
+        long = "monitors",
+        value_name = "FILE",
+        help = "Monitors for the chat from a YAML or JSON file, set before its first message",
+        long_help = "Monitors (and optionally a default decision model) for the chat, from a YAML or JSON file in the shape of a workflow's decision_settings, set before the chat's first message. A public decision model among them is asked about as --decision-model's is."
+    )]
+    pub monitors: Option<std::path::PathBuf>,
+}
+
+impl SessionOptions {
+    /// `--decision-model` and `--monitors`, for the session builder.
+    pub fn decisions(&self) -> crate::session::StartDecisions {
+        crate::session::StartDecisions {
+            model: self.decision_model.clone(),
+            monitors: self.monitors.clone(),
+        }
+    }
 }
 
 /// Extension configuration options shared between Session and Run commands
@@ -1655,6 +1681,16 @@ struct ServeOptions {
     /// Open a browser once it is ready
     #[arg(long, help = "Open a browser once the server is ready")]
     open: bool,
+
+    /// Let a person in the browser make a chat public with a decision model (SD-16)
+    #[arg(
+        long,
+        help = "Let a person in the browser make a new chat public by choosing a public \
+                decision model (such as one on Baseten) before its first message. Without it, \
+                this server refuses such a choice, because it cannot tell a person from a \
+                program holding its secret."
+    )]
+    allow_public_decision_models: bool,
 }
 
 impl ServeOptions {
@@ -1669,6 +1705,7 @@ impl ServeOptions {
             self.open,
             self.computer_use_approval,
             self.folder_access_approval,
+            self.allow_public_decision_models,
         )
         .await
     }
@@ -2811,6 +2848,7 @@ async fn handle_interactive_session(chat: SessionChat) -> Result<()> {
         interactive: true,
         quiet: false,
         output_format: "text".to_string(),
+        decisions: session_opts.decisions(),
     })
     .await;
 
@@ -3040,6 +3078,7 @@ async fn handle_run_command(
         interactive: run_behavior.interactive,
         quiet: output_opts.quiet,
         output_format: output_opts.output_format,
+        decisions: session_opts.decisions(),
     })
     .await;
 
@@ -3383,6 +3422,7 @@ async fn handle_doctor_fix(dep: String) -> Result<()> {
         interactive: true,
         quiet: false,
         output_format: "text".to_string(),
+        decisions: Default::default(),
     })
     .await;
     session.interactive(Some(prompt)).await
@@ -3418,6 +3458,7 @@ async fn handle_default_session() -> Result<()> {
         interactive: true,
         quiet: false,
         output_format: "text".to_string(),
+        decisions: Default::default(),
     })
     .await;
     session.interactive(None).await

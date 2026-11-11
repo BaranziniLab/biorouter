@@ -37,7 +37,7 @@ use biorouter::decision::{
     DecisionModelSource, DecisionRequest, DecisionResult, DecisionService, DecisionSession,
     DecisionUseGate,
 };
-use biorouter::privacy::{ModelAffiliation, ProviderTier};
+use biorouter::privacy::{ModelAffiliation, ProviderTier, SessionClassification};
 use biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL;
 use biorouter_server::state::AppState;
 use serde_json::{json, Value};
@@ -435,16 +435,31 @@ async fn start_with_an_invalid_block_is_400_with_the_sentence() {
     assert_eq!(chats(&state).await, before, "no chat was made");
 }
 
+/// The key the start's Versa provider is built with; never sent.
+fn versa_key() -> HashMap<String, String> {
+    HashMap::from([(
+        "VERSA_AZURE_API_KEY".to_string(),
+        "placeholder-never-sent".to_string(),
+    )])
+}
+
+/// DR-33 (design §3.7): a Versa workflow that names joey-1 makes the new chat
+/// public, so starting it is a lowering the person confirms. Without
+/// `accept_public_decision_models` the start asks (409, its own body) and the
+/// chat is discarded; with it the chat starts public with the person's basis;
+/// the same workflow on a local decision model moves nothing. No decision
+/// model is asked either way.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
-async fn start_refused_by_privacy_is_422_and_discards_the_chat() {
+async fn a_workflow_naming_a_public_decision_model_starts_a_versa_chat_public_only_when_confirmed()
+{
+    if !biorouter::privacy::privacy_tiers_enabled() {
+        return;
+    }
     let (state, requests) = daemon().await;
     let dir = tempfile::tempdir().unwrap();
     let before = chats(&state).await;
 
-    // The new chat is bound to Versa, a private model, so its first turn
-    // makes it Private: the hosted decision model may not read it. The key is
-    // a placeholder; the provider is built and never sent a request.
     let mut request = start(
         dir.path(),
         supervised_workflow(0.7, "baseten_decision/joey-1"),
@@ -455,26 +470,51 @@ async fn start_refused_by_privacy_is_422_and_discards_the_chat() {
         &state,
         "POST",
         "/agent/start",
-        Some(request),
+        Some(request.clone()),
         true,
-        HashMap::from([(
-            "VERSA_AZURE_API_KEY".to_string(),
-            "placeholder-never-sent".to_string(),
-        )]),
+        versa_key(),
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    let text = message(&body);
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let question: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(question["code"], "needsPublicDecisionConfirmation");
     assert!(
-        text.starts_with(NOT_STARTED) && text.contains("joey-1"),
-        "{text}"
+        question["message"].as_str().unwrap().contains("joey-1"),
+        "{body}"
     );
     assert_eq!(chats(&state).await, before, "the chat was discarded");
-    assert_eq!(requests.load(Ordering::SeqCst), 0);
     state.clear_cached_agents().await;
 
-    // The same workflow on a local decision model starts on the same model:
-    // the refusal above is the hosted model's.
+    request["accept_public_decision_models"] = json!(true);
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/agent/start",
+        Some(request),
+        true,
+        versa_key(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let started: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(started["tierEffect"], "becomesPublic", "{body}");
+    let id = started["id"].as_str().unwrap().to_string();
+    let row = state.session_manager().get_session(&id, false).await.unwrap();
+    assert_eq!(row.privacy_tier, SessionClassification::Public);
+    assert!(
+        row.extension_data
+            .get_extension_state(
+                biorouter::privacy::decision_axes::PUBLIC_BASIS_STATE,
+                biorouter::privacy::decision_axes::PUBLIC_BASIS_VERSION,
+            )
+            .is_some(),
+        "the person's acceptance is recorded with the seed"
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    discard(&state, &id).await;
+
+    // The same workflow on a local decision model starts on the same model
+    // and moves nothing.
     let mut request = start(
         dir.path(),
         supervised_workflow(0.7, "ollama_decision/tev1:0.8b"),
@@ -487,18 +527,104 @@ async fn start_refused_by_privacy_is_422_and_discards_the_chat() {
         "/agent/start",
         Some(request),
         true,
-        HashMap::from([(
-            "VERSA_AZURE_API_KEY".to_string(),
-            "placeholder-never-sent".to_string(),
-        )]),
+        versa_key(),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let started: Value = serde_json::from_str(&body).unwrap();
+    assert!(started.get("tierEffect").is_none(), "{body}");
+    discard(&state, started["id"].as_str().unwrap()).await;
+}
+
+/// DR-33 (design §4): a chat's decision models chosen before its first
+/// message ride the start itself. A Baseten default on a Versa chat asks
+/// first (409, chat discarded), starts public with the confirmation, and is
+/// refused beside a workflow that declares its own decision settings (400,
+/// nothing created).
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_start_carries_the_chats_decision_models_before_its_first_message() {
+    if !biorouter::privacy::privacy_tiers_enabled() {
+        return;
+    }
+    let (state, requests) = daemon().await;
+    let dir = tempfile::tempdir().unwrap();
+    let before = chats(&state).await;
+    let mut request = json!({
+        "working_dir": dir.path(),
+        "provider": "versa_azure",
+        "model": VERSA_AZURE_DEFAULT_MODEL,
+        "extension_overrides": [],
+        "decision_settings": {
+            "defaultModel": {"provider": "baseten_decision", "model": "joey-1"},
+            "monitors": []
+        }
+    });
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/agent/start",
+        Some(request.clone()),
+        true,
+        versa_key(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let question: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(question["code"], "needsPublicDecisionConfirmation");
+    assert_eq!(
+        question["message"],
+        "This chat will be public: joey-1 runs on Baseten."
+    );
+    assert_eq!(chats(&state).await, before, "the chat was discarded");
+    state.clear_cached_agents().await;
+
+    request["accept_public_decision_models"] = json!(true);
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/agent/start",
+        Some(request.clone()),
+        true,
+        versa_key(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let started: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(started["tierEffect"], "becomesPublic");
+    assert_eq!(
+        started["tierEffectLine"],
+        "This chat will be public: joey-1 runs on Baseten."
+    );
+    let id = started["id"].as_str().unwrap().to_string();
+    let agent = state.peek_agent(&id).await.expect("the start holds the chat's agent");
+    assert_eq!(
+        agent.provider().await.unwrap().tier(),
+        ProviderTier::Public,
+        "the chat's agent runs public from the start"
+    );
+    assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
     discard(&state, &id).await;
+
+    // Beside a workflow that declares its own decision settings: refused.
+    request["workflow"] = supervised_workflow(0.7, "ollama_decision/tev1:0.8b");
+    let before = chats(&state).await;
+    let (status, body) = send(
+        &state,
+        "POST",
+        "/agent/start",
+        Some(request),
+        true,
+        versa_key(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        message(&body),
+        biorouter_server::routes::agent::START_DECISION_SETTINGS_BESIDE_A_WORKFLOW
+    );
+    assert_eq!(chats(&state).await, before);
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

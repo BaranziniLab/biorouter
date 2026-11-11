@@ -81,6 +81,69 @@ pub(super) const PRIVATE: &str = "private";
 /// spellings of it is exactly how a barrier silently stops working.
 pub const CAPABILITY_TIER_META_KEY: &str = "biorouter-capability-tier";
 
+/// The result meta key a built-in server sets when the result it returns was
+/// read out of private content (DR-33, design §2.6), and the key beside it that
+/// names the bases. The daemon's dispatch choke point reads both
+/// ([`private_content_bases`]) and ratchets the CALLER's chat to Private before
+/// the result is returned, with the reason `kb:<base id>`.
+///
+/// A mark rather than a ratchet here because this crate cannot reach the
+/// session store; `dispatch_tool_call` is the one choke point every model's
+/// call passes through, and it already ratchets there for private extensions.
+pub const PRIVATE_CONTENT_META_KEY: &str = "privateContent";
+pub const PRIVATE_CONTENT_BASES_META_KEY: &str = "privateContentKnowledgeBases";
+
+/// Mark `result` as carrying content read out of the private `bases`. Nothing
+/// is marked for an empty list.
+pub fn mark_private_content(result: &mut rmcp::model::CallToolResult, bases: &[String]) {
+    if bases.is_empty() {
+        return;
+    }
+    let meta = result.meta.get_or_insert_with(rmcp::model::Meta::new);
+    meta.0.insert(
+        PRIVATE_CONTENT_META_KEY.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    meta.0.insert(
+        PRIVATE_CONTENT_BASES_META_KEY.to_string(),
+        serde_json::Value::Array(
+            bases
+                .iter()
+                .map(|id| serde_json::Value::String(id.clone()))
+                .collect(),
+        ),
+    );
+}
+
+/// The private bases a marked result was read from, or `None` when it carries
+/// no mark. A mark with no readable list still counts: the content was private
+/// even if the ids were lost, and the reader is ratcheted as for `unknown`.
+pub fn private_content_bases(meta: Option<&rmcp::model::Meta>) -> Option<Vec<String>> {
+    let meta = meta?;
+    if meta.0.get(PRIVATE_CONTENT_META_KEY) != Some(&serde_json::Value::Bool(true)) {
+        return None;
+    }
+    let bases = meta
+        .0
+        .get(PRIVATE_CONTENT_BASES_META_KEY)
+        .and_then(|v| v.as_array())
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(bases)
+}
+
+/// The private bases among `ids`, in order: what a call reading them gives a
+/// caller that it must be told about ([`mark_private_content`]). Not a
+/// reachability question, which only [`assert_reachable`] answers: the caller
+/// has already been admitted to every id here.
+pub fn private_among(root: &Path, ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    ids.into_iter().filter(|id| is_private(root, id)).collect()
+}
+
 /// Names no base, no page and no snippet. Constant, so a model that retries sees
 /// the same string and stops rather than looping.
 pub const KB_PRIVATE_REFUSAL: &str = "\

@@ -27,7 +27,12 @@ use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session, SessionManager, WorkingDirUpdate};
 use biorouter::workflow::runtime::WORKFLOW_NOT_STARTED;
-use biorouter::workflow::supervision::{self, SeedTarget, SeedTargetKind};
+use biorouter::decision::save::LoweringConsent;
+use biorouter::decision::settings::DecisionSettings;
+use biorouter::privacy::decision_axes::TierEffect;
+use biorouter::workflow::supervision::{
+    self, SeedConsent, SeedRefusalKind, SeedTarget, SeedTargetKind,
+};
 use biorouter::workflow::Workflow;
 #[cfg(test)]
 use biorouter::workflow::WorkflowKnowledgeBases;
@@ -412,7 +417,48 @@ pub struct StartAgentRequest {
     workflow_deeplink: Option<String>,
     #[serde(default)]
     extension_overrides: Option<Vec<ExtensionConfig>>,
+    /// DR-33 (design §4): the new chat's decision settings (its default
+    /// decision model and monitors), saved before its first message through
+    /// the same check a `PUT /sessions/{id}/decision-settings` gets. Refused
+    /// with 400 beside a workflow that declares its own.
+    #[serde(default, alias = "decisionSettings")]
+    decision_settings: Option<DecisionSettings>,
+    /// The person saw "This chat will be public: …" and accepted it: needed,
+    /// with the user-action proof, when `decision_settings` or the workflow's
+    /// own decision models would make a chat on a private model public.
+    #[serde(default, alias = "acceptPublicDecisionModels")]
+    accept_public_decision_models: bool,
 }
+
+/// `POST /agent/start`'s answer: the new chat, and what its decision models
+/// did to its privacy tier (DR-33).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StartedSession {
+    #[serde(flatten)]
+    pub session: Session,
+    /// `becomesPublic` when the decision models the request or its workflow
+    /// named made this chat, on a private model, public; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier_effect: Option<TierEffect>,
+    /// The line to show for it ("This chat will be public: joey-1 runs on
+    /// Baseten."), absent when there is nothing to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier_effect_line: Option<String>,
+}
+
+impl std::ops::Deref for StartedSession {
+    type Target = Session;
+
+    fn deref(&self) -> &Session {
+        &self.session
+    }
+}
+
+/// The refusal of a start that names its own decision settings beside a
+/// workflow that declares them.
+pub const START_DECISION_SETTINGS_BESIDE_A_WORKFLOW: &str =
+    "This workflow sets its own decision models; change them after the chat starts.";
 
 fn configured_new_session_provider() -> Result<Option<(String, ModelConfig)>, ErrorResponse> {
     let config = Config::global();
@@ -1032,21 +1078,76 @@ pub struct RestartAgentResponse {
     path = "/agent/start",
     request_body = StartAgentRequest,
     responses(
-        (status = 200, description = "Agent started successfully. A workflow that declares `decision_settings` or an `orchestration_plan` has had them applied to the new chat before anything was sent in it.", body = Session),
+        (status = 200, description = "Agent started successfully. A workflow that declares `decision_settings` or an `orchestration_plan` has had them applied to the new chat before anything was sent in it, and so have the request's own `decision_settings`. `tierEffect` says when they made the chat public (DR-33).", body = StartedSession),
         (status = 400, description = "Bad request. For a workflow that declares monitors or a phase plan, also: those blocks are malformed, and the message reads \"The workflow was not started: <sentence>\". No chat is left behind.", body = ErrorResponse),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 403, description = "The workflow declares monitors or a phase plan, which only the person may apply to a chat, and this daemon holds a user-action key the request did not prove (or the desktop daemon's key never arrived). No chat was created.", body = ErrorResponse),
-        (status = 422, description = "The workflow's monitors or phase gates are valid but cannot run for this chat: a decision model it may not use (its privacy tier, an institution, a Crew grant), one that is not there, or one that cannot take the question. The message reads \"The workflow was not started: <sentence>\", and the chat was discarded.", body = ErrorResponse),
-        (status = 409, description = "The workflow declares a phase plan, which runs only in the Autonomous approval mode, and Biorouter is in another (the message reads \"The workflow was not started: <sentence>\" and the chat was discarded). Or: the configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.", body = ErrorResponse),
+        (status = 403, description = "The workflow declares monitors or a phase plan, or the request names `decision_settings`, which only the person may apply to a chat, and this daemon holds a user-action key the request did not prove (or the desktop daemon's key never arrived). No chat was created. Or: their decision models would make the chat public and this daemon holds no user-action key and its operator did not allow that (SD-16); the chat was discarded.", body = ErrorResponse),
+        (status = 422, description = "The request's own `decision_settings` cannot run for this chat (the save check's sentence), or the workflow's monitors or phase gates are valid but cannot run for this chat: a decision model it may not use (its privacy tier, an institution, a Crew grant), one that is not there, or one that cannot take the question. The message reads \"The workflow was not started: <sentence>\", and the chat was discarded.", body = ErrorResponse),
+        (status = 409, description = "The workflow's or the request's decision models would make this chat, which runs on a private model, public, and the request did not say `accept_public_decision_models: true` (DR-33): the body is a `PublicDecisionConfirmation` (`code` = `needsPublicDecisionConfirmation`, `message` = the question) and the chat was discarded. Or: the workflow declares a phase plan, which runs only in the Autonomous approval mode, and Biorouter is in another (the message reads \"The workflow was not started: <sentence>\" and the chat was discarded). Or: the configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
-#[allow(clippy::too_many_lines)]
 async fn start_agent(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<StartAgentRequest>,
-) -> Result<Json<Session>, ErrorResponse> {
+) -> Result<Json<StartedSession>, StartRefusal> {
+    // A start whose decision models would make the chat public asks the
+    // person first, in a body the client can tell from every other 409
+    // (DR-33). `start_new_chat` answers in `ErrorResponse`'s shape and leaves
+    // the question here.
+    let mut confirmation: Option<crate::routes::decisions::PublicDecisionConfirmation> = None;
+    let started = start_new_chat(state, headers, payload, &mut confirmation).await;
+    started.map(Json).map_err(|error| StartRefusal {
+        status: error.status,
+        message: error.message,
+        confirmation,
+    })
+}
+
+/// Why `POST /agent/start` started nothing: an [`ErrorResponse`], or the
+/// question a start whose decision models would make the chat public asks
+/// (DR-33), answered as its own JSON body so a client can tell it from every
+/// other 409.
+#[derive(Debug)]
+pub struct StartRefusal {
+    pub status: StatusCode,
+    pub message: String,
+    pub confirmation: Option<crate::routes::decisions::PublicDecisionConfirmation>,
+}
+
+impl IntoResponse for StartRefusal {
+    fn into_response(self) -> axum::response::Response {
+        match self.confirmation {
+            Some(question) => (StatusCode::CONFLICT, Json(question)).into_response(),
+            None => ErrorResponse {
+                message: self.message,
+                status: self.status,
+            }
+            .into_response(),
+        }
+    }
+}
+
+/// How a start that may make its chat public by a decision model was
+/// confirmed (DR-33), as the seed takes it.
+fn seed_consent(consent: &LoweringConsent) -> SeedConsent {
+    match consent {
+        LoweringConsent::Confirmed => SeedConsent::Confirmed {
+            door: "agent-start",
+        },
+        LoweringConsent::Unconfirmed => SeedConsent::Unconfirmed,
+        LoweringConsent::NotAllowedHere(sentence) => SeedConsent::NotAllowedHere(sentence.clone()),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn start_new_chat(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    payload: StartAgentRequest,
+    confirmation: &mut Option<crate::routes::decisions::PublicDecisionConfirmation>,
+) -> Result<StartedSession, ErrorResponse> {
     let StartAgentRequest {
         working_dir,
         provider,
@@ -1055,7 +1156,12 @@ async fn start_agent(
         workflow_id,
         workflow_deeplink,
         extension_overrides,
+        decision_settings,
+        accept_public_decision_models,
     } = payload;
+    // DR-33: the person's answer to "this chat will be public", read once.
+    let consent =
+        crate::routes::decisions::request_consent(&headers, accept_public_decision_models);
 
     let prepared_provider = prepare_new_session_provider(&headers, provider, model).await?;
 
@@ -1103,11 +1209,33 @@ async fn start_agent(
         }
     }
 
+    // DR-33 (design §4): the request's own decision settings, checked for
+    // shape before any chat exists. Beside a workflow that declares its own
+    // they are refused: one start, one set of decision models.
+    if let Some(settings) = decision_settings.as_ref() {
+        if original_workflow
+            .as_ref()
+            .is_some_and(|workflow| workflow.decision_settings.is_some())
+        {
+            return Err(ErrorResponse {
+                message: START_DECISION_SETTINGS_BESIDE_A_WORKFLOW.to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
+        if let Err(sentence) = biorouter::decision::settings::validate(settings) {
+            return Err(ErrorResponse {
+                message: sentence,
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
+    }
+
     // Seeding a workflow's supervision writes a chat's decision settings and
     // phase plan, which is the person's decision exactly as the PUT routes'
     // writes are: the same proof rule, asked before any chat exists, so a
-    // refusal leaves nothing behind.
-    if supervised {
+    // refusal leaves nothing behind. The request's own decision settings are
+    // the same write.
+    if supervised || decision_settings.is_some() {
         if let Some(sentence) = crate::routes::decisions::decision_write_refusal_sentence(&headers)
         {
             return Err(ErrorResponse {
@@ -1244,10 +1372,26 @@ async fn start_agent(
             enforced: biorouter::privacy::privacy_tiers_enabled(),
             bound_tier,
         };
-        if let Err(refusal) =
-            supervision::seed(manager, state.decision_service(), workflow, target).await
+        if let Err(refusal) = supervision::seed(
+            manager,
+            state.decision_service(),
+            workflow,
+            target.with_consent(seed_consent(&consent)),
+        )
+        .await
         {
             discard_failed_new_session(&state, &session.id).await;
+            if refusal.kind == SeedRefusalKind::NeedsPublicDecisionConfirmation {
+                *confirmation = Some(crate::routes::decisions::PublicDecisionConfirmation {
+                    code: crate::routes::decisions::NEEDS_PUBLIC_DECISION_CONFIRMATION.to_string(),
+                    message: refusal
+                        .question
+                        .clone()
+                        .unwrap_or_else(|| refusal.sentence.clone()),
+                    info: biorouter::decision::save::BECOMES_PUBLIC_INFO.to_string(),
+                    models: Vec::new(),
+                });
+            }
             return Err(ErrorResponse {
                 message: format!("{WORKFLOW_NOT_STARTED}: {}", refusal.sentence),
                 status: StatusCode::from_u16(refusal.status())
@@ -1256,7 +1400,25 @@ async fn start_agent(
         }
     }
 
+    // DR-33 (design §4): the request's own decision settings, saved through
+    // the checked door a `PUT /sessions/{id}/decision-settings` uses, against
+    // the model this chat was just bound to. A refusal discards the chat, as a
+    // refused workflow seed does.
+    let mut saved_effect: Option<(TierEffect, Option<String>)> = None;
+    if let Some(settings) = decision_settings {
+        let enforced = biorouter::privacy::privacy_tiers_enabled();
+        let saved = match start_decision_settings(&state, &session.id, enforced, bound_tier, settings, &consent).await {
+            Ok(saved) => saved,
+            Err(error) => {
+                discard_failed_new_session(&state, &session.id).await;
+                return Err(start_save_refusal(error, confirmation));
+            }
+        };
+        saved_effect = Some((saved.tier_effect, saved.effect_line));
+    }
+
     // Refetch session to get all updates
+    let lowered_by_seed = supervised;
     session = match manager.get_session(&session.id, false).await {
         Ok(updated) => updated,
         Err(err) => {
@@ -1274,6 +1436,19 @@ async fn start_agent(
             });
         }
     };
+
+    // DR-33: what the start's decision models did to the chat's tier. The
+    // request's own save says; a workflow's seed is read back off the row the
+    // seed left, with the bound model's tier, as the next save would see it.
+    let (tier_effect, tier_effect_line) = match saved_effect {
+        Some((TierEffect::None, _)) => (None, None),
+        Some((effect, line)) => (Some(effect), line),
+        None if lowered_by_seed => seeded_tier_effect(&session, bound_tier),
+        None => (None, None),
+    };
+    if tier_effect == Some(TierEffect::BecomesPublic) {
+        crate::routes::decisions::lower_held_agent(&state, &session.id).await;
+    }
 
     // Eagerly start loading extensions in the background
     let session_for_spawn = session.clone();
@@ -1324,7 +1499,115 @@ async fn start_agent(
         .set_extension_loading_task(session_id_for_task, task)
         .await;
 
-    Ok(Json(session))
+    Ok(StartedSession {
+        session,
+        tier_effect,
+        tier_effect_line,
+    })
+}
+
+/// Whether a workflow's seed made the new chat public by a decision model:
+/// the row's own standing names lower the model it is bound to. Asked through
+/// the save check's own reading of the row ([`DecisionSession::with_row_tier_context`]),
+/// so the start and the next save cannot disagree.
+///
+/// [`DecisionSession::with_row_tier_context`]: biorouter::decision::DecisionSession::with_row_tier_context
+fn seeded_tier_effect(
+    row: &Session,
+    bound_tier: Option<ProviderTier>,
+) -> (Option<TierEffect>, Option<String>) {
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    let Some(bound) = bound_tier.filter(|tier| enforced && tier.is_private()) else {
+        return (None, None);
+    };
+    let lowered = biorouter::decision::DecisionSession::new(&row.id, row.privacy_tier, enforced)
+        .with_bound_model_tier(Some(bound))
+        .with_row_tier_context(row)
+        .tier_context
+        .is_some_and(|context| context.lowered_now);
+    if !lowered {
+        return (None, None);
+    }
+    let records = biorouter::privacy::decision_axes::RowRecords::parse(&row.extension_data);
+    let names = biorouter::privacy::decision_axes::public_standing_names(&records.inputs(row));
+    (
+        Some(TierEffect::BecomesPublic),
+        biorouter::decision::save::tier_effect_line(TierEffect::BecomesPublic, &names),
+    )
+}
+
+/// [`start_new_chat`]'s checked save of the request's own decision settings,
+/// with the bound model's tier the start just bound and the row as it stands.
+async fn start_decision_settings(
+    state: &Arc<AppState>,
+    session_id: &str,
+    enforced: bool,
+    bound_tier: Option<ProviderTier>,
+    settings: DecisionSettings,
+    consent: &LoweringConsent,
+) -> anyhow::Result<biorouter::decision::save::CheckedSave> {
+    let manager = state.session_manager();
+    let row = manager.get_session(session_id, false).await?;
+    let affiliations = manager.session_affiliations(session_id).await?;
+    let checked = biorouter::decision::DecisionSession::new(session_id, row.privacy_tier, enforced)
+        .with_affiliations(affiliations)
+        .with_bound_model_tier(bound_tier.filter(|_| enforced))
+        .with_row_tier_context(&row);
+    let door = biorouter::decision::save::SaveDoor::person("agent-start", consent.clone());
+    biorouter::decision::save::save_checked_by(
+        state.decision_service(),
+        manager,
+        &checked,
+        settings,
+        &door,
+    )
+    .await
+}
+
+/// A refused save of a start's own decision settings, in the start's answer
+/// shape: the save route's statuses, and the confirmation question left in
+/// `confirmation` for a lowering the person has not accepted.
+fn start_save_refusal(
+    error: anyhow::Error,
+    confirmation: &mut Option<crate::routes::decisions::PublicDecisionConfirmation>,
+) -> ErrorResponse {
+    use biorouter::decision::save::{
+        NeedsPublicDecisionConfirmation, PublicBasisNotEligible, PublicDecisionModelsNotAllowed,
+    };
+    if let Some(confirm) = error.downcast_ref::<NeedsPublicDecisionConfirmation>() {
+        *confirmation = Some(crate::routes::decisions::PublicDecisionConfirmation {
+            code: crate::routes::decisions::NEEDS_PUBLIC_DECISION_CONFIRMATION.to_string(),
+            message: confirm.sentence.clone(),
+            info: biorouter::decision::save::BECOMES_PUBLIC_INFO.to_string(),
+            models: confirm.models.clone(),
+        });
+        return ErrorResponse {
+            message: confirm.sentence.clone(),
+            status: StatusCode::CONFLICT,
+        };
+    }
+    let status = if error.downcast_ref::<PublicBasisNotEligible>().is_some() {
+        StatusCode::CONFLICT
+    } else if error.downcast_ref::<PublicDecisionModelsNotAllowed>().is_some() {
+        StatusCode::FORBIDDEN
+    } else if error
+        .downcast_ref::<biorouter::decision::UnusableDecisionSettings>()
+        .is_some()
+    {
+        StatusCode::UNPROCESSABLE_ENTITY
+    } else if error
+        .downcast_ref::<biorouter::decision::settings::InvalidDecisionSettings>()
+        .is_some()
+    {
+        StatusCode::BAD_REQUEST
+    } else {
+        tracing::warn!("a new chat's decision settings could not be saved: {error:#}");
+        return ErrorResponse::internal("The new chat's decision settings could not be saved.");
+    };
+    ErrorResponse {
+        message: error.to_string(),
+        status,
+    }
 }
 
 fn validate_continuation_owner_id(owner_id: Option<&str>) -> Result<(), ErrorResponse> {
@@ -2019,11 +2302,14 @@ async fn update_agent_provider(
     // is bound (and when Gate B' refuses what is), and the conservative reading
     // is that a session with no private capability has none to preserve, so a
     // first bind to a private provider is a raise.
-    let current = agent
-        .provider()
-        .await
-        .map(|p| p.tier())
-        .unwrap_or(ProviderTier::Public);
+    //
+    // DR-33 (design §3.1): DR-16 is about the PROVIDER axis, so both sides are
+    // the plain models' tiers. `bound_model_tier` unwraps the decision-bound
+    // wrapper the slot holds when the chat names decision models; the slot's
+    // own `tier()` would read a Versa chat lowered by a Baseten monitor as
+    // Public and turn Versa-to-Versa into a "raise" needing the proof. The
+    // incoming side is the plain instance `create` built.
+    let current = agent.bound_model_tier().await;
     // SD-12's other half — see `raise_baseline`.
     let baseline = raise_baseline(current, user_action_proof(&headers));
     // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
@@ -2077,6 +2363,29 @@ async fn update_agent_provider(
     Ok(agent
         .cross_affiliation_notice(&payload.session_id, model_affiliation)
         .await)
+}
+
+/// The 409 `/agent/add_extension` answers when a private extension meets a
+/// public chat. On a chat made public by one of its decision models (DR-33,
+/// design §3.9) "switch to a private model" would be circular advice, since
+/// the chat already runs on one, so the sentence names the decision model
+/// instead, for the person who pressed the switch. Otherwise it is the typed
+/// `PrivateExtensionOverHttp` text, unchanged.
+fn add_extension_tier_refusal(
+    extension_name: String,
+    lowered_by: Option<&biorouter::privacy::decision_axes::LoweredBy>,
+) -> String {
+    match lowered_by {
+        Some(cause) => biorouter::privacy::refusal::decision_lowered_sentence(
+            Some(&extension_name),
+            Some(cause),
+            biorouter::privacy::refusal::RefusalAudience::Person,
+        ),
+        None => PrivacyRefusal::PrivateExtensionOverHttp {
+            name: extension_name,
+        }
+        .to_string(),
+    }
 }
 
 #[utoipa::path(
@@ -2148,6 +2457,9 @@ async fn agent_add_extension(
         .as_ref()
         .map(|p| p.tier())
         .unwrap_or(ProviderTier::Public);
+    // DR-33 (design §3.9): the cause, when a decision model made this chat
+    // public, off the SAME instance. Text only; it picks the refusal's words.
+    let lowered_by = bound.as_ref().and_then(|p| p.decision_lowered_by().cloned());
     let extension_name = request.config.name();
     // Task 43 (DR-23): the config, not just its name — a renamed entry is
     // resolved through the install directory in its arguments. Task 48 (DR-26):
@@ -2182,10 +2494,7 @@ async fn agent_add_extension(
     if enforced && biorouter::privacy::refusal::tier_refuses(classification.tier, capability) {
         return Err(ErrorResponse {
             status: StatusCode::CONFLICT,
-            message: PrivacyRefusal::PrivateExtensionOverHttp {
-                name: extension_name,
-            }
-            .to_string(),
+            message: add_extension_tier_refusal(extension_name, lowered_by.as_ref()),
         });
     }
 
@@ -3745,6 +4054,8 @@ mod new_session_provider_binding_tests {
                     workflow_id: None,
                     workflow_deeplink: None,
                     extension_overrides: Some(Vec::new()),
+                    decision_settings: None,
+                    accept_public_decision_models: false,
                 }),
             ),
         )
@@ -3889,6 +4200,8 @@ mod new_session_provider_binding_tests {
                     workflow_id: None,
                     workflow_deeplink: None,
                     extension_overrides: Some(Vec::new()),
+                    decision_settings: None,
+                    accept_public_decision_models: false,
                 }),
             ),
         )
@@ -3947,6 +4260,8 @@ mod new_session_provider_binding_tests {
             workflow_id: None,
             workflow_deeplink: None,
             extension_overrides: Some(Vec::new()),
+            decision_settings: None,
+            accept_public_decision_models: false,
         };
 
         let refused = with_config_overrides(
@@ -7268,17 +7583,19 @@ mod knowledge_selection_tests {
         // ⚠ The leading newline is load-bearing: `include_str!` reads this file
         // including this test, so an anchor without it matches the copy inside
         // this very string literal and slices the test instead of the handler.
+        // The handler's body is `start_new_chat` since DR-33 gave `start_agent`
+        // a question to answer in its own shape.
         let body = source
-            .split("\nasync fn start_agent(")
+            .split("\nasync fn start_new_chat(")
             .nth(1)
             .and_then(|rest| rest.split("\n}\n").next())
-            .expect("start_agent production body");
+            .expect("start_new_chat production body");
 
         // In source order. Each step's window runs to the next one, so the
         // assertion is "between one fallible step and the next, the error path
         // discards the chat" rather than a count that a fourth step could pass
         // without being looked at.
-        const STEPS: [&str; 7] = [
+        const STEPS: [&str; 8] = [
             "bind_new_session_provider(",
             "runtime::prepare_prompt(",
             "apply_workflow_knowledge_selection(",
@@ -7286,6 +7603,8 @@ mod knowledge_selection_tests {
             ".workflow(Some(workflow))",
             // Item 8: a refused supervision seed discards the chat too.
             "supervision::seed(",
+            // DR-33: so does a refused save of the start's own decision models.
+            "start_decision_settings(",
             "get_session(&session.id, false)",
         ];
 
@@ -7798,5 +8117,255 @@ mod opening_is_not_activity_route_tests {
             sidebar_order(&state, &ids).await,
             vec![toggled, switched, newest]
         );
+    }
+}
+
+#[cfg(test)]
+mod decision_lowered_route_tests {
+    //! DR-33 at `/agent/update_provider` and `/agent/add_extension` (design
+    //! §3.1, §3.9): a chat on a private model that the person made public with a
+    //! public decision model.
+    use super::*;
+    use crate::routes::session::diverge_tests::install_test_user_action_key;
+    use axum::body::Body;
+    use axum::http::Request;
+    use biorouter::config::with_config_overrides;
+    use biorouter::decision::settings::{DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION};
+    use biorouter::model::ModelConfig;
+    use biorouter::privacy::decision_axes::{
+        BasisAuthor, HostLabel, LoweredBy, NameSource, PublicBasis,
+    };
+    use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+    use biorouter::providers::errors::ProviderError;
+    use biorouter::session::session_manager::{BasisWrite, BasisWriteOutcome};
+    use serial_test::serial;
+    use std::path::PathBuf;
+    use tower::ServiceExt;
+
+    struct Model {
+        name: &'static str,
+        tier: ProviderTier,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Model {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            self.name
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("gpt-5.5").unwrap()
+        }
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[biorouter::conversation::message::Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<(biorouter::conversation::message::Message, ProviderUsage), ProviderError>
+        {
+            Ok((
+                biorouter::conversation::message::Message::assistant().with_text("ok"),
+                ProviderUsage::new(self.name.to_string(), Usage::default()),
+            ))
+        }
+    }
+
+    /// Deletes the chat however the test ends.
+    struct Chat {
+        state: Arc<AppState>,
+        id: String,
+    }
+
+    impl Drop for Chat {
+        fn drop(&mut self) {
+            let state = Arc::clone(&self.state);
+            let id = std::mem::take(&mut self.id);
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    let _ = state.agent_manager.remove_session(&id).await;
+                    let _ = state.session_manager().delete_session(&id).await;
+                })
+            });
+        }
+    }
+
+    /// An empty chat bound to `bound`, made public by the person's choice of
+    /// `baseten_decision/joey-1` as its default when `lowered`.
+    async fn chat(state: &Arc<AppState>, bound: Model, lowered: bool) -> Chat {
+        let sm = state.session_manager();
+        let id = sm
+            .create_session(
+                PathBuf::from("/tmp/biorouter-dr33-route"),
+                "DR-33 route fixture".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        let chat = Chat {
+            state: Arc::clone(state),
+            id: id.clone(),
+        };
+        let _ = state.agent_manager.remove_session(&id).await;
+        if lowered {
+            let basis = PublicBasis::new(&id, BasisAuthor::Person, "test", vec![]);
+            let written = sm
+                .write_public_basis(&id, BasisWrite::Set(basis), |data| {
+                    data.set_extension_state(
+                        DECISION_SETTINGS_STATE,
+                        DECISION_SETTINGS_VERSION,
+                        serde_json::json!({
+                            "defaultModel": {"provider": "baseten_decision", "model": "joey-1"},
+                            "monitors": [],
+                        }),
+                    );
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            assert_eq!(written, BasisWriteOutcome::Written(()));
+        }
+        let agent = state.get_agent(id.clone()).await.unwrap();
+        agent.update_provider(Arc::new(bound), &id).await.unwrap();
+        chat
+    }
+
+    /// One request, WITHOUT the person's proof: the daemon secret only.
+    async fn post_without_proof(
+        state: &Arc<AppState>,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, String) {
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        // Port 1: nothing answers, and nothing here asks it to.
+        let overrides = std::collections::HashMap::from([(
+            "OLLAMA_HOST".to_string(),
+            "http://127.0.0.1:1".to_string(),
+        )]);
+        let response = with_config_overrides(overrides, routes(Arc::clone(state)).oneshot(request))
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// DR-16 compares the two plain models (design §3.1): on a Versa chat a
+    /// Baseten monitor made public, moving to a local Ollama model is a
+    /// private-to-private move any caller may make, as it is on any Versa
+    /// chat. Reading the slot's (lowered) tier made it a "raise" that needed
+    /// the proof. The control row keeps the gate honest: a chat whose model is
+    /// public still needs the proof for the same move.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_chat_made_public_by_a_decision_model_moves_between_private_models_without_the_proof(
+    ) {
+        if !biorouter::privacy::privacy_tiers_enabled() {
+            return;
+        }
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let versa = Model {
+            name: "versa_azure",
+            tier: ProviderTier::Private,
+        };
+        let lowered = chat(&state, versa, true).await;
+        let agent = state.get_agent(lowered.id.clone()).await.unwrap();
+        assert_eq!(agent.provider().await.unwrap().tier(), ProviderTier::Public);
+        assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+
+        let move_to_ollama = |id: &str| {
+            serde_json::json!({"session_id": id, "provider": "ollama", "model": "qwen3.8:27b"})
+        };
+        let (status, body) = post_without_proof(
+            &state,
+            "/agent/update_provider",
+            move_to_ollama(&lowered.id),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            agent.bound_model_provider().await.unwrap().get_name(),
+            "ollama"
+        );
+
+        let claude = Model {
+            name: "claude_code",
+            tier: ProviderTier::Public,
+        };
+        let public = chat(&state, claude, false).await;
+        let (status, body) =
+            post_without_proof(&state, "/agent/update_provider", move_to_ollama(&public.id)).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "a public model's chat still needs the proof to move onto a private one: {body}"
+        );
+    }
+
+    /// The 409's words (design §3.9): on a chat a decision model made public,
+    /// "switch to a private model" would be circular, so the sentence names the
+    /// decision model; otherwise it is the typed refusal, unchanged.
+    #[test]
+    fn the_add_extension_refusal_names_the_decision_model_that_made_the_chat_public() {
+        let cause = LoweredBy {
+            source: NameSource::Monitor,
+            label: "Done".to_string(),
+            model: "joey-1".to_string(),
+            host: HostLabel::Baseten,
+            others: 0,
+        };
+        let lowered = add_extension_tier_refusal("OMOP".to_string(), Some(&cause));
+        assert!(
+            lowered.starts_with(
+                "This chat is public because monitor \"Done\" uses joey-1, a Baseten model, so \
+                 it can't use the private extension OMOP."
+            ),
+            "{lowered}"
+        );
+        assert!(!lowered.contains("public model, so the extension"), "{lowered}");
+        assert_eq!(
+            add_extension_tier_refusal("OMOP".to_string(), None),
+            PrivacyRefusal::PrivateExtensionOverHttp {
+                name: "OMOP".to_string()
+            }
+            .to_string()
+        );
+    }
+
+    /// The cause is read off the SAME instance the capability was, so the words
+    /// and the decision can never describe two bindings.
+    #[test]
+    fn the_add_extension_refusal_reads_its_cause_off_the_one_bound_instance() {
+        let handler = crate::routes::body_of(include_str!("agent.rs"), "async fn agent_add_extension");
+        let squeezed: String = handler
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(str::chars)
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert_eq!(
+            squeezed.matches("agent.provider().await").count(),
+            1,
+            "`/agent/add_extension` reads the slot once"
+        );
+        assert!(
+            squeezed.contains("bound.as_ref().and_then(|p|p.decision_lowered_by().cloned())"),
+            "the refusal's cause must come from the instance the tier came from"
+        );
+        assert!(squeezed.contains("add_extension_tier_refusal(extension_name,lowered_by.as_ref())"));
     }
 }

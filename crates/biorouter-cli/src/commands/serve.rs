@@ -96,6 +96,7 @@ pub async fn handle_serve(
     open_browser: bool,
     computer_use_approval: bool,
     folder_access_approval: bool,
+    allow_public_decision_models: bool,
 ) -> Result<()> {
     let computer_use_digest =
         configure_scoped_approval(computer_use_approval, "Biorouter Copilot")?;
@@ -147,6 +148,7 @@ pub async fn handle_serve(
         &secret_key,
         &web_dir,
         computer_use_digest.is_some() || folder_access_digest.is_some(),
+        allow_public_decision_models,
     )?;
 
     // The page `--open` hands the browser, removed however this ends: it holds
@@ -182,6 +184,9 @@ pub async fn handle_serve(
             bind_is_loopback,
             proxied_to.as_deref(),
         );
+        if allow_public_decision_models {
+            eprintln!("  {PUBLIC_DECISION_MODELS_BANNER}");
+        }
         if computer_use_approval {
             eprintln!("  Biorouter Copilot approval is configured. Enter your approval key in the browser when approving a task.");
             eprintln!("  Biorouter Copilot controls this backend host's desktop, not a remote browser's device.");
@@ -214,6 +219,19 @@ pub async fn handle_serve(
     outcome
 }
 
+/// SD-16: the variable `serve` hands its daemon when the operator passed
+/// `--allow-public-decision-models`. The daemon reads it once at launch and
+/// pins it with the rest of its launch configuration (SD-12), so a shell that
+/// edits the environment later changes nothing. The literal is defined in
+/// `biorouter_server::launch` too; this crate does not depend on
+/// `biorouter-server`.
+pub(crate) const ALLOW_PUBLIC_DECISION_MODELS_ENV: &str = "BIOROUTER_ALLOW_PUBLIC_DECISION_MODELS";
+
+/// What the banner says when the operator allowed it.
+const PUBLIC_DECISION_MODELS_BANNER: &str =
+    "A person in the browser may make a new chat public by choosing a public decision model \
+     (such as one on Baseten) before its first message.";
+
 /// Start `serve`'s daemon: `biorouterd agent` with the browser token and public address that
 /// were chosen here (an inherited value of either is removed, never passed on), the secret, the
 /// interface folder, and an approval pipe on stdin only when `approval_pipe` is set.
@@ -226,9 +244,40 @@ fn spawn_serve_daemon(
     secret_key: &str,
     web_dir: &Path,
     approval_pipe: bool,
+    allow_public_decision_models: bool,
 ) -> Result<Child> {
     let daemon = resolve_biorouterd()?;
-    let mut command = Command::new(&daemon);
+    let mut command = serve_daemon_command(
+        &daemon,
+        host,
+        port,
+        browser_token,
+        public_url,
+        secret_key,
+        web_dir,
+        approval_pipe,
+        allow_public_decision_models,
+    );
+    command
+        .spawn()
+        .with_context(|| format!("could not start {}", daemon.display()))
+}
+
+/// The command [`spawn_serve_daemon`] runs, built apart so its environment can
+/// be read by a test.
+#[allow(clippy::too_many_arguments)]
+fn serve_daemon_command(
+    daemon: &Path,
+    host: &str,
+    port: u16,
+    browser_token: &BrowserToken,
+    public_url: Option<&str>,
+    secret_key: &str,
+    web_dir: &Path,
+    approval_pipe: bool,
+    allow_public_decision_models: bool,
+) -> Command {
+    let mut command = Command::new(daemon);
     command.arg("agent");
     // The second layer; see the module documentation.
     #[cfg(unix)]
@@ -257,6 +306,15 @@ fn spawn_serve_daemon(
         None => {
             command.env_remove(PUBLIC_URL_ENV);
         }
+    }
+    // SD-16: set from the flag, or removed. This daemon holds no user-action
+    // key, so a decision model that would make a chat public is refused unless
+    // the operator opted in here; a value this shell happens to export is
+    // not an opt-in, so it never reaches the daemon.
+    if allow_public_decision_models {
+        command.env(ALLOW_PUBLIC_DECISION_MODELS_ENV, "1");
+    } else {
+        command.env_remove(ALLOW_PUBLIC_DECISION_MODELS_ENV);
     }
     command
         .env("BIOROUTER_HOST", host)
@@ -288,9 +346,8 @@ fn spawn_serve_daemon(
         .env_remove("BIOROUTER_USER_ACTION_EXPECTED")
         // A backstop for a panic unwinding through here. Every ordinary path
         // goes through `stop_daemon`, which asks before it insists.
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("could not start {}", daemon.display()))
+        .kill_on_drop(true);
+    command
 }
 
 /// How long the page `--open` hands the browser is kept. A browser reads it the
@@ -957,6 +1014,47 @@ mod tests {
     // import only one platform uses is a warning on the other one.
     #[cfg(unix)]
     use crate::commands::exe_path::biorouterd_beside;
+
+    /// The value `command` sets `name` to: `Some(Some(v))` set, `Some(None)`
+    /// removed, `None` neither (inherited from this shell).
+    fn env_of(command: &Command, name: &str) -> Option<Option<String>> {
+        command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+            .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    fn daemon_command(allow_public_decision_models: bool) -> Command {
+        serve_daemon_command(
+            Path::new("/nonexistent/biorouterd"),
+            "127.0.0.1",
+            DEFAULT_PORT,
+            &BrowserToken::Minted("t".into()),
+            None,
+            "secret",
+            Path::new("/nonexistent/web"),
+            false,
+            allow_public_decision_models,
+        )
+    }
+
+    /// SD-16: a keyless `serve` daemon refuses a decision model that would make
+    /// a chat public unless the operator opted in at launch. The flag is the
+    /// only opt-in: without it the variable is removed from the daemon's
+    /// environment, so one this shell exports does not reach it.
+    #[test]
+    fn the_public_decision_model_opt_in_reaches_the_daemon_only_from_the_flag() {
+        assert_eq!(
+            env_of(&daemon_command(true), ALLOW_PUBLIC_DECISION_MODELS_ENV),
+            Some(Some("1".to_string()))
+        );
+        assert_eq!(
+            env_of(&daemon_command(false), ALLOW_PUBLIC_DECISION_MODELS_ENV),
+            Some(None),
+            "without the flag the variable must be removed, not inherited"
+        );
+    }
 
     #[test]
     fn the_default_port_does_not_collide_with_the_daemon_it_starts() {

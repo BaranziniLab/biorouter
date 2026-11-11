@@ -27,6 +27,7 @@ import {
 } from '../store/extensionOverrides';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { createSession } from '../sessions';
+import { isPublicChatDeclined } from '../utils/sessionDecisions';
 import {
   adoptDraftReasoningEffort,
   draftReasoningScope,
@@ -38,6 +39,14 @@ import { toastError } from '../toasts';
 import { startChatFailureNotice } from '../utils/startChatFailure';
 import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
 import { HOME_COMPOSER_DRAFT_KEY } from '../utils/composerDrafts';
+import { useModelAndProvider } from './ModelAndProviderContext';
+import { DraftMonitorsDialog } from './decisions/DraftMonitorsDialog';
+import {
+  chatModelKey,
+  draftStartFields,
+  useDraftDecisionSettings,
+} from './decisions/draftDecisionSettings';
+import { usePublicDecisionConfirm } from './decisions/usePublicDecisionConfirm';
 
 export default function Hub({
   setView,
@@ -48,6 +57,12 @@ export default function Hub({
   const [workingDir, setWorkingDir] = useState(getInitialWorkingDir());
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const confirmNewChatModel = useConfirmNewChatModel();
+  // DR-33 (design §4): monitors set before the first message, held under Home's
+  // draft key and sent with the start, against the model new chats start on.
+  const { currentProvider, currentModel } = useModelAndProvider();
+  const [monitorsOpen, setMonitorsOpen] = useState(false);
+  const [draftDecisions, setDraftDecisions] = useDraftDecisionSettings(HOME_COMPOSER_DRAFT_KEY);
+  const publicDecisionConfirm = usePublicDecisionConfirm('send');
 
   /**
    * Resolves FALSE when no chat was started, which is ChatInput's signal to put
@@ -81,8 +96,12 @@ export default function Hub({
         const session = await createSession(workingDir, {
           extensionConfigs,
           allExtensions: extensionConfigs.length > 0 ? undefined : extensionsList,
+          ...draftStartFields(draftDecisions, chatModelKey(currentProvider, currentModel)),
+          confirmPublicDecisionModels: publicDecisionConfirm.confirm,
         });
 
+        // The draft started with the chat; the next chat from Home starts with none.
+        setDraftDecisions(null);
         adoptDraftReasoningEffort(effortScope, session.id, submittedEffort);
         setView('pair', {
           resumeSessionId: session.id,
@@ -91,8 +110,11 @@ export default function Hub({
         });
         return true;
       } catch (error) {
-        console.error('Failed to create session:', error);
         setIsCreatingSession(false);
+        // The person said no to "This chat will be public": nothing went wrong, and
+        // the composer keeps the message.
+        if (isPublicChatDeclined(error)) return false;
+        console.error('Failed to create session:', error);
         toastError(startChatFailureNotice(error, { kept: true }));
         return false;
       }
@@ -143,9 +165,19 @@ export default function Hub({
             sessionCosts={undefined}
             toolCount={0}
             onWorkingDirChange={setWorkingDir}
+            onOpenDecisionMonitors={() => setMonitorsOpen(true)}
           />
         </div>
       </div>
+      <DraftMonitorsDialog
+        open={monitorsOpen}
+        onOpenChange={setMonitorsOpen}
+        provider={currentProvider}
+        model={currentModel}
+        draft={draftDecisions}
+        onDraftChange={setDraftDecisions}
+      />
+      {publicDecisionConfirm.dialog}
     </div>
   );
 }

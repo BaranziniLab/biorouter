@@ -2150,6 +2150,42 @@ pub enum WorkingDirUpdate {
     SessionNotFound,
 }
 
+/// What [`SessionManager::write_public_basis`] does with `public_basis.v1`
+/// (DR-33, design §1.8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BasisWrite {
+    /// Write this basis: a person's accepted lowering, or a refresh of one. The
+    /// write lands only on an eligible chat, checked inside the write.
+    Set(crate::privacy::decision_axes::PublicBasis),
+    /// Remove the basis (a save that leaves no counted public name). Needs no
+    /// eligibility: a raise is the safe direction.
+    Clear,
+    /// Leave the basis as it is.
+    Keep,
+}
+
+/// Outcome of [`SessionManager::write_public_basis`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BasisWriteOutcome<R> {
+    /// The mutation and the basis landed together.
+    Written(R),
+    /// A [`BasisWrite::Set`] on a chat that is not eligible any more: it is
+    /// classified Private, or it holds a message and was neither declassified
+    /// by the person nor already lowered. Nothing was written.
+    NotEligible,
+    /// No session with that id exists; nothing was written.
+    SessionNotFound,
+}
+
+/// The sentence a door answers [`BasisWriteOutcome::NotEligible`] with (design
+/// §1.8), naming the model the person wanted.
+pub fn public_basis_not_eligible_sentence(model: &str) -> String {
+    format!(
+        "This chat has started, so it can't be made public by a decision model now. Start a new \
+         chat and choose {model} before its first message."
+    )
+}
+
 pub struct SessionManager {
     storage: Arc<SessionStorage>,
 }
@@ -2482,6 +2518,58 @@ impl SessionManager {
         R: Send,
     {
         self.storage.update_extension_data(session_id, mutate).await
+    }
+
+    /// DR-33 (design §1.8): THE one writer of `public_basis.v1`
+    /// (`public_basis_has_one_writer`). A decision-settings or gate save whose
+    /// tier effect touches the basis goes through here, so the save and the
+    /// basis land in one transaction.
+    ///
+    /// `mutate` is the save itself (it writes `decision_settings.v1`, or the
+    /// plan). `basis` says what happens to the basis in the same write:
+    ///
+    /// * [`BasisWrite::Set`] lands only while the chat is **eligible**: it is
+    ///   classified Public AND it holds no message, OR its `privacy_reason` is
+    ///   `declassified_by_user`, OR it already carries a basis naming it. The
+    ///   condition is the `WHERE` clause of the transaction's first statement,
+    ///   which takes the store's write lock, so a first message racing the save
+    ///   either lands first (and the save is refused) or after it (and Gate B
+    ///   reads the basis). It is one atomic decision, never a read and then a
+    ///   write.
+    /// * [`BasisWrite::Clear`] and [`BasisWrite::Keep`] need no eligibility.
+    ///
+    /// With the master switch off no basis is written (design §2.5): a `Set` is
+    /// taken as `Keep`, so a public name saved then lowers nothing when tiers
+    /// come back on.
+    pub async fn write_public_basis<F, R>(
+        &self,
+        session_id: &str,
+        basis: BasisWrite,
+        mutate: F,
+    ) -> Result<BasisWriteOutcome<R>>
+    where
+        F: FnOnce(&mut ExtensionData) -> Result<R> + Send,
+        R: Send,
+    {
+        let basis = match basis {
+            BasisWrite::Set(_) if !crate::privacy::privacy_tiers_enabled() => {
+                tracing::debug!(
+                    session_id,
+                    "privacy tiers are off, so no public basis is written"
+                );
+                BasisWrite::Keep
+            }
+            BasisWrite::Set(record) if record.session_id != session_id => {
+                anyhow::bail!(
+                    "a public basis written for chat {} was offered to chat {session_id}",
+                    record.session_id
+                );
+            }
+            other => other,
+        };
+        self.storage
+            .write_public_basis(session_id, basis, mutate)
+            .await
     }
 
     /// Set the session's working directory **only if the chat is still empty**
@@ -7167,6 +7255,114 @@ impl SessionStorage {
         Ok(Some(result))
     }
 
+    /// See [`SessionManager::write_public_basis`].
+    async fn write_public_basis<F, R>(
+        &self,
+        session_id: &str,
+        basis: BasisWrite,
+        mutate: F,
+    ) -> Result<BasisWriteOutcome<R>>
+    where
+        F: FnOnce(&mut ExtensionData) -> Result<R> + Send,
+        R: Send,
+    {
+        use crate::privacy::decision_axes::{PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION};
+        let pool = self.pool().await?;
+        let mut tx = pool.begin().await?;
+        let is_activity = crate::session::activity::setup_write_is_activity();
+
+        // LOAD-BEARING FIRST STATEMENT, AND IT MUST BE A WRITE (see
+        // `update_extension_data`). For a `Set` it is also the eligibility
+        // check: it matches the row only while the chat may be lowered, and the
+        // write lock it takes holds every other writer (a first message, a
+        // ratchet) off the row until this transaction ends.
+        let touched = match &basis {
+            BasisWrite::Set(_) => {
+                sqlx::query(
+                    "UPDATE sessions \
+                        SET updated_at = CASE WHEN ?1 = 1 THEN datetime('now') ELSE updated_at END \
+                      WHERE id = ?2 \
+                        AND privacy_tier = 'public' \
+                        AND ( NOT EXISTS (SELECT 1 FROM messages WHERE session_id = ?2) \
+                              OR privacy_reason = ?3 \
+                              OR (CASE WHEN json_valid(extension_data) \
+                                       THEN json_extract(extension_data, '$.\"public_basis.v1\".sessionId') \
+                                  END) = ?2 )",
+                )
+                .bind(i64::from(is_activity))
+                .bind(session_id)
+                .bind(crate::privacy::declassify::DECLASSIFIED_BY_USER)
+                .execute(&mut *tx)
+                .await?
+            }
+            BasisWrite::Clear | BasisWrite::Keep => {
+                sqlx::query(
+                    "UPDATE sessions \
+                        SET updated_at = CASE WHEN ? = 1 THEN datetime('now') ELSE updated_at END \
+                      WHERE id = ?",
+                )
+                .bind(i64::from(is_activity))
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?
+            }
+        };
+        if touched.rows_affected() == 0 {
+            let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_one(&mut *tx)
+                .await?
+                > 0;
+            tx.rollback().await?;
+            return Ok(if exists {
+                BasisWriteOutcome::NotEligible
+            } else {
+                BasisWriteOutcome::SessionNotFound
+            });
+        }
+
+        let raw = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT extension_data FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?
+        .unwrap_or_else(|| "{}".to_string());
+        let mut data = match Self::parse_extension_data(&raw) {
+            Ok(data) => data,
+            Err(e) => {
+                tx.rollback().await?;
+                return Err(e);
+            }
+        };
+        let result = match mutate(&mut data) {
+            Ok(result) => result,
+            Err(e) => {
+                tx.rollback().await?;
+                return Err(e);
+            }
+        };
+        let key = format!("{PUBLIC_BASIS_STATE}.{PUBLIC_BASIS_VERSION}");
+        match basis {
+            BasisWrite::Set(record) => {
+                data.extension_states
+                    .insert(key, serde_json::to_value(&record)?);
+            }
+            BasisWrite::Clear => {
+                data.extension_states.remove(&key);
+            }
+            BasisWrite::Keep => {}
+        }
+
+        sqlx::query("UPDATE sessions SET extension_data = ? WHERE id = ?")
+            .bind(serde_json::to_string(&data)?)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(BasisWriteOutcome::Written(result))
+    }
+
     /// Strict, unlike the tolerant `unwrap_or_default()` in `Session::from_row`.
     /// A read-modify-write of one key rewrites the WHOLE column, so silently
     /// treating an unparseable blob as empty would erase every other
@@ -9484,10 +9680,20 @@ impl SessionStorage {
         // which no value in this enum can exercise.
         let imported = import.privacy_tier;
 
+        // DR-33 (design §3.16): an imported row never carries a public basis or
+        // a spawn ceiling, and its public decision models arrive switched off.
+        // Whether this new chat may be public by a decision model is the
+        // person's choice for it, made by turning one back on.
+        let mut extension_data = import.extension_data;
+        crate::privacy::decision_axes::turn_off_public_names(
+            &mut extension_data,
+            crate::privacy::decision_axes::DERIVED_NOTICE,
+        );
+
         let mut builder = session_manager
             .update(&session.id)
             .raise_privacy(SessionClassification::Private.max(imported), "imported")
-            .extension_data(import.extension_data)
+            .extension_data(extension_data)
             .total_tokens(import.total_tokens)
             .input_tokens(import.input_tokens)
             .output_tokens(import.output_tokens)
@@ -9560,9 +9766,33 @@ impl SessionStorage {
                 .record_required_session_affiliation(&new_session.id, institution)
                 .await?;
         }
+        // DR-33 (design §3.16): a branch or copy is a new chat with a copy of
+        // content. It never carries the source's public basis or spawn ceiling
+        // (a ceiling is valid only on the subagent it was written for), and its
+        // public decision models are copied switched off, with a note. Turning
+        // one back on is a lowering, admitted only while the new chat is
+        // eligible — which, holding messages, means after declassification.
+        //
+        // Except for a public source bound to a model that declares Public
+        // (Claude Code, Codex): such a chat is public whatever it names, so its
+        // public decision models were always legal and lower nothing. They stay
+        // on. If the branch is later switched to a private model, they are
+        // names without a basis (inert): its next turn ratchets it by that model
+        // and the monitors are switched off then (§3.15).
+        let mut extension_data = source.extension_data.clone();
+        let bound_public = crate::decision::save::row_bound_model_tier(source, true).await
+            == Some(crate::privacy::ProviderTier::Public);
+        if bound_public {
+            crate::privacy::decision_axes::forget_lowering_records(&mut extension_data);
+        } else {
+            crate::privacy::decision_axes::turn_off_public_names(
+                &mut extension_data,
+                crate::privacy::decision_axes::DERIVED_NOTICE,
+            );
+        }
         let mut update = session_manager
             .update(&new_session.id)
-            .extension_data(source.extension_data.clone())
+            .extension_data(extension_data)
             .schedule_id(source.schedule_id.clone())
             .workflow(source.workflow.clone())
             .user_workflow_values(source.user_workflow_values.clone())
@@ -23184,5 +23414,390 @@ mod naming_at_a_limit_tests {
             sm.get_session(open, false).await.unwrap().name,
             "Generated title"
         );
+    }
+}
+
+/// DR-33 (design §1.8, §3.16): `public_basis.v1` has one writer, it lands only
+/// on an eligible chat, and a derived row carries no basis, no ceiling and no
+/// live public decision model.
+#[cfg(test)]
+mod public_basis_tests {
+    use super::*;
+    use crate::conversation::message::Message;
+    use crate::decision::settings::{DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION};
+    use crate::privacy::decision_axes::{
+        self, BasisAuthor, PrivacyCeiling, PublicBasis, PRIVACY_CEILING_STATE,
+        PRIVACY_CEILING_VERSION, PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION,
+    };
+    use crate::privacy::ProviderTier;
+    use tempfile::TempDir;
+
+    fn baseten_default() -> serde_json::Value {
+        serde_json::json!({
+            "defaultModel": { "provider": "baseten_decision", "model": "joey-1" },
+            "monitors": [],
+        })
+    }
+
+    async fn fresh(sm: &SessionManager, dir: &TempDir) -> String {
+        sm.create_session(
+            dir.path().to_path_buf(),
+            "basis".to_string(),
+            SessionType::User,
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    async fn lower(sm: &SessionManager, id: &str) -> BasisWriteOutcome<()> {
+        let basis = PublicBasis::new(id, BasisAuthor::Person, "test", vec![]);
+        sm.write_public_basis(id, BasisWrite::Set(basis), |data| {
+            data.set_extension_state(
+                DECISION_SETTINGS_STATE,
+                DECISION_SETTINGS_VERSION,
+                baseten_default(),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap()
+    }
+
+    fn has_basis(row: &Session) -> bool {
+        row.extension_data
+            .get_extension_state(PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION)
+            .is_some()
+    }
+
+    #[tokio::test]
+    async fn a_basis_lands_with_its_save_on_an_empty_public_chat() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = fresh(&sm, &dir).await;
+        assert_eq!(lower(&sm, &id).await, BasisWriteOutcome::Written(()));
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert!(has_basis(&row));
+        assert_eq!(
+            decision_axes::from_row(&row).tier(),
+            Some(ProviderTier::Public)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chat_with_a_message_is_not_lowered_and_nothing_is_written() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = fresh(&sm, &dir).await;
+        sm.add_message(&id, &Message::user().with_text("patient notes"))
+            .await
+            .unwrap();
+        assert_eq!(lower(&sm, &id).await, BasisWriteOutcome::NotEligible);
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert!(!has_basis(&row));
+        assert!(
+            row.extension_data
+                .get_extension_state(DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION)
+                .is_none(),
+            "a refused lowering wrote its settings anyway"
+        );
+        assert!(
+            public_basis_not_eligible_sentence("joey-1").contains("choose joey-1 before its first")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_private_chat_is_never_eligible_and_a_missing_one_is_not_found() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = fresh(&sm, &dir).await;
+        sm.update(&id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        assert_eq!(lower(&sm, &id).await, BasisWriteOutcome::NotEligible);
+        assert_eq!(
+            lower(&sm, "no-such-chat").await,
+            BasisWriteOutcome::SessionNotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declassified_chat_and_an_already_lowered_chat_are_eligible_with_messages() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+
+        // Declassified by the person.
+        let declassified = fresh(&sm, &dir).await;
+        sm.add_message(&declassified, &Message::user().with_text("hi"))
+            .await
+            .unwrap();
+        sm.update(&declassified)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        crate::privacy::declassify::declassify_for_test(&sm, &declassified)
+            .await
+            .unwrap();
+        assert_eq!(
+            lower(&sm, &declassified).await,
+            BasisWriteOutcome::Written(())
+        );
+
+        // Lowered while empty, then a message: a refresh still lands.
+        let lowered = fresh(&sm, &dir).await;
+        assert_eq!(lower(&sm, &lowered).await, BasisWriteOutcome::Written(()));
+        sm.add_message(&lowered, &Message::user().with_text("hi"))
+            .await
+            .unwrap();
+        assert_eq!(lower(&sm, &lowered).await, BasisWriteOutcome::Written(()));
+
+        // …until the basis is cleared, after which it is a first lowering again.
+        let cleared = sm
+            .write_public_basis(&lowered, BasisWrite::Clear, |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(cleared, BasisWriteOutcome::Written(()));
+        assert!(!has_basis(&sm.get_session(&lowered, false).await.unwrap()));
+        assert_eq!(lower(&sm, &lowered).await, BasisWriteOutcome::NotEligible);
+    }
+
+    #[tokio::test]
+    async fn a_basis_for_another_chat_is_refused_before_anything_is_written() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = fresh(&sm, &dir).await;
+        let wrong = PublicBasis::new("another chat", BasisAuthor::Person, "test", vec![]);
+        assert!(sm
+            .write_public_basis(&id, BasisWrite::Set(wrong), |_| Ok(()))
+            .await
+            .is_err());
+        assert!(!has_basis(&sm.get_session(&id, false).await.unwrap()));
+    }
+
+    /// Design §3.16, for a chat bound to a public model: a branch keeps its
+    /// public decision models on (the chat is public whatever it names, so
+    /// they were always legal), and still carries no basis and no ceiling.
+    #[tokio::test]
+    async fn a_copy_of_a_public_model_s_chat_keeps_its_public_monitors_on() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = fresh(&sm, &dir).await;
+        sm.update(&id)
+            .provider_name("anthropic")
+            .model_config(crate::model::ModelConfig::new_or_fail("claude-sonnet-4-5"))
+            .apply()
+            .await
+            .unwrap();
+        let basis = PublicBasis::new(&id, BasisAuthor::Person, "test", vec![]);
+        sm.write_public_basis(&id, BasisWrite::Set(basis), |data| {
+            data.set_extension_state(
+                DECISION_SETTINGS_STATE,
+                DECISION_SETTINGS_VERSION,
+                serde_json::json!({
+                    "monitors": [{
+                        "id": "done",
+                        "name": "Done",
+                        "question": { "instructions": "Done?", "kind": { "binary": {} } },
+                        "model": { "provider": "baseten_decision", "model": "joey-1" },
+                        "threshold": 0.8,
+                        "option": null,
+                        "rearmBelow": null,
+                    }],
+                }),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+        sm.add_message(&id, &Message::user().with_text("hi"))
+            .await
+            .unwrap();
+
+        let copy = sm.copy_session(&id, "copy".to_string()).await.unwrap();
+        assert!(!has_basis(&copy), "a derived row carried the basis");
+        let settings: crate::decision::settings::DecisionSettings = serde_json::from_value(
+            copy.extension_data
+                .get_extension_state(DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION)
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        assert!(
+            settings.monitors[0].enabled,
+            "a public model's chat lost its public monitor on a copy"
+        );
+        assert!(copy
+            .extension_data
+            .get_extension_state(
+                decision_axes::DECISION_NOTICE_STATE,
+                decision_axes::DECISION_NOTICE_VERSION
+            )
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_copy_and_an_import_carry_no_basis_no_ceiling_and_no_live_public_name() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = fresh(&sm, &dir).await;
+        let basis = PublicBasis::new(&id, BasisAuthor::Person, "test", vec![]);
+        sm.write_public_basis(&id, BasisWrite::Set(basis), |data| {
+            data.set_extension_state(
+                DECISION_SETTINGS_STATE,
+                DECISION_SETTINGS_VERSION,
+                serde_json::json!({
+                    "monitors": [{
+                        "id": "done",
+                        "name": "Done",
+                        "question": { "instructions": "Done?", "kind": { "binary": {} } },
+                        "model": { "provider": "baseten_decision", "model": "joey-1" },
+                        "threshold": 0.8,
+                        "option": null,
+                        "rearmBelow": null,
+                    }],
+                }),
+            );
+            data.set_extension_state(
+                PRIVACY_CEILING_STATE,
+                PRIVACY_CEILING_VERSION,
+                serde_json::to_value(PrivacyCeiling::public_from("parent", None)).unwrap(),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+        sm.add_message(&id, &Message::user().with_text("hi"))
+            .await
+            .unwrap();
+        let source = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            decision_axes::from_row(&source).tier(),
+            Some(ProviderTier::Public)
+        );
+
+        let copy = sm.copy_session(&id, "copy".to_string()).await.unwrap();
+        let exported = sm.export_session(&id).await.unwrap();
+        let imported = sm.import_session(&exported).await.unwrap();
+        for derived in [copy, imported] {
+            assert!(!has_basis(&derived), "a derived row carried the basis");
+            assert!(derived
+                .extension_data
+                .get_extension_state(PRIVACY_CEILING_STATE, PRIVACY_CEILING_VERSION)
+                .is_none());
+            assert!(decision_axes::from_row(&derived).is_identity());
+            let settings: crate::decision::settings::DecisionSettings = serde_json::from_value(
+                derived
+                    .extension_data
+                    .get_extension_state(DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION)
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                settings.monitors.len(),
+                1,
+                "the monitor was deleted, not disabled"
+            );
+            assert!(
+                !settings.monitors[0].enabled,
+                "a public monitor was copied live"
+            );
+        }
+    }
+
+    /// The census of design §7.2: `write_public_basis` is the only writer of
+    /// the key, and the removers are the derived rows and declassification,
+    /// through the one function that turns public names off.
+    #[test]
+    fn public_basis_has_one_writer() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let mut naming_the_key = std::collections::BTreeMap::<String, usize>::new();
+        let mut turning_off = std::collections::BTreeMap::<String, usize>::new();
+        for entry in walkdir::WalkDir::new(root.join("crates")) {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if path.extension().and_then(|e| e.to_str()) != Some("rs")
+                || !rel.contains("/src/")
+                || rel.ends_with("_tests.rs")
+            {
+                continue;
+            }
+            let src = std::fs::read_to_string(path).unwrap();
+            // Only production code: up to the first test module.
+            let production = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or(&src);
+            for line in production.lines() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                let key = code.matches("PUBLIC_BASIS_STATE").count()
+                    + code.matches("\"public_basis\"").count()
+                    + code.matches("public_basis.v1\\\"").count();
+                if key > 0 {
+                    *naming_the_key.entry(rel.clone()).or_default() += key;
+                }
+                let off = code.matches("turn_off_public_names(").count();
+                if off > 0 {
+                    *turning_off.entry(rel.clone()).or_default() += off;
+                }
+            }
+        }
+        let key_files: Vec<&str> = naming_the_key.keys().map(String::as_str).collect();
+        assert_eq!(
+            key_files,
+            vec![
+                "crates/biorouter/src/privacy/decision_axes.rs",
+                "crates/biorouter/src/session/session_manager.rs",
+            ],
+            "a new file names the public basis key; `write_public_basis` is its one writer: \
+             {naming_the_key:?}"
+        );
+        assert_eq!(
+            turning_off,
+            std::collections::BTreeMap::from([
+                ("crates/biorouter/src/privacy/declassify.rs".to_string(), 1),
+                // The definition.
+                (
+                    "crates/biorouter/src/privacy/decision_axes.rs".to_string(),
+                    1
+                ),
+                // `import_session` and `create_derived_session`.
+                (
+                    "crates/biorouter/src/session/session_manager.rs".to_string(),
+                    2
+                ),
+            ]),
+            "the set of places that turn public decision models off changed"
+        );
+        // In session_manager.rs the key is named only inside the writer.
+        let sm_src = include_str!("session_manager.rs");
+        let production = sm_src.split("\n#[cfg(test)]\nmod ").next().unwrap();
+        let writer = production
+            .find("    async fn write_public_basis<F, R>(")
+            .expect("the storage writer exists");
+        let writer_end = writer
+            + production
+                .get(writer..)
+                .and_then(|rest| rest.find("\n    }\n"))
+                .expect("the writer closes");
+        for (at, _) in production.match_indices("PUBLIC_BASIS_STATE") {
+            assert!(
+                at > writer && at < writer_end,
+                "session_manager.rs names the public basis key outside its one writer"
+            );
+        }
     }
 }

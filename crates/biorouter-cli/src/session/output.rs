@@ -1499,6 +1499,33 @@ fn banner_model(provider: &str, model: &str) -> String {
     crate::commands::decide::model_name(provider, model)
 }
 
+/// DR-33 (design §5): why this chat is public when its decision models made it
+/// so, for the banner's privacy row and the terminal UI's header; `None` when
+/// they did not (the chat's model is public, nothing public is named, or the
+/// chat is private), and whenever privacy tiers are off (`enforced`, sampled
+/// by the caller), when no notice about tiers is shown.
+///
+/// `bound_model_tier` is the tier of the model itself
+/// (`Agent::bound_model_tier`), never the slot's: the question is whether the
+/// decision models lowered a private model's chat. Read from the stored row,
+/// the one record every process agrees on, so the banner says what the next
+/// turn's Gate B will compute.
+pub fn decision_privacy_reason(
+    row: &biorouter::session::Session,
+    bound_model_tier: biorouter::privacy::ProviderTier,
+    enforced: bool,
+) -> Option<String> {
+    if !enforced {
+        return None;
+    }
+    let axes = biorouter::privacy::decision_axes::from_row(row);
+    if !axes.lowers(bound_model_tier) {
+        return None;
+    }
+    axes.lowered_by().map(super::privacy::decision_reason)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn display_session_info(
     resume: bool,
     provider: &str,
@@ -1511,6 +1538,9 @@ pub fn display_session_info(
     // `provider_instance` would report the model's tier instead and say
     // "Private" for the one case that matters.
     privacy: biorouter::privacy::SessionClassification,
+    // DR-33: [`decision_privacy_reason`], when decision models made the chat
+    // public.
+    decision_reason: Option<String>,
 ) {
     let headline = if resume {
         "resuming chat"
@@ -1553,6 +1583,9 @@ pub fn display_session_info(
         "privacy",
         format!("{} (at start)", super::privacy::tier_row(privacy)),
     );
+    if let Some(reason) = decision_reason {
+        row("", reason);
+    }
 
     row(
         "workdir",
@@ -1778,6 +1811,16 @@ pub fn preview() {
         &sid,
         None,
         biorouter::privacy::SessionClassification::Private,
+        None,
+    );
+    display_session_info(
+        false,
+        "versa_azure",
+        "gpt-5.5",
+        &sid,
+        None,
+        biorouter::privacy::SessionClassification::Public,
+        Some("public because monitor \"Done\" uses joey-1 · Baseten".to_string()),
     );
 
     // Section rules for a few representative tools.
@@ -1815,6 +1858,82 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};
+
+    /// A Public row whose default decision model is Baseten's joey-1, with
+    /// the person's basis when `basis`.
+    fn lowered_row(basis: bool) -> biorouter::session::Session {
+        use biorouter::decision::settings::{
+            DecisionSettings, DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION,
+        };
+        use biorouter::privacy::decision_axes::{
+            BasisAuthor, PublicBasis, PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION,
+        };
+        let mut row = biorouter::session::Session {
+            id: "20261110_1".to_string(),
+            ..Default::default()
+        };
+        let settings = DecisionSettings {
+            default_model: Some(biorouter::decision::DecisionModelRef::new(
+                "baseten_decision",
+                "joey-1",
+            )),
+            monitors: Vec::new(),
+        };
+        row.extension_data.set_extension_state(
+            DECISION_SETTINGS_STATE,
+            DECISION_SETTINGS_VERSION,
+            serde_json::to_value(&settings).unwrap(),
+        );
+        if basis {
+            let record = PublicBasis::new(
+                &row.id,
+                BasisAuthor::Person,
+                "cli",
+                vec!["baseten_decision/joey-1".to_string()],
+            );
+            row.extension_data.set_extension_state(
+                PUBLIC_BASIS_STATE,
+                PUBLIC_BASIS_VERSION,
+                serde_json::to_value(&record).unwrap(),
+            );
+        }
+        row
+    }
+
+    /// DR-33 (design §5): the banner says why a private model's chat is
+    /// public, and only then: not for a public model's chat, not for a public
+    /// name nobody accepted (no basis, so it lowers nothing), not for a chat
+    /// that is private, and not with privacy tiers off.
+    #[test]
+    fn the_banner_says_why_decision_models_made_a_private_models_chat_public() {
+        use biorouter::privacy::{ProviderTier, SessionClassification};
+        assert_eq!(
+            decision_privacy_reason(&lowered_row(true), ProviderTier::Private, true).as_deref(),
+            Some("public because the default decision model is joey-1 · Baseten")
+        );
+        assert_eq!(
+            decision_privacy_reason(&lowered_row(true), ProviderTier::Public, true),
+            None,
+            "a public model's chat is public by its model"
+        );
+        assert_eq!(
+            decision_privacy_reason(&lowered_row(false), ProviderTier::Private, true),
+            None,
+            "a public name with no basis lowers nothing"
+        );
+        let mut private = lowered_row(true);
+        private.privacy_tier = SessionClassification::Private;
+        assert_eq!(
+            decision_privacy_reason(&private, ProviderTier::Private, true),
+            None,
+            "a private chat's names are inert"
+        );
+        assert_eq!(
+            decision_privacy_reason(&lowered_row(true), ProviderTier::Private, false),
+            None,
+            "no tier notice with privacy tiers off"
+        );
+    }
 
     #[test]
     fn the_banner_names_a_baseten_decision_model_by_its_alias() {

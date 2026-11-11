@@ -24,6 +24,14 @@
 //!   to also watch subagents onto running ones: without a daemon none is
 //!   running.
 //!
+//! **A save can make the chat public** (DR-33): a chat is as private as its
+//! least private model, decision models included, so naming a public one
+//! (Baseten's joey-1) on an empty chat bound to a private model (Versa) makes
+//! it a public chat. Both paths say what a save does to the chat's tier on
+//! stderr, and a save that makes the chat public is first asked about and
+//! confirmed by typing the last six characters of the chat id at a terminal
+//! (`decision_tier`); with no terminal it is refused and nothing is written.
+//!
 //! Every edit reads the whole record, changes one entry and writes the whole
 //! record back, so the other entries keep who set them (`setBy`,
 //! `setBySession`, `inheritedFrom`) byte for byte. The person may remove any
@@ -215,6 +223,16 @@ pub enum MonitorsCommand {
     Remove {
         /// The monitor's id or name.
         monitor: String,
+    },
+    /// Set the chat's default decision model, the one its monitors without a
+    /// model and its `decide` calls use, or `none` to clear it. A public one
+    /// (joey-1 on Baseten) makes a chat on a private model public, which asks
+    /// for a confirmation typed here, and only before the chat's first
+    /// message.
+    Default {
+        /// The model, by its name (tev1:0.8b, joey-1) or as provider/model;
+        /// `none` clears it.
+        model: String,
     },
 }
 
@@ -578,6 +596,93 @@ pub fn render_monitors(session_id: &str, settings: &DecisionSettings) -> Vec<Str
     out
 }
 
+/// The list's first line (design §5): the chat's tier and, when its decision
+/// models made a private model's chat public, why.
+pub fn privacy_header(
+    classification: biorouter::privacy::SessionClassification,
+    reason: Option<&str>,
+) -> String {
+    match (classification, reason) {
+        (biorouter::privacy::SessionClassification::Private, _) => {
+            "Privacy: private. Only private decision models can read this chat.".to_string()
+        }
+        (_, Some(reason)) => format!("Privacy: {reason}."),
+        (_, None) => "Privacy: public.".to_string(),
+    }
+}
+
+/// The daemon's `privacyBasis` (on `GET /sessions/{id}`) as the cause the
+/// terminal words: `None` when the answer carries none.
+pub fn basis_from_answer(
+    value: &serde_json::Value,
+) -> Option<biorouter::privacy::decision_axes::LoweredBy> {
+    use biorouter::privacy::decision_axes::{HostLabel, LoweredBy, NameSource};
+    let basis = value.get("privacyBasis").filter(|basis| !basis.is_null())?;
+    let text = |key: &str| {
+        basis
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let source = match text("source").as_str() {
+        "default" => NameSource::Default,
+        "monitor" => NameSource::Monitor,
+        "gate" => NameSource::Gate,
+        "phaseMonitor" | "phase_monitor" => NameSource::PhaseMonitor,
+        "parent" => NameSource::Parent,
+        _ => return None,
+    };
+    let host: HostLabel = basis
+        .get("host")
+        .and_then(|host| serde_json::from_value(host.clone()).ok())
+        .unwrap_or(HostLabel::Baseten);
+    Some(LoweredBy {
+        source,
+        label: text("label"),
+        model: text("model"),
+        host,
+        others: 0,
+    })
+}
+
+/// The list's header from the daemon: the chat's tier and `privacyBasis`.
+async fn daemon_privacy_header(session_id: &str, auth: &DaemonAuth) -> Result<String> {
+    let path = format!("/sessions/{session_id}?metadata_only=true");
+    let (code, body) = daemon_get_json(&path, auth, configured_port(), REQUEST_DEADLINE).await?;
+    if code != 200 {
+        return Err(daemon_error(
+            session_id,
+            &format!("GET {path}"),
+            code,
+            &body,
+        ));
+    }
+    let value: serde_json::Value = parse_json(&body, "a session")?;
+    let classification = value
+        .get("privacy_tier")
+        .and_then(|tier| serde_json::from_value(tier.clone()).ok())
+        .unwrap_or(biorouter::privacy::SessionClassification::Public);
+    let reason =
+        basis_from_answer(&value).map(|cause| crate::session::privacy::decision_reason(&cause));
+    Ok(privacy_header(classification, reason.as_deref()))
+}
+
+/// The list's header from the local store: the row's tier and, with the model
+/// it is bound to as the row declares it, why decision models made it public.
+async fn local_privacy_header(store: &LocalStore, session_id: &str) -> Result<String> {
+    let row = store
+        .manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|_| anyhow!("Session '{session_id}' not found."))?;
+    let bound = biorouter::decision::save::row_bound_model_tier(&row, store.enforced)
+        .await
+        .unwrap_or(biorouter::privacy::ProviderTier::Public);
+    let reason = crate::session::output::decision_privacy_reason(&row, bound, store.enforced);
+    Ok(privacy_header(row.privacy_tier, reason.as_deref()))
+}
+
 // ── reading and writing ─────────────────────────────────────────────────────
 
 fn settings_path(session_id: &str) -> String {
@@ -610,23 +715,82 @@ async fn daemon_load(session_id: &str, auth: &DaemonAuth) -> Result<DecisionSett
     parse_settings(&body)
 }
 
+/// The settings `PUT`'s body: the record, with the person's acceptance of a
+/// lowering beside its keys when `accepted` (DR-33). The route answers a
+/// save that would make the chat public 409
+/// `needsPublicDecisionConfirmation` without it.
+pub fn settings_body(settings: &DecisionSettings, accepted: bool) -> Result<String> {
+    let mut body = serde_json::to_value(settings)?;
+    if accepted {
+        if let Some(object) = body.as_object_mut() {
+            object.insert(
+                "acceptPublicDecisionModels".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+    }
+    Ok(body.to_string())
+}
+
+/// What a stored save did, as the daemon answered it or as it ran here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedSettings {
+    pub settings: DecisionSettings,
+    /// What the save did to the chat's tier, when the answer says.
+    pub tier_effect: Option<biorouter::privacy::decision_axes::TierEffect>,
+    /// The line that says it, in the terminal's words, or `None`.
+    pub effect_line: Option<String>,
+}
+
+impl From<biorouter::decision::save::CheckedSave> for SavedSettings {
+    fn from(saved: biorouter::decision::save::CheckedSave) -> Self {
+        Self {
+            effect_line: super::decision_tier::effect_line(&saved),
+            tier_effect: Some(saved.tier_effect),
+            settings: saved.settings,
+        }
+    }
+}
+
 async fn daemon_save(
     session_id: &str,
     settings: &DecisionSettings,
     auth: DaemonAuth,
-) -> Result<DecisionSettings> {
+    confirm: &mut dyn super::decision_tier::ConfirmPublic,
+) -> Result<SavedSettings> {
+    use super::decision_tier::{with_public_confirmation, SaveAttempt};
     let path = settings_path(session_id);
-    let body = serde_json::to_string(settings)?;
-    let ((code, answer), _) = protected_write_with_key_if_wanted(
-        "PUT",
-        &path,
-        &body,
-        auth,
-        configured_port(),
-        REQUEST_DEADLINE,
-    )
-    .await?;
-    save_answer(session_id, &path, code, &answer, settings)
+    // The auth a retry sends is the one the first answer came back with, so a
+    // user-action key typed for the first is not asked for again.
+    let auth = Arc::new(std::sync::Mutex::new(auth));
+    with_public_confirmation(confirm, session_id, |accepted| {
+        let path = path.clone();
+        let body = settings_body(settings, accepted);
+        let auth = Arc::clone(&auth);
+        async move {
+            let body = body?;
+            let current = auth.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let ((code, answer), back) = protected_write_with_key_if_wanted(
+                "PUT",
+                &path,
+                &body,
+                current,
+                configured_port(),
+                REQUEST_DEADLINE,
+            )
+            .await?;
+            *auth.lock().unwrap_or_else(|e| e.into_inner()) = back;
+            if super::decision_tier::is_confirmation_request(code, &answer) {
+                return Ok(SaveAttempt::NeedsConfirmation(
+                    super::decision_tier::cli_words(&super::decision_tier::confirmation_question(
+                        &answer,
+                    )),
+                ));
+            }
+            save_answer(session_id, &path, code, &answer, settings).map(SaveAttempt::Saved)
+        }
+    })
+    .await
 }
 
 /// What the daemon's answer to the settings `PUT` means: the record it
@@ -643,11 +807,18 @@ fn save_answer(
     code: u16,
     answer: &str,
     sent: &DecisionSettings,
-) -> Result<DecisionSettings> {
+) -> Result<SavedSettings> {
     match code {
-        200 | 201 => parse_settings(answer).or_else(|_| Ok(sent.clone())),
-        204 => Ok(sent.clone()),
-        400 | 422 => Err(anyhow!(
+        200 | 201 => Ok(saved_from_answer(answer, sent)),
+        204 => Ok(SavedSettings {
+            settings: sent.clone(),
+            tier_effect: None,
+            effect_line: None,
+        }),
+        // A 409 here is not the confirmation question (that is asked before
+        // this is reached): a first message raced a lowering, and its
+        // sentence says so.
+        400 | 409 | 422 => Err(anyhow!(
             "{}",
             refusal_sentence(answer).unwrap_or_else(|| format!(
                 "the daemon refused the change ({code}) without saying why. Nothing was saved."
@@ -665,6 +836,51 @@ fn save_answer(
             other,
             answer,
         )),
+    }
+}
+
+/// A 200's body: the stored record (bare or under `settings`) and, when the
+/// daemon says, the save's `tierEffect` and the line that says it.
+fn saved_from_answer(answer: &str, sent: &DecisionSettings) -> SavedSettings {
+    let value: Option<serde_json::Value> = serde_json::from_str(answer).ok();
+    let tier_effect = value
+        .as_ref()
+        .and_then(|value| value.get("tierEffect"))
+        .and_then(|effect| serde_json::from_value(effect.clone()).ok());
+    let effect_line = value
+        .as_ref()
+        .and_then(|value| {
+            ["effectLine", "tierEffectLine"]
+                .iter()
+                .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            tier_effect.and_then(|effect| {
+                biorouter::decision::save::tier_effect_line(effect, &[])
+                    .filter(|_| {
+                        effect == biorouter::privacy::decision_axes::TierEffect::BecomesPrivateAtNextMessage
+                    })
+            })
+        })
+        .map(|line| super::decision_tier::cli_words(&line));
+    // The record is answered beside the two effect keys, which the record
+    // itself does not have.
+    let settings = value
+        .map(|mut value| {
+            if let Some(object) = value.as_object_mut() {
+                object.remove("tierEffect");
+                object.remove("tierEffectLine");
+                object.remove("effectLine");
+            }
+            value.to_string()
+        })
+        .and_then(|record| parse_settings(&record).ok())
+        .unwrap_or_else(|| sent.clone());
+    SavedSettings {
+        settings,
+        tier_effect,
+        effect_line,
     }
 }
 
@@ -743,17 +959,24 @@ async fn local_session_type(manager: &SessionManager, session_id: &str) -> Resul
 ///
 /// Unlike the route it copies nothing onto running subagents: without a
 /// daemon, none is running.
+///
+/// DR-33: the save's tier effect is worked out first; one that would make the
+/// chat public is asked about with `confirm` and stored only with the
+/// person's typed acceptance (`decision_tier::save_settings_at_terminal`).
 pub async fn save_locally(
     service: &DecisionService,
     manager: Arc<SessionManager>,
     session_id: &str,
     enforced: bool,
     settings: DecisionSettings,
-) -> Result<DecisionSettings> {
+    confirm: &mut dyn super::decision_tier::ConfirmPublic,
+) -> Result<SavedSettings> {
     let session =
         biorouter::decision::save::load_for_save(Arc::clone(&manager), session_id, enforced)
             .await?;
-    biorouter::decision::save_checked(service, &manager, &session, settings).await
+    super::decision_tier::save_settings_at_terminal(service, &manager, &session, settings, confirm)
+        .await
+        .map(SavedSettings::from)
 }
 
 /// What `add` prints once the monitor is stored.
@@ -793,12 +1016,29 @@ fn removed_message(session_id: &str, removed: &MonitorCriterion) -> String {
     message
 }
 
-/// What `add` and `remove` change.
+/// What `add`, `remove` and `default` change.
 #[derive(Debug, Clone)]
 pub enum MonitorEdit {
     Add(AddMonitor),
     /// A monitor's id or name.
     Remove(String),
+    /// The default decision model, spelled `provider/model`, or `None` to
+    /// clear it.
+    Default(Option<String>),
+}
+
+/// What `default` prints once it is stored.
+fn default_message(session_id: &str, model: Option<&DecisionModelRef>) -> String {
+    match model {
+        Some(model) => format!(
+            "The default decision model of session {session_id} is now {}.",
+            super::decide::model_for_person(model)
+        ),
+        None => format!(
+            "Session {session_id} has no default decision model now: monitors without a model \
+             use the one chosen automatically (local first, within the chat's tier)."
+        ),
+    }
 }
 
 /// Apply `edit` to `settings`, the chat's whole record as stored, and say
@@ -831,6 +1071,18 @@ where
             let removed = remove_monitor(settings, &monitor)?;
             removed_message(session_id, &removed)
         }
+        MonitorEdit::Default(model) => {
+            let model = model
+                .map(|label| {
+                    DecisionModelRef::parse(&label).ok_or_else(|| {
+                        anyhow!("`{label}` is not a decision model; write it provider/model.")
+                    })
+                })
+                .transpose()?;
+            let message = default_message(session_id, model.as_ref());
+            settings.default_model = model;
+            message
+        }
     };
     biorouter::decision::settings::validate(settings).map_err(|e| anyhow!("{e}"))?;
     Ok(message)
@@ -843,14 +1095,22 @@ async fn edit_through_daemon(
     auth: DaemonAuth,
     session_id: &str,
     edit: MonitorEdit,
-) -> Result<String> {
+    confirm: &mut dyn super::decision_tier::ConfirmPublic,
+) -> Result<EditOutcome> {
     let mut settings = daemon_load(session_id, &auth).await?;
     let message = apply_edit(session_id, &mut settings, edit, || {
         daemon_session_type(session_id, &auth)
     })
     .await?;
-    daemon_save(session_id, &settings, auth).await?;
-    Ok(message)
+    let saved = daemon_save(session_id, &settings, auth, confirm).await?;
+    Ok(EditOutcome { message, saved })
+}
+
+/// What an edit printed and stored.
+#[derive(Debug, Clone)]
+pub struct EditOutcome {
+    pub message: String,
+    pub saved: SavedSettings,
 }
 
 /// `add` or `remove` in the local store: read the record, change it, and
@@ -861,21 +1121,23 @@ async fn edit_locally(
     store: &LocalStore,
     session_id: &str,
     edit: MonitorEdit,
-) -> Result<String> {
+    confirm: &mut dyn super::decision_tier::ConfirmPublic,
+) -> Result<EditOutcome> {
     let mut settings = biorouter::decision::settings::load(&store.manager, session_id).await?;
     let message = apply_edit(session_id, &mut settings, edit, || {
         local_session_type(&store.manager, session_id)
     })
     .await?;
-    save_locally(
+    let saved = save_locally(
         service,
         Arc::clone(&store.manager),
         session_id,
         store.enforced,
         settings,
+        confirm,
     )
     .await?;
-    Ok(message)
+    Ok(EditOutcome { message, saved })
 }
 
 /// `biorouter session monitors <SESSION_ID> ...`.
@@ -905,6 +1167,16 @@ pub async fn handle_session_monitors(
             if json {
                 super::print_line(serde_json::to_string_pretty(&settings)?);
             } else {
+                // Best-effort: the monitors are the answer, the header a
+                // gloss on it.
+                let header = match (&source, &local) {
+                    (Reach::Daemon(auth), _) => daemon_privacy_header(session_id, auth).await,
+                    (_, Some(store)) => local_privacy_header(store, session_id).await,
+                    _ => unreachable!("a local read always has its store"),
+                };
+                if let Ok(header) = header {
+                    super::print_line(header);
+                }
                 for line in render_monitors(session_id, &settings) {
                     super::print_line(line);
                 }
@@ -917,22 +1189,44 @@ pub async fn handle_session_monitors(
             MonitorEdit::Add(add)
         }
         MonitorsCommand::Remove { monitor } => MonitorEdit::Remove(monitor),
+        MonitorsCommand::Default { model } => {
+            let model = model.trim();
+            if model.eq_ignore_ascii_case("none") {
+                MonitorEdit::Default(None)
+            } else {
+                MonitorEdit::Default(
+                    super::decide::spell_model_option(Some(model.to_string())).await?,
+                )
+            }
+        }
     };
-    let message = match (source, local) {
-        (Reach::Daemon(auth), _) => edit_through_daemon(auth, session_id, edit).await,
+    let mut confirm = super::decision_tier::TerminalConfirm::here();
+    let outcome = match (source, local) {
+        (Reach::Daemon(auth), _) => edit_through_daemon(auth, session_id, edit, &mut confirm).await,
         (_, Some(store)) => {
-            edit_locally(biorouter::decision::global(), &store, session_id, edit).await
+            edit_locally(
+                biorouter::decision::global(),
+                &store,
+                session_id,
+                edit,
+                &mut confirm,
+            )
+            .await
         }
         _ => unreachable!("a local write always has its store"),
     }
     .map_err(super::decide::advise)?;
-    println!("{message}");
+    println!("{}", outcome.message);
+    if let Some(line) = outcome.saved.effect_line {
+        eprintln!("{line}");
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::decision_tier::Scripted;
     use clap::Parser;
 
     #[derive(Parser)]
@@ -1763,7 +2057,10 @@ mod tests {
 
         let refused = save_answer("s1", &path, 403, "proof needed", &sent).unwrap_err();
         assert!(refused.to_string().contains("user-action key"));
-        assert_eq!(save_answer("s1", &path, 204, "", &sent).unwrap(), sent);
+        assert_eq!(
+            save_answer("s1", &path, 204, "", &sent).unwrap().settings,
+            sent
+        );
     }
 
     /// A decision service over no models at all: every named model is
@@ -1838,9 +2135,15 @@ mod tests {
             manager: manager.clone(),
             enforced: true,
         };
-        let error = edit_locally(&service, &store, &chat.id, MonitorEdit::Add(add(&gone)))
-            .await
-            .unwrap_err();
+        let error = edit_locally(
+            &service,
+            &store,
+            &chat.id,
+            MonitorEdit::Add(add(&gone)),
+            &mut Scripted::no_terminal(),
+        )
+        .await
+        .unwrap_err();
         assert!(
             error
                 .to_string()
@@ -1861,9 +2164,16 @@ mod tests {
             monitors: vec![monitor.clone()],
         };
 
-        let error = save_locally(&service, manager.clone(), &chat.id, true, settings)
-            .await
-            .unwrap_err();
+        let error = save_locally(
+            &service,
+            manager.clone(),
+            &chat.id,
+            true,
+            settings,
+            &mut Scripted::no_terminal(),
+        )
+        .await
+        .unwrap_err();
         assert!(
             error
                 .downcast_ref::<biorouter::decision::UnusableDecisionSettings>()
@@ -1890,9 +2200,16 @@ mod tests {
             default_model: None,
             monitors: vec![monitor.clone()],
         };
-        save_locally(&service, manager.clone(), &chat.id, true, off.clone())
-            .await
-            .unwrap();
+        save_locally(
+            &service,
+            manager.clone(),
+            &chat.id,
+            true,
+            off.clone(),
+            &mut Scripted::no_terminal(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             biorouter::decision::settings::load(&manager, &chat.id)
                 .await
@@ -1905,9 +2222,16 @@ mod tests {
             default_model: None,
             monitors: vec![monitor],
         };
-        assert!(save_locally(&service, manager.clone(), &chat.id, true, on)
-            .await
-            .is_err());
+        assert!(save_locally(
+            &service,
+            manager.clone(),
+            &chat.id,
+            true,
+            on,
+            &mut Scripted::no_terminal()
+        )
+        .await
+        .is_err());
         assert_eq!(
             biorouter::decision::settings::load(&manager, &chat.id)
                 .await
@@ -1988,14 +2312,28 @@ mod tests {
         }
     }
 
-    /// Item 6, as a live run found it: with no daemon, a chat bound to a
-    /// private model that has not had its first turn (still classified
-    /// Public, its row naming `versa_azure`) is refused a public decision
-    /// model with the sentence the daemon's route answers 422 with, and
-    /// nothing is stored. The same monitor on a chat bound to nothing is
-    /// stored, so what refuses it is the bound model.
+    /// The public basis a row records, if any.
+    async fn basis_of(manager: &SessionManager, id: &str) -> Option<serde_json::Value> {
+        use biorouter::privacy::decision_axes::{PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION};
+        manager
+            .get_session(id, false)
+            .await
+            .unwrap()
+            .extension_data
+            .get_extension_state(PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION)
+            .cloned()
+    }
+
+    /// DR-33 (design §1.8, §7.4), with no daemon: on an empty chat bound to a
+    /// private model (still classified Public, its row naming `versa_azure`),
+    /// a public decision model makes the chat public. So the save asks first,
+    /// and with no terminal to type the confirmation it is refused and
+    /// nothing is stored; declined, nothing is stored; confirmed, the monitor
+    /// and the person's basis are stored together and the effect is said.
+    /// The same monitor on a chat bound to nothing asks nothing.
     #[tokio::test]
-    async fn a_local_save_refuses_a_public_monitor_on_a_chat_bound_to_a_private_model() {
+    async fn a_local_save_that_makes_a_private_models_chat_public_needs_a_typed_confirmation() {
+        use biorouter::privacy::decision_axes::TierEffect;
         let dir = tempfile::tempdir().unwrap();
         let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
         let create = |name: &'static str| {
@@ -2008,14 +2346,20 @@ mod tests {
                     .unwrap()
             }
         };
+        let on_versa = |id: String| {
+            let manager = manager.clone();
+            async move {
+                manager
+                    .update(&id)
+                    .provider_name("versa_azure")
+                    .model_config(biorouter::model::ModelConfig::new_or_fail("gpt-5.5"))
+                    .apply()
+                    .await
+                    .unwrap();
+            }
+        };
         let bound = create("bound").await;
-        manager
-            .update(&bound.id)
-            .provider_name("versa_azure")
-            .model_config(biorouter::model::ModelConfig::new_or_fail("gpt-5.5"))
-            .apply()
-            .await
-            .unwrap();
+        on_versa(bound.id.clone()).await;
         let unbound = create("unbound").await;
         let service = DecisionService::new(Arc::new(OnlyJoey))
             .with_use_gate(Arc::new(Allow))
@@ -2034,40 +2378,328 @@ mod tests {
             "--model",
             "baseten_decision/joey-1",
         ];
+        let nothing_stored = |id: String| {
+            let manager = manager.clone();
+            async move {
+                assert_eq!(
+                    biorouter::decision::settings::load(&manager, &id)
+                        .await
+                        .unwrap(),
+                    DecisionSettings::default(),
+                    "nothing was stored"
+                );
+                assert_eq!(basis_of(&manager, &id).await, None, "no basis was written");
+            }
+        };
 
-        let error = edit_locally(&service, &store, &bound.id, MonitorEdit::Add(add(&joey)))
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().starts_with(
-                "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
-                 model, so it becomes private at its first turn, and `joey-1` is a public model \
-                 a private chat cannot use."
-            ),
-            "{error}"
+        // No terminal: refused, nothing stored.
+        let mut nobody = Scripted::no_terminal();
+        let error = edit_locally(
+            &service,
+            &store,
+            &bound.id,
+            MonitorEdit::Add(add(&joey)),
+            &mut nobody,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            crate::commands::decision_tier::NO_TERMINAL
         );
-        assert!(error
-            .downcast_ref::<biorouter::decision::UnusableDecisionSettings>()
-            .is_some());
+        assert_eq!(
+            nobody.asked,
+            vec!["This chat will be public: joey-1 runs on Baseten.".to_string()]
+        );
+        nothing_stored(bound.id.clone()).await;
+
+        // Declined: nothing stored.
+        let error = edit_locally(
+            &service,
+            &store,
+            &bound.id,
+            MonitorEdit::Add(add(&joey)),
+            &mut Scripted::no(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), crate::commands::decision_tier::DECLINED);
+        nothing_stored(bound.id.clone()).await;
+
+        // Confirmed: the monitor and the basis land together.
+        let outcome = edit_locally(
+            &service,
+            &store,
+            &bound.id,
+            MonitorEdit::Add(add(&joey)),
+            &mut Scripted::yes(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.saved.tier_effect, Some(TierEffect::BecomesPublic));
+        assert_eq!(
+            outcome.saved.effect_line.as_deref(),
+            Some("This chat will be public: joey-1 runs on Baseten.")
+        );
         assert_eq!(
             biorouter::decision::settings::load(&manager, &bound.id)
-                .await
-                .unwrap(),
-            DecisionSettings::default(),
-            "nothing was stored"
-        );
-
-        edit_locally(&service, &store, &unbound.id, MonitorEdit::Add(add(&joey)))
-            .await
-            .unwrap();
-        assert_eq!(
-            biorouter::decision::settings::load(&manager, &unbound.id)
                 .await
                 .unwrap()
                 .monitors
                 .len(),
             1
         );
+        let basis = basis_of(&manager, &bound.id).await.expect("the basis");
+        assert_eq!(basis["sessionId"], serde_json::json!(bound.id));
+        assert_eq!(basis["by"], serde_json::json!("person"));
+        assert_eq!(basis["door"], serde_json::json!("cli"));
+        // And the banner now says why.
+        let row = manager.get_session(&bound.id, false).await.unwrap();
+        assert_eq!(
+            crate::session::output::decision_privacy_reason(
+                &row,
+                biorouter::privacy::ProviderTier::Private,
+                true
+            )
+            .as_deref(),
+            Some("public because monitor \"Done\" uses joey-1 · Baseten")
+        );
+
+        // A chat on no model is not lowered by it, so nothing is asked.
+        let mut never = Scripted::no_terminal();
+        let outcome = edit_locally(
+            &service,
+            &store,
+            &unbound.id,
+            MonitorEdit::Add(add(&joey)),
+            &mut never,
+        )
+        .await
+        .unwrap();
+        assert!(never.asked.is_empty());
+        assert_eq!(outcome.saved.effect_line, None);
+    }
+
+    /// The not-eligible twin (design §3.2): a chat on a private model that
+    /// already has a message cannot be made public by a decision model, so
+    /// the save is refused with the terminal's sentence, before anything is
+    /// asked, and nothing is stored.
+    #[tokio::test]
+    async fn a_local_save_refuses_a_public_monitor_on_a_private_models_chat_with_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let chat = manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "started".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        manager
+            .update(&chat.id)
+            .provider_name("versa_azure")
+            .model_config(biorouter::model::ModelConfig::new_or_fail("gpt-5.5"))
+            .apply()
+            .await
+            .unwrap();
+        manager
+            .add_message(
+                &chat.id,
+                &biorouter::conversation::message::Message::user().with_text("hello"),
+            )
+            .await
+            .unwrap();
+        let service = DecisionService::new(Arc::new(OnlyJoey))
+            .with_use_gate(Arc::new(Allow))
+            .with_default_model(None);
+        let store = LocalStore {
+            manager: manager.clone(),
+            enforced: true,
+        };
+        let joey = [
+            "--name",
+            "Done",
+            "--ask",
+            "Is the task done?",
+            "--threshold",
+            "0.8",
+            "--model",
+            "baseten_decision/joey-1",
+        ];
+        let mut asked = Scripted::yes();
+        let error = edit_locally(
+            &service,
+            &store,
+            &chat.id,
+            MonitorEdit::Add(add(&joey)),
+            &mut asked,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("already has messages on a private model"),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("`biorouter models decision list`"),
+            "the terminal's way out: {error}"
+        );
+        assert!(asked.asked.is_empty(), "a refusal is not a question");
+        assert_eq!(
+            biorouter::decision::settings::load(&manager, &chat.id)
+                .await
+                .unwrap(),
+            DecisionSettings::default()
+        );
+    }
+
+    /// `default` sets the chat's default decision model and `none` clears it,
+    /// keeping every monitor as it was.
+    #[tokio::test]
+    async fn default_sets_and_clears_the_chats_default_decision_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let chat = manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "notes".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let service = DecisionService::new(Arc::new(OnlyJoey))
+            .with_use_gate(Arc::new(Allow))
+            .with_default_model(None);
+        let store = LocalStore {
+            manager: manager.clone(),
+            enforced: true,
+        };
+        let said = edit_locally(
+            &service,
+            &store,
+            &chat.id,
+            MonitorEdit::Default(Some("baseten_decision/joey-1".into())),
+            &mut Scripted::no_terminal(),
+        )
+        .await
+        .unwrap()
+        .message;
+        assert!(said.contains("is now joey-1 · Baseten"), "{said}");
+        assert_eq!(
+            biorouter::decision::settings::load(&manager, &chat.id)
+                .await
+                .unwrap()
+                .default_model,
+            Some(DecisionModelRef::new("baseten_decision", "joey-1"))
+        );
+        edit_locally(
+            &service,
+            &store,
+            &chat.id,
+            MonitorEdit::Default(None),
+            &mut Scripted::no_terminal(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            biorouter::decision::settings::load(&manager, &chat.id)
+                .await
+                .unwrap()
+                .default_model,
+            None
+        );
+    }
+
+    /// The list's first line says the chat's tier and, when decision models
+    /// made it public, why; the daemon's `privacyBasis` reads the same.
+    #[test]
+    fn the_list_header_says_the_tier_and_why() {
+        use biorouter::privacy::SessionClassification;
+        assert_eq!(
+            privacy_header(SessionClassification::Public, None),
+            "Privacy: public."
+        );
+        assert!(
+            privacy_header(SessionClassification::Private, Some("ignored"))
+                .starts_with("Privacy: private.")
+        );
+        let answer = serde_json::json!({
+            "privacy_tier": "public",
+            "privacyBasis": {
+                "kind": "decisionModel",
+                "source": "monitor",
+                "label": "Done",
+                "model": "joey-1",
+                "host": {"kind": "baseten"},
+                "place": "Baseten",
+                "summary": "monitor \"Done\" uses joey-1, a Baseten model"
+            }
+        });
+        let cause = basis_from_answer(&answer).expect("a basis");
+        assert_eq!(
+            privacy_header(
+                SessionClassification::Public,
+                Some(&crate::session::privacy::decision_reason(&cause))
+            ),
+            "Privacy: public because monitor \"Done\" uses joey-1 · Baseten."
+        );
+        assert_eq!(
+            basis_from_answer(&serde_json::json!({"privacy_tier": "public"})),
+            None
+        );
+    }
+
+    /// Through a daemon, the PUT carries the person's acceptance only when
+    /// asked to, and a stored answer's `tierEffect` is read.
+    #[test]
+    fn the_daemon_put_carries_the_acceptance_and_its_answer_the_effect() {
+        let sent = DecisionSettings {
+            default_model: Some(DecisionModelRef::new("baseten_decision", "joey-1")),
+            monitors: Vec::new(),
+        };
+        assert!(!settings_body(&sent, false)
+            .unwrap()
+            .contains("acceptPublicDecisionModels"));
+        let accepted: serde_json::Value =
+            serde_json::from_str(&settings_body(&sent, true).unwrap()).unwrap();
+        assert_eq!(accepted["acceptPublicDecisionModels"], true);
+        assert_eq!(accepted["defaultModel"]["model"], "joey-1");
+        // The route answers the record flattened beside the effect.
+        let saved = save_answer(
+            "s1",
+            "/sessions/s1/decision-settings",
+            200,
+            r#"{"defaultModel":null,"monitors":[],"tierEffect":"becomesPrivateAtNextMessage"}"#,
+            &sent,
+        )
+        .unwrap();
+        assert_eq!(
+            saved.settings,
+            DecisionSettings::default(),
+            "the stored record"
+        );
+        assert_eq!(
+            saved.tier_effect,
+            Some(biorouter::privacy::decision_axes::TierEffect::BecomesPrivateAtNextMessage)
+        );
+        assert!(saved
+            .effect_line
+            .unwrap()
+            .starts_with("This chat becomes private at your next message."));
+        let error = save_answer(
+            "s1",
+            "/sessions/s1/decision-settings",
+            409,
+            "This chat has started, so it can't be made public by a decision model now.",
+            &sent,
+        )
+        .unwrap_err();
+        assert!(error.to_string().starts_with("This chat has started"));
     }
 
     /// On the local path `add --subagents` is refused on a subagent's own
@@ -2109,9 +2741,15 @@ mod tests {
             "--disabled",
         ];
 
-        let refused = edit_locally(&service, &store, &child.id, MonitorEdit::Add(add(&shared)))
-            .await
-            .unwrap_err();
+        let refused = edit_locally(
+            &service,
+            &store,
+            &child.id,
+            MonitorEdit::Add(add(&shared)),
+            &mut Scripted::no_terminal(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(refused.to_string(), SUBAGENTS_ON_A_SUBAGENT);
         assert_eq!(
             biorouter::decision::settings::load(&manager, &child.id)
@@ -2120,9 +2758,16 @@ mod tests {
             DecisionSettings::default()
         );
 
-        let said = edit_locally(&service, &store, &parent.id, MonitorEdit::Add(add(&shared)))
-            .await
-            .unwrap();
+        let said = edit_locally(
+            &service,
+            &store,
+            &parent.id,
+            MonitorEdit::Add(add(&shared)),
+            &mut Scripted::no_terminal(),
+        )
+        .await
+        .unwrap()
+        .message;
         assert!(said.ends_with("It also watches the subagents this chat starts."));
         let stored = biorouter::decision::settings::load(&manager, &parent.id)
             .await
@@ -2158,9 +2803,11 @@ mod tests {
             &store,
             &parent.id,
             MonitorEdit::Remove("off-task".into()),
+            &mut Scripted::no_terminal(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .message;
         assert!(said.contains("It was set by the agent of chat"), "{said}");
         assert_eq!(
             biorouter::decision::settings::load(&manager, &parent.id)

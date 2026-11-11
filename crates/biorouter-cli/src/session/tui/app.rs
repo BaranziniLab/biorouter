@@ -86,6 +86,10 @@ pub struct StatusInfo {
     /// Tokens used so far this session, and the model's context window.
     pub used_tokens: usize,
     pub context_limit: usize,
+    /// DR-33: why this chat is public when its decision models made a private
+    /// model's chat public (`public because monitor "Done" uses joey-1 ·
+    /// Baseten`), shown after the model on the first line; `None` otherwise.
+    pub privacy_reason: Option<String>,
 }
 
 pub struct App {

@@ -10,6 +10,7 @@ vi.mock('../toasts', () => ({
 }));
 
 import { handleCreateSessionError } from './BaseChat';
+import { PublicChatDeclinedError } from '../utils/sessionDecisions';
 
 const restoreEvents = (dispatch: ReturnType<typeof vi.spyOn>): CustomEvent[] =>
   dispatch.mock.calls
@@ -33,6 +34,11 @@ describe('handleCreateSessionError', () => {
     expect(mockToastError.mock.calls[0][0].msg).toContain('Your message was kept');
 
     dispatch.mockRestore();
+  });
+
+  it('a start the person declined at "This chat will be public" reports nothing (DR-33)', () => {
+    expect(handleCreateSessionError(new PublicChatDeclinedError())).toBe(false);
+    expect(mockToastError).not.toHaveBeenCalled();
   });
 
   it('broadcasts NOTHING — a new chat has no id, and every new tab heard `""`', () => {

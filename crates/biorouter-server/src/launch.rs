@@ -59,12 +59,29 @@ pub const USER_ACTION_EXPECTED_ENV: &str = "BIOROUTER_USER_ACTION_EXPECTED";
 /// fails closed instead of reading "nothing moved".
 pub const NO_LAUNCH_STATE_RECORDED: &str = "<no launch state recorded>";
 
+/// SD-16 (`docs/deployment/serve-decisions.md`): the operator of a daemon that
+/// holds no user-action key allows a person to make a chat public by naming a
+/// public decision model in it. `biorouter serve --allow-public-decision-models`
+/// sets it on the daemon it spawns.
+///
+/// Read once, at launch, and pinned with SD-12's configuration
+/// ([`allows_public_decision_models`]): a shell that later edits this process's
+/// environment or `config.yaml` changes nothing. On a daemon that holds a key it
+/// is never consulted, because there the person's proof is what admits a
+/// lowering. Only `1` or `true` allows it: unlike
+/// [`USER_ACTION_EXPECTED_ENV`], this value can only make the daemon *less*
+/// strict, so the reading that refuses is the one doubt gets.
+pub const ALLOW_PUBLIC_DECISION_MODELS_ENV: &str = "BIOROUTER_ALLOW_PUBLIC_DECISION_MODELS";
+
 #[derive(Debug)]
 struct LaunchState {
     /// `(key, value at launch)` for every key in [`pinned_config_keys`].
     capability_config: Vec<(&'static str, Option<String>)>,
     /// Did whoever started this daemon say it would send a user-action key?
     launcher_declared_a_user_action_key: bool,
+    /// SD-16: did the operator allow public decision models on a keyless
+    /// daemon ([`ALLOW_PUBLIC_DECISION_MODELS_ENV`])?
+    allows_public_decision_models: bool,
 }
 
 static LAUNCH: RwLock<Option<LaunchState>> = RwLock::new(None);
@@ -117,12 +134,47 @@ fn sample_capability_config() -> Vec<(&'static str, Option<String>)> {
 /// single binary (the config overrides are a `tokio` task-local scoped to a
 /// future, so the sample must be taken inside one). Production has exactly one
 /// call site.
+///
+/// It records SD-16's opt-in as refused; the production launch, which has read
+/// the operator's opt-in, calls [`record_launch_state_with`].
 pub fn record_launch_state(launcher_declared_a_user_action_key: bool) {
+    record_launch_state_with(launcher_declared_a_user_action_key, false);
+}
+
+/// [`record_launch_state`] with SD-16's opt-in as the launch read it
+/// ([`operator_allowed_public_decision_models_in_env`]).
+pub fn record_launch_state_with(
+    launcher_declared_a_user_action_key: bool,
+    allows_public_decision_models: bool,
+) {
     let recorded = LaunchState {
         capability_config: sample_capability_config(),
         launcher_declared_a_user_action_key,
+        allows_public_decision_models,
     };
     *LAUNCH.write().unwrap_or_else(PoisonError::into_inner) = Some(recorded);
+}
+
+/// SD-16: may a person on this daemon make a chat public by naming a public
+/// decision model in it, when the daemon holds no user-action key? Read from the
+/// recorded launch state, never from the environment at request time. `false`
+/// when nothing was recorded: the refusal is the safe reading.
+pub fn allows_public_decision_models() -> bool {
+    LAUNCH
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|state| state.allows_public_decision_models)
+}
+
+/// Did the operator set [`ALLOW_PUBLIC_DECISION_MODELS_ENV`] to `1` or `true`?
+/// Read exactly once, by `commands::agent::run`, then frozen into the launch
+/// state.
+pub fn operator_allowed_public_decision_models_in_env() -> bool {
+    std::env::var(ALLOW_PUBLIC_DECISION_MODELS_ENV).is_ok_and(|value| {
+        let value = value.trim();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    })
 }
 
 /// The first pinned key whose value no longer matches what this daemon started
@@ -249,9 +301,52 @@ mod tests {
         }
     }
 
+    /// SD-16's opt-in is read strictly, because it only ever loosens a
+    /// keyless daemon: anything but `1` or `true` refuses.
+    #[test]
+    fn only_an_explicit_operator_opt_in_allows_public_decision_models() {
+        for (value, allowed) in [
+            (Some("1"), true),
+            (Some("true"), true),
+            (Some("TRUE"), true),
+            (Some(" 1 "), true),
+            (Some("yes"), false),
+            (Some("2"), false),
+            (Some(""), false),
+            (Some("0"), false),
+            (Some("false"), false),
+            (None, false),
+        ] {
+            let _guard = env_lock::lock_env([(ALLOW_PUBLIC_DECISION_MODELS_ENV, value)]);
+            assert_eq!(
+                operator_allowed_public_decision_models_in_env(),
+                allowed,
+                "{value:?} was read the wrong way"
+            );
+        }
+    }
+
+    /// The opt-in is the launch's, never the environment's at request time:
+    /// setting the variable after the record changes nothing, and the plain
+    /// record (every test launch) refuses.
+    #[test]
+    #[serial_test::serial(launch_state)]
+    fn the_public_decision_opt_in_is_pinned_at_launch() {
+        // The variable says "allow" throughout; only the record decides.
+        let _guard = env_lock::lock_env([(ALLOW_PUBLIC_DECISION_MODELS_ENV, Some("1"))]);
+        record_launch_state_with(false, true);
+        assert!(allows_public_decision_models());
+        record_launch_state(false);
+        assert!(
+            !allows_public_decision_models(),
+            "the environment at request time must not allow anything the launch did not"
+        );
+    }
+
     /// A recorded launch state agrees with the configuration it was sampled
     /// from, and disagrees the moment one of the pinned keys moves.
     #[tokio::test]
+    #[serial_test::serial(launch_state)]
     async fn a_pinned_key_that_moves_after_launch_is_named() {
         use biorouter::config::with_config_overrides;
         use std::collections::HashMap;

@@ -335,7 +335,54 @@ export interface DecisionModelEntry {
   local: boolean;
   /** Why the model cannot be used now, when the daemon says so. */
   unavailableReason: string | null;
+  /**
+   * What choosing it would do to the chat's tier (DR-33): `makesPublic` when the
+   * chat runs on a private model, can still be made public, and this model is
+   * public. The daemon computes it; no renderer recomputes the fold. Absent from
+   * an older daemon, and on a listing that named no chat.
+   */
+  chatEffect?: DecisionChatEffect | null;
 }
+
+/** `ChatEffect` in `decision/service.rs`: what a picker row would do to the chat's tier. */
+export type DecisionChatEffect = 'makesPublic';
+
+/** `TierEffect` in `privacy/decision_axes.rs`: what a decision-settings save did to the chat's tier. */
+export const DECISION_TIER_EFFECTS = [
+  'none',
+  'becomesPublic',
+  'staysPublic',
+  'becomesPrivateAtNextMessage',
+  'refusedNotEligible',
+  'refusedPrivate',
+] as const;
+export type DecisionTierEffect = (typeof DECISION_TIER_EFFECTS)[number];
+
+/** A save's answer: what is stored, and what the save did to the chat's tier (`DecisionSettingsSaved`). */
+export interface SavedDecisionSettings extends DecisionSettings {
+  /** `null` from an older daemon that does not say. */
+  tierEffect: DecisionTierEffect | null;
+  /** The daemon's line for it ("This chat will be public: …"), or `null` when there is nothing to say. */
+  tierEffectLine: string | null;
+}
+
+/**
+ * The 409 a write answers when it would make the chat public by a decision model
+ * and did not carry the person's confirmation (`PublicDecisionConfirmation`).
+ * Nothing was saved; the caller asks with `message` and `info`, then writes again
+ * with `acceptPublicDecisionModels`.
+ */
+export interface PublicDecisionConfirmation {
+  /** The effect line, as the question: "This chat will be public: joey-1 runs on Baseten." */
+  message: string;
+  /** The InfoTip beside it. */
+  info: string | null;
+  /** The public models the save names. */
+  models: DecisionModelRef[];
+}
+
+/** The `code` a {@link PublicDecisionConfirmation} carries. */
+export const NEEDS_PUBLIC_DECISION_CONFIRMATION = 'needsPublicDecisionConfirmation';
 
 /** `GateOwner` in `orchestration_plan.rs`: who set a phase gate. */
 export const GATE_OWNERS = ['agent', 'person', 'workflow'] as const;
@@ -1030,6 +1077,91 @@ export function parseDecisionModelEntry(value: unknown): DecisionModelEntry | nu
     adapter: optionalOneOf(DECISION_ADAPTERS, body.adapter),
     local: body.local === true,
     unavailableReason: text(body.unavailableReason ?? body.unavailable_reason),
+    chatEffect: (body.chatEffect ?? body.chat_effect) === 'makesPublic' ? 'makesPublic' : null,
+  };
+}
+
+/** `provider/model` (the 409's `models`) as a reference; the model part may hold `/` itself. */
+function parseModelSpelling(value: unknown): DecisionModelRef | null {
+  const spelled = text(value);
+  if (!spelled) return null;
+  const at = spelled.indexOf('/');
+  if (at <= 0 || at === spelled.length - 1) return null;
+  return { provider: spelled.slice(0, at), model: spelled.slice(at + 1), adapter: null };
+}
+
+/**
+ * A {@link PublicDecisionConfirmation}, or `null` for any other body: only the
+ * code says it is one, because a 409 also carries plain-text refusals ("This
+ * chat has started, so it can't be made public …").
+ */
+export function parsePublicDecisionConfirmation(value: unknown): PublicDecisionConfirmation | null {
+  const body = record(value);
+  if (!body || body.code !== NEEDS_PUBLIC_DECISION_CONFIRMATION) return null;
+  const message = text(body.message);
+  if (!message) return null;
+  return {
+    message,
+    info: text(body.info),
+    models: Array.isArray(body.models)
+      ? body.models
+          .map(parseModelSpelling)
+          .filter((model): model is DecisionModelRef => model !== null)
+      : [],
+  };
+}
+
+/** `PrivacyBasisSource`: which of the chat's names made it public. */
+export const PRIVACY_BASIS_SOURCES = [
+  'default',
+  'monitor',
+  'gate',
+  'phaseMonitor',
+  'parent',
+] as const;
+export type PrivacyBasisSource = (typeof PRIVACY_BASIS_SOURCES)[number];
+
+/**
+ * `PrivacyBasis` on `GET /sessions/{id}` (DR-33, design §5): why a chat whose own
+ * model is private is public, as the daemon computed it. Present only when a
+ * decision model (or a public parent's ceiling) is what made it so.
+ */
+export interface PrivacyBasis {
+  source: PrivacyBasisSource;
+  /** The monitor's name, the phase's title, or the parent chat's id. */
+  label: string;
+  /** The model's own name (`joey-1`); empty for a parent that recorded none. */
+  model: string;
+  /** Where it runs, in words (`Baseten`, `this computer`). */
+  place: string;
+  /** The daemon's clause for a person: `monitor "Done" uses joey-1, a Baseten model`. */
+  summary: string;
+}
+
+/** A session read's `privacyBasis`, or `null` when it has none (or one this build cannot read). */
+export function parsePrivacyBasis(value: unknown): PrivacyBasis | null {
+  const body = record(record(value)?.privacyBasis);
+  if (!body) return null;
+  const source = optionalOneOf(PRIVACY_BASIS_SOURCES, body.source);
+  if (!source) return null;
+  return {
+    source,
+    label: text(body.label) ?? '',
+    model: text(body.model) ?? '',
+    place: text(body.place) ?? '',
+    summary: text(body.summary) ?? '',
+  };
+}
+
+/** What a save did to the chat's tier, from its answer; `null` when it does not say. */
+export function parseTierEffect(value: unknown): {
+  tierEffect: DecisionTierEffect | null;
+  tierEffectLine: string | null;
+} {
+  const body = record(value);
+  return {
+    tierEffect: optionalOneOf(DECISION_TIER_EFFECTS, body?.tierEffect),
+    tierEffectLine: text(body?.tierEffectLine),
   };
 }
 
@@ -1722,6 +1854,39 @@ export class DecisionRequestError extends Error {
   }
 }
 
+/**
+ * DR-33 — a start the person declined at "This chat will be public: …". Nothing
+ * was created (the daemon discarded the chat when it asked), and nothing went
+ * wrong: the caller hands the message back without a failure toast.
+ */
+export class PublicChatDeclinedError extends Error {
+  constructor() {
+    super('The chat was not started.');
+    this.name = 'PublicChatDeclinedError';
+  }
+}
+
+/** {@link PublicChatDeclinedError}, by name too, so a test double of it still reads as one. */
+export function isPublicChatDeclined(error: unknown): boolean {
+  return (
+    error instanceof PublicChatDeclinedError || record(error)?.name === 'PublicChatDeclinedError'
+  );
+}
+
+/**
+ * A write refused only for want of the person's confirmation that the chat will
+ * be public (409 `needsPublicDecisionConfirmation`). Nothing was saved; ask, then
+ * write again with `acceptPublicDecisionModels`.
+ */
+export class PublicDecisionConfirmationError extends DecisionRequestError {
+  confirmation: PublicDecisionConfirmation;
+  constructor(confirmation: PublicDecisionConfirmation) {
+    super(confirmation.message, 409, confirmation.message);
+    this.name = 'PublicDecisionConfirmationError';
+    this.confirmation = confirmation;
+  }
+}
+
 /** The sentence a refusal carries: a plain-text body, or `message` / `error` in a JSON one. */
 export function refusalText(error: unknown): string | null {
   if (typeof error === 'string') return error.trim() || null;
@@ -1783,26 +1948,42 @@ export async function fetchDecisionSettings(
   return { data: parsed, missing };
 }
 
-/** `PUT /sessions/{id}/decision-settings`. The stored value, or the daemon's refusal as an error. */
+/**
+ * `PUT /sessions/{id}/decision-settings`. The stored value with what the save did
+ * to the chat's tier, or the daemon's refusal as an error: a
+ * {@link PublicDecisionConfirmationError} when the save would make the chat public
+ * and `acceptPublicDecisionModels` was not said (DR-33).
+ *
+ * `acceptPublicDecisionModels` is the person's answer to a line they saw ("This
+ * chat will be public: …"); a caller passes it only after showing that line.
+ */
 export async function saveDecisionSettings(
   sessionId: string,
-  settings: DecisionSettings
-): Promise<DecisionSettings> {
+  settings: DecisionSettings,
+  options: { acceptPublicDecisionModels?: boolean } = {}
+): Promise<SavedDecisionSettings> {
   const headers = await userActionHeaders();
+  // The parsers' own wire writer, which mirrors the Rust enums the generated type spells out.
+  const body: Record<string, unknown> = decisionSettingsToWire(settings);
+  if (options.acceptPublicDecisionModels) body.acceptPublicDecisionModels = true;
   const result = (await putDecisionSettings({
     path: { session_id: sessionId },
-    // The parsers' own wire writer, which mirrors the Rust enums the generated type spells out.
-    body: decisionSettingsToWire(settings) as PutDecisionSettingsData['body'],
+    body: body as PutDecisionSettingsData['body'],
     headers,
   })) as ClientResult;
   const status = result.response?.status ?? null;
   if (result.error !== undefined || result.data === undefined) {
+    const confirmation = status === 409 ? parsePublicDecisionConfirmation(result.error) : null;
+    if (confirmation) throw new PublicDecisionConfirmationError(confirmation);
     throw new DecisionRequestError(
       refusalText(result.error) ?? `Could not save (${status ?? 'no answer'})`,
       status
     );
   }
-  return parseDecisionSettings(result.data) ?? settings;
+  return {
+    ...(parseDecisionSettings(result.data) ?? settings),
+    ...parseTierEffect(result.data),
+  };
 }
 
 export async function fetchDecisionPage(
@@ -1857,6 +2038,16 @@ export async function fetchDecisionModels(
 }
 
 /**
+ * A chat not started yet (the composer's draft, design §4): it names no session,
+ * and the catalog works out each row's `chatEffect` for a new, empty chat bound
+ * to this provider and model.
+ */
+export interface DecisionDraftChat {
+  boundProvider: string;
+  boundModel: string;
+}
+
+/**
  * {@link fetchDecisionModels}, with the reason the named chat may use no
  * decision model at all (`sessionUnavailableReason`), for a choice no row
  * stands for: a monitor left on the chat's decision model.
@@ -1868,11 +2059,20 @@ export async function fetchDecisionModels(
  */
 export async function fetchDecisionCatalog(
   signal?: AbortSignal,
-  sessionId?: string
+  chat?: string | DecisionDraftChat
 ): Promise<DecisionCatalog & { missing: boolean }> {
   const headers = await userActionHeaders();
+  const query =
+    typeof chat === 'string'
+      ? chat
+        ? { sessionId: chat }
+        : null
+      : chat
+        ? { boundProvider: chat.boundProvider, boundModel: chat.boundModel }
+        : null;
   const result = (await listDecisionModels({
-    ...(sessionId ? { query: { sessionId } } : {}),
+    // The draft's two parameters are newer than the generated query type.
+    ...(query ? { query: query as { sessionId?: string } } : {}),
     headers,
     signal,
   })) as ClientResult;

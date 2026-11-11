@@ -43,6 +43,10 @@ use crate::agents::orchestration_plan::{
     DEFAULT_GATE_THRESHOLD, MAX_PHASES, PLAN_STATE, PLAN_VERSION,
 };
 use crate::config::BioRouterMode;
+use crate::decision::save::{
+    self, AfterSave, LoweringConsent, NeedsPublicDecisionConfirmation,
+    PublicDecisionModelsNotAllowed, SaveDoor, TierChange, UnusableDecisionSettings,
+};
 use crate::decision::settings::{
     self, DecisionSettings, MonitorAction, MonitorCriterion, MonitorDirection, MonitorErrorPolicy,
     MonitorOwner, MonitorSpec, MonitorTiming, DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION,
@@ -51,8 +55,10 @@ use crate::decision::settings::{
 use crate::decision::{
     DecisionKind, DecisionService, DecisionSession, ModelSource, Question, Threshold,
 };
+use crate::privacy::decision_axes::{self, BasisAuthor, LoweredBy, RowRecords};
 use crate::privacy::ProviderTier;
 use crate::session::extension_data::ExtensionData;
+use crate::session::session_manager::{public_basis_not_eligible_sentence, BasisWriteOutcome};
 use crate::session::{Session, SessionManager};
 
 /// The marker a seeded chat keeps in its `extension_data`: which workflow
@@ -542,10 +548,60 @@ pub struct SeedTarget {
     pub mode: BioRouterMode,
     /// The privacy master switch, sampled once by the door.
     pub enforced: bool,
-    /// The capability tier of the chat model the chat is bound to, when the
-    /// door knows it: a chat still Public but bound to a private model
-    /// becomes private at its first turn.
+    /// The tier of the LANGUAGE model the chat is bound to, when the door
+    /// knows it (`Agent::bound_model_tier`, or the instance the door is about
+    /// to bind; never a slot's folded tier): a chat still Public but bound to
+    /// a private model becomes private at its first message, unless its
+    /// workflow makes it public by naming a public decision model, which is a
+    /// lowering the person must accept ([`SeedConsent`], DR-33).
     pub bound_tier: Option<ProviderTier>,
+}
+
+impl SeedTarget {
+    /// This target with the person's answer about a lowering
+    /// ([`SeedConsent`]). A bare [`SeedTarget`] is [`SeedConsent::Unconfirmed`].
+    pub fn with_consent(self, consent: SeedConsent) -> SeedRequest {
+        SeedRequest {
+            target: self,
+            consent,
+        }
+    }
+}
+
+/// Whether the person accepted, at the door that starts the workflow, that its
+/// decision models make the new chat public (DR-33, design §3.7). A workflow
+/// that names a public decision model for a chat bound to a private model
+/// LOWERS the chat, so its seed is a lowering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeedConsent {
+    /// Not asked, or not accepted: a lowering seed is refused
+    /// ([`SeedRefusalKind::NeedsPublicDecisionConfirmation`], 409) and the
+    /// refusal carries the question to ask ([`SeedRefusal::question`]).
+    Unconfirmed,
+    /// The person accepted at this door (`acceptPublicDecisionModels: true`
+    /// under the user-action proof, a confirmation typed at a terminal).
+    /// `door` is the audit word the basis records (`agent-start`, `cli`).
+    Confirmed { door: &'static str },
+    /// This door never lowers (a keyless daemon its operator did not open to
+    /// it, SD-16): [`SeedRefusalKind::PublicDecisionModelsNotAllowed`] (403)
+    /// with this sentence.
+    NotAllowedHere(String),
+    /// A scheduled run: it lowers only when the schedule records the person's
+    /// acceptance (`accepted`).
+    Schedule { accepted: bool },
+}
+
+/// A seed, with the person's answer about a lowering.
+#[derive(Debug, Clone)]
+pub struct SeedRequest {
+    pub target: SeedTarget,
+    pub consent: SeedConsent,
+}
+
+impl From<SeedTarget> for SeedRequest {
+    fn from(target: SeedTarget) -> Self {
+        target.with_consent(SeedConsent::Unconfirmed)
+    }
 }
 
 /// What [`seed`] did.
@@ -600,6 +656,13 @@ pub enum SeedRefusalKind {
     Refused,
     /// The plan needs the Autonomous approval mode (409).
     NeedsAutoMode,
+    /// Its decision models would make the chat public and the person has not
+    /// accepted that at this door (409, DR-33). [`SeedRefusal::question`] is
+    /// what to ask.
+    NeedsPublicDecisionConfirmation,
+    /// Its decision models would make the chat public and this door never
+    /// does that (403, SD-16), or a scheduled run records no acceptance.
+    PublicDecisionModelsNotAllowed,
 }
 
 impl SeedRefusalKind {
@@ -608,7 +671,8 @@ impl SeedRefusalKind {
         match self {
             Self::Invalid => 400,
             Self::Refused => 422,
-            Self::NeedsAutoMode => 409,
+            Self::NeedsAutoMode | Self::NeedsPublicDecisionConfirmation => 409,
+            Self::PublicDecisionModelsNotAllowed => 403,
         }
     }
 }
@@ -619,21 +683,27 @@ impl SeedRefusalKind {
 pub struct SeedRefusal {
     pub kind: SeedRefusalKind,
     pub sentence: String,
+    /// For [`SeedRefusalKind::NeedsPublicDecisionConfirmation`], the question
+    /// the door asks the person ("This workflow uses joey-1 · Baseten, so
+    /// this chat will be public. Start it?"); `None` otherwise.
+    pub question: Option<String>,
 }
 
 impl SeedRefusal {
-    fn invalid(sentence: impl Into<String>) -> Self {
+    fn of(kind: SeedRefusalKind, sentence: impl Into<String>) -> Self {
         Self {
-            kind: SeedRefusalKind::Invalid,
+            kind,
             sentence: sentence.into(),
+            question: None,
         }
     }
 
+    fn invalid(sentence: impl Into<String>) -> Self {
+        Self::of(SeedRefusalKind::Invalid, sentence)
+    }
+
     fn refused(sentence: impl Into<String>) -> Self {
-        Self {
-            kind: SeedRefusalKind::Refused,
-            sentence: sentence.into(),
-        }
+        Self::of(SeedRefusalKind::Refused, sentence)
     }
 
     /// The HTTP status a route answers this refusal with.
@@ -958,10 +1028,10 @@ async fn preflight(
     }
     validate(workflow).map_err(SeedRefusal::invalid)?;
     if workflow.orchestration_plan.is_some() && target.mode != BioRouterMode::Auto {
-        return Err(SeedRefusal {
-            kind: SeedRefusalKind::NeedsAutoMode,
-            sentence: needs_auto_mode(target.mode),
-        });
+        return Err(SeedRefusal::of(
+            SeedRefusalKind::NeedsAutoMode,
+            needs_auto_mode(target.mode),
+        ));
     }
     Ok(Preflight::Go(Box::new(session)))
 }
@@ -1029,7 +1099,7 @@ async fn decision_session(
     let decision_session = DecisionSession::new(id, session.privacy_tier, target.enforced)
         .with_affiliations(affiliations)
         .with_chat_default_model(Ok(merged.settings.default_model.clone()))
-        .with_bound_tier(target.bound_tier);
+        .with_bound_model_tier(target.bound_tier);
     Ok(decision_session)
 }
 
@@ -1063,17 +1133,25 @@ fn records(
 
 /// What the one transaction came to.
 fn transaction_outcome(
-    written: anyhow::Result<Option<()>>,
+    written: anyhow::Result<BasisWriteOutcome<()>>,
     id: &str,
     monitor_ids: Vec<String>,
     phase_ids: Vec<String>,
+    lowering_model: Option<&str>,
 ) -> Result<SeedOutcome, SeedRefusal> {
     match written {
-        Ok(Some(())) => Ok(SeedOutcome::Seeded {
+        Ok(BasisWriteOutcome::Written(())) => Ok(SeedOutcome::Seeded {
             monitor_ids,
             phase_ids,
         }),
-        Ok(None) => Err(SeedRefusal::invalid(format!("no chat {id} exists."))),
+        Ok(BasisWriteOutcome::SessionNotFound) => {
+            Err(SeedRefusal::invalid(format!("no chat {id} exists.")))
+        }
+        // A message landed while the lowering was being written, so the chat
+        // can no longer be made public by a decision model.
+        Ok(BasisWriteOutcome::NotEligible) => Err(SeedRefusal::refused(as_lower_first(
+            &public_basis_not_eligible_sentence(lowering_model.unwrap_or("its decision model")),
+        ))),
         Err(error) => match error.downcast_ref::<Abort>() {
             Some(Abort::Marked(outcome)) => Ok(outcome.clone()),
             Some(Abort::Refusal(refusal)) => Err(refusal.clone()),
@@ -1083,6 +1161,148 @@ fn transaction_outcome(
             ))),
         },
     }
+}
+
+/// `sentence` with its first letter lowered, to read after "The workflow was
+/// not started: ".
+fn as_lower_first(sentence: &str) -> String {
+    let mut chars = sentence.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// The sentence a scheduled run's seed is refused with when its chat starts
+/// private (it inherits a private creator's classification) and its workflow
+/// names a public decision model (design §3.7).
+pub fn scheduled_private_run_refusal(model: &str) -> String {
+    format!(
+        "this run's chat starts private, because the chat that created the schedule is \
+         private, so {model} can't read it. Choose a model on this computer in the workflow, \
+         or create the schedule from a public chat."
+    )
+}
+
+/// The sentence a scheduled run's seed is refused with when its workflow
+/// would make the new chat public through a decision model and the schedule
+/// records no acceptance of that by the person (design §1.8, §3.7). Names no
+/// chat or schedule.
+pub fn scheduled_lowering_refusal(models: &str) -> String {
+    format!(
+        "it uses {models}, which would make this run's chat public, and scheduled runs can't \
+         make a chat public by a decision model yet, so nothing was run. Choose a model on this \
+         computer in the workflow, or run it from the desktop app."
+    )
+}
+
+/// The question a door asks before a workflow whose decision models make the
+/// chat public starts (design §3.7, §5).
+pub fn public_workflow_question(models: &str) -> String {
+    format!("This workflow uses {models}, so this chat will be public. Start it?")
+}
+
+/// The [`SaveDoor`] a seed's consent stands for.
+fn seed_door(consent: &SeedConsent) -> SaveDoor<'static> {
+    match consent {
+        SeedConsent::Unconfirmed => SaveDoor::person("workflow", LoweringConsent::Unconfirmed),
+        SeedConsent::Confirmed { door } => SaveDoor::person(door, LoweringConsent::Confirmed),
+        SeedConsent::NotAllowedHere(sentence) => SaveDoor::person(
+            "workflow",
+            LoweringConsent::NotAllowedHere(sentence.clone()),
+        ),
+        SeedConsent::Schedule { accepted: true } => {
+            SaveDoor::person("schedule", LoweringConsent::Confirmed)
+                .with_author(BasisAuthor::Schedule)
+        }
+        SeedConsent::Schedule { accepted: false } => {
+            SaveDoor::person("schedule", LoweringConsent::NotAllowedHere(String::new()))
+        }
+    }
+}
+
+/// `joey-1 · Baseten and tev1:0.8b · this computer`.
+fn names_phrase(names: &[LoweredBy]) -> String {
+    let mut phrases: Vec<String> = Vec::new();
+    for name in names {
+        let phrase = format!("{} · {}", name.model, name.host.place());
+        if !phrases.contains(&phrase) {
+            phrases.push(phrase);
+        }
+    }
+    match phrases.as_slice() {
+        [] => "a public decision model".to_string(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+/// What the workflow's blocks do to the new chat's tier (DR-33), as the
+/// [`SeedRefusal`] a refused change is. Nothing is written.
+fn seed_tier_change(
+    session: &Session,
+    decision_session: &DecisionSession,
+    merged: &Merged,
+    plan: Option<&OrchestrationPlan>,
+    consent: &SeedConsent,
+) -> Result<TierChange, SeedRefusal> {
+    let after = AfterSave::Both(&merged.settings, plan);
+    if decision_session.enforced
+        && session.privacy_tier.is_private()
+        && matches!(consent, SeedConsent::Schedule { .. })
+    {
+        let records = RowRecords::parse(&session.extension_data);
+        let inputs = records
+            .inputs(session)
+            .with_settings(&merged.settings)
+            .with_plan(plan);
+        if let Some(name) = decision_axes::public_standing_names(&inputs).first() {
+            return Err(SeedRefusal::refused(scheduled_private_run_refusal(
+                &name.model,
+            )));
+        }
+    }
+    let door = seed_door(consent);
+    save::tier_change(decision_session, session, after, &door).map_err(|error| {
+        if error.is::<NeedsPublicDecisionConfirmation>() {
+            let names = {
+                let records = RowRecords::parse(&session.extension_data);
+                let inputs = records
+                    .inputs(session)
+                    .with_settings(&merged.settings)
+                    .with_plan(plan);
+                names_phrase(&decision_axes::public_standing_names(&inputs))
+            };
+            return SeedRefusal {
+                kind: SeedRefusalKind::NeedsPublicDecisionConfirmation,
+                sentence: format!(
+                    "it uses {names}, so this chat would be public, and the person has not \
+                     accepted that."
+                ),
+                question: Some(public_workflow_question(&names)),
+            };
+        }
+        if let Some(refused) = error.downcast_ref::<PublicDecisionModelsNotAllowed>() {
+            let records = RowRecords::parse(&session.extension_data);
+            let inputs = records
+                .inputs(session)
+                .with_settings(&merged.settings)
+                .with_plan(plan);
+            let names = names_phrase(&decision_axes::public_standing_names(&inputs));
+            let sentence = match consent {
+                SeedConsent::Schedule { .. } => scheduled_lowering_refusal(&names),
+                _ => as_lower_first(&refused.0),
+            };
+            return SeedRefusal::of(SeedRefusalKind::PublicDecisionModelsNotAllowed, sentence);
+        }
+        if let Some(unusable) = error.downcast_ref::<UnusableDecisionSettings>() {
+            return SeedRefusal::refused(not_a_save(&unusable.0));
+        }
+        SeedRefusal::refused(format!(
+            "what the workflow's decision models do to this chat's privacy could not be worked \
+             out ({error}), so nothing was applied."
+        ))
+    })
 }
 
 /// Apply `workflow`'s `decision_settings` and `orchestration_plan` to the
@@ -1101,12 +1321,20 @@ fn transaction_outcome(
 /// Otherwise the blocks are validated ([`validate`]); a plan is refused in a
 /// subagent's chat and outside the Autonomous approval mode; the workflow's
 /// settings are merged into the chat's (the chat's default decision model and
-/// its monitors win on a shared id); every model they turn on, each gate's
-/// and each phase monitor's, is checked the way a person's save is
-/// ([`DecisionService::check_settings`], [`DecisionService::check_model_use`],
-/// with nothing of the chat sent); and the settings, the plan (gates owned by
-/// the workflow) and the marker are written in ONE transaction, all or
-/// nothing. A chat that already has a plan is refused there.
+/// its monitors win on a shared id); what they do to the chat's privacy tier
+/// is worked out (DR-33, [`save::tier_change`]): a workflow that names a
+/// public decision model for a chat bound to a private model makes the chat
+/// public, which needs the person's acceptance ([`SeedConsent`]); every model
+/// they turn on, each gate's and each phase monitor's, is checked the way a
+/// person's save is ([`DecisionService::check_settings`],
+/// [`DecisionService::check_model_use`], with nothing of the chat sent); and
+/// the settings, the plan (gates owned by the workflow), the marker and the
+/// person's acceptance (`public_basis.v1`, through
+/// `SessionManager::write_public_basis`) are written in ONE transaction, all
+/// or nothing. A chat that already has a plan is refused there.
+///
+/// `request` is a [`SeedTarget`] (no acceptance: a lowering seed is
+/// refused), or one with the door's answer ([`SeedTarget::with_consent`]).
 ///
 /// The seed is setup on a chat with no messages, so it opens no activity
 /// scope. Any refusal writes nothing.
@@ -1114,8 +1342,9 @@ pub async fn seed(
     manager: &SessionManager,
     service: &DecisionService,
     workflow: &Workflow,
-    target: SeedTarget,
+    request: impl Into<SeedRequest>,
 ) -> Result<SeedOutcome, SeedRefusal> {
+    let SeedRequest { target, consent } = request.into();
     if !declares_supervision(workflow) {
         return Ok(SeedOutcome::NothingDeclared);
     }
@@ -1129,6 +1358,14 @@ pub async fn seed(
     let plan = workflow_plan(workflow)?;
 
     let decision_session = decision_session(manager, &session, &target, &merged).await?;
+    let change = seed_tier_change(
+        &session,
+        &decision_session,
+        &merged,
+        plan.as_ref(),
+        &consent,
+    )?;
+    let decision_session = decision_session.with_lowered_after_save(change.lowered_after_save);
     if merged.changed {
         service
             .check_settings(&decision_session, &merged.settings, Some(&current))
@@ -1152,10 +1389,19 @@ pub async fn seed(
         plan: plan.as_ref().map(orchestration_plan::plan_record),
         marker,
     };
+    let lowering_model = change.public_names.first().map(|name| name.model.clone());
     let written = manager
-        .update_extension_data(id, move |data: &mut ExtensionData| write.apply(data))
+        .write_public_basis(id, change.basis, move |data: &mut ExtensionData| {
+            write.apply(data)
+        })
         .await;
-    transaction_outcome(written, id, monitor_ids, phase_ids)
+    transaction_outcome(
+        written,
+        id,
+        monitor_ids,
+        phase_ids,
+        lowering_model.as_deref(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,6 +1597,14 @@ mod tests {
                 .collect()
         }
         async fn open(&self, wanted: &DecisionModelRef) -> DecisionResult<Arc<dyn DecisionModel>> {
+            // Baseten's joey-1, which the fold knows is public (DR-33).
+            if wanted.model == "joey-1" {
+                return Ok(Arc::new(Fake {
+                    name: "joey-1",
+                    tier: ProviderTier::Public,
+                    sent: self.0.clone(),
+                }));
+            }
             match MODELS.iter().find(|(name, _)| *name == wanted.model) {
                 Some((name, tier)) => Ok(Arc::new(Fake {
                     name,
@@ -2028,6 +2282,7 @@ decision_settings:
                 kind: SeedRefusalKind::Invalid,
                 sentence: "This chat already has a phase plan; start the workflow in a new chat."
                     .into(),
+                question: None,
             }
         );
         assert_eq!(refusal.status(), 400);
@@ -2188,7 +2443,7 @@ decision_settings:
             "{error:?}"
         );
         assert_eq!(
-            transaction_outcome(Err(error), "chat", vec![], vec![]),
+            transaction_outcome(Err(error), "chat", vec![], vec![], None),
             Ok(another)
         );
         assert_eq!(keys(&data), vec!["workflow_supervision.v1".to_string()]);
@@ -2206,7 +2461,7 @@ decision_settings:
         );
         let error = write().apply(&mut data).unwrap_err();
         assert_eq!(
-            transaction_outcome(Err(error), "chat", vec![], vec![]),
+            transaction_outcome(Err(error), "chat", vec![], vec![], None),
             Ok(SeedOutcome::AlreadySeeded)
         );
         assert_eq!(keys(&data), vec!["workflow_supervision.v1".to_string()]);
@@ -2289,7 +2544,7 @@ decision_settings:
         assert!(
             refusal.sentence.starts_with(
                 "monitor \"Reached ten\" could not run. This chat runs on a private model, so \
-                 it becomes private at its first turn"
+                 it becomes private at its first message"
             ),
             "{}",
             refusal.sentence
@@ -2358,6 +2613,134 @@ decision_settings:
         assert_eq!(written(&manager, &id).await, [None, None, None]);
     }
 
+    /// DR-33 (design §3.7): a workflow that names a public decision model for
+    /// a new chat bound to a private model makes the chat public, so its seed
+    /// is a lowering. Not accepted, it is refused with the question to ask
+    /// and nothing is written; accepted, it is seeded with the person's basis
+    /// in the same transaction; a door that never lowers refuses it (403); a
+    /// scheduled run refuses it without a recorded acceptance, and a run whose
+    /// chat starts private is refused with its own sentence.
+    #[tokio::test]
+    async fn a_workflow_naming_a_public_decision_model_is_a_lowering_the_person_accepts() {
+        let dir = TempDir::new().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf());
+        let sent = Arc::new(AtomicUsize::new(0));
+        let service = decision_service(&sent);
+        let joey = workflow(&MONITORS_ONLY.replace(
+            "model: {provider: test_decision, model: cloud}",
+            "model: {provider: baseten_decision, model: joey-1}",
+        ));
+        let bound = |id: &str| {
+            let mut target = target(id);
+            target.bound_tier = Some(ProviderTier::Private);
+            target
+        };
+        let has_basis = |data: &ExtensionData| {
+            data.get_extension_state(
+                decision_axes::PUBLIC_BASIS_STATE,
+                decision_axes::PUBLIC_BASIS_VERSION,
+            )
+            .is_some()
+        };
+
+        let id = new_chat(&dir, &manager).await;
+        let refusal = seed(&manager, &service, &joey, bound(&id))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refusal.kind,
+            SeedRefusalKind::NeedsPublicDecisionConfirmation
+        );
+        assert_eq!(refusal.status(), 409);
+        assert_eq!(
+            refusal.question.as_deref(),
+            Some("This workflow uses joey-1 · Baseten, so this chat will be public. Start it?")
+        );
+        assert_eq!(written(&manager, &id).await, [None, None, None]);
+
+        let refusal = seed(
+            &manager,
+            &service,
+            &joey,
+            bound(&id).with_consent(SeedConsent::NotAllowedHere(
+                "This server can't make a chat public by a decision model.".into(),
+            )),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refusal.kind,
+            SeedRefusalKind::PublicDecisionModelsNotAllowed
+        );
+        assert_eq!(refusal.status(), 403);
+
+        let refusal = seed(
+            &manager,
+            &service,
+            &joey,
+            bound(&id).with_consent(SeedConsent::Schedule { accepted: false }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refusal.sentence,
+            scheduled_lowering_refusal("joey-1 · Baseten"),
+            "a schedule that records no acceptance never lowers"
+        );
+        assert_eq!(written(&manager, &id).await, [None, None, None]);
+
+        let outcome = seed(
+            &manager,
+            &service,
+            &joey,
+            bound(&id).with_consent(SeedConsent::Confirmed {
+                door: "agent-start",
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, SeedOutcome::Seeded { .. }), "{outcome:?}");
+        let row = manager.get_session(&id, false).await.unwrap();
+        assert!(
+            has_basis(&row.extension_data),
+            "the basis lands with the seed"
+        );
+        assert!(decision_axes::from_row(&row).lowers(ProviderTier::Private));
+
+        // A scheduled run whose chat starts private (a private creator).
+        let private = new_chat(&dir, &manager).await;
+        manager
+            .update(&private)
+            .raise_privacy(
+                crate::privacy::SessionClassification::Private,
+                "turn:versa_azure",
+            )
+            .apply()
+            .await
+            .unwrap();
+        let refusal = seed(
+            &manager,
+            &service,
+            &joey,
+            target(&private).with_consent(SeedConsent::Schedule { accepted: true }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refusal.sentence, scheduled_private_run_refusal("joey-1"));
+        assert_eq!(written(&manager, &private).await, [None, None, None]);
+
+        // A chat on a public model is public whatever it names: seeded with
+        // no question asked.
+        let claude = new_chat(&dir, &manager).await;
+        let mut public = target(&claude);
+        public.bound_tier = Some(ProviderTier::Public);
+        assert!(matches!(
+            seed(&manager, &service, &joey, public).await,
+            Ok(SeedOutcome::Seeded { .. })
+        ));
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "a seed sends nothing");
+    }
+
     #[tokio::test]
     async fn a_plan_outside_auto_needs_auto_mode() {
         let dir = TempDir::new().unwrap();
@@ -2413,6 +2796,7 @@ decision_settings:
                            subagent cannot run phases: workspace tools are refused to \
                            subagents. Remove the block from that file."
                     .into(),
+                question: None,
             }
         );
         assert_eq!(written(&manager, &id).await, [None, None, None]);
@@ -2502,6 +2886,7 @@ decision_settings:
                 sentence: "this chat has 8 monitors and the workflow adds 1, and a chat can have \
                            at most 8."
                     .into(),
+                question: None,
             }
         );
         assert_eq!(settings::load(&manager, &other).await.unwrap(), full);

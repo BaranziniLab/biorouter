@@ -148,20 +148,45 @@ describe('the model and effort chip', () => {
     // The chat's tier sentence ends with its own period; the effort follows it
     // after one, not after a second one the join used to add.
     expect(chip).toHaveAccessibleName(
-      'Current model: gpt-5.6-sol-2026-07-09 (Private model). Private chat. Biorouter only lets a private model open it. Effort: Normal'
+      'Current model: gpt-5.6-sol-2026-07-09 (Private model). Private chat. Biorouter only lets private models, decision models included, read it. Effort: Normal'
     );
     expect(chip.getAttribute('aria-label')).not.toContain('..');
+  });
+
+  it('on a chat its decision models made public, says so after the chat’s tier (DR-33)', async () => {
+    render(
+      <ModelsBottomBar
+        sessionId="s1"
+        privacyTier="public"
+        privacyBasis={{
+          source: 'monitor',
+          label: 'Done',
+          model: 'joey-1',
+          place: 'Baseten',
+          summary: 'monitor "Done" uses joey-1, a Baseten model',
+        }}
+        setView={vi.fn()}
+        reasoningScope={SCOPE}
+        hideAlertPopover
+      />
+    );
+    const chip = await screen.findByTestId('model-chip');
+    await waitFor(() =>
+      expect(chip).toHaveAccessibleName(
+        /Public chat\. This chat is public because of its decision models\. Effort: Normal$/
+      )
+    );
   });
 
   it('ends each part of the name once, and leaves the parts as written (V2-R8-5)', () => {
     expect(
       joinSentences([
         'Current model: m (Private model)',
-        'Private chat. Biorouter only lets a private model open it.',
+        'Private chat. Biorouter only lets private models, decision models included, read it.',
         'Effort: Normal',
       ])
     ).toBe(
-      'Current model: m (Private model). Private chat. Biorouter only lets a private model open it. Effort: Normal'
+      'Current model: m (Private model). Private chat. Biorouter only lets private models, decision models included, read it. Effort: Normal'
     );
     expect(joinSentences(['Current model: m', 'Public chat', 'Effort: Deep'])).toBe(
       'Current model: m. Public chat. Effort: Deep'

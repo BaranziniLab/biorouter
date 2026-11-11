@@ -1459,15 +1459,18 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter/src/agents/extension_manager.rs",
-                counts: c(3, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "Gates E and F: the tool list and tool dispatch. It was FOUR until the \
+                what: "Gate E's two filters (the tool list and the extension listing), which \
+                       only ask whether to hide and compose no sentence. It was FOUR until the \
                        2026-09-10 test drive's finding M18: the fourth was \
                        `assert_extension_reachable`, the one gate that reads an unknown name \
                        as Private, where this function's flat sentence asserted a privateness \
                        the gate had not established. That call now goes to \
                        `private_or_absent_refusal`, tracked in its own row. Moving it back \
-                       would put the false claim back",
+                       would put the false claim back. It was THREE until DR-33: Gate C's \
+                       dispatch refusal moved onto `privacy_refusal_explained`, so a chat made \
+                       public by a decision model is told why instead of to switch models",
             },
             Site {
                 file: "crates/biorouter/src/agents/subagent_tool.rs",
@@ -1479,11 +1482,40 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter/src/privacy/refusal.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`extension_enable_refusal`'s tier arm, the enable doors' one ask. \
+                what: "`privacy_refusal_explained` (DR-33), which is this function plus the \
+                       decision-model sentence; `extension_enable_refusal`'s tier arm reaches it \
+                       through that, so it is still the enable doors' one ask. \
                        `workspace_extension.rs` used to ask it directly and \
                        `extension_manager_extension.rs` hand-wrote the same rule in its own \
                        words; both now go through the shared gate, which is what fixed the \
                        clause order the two copies disagreed about",
+            },
+        ],
+    },
+    Guard {
+        ident: "privacy_refusal_explained",
+        defined_in: "crates/biorouter/src/privacy/refusal.rs",
+        decides: "DR-33 (design §3.9): `privacy_refusal`'s rule, unchanged, with the sentence \
+                  naming the decision model when the sampled capability says one made the chat \
+                  public. It decides nothing of its own; it exists so no gate re-spells the \
+                  rule to pick its words",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter/src/agents/extension_manager.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "Gate C, `authorize_dispatch_boundaries`: the one refusal a model reads \
+                       when a chat reaches for a private extension at dispatch. The words are \
+                       read off the slot only when the sample says a decision model lowered it \
+                       and the extension is private, which is exactly the refusal path. Gate \
+                       E's two filters stay on `privacy_refusal`: they hide and say nothing",
+            },
+            Site {
+                file: "crates/biorouter/src/privacy/refusal.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`extension_enable_refusal`'s tier arm",
             },
         ],
     },
@@ -1613,6 +1645,229 @@ const REGISTRY: &[Guard] = &[
         sites: &[],
     },
 ];
+
+// ---------------------------------------------------------------------------
+// DR-33: where a chat's decision models are folded into its tier.
+// ---------------------------------------------------------------------------
+
+/// Where `privacy::decision_axes` is COMPUTED, by qualified spelling, per
+/// production file (design §7.2). `from_row` and `fold` are ordinary words
+/// (`sqlx::FromRow::from_row`, `Iterator::fold`), so the guard registry above
+/// cannot count them by identifier; this counts the path-qualified call, and
+/// [`decision_axes_is_never_imported_by_name`] keeps a caller from dropping the
+/// path to hide from it.
+///
+/// The fold is computed at the bind, at Gate B, after an admitted lowering and
+/// at spawn; everything else only explains or predicts. `agent.rs` has one site
+/// because all three of its moments go through `install_bound_provider`. Pin
+/// the measured count per file; a later addition must argue for itself here.
+const DECISION_AXES_SITES: &[(&str, &str, usize, &str)] = &[
+    (
+        "decision_axes::from_row(",
+        "crates/biorouter/src/agents/agent.rs",
+        1,
+        "`install_bound_provider`, the slot's one writer: the bind, Gate B's refresh and \
+         `lower_decision_axes` all reach the fold through it",
+    ),
+    (
+        "decision_axes::fold(",
+        "crates/biorouter/src/agents/subagent_tool.rs",
+        1,
+        "spawn (design §3.4): the child's effective tier, its model folded with the public \
+         ceiling it is about to be stamped with, which R4/DR-19/DR-31 and the extension filter \
+         read. The same fold the child's slot computes from its row once the ceiling lands",
+    ),
+    (
+        "decision_axes::from_row(",
+        "crates/biorouter/src/decision/service.rs",
+        1,
+        "a prediction that installs nothing: `DecisionSession::with_row_tier_context` reads \
+         whether the stored row's decision models lower it now, so a picker row and a save's \
+         usability check can say what the save does (design §3.2, §5)",
+    ),
+    (
+        "decision_axes::from_row(",
+        "crates/biorouter-cli/src/session/output.rs",
+        1,
+        "explains, installs nothing: `decision_privacy_reason`, the terminal banner's and the \
+         TUI header's \"public because monitor … uses joey-1 · Baseten\" (design §5), from the \
+         stored row with the agent's own bound model",
+    ),
+    (
+        "decision_axes::from_row(",
+        "crates/biorouter-server/src/routes/session.rs",
+        1,
+        "explains, installs nothing: `GET /sessions/{id}`'s `privacyBasis`, the decision model \
+         that made the chat public, from the stored row with the bound model's tier (design §5), \
+         so no renderer recomputes the fold",
+    ),
+];
+
+fn qualified_counts(tree: &Tree, needle: &str) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for (rel, lines) in &tree.production {
+        if rel.ends_with("privacy/decision_axes.rs") {
+            continue;
+        }
+        let hits: usize = lines.iter().map(|(_, t)| t.matches(needle).count()).sum();
+        if hits > 0 {
+            out.insert(rel.clone(), hits);
+        }
+    }
+    out
+}
+
+#[test]
+fn decision_axes_are_computed_only_where_this_census_says() {
+    let tree = scan_tree();
+    for needle in ["decision_axes::from_row(", "decision_axes::fold("] {
+        let measured = qualified_counts(&tree, needle);
+        let declared: BTreeMap<String, usize> = DECISION_AXES_SITES
+            .iter()
+            .filter(|(n, ..)| *n == needle)
+            .map(|(_, file, count, _)| (file.to_string(), *count))
+            .collect();
+        assert_eq!(
+            measured, declared,
+            "the places a chat's decision models are folded into its tier changed for \
+             `{needle}`. Add or grow a row in DECISION_AXES_SITES saying what the new site is \
+             (a bind, Gate B, a lowering, a spawn, or a prediction that installs nothing)"
+        );
+    }
+}
+
+/// The census above counts the qualified spelling. A `use` that names
+/// `from_row` or `fold` out of `decision_axes` would let a caller write the bare
+/// word and vanish from it.
+#[test]
+fn decision_axes_is_never_imported_by_name() {
+    let tree = scan_tree();
+    let word = regex::Regex::new(r"\b(from_row|fold)\b").unwrap();
+    let mut offenders = Vec::new();
+    for (rel, lines) in &tree.production {
+        // A `use` of `decision_axes` may span lines; follow it to its `;`.
+        let mut in_axes_use = false;
+        for (ln, text) in lines {
+            let t = text.trim_start();
+            if (t.starts_with("use ") || t.starts_with("pub use ")) && t.contains("decision_axes") {
+                in_axes_use = true;
+            }
+            if in_axes_use && word.is_match(t) {
+                offenders.push(format!("{rel}:{ln}: {}", t.trim()));
+            }
+            if in_axes_use && t.contains(';') {
+                in_axes_use = false;
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "`decision_axes::from_row` / `fold` imported by name: {offenders:?}"
+    );
+}
+
+/// Design §2.1: the readers that ask "what model is this chat bound to" (the
+/// save checks, DR-16's raise comparators, the workflow seed) read the inner
+/// language model (`bound_model_tier`, `bound_model_provider`), never the slot.
+/// The slot's `tier()` is the folded, decision-lowered capability, and a raise
+/// comparator that read it called a Versa-to-Versa move on a lowered chat a
+/// raise from Public.
+///
+/// Each entry is a file (whole production text) or one function in it, and
+/// names a token its body must still contain, so the scan cannot pass by
+/// failing to find what it scans.
+#[test]
+fn save_checks_and_raise_comparators_read_the_bound_model_tier() {
+    const SITES: &[(&str, Option<&str>, &str)] = &[
+        (
+            "crates/biorouter-server/src/routes/decisions.rs",
+            None,
+            "bound_model_provider()",
+        ),
+        (
+            "crates/biorouter/src/workflow/runtime.rs",
+            None,
+            "bound_model_provider()",
+        ),
+        (
+            "crates/biorouter/src/decision/save.rs",
+            None,
+            "bound_model_tier",
+        ),
+        (
+            "crates/biorouter-server/src/routes/agent.rs",
+            Some("async fn update_agent_provider("),
+            "bound_model_tier()",
+        ),
+        (
+            "crates/biorouter-server/src/routes/apps.rs",
+            Some("async fn established_capability("),
+            "bound_model_provider()",
+        ),
+        (
+            "crates/biorouter/src/agents/workspace_extension.rs",
+            Some("async fn preflight_set_tools("),
+            "target_bound_model_tier(",
+        ),
+    ];
+    let tree = scan_tree();
+    let mut offenders = Vec::new();
+    for (rel, function, witness) in SITES {
+        let lines = tree
+            .production
+            .get(*rel)
+            .unwrap_or_else(|| panic!("{rel} is not in the production tree"));
+        let text: String = lines
+            .iter()
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = match function {
+            None => text,
+            Some(signature) => {
+                let start = text
+                    .find(signature)
+                    .unwrap_or_else(|| panic!("{rel} no longer defines `{signature}`"));
+                let open = start
+                    + text[start..]
+                        .find('{')
+                        .unwrap_or_else(|| panic!("`{signature}` has no body"));
+                let mut depth = 0usize;
+                let mut end = text.len();
+                for (at, ch) in text[open..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = open + at + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                text[start..end].to_string()
+            }
+        };
+        let squeezed: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            squeezed.contains(witness),
+            "{rel} {function:?} no longer reads `{witness}`; the scan would pass vacuously"
+        );
+        // `.provider()` is the slot; `bound_model_provider()` does not match,
+        // because its dot precedes `bound_model_`.
+        let hits = squeezed.matches(".provider()").count();
+        if hits > 0 {
+            offenders.push(format!("{rel} {function:?}: {hits} read(s) of `.provider()`"));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a save check or raise comparator reads the folded slot instead of the bound language \
+         model (`Agent::bound_model_tier` / `bound_model_provider`): {offenders:?}"
+    );
+}
 
 // ---------------------------------------------------------------------------
 // The scanner.

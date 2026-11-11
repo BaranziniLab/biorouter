@@ -972,11 +972,11 @@
         },
         "responses": {
           "200": {
-            "description": "Agent started successfully. A workflow that declares `decision_settings` or an `orchestration_plan` has had them applied to the new chat before anything was sent in it.",
+            "description": "Agent started successfully. A workflow that declares `decision_settings` or an `orchestration_plan` has had them applied to the new chat before anything was sent in it, and so have the request's own `decision_settings`. `tierEffect` says when they made the chat public (DR-33).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/StartedSession"
                 }
               }
             }
@@ -995,7 +995,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "403": {
-            "description": "The workflow declares monitors or a phase plan, which only the person may apply to a chat, and this daemon holds a user-action key the request did not prove (or the desktop daemon's key never arrived). No chat was created.",
+            "description": "The workflow declares monitors or a phase plan, or the request names `decision_settings`, which only the person may apply to a chat, and this daemon holds a user-action key the request did not prove (or the desktop daemon's key never arrived). No chat was created. Or: their decision models would make the chat public and this daemon holds no user-action key and its operator did not allow that (SD-16); the chat was discarded.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1005,7 +1005,7 @@
             }
           },
           "409": {
-            "description": "The workflow declares a phase plan, which runs only in the Autonomous approval mode, and Biorouter is in another (the message reads \"The workflow was not started: <sentence>\" and the chat was discarded). Or: the configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.",
+            "description": "The workflow's or the request's decision models would make this chat, which runs on a private model, public, and the request did not say `accept_public_decision_models: true` (DR-33): the body is a `PublicDecisionConfirmation` (`code` = `needsPublicDecisionConfirmation`, `message` = the question) and the chat was discarded. Or: the workflow declares a phase plan, which runs only in the Autonomous approval mode, and Biorouter is in another (the message reads \"The workflow was not started: <sentence>\" and the chat was discarded). Or: the configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1015,7 +1015,7 @@
             }
           },
           "422": {
-            "description": "The workflow's monitors or phase gates are valid but cannot run for this chat: a decision model it may not use (its privacy tier, an institution, a Crew grant), one that is not there, or one that cannot take the question. The message reads \"The workflow was not started: <sentence>\", and the chat was discarded.",
+            "description": "The request's own `decision_settings` cannot run for this chat (the save check's sentence), or the workflow's monitors or phase gates are valid but cannot run for this chat: a decision model it may not use (its privacy tier, an institution, a Crew grant), one that is not there, or one that cannot take the question. The message reads \"The workflow was not started: <sentence>\", and the chat was discarded.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6520,7 +6520,27 @@
           {
             "name": "sessionId",
             "in": "query",
-            "description": "A chat to work out `unavailableReason` for. Gated like every route that names a chat",
+            "description": "A chat to work out `unavailableReason` and `chatEffect` for. Gated like every route that names a chat",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "boundProvider",
+            "in": "query",
+            "description": "With `boundModel` and no `sessionId`: a chat not started yet that will be bound to this provider, for `chatEffect` (the composer's draft)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "boundModel",
+            "in": "query",
+            "description": "The draft's model",
             "required": false,
             "schema": {
               "type": "string",
@@ -9228,11 +9248,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Session history retrieved successfully",
+            "description": "Session history retrieved successfully, with `privacyBasis` when a decision model the chat names is what made it public (DR-33)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/SessionDetail"
                 }
               }
             }
@@ -9479,7 +9499,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/DecisionSettings"
+                "$ref": "#/components/schemas/DecisionSettingsWrite"
               }
             }
           },
@@ -9487,11 +9507,11 @@
         },
         "responses": {
           "200": {
-            "description": "The settings as stored",
+            "description": "The settings as stored, with what the save did to the chat's privacy tier",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DecisionSettings"
+                  "$ref": "#/components/schemas/DecisionSettingsSaved"
                 }
               }
             }
@@ -9503,13 +9523,23 @@
             "description": "Unauthorized - Invalid or missing API key"
           },
           "403": {
-            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)"
+            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's, or the save would make the chat public by a decision model and the daemon's operator did not allow that (SD-16) (body = plain text)"
           },
           "404": {
             "description": "Session not found (body = plain text)"
           },
+          "409": {
+            "description": "The save would make this chat, which runs on a private model, public by a decision model, and the body did not say `acceptPublicDecisionModels: true` (body = PublicDecisionConfirmation, JSON); or the chat started while it was being made public (body = plain text). Nothing was saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicDecisionConfirmation"
+                }
+              }
+            }
+          },
           "422": {
-            "description": "What this save turns on could not run for this chat now: the model is not available, cannot take the question, or the chat's privacy tier, an institution or a Crew grant refuses it. Nothing was saved (body = plain text)"
+            "description": "What this save turns on could not run for this chat now: the model is not available, cannot take the question, or the chat's privacy tier, an institution or a Crew grant refuses it; or the chat holds messages a private model may have produced, so it can no longer be made public by a decision model. Nothing was saved (body = plain text)"
           },
           "500": {
             "description": "Internal server error"
@@ -10224,7 +10254,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PhaseGateSpec"
+                "$ref": "#/components/schemas/PhaseGateWrite"
               }
             }
           },
@@ -10232,7 +10262,7 @@
         },
         "responses": {
           "200": {
-            "description": "The gate is the person's now and its attempts start over; the plan as this caller may see it",
+            "description": "The gate is the person's now and its attempts start over; the plan as this caller may see it, and what the write did to the chat's privacy tier",
             "content": {
               "application/json": {
                 "schema": {
@@ -10248,13 +10278,20 @@
             "description": "Unauthorized - Invalid or missing API key"
           },
           "403": {
-            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)"
+            "description": "Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's, or the gate would make the chat public by a decision model and the daemon's operator did not allow that (SD-16) (body = plain text)"
           },
           "404": {
             "description": "No such chat, the chat has no orchestration plan, or the plan has no such phase (body = plain text)"
           },
           "409": {
-            "description": "The phase is completed or skipped, or the plan could not be read or written. Nothing was changed (body = plain text)"
+            "description": "The phase is completed or skipped, or the plan could not be read or written (body = plain text); or the gate's model would make this chat, which runs on a private model, public, and the body did not say `acceptPublicDecisionModels: true` (body = PublicDecisionConfirmation, JSON). Nothing was changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicDecisionConfirmation"
+                }
+              }
+            }
           },
           "422": {
             "description": "The gate's decision model cannot answer it in this chat now: not available, cannot take yes/no questions, will not load, or refused by the chat's privacy tier, an institution or a Crew grant. Nothing was changed (body = plain text)"
@@ -13092,6 +13129,13 @@
           }
         }
       },
+      "ChatEffect": {
+        "type": "string",
+        "description": "What choosing a listed decision model would do to the chat's tier, for a\npicker row (`DecisionModelInfo.chatEffect`, design §5).",
+        "enum": [
+          "makesPublic"
+        ]
+      },
       "ChatRequest": {
         "type": "object",
         "required": [
@@ -15494,6 +15538,14 @@
           "adapter": {
             "$ref": "#/components/schemas/DecisionAdapter"
           },
+          "chatEffect": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatEffect"
+              }
+            ],
+            "nullable": true
+          },
           "contextTokens": {
             "type": "integer",
             "minimum": 0
@@ -15839,6 +15891,47 @@
           }
         },
         "additionalProperties": false
+      },
+      "DecisionSettingsSaved": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DecisionSettings"
+          },
+          {
+            "type": "object",
+            "required": [
+              "tierEffect"
+            ],
+            "properties": {
+              "tierEffect": {
+                "$ref": "#/components/schemas/TierEffect"
+              },
+              "tierEffectLine": {
+                "type": "string",
+                "description": "The line to show for it (\"This chat will be public: joey-1 runs on\nBaseten.\"), absent when there is nothing to say.",
+                "nullable": true
+              }
+            }
+          }
+        ],
+        "description": "What a decision-settings save stored, and what it did to the chat's tier."
+      },
+      "DecisionSettingsWrite": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DecisionSettings"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "acceptPublicDecisionModels": {
+                "type": "boolean",
+                "description": "The person saw \"This chat will be public: …\" and accepted it. Needed,\nwith the user-action proof, for a save that makes a chat on a private\nmodel public by a decision model; ignored by any other save."
+              }
+            }
+          }
+        ],
+        "description": "`PUT /sessions/{id}/decision-settings`'s body: the settings record, and the\nperson's confirmation of a lowering beside it."
       },
       "DecisionTurnMarker": {
         "type": "object",
@@ -17601,6 +17694,75 @@
             "format": "int32",
             "minimum": 0
           }
+        }
+      },
+      "HostLabel": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "baseten"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "this_computer"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "host"
+            ],
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "An Ollama server that is not this computer."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "ollama_at"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "ollama_cloud"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Where a public decision model runs, for the sentence.",
+        "discriminator": {
+          "propertyName": "kind"
         }
       },
       "HostStartError": {
@@ -21274,6 +21436,14 @@
               }
             ],
             "nullable": true
+          },
+          "tierEffect": {
+            "$ref": "#/components/schemas/TierEffect"
+          },
+          "tierEffectLine": {
+            "type": "string",
+            "description": "The line to show for it, absent when there is nothing to say.",
+            "nullable": true
           }
         }
       },
@@ -21422,6 +21592,23 @@
           }
         },
         "additionalProperties": false
+      },
+      "PhaseGateWrite": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PhaseGateSpec"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "acceptPublicDecisionModels": {
+                "type": "boolean",
+                "description": "As [`DecisionSettingsWrite::accept_public_decision_models`]."
+              }
+            }
+          }
+        ],
+        "description": "`PUT /sessions/{id}/phase-gates/{phase_id}`'s body: the gate, and the\nperson's confirmation of a lowering beside it."
       },
       "PhaseKind": {
         "type": "string",
@@ -21764,6 +21951,62 @@
           }
         }
       },
+      "PrivacyBasis": {
+        "type": "object",
+        "description": "Why a chat is public when its own language model is private (DR-33,\ndesign §5): the decision model it names, as the daemon computed it, so no\nrenderer recomputes the fold. Present only on the single-session read, and\nonly when a decision model (or a public parent's ceiling) is what made the\nchat public; a listing row shows its lock and nothing more.",
+        "required": [
+          "kind",
+          "source",
+          "label",
+          "model",
+          "host",
+          "place",
+          "summary"
+        ],
+        "properties": {
+          "host": {
+            "$ref": "#/components/schemas/biorouter.privacy.decision_axes.HostLabel"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PrivacyBasisKind"
+          },
+          "label": {
+            "type": "string",
+            "description": "The monitor's name, the phase's title, or the parent chat's id."
+          },
+          "model": {
+            "type": "string",
+            "description": "The model's own name (`joey-1`); empty for a parent ceiling that did not\nrecord one."
+          },
+          "place": {
+            "type": "string",
+            "description": "Where it runs, in words (`Baseten`, `this computer`), for \"joey-1 ·\nBaseten\"."
+          },
+          "source": {
+            "$ref": "#/components/schemas/PrivacyBasisSource"
+          },
+          "summary": {
+            "type": "string",
+            "description": "The reason as one clause for a person: `monitor \"Done\" uses joey-1, a\nBaseten model`."
+          }
+        }
+      },
+      "PrivacyBasisKind": {
+        "type": "string",
+        "enum": [
+          "decisionModel"
+        ]
+      },
+      "PrivacyBasisSource": {
+        "type": "string",
+        "enum": [
+          "default",
+          "monitor",
+          "gate",
+          "phaseMonitor",
+          "parent"
+        ]
+      },
       "PrivacyDisclosureResponse": {
         "type": "object",
         "description": "What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).\n\n⚠ **The copy is on the wire on purpose.** The sentence exists in the GUI\ndialog, the settings panel, the provider grid, the model chip, the CLI,\n`docs/` and the landing site; four hand-written copies drift within one\nrelease and the drifted one is always the one a user reads. One definition\nlives in `biorouter::privacy::disclosure` and the renderer renders what it is\nhanded — a hardcoded English string in a component is the failure this shape\nexists to prevent, and it is invisible until the two disagree.",
@@ -22045,6 +22288,37 @@
             "items": {
               "$ref": "#/components/schemas/ProviderDetails"
             }
+          }
+        }
+      },
+      "PublicDecisionConfirmation": {
+        "type": "object",
+        "description": "The 409 a write answers when it would make the chat public by a decision\nmodel and did not carry the person's confirmation. Nothing was saved.",
+        "required": [
+          "code",
+          "message",
+          "info",
+          "models"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Always `needsPublicDecisionConfirmation`."
+          },
+          "info": {
+            "type": "string",
+            "description": "The InfoTip beside it."
+          },
+          "message": {
+            "type": "string",
+            "description": "The effect line, as the question to ask: \"This chat will be public:\njoey-1 runs on Baseten.\""
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The public models, as `provider/model`."
           }
         }
       },
@@ -23929,6 +24203,27 @@
           }
         }
       },
+      "SessionDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Session"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "privacyBasis": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/PrivacyBasis"
+                  }
+                ],
+                "nullable": true
+              }
+            }
+          }
+        ],
+        "description": "`GET /sessions/{session_id}`'s answer: the session, and why it is public\nwhen a decision model made it so."
+      },
       "SessionDisplayInfo": {
         "type": "object",
         "required": [
@@ -25787,6 +26082,18 @@
           "working_dir"
         ],
         "properties": {
+          "accept_public_decision_models": {
+            "type": "boolean",
+            "description": "The person saw \"This chat will be public: …\" and accepted it: needed,\nwith the user-action proof, when `decision_settings` or the workflow's\nown decision models would make a chat on a private model public."
+          },
+          "decision_settings": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DecisionSettings"
+              }
+            ],
+            "nullable": true
+          },
           "extension_overrides": {
             "type": "array",
             "items": {
@@ -25966,6 +26273,32 @@
           }
         },
         "additionalProperties": false
+      },
+      "StartedSession": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Session"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "tierEffect": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TierEffect"
+                  }
+                ],
+                "nullable": true
+              },
+              "tierEffectLine": {
+                "type": "string",
+                "description": "The line to show for it (\"This chat will be public: joey-1 runs on\nBaseten.\"), absent when there is nothing to say.",
+                "nullable": true
+              }
+            }
+          }
+        ],
+        "description": "`POST /agent/start`'s answer: the new chat, and what its decision models\ndid to its privacy tier (DR-33)."
       },
       "SteerOutcome": {
         "type": "string",
@@ -26476,6 +26809,18 @@
           }
         ],
         "description": "What \"pass\" means for one question. It acts on the probability of the\nanswer the caller wants, never on [`Decision::confidence`], which measures\nhow concentrated the distribution is and is not the probability of\nanything."
+      },
+      "TierEffect": {
+        "type": "string",
+        "description": "What a save does to a chat's tier (design §3.2). Computed from two folds and\nnever from the slot.",
+        "enum": [
+          "none",
+          "becomesPublic",
+          "staysPublic",
+          "becomesPrivateAtNextMessage",
+          "refusedNotEligible",
+          "refusedPrivate"
+        ]
       },
       "TokenState": {
         "type": "object",

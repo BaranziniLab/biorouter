@@ -541,6 +541,17 @@ fn json_of(body: &str) -> Value {
     serde_json::from_str(body).unwrap_or_else(|e| panic!("not JSON ({e}): {body}"))
 }
 
+/// A settings write's answer without what it says about the chat's tier
+/// (DR-33's `tierEffect` and `tierEffectLine`, beside the stored record).
+fn saved_settings(body: &str) -> Value {
+    let mut saved = json_of(body);
+    if let Some(object) = saved.as_object_mut() {
+        object.remove("tierEffect");
+        object.remove("tierEffectLine");
+    }
+    saved
+}
+
 fn yes_no(threshold: Option<f64>) -> Value {
     let mut question = json!({
         "instructions": "Does this note state the patient has multiple sclerosis?",
@@ -858,7 +869,7 @@ async fn the_person_at_the_keyboard_stores_settings_that_read_back() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let stored = json_of(&body);
+    let stored = saved_settings(&body);
     assert_eq!(stored["monitors"][0]["id"], "m1", "{body}");
     let (status, body) = send(
         fake.app(&state),
@@ -1089,7 +1100,7 @@ async fn a_misspelled_settings_key_is_refused_by_name_and_nothing_is_stored() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let stored = json_of(&body);
+    let stored = saved_settings(&body);
     assert_eq!(stored["monitors"][0]["onError"], "pause", "{body}");
     let (status, body) = send(
         fake.app(&state),
@@ -1320,7 +1331,7 @@ async fn what_the_settings_read_answers_is_written_back_unchanged() {
         let (status, again) = send(fake.app(&state), "PUT", uri, Some(back), &[PROOF]).await;
         assert_eq!(status, StatusCode::OK, "{uri}: {again}");
         assert_eq!(
-            json_of(&again),
+            saved_settings(&again),
             read,
             "{uri}: the write-back stored what was read"
         );
@@ -2232,11 +2243,13 @@ impl biorouter::providers::base::Provider for Tiered {
 }
 
 /// A chat still Public but bound to a private model becomes private at its
-/// first turn, where a public decision model would be refused at every check,
-/// so the save refuses it now. Read off the agent this daemon holds; a chat
-/// bound to no model is checked on its classification alone (a chat this
-/// daemon does not hold:
-/// [`a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds`]).
+/// first message unless a person makes it public with a public decision model
+/// (DR-33). `test_decision/cloud-checker` is a public model whose provider
+/// the fold cannot declare, so it can never lower the chat (doubt never
+/// lowers, design §1.5) and is refused as one the chat could not read after
+/// its first message. Read off the agent this daemon holds; a chat bound to
+/// no model is checked on its classification alone (a chat this daemon does
+/// not hold: [`a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds`]).
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn a_public_chat_bound_to_a_private_model_cannot_save_a_public_monitor() {
@@ -2268,7 +2281,9 @@ async fn a_public_chat_bound_to_a_private_model_cannot_save_a_public_monitor() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(
-        body.contains("This chat runs on a private model, so it becomes private at its first turn"),
+        body.contains(
+            "This chat runs on a private model, so it becomes private at its first message"
+        ),
         "{body}"
     );
     let (status, body) = send(
@@ -2345,9 +2360,20 @@ async fn a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds(
     let mut joey_monitor = monitor("m1");
     joey_monitor["model"] = joey_model();
     let joey = json!({ "monitors": [joey_monitor] });
-    let refusal = "Nothing was saved: monitor \"Form reached\" could not run. This chat runs on \
-                   a private model, so it becomes private at its first turn, and `joey-1` is a \
-                   public model a private chat cannot use.";
+    // DR-33: naming joey-1 on an empty chat bound to Versa makes it public,
+    // which the person confirms first; the daemon reads the bound model off the
+    // row when it holds no agent, so the same save asks the same question
+    // after a restart as with the agent loaded.
+    let asks = |status: StatusCode, body: &str| {
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let question = json_of(body);
+        assert_eq!(question["code"], "needsPublicDecisionConfirmation", "{body}");
+        assert_eq!(
+            question["message"],
+            "This chat will be public: joey-1 runs on Baseten.",
+            "{body}"
+        );
+    };
 
     let bound = seed_bound_row(&state, "versa_azure").await;
     assert!(
@@ -2357,8 +2383,7 @@ async fn a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds(
     let uri = format!("/sessions/{}/decision-settings", bound.id);
     let before = stored_settings(&state, &bound.id).await;
     let (status, body) = send(fake.app(&state), "PUT", &uri, Some(joey.clone()), &[PROOF]).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert!(body.starts_with(refusal), "{body}");
+    asks(status, &body);
     assert_eq!(
         stored_settings(&state, &bound.id).await,
         before,
@@ -2378,15 +2403,8 @@ async fn a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds(
         &[PROOF],
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert!(
-        body.starts_with("Phase \"research\"'s gate cannot be answered in this chat: ")
-            && body.contains(
-                "This chat runs on a private model, so it becomes private at its first turn"
-            )
-            && body.ends_with(". Nothing was changed."),
-        "{body}"
-    );
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(json_of(&body)["code"], "needsPublicDecisionConfirmation", "{body}");
     assert_eq!(stored_plan(&state, &bound.id).await, plan, "nothing stored");
 
     // A private decision model is what such a chat may save.
@@ -2416,8 +2434,7 @@ async fn a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds(
         &[PROOF],
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert!(body.starts_with(refusal), "{body}");
+    asks(status, &body);
 
     // A row on a public provider still saves.
     let public = seed_bound_row(&state, "anthropic").await;
@@ -3648,6 +3665,16 @@ fn every_door_that_writes_decision_settings_runs_the_save_check() {
         "crates/biorouter/src/workflow/supervision.rs",
         "crates/biorouter/src/agents/workspace_extension.rs",
     ];
+    // DR-33: writers that only ever turn a monitor OFF or clear a public
+    // default, so there is nothing for the save check to ask: turning a
+    // chat's public decision models off when it is branched, copied, imported
+    // or declassified (`decision_axes::turn_off_public_names`), and switching
+    // off a monitor the privacy refusal stranded on a now-private chat (design
+    // §3.15). Each file must still say what it turns off.
+    const OFF_ONLY: [(&str, &str); 2] = [
+        ("crates/biorouter/src/privacy/decision_axes.rs", "monitor.enabled = false"),
+        ("crates/biorouter/src/decision/monitor.rs", "monitor.enabled = false"),
+    ];
     // Called as `<…settings>::<name>(`: `settings::save(`,
     // `decision_settings::save(`, `crate::decision::settings::update(`.
     const WRITERS: [&str; 3] = ["save", "save_chat", "update"];
@@ -3740,8 +3767,19 @@ fn every_door_that_writes_decision_settings_runs_the_save_check() {
         let code = without_test_items(code_only(&src)).join("\n");
         code.contains("check_settings(") || code.contains("check_model_use(")
     };
-    let allowed =
-        |file: &str| DEFINED_IN.contains(&file) || (CHECKED_DOORS.contains(&file) && checked(file));
+    let turns_off = |file: &str| {
+        OFF_ONLY.iter().any(|(off, marker)| {
+            *off == file
+                && std::fs::read_to_string(repo.join(file))
+                    .unwrap_or_default()
+                    .contains(marker)
+        })
+    };
+    let allowed = |file: &str| {
+        DEFINED_IN.contains(&file)
+            || (CHECKED_DOORS.contains(&file) && checked(file))
+            || turns_off(file)
+    };
     let unchecked: Vec<String> = found
         .iter()
         .filter(|(file, ..)| !allowed(file))
@@ -3783,4 +3821,377 @@ fn c() { m.update_extension_state(id, "decision_settings", "v1", f); }
         "{code}"
     );
     assert_eq!(code.lines().count(), src.lines().count());
+}
+
+// ─── DR-33: a chat's decision models count toward its tier ───
+
+/// Every corner of who may make a chat public by a decision model.
+#[test]
+fn only_a_person_who_confirmed_may_make_a_chat_public_and_a_keyless_daemon_only_when_allowed() {
+    use UserActionProof::*;
+    for (proof, keyless_allowed, accepted, expected) in [
+        (Proven, false, true, LoweringConsent::Confirmed),
+        (Proven, true, true, LoweringConsent::Confirmed),
+        (Proven, false, false, LoweringConsent::Unconfirmed),
+        (Unproven, true, true, LoweringConsent::Unconfirmed),
+        (NoKeyInstalled, true, true, LoweringConsent::Confirmed),
+        (NoKeyInstalled, true, false, LoweringConsent::Unconfirmed),
+        (
+            NoKeyInstalled,
+            false,
+            true,
+            LoweringConsent::NotAllowedHere(PUBLIC_DECISION_MODELS_NOT_ALLOWED.to_string()),
+        ),
+        (
+            NoKeyInstalled,
+            false,
+            false,
+            LoweringConsent::NotAllowedHere(PUBLIC_DECISION_MODELS_NOT_ALLOWED.to_string()),
+        ),
+    ] {
+        assert_eq!(
+            lowering_consent(proof, keyless_allowed, accepted),
+            expected,
+            "{proof:?}, keyless allowed {keyless_allowed}, accepted {accepted}"
+        );
+    }
+}
+
+/// The flag is taken out of the body before the strict record reads it, and
+/// only a boolean is a flag.
+#[test]
+fn the_confirmation_rides_beside_the_record_and_never_reaches_it() {
+    let (rest, accepted) = split_acceptance(
+        br#"{"monitors": [], "acceptPublicDecisionModels": true}"#,
+        "decision settings",
+    )
+    .unwrap();
+    assert!(accepted);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&rest).unwrap(),
+        json!({ "monitors": [] })
+    );
+    let (_, accepted) = split_acceptance(br#"{"monitors": []}"#, "decision settings").unwrap();
+    assert!(!accepted);
+    assert!(split_acceptance(
+        br#"{"acceptPublicDecisionModels": "yes"}"#,
+        "decision settings"
+    )
+    .unwrap_err()
+    .contains("must be true or false"));
+    // Not an object: left for the record's reader to refuse in its words.
+    let (rest, accepted) = split_acceptance(b"[1]", "decision settings").unwrap();
+    assert_eq!((rest.as_slice(), accepted), (b"[1]".as_slice(), false));
+    // A key written twice is still written twice, so the record refuses it.
+    let (rest, _) = split_acceptance(
+        br#"{"monitors": [], "monitors": [], "acceptPublicDecisionModels": true}"#,
+        "decision settings",
+    )
+    .unwrap();
+    assert_eq!(rest, br#"{"monitors":[],"monitors":[]}"#.to_vec());
+    // Without the flag the body is untouched, byte for byte.
+    let body = br#"{ "monitors" : [] }"#;
+    assert_eq!(split_acceptance(body, "x").unwrap().0, body.to_vec());
+}
+
+/// An empty chat this daemon holds, bound to a private language model.
+async fn versa_chat(state: &Arc<AppState>) -> (Seeded, Arc<biorouter::agents::Agent>) {
+    let chat = seed(state, SessionClassification::Public).await;
+    // Session ids are reissued: never inherit an agent an earlier test left.
+    let _ = state.agent_manager.remove_session(&chat.id).await;
+    let agent = state.get_agent(chat.id.clone()).await.unwrap();
+    agent
+        .update_provider(
+            Arc::new(Tiered {
+                name: "versa_azure",
+                tier: ProviderTier::Private,
+            }),
+            &chat.id,
+        )
+        .await
+        .unwrap();
+    (chat, agent)
+}
+
+fn joey_monitor_settings() -> Value {
+    let mut joey = monitor("m1");
+    joey["model"] = joey_model();
+    json!({ "monitors": [joey] })
+}
+
+async fn stored_basis(state: &Arc<AppState>, id: &str) -> Option<Value> {
+    state
+        .session_manager()
+        .get_extension_state(
+            id,
+            biorouter::privacy::decision_axes::PUBLIC_BASIS_STATE,
+            biorouter::privacy::decision_axes::PUBLIC_BASIS_VERSION,
+        )
+        .await
+        .unwrap()
+}
+
+/// Design §3.2's table over HTTP, on a Versa chat before its first message:
+/// a Baseten monitor without the person's confirmation is a question (409,
+/// nothing saved); with it the chat is public, the basis is written with the
+/// settings, and the agent this daemon holds takes the lowered tier at once.
+/// A second public save keeps it public; removing the last public name makes
+/// it private at the next message (the slot waits for that turn) and clears
+/// the basis.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_versa_chat_is_made_public_by_a_baseten_monitor_only_when_the_person_confirms() {
+    if !biorouter::privacy::privacy_tiers_enabled() {
+        return;
+    }
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let fake = fake_listing(vec![joey_entry()]);
+    let (chat, agent) = versa_chat(&state).await;
+    let uri = format!("/sessions/{}/decision-settings", chat.id);
+    let before = stored_settings(&state, &chat.id).await;
+
+    let (status, body) = send(
+        fake.app(&state),
+        "PUT",
+        &uri,
+        Some(joey_monitor_settings()),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let question = json_of(&body);
+    assert_eq!(question["code"], "needsPublicDecisionConfirmation");
+    assert_eq!(question["message"], "This chat will be public: joey-1 runs on Baseten.");
+    assert_eq!(question["models"], json!(["baseten_decision/joey-1"]));
+    assert_eq!(stored_settings(&state, &chat.id).await, before, "nothing saved");
+    assert_eq!(stored_basis(&state, &chat.id).await, None);
+    assert_eq!(agent.provider().await.unwrap().tier(), ProviderTier::Private);
+
+    let mut confirmed = joey_monitor_settings();
+    confirmed["acceptPublicDecisionModels"] = json!(true);
+    let (status, body) = send(fake.app(&state), "PUT", &uri, Some(confirmed), &[PROOF]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let saved = json_of(&body);
+    assert_eq!(saved["tierEffect"], "becomesPublic");
+    assert_eq!(
+        saved["tierEffectLine"],
+        "This chat will be public: joey-1 runs on Baseten."
+    );
+    assert_eq!(saved["monitors"][0]["id"], "m1", "the settings are the body");
+    assert!(saved.get("acceptPublicDecisionModels").is_none());
+    let basis = stored_basis(&state, &chat.id).await.expect("the basis is written");
+    assert_eq!(basis["sessionId"], json!(chat.id));
+    assert_eq!(basis["by"], "person");
+    assert_eq!(basis["door"], "decision-settings");
+    assert_eq!(
+        agent.provider().await.unwrap().tier(),
+        ProviderTier::Public,
+        "the held agent takes the lowering at once"
+    );
+    assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+    let (_, read) = send(
+        served(state.clone()),
+        "GET",
+        &format!("/sessions/{}?metadata_only=true", chat.id),
+        None,
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(json_of(&read)["privacyBasis"]["model"], "joey-1", "{read}");
+
+    // Keeping joey-1 and changing the threshold: stays public, no question.
+    let mut kept = joey_monitor_settings();
+    kept["monitors"][0]["threshold"] = json!(0.9);
+    let (status, body) = send(fake.app(&state), "PUT", &uri, Some(kept), &[PROOF]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(json_of(&body)["tierEffect"], "staysPublic");
+
+    // Removing it: private at the next message, basis cleared, no flag.
+    let (status, body) = send(
+        fake.app(&state),
+        "PUT",
+        &uri,
+        Some(json!({ "monitors": [] })),
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let removed = json_of(&body);
+    assert_eq!(removed["tierEffect"], "becomesPrivateAtNextMessage");
+    assert!(removed["tierEffectLine"]
+        .as_str()
+        .unwrap()
+        .starts_with("This chat becomes private at your next message."));
+    assert_eq!(stored_basis(&state, &chat.id).await, None);
+    assert_eq!(
+        agent.provider().await.unwrap().tier(),
+        ProviderTier::Public,
+        "a raise waits for the next turn's Gate B"
+    );
+}
+
+/// A Versa chat that already has messages holds content a private model may
+/// have produced, so a public decision model is refused whatever the person
+/// says (422, nothing saved), as on a Private chat.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_started_or_private_chat_is_never_made_public_by_a_decision_model() {
+    if !biorouter::privacy::privacy_tiers_enabled() {
+        return;
+    }
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let fake = fake_listing(vec![joey_entry()]);
+    let (started, _agent) = versa_chat(&state).await;
+    state
+        .session_manager()
+        .add_message(
+            &started.id,
+            &biorouter::conversation::message::Message::user().with_text("patient notes"),
+        )
+        .await
+        .unwrap();
+    let mut confirmed = joey_monitor_settings();
+    confirmed["acceptPublicDecisionModels"] = json!(true);
+    for chat in [&started, &seed(&state, SessionClassification::Private).await] {
+        let before = stored_settings(&state, &chat.id).await;
+        let (status, body) = send(
+            fake.app(&state),
+            "PUT",
+            &format!("/sessions/{}/decision-settings", chat.id),
+            Some(confirmed.clone()),
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body.starts_with("Nothing was saved"), "{body}");
+        assert_eq!(stored_settings(&state, &chat.id).await, before);
+        assert_eq!(stored_basis(&state, &chat.id).await, None);
+    }
+}
+
+/// The picker learns what a model would do before the person chooses it:
+/// on an empty Versa chat a Baseten model "makes this chat public" and a
+/// local one moves nothing; a draft (no chat yet, the composer's held model)
+/// gets the same answer, and a public model's chat gets none.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn the_model_listing_says_which_models_would_make_the_chat_public() {
+    if !biorouter::privacy::privacy_tiers_enabled() {
+        return;
+    }
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let fake = fake_listing(vec![joey_entry()]);
+    let (chat, _agent) = versa_chat(&state).await;
+    let effect_of = |body: &str, model: &str| {
+        json_of(body)["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["model"] == model)
+            .unwrap_or_else(|| panic!("{model} is listed: {body}"))["chatEffect"]
+            .clone()
+    };
+    let (status, body) = send(
+        fake.app(&state),
+        "GET",
+        &format!("/decisions/models?sessionId={}", chat.id),
+        None,
+        &[PROOF],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(effect_of(&body, "joey-1"), "makesPublic");
+    assert_eq!(effect_of(&body, "local-checker"), Value::Null);
+
+    let (status, body) = send(
+        fake.app(&state),
+        "GET",
+        "/decisions/models?boundProvider=versa_azure&boundModel=gpt-5.5",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(effect_of(&body, "joey-1"), "makesPublic");
+
+    let (_, body) = send(
+        fake.app(&state),
+        "GET",
+        "/decisions/models?boundProvider=claude_code&boundModel=default",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(effect_of(&body, "joey-1"), Value::Null);
+}
+
+/// A person's gate follows the settings save's rules (design §3.6): a Baseten
+/// gate on an empty Versa chat's open phase is a lowering that asks first,
+/// and with the confirmation the plan and the basis land in one write.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_baseten_gate_makes_a_versa_chat_public_only_when_the_person_confirms() {
+    if !biorouter::privacy::privacy_tiers_enabled() {
+        return;
+    }
+    install_test_user_action_key();
+    let state = AppState::new().await.unwrap();
+    let fake = fake_listing(vec![joey_entry()]);
+    let (chat, agent) = versa_chat(&state).await;
+    seed_plan(&state, &chat.id).await;
+    let plan = stored_plan(&state, &chat.id).await;
+    let uri = format!("/sessions/{}/phase-gates/research", chat.id);
+    let mut gate = person_gate(None);
+    gate["model"] = joey_model();
+
+    let (status, body) = send(fake.app(&state), "PUT", &uri, Some(gate.clone()), &[PROOF]).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(json_of(&body)["code"], "needsPublicDecisionConfirmation");
+    assert_eq!(stored_plan(&state, &chat.id).await, plan, "nothing stored");
+
+    gate["acceptPublicDecisionModels"] = json!(true);
+    let (status, body) = send(fake.app(&state), "PUT", &uri, Some(gate), &[PROOF]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let answer = json_of(&body);
+    assert_eq!(answer["tierEffect"], "becomesPublic");
+    assert!(
+        phase_of(&answer["plan"], "research")["gate"]["model"]
+            .as_str()
+            .is_some_and(|model| model.contains("joey-1")),
+        "{body}"
+    );
+    let stored = stored_plan(&state, &chat.id).await.unwrap();
+    assert!(
+        stored["revision"].as_u64() > plan.as_ref().and_then(|p| p["revision"].as_u64()),
+        "the plan's revision moves as every plan write moves it"
+    );
+    assert_eq!(stored_basis(&state, &chat.id).await.unwrap()["door"], "phase-gate");
+    assert_eq!(agent.provider().await.unwrap().tier(), ProviderTier::Public);
+
+    // Removing that gate: private at the next message, basis cleared.
+    let (status, body) = send(fake.app(&state), "DELETE", &uri, None, &[PROOF]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(json_of(&body)["tierEffect"], "becomesPrivateAtNextMessage");
+    assert_eq!(stored_basis(&state, &chat.id).await, None);
+}
+
+/// Design §2.1's source scan for this file: the save checks ask what model
+/// the chat is bound to, never what its slot may reach.
+#[test]
+fn the_save_checks_read_the_bound_model_tier() {
+    let source = include_str!("decisions.rs");
+    for (n, line) in source.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or_default();
+        assert!(
+            !(code.contains("provider()") && code.contains(".tier()")),
+            "decisions.rs:{}: a save check read the slot's tier: {line}",
+            n + 1
+        );
+    }
+    let bound = crate::routes::body_of(source, "async fn bound_tier(");
+    assert!(bound.contains("agent.bound_model_tier()"), "{bound}");
+    assert!(!bound.contains("agent.provider()"), "{bound}");
 }
