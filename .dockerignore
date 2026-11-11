@@ -5,13 +5,22 @@ target/
 # Node modules and build outputs
 node_modules/
 **/node_modules/
+**/test-results/
+**/playwright-report/
+**/model-cache/
+**/sandboxes/
+**/.tmp/
+.tmp/
 ui/desktop/out/
 ui/desktop/dist/
+ui/desktop/src/web/
 ui/desktop/src/bin/
 
 # Git
 .git/
 .gitignore
+.claude/
+.codex/
 
 # Documentation builds
 documentation/build/
@@ -29,6 +38,13 @@ documentation/.cache-loader/
 # Environment and config files
 .env
 .env.*
+*.env
+**/.env
+**/.env.*
+**/*.env
+**/.config/
+**/.local/
+**/ggml-*.bin
 *.log
 
 # CI/CD
@@ -98,6 +114,4 @@ ehthumbs.db
 *.jsonl
 sessions/
 
-# Generated files
-ui/desktop/openapi.json
-ui/desktop/src/api/
+# The tracked OpenAPI schema and generated client are web build inputs.

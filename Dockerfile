@@ -5,6 +5,7 @@
 # Native helper is part of the CLI image even when no desktop is attached.
 FROM --platform=$BUILDPLATFORM golang:1.26.8-bookworm AS computer-use-builder
 ARG TARGETARCH
+ENV GOMAXPROCS=2
 RUN apt-get update && apt-get install -y --no-install-recommends python3 git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 # ⚠ Both scripts. `computer-use-runtime.py` loads `vendor-computer-use-source.py`
@@ -15,10 +16,12 @@ COPY scripts/vendor-computer-use-source.py scripts/vendor-computer-use-source.py
 COPY vendor/computer-use vendor/computer-use
 RUN case "$TARGETARCH" in amd64) HELPER_TARGET=linux-x64 ;; arm64) HELPER_TARGET=linux-arm64 ;; *) echo "Unsupported native helper architecture: $TARGETARCH" >&2; exit 1 ;; esac && \
     python3 scripts/computer-use-runtime.py build "$HELPER_TARGET" && \
-    cp -a "target/computer-use/$HELPER_TARGET" /computer-use
+    cp -a "target/computer-use/$HELPER_TARGET" /computer-use && \
+    touch /computer-use.ready
 
-# Build stage
+# The small ready files make the native compiler stages run in order.
 FROM rust:1.92-bookworm AS builder
+COPY --from=computer-use-builder /computer-use.ready /tmp/computer-use.ready
 
 # Install build dependencies. cmake builds the local dictation engine (whisper.cpp) inside
 # the biorouter-dictation crate's build script; scripts/check-dictation-build-prereqs.sh
@@ -43,11 +46,23 @@ COPY . .
 
 # Build release binaries with optimizations
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+ENV CARGO_BUILD_JOBS=3
+ENV CMAKE_BUILD_PARALLEL_LEVEL=3
+ENV CARGO_INCREMENTAL=0
+ENV CARGO_PROFILE_RELEASE_DEBUG=0
 ENV CARGO_PROFILE_RELEASE_LTO=true
 ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
 ENV CARGO_PROFILE_RELEASE_OPT_LEVEL=z
 ENV CARGO_PROFILE_RELEASE_STRIP=true
-RUN cargo build --release --package biorouter-cli
+RUN printf 'CMAKE_BUILD_TYPE=Release (checked by scripts/check-dictation-build-prereqs.sh)\n' && \
+    cargo build --release --locked --package biorouter-cli --package biorouter-server && \
+    touch /build/rust.ready
+
+FROM node:24-bookworm AS web-builder
+COPY --from=builder /build/rust.ready /tmp/rust.ready
+WORKDIR /build/ui/desktop
+COPY ui/desktop/ ./
+RUN npm ci && npm run build:web
 
 # Runtime stage - minimal Debian
 FROM debian:bookworm-slim@sha256:b1a741487078b369e78119849663d7f1a5341ef2768798f7b7406c4240f86aef
@@ -71,11 +86,13 @@ RUN apt-get update && \
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/biorouter /usr/local/bin/biorouter
+COPY --from=builder /build/target/release/biorouterd /usr/local/bin/biorouterd
 COPY --from=computer-use-builder /computer-use /usr/libexec/biorouter/computer-use
+COPY --from=web-builder /build/ui/desktop/src/web /usr/share/biorouter/web
 
 # Create non-root user
 RUN useradd -m -u 1000 -s /bin/bash biorouter && \
-    mkdir -p /home/biorouter/.config/biorouter && \
+    mkdir -p /home/biorouter/.config/biorouter /home/biorouter/.local/share/biorouter && \
     chown -R biorouter:biorouter /home/biorouter
 
 # Set up environment
@@ -85,6 +102,7 @@ ENV HOME="/home/biorouter"
 # Switch to non-root user
 USER biorouter
 WORKDIR /home/biorouter
+EXPOSE 8765
 
 # Default to biorouter CLI
 ENTRYPOINT ["/usr/local/bin/biorouter"]
@@ -92,6 +110,6 @@ CMD ["--help"]
 
 # Labels for metadata
 LABEL org.opencontainers.image.title="biorouter"
-LABEL org.opencontainers.image.description="BioRouter CLI"
+LABEL org.opencontainers.image.description="Biorouter CLI and browser server"
 LABEL org.opencontainers.image.vendor="UCSF Baranzini Lab"
 LABEL org.opencontainers.image.source="https://github.com/BaranziniLab/biorouter"
