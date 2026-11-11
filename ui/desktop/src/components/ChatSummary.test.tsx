@@ -159,6 +159,57 @@ describe('compact chat summary', () => {
     expect(rows.map((row) => row.getAttribute('data-status'))).toEqual(['pending', 'blocked']);
   });
 
+  it('shows the first open step as running when the agent only reports what is done', () => {
+    // The agent no longer says "starting #3": finishing #2 is enough.
+    const { rerender } = render(
+      <ChatSummary
+        {...props}
+        todos={{
+          ...props.todos,
+          items: [
+            { id: '1', text: 'Compare clinic options', status: 'completed' },
+            { id: '2', text: 'Ask the clinic', status: 'blocked' },
+            { id: '3', text: 'Verify arithmetic', status: 'pending' },
+            { id: '4', text: 'Present the comparison', status: 'pending' },
+          ],
+        }}
+      />
+    );
+    const rows = () =>
+      within(screen.getByRole('list', { name: summaryCopy.todoListLabel })).getAllByRole(
+        'listitem'
+      );
+    expect(rows().map((row) => row.textContent)).toEqual([
+      'Complete, Compare clinic options',
+      'Blocked, Ask the clinic',
+      'In progress, Verify arithmetic',
+      'Pending, Present the comparison',
+    ]);
+    expect(rows()[2]).toHaveAttribute('data-status', 'in_progress');
+    expect(rows()[2]).toHaveAttribute('data-derived');
+    // Progress still counts only what is done.
+    expect(screen.getByText('1 of 4 complete')).toBeInTheDocument();
+
+    // An item the agent marked running explicitly wins, and nothing is derived.
+    rerender(
+      <ChatSummary
+        {...props}
+        todos={{
+          ...props.todos,
+          items: [
+            { id: '3', text: 'Verify arithmetic', status: 'pending' },
+            { id: '4', text: 'Present the comparison', status: 'in_progress' },
+          ],
+        }}
+      />
+    );
+    expect(rows().map((row) => row.getAttribute('data-status'))).toEqual([
+      'pending',
+      'in_progress',
+    ]);
+    expect(rows().some((row) => row.hasAttribute('data-derived'))).toBe(false);
+  });
+
   it('shows ordered, labelled steps and accessible progress', () => {
     render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1');
@@ -288,7 +339,9 @@ describe('compact chat summary', () => {
   });
 
   it('crossfades a glyph on every change, including a return to the status the row began with', () => {
-    const begin = [{ id: '1', text: 'Verify', status: 'pending' as const }];
+    // Blocked, not pending: a lone pending item already reads as running (it is
+    // the derived current item), so pending to running would be no change.
+    const begin = [{ id: '1', text: 'Verify', status: 'blocked' as const }];
     const { rerender, container } = render(
       <ChatSummary {...props} todos={{ ...props.todos, items: begin }} />
     );

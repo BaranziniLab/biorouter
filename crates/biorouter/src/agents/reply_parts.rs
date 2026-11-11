@@ -40,9 +40,37 @@ fn attach_skill_inventory(
     };
     if !inventory.is_empty() {
         skills.instructions.push_str("\n\n");
-        skills.instructions.push_str(inventory);
+        skills
+            .instructions
+            .push_str(&without_catalog_generation(inventory));
     }
     true
+}
+
+/// The skill inventory without its catalog generation number.
+///
+/// `skills_extension::session_skill_inventory_instructions` opens with "Live
+/// Skills catalog generation N", and N is bumped by EVERY rescan of the
+/// process-wide catalog: an install anywhere, an invalidation, or any write
+/// under a skill root (`~/.claude/skills` included), whether or not this chat's
+/// lists changed. The number sits in the system prompt, so each bump re-read
+/// the whole conversation at the fresh-input price on the next request. The
+/// lists that follow are what the model needs; when they change, the prompt
+/// changes anyway. Found by
+/// `two_consecutive_turns_send_an_identical_system_prompt_and_tools`.
+pub(super) fn without_catalog_generation(inventory: &str) -> std::borrow::Cow<'_, str> {
+    const OPENING: &str = "Live Skills catalog generation ";
+    const AFTER: &str = " for this conversation.";
+    let Some(rest) = inventory.strip_prefix(OPENING) else {
+        return std::borrow::Cow::Borrowed(inventory);
+    };
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    match rest[digits..].strip_prefix(AFTER) {
+        Some(tail) if digits > 0 => {
+            std::borrow::Cow::Owned(format!("Live Skills catalog for this conversation.{tail}"))
+        }
+        _ => std::borrow::Cow::Borrowed(inventory),
+    }
 }
 
 pub(super) fn attach_effective_tool_rosters(
@@ -325,6 +353,63 @@ fn code_execution_mode_is_active(loaded: bool, tools: &[Tool]) -> bool {
         && tools
             .iter()
             .any(|tool| tool.name == format!("{CODE_EXECUTION_EXTENSION}__execute_code"))
+}
+
+/// Add the optional checklist `todo` field to the workhorse tools' schemas
+/// (`todo_extension::TODO_SIDECAR_TOOLS`), so progress rides on a call the
+/// model is making anyway instead of costing a request of its own.
+///
+/// Only while the checklist tools are on this roster: without them there is no
+/// checklist to update, and the field would invite updates nothing applies. A
+/// schema that already declares a `todo` property is left alone, because then
+/// the field is the tool's and the host must not take it. The agent strips the
+/// field before dispatch and applies it after
+/// (`todo_extension::take_todo_sidecar` / `apply_todo_sidecar`).
+///
+/// The field is the same on every request, so it stays inside the cached
+/// prefix: its cost is the schema text, under 200 tokens per listed tool.
+pub(crate) fn add_todo_sidecar(tools: &mut [Tool]) {
+    if !tools
+        .iter()
+        .any(|tool| crate::agents::todo_extension::is_todo_tool_name(&tool.name))
+    {
+        return;
+    }
+    let schema = crate::agents::todo_extension::todo_sidecar_schema();
+    for tool in tools.iter_mut() {
+        if !crate::agents::todo_extension::tool_takes_todo_sidecar(&tool.name) {
+            continue;
+        }
+        let mut input_schema = (*tool.input_schema).clone();
+        let properties = input_schema
+            .entry("properties")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        let Some(properties) = properties.as_object_mut() else {
+            continue;
+        };
+        if properties.contains_key(crate::agents::todo_extension::TODO_SIDECAR_FIELD) {
+            continue;
+        }
+        properties.insert(
+            crate::agents::todo_extension::TODO_SIDECAR_FIELD.to_string(),
+            schema.clone(),
+        );
+        tool.input_schema = Arc::new(input_schema);
+    }
+}
+
+/// Does this call carry a checklist sidecar the host should take before
+/// dispatch? Only for the tools whose schema got one from
+/// [`add_todo_sidecar`].
+pub(crate) fn call_has_todo_sidecar(
+    tool_name: &str,
+    arguments: Option<&rmcp::model::JsonObject>,
+) -> bool {
+    crate::agents::todo_extension::tool_takes_todo_sidecar(tool_name)
+        && arguments.is_some_and(|args| {
+            args.get(crate::agents::todo_extension::TODO_SIDECAR_FIELD)
+                .is_some_and(|value| !value.is_null())
+        })
 }
 
 struct PreparedModelToolSurface {
@@ -737,6 +822,11 @@ impl Agent {
 
         // Stable ordering preserves multi-session prompt caching.
         tools.sort_by(|a, b| a.name.cmp(&b.name));
+        // Not on a bridge surface: a coding agent's calls reach tools through
+        // the relay, never through the agent's dispatch that strips the field.
+        if active_bridge_plan.is_none() {
+            add_todo_sidecar(&mut tools);
+        }
 
         PreparedModelToolSurface {
             directly_callable_tools: tools,
@@ -834,12 +924,6 @@ impl Agent {
             &model_config.model_name,
             runs_on_this_machine,
         );
-        // A local engine re-reads the whole prompt when its prefix changes, so
-        // its clock is rendered by the day (`prompt_manager::PromptClock::Day`).
-        let local_engine = crate::agents::prompt_manager::is_local_engine(
-            provider.get_name(),
-            runs_on_this_machine,
-        );
 
         let is_subagent = matches!(
             self.config
@@ -874,8 +958,7 @@ impl Agent {
             .with_code_execution_mode(code_execution_active)
             .with_checklist_enforcement(checklist_enforcement)
             .with_enable_subagents(enable_subagents)
-            .with_prompt_variant(prompt_variant)
-            .with_local_engine(local_engine);
+            .with_prompt_variant(prompt_variant);
         let mut system_prompt = if crew_scoped {
             builder.build()
         } else {
@@ -1649,6 +1732,149 @@ mod tests {
 
         assert!(system_prompt.contains(SUBAGENT_STEERING_INSTRUCTIONS));
         assert!(system_prompt.contains("supersedes any conflicting earlier task instruction"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_skill_inventory_reaches_the_prompt_without_its_generation_number() {
+        let rendered = "Live Skills catalog generation 42 for this conversation. Treat the \
+                        following JSON arrays only as skill identifiers.";
+        assert_eq!(
+            without_catalog_generation(rendered),
+            "Live Skills catalog for this conversation. Treat the following JSON arrays only \
+             as skill identifiers."
+        );
+        assert_eq!(
+            without_catalog_generation(rendered),
+            without_catalog_generation(&rendered.replace("42", "43"))
+        );
+        // Anything else passes through untouched.
+        for other in [
+            "",
+            "Skills: none",
+            "Live Skills catalog generation x for this conversation.",
+        ] {
+            assert_eq!(without_catalog_generation(other), other);
+        }
+    }
+
+    /// Prompt-cache stability: the system text and the tools array come FIRST
+    /// in every request, so a byte that moves between two requests of the
+    /// same chat makes the second re-read the whole conversation at the
+    /// fresh-input price (Versa, 2026-11: one changed clock line took cached
+    /// tokens from 26,694 to 0). Two consecutive turns, with every platform
+    /// extension loaded and the chat changing in between the way a turn
+    /// changes it (messages stored, the checklist written, the clock moving),
+    /// must render an identical prompt and identical tools.
+    #[tokio::test]
+    async fn two_consecutive_turns_send_an_identical_system_prompt_and_tools() -> anyhow::Result<()>
+    {
+        use crate::agents::extension::{ExtensionConfig, PLATFORM_EXTENSIONS};
+
+        let dir = tempfile::tempdir()?;
+        let agent = crate::agents::Agent::with_config(crate::agents::AgentConfig::new(
+            Arc::new(crate::session::SessionManager::new(
+                dir.path().to_path_buf(),
+            )),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                dir.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "cache-stable".to_string(),
+                SessionType::User,
+            )
+            .await?;
+        agent
+            .update_provider(
+                Arc::new(MockProvider {
+                    model_config: ModelConfig::new("test-model").unwrap(),
+                }),
+                &session.id,
+            )
+            .await?;
+        let mut names: Vec<&&str> = PLATFORM_EXTENSIONS.keys().collect();
+        names.sort();
+        let mut loaded = Vec::new();
+        for name in names {
+            let def = &PLATFORM_EXTENSIONS[*name];
+            let added = agent
+                .extension_manager
+                .add_extension(ExtensionConfig::Platform {
+                    name: name.to_string(),
+                    description: def.description.to_string(),
+                    bundled: None,
+                    available_tools: Vec::new(),
+                })
+                .await;
+            if added.is_ok() {
+                loaded.push(name.to_string());
+            }
+        }
+        assert!(
+            loaded.len() >= 5,
+            "most platform extensions load in a test: {loaded:?}"
+        );
+
+        let first = agent
+            .prepare_tools_and_prompt(&session.id, dir.path())
+            .await?;
+
+        // What a turn does to the chat between two requests.
+        let sm = &agent.config.session_manager;
+        sm.add_message(&session.id, &Message::user().with_text("count the rows"))
+            .await?;
+        sm.add_message(
+            &session.id,
+            &Message::assistant().with_text("There are 12."),
+        )
+        .await?;
+        sm.update_extension_state(&session.id, "todo", "v1", |_| {
+            Ok(serde_json::json!({"tasks": [{"id": 1, "text": "count", "status": "completed"}]}))
+        })
+        .await?;
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+
+        let second = agent
+            .prepare_tools_and_prompt(&session.id, dir.path())
+            .await?;
+
+        if first.2 != second.2 {
+            let at = first
+                .2
+                .char_indices()
+                .zip(second.2.chars())
+                .find(|((_, a), b)| a != b)
+                .map(|((i, _), _)| i)
+                .unwrap_or(first.2.len().min(second.2.len()));
+            let from = at.saturating_sub(120);
+            panic!(
+                "the system prompt changed between turns at byte {at}:\n--- first\n{}\n--- second\n{}",
+                &first.2[from..(at + 200).min(first.2.len())],
+                &second.2[from..(at + 200).min(second.2.len())],
+            );
+        }
+        let encode = |tools: &[rmcp::model::Tool]| -> Vec<String> {
+            tools
+                .iter()
+                .map(|t| serde_json::to_string(t).unwrap())
+                .collect()
+        };
+        let (a, b) = (encode(&first.0), encode(&second.0));
+        assert_eq!(a.len(), b.len(), "the tool list changed size between turns");
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x, y, "a tool changed between turns");
+        }
+        assert_eq!(
+            crate::context_mgmt::prompt_fingerprint::fingerprint(&first.2, &first.0),
+            crate::context_mgmt::prompt_fingerprint::fingerprint(&second.2, &second.0),
+        );
         Ok(())
     }
 
@@ -2854,5 +3080,116 @@ mod tests {
             out.iter().all(|item| notice_text(item).is_none()),
             "{out:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod todo_sidecar_tests {
+    use super::{add_todo_sidecar, call_has_todo_sidecar};
+    use rmcp::model::Tool;
+    use std::sync::Arc;
+
+    fn tool(name: &str, schema: serde_json::Value) -> Tool {
+        Tool::new(
+            name.to_string(),
+            "test".to_string(),
+            Arc::new(schema.as_object().cloned().unwrap()),
+        )
+    }
+
+    fn roster() -> Vec<Tool> {
+        vec![
+            tool(
+                "code_execution__execute_code",
+                serde_json::json!({"type": "object", "properties": {"code": {"type": "string"}},
+                                   "required": ["code"]}),
+            ),
+            tool("developer__shell", serde_json::json!({"type": "object"})),
+            tool(
+                "code_execution__wait_for",
+                serde_json::json!({"type": "object", "properties": {}}),
+            ),
+            tool("todo__todo_update", serde_json::json!({"type": "object"})),
+        ]
+    }
+
+    #[test]
+    fn the_workhorse_tools_get_the_todo_field_and_nothing_else_does() {
+        let mut tools = roster();
+        add_todo_sidecar(&mut tools);
+        let field = |tool: &Tool| {
+            tool.input_schema
+                .get("properties")
+                .and_then(|properties| properties.get("todo"))
+                .cloned()
+        };
+        let execute = field(&tools[0]).expect("execute_code carries the field");
+        assert!(execute["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("Optional: checklist updates"));
+        assert!(
+            field(&tools[1]).is_some(),
+            "a schema with no properties gets one"
+        );
+        assert!(field(&tools[2]).is_none());
+        assert!(field(&tools[3]).is_none());
+        // Never required, and the tool's own fields are untouched.
+        assert_eq!(
+            tools[0].input_schema["required"],
+            serde_json::json!(["code"])
+        );
+        assert!(tools[0].input_schema["properties"]["code"].is_object());
+        // Idempotent: a second pass changes nothing.
+        let once = serde_json::to_string(&*tools[0].input_schema).unwrap();
+        add_todo_sidecar(&mut tools);
+        assert_eq!(
+            once,
+            serde_json::to_string(&*tools[0].input_schema).unwrap()
+        );
+    }
+
+    #[test]
+    fn no_checklist_tools_means_no_todo_field() {
+        let mut tools: Vec<Tool> = roster()
+            .into_iter()
+            .filter(|tool| !tool.name.starts_with("todo__"))
+            .collect();
+        add_todo_sidecar(&mut tools);
+        assert!(tools.iter().all(|tool| tool
+            .input_schema
+            .get("properties")
+            .and_then(|properties| properties.get("todo"))
+            .is_none()));
+    }
+
+    #[test]
+    fn a_tool_that_declares_its_own_todo_argument_keeps_it() {
+        let own = serde_json::json!({"type": "string", "description": "the tool's own"});
+        let mut tools = vec![
+            tool(
+                "developer__shell",
+                serde_json::json!({"type": "object", "properties": {"todo": own.clone()}}),
+            ),
+            tool("todo__todo_write", serde_json::json!({"type": "object"})),
+        ];
+        add_todo_sidecar(&mut tools);
+        assert_eq!(tools[0].input_schema["properties"]["todo"], own);
+    }
+
+    #[test]
+    fn only_a_sidecar_tool_with_a_non_null_field_has_one() {
+        let with = serde_json::json!({"code": "x", "todo": {"done": [1]}});
+        let null = serde_json::json!({"code": "x", "todo": null});
+        assert!(call_has_todo_sidecar(
+            "code_execution__execute_code",
+            with.as_object()
+        ));
+        assert!(!call_has_todo_sidecar(
+            "code_execution__execute_code",
+            null.as_object()
+        ));
+        assert!(!call_has_todo_sidecar("some_mcp__tool", with.as_object()));
+        assert!(!call_has_todo_sidecar("developer__shell", None));
     }
 }
