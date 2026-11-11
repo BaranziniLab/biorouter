@@ -3061,7 +3061,13 @@ async fn handle_run_command(
         );
 
         let result = session.headless(contents).await;
-        log_session_completion(&session, session_start, session_type, result.is_ok()).await;
+        // A run its supervision stopped ended normally; only its exit
+        // status says so (H-6).
+        let ended_normally = result.as_ref().map_or_else(
+            |e| e.is::<crate::commands::supervision_stop::SupervisionStopped>(),
+            |_| true,
+        );
+        log_session_completion(&session, session_start, session_type, ended_normally).await;
         result
     } else {
         Err(anyhow::anyhow!(

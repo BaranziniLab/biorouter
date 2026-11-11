@@ -423,18 +423,29 @@ pub fn remove_monitor(settings: &mut DecisionSettings, wanted: &str) -> Result<M
     Ok(settings.monitors.remove(index))
 }
 
-fn timing_text(timing: MonitorTiming) -> &'static str {
+/// When a monitor is checked, as `list` and `run --explain` say it.
+pub(crate) fn timing_text(timing: MonitorTiming) -> &'static str {
     match timing {
         MonitorTiming::PostIteration => "after each iteration",
         MonitorTiming::TurnEnd => "as the turn ends",
     }
 }
 
-fn action_text(action: MonitorAction) -> &'static str {
+/// What a monitor does when it fires, as `list` and `run --explain` say it.
+pub(crate) fn action_text(action: MonitorAction) -> &'static str {
     match action {
         MonitorAction::Stop => "stops the turn",
         MonitorAction::Notify => "shows a notice",
         MonitorAction::Steer => "tells the model",
+    }
+}
+
+/// What a monitor does when its check errors, as `list` and `run --explain`
+/// say it.
+pub(crate) fn error_text(on_error: MonitorErrorPolicy) -> &'static str {
+    match on_error {
+        MonitorErrorPolicy::Notify => "an error shows a notice",
+        MonitorErrorPolicy::Pause => "an error pauses the turn",
     }
 }
 
@@ -540,10 +551,7 @@ pub fn render_monitors(session_id: &str, settings: &DecisionSettings) -> Vec<Str
             if let Some(rearm) = rearm_text(monitor) {
                 details.push(rearm);
             }
-            details.push(match monitor.on_error {
-                MonitorErrorPolicy::Notify => "an error shows a notice".to_string(),
-                MonitorErrorPolicy::Pause => "an error pauses the turn".to_string(),
-            });
+            details.push(error_text(monitor.on_error).to_string());
             details.push(format!(
                 "at most {} checks a turn",
                 monitor.max_evals_per_turn

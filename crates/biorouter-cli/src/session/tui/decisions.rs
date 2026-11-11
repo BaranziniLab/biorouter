@@ -111,7 +111,12 @@ pub fn card_lines(record: &DecisionRecord) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(header)];
     if let Some(error) = &record.error {
         lines.push(Line::from(Span::styled(
-            format!("  {}", clip(error, 200)),
+            // R4: the record keeps the agent's advice; a person is told the
+            // command.
+            format!(
+                "  {}",
+                clip(&crate::commands::decide::terminal_advice(error), 200)
+            ),
             Style::new().fg(Color::Red),
         )));
         return lines;
@@ -574,6 +579,14 @@ mod tests {
         let lines = text(&card_lines(&failed));
         assert_eq!(lines.len(), 2);
         assert!(lines[1].contains("did not answer"));
+        // R4: a refusal the record keeps in the agent's words names the
+        // command a person runs.
+        failed.error = Some("Name a private decision model (decision_models lists them).".into());
+        let lines = text(&card_lines(&failed));
+        assert!(
+            lines[1].contains("(`biorouter models decision list` shows them)"),
+            "{lines:?}"
+        );
 
         // A Baseten model's card names it by its alias, as the status line
         // and the reply text do, not by the slug the record keeps.

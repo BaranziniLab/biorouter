@@ -565,6 +565,119 @@ mod workspace_file_authority_tests {
         );
         crate::folder_access::FolderAccessManager::global().end_session(&session);
     }
+
+    /// H-1, wired: the dispatch path reads the chat's tree, so a subagent's
+    /// file call is covered by the "Allow for this session" a person gave in
+    /// its parent (the tree logic itself is pinned in `folder_access`).
+    #[tokio::test]
+    async fn a_subagents_file_call_uses_its_parents_person_given_session_grant() {
+        use crate::conversation::message::{ActionRequiredData, MessageContent};
+        use crate::pending_user_action::{
+            DecisionAuthority, PendingUserActions, ResolveOutcome, UserActionOutcome,
+        };
+        use crate::session::session_manager::SessionType;
+        let fixture = tempfile::tempdir().unwrap();
+        let directory = fixture.path().canonicalize().unwrap();
+        let (parent_ws, child_ws, external) = (
+            directory.join("parent"),
+            directory.join("child"),
+            directory.join("results"),
+        );
+        for folder in [&parent_ws, &child_ws, &external] {
+            std::fs::create_dir(folder).unwrap();
+        }
+        let manager = ExtensionManager::new_without_provider(directory.join("state"));
+        let sessions = manager.context.session_manager.clone();
+        let parent = sessions
+            .create_session(parent_ws.clone(), "parent".into(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        let child = sessions
+            .create_session(child_ws.clone(), "child".into(), SessionType::SubAgent)
+            .await
+            .unwrap()
+            .id;
+        sessions
+            .update(&child)
+            .parent_session_id(Some(parent.clone()))
+            .apply()
+            .await
+            .unwrap();
+        manager.set_working_dir(child_ws.clone()).await;
+        let target = external.join("notes.txt");
+        assert!(
+            admit(&manager, &child, &target).await.is_err(),
+            "not covered before the parent's grant"
+        );
+
+        let folders = crate::folder_access::FolderAccessManager::global();
+        folders.pin_workspace(&parent, &parent_ws).unwrap();
+        let plan = biorouter_mcp::FileAccessPlan {
+            requests: vec![biorouter_mcp::FileAccessRequest {
+                path: target.clone(),
+                access: AccessMode::Write,
+                recursive: false,
+            }],
+        };
+        let (asking, cwd) = (parent.clone(), parent_ws.clone());
+        let task = tokio::spawn(async move {
+            folders
+                .admit(
+                    &asking,
+                    "developer__text_editor",
+                    &cwd,
+                    &plan,
+                    &CancellationToken::new(),
+                )
+                .await
+        });
+        let id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                for message in PendingUserActions::global().pending_cards_for_session(&parent) {
+                    for content in message.content {
+                        if let MessageContent::ActionRequired(action) = content {
+                            if let ActionRequiredData::ToolConfirmation { id, .. } = action.data {
+                                return id;
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            PendingUserActions::global().resolve_in_session(
+                &parent,
+                &id,
+                UserActionOutcome::Approved {
+                    permission: crate::permission::Permission::AlwaysAllow,
+                },
+                DecisionAuthority::for_test_proven(),
+            ),
+            ResolveOutcome::Delivered
+        );
+        task.await.unwrap().unwrap();
+
+        let admission = admit(&manager, &child, &target)
+            .await
+            .expect("covered by the parent's session grant")
+            .unwrap();
+        authorized_path(
+            admission.authority.token(),
+            &child,
+            &admission.action_id,
+            &target,
+            AccessMode::Write,
+        )
+        .unwrap()
+        .atomic_write(b"synthetic subagent result")
+        .unwrap();
+        folders.end_session(&parent);
+        folders.end_session(&child);
+    }
 }
 
 /// A flattened representation of a resource used by the agent to prepare inference
@@ -3788,24 +3901,26 @@ impl ExtensionManager {
         })?;
         let manager = crate::folder_access::FolderAccessManager::global();
         manager.pin_workspace_handle(session_id, &cwd, filesystem);
-        if tool_name == "analyze" {
+        let analysis_depth = if tool_name == "analyze" {
             let params: biorouter_mcp::developer::analyze::types::AnalyzeParams =
                 serde_json::from_value(arguments)?;
-            return manager
-                .admit_analysis(
+            Some(params.max_depth)
+        } else {
+            None
+        };
+        // H-1: in a subagent, a folder card is also shown where a person is
+        // watching, and a direct subagent may use its parent's session grants.
+        Ok(Some(
+            manager
+                .admit_in_tree(
                     session_id,
                     prefixed_name,
                     &cwd,
                     &plan,
                     cancel,
-                    params.max_depth,
+                    analysis_depth,
+                    &self.context.session_manager,
                 )
-                .await
-                .map(Some);
-        }
-        Ok(Some(
-            manager
-                .admit(session_id, prefixed_name, &cwd, &plan, cancel)
                 .await?,
         ))
     }

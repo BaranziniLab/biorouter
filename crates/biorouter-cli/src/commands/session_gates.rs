@@ -377,7 +377,7 @@ fn gate_lines(session_id: &str, phase: &PhaseSnapshot, gate: &PhaseGateSnapshot)
     if let Some(error) = gate.last_error.as_deref() {
         out.push(format!(
             "     its last check decided nothing: {}",
-            clip(error, 160)
+            clip(&super::decide::terminal_advice(error), 160)
         ));
     }
     if !gate.holds.is_empty() {
@@ -1080,7 +1080,7 @@ mod tests {
         agent.needs_person = true;
         agent.model = Some("ollama_decision/tev1:0.8b".into());
         agent.retries_granted = 1;
-        agent.last_error = Some("Ollama is not answering.".into());
+        agent.last_error = Some("Ollama is not answering. (decision_models lists them)".into());
         review.gate = Some(agent);
         let mut done = snapshot_phase("done", PhaseStatus::Skipped);
         let mut workflow = snapshot_gate(GateOwner::Workflow);
@@ -1124,7 +1124,10 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("     its last check decided nothing: Ollama is not answering."),
+            text.contains(
+                "     its last check decided nothing: Ollama is not answering. \
+                 (`biorouter models decision list` shows them)"
+            ),
             "{text}"
         );
         assert!(

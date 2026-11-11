@@ -1,3 +1,4 @@
+{% raw -%}
 Turn this conversation into a reusable **workflow**: a saved setup someone can start a fresh chat from and get the same kind of help again, without re-explaining anything.
 
 Write the workflow for the NEXT run, not this one. Generalise away this conversation's specific values — the particular file, the particular date, the particular patient cohort — and turn the ones that will change into parameters.
@@ -51,3 +52,4 @@ Example — a conversation that ended up pulling a gene's disease associations o
   ],
   "skills": ["spoke-knowledge-graph"]
 }
+{%- endraw %}
