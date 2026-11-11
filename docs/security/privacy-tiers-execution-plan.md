@@ -22884,6 +22884,15 @@ it names.
 - **The decision note is stored under its own key**, `decision_notice.v1`, because
   `decision_settings.v1` refuses unknown keys.
 
+### Confirmed by the owner, 2026-11-11
+
+The build left two choices for the owner to rule on, and both are now rulings:
+
+- **A public chat may not start a private subagent.** The spawn stays refused (item 7 above, and
+  §8.2 of privacy-tiers.md), so a private child is never born under a public parent.
+- **The terminal's typed confirmation is the only way to make a chat public from the CLI.** There
+  is no flag that answers it in advance (item 1), so an agent at a shell cannot pass one.
+
 ### Census
 
 `DECISION_AXES_SITES` in `crates/biorouter/tests/privacy_guard_wiring.rs` counts the qualified
