@@ -1595,7 +1595,10 @@ impl DecisionService {
                 answered: Err(error),
                 in_flight,
                 ..
-            })) => (named_for_chunk(error, attempt.chunk_id), Some(in_flight)),
+            })) => (
+                named_for_chunk(error, attempt.chunk_id, &request.questions),
+                Some(in_flight),
+            ),
             // The call's task ended without an answer: it panicked.
             Ok(Err(_)) => (
                 DecisionError::Backend {
@@ -2481,14 +2484,20 @@ static LOADED_COUNTER: std::sync::OnceLock<Arc<crate::token_counter::TokenCounte
 /// The token estimate for a request: the state and every question's text,
 /// through the shared o200k counter with the non-OpenAI margin.
 pub async fn estimate_tokens(request: &DecisionRequest) -> usize {
+    with_margin(raw_tokens(request).await, request.questions.len())
+}
+
+/// [`estimate_tokens`] before its margin and per-question overhead: the
+/// tokens of the request's text by Biorouter's estimate, the unit
+/// [`UsableChunk::tokens`] and an over-size refusal speak in.
+async fn raw_tokens(request: &DecisionRequest) -> usize {
     let text = request_text(request);
-    let raw = match crate::token_counter::shared_token_counter().await {
+    (match crate::token_counter::shared_token_counter().await {
         Ok(counter) => LOADED_COUNTER.get_or_init(|| counter).count_tokens(&text),
         // The tokenizer failed to load: the four-characters-a-token estimate
         // the context budget uses, which errs low, so the margin below matters.
         Err(_) => crate::context_budget::estimate_tokens(&text),
-    } + extra_digit_tokens(&text);
-    with_margin(raw, request.questions.len())
+    }) + extra_digit_tokens(&text)
 }
 
 /// [`estimate_tokens`] without waiting, for fitting a state while a lock is
@@ -2589,8 +2598,6 @@ pub fn context_margin(context_tokens: usize) -> usize {
 /// check's per-digit charge ([`extra_digit_tokens`]). For building a state
 /// that fits, such as a monitor's window; the check still judges.
 pub fn state_budget_tokens(context_tokens: usize, questions: &IndexMap<String, Question>) -> usize {
-    let overhead = context_margin(context_tokens) + PER_QUESTION_OVERHEAD * questions.len();
-    let estimated_room = context_tokens.saturating_sub(overhead) as f64 / TOKEN_ESTIMATE_MARGIN;
     let question_tokens: usize = questions
         .iter()
         .map(|(name, question)| {
@@ -2599,27 +2606,75 @@ pub fn state_budget_tokens(context_tokens: usize, questions: &IndexMap<String, Q
             text.len().div_ceil(3) + extra_digit_tokens(&text)
         })
         .sum();
-    (estimated_room.floor() as usize).saturating_sub(question_tokens)
+    text_room(context_tokens, questions.len()).saturating_sub(question_tokens)
+}
+
+/// The tokens of text, by Biorouter's estimate before its margin, that a
+/// request asking `questions` questions may carry in a model of
+/// `context_tokens`, questions' own text included: the check's limit less its
+/// margin and per-question overhead, divided by its non-OpenAI factor. With no
+/// question it is [`UsableChunk::tokens`].
+fn text_room(context_tokens: usize, questions: usize) -> usize {
+    let overhead = context_margin(context_tokens) + PER_QUESTION_OVERHEAD * questions;
+    (context_tokens.saturating_sub(overhead) as f64 / TOKEN_ESTIMATE_MARGIN).floor() as usize
+}
+
+/// The text's own tokens, and the most it may have beside the questions, in
+/// the unit `decision_models` reports ([`UsableChunk::tokens`]): the request's
+/// estimate before the margin, less its questions' share. Whenever the check
+/// refuses the request, the first exceeds the second, so a refusal always reads
+/// "this much, more than that much", and the second is what `decision_models`
+/// gives less the questions' length (R3-F2: the refusal used to give the window
+/// less the margin, in margin-inflated tokens, so tev1:0.8b's 1,669 read as
+/// 1,920 there).
+async fn text_tokens_and_room(request: &DecisionRequest, context_tokens: usize) -> (usize, usize) {
+    let total = raw_tokens(request).await;
+    let questions_only = raw_tokens(&DecisionRequest {
+        questions: request.questions.clone(),
+        context: DecisionContext::Text(String::new()),
+    })
+    .await;
+    (
+        total.saturating_sub(questions_only),
+        text_room(context_tokens, request.questions.len()).saturating_sub(questions_only),
+    )
 }
 
 /// A server's own over-window refusal (an adapter's [`DecisionError::TooLarge`],
 /// which cannot know the chunk) named for the chunk it was about, as the check
 /// before sending names it.
-fn named_for_chunk(error: DecisionError, chunk_id: Option<&str>) -> DecisionError {
+///
+/// The server counts the whole prompt in its own tokens. Both numbers are put
+/// in the unit the check before sending and `decision_models` use (R3-F2): the
+/// server's count less the margin's factor and the questions' share, and the
+/// room [`state_budget_tokens`] gives beside `questions`. A prompt over the
+/// window is over that room too, so the text's number stays the larger.
+fn named_for_chunk(
+    error: DecisionError,
+    chunk_id: Option<&str>,
+    questions: &IndexMap<String, Question>,
+) -> DecisionError {
     match error {
         DecisionError::TooLarge {
             tokens,
-            usable,
             limit,
             model,
             ..
-        } => DecisionError::TooLarge {
-            chunk: chunk_label(chunk_id),
-            tokens,
-            usable,
-            limit,
-            model,
-        },
+        } => {
+            let usable = state_budget_tokens(limit, questions);
+            let room = text_room(limit, questions.len());
+            let question_share = room.saturating_sub(usable);
+            let text = ((tokens as f64 / TOKEN_ESTIMATE_MARGIN).ceil() as usize)
+                .saturating_sub(question_share)
+                .max(usable + 1);
+            DecisionError::TooLarge {
+                chunk: chunk_label(chunk_id),
+                tokens: text,
+                usable,
+                limit,
+                model,
+            }
+        }
         other => other,
     }
 }
@@ -2785,10 +2840,11 @@ async fn check_size(
     let tokens = estimate_tokens(request).await;
     let limit = caps.context_tokens;
     if tokens + context_margin(limit) > limit {
+        let (tokens, usable) = text_tokens_and_room(request, limit).await;
         return Err(DecisionError::TooLarge {
             chunk,
             tokens,
-            usable: limit.saturating_sub(context_margin(limit)),
+            usable,
             limit,
             model: format!("`{}`", model.display_name()),
         });
@@ -5352,16 +5408,74 @@ mod tests {
             limit: 2_048,
             model: "`tev1:0.8b`".into(),
         };
-        let named = named_for_chunk(server.clone(), Some("note-7"));
-        assert!(
-            named
-                .to_string()
-                .starts_with("Chunk `note-7` is about 2503 tokens"),
-            "{named}"
+        // R3-F2: the server's whole-prompt count, said in the unit
+        // decision_models uses: 2,503 / 1.15, with no question to take out,
+        // beside the 1,669 decision_models gives tev1:0.8b.
+        let none = IndexMap::new();
+        let named = named_for_chunk(server.clone(), Some("note-7"), &none);
+        assert_eq!(
+            named.to_string(),
+            "Chunk `note-7` is about 2177 tokens, more than the about 1669 tokens of text \
+             `tev1:0.8b` takes beside these questions (its window is 2048 tokens). Split it \
+             into smaller pieces and ask again."
         );
-        assert_eq!(named_for_chunk(server.clone(), None), server);
+        assert_eq!(usable_chunk(2_048, None).tokens, 1_669);
+        // Beside a question, its share comes out of both numbers.
+        let questions = request("x", None).questions;
+        let DecisionError::TooLarge { tokens, usable, .. } =
+            named_for_chunk(server.clone(), None, &questions)
+        else {
+            panic!("still a size error");
+        };
+        assert_eq!(usable, state_budget_tokens(2_048, &questions));
+        assert!(usable < 1_669 && tokens > usable, "{tokens} {usable}");
         let other = DecisionError::Invalid("x".into());
-        assert_eq!(named_for_chunk(other.clone(), Some("a")), other);
+        assert_eq!(named_for_chunk(other.clone(), Some("a"), &none), other);
+    }
+
+    /// R3-F2: the check's own refusal says the text's size and the room
+    /// beside the questions in decision_models' unit, so the room it names is
+    /// decision_models' usable size less the question, never the window less
+    /// the margin (1,920 for tev1:0.8b, which read as more than the 1,669
+    /// decision_models gave).
+    #[tokio::test]
+    async fn the_size_refusal_speaks_in_decision_models_unit() {
+        load_token_counter().await;
+        let model = Fixed {
+            entry: DecisionModelEntry {
+                context_tokens: 2_048,
+                ..entry("tev", ProviderTier::Private, true)
+            },
+            p: 0.9,
+            calls: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+        };
+        let labs = "K 4.1 Na 139 Cl 101 HCO3 24 BUN 18 Cr 0.92 Glu 104\n".repeat(240);
+        let big = request(&labs, None);
+        let err = check_size(&model, &model.caps(), &big, None)
+            .await
+            .unwrap_err();
+        let DecisionError::TooLarge {
+            tokens,
+            usable,
+            limit,
+            ..
+        } = err
+        else {
+            panic!("{err:?}");
+        };
+        assert_eq!(limit, 2_048);
+        let listed = usable_chunk(2_048, Some(65_536)).tokens;
+        assert!(usable < listed, "beside a question: {usable} < {listed}");
+        assert!(listed - usable < 40, "only the question's share: {usable}");
+        let mut text_only = big.clone();
+        text_only.questions.clear();
+        let own = raw_tokens(&text_only).await;
+        assert!(
+            tokens.abs_diff(own) <= 3,
+            "the text's own tokens: {tokens} vs {own}"
+        );
+        assert!(tokens > usable);
     }
 
     /// The usable size `decision_models` gives is one the check passes, and

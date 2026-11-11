@@ -1761,6 +1761,8 @@ impl MonitorRegistry {
                 origin_id: Some(criterion.id.clone()),
                 label: criterion.name.clone(),
                 count: u64::from(state.turn.evaluations),
+                // Each check is one request for this monitor.
+                calls: u64::from(state.turn.evaluations),
                 passed: u64::from(state.turn.met),
                 failed: u64::from(state.turn.unmet),
                 errors: u64::from(state.turn.errors),
@@ -2448,8 +2450,17 @@ fn holds_limits(step: &Step) -> bool {
 /// oldest first once there are more.
 const MAX_TALLIED_TURNS: usize = 512;
 
-static TURN_TALLIES: LazyLock<Mutex<IndexMap<String, Vec<DecisionTurnMarkerItem>>>> =
+static TURN_TALLIES: LazyLock<Mutex<IndexMap<String, TurnTally>>> =
     LazyLock::new(|| Mutex::new(IndexMap::new()));
+
+/// One turn's tally: an item per source, and the calls already counted on
+/// each, so a `decide` call's many rows count as one call (R3-F3).
+#[derive(Default)]
+struct TurnTally {
+    items: Vec<DecisionTurnMarkerItem>,
+    /// (item index, batch id) of every call counted.
+    calls: std::collections::HashSet<(usize, String)>,
+}
 
 fn default_label(origin: DecisionOrigin) -> &'static str {
     match origin {
@@ -2534,7 +2545,8 @@ pub fn note_decision_chunks(entry: &DecisionLogEntry, chunks: u64) {
     if !tallies.contains_key(turn_id) && tallies.len() >= MAX_TALLIED_TURNS {
         tallies.shift_remove_index(0);
     }
-    let items = tallies.entry(turn_id.to_string()).or_default();
+    let tally = tallies.entry(turn_id.to_string()).or_default();
+    let items = &mut tally.items;
     let label = entry
         .origin_label
         .clone()
@@ -2560,6 +2572,7 @@ pub fn note_decision_chunks(entry: &DecisionLogEntry, chunks: u64) {
                 origin_id,
                 label,
                 count: 0,
+                calls: 0,
                 passed: 0,
                 failed: 0,
                 errors: 0,
@@ -2569,7 +2582,16 @@ pub fn note_decision_chunks(entry: &DecisionLogEntry, chunks: u64) {
             items.len() - 1
         }
     };
-    let item = &mut items[index];
+    // A call is its batch: every chunk and model of one `decide` call shares
+    // it. A row with no batch is a call of its own.
+    let new_call = match &entry.batch_id {
+        Some(batch) => tally.calls.insert((index, batch.clone())),
+        None => true,
+    };
+    let item = &mut tally.items[index];
+    if new_call {
+        item.calls += 1;
+    }
     item.count += chunks;
     match entry.outcome {
         DecisionOutcome::Passed => item.passed += chunks,
@@ -2588,6 +2610,7 @@ pub fn take_turn_tally(turn_id: &str) -> Vec<DecisionTurnMarkerItem> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .shift_remove(turn_id)
+        .map(|tally| tally.items)
         .unwrap_or_default()
 }
 
@@ -2655,6 +2678,14 @@ pub fn marker_text(marker: &DecisionTurnMarker) -> String {
                     }
                     text
                 }
+                // R3-F3: how many calls, then how many chunks they read, so
+                // three calls of 200 never read as one call of 600.
+                DecisionOrigin::Tool if item.calls > 0 => format!(
+                    "{}: {} read {}",
+                    item.label,
+                    plural(item.calls, "call", "calls"),
+                    plural(item.count, "chunk", "chunks")
+                ),
                 DecisionOrigin::Tool => {
                     format!("{}: {}", item.label, plural(item.count, "chunk", "chunks"))
                 }
@@ -3076,6 +3107,7 @@ mod tests {
             origin_id: Some("m1".into()),
             label: "Form reached".into(),
             count,
+            calls: count,
             passed: 0,
             failed: count - errors,
             errors,
@@ -4263,7 +4295,9 @@ mod tests {
                 .into(),
             ),
             turn_id: Some(turn.into()),
-            batch_id: None,
+            // As the service writes it: a `decide` call's rows carry its
+            // batch id, which is also its origin id.
+            batch_id: (origin == DecisionOrigin::Tool).then(|| id.into()),
             chunk_index: None,
             chunk_id: None,
             model: None,
@@ -4359,6 +4393,7 @@ mod tests {
             origin_id: Some("m1".into()),
             label: "Form reached".into(),
             count: 18,
+            calls: 18,
             passed: 0,
             failed: 18,
             errors: 0,
@@ -4374,7 +4409,7 @@ mod tests {
         assert_eq!(
             marker_text(&marker),
             "Decision models: monitor 'Form reached' checked 18 times (last P 0.31), quiet; \
-             decide: 600 chunks, 2 errors; gate 'Build': 2 checks, 1 passed"
+             decide: 1 call read 600 chunks, 2 errors; gate 'Build': 2 checks, 1 passed"
         );
         assert!(turn_marker("empty", Vec::new(), Vec::new()).is_none());
     }
@@ -4514,6 +4549,22 @@ mod tests {
             .collect();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].count, 6);
+        // R3-F3: one source, but three calls, each counted once however many
+        // rows it wrote.
+        assert_eq!(tools[0].calls, 3);
+        let gate_calls: Vec<u64> = tally
+            .iter()
+            .filter(|item| item.origin == DecisionOrigin::Gate)
+            .map(|item| item.calls)
+            .collect();
+        assert_eq!(gate_calls, vec![1, 1], "a row with no batch is a call");
+        assert_eq!(
+            marker_text(&DecisionTurnMarker {
+                turn_id: turn.into(),
+                items: tools.iter().map(|item| (*item).clone()).collect(),
+            }),
+            "Decision models: decide: 3 calls read 6 chunks"
+        );
         assert_eq!(tools[0].origin_id, None);
         assert_eq!(tools[0].label, "decide");
         let gates: Vec<_> = tally

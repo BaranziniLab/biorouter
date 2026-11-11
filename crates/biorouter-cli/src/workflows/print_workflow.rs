@@ -111,7 +111,7 @@ fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
 
-/// `Monitor "Off task": after each iteration, asks joey-1 · Baseten "…";
+/// `Monitor 'Off task': after each iteration, asks joey-1 · Baseten "…";
 /// when P(yes) ≥ 0.80, it stops the turn (re-arms below 0.40); an error
 /// pauses the turn`. `default_model` names the model it asks when it names
 /// none.
@@ -129,7 +129,7 @@ fn monitor_line(monitor: &MonitorCriterion, default_model: &str) -> String {
         .map(|rearm| format!(" ({rearm})"))
         .unwrap_or_default();
     let mut line = format!(
-        "Monitor \"{}\"{}: {}, asks {model} \"{}\"; when {}{in_a_row}, it {}{rearm}; {}",
+        "Monitor '{}'{}: {}, asks {model} \"{}\"; when {}{in_a_row}, it {}{rearm}; {}",
         decide::clip(&monitor.name, 60),
         if monitor.enabled { "" } else { " (off)" },
         session_monitors::timing_text(monitor.timing),
@@ -300,10 +300,10 @@ mod tests {
         let text = lines.join("\n");
         for expected in [
             "   - Default decision model: joey-1 · Baseten",
-            "   - Monitor \"Reached ten\": after each iteration, asks joey-1 · Baseten \"Has the \
+            "   - Monitor 'Reached ten': after each iteration, asks joey-1 · Baseten \"Has the \
              agent already echoed 10 or a larger number?\"; when P(yes) ≥ 0.70, it stops the turn \
              (stops again while it holds); an error pauses the turn",
-            "   - Monitor \"Drift\": as the turn ends, asks tev1:0.8b · this computer \"Is it off \
+            "   - Monitor 'Drift': as the turn ends, asks tev1:0.8b · this computer \"Is it off \
              task?\"; when P(yes) < 0.30 on 2 checks in a row, it shows a notice; an error shows \
              a notice",
             "   - Phase plan \"Count plan\": 2 phases: count, check",

@@ -622,7 +622,13 @@ pub(crate) async fn surface_where_a_person_is_watching(
     session.parent_session_id.as_ref()?;
     let chain = ancestor_chain(session_manager, session).await;
     let root = chain.last()?;
-    parked.also_surface_in(root).then(|| root.clone())
+    // R2-1: the copy in the root says which subagent asks — its role, else its
+    // chat's name — so a folder card there never reads as the root's own ask.
+    let requested_by =
+        crate::agents::subagent_roster::display_name(&session.extension_data, &session.name);
+    parked
+        .also_surface_in_for(root, Some(&requested_by))
+        .then(|| root.clone())
 }
 
 /// Hand a decision to the prompt that is parked on it. Reuses BR-62's routing

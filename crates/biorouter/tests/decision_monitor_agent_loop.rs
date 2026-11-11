@@ -1937,8 +1937,13 @@ async fn six_hundred_decisions_in_one_turn_are_one_marker() {
     assert_eq!(marker[0].items.len(), 1);
     assert_eq!(marker[0].items[0].origin, DecisionOrigin::Tool);
     assert_eq!(marker[0].items[0].count, 600);
+    // R3-F3: one batch is one call, however many chunks it read.
+    assert_eq!(marker[0].items[0].calls, 1);
     assert_eq!(
-        count_containing(&notices(&messages), "Decision models: decide: 600 chunks"),
+        count_containing(
+            &notices(&messages),
+            "Decision models: decide: 1 call read 600 chunks"
+        ),
         1
     );
     // Nothing about the calls reached the transcript but that one marker.

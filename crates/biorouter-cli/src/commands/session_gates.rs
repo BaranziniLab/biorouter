@@ -87,9 +87,9 @@ pub struct SetGate {
     /// Default 3.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=5))]
     pub attempts: Option<u32>,
-    /// The decision model, `provider/model`. Without it the chat's default
-    /// decision model is used.
-    #[arg(long, value_name = "PROVIDER/MODEL")]
+    /// The decision model, by its name (tev1:0.8b, joey-1) or as
+    /// provider/model. Without it the chat's default decision model is used.
+    #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
     /// Accept probabilities a model states in words (uncalibrated) rather
     /// than refusing them.
@@ -707,6 +707,15 @@ pub async fn handle_session_gates(
     format: GatesFormat,
     user_action_key_stdin: bool,
 ) -> Result<()> {
+    // A bare model name (`tev1:0.8b`, `joey-1`) is spelled out first, as
+    // `decide --model` takes it (R3-F4).
+    let command = match command {
+        Some(GatesCommand::Set(mut set)) => {
+            set.model = super::decide::spell_model_option(set.model).await?;
+            Some(GatesCommand::Set(set))
+        }
+        other => other,
+    };
     // Read before anything is asked, so a mistake costs no request.
     let edit = edit_of(command.unwrap_or(GatesCommand::List))?;
     let source = reach(user_action_key_stdin).await?;

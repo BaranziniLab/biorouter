@@ -79,8 +79,9 @@ pub const PROBABILITY_NOTE: &str =
 /// `biorouter decide`.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct DecideOptions {
-    /// The decision model, `provider/model` (see `biorouter models decision list`).
-    #[arg(long, value_name = "PROVIDER/MODEL")]
+    /// The decision model, by its name (tev1:0.8b, joey-1) or as
+    /// provider/model (see `biorouter models decision list`).
+    #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
 
     /// The question to ask about the text.
@@ -1274,6 +1275,61 @@ fn configured_default_warning() -> Option<String> {
     )
 }
 
+/// The model `--model` names (R3-F4): by provider/model, or by a bare name or
+/// alias (`tev1:0.8b`, `joey-1`) that exactly one listed model answers to, as
+/// the agent's `decide` and a phase gate take it. A provider/model nothing
+/// lists is kept as written, so the service can still open a model its listing
+/// missed and say why it cannot.
+async fn model_named(service: &DecisionService, raw: &str) -> Result<DecisionModelRef> {
+    let listed = service.models_for(None).await;
+    resolve_model_option(&listed, raw).map_err(|refusal| anyhow!("{refusal}"))
+}
+
+/// A `--model` option of another command (a chat's monitors and gates) in
+/// the provider/model spelling the setting stores, resolved as `decide
+/// --model` resolves it, so a bare name works there too.
+pub async fn spell_model_option(raw: Option<String>) -> Result<Option<String>> {
+    match raw {
+        Some(raw) => Ok(Some(
+            model_named(biorouter::decision::global(), &raw)
+                .await?
+                .label(),
+        )),
+        None => Ok(None),
+    }
+}
+
+/// [`model_named`] against a listing, without the service.
+pub fn resolve_model_option(
+    listed: &[(DecisionModelEntry, Option<String>)],
+    raw: &str,
+) -> std::result::Result<DecisionModelRef, String> {
+    let raw = raw.trim();
+    match biorouter::agents::decisions_extension::listed_model_named(listed, raw) {
+        Ok(Some(model)) => Ok(model),
+        Ok(None) => DecisionModelRef::parse(raw).ok_or_else(|| {
+            let names: Vec<String> = listed
+                .iter()
+                .map(|(entry, _)| short_model(&entry.model_ref()))
+                .collect();
+            format!(
+                "{raw} is not a decision model this computer offers{}. Name one by its name, \
+                 such as tev1:0.8b or joey-1, or as provider/model (biorouter models decision \
+                 list shows them).",
+                if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (it offers {})", names.join(", "))
+                }
+            )
+        }),
+        Err(spellings) => Err(format!(
+            "{raw} names more than one decision model: {}. Name one of them as provider/model.",
+            spellings.join(", ")
+        )),
+    }
+}
+
 /// `biorouter decide`.
 pub async fn handle_decide(options: DecideOptions) -> Result<()> {
     let question = build_question(&options)?;
@@ -1282,13 +1338,11 @@ pub async fn handle_decide(options: DecideOptions) -> Result<()> {
             eprintln!("{warning}");
         }
     }
+    let service = biorouter::decision::global();
     let wanted = match options.model.as_deref() {
-        Some(raw) => Some(DecisionModelRef::parse(raw).ok_or_else(|| {
-            anyhow!("--model takes `provider/model`, for example `ollama_decision/tev1:0.8b`")
-        })?),
+        Some(raw) => Some(model_named(service, raw).await?),
         None => None,
     };
-    let service = biorouter::decision::global();
     let (session, model) = chat_and_model(&options, service, wanted).await?;
 
     let target = Target {
@@ -2408,6 +2462,58 @@ pub(crate) mod tests {
                 local,
                 load_refusal: None,
             }
+        }
+
+        /// R3-F4: `--model` takes a bare name or alias that one listed model
+        /// answers to, as the agent's decide and a gate do; a name two models
+        /// share lists the spellings that work; an unlisted provider/model is
+        /// kept as written; an unknown bare name says what to type.
+        #[test]
+        fn model_takes_a_bare_name_or_alias_as_the_agents_decide_does() {
+            let joey = DecisionModelEntry {
+                model: "decision-models/baseten-joey-2b-latest".into(),
+                display_name: "joey-1".into(),
+                ..listed("x", ProviderTier::Public)
+            };
+            let tev = listed("tev1:0.8b", ProviderTier::Private);
+            let rows = vec![(joey.clone(), None), (tev.clone(), None)];
+            assert_eq!(resolve_model_option(&rows, "joey-1"), Ok(joey.model_ref()));
+            assert_eq!(
+                resolve_model_option(&rows, " tev1:0.8b "),
+                Ok(tev.model_ref())
+            );
+            assert_eq!(
+                resolve_model_option(&rows, "baseten_decision/joey-1"),
+                Ok(joey.model_ref())
+            );
+            assert_eq!(
+                resolve_model_option(&rows, "ollama_decision/unlisted:1b"),
+                Ok(DecisionModelRef::new("ollama_decision", "unlisted:1b"))
+            );
+            let unknown = resolve_model_option(&rows, "nosuch").unwrap_err();
+            assert!(
+                unknown.starts_with(
+                    "nosuch is not a decision model this computer offers \
+                     (it offers joey-1, tev1:0.8b)."
+                ),
+                "{unknown}"
+            );
+            assert!(
+                unknown.contains("biorouter models decision list"),
+                "{unknown}"
+            );
+            assert!(!unknown.contains('`'), "R5: {unknown}");
+            let twin = DecisionModelEntry {
+                provider: "other_decision".into(),
+                ..tev.clone()
+            };
+            let shared = vec![(tev, None), (twin, None)];
+            let both = resolve_model_option(&shared, "tev1:0.8b").unwrap_err();
+            assert!(
+                both.contains("ollama_decision/tev1:0.8b")
+                    && both.contains("other_decision/tev1:0.8b"),
+                "{both}"
+            );
         }
 
         /// A local model and a hosted one; the local one can leave the

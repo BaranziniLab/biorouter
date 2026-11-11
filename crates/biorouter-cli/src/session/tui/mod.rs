@@ -4381,6 +4381,7 @@ mod tests {
             origin_id: Some(label.to_lowercase()),
             label: label.to_string(),
             count,
+            calls: count,
             passed: 0,
             failed: count,
             errors: 0,
@@ -4458,9 +4459,9 @@ mod tests {
         let lines = buffer_lines(&mut app, 120, 30);
         let markers: Vec<&String> = lines.iter().filter(|l| l.contains('◇')).collect();
         assert_eq!(markers.len(), 2, "{lines:#?}");
-        assert!(markers[0].contains("Monitor Form reached: 1800 checks this turn · 1800 quiet"));
+        assert!(markers[0].contains("Monitor 'Form reached': 1800 checks this turn · 1800 quiet"));
         assert!(
-            markers[1].contains("Gate Implementation: 3 checks this turn · 3 not passed"),
+            markers[1].contains("Gate 'Implementation': 3 checks this turn · 3 not passed"),
             "a gate passes or does not, never \"failed\": {}",
             markers[1]
         );
