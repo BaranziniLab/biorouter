@@ -279,7 +279,9 @@ async fn workflow_from_session(
         .get_agent_for_route(request.session_id.clone())
         .await?;
 
-    let workflow_result = agent.create_workflow(conversation).await;
+    let workflow_result = agent
+        .create_workflow_for_session(conversation, Some(&request.session_id))
+        .await;
 
     match workflow_result {
         Ok(mut workflow) => {

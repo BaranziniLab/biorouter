@@ -36,4 +36,16 @@ describe('SystemNotificationInline', () => {
     render(<SystemNotificationInline message={inlineNotice('Stopped. Retrying in 5s')} />);
     expect(screen.queryByTestId('chat-turn-stopped')).toBeNull();
   });
+
+  // A usage-limit notice is the same quiet line, marked with its kind.
+  it('marks a stored usage-limit notice with its kind', () => {
+    const text = 'Usage limit reached for this chat: 1,000 of 1,000 tokens.';
+    render(<SystemNotificationInline message={inlineNotice(text)} />);
+    expect(screen.getByText(text)).toHaveAttribute('data-usage-limit-notice', 'chatReached');
+  });
+
+  it('leaves the marker off any other notice', () => {
+    render(<SystemNotificationInline message={inlineNotice('Compaction complete')} />);
+    expect(screen.getByText('Compaction complete')).not.toHaveAttribute('data-usage-limit-notice');
+  });
 });

@@ -306,7 +306,7 @@ impl Agent {
             .ok_or_else(|| err("This session has no conversation to build a workflow from"))?;
 
         let mut workflow = self
-            .create_workflow(conversation)
+            .create_workflow_for_session(conversation, Some(&session.id))
             .await
             .map_err(|e| err(format!("Failed to generate a workflow: {e}")))?;
 

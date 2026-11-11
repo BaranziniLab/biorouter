@@ -484,6 +484,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: Some(66_000_000),
             monthly_dollar_limit: Some(250.0),
+            ..UsageLimits::default()
         };
         let text = format_usage_text(
             &rows,
@@ -556,6 +557,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: None,
             monthly_dollar_limit: Some(100.0),
+            ..UsageLimits::default()
         };
         let text = format_usage_text(&[], UsageGroup::Day, &summary(500, None), &limits, 0, 0);
         assert!(text.contains("cost unavailable"), "{text}");
@@ -575,6 +577,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: Some(66_000_000),
             monthly_dollar_limit: Some(250.0),
+            ..UsageLimits::default()
         };
         let json = usage_json(
             &rows,
@@ -597,6 +600,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: Some(1_000),
             monthly_dollar_limit: Some(100.0),
+            ..UsageLimits::default()
         };
         let json = usage_json(&[], UsageGroup::Day, &summary(500, None), &limits).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();

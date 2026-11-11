@@ -85,10 +85,11 @@ fn load_parts(content: &[MessageContent]) -> Vec<String> {
 /// The window is centred on the match, not taken from the head — see [`excerpt`].
 /// Printing whole messages made the answer scale with how much the user had
 /// written rather than with how many things matched — measured at 779,488
-/// characters (~195k tokens) for one ordinary query at `limit: 50`, roughly 8x
-/// the 25k-token inline cap, which pushes the entire result into a file the
-/// model then has to go and grep. At this width a full 50-hit search stays
-/// inside the cap and remains directly readable.
+/// characters (~195k tokens) for one ordinary query at `limit: 50`, roughly 20x
+/// the 10k-token inline cap, which pushes the entire result into a file the
+/// model then has to go and grep. At this width the default 10-hit search stays
+/// inside the cap and remains directly readable; a full 50-hit search (about
+/// 15k tokens) is offloaded to a handle with a preview.
 const MAX_EXCERPT_CHARS: usize = 1200;
 
 /// How much of one message LOAD prints. Wider than [`MAX_EXCERPT_CHARS`] because
