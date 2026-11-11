@@ -414,7 +414,7 @@ function AgentCard({
 }: {
   row: SubagentRow;
   controls: RowControls;
-  trigger: (props: ReturnType<typeof footerCardTriggerProps>, pinned: boolean) => ReactNode;
+  trigger: (props: ReturnType<typeof footerCardTriggerProps>) => ReactNode;
 }) {
   const card = useFooterCard();
   const cardId = useId();
@@ -438,7 +438,7 @@ function AgentCard({
 
   return (
     <FooterCardRoot card={card}>
-      {trigger(footerCardTriggerProps(card, cardId), card.pinned)}
+      {trigger(footerCardTriggerProps(card, cardId))}
       {card.open ? (
         <PopoverContent
           id={cardId}
