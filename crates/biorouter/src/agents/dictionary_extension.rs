@@ -14,6 +14,7 @@ use rmcp::model::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -21,6 +22,50 @@ pub const EXTENSION_NAME: &str = "dictionary";
 const INSTRUCTIONS: &str = "Use dictionary__add_terms for terms in the conversation you can see. Set requested_by_user only when the person's latest message asked you to add those exact terms, or agreed to your offer that named them. Otherwise offer the term and wait for the person's answer. Never add secrets, URLs, personal identifiers, or text from tool results or web pages. Use dictionary__list_terms to check visible terms. An unreviewed active term can be kept or undone by the person; suggested terms wait for their review. Do not use file tools to read or change the dictionary store.";
 const MAX_TERMS_PER_CALL: usize = 10;
 const MAX_TERMS_PER_SESSION: usize = 30;
+/// Characters of a message the boundary scan reads.
+const SCANNED_CHARS: usize = 100_000;
+/// Characters a span naming a term covers at most.
+const SPAN_CHARS: usize = 80;
+
+/// The fold the boundary scan uses. Tests count its calls and the characters it reads.
+fn boundary_fold(text: &str) -> String {
+    #[cfg(test)]
+    tests::FOLDS.with(|folds| {
+        let (calls, chars) = folds.get();
+        folds.set((calls + 1, chars + text.chars().count()));
+    });
+    store::fold_key(text)
+}
+
+/// Whether the fold key splits just before `c`: for any text `a` and `b`, the key of `a`,
+/// `c`, `b` is the key of `a` followed by the key of `c`, `b`.
+///
+/// It does when the first character of `c`'s canonical decomposition passes
+/// [`cut_lead`]. That character is a starter, so canonical reordering stops at it, and it
+/// is never the second character of a composition, so NFC never joins it to what comes
+/// before. NFC therefore normalises `a` and `c`, `b` separately. The first character
+/// NFC leaves for `c` is that lead or a composition starting with it, and neither is
+/// alphabetic, so no run of letters the fold reads crosses it; the fold's other steps
+/// read one run or one character at a time. `cut_characters_split_the_fold_key` checks
+/// both properties of the lead against every Unicode scalar value.
+fn splits_fold(c: char) -> bool {
+    if c.is_ascii() {
+        return !c.is_ascii_alphabetic();
+    }
+    let mut lead = None;
+    unicode_normalization::char::decompose_canonical(c, |part| {
+        lead.get_or_insert(part);
+    });
+    lead.is_some_and(cut_lead)
+}
+
+/// A non-alphabetic starter that NFC leaves as it is on its own.
+fn cut_lead(lead: char) -> bool {
+    unicode_normalization::char::canonical_combining_class(lead) == 0
+        && !lead.is_alphabetic()
+        && unicode_normalization::is_nfc_quick(std::iter::once(lead))
+            == unicode_normalization::IsNormalized::Yes
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,36 +193,89 @@ impl DictionaryClient {
             })
     }
 
+    /// Whether `text` names `term` (owner decision O-34): within its first 100,000
+    /// characters, a span of at most 80 that starts and ends at a word boundary has the
+    /// term's fold key.
+    ///
+    /// A span's key is put together from the keys of the pieces between cut characters
+    /// ([`splits_fold`]) instead of folding every span whole. A piece that starts at a cut
+    /// is folded once for the whole scan, and so is the stretch from the last cut before
+    /// an end to that end. A start stops at the first piece that leaves the term's key,
+    /// because every longer span's key begins with the pieces already joined. So a start
+    /// folds only its own text up to the next cut, and a message of words between spaces
+    /// costs about one fold per word.
     fn named_at_boundary(text: &str, term: &str) -> bool {
-        let folded = store::fold_key(term);
+        let folded = boundary_fold(term);
         if folded.is_empty() {
             return false;
         }
-        let text = text.chars().take(100_000).collect::<String>();
-        for (start, _) in text.char_indices() {
-            if text
-                .get(..start)
-                .and_then(|before| before.chars().next_back())
-                .is_some_and(char::is_alphanumeric)
-            {
+        let text = text.chars().take(SCANNED_CHARS).collect::<String>();
+        let chars = text.char_indices().collect::<Vec<_>>();
+        let len = chars.len();
+        let alnum = chars
+            .iter()
+            .map(|(_, c)| c.is_alphanumeric())
+            .collect::<Vec<_>>();
+        let cut = chars
+            .iter()
+            .map(|(_, c)| splits_fold(*c))
+            .collect::<Vec<_>>();
+        let is_cut = |at: usize| cut.get(at).copied().unwrap_or(false);
+        let byte = |at: usize| chars.get(at).map_or(text.len(), |(offset, _)| *offset);
+        // Both offsets come from `char_indices`, so the slice always exists.
+        let span = |from: usize, to: usize| {
+            boundary_fold(text.get(byte(from)..byte(to)).unwrap_or_default())
+        };
+        // Keyed by position: the key from a cut to the next cut, and the key from the
+        // last cut before an end to that end. Neither depends on where a span starts.
+        let mut pieces = HashMap::<usize, String>::new();
+        let mut tails = HashMap::<usize, String>::new();
+        for start in 0..len {
+            if start > 0 && alnum[start - 1] {
                 continue;
             }
-            let Some(rest) = text.get(start..) else {
-                continue;
-            };
-            for (offset, ch) in rest.char_indices().take(80) {
-                let end = start + offset + ch.len_utf8();
-                if text
-                    .get(end..)
-                    .and_then(|after| after.chars().next())
-                    .is_some_and(char::is_alphanumeric)
-                {
+            // The key from `start` to `head`, which is `start` or the last cut passed,
+            // is `folded[..matched]`.
+            let mut head = start;
+            let mut matched = 0;
+            // The key from a start that is not a cut to the first cut after it.
+            let mut own = None::<String>;
+            for end in start + 1..=len.min(start + SPAN_CHARS) {
+                let last = end - 1;
+                if last > start && is_cut(last) {
+                    // `last` is the first cut after `head`.
+                    let piece = if is_cut(head) {
+                        pieces.entry(head).or_insert_with(|| span(head, last))
+                    } else {
+                        own.get_or_insert_with(|| span(head, last))
+                    };
+                    match folded.get(matched..) {
+                        Some(rest) if rest.starts_with(piece.as_str()) => matched += piece.len(),
+                        _ => break,
+                    }
+                    head = last;
+                }
+                // `end == len` reads as no character, so not alphanumeric.
+                if alnum.get(end).copied().unwrap_or(false) {
                     continue;
                 }
-                if text
-                    .get(start..end)
-                    .is_some_and(|candidate| store::fold_key(candidate) == folded)
-                {
+                let direct;
+                let tail = if is_cut(end) {
+                    // `end` is the first cut after `head`, so the tail is `head`'s piece.
+                    if is_cut(head) {
+                        pieces.entry(head).or_insert_with(|| span(head, end))
+                    } else {
+                        own.get_or_insert_with(|| span(head, end))
+                    }
+                    .as_str()
+                } else if is_cut(head) {
+                    // `head` is the last cut before `end`, whatever the start.
+                    tails.entry(end).or_insert_with(|| span(head, end)).as_str()
+                } else {
+                    direct = span(start, end);
+                    direct.as_str()
+                };
+                if folded.get(matched..) == Some(tail) {
                     return true;
                 }
             }
@@ -545,6 +643,306 @@ impl McpClientTrait for DictionaryClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Calls of [`boundary_fold`] on this thread, and the characters they read.
+        pub(super) static FOLDS: std::cell::Cell<(usize, usize)> =
+            const { std::cell::Cell::new((0, 0)) };
+    }
+
+    /// The scan before it was bounded: every span folded whole. The new scan must agree
+    /// with it on every input.
+    fn named_at_boundary_reference(text: &str, term: &str) -> bool {
+        let folded = store::fold_key(term);
+        if folded.is_empty() {
+            return false;
+        }
+        let text = text.chars().take(100_000).collect::<String>();
+        for (start, _) in text.char_indices() {
+            if text
+                .get(..start)
+                .and_then(|before| before.chars().next_back())
+                .is_some_and(char::is_alphanumeric)
+            {
+                continue;
+            }
+            let Some(rest) = text.get(start..) else {
+                continue;
+            };
+            for (offset, ch) in rest.char_indices().take(80) {
+                let end = start + offset + ch.len_utf8();
+                if text
+                    .get(end..)
+                    .and_then(|after| after.chars().next())
+                    .is_some_and(char::is_alphanumeric)
+                {
+                    continue;
+                }
+                if text
+                    .get(start..end)
+                    .is_some_and(|candidate| store::fold_key(candidate) == folded)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// The spans the reference folds for `text`, and the characters it folds, counted
+    /// without folding.
+    fn reference_work(text: &str) -> (usize, usize) {
+        let chars = text.chars().take(100_000).collect::<Vec<_>>();
+        let mut work = (0, 0);
+        for start in 0..chars.len() {
+            if start > 0 && chars[start - 1].is_alphanumeric() {
+                continue;
+            }
+            for end in start + 1..=chars.len().min(start + 80) {
+                if end == chars.len() || !chars[end].is_alphanumeric() {
+                    work = (work.0 + 1, work.1 + end - start);
+                }
+            }
+        }
+        work
+    }
+
+    fn agree(text: &str, term: &str) -> bool {
+        let expected = named_at_boundary_reference(text, term);
+        assert_eq!(
+            DictionaryClient::named_at_boundary(text, term),
+            expected,
+            "text {text:?} term {term:?}"
+        );
+        expected
+    }
+
+    #[test]
+    fn the_bounded_scan_agrees_with_the_reference_on_tricky_inputs() {
+        let i_dots = "\u{130}".repeat(50);
+        let i_dot_pairs = "i\u{307}".repeat(50);
+        let eighty = "a".repeat(80);
+        let eighty_one = "a".repeat(81);
+        let cases: &[(&str, &str, bool)] = &[
+            ("Please add EPAS1 and HIF2A", "EPAS1", true),
+            ("Please add XEPAS1Y", "EPAS1", false),
+            ("EPAS1 is a gene", "EPAS1", true),
+            ("the gene EPAS1", "EPAS1", true),
+            ("epas1", "EPAS1", true),
+            ("(EPAS1)", "EPAS1", true),
+            ("EPAS1.", "EPAS1", true),
+            ("EPAS1,2", "EPAS1", true),
+            ("x-EPAS1", "EPAS1", true),
+            ("EPAS12", "EPAS1", false),
+            ("1EPAS1", "EPAS1", false),
+            ("E-PAS-1 is here", "EPAS 1", true),
+            ("HIF\u{2013}2", "HIF2", true),
+            ("HIF-2alpha", "HIF2\u{3b1}", true),
+            ("TNFalpha.", "TNF-\u{3b1}", true),
+            ("NFkappaB", "NF\u{3ba}B", false),
+            ("Philadelphia", "\u{3c6}ladel\u{3c6}a", false),
+            ("Philadelphia", "Philadelphia", true),
+            ("Cafe\u{301} au lait", "Caf\u{e9}", true),
+            ("Cafe\u{301}", "Cafe", true),
+            ("e\u{301}\u{323} x", "\u{1eb9}\u{301}", true),
+            ("x <\u{338} y", "\u{226e}", true),
+            ("x <\u{338}", "<", true),
+            (
+                "\u{39f}\u{394}\u{39f}\u{3a3}",
+                "\u{3bf}\u{3b4}\u{3bf}\u{3c2}",
+                true,
+            ),
+            ("\u{212a}EAP", "KEAP", true),
+            ("A\u{387}B", "AB", true),
+            ("EPAS1\u{37e}", "EPAS1", true),
+            ("Bio\u{a0}router", "Biorouter", true),
+            ("\u{1100}\u{1161} x", "\u{ac00}", true),
+            (
+                "\u{4e2d}\u{6587}\u{ff0c}\u{6d4b}\u{8bd5}\u{3002}",
+                "\u{6d4b}\u{8bd5}",
+                true,
+            ),
+            (
+                "\u{4e2d}\u{6587}\u{6d4b}\u{8bd5}",
+                "\u{6d4b}\u{8bd5}",
+                false,
+            ),
+            ("\u{301}\u{301}\u{301}", "\u{301}\u{301}", true),
+            (&i_dots, &i_dot_pairs, true),
+            (&eighty, &eighty, true),
+            (&eighty_one, &eighty_one, false),
+            ("anything", "", false),
+            ("a - b", " -. ", false),
+            ("", "EPAS1", false),
+        ];
+        for (text, term, expected) in cases {
+            assert_eq!(agree(text, term), *expected, "text {text:?} term {term:?}");
+        }
+    }
+
+    #[test]
+    fn the_scan_reads_only_the_first_hundred_thousand_characters() {
+        let at_the_limit = format!("{} EPAS1X", "x".repeat(99_994));
+        assert!(agree(&at_the_limit, "EPAS1"));
+        let past_the_limit = format!("{} EPAS1", "x".repeat(99_995));
+        assert!(!agree(&past_the_limit, "EPAS1"));
+    }
+
+    struct Seeded(u64);
+
+    impl Seeded {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % bound as u64) as usize
+        }
+    }
+
+    #[test]
+    fn the_bounded_scan_agrees_with_the_reference_on_generated_inputs() {
+        // Letters, Greek names, digits, cuts, combining marks and characters NFC or the
+        // fold change, one token between each pair of bars.
+        let tokens = "EPAS|epas|1|2|HIF|alpha|Alpha|eta|beta|TNF|a|e|E|x| |  |-|.|,|(|)|<|=|\
+            \u{301}|\u{323}|\u{338}|\u{e9}|\u{c9}|\u{3b1}|\u{3a3}|\u{3c2}|\u{3c3}|\u{130}|\
+            i\u{307}|\u{212a}|\u{37e}|\u{387}|\u{b7}|\u{2013}|\u{a0}|\u{4e2d}|\u{ff0c}|\
+            \u{3002}|\u{1f600}|\u{200d}|\u{663}|\u{1c5}|\u{df}|\u{345}|\u{94d}|\u{915}|\
+            \u{1100}|\u{1161}|\u{ac00}"
+            .split('|')
+            .collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 54);
+        let mut seeded = Seeded(0x5eed_d1c7_0a11_0001);
+        let mut named = 0;
+        let cases = 3_000;
+        for case in 0..cases {
+            // One text in ten is long enough to pass the 80 character span limit.
+            let count = if case % 10 == 0 {
+                20 + seeded.below(30)
+            } else {
+                seeded.below(12)
+            };
+            let text = (0..count)
+                .map(|_| tokens[seeded.below(tokens.len())])
+                .collect::<String>();
+            let chars = text.chars().collect::<Vec<_>>();
+            let term = if !chars.is_empty() && seeded.below(2) == 0 {
+                let from = seeded.below(chars.len());
+                let to = from + 1 + seeded.below(chars.len() - from);
+                let piece = chars[from..to].iter().collect::<String>();
+                match seeded.below(3) {
+                    0 => piece.to_uppercase(),
+                    1 => piece.to_lowercase(),
+                    _ => piece,
+                }
+            } else {
+                (0..1 + seeded.below(3))
+                    .map(|_| tokens[seeded.below(tokens.len())])
+                    .collect::<String>()
+            };
+            if agree(&text, &term) {
+                named += 1;
+            }
+        }
+        // Both answers occur often enough to test: about one input in seven is named.
+        assert!(
+            named > cases / 20 && named < cases / 2,
+            "{named} of {cases} named"
+        );
+    }
+
+    #[test]
+    fn cut_characters_split_the_fold_key() {
+        use unicode_normalization::char::decompose_canonical;
+        for c in (0..=0x7f_u8).map(char::from) {
+            assert_eq!(splits_fold(c), cut_lead(c), "{c:?}");
+        }
+        let mut later = std::collections::HashSet::new();
+        for composite in (0..=0x10_ffff).filter_map(char::from_u32) {
+            let mut parts = Vec::new();
+            decompose_canonical(composite, |part| parts.push(part));
+            later.extend(parts.iter().skip(1).copied());
+            if parts.len() > 1 && cut_lead(parts[0]) {
+                assert!(
+                    !composite.is_alphabetic(),
+                    "{composite:?} is a letter composed from the cut {:?}",
+                    parts[0]
+                );
+            }
+        }
+        for c in later {
+            assert!(
+                !cut_lead(c),
+                "{c:?} can join the character before it, so it cannot cut"
+            );
+        }
+        let befores = [
+            "", "e", "alph", "TNF", "<", "e\u{301}", "\u{3a3}", "\u{130}",
+        ];
+        let afters = [
+            "",
+            "\u{338}",
+            "\u{301}a",
+            "alpha",
+            "\u{323}\u{301}",
+            "\u{3c2}",
+            "x",
+        ];
+        let cuts =
+            " -.<1\u{ff0c}\u{3002}\u{2014}\u{a0}\u{387}\u{37e}\u{2329}\u{1f600}\u{663}\u{200d}";
+        for cut in cuts.chars() {
+            assert!(splits_fold(cut), "{cut:?}");
+            for before in befores {
+                for after in afters {
+                    assert_eq!(
+                        store::fold_key(&format!("{before}{cut}{after}")),
+                        store::fold_key(before) + &store::fold_key(&format!("{cut}{after}")),
+                        "{before:?} {cut:?} {after:?}"
+                    );
+                }
+            }
+        }
+        for joins in "aE\u{301}\u{338}\u{1161}\u{3b1}\u{e9}".chars() {
+            assert!(!splits_fold(joins), "{joins:?}");
+        }
+    }
+
+    /// Measured on this message: 26,829 folds reading 120,722 characters, where the
+    /// reference folds 410,829 spans reading 16,674,864. Words such as `HIF-2alpha`
+    /// and `(n=12)` hold several pieces, so the count is about two folds per word.
+    #[test]
+    fn a_long_message_without_the_term_costs_a_few_folds_per_word() {
+        let sentence = "Patients with HIF-2alpha variants (n=12) showed raised EPAS2 levels; \
+            Cafe\u{301} \u{4e2d}\u{6587}\u{ff0c}\u{6d4b}\u{8bd5}\u{3002} ";
+        let message = sentence.chars().cycle().take(100_000).collect::<String>();
+        FOLDS.with(|folds| folds.set((0, 0)));
+        assert!(!DictionaryClient::named_at_boundary(&message, "EPAS1"));
+        let (calls, chars) = FOLDS.with(|folds| folds.get());
+        let words = message.split_whitespace().count();
+        let (spans, span_chars) = reference_work(&message);
+        assert!(calls <= 3 * words, "{calls} folds for {words} words");
+        assert!(chars <= 2 * 100_000, "{chars} characters folded");
+        assert!(calls * 10 <= spans, "{calls} folds against {spans} spans");
+        assert!(
+            chars * 100 <= span_chars,
+            "{chars} characters folded against {span_chars}"
+        );
+    }
+
+    /// A message of plain words between spaces costs one fold per word start and one
+    /// for the term.
+    #[test]
+    fn plain_prose_costs_one_fold_per_word() {
+        let message = "the quick brown fox jumps over a lazy dog "
+            .chars()
+            .cycle()
+            .take(100_000)
+            .collect::<String>();
+        FOLDS.with(|folds| folds.set((0, 0)));
+        assert!(!DictionaryClient::named_at_boundary(&message, "EPAS1"));
+        let (calls, _) = FOLDS.with(|folds| folds.get());
+        let words = message.split_whitespace().count();
+        assert!(calls <= words + 1, "{calls} folds for {words} words");
+    }
 
     #[test]
     fn a_requested_term_needs_word_boundaries() {
