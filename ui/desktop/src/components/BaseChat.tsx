@@ -2706,6 +2706,12 @@ function BaseChatContent({
       fired: firedMonitors,
     },
     hasWorkflow: !!(workflow ?? loadingChatRow?.workflow),
+    // This chat's model and tier, as the model chip and the composer name them.
+    chatModel:
+      (effectiveModel?.model ?? currentModel)
+        ? friendlyModelName((effectiveModel?.model ?? currentModel)!)
+        : null,
+    privacyTier: session?.privacy_tier ?? loadingChatRow?.privacy_tier ?? null,
     decisionChat,
     onWorkflow: handleWorkflowReviewAction,
     onDiagnostics: handleDiagnosticsReviewAction,
