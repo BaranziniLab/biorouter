@@ -44,6 +44,8 @@ const MAX_CANDIDATES: usize = 32;
 const CACHE_FOR: Duration = Duration::from_secs(60);
 /// The longest alias shown.
 const MAX_ALIAS: usize = 64;
+/// How long a label or own alias search may ask `ssh` before giving up.
+const SEARCH_BOUND: Duration = Duration::from_secs(5);
 
 /// The person's SSH configuration file, as the bridge reads it: the development profile's
 /// `-F` file, else `~/.ssh/config`.
@@ -328,6 +330,16 @@ pub(super) struct OwnAlias {
 /// host is itself one of their entries (their settings for it already apply), when no entry
 /// matches, or when `ssh` can't say.
 pub(super) async fn own_alias_for_login(ssh_target: &str, port: Option<u16>) -> Option<OwnAlias> {
+    own_alias_for_login_within(ssh_target, port, SEARCH_BOUND).await
+}
+
+/// [`own_alias_for_login`] with the search bounded by `bound`; tests pass a longer one, so a
+/// loaded machine does not decide their outcome.
+async fn own_alias_for_login_within(
+    ssh_target: &str,
+    port: Option<u16>,
+    bound: Duration,
+) -> Option<OwnAlias> {
     let (_, host) = ssh_target.rsplit_once('@')?;
     let (names, _) = candidates();
     if names.is_empty() || names.iter().any(|name| name.eq_ignore_ascii_case(host)) {
@@ -348,15 +360,18 @@ pub(super) async fn own_alias_for_login(ssh_target: &str, port: Option<u16>) -> 
         }
         None
     };
-    tokio::time::timeout(Duration::from_secs(5), search)
-        .await
-        .ok()
-        .flatten()
+    tokio::time::timeout(bound, search).await.ok().flatten()
 }
 
 /// What to call the server a saved login (`user@host` or an alias) reaches. See the module
 /// documentation; display only.
 pub async fn server_label(ssh_target: &str, port: Option<u16>) -> String {
+    server_label_within(ssh_target, port, SEARCH_BOUND).await
+}
+
+/// [`server_label`] with the resolution bounded by `bound`; tests pass a longer one, so a
+/// loaded machine does not decide their outcome.
+async fn server_label_within(ssh_target: &str, port: Option<u16>, bound: Duration) -> String {
     let host = ssh_target
         .rsplit_once('@')
         .map_or(ssh_target, |(_, host)| host)
@@ -372,12 +387,9 @@ pub async fn server_label(ssh_target: &str, port: Option<u16>) -> String {
             return label.clone();
         }
     }
-    let label = tokio::time::timeout(
-        Duration::from_secs(5),
-        resolve_label(&host, ssh_target, port, &names),
-    )
-    .await
-    .unwrap_or_else(|_| host.clone());
+    let label = tokio::time::timeout(bound, resolve_label(&host, ssh_target, port, &names))
+        .await
+        .unwrap_or_else(|_| host.clone());
     CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -413,6 +425,26 @@ async fn resolve_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tests' bound on a search. Every candidate costs a fake `ssh` process or two, and on
+    /// a loaded machine (load average 60 to 80) a run of these tests failed at 5.02 s with the
+    /// five second [`SEARCH_BOUND`] spent: a search cut short answers `None`, and a label the
+    /// bare host.
+    #[cfg(unix)]
+    const UNHURRIED: Duration = Duration::from_secs(60);
+
+    /// [`super::own_alias_for_login`] under [`UNHURRIED`]. Declared here, it takes the place of
+    /// the glob-imported one in these tests.
+    #[cfg(unix)]
+    async fn own_alias_for_login(ssh_target: &str, port: Option<u16>) -> Option<OwnAlias> {
+        own_alias_for_login_within(ssh_target, port, UNHURRIED).await
+    }
+
+    /// [`super::server_label`] under [`UNHURRIED`], as above.
+    #[cfg(unix)]
+    async fn server_label(ssh_target: &str, port: Option<u16>) -> String {
+        server_label_within(ssh_target, port, UNHURRIED).await
+    }
 
     #[test]
     fn host_lines_give_literal_names_only_in_file_order() {
