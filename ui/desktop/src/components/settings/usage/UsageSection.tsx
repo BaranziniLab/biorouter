@@ -5,6 +5,7 @@ import { Note } from '../../ui/note';
 import { SettingSection } from '../../ui/setting-row';
 import { Skeleton } from '../../ui/skeleton';
 import { settingsUsageCopy as copy } from '../../usage/copy';
+import { useCurrentModelPriced } from '../../usage/useCurrentModelPriced';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { loadUsage } from './loadUsage';
 import { UsagePanel } from './UsagePanel';
@@ -43,6 +44,8 @@ export default function UsageSection({ showCosts = true }: { showCosts?: boolean
   // A saved limit reads the month again without a status line: its gauges' percentages are the
   // daemon's, and the limits themselves are already in place from the write's answer.
   const [savedVersion, setSavedVersion] = useState(0);
+  // A new limit starts in dollars while the current model has a price.
+  const priced = useCurrentModelPriced();
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +129,17 @@ export default function UsageSection({ showCosts = true }: { showCosts?: boolean
               : null
           }
           showCosts={showCosts}
+          priced={priced}
+          monthProgress={
+            summary
+              ? {
+                  usedTokens: summary.monthlyUsedTokens ?? null,
+                  usedUsd: summary.monthlyUsedUsd ?? null,
+                  reached: summary.monthlyReached === true,
+                  near: summary.monthlyNear === true,
+                }
+              : null
+          }
           onSaved={onLimitsSaved}
         />
       )}

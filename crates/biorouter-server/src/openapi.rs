@@ -958,6 +958,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::usage_limit::ChatUsageLimitOverride,
         super::routes::usage_limit::UsageLimitAmounts,
         super::routes::usage_limit::UsageLimitUsed,
+        super::routes::usage_limit::UsageLimitNextRequest,
         super::routes::usage_limit::UsageLimitMode,
         super::routes::usage_limit::UsageLimitSource,
         super::routes::usage_limit::UsageLimitReason,

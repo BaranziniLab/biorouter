@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { UsageReportRow, UsageSummaryResponse, UsageTotals } from '../../../api';
+import { formatUsd } from '../../../utils/formatUsd';
 import {
   billedTokens,
   cacheTokens as combinedCacheTokens,
@@ -85,8 +86,8 @@ export function formatCost(cost: number | null | undefined): string {
   if (cost === null || cost === undefined || !Number.isFinite(cost) || cost < 0) {
     return 'Unavailable';
   }
-  if (cost > 0 && cost < 0.01) return '<$0.01';
-  return `$${cost.toFixed(2)}`;
+  // The shared dollar format, so a month's cost reads as the composer and the limit notices do.
+  return formatUsd(cost);
 }
 
 export function formatCostEstimate(cost: number | null | undefined): string {
@@ -502,7 +503,7 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
               testid="usage-gauge-dollars"
               label={copy.dollarBudget}
               used={formatCostEstimate(mtd.cost)}
-              limit={`$${summary.monthlyDollarLimit.toFixed(2)}`}
+              limit={formatUsd(summary.monthlyDollarLimit)}
               percent={dollarPercent}
               unavailableReason={dollarUnavailableReason}
             />

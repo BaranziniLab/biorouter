@@ -1,6 +1,8 @@
-//! Usage limits in the reply loop: a reached limit ends the turn BEFORE the
-//! next model request, a message to a paused chat makes no model request,
-//! lifting the limit resumes the chat, and the monthly limit pauses every chat.
+//! Usage limits in the reply loop: a reached limit, or one the next request is
+//! estimated to pass, ends the turn BEFORE that model request; the turn that
+//! reaches a limit stores why; the near-limit warning is stored once per
+//! crossing; a message to a paused chat makes no model request, lifting the
+//! limit resumes the chat, and the monthly limit pauses every chat.
 //! See `docs/agent-loop/usage-limits.md`.
 
 use std::path::PathBuf;
@@ -19,7 +21,7 @@ use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
 use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
 use biorouter::providers::errors::ProviderError;
-use biorouter::session::session_manager::SessionType;
+use biorouter::session::session_manager::{SessionType, UsageLedgerEntry};
 use biorouter::session::SideUsageEntry;
 use futures::StreamExt;
 use rmcp::model::{CallToolRequestParams, Tool};
@@ -43,9 +45,11 @@ fn sandbox_config_root_for_this_test_binary() {
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Always calls a tool (fresh arguments, so no repetition guard fires) and
-/// reports 100 billed tokens a call.
+/// reports 100 billed tokens a call, or answers in text with `text_usage`
+/// billed tokens (80% input) and so ends the turn.
 struct MockSpendyProvider {
     calls: Arc<AtomicUsize>,
+    text_usage: Option<i32>,
 }
 
 #[async_trait]
@@ -57,6 +61,14 @@ impl Provider for MockSpendyProvider {
         _tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(total) = self.text_usage {
+            let input = total * 4 / 5;
+            let usage = ProviderUsage::new(
+                "mock-model".to_string(),
+                Usage::new(Some(input), Some(total - input), Some(total)),
+            );
+            return Ok((Message::assistant().with_text("Done."), usage));
+        }
         let call = CallToolRequestParams {
             task: None,
             meta: None,
@@ -107,6 +119,13 @@ impl Provider for MockSpendyProvider {
 }
 
 async fn spendy_agent(name: &str) -> Result<(Agent, String, Arc<AtomicUsize>)> {
+    spendy_agent_with(name, None).await
+}
+
+async fn spendy_agent_with(
+    name: &str,
+    text_usage: Option<i32>,
+) -> Result<(Agent, String, Arc<AtomicUsize>)> {
     let agent = Agent::new();
     let session = agent
         .config
@@ -118,6 +137,7 @@ async fn spendy_agent(name: &str) -> Result<(Agent, String, Arc<AtomicUsize>)> {
         .update_provider(
             Arc::new(MockSpendyProvider {
                 calls: Arc::clone(&calls),
+                text_usage,
             }),
             &session.id,
         )
@@ -215,42 +235,75 @@ async fn seed_spend(agent: &Agent, session_id: &str, key: &str, tokens: i64) -> 
     Ok(())
 }
 
+/// A turn request the chat made earlier, so the next one is estimated from it
+/// (80 tokens in, 20 out, the mock's own shape) rather than from the size of
+/// the first prompt.
+async fn seed_request(agent: &Agent, session_id: &str, key: &str) -> Result<()> {
+    agent
+        .config
+        .session_manager
+        .apply_usage_event(UsageLedgerEntry {
+            event_key: key.to_string(),
+            session_id: session_id.to_string(),
+            schedule_id: None,
+            current_total_tokens: Some(100),
+            current_input_tokens: Some(80),
+            current_output_tokens: Some(20),
+            billed_total_tokens: Some(100),
+            input_tokens: Some(80),
+            output_tokens: Some(20),
+            model_id: Some("mock-model".to_string()),
+            provider: Some("mock-spendy".to_string()),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+        })
+        .await?;
+    Ok(())
+}
+
+async fn chat_tokens(agent: &Agent, session_id: &str) -> Result<i64> {
+    Ok(agent
+        .config
+        .session_manager
+        .spend_snapshot(session_id, false)
+        .await?
+        .chat_tokens)
+}
+
 #[tokio::test]
-async fn a_reached_chat_limit_stops_before_the_next_model_request() -> Result<()> {
+async fn a_request_that_would_pass_the_chat_limit_is_not_made() -> Result<()> {
     let _serial = SERIAL.lock().await;
     let (agent, id, calls) = spendy_agent("usage-limit-stop").await?;
-    // 100 tokens a call: the first call takes the chat to 83% (a warning), the
-    // second to 166%, and no third request may be made.
+    // 100 tokens a call from 100: the requests run while the next one, about
+    // 100 tokens, still fits under 450, and none runs past it.
+    seed_request(&agent, &id, "stop:seed").await?;
     usage_limit::set_for_session(
         &agent.config.session_manager,
         &id,
         Some(ChatLimitOverride::Limit {
-            max_tokens: Some(120),
+            max_tokens: Some(450),
             max_usd: None,
         }),
     )
     .await?;
 
     let responses = drain(&agent, config(&id, 100)).await?;
+    let used = chat_tokens(&agent, &id).await?;
+    assert!(used <= 450, "no request runs past the limit: {used} used");
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "the limit must stop the turn before a third model request"
+        3,
+        "three requests fit under the limit, the fourth would pass it"
     );
     let live = notices(&responses);
-    assert_eq!(
-        live.iter()
-            .filter(|n| n.starts_with(CHAT_LIMIT_WARNING_PREFIX))
-            .count(),
-        1,
-        "one warning per reply: {live:?}"
-    );
     let stop = live
         .iter()
         .find(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX))
         .unwrap_or_else(|| panic!("no stop notice: {live:?}"));
-    assert!(stop.contains("200 tokens used"), "{stop}");
-    assert!(stop.contains("120 tokens"), "{stop}");
+    assert!(stop.contains("400 tokens used"), "{stop}");
+    assert!(stop.contains("of its limit of 450 tokens"), "{stop}");
+    assert!(stop.contains("The next request is estimated at"), "{stop}");
+    assert!(stop.contains("50 tokens is left"), "{stop}");
     // No wrap-up call and no BR-35 budget dance.
     assert!(
         !live.iter().any(|n| n.contains("Budget reached")),
@@ -258,12 +311,135 @@ async fn a_reached_chat_limit_stops_before_the_next_model_request() -> Result<()
     );
 
     // Durable: the stop notice is stored with the chat.
+    let stored = stored_notices(&agent, &id).await?;
     assert!(
-        stored_notices(&agent, &id)
-            .await?
+        stored
             .iter()
             .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
-        "the stop notice must survive a reload"
+        "the stop notice must survive a reload: {stored:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_turn_that_reaches_the_limit_stores_why() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    // One request bills far more than the estimate (1,000 against about 120).
+    let (agent, id, calls) = spendy_agent_with("usage-limit-turn-end", Some(1_000)).await?;
+    seed_request(&agent, &id, "turn-end:seed").await?;
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(500),
+            max_usd: None,
+        }),
+    )
+    .await?;
+
+    let responses = drain(&agent, config(&id, 10)).await?;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        notices(&responses)
+            .iter()
+            .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
+        "the turn says it reached the limit"
+    );
+    let stored = stored_notices(&agent, &id).await?;
+    let stop = stored
+        .iter()
+        .find(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX))
+        .unwrap_or_else(|| panic!("the reason must survive a reload: {stored:?}"));
+    assert!(stop.contains("1,100 tokens used"), "{stop}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_near_limit_warning_is_stored_once_per_crossing() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (agent, id, calls) = spendy_agent_with("usage-limit-warn-once", Some(100)).await?;
+    // 650 billed by a side call (not a request shape) plus one 100-token
+    // request: 750 of 1,000, and each reply bills 100 more.
+    seed_spend(&agent, &id, "side:seed:1", 650).await?;
+    seed_request(&agent, &id, "warn:seed").await?;
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(1_000),
+            max_usd: None,
+        }),
+    )
+    .await?;
+
+    // 750 to 850: the reply crosses 80%, and its end stores the warning.
+    let first = notices(&drain(&agent, config(&id, 10)).await?);
+    assert_eq!(
+        first
+            .iter()
+            .filter(|n| n.starts_with(CHAT_LIMIT_WARNING_PREFIX))
+            .count(),
+        1,
+        "{first:?}"
+    );
+    // 850 to 950: no second warning; the next request (about 120) no longer
+    // fits, so this turn's end stores the stop.
+    let second = notices(&drain(&agent, config(&id, 10)).await?);
+    assert!(
+        !second
+            .iter()
+            .any(|n| n.starts_with(CHAT_LIMIT_WARNING_PREFIX)),
+        "warned once per crossing, not before every reply: {second:?}"
+    );
+    assert!(
+        second
+            .iter()
+            .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
+        "{second:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    let stored = stored_notices(&agent, &id).await?;
+    assert_eq!(
+        stored
+            .iter()
+            .filter(|n| n.starts_with(CHAT_LIMIT_WARNING_PREFIX))
+            .count(),
+        1,
+        "{stored:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_limit_smaller_than_one_request_says_so() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (agent, id, calls) = spendy_agent("usage-limit-too-small").await?;
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(50),
+            max_usd: None,
+        }),
+    )
+    .await?;
+
+    let responses = drain(&agent, config(&id, 3)).await?;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "the first request alone would pass the limit"
+    );
+    let live = notices(&responses);
+    let stop = live
+        .iter()
+        .find(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX))
+        .unwrap_or_else(|| panic!("no stop notice: {live:?}"));
+    assert!(stop.contains("One request is estimated at"), "{stop}");
+    assert!(
+        stop.contains("more than the whole limit of 50 tokens"),
+        "{stop}"
     );
     Ok(())
 }
@@ -443,11 +619,14 @@ async fn a_limit_reached_at_a_context_overflow_ends_the_turn_there() -> Result<(
     };
     provider.session_id.set(id.clone()).unwrap();
     agent.update_provider(Arc::new(provider), &id).await?;
+    // From 100 used, the first request (about 120) fits under 300; the 500
+    // its call spends does not.
+    seed_request(&agent, &id, "overflow:seed").await?;
     usage_limit::set_for_session(
         &agent.config.session_manager,
         &id,
         Some(ChatLimitOverride::Limit {
-            max_tokens: Some(100),
+            max_tokens: Some(300),
             max_usd: None,
         }),
     )

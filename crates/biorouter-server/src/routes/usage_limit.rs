@@ -8,7 +8,10 @@
 //! The answer is the chat's effective limit (its own, the default per-chat
 //! limit, or none), its override, the configured defaults and monthly limit,
 //! what the chat (with its subagents) and the month have used, and whether a
-//! limit is reached or near. A subagent is held to its parent chat's limit, so
+//! limit is reached or near. `paused` also holds when the chat's next request
+//! is estimated to pass a limit (`pausedByEstimate`, `nextRequest`), estimated
+//! as the reply loop's prologue does: the chat's last request plus its answer,
+//! priced at the chat's model. A subagent is held to its parent chat's limit, so
 //! a read names the parent's figures and a write to a subagent is refused.
 //! The month's totals are an aggregate over every chat, private ones included,
 //! so only a caller with the user-action proof receives them; anyone else gets
@@ -112,6 +115,15 @@ pub enum UsageLimitMode {
     Limit,
 }
 
+/// What the chat's next request is estimated to bill.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimitNextRequest {
+    pub tokens: u64,
+    /// `null` when the chat's model has no price.
+    pub usd: Option<f64>,
+}
+
 /// What the chat (with its subagents) and the month have used.
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -146,6 +158,12 @@ pub struct SessionUsageLimitResponse {
     /// or lifted (or, for the month, the next local month begins).
     pub paused: bool,
     pub reason: Option<UsageLimitReason>,
+    /// `paused` because the next request is estimated to pass the limit named
+    /// by `reason`, not because it is reached.
+    pub paused_by_estimate: bool,
+    /// The estimate of the chat's next request, when a limit is in force and
+    /// the chat has made a request to estimate it from.
+    pub next_request: Option<UsageLimitNextRequest>,
     /// A limit is at 80% or more and none is reached.
     pub warn: bool,
     /// A per-chat dollar limit is set but nothing the chat used is priced, so
@@ -327,7 +345,39 @@ pub(crate) async fn usage_limit_state(
     let spend = manager
         .spend_snapshot(&billing, effective.needs_usd())
         .await?;
-    let (reached, warning) = usage_limit::evaluate(&effective, &spend);
+    let (mut reached, warning) = usage_limit::evaluate(&effective, &spend);
+    let mut next_request = None;
+    if reached.is_none() && !effective.is_unlimited() {
+        // The prologue's estimate: the chat's bound model, no prompt size.
+        let row = manager.get_session(session_id, false).await.ok();
+        let inputs = usage_limit::NextRequestInputs {
+            provider: row.as_ref().and_then(|row| row.provider_name.clone()),
+            model: row
+                .as_ref()
+                .and_then(|row| row.model_config.as_ref())
+                .map(|config| config.model_name.clone()),
+            ..Default::default()
+        };
+        match usage_limit::estimate_next_request(
+            manager,
+            session_id,
+            &inputs,
+            effective.needs_usd(),
+        )
+        .await
+        {
+            Ok(Some(estimate)) => {
+                reached = usage_limit::projected_hit(&effective, &spend, &estimate);
+                next_request = Some(UsageLimitNextRequest {
+                    tokens: estimate.tokens,
+                    usd: estimate.usd,
+                });
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(session_id, "could not estimate the next request: {e:#}"),
+        }
+    }
+    let warning = warning.filter(|_| reached.is_none());
     Ok(SessionUsageLimitResponse {
         limit: EffectiveChatLimit {
             max_tokens: effective.chat_tokens,
@@ -348,6 +398,10 @@ pub(crate) async fn usage_limit_state(
             LimitScope::Chat => UsageLimitReason::Chat,
             LimitScope::Month => UsageLimitReason::Month,
         }),
+        paused_by_estimate: reached
+            .as_ref()
+            .is_some_and(|hit| hit.next_request.is_some()),
+        next_request,
         warn: warning.is_some(),
         chat_dollar_limit_inert: effective.chat_usd.is_some() && spend.chat_usd.is_none(),
         month_dollar_limit_inert: effective.month_usd.is_some() && spend.month_usd.is_none(),
@@ -679,6 +733,78 @@ mod tests {
                 send(state.clone(), "PUT", &uri, Some(bad.clone()), &[PROOF]).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_chat_whose_next_request_would_pass_its_limit_reads_paused() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let chat = seed(&state, SessionClassification::Public).await;
+        let uri = format!("/sessions/{}/usage-limit", chat.id);
+        state
+            .session_manager()
+            .apply_usage_event(biorouter::session::session_manager::UsageLedgerEntry {
+                event_key: format!("{}:turn-1", chat.id),
+                session_id: chat.id.clone(),
+                schedule_id: None,
+                current_total_tokens: Some(36_005),
+                current_input_tokens: Some(36_000),
+                current_output_tokens: Some(5),
+                billed_total_tokens: Some(36_005),
+                input_tokens: Some(36_000),
+                output_tokens: Some(5),
+                model_id: Some("mock-model".into()),
+                provider: Some("mock".into()),
+                cache_read_tokens: Some(0),
+                cache_creation_tokens: Some(0),
+            })
+            .await
+            .unwrap();
+
+        // 36,005 used of 50,000; the next request (36,005 prompt plus 5 out)
+        // would pass it.
+        let (status, body) = send(
+            state.clone(),
+            "PUT",
+            &uri,
+            Some(json!({ "mode": "limit", "maxTokens": 50_000 })),
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let read = json_of(&body);
+        assert_eq!(read["paused"], true, "{body}");
+        assert_eq!(read["pausedByEstimate"], true, "{body}");
+        assert_eq!(read["reason"], "chat", "{body}");
+        assert_eq!(read["nextRequest"]["tokens"], 36_010, "{body}");
+        assert_eq!(read["warn"], false, "a pause is not also a warning: {body}");
+
+        let (status, body) = send(
+            state.clone(),
+            "PUT",
+            &uri,
+            Some(json!({ "mode": "limit", "maxTokens": 100_000 })),
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let read = json_of(&body);
+        assert_eq!(read["paused"], false, "{body}");
+        assert_eq!(read["pausedByEstimate"], false, "{body}");
+        assert_eq!(read["nextRequest"]["tokens"], 36_010, "{body}");
+
+        // A dollar limit keeps every decimal it was given.
+        let (status, body) = send(
+            state.clone(),
+            "PUT",
+            &uri,
+            Some(json!({ "mode": "limit", "maxUsd": 0.013 })),
+            &[PROOF],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(json_of(&body)["limit"]["maxUsd"], 0.013, "{body}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

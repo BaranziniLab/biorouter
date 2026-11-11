@@ -3,6 +3,7 @@ import { useModelAndProvider } from '../ModelAndProviderContext';
 import { Gauge } from '../icons/app-icons';
 import { COST_CARD_COPY, FOOTER_COPY, USAGE_LIMIT_COPY } from './copy';
 import './pickers.css';
+import { formatUsd } from '../../utils/formatUsd';
 import { fetchModelPricing } from '../../utils/pricing';
 import { PricingData } from '../../api';
 import {
@@ -91,13 +92,16 @@ export function aggregateModelRowsCost(
   return { amount: hasKnownCost ? amount : null, partial };
 }
 
+/**
+ * A cost as the footer, its card and the per-model rows print it: the shared dollar format
+ * (`utils/formatUsd.ts`), so the chat's total and its one model's row read the same figure
+ * ("$0.0085" in both, never "$0.01" beside "<$0.01"). Another currency symbol takes the same
+ * digits.
+ */
 export function formatTooltipMoney(amount: number | null, currency = '$'): string {
   if (amount === null || !Number.isFinite(amount) || amount < 0) return 'Unavailable';
-  if (amount > 0 && amount < 0.01) return `<${currency}0.01`;
-  return `${currency}${amount.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+  const usd = formatUsd(amount);
+  return currency === '$' ? usd : usd.replace('$', currency);
 }
 
 export function formatCostEstimate(estimate: CostEstimate, currency = '$'): string {
@@ -435,12 +439,12 @@ export function CostTracker({
         // model's (`ledgerOnly`): nothing from this path.
         pricing: !ledgerOnly && currentModel && currentProvider && !isLoading ? costInfo : null,
       });
-  // A new limit starts in dollars when something the chat runs on has a price.
+  // A new limit starts in dollars when something the chat runs on has a price, whether or not
+  // Show costs is on: that switch hides the running cost, not the dollar limit.
   const priced =
-    showPricing &&
-    ((!!costInfo &&
+    (!!costInfo &&
       ((costInfo.input_token_cost ?? 0) > 0 || (costInfo.output_token_cost ?? 0) > 0)) ||
-      (modelCostRows ?? []).some((row) => row.totalCost !== null && row.totalCost > 0));
+    (modelCostRows ?? []).some((row) => row.totalCost !== null && row.totalCost > 0);
   // One element at one place for every path, so a card the person pinned stays pinned when the
   // ledger's answer replaces the live price.
   if (!summary && !usageLimit) return null;

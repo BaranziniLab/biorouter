@@ -506,9 +506,25 @@ export default function ChatInput({
     if (wasLoadingForLimitRef.current && !isLoading) setTurnsEnded((count) => count + 1);
     wasLoadingForLimitRef.current = isLoading;
   }, [isLoading]);
-  const usageLimit = useSessionUsageLimit(sessionId, `${turnsEnded}:${usageLimitNoticeKey ?? ''}`);
-  const usagePaused = usageLimit.state?.paused === true;
-  const usagePausedBy = usagePaused ? (usageLimit.state?.reason ?? 'chat') : null;
+  // Read again whenever the chat's recorded usage moves, not only when a turn ends: a title's
+  // side call lands after the turn, and the near-limit mark must not wait for the next one.
+  const usageSignature =
+    (accumulatedInputTokens ?? 0) +
+    (accumulatedOutputTokens ?? 0) +
+    (modelCostRows ?? []).reduce((sum, row) => sum + (row.totalTokens ?? 0), 0);
+  const usageLimit = useSessionUsageLimit(
+    sessionId,
+    `${turnsEnded}:${usageLimitNoticeKey ?? ''}:${usageSignature}`
+  );
+  // A chat with no id yet has no per-chat limit, but the monthly one already holds it.
+  const usagePausedForMonth = !sessionId && usageLimit.month?.reached === true;
+  const usagePaused = usageLimit.state?.paused === true || usagePausedForMonth;
+  const usagePausedBy = usagePaused
+    ? usagePausedForMonth
+      ? 'month'
+      : (usageLimit.state?.reason ?? 'chat')
+    : null;
+  const usagePausedByEstimate = usageLimit.state?.pausedByEstimate === true;
   const submissionBlocked = submissionBlockedByOwner || usagePaused;
   const openUsageSettings = () => {
     const options: ViewOptions & { section: string } = { section: 'usage' };
@@ -3099,8 +3115,12 @@ export default function ChatInput({
           >
             <span className="text-supporting">
               {usagePausedBy === 'month'
-                ? USAGE_LIMIT_COPY.noticeMonth
-                : USAGE_LIMIT_COPY.noticeChat}
+                ? usagePausedByEstimate
+                  ? USAGE_LIMIT_COPY.noticeMonthNext
+                  : USAGE_LIMIT_COPY.noticeMonth
+                : usagePausedByEstimate
+                  ? USAGE_LIMIT_COPY.noticeChatNext
+                  : USAGE_LIMIT_COPY.noticeChat}
             </span>
             <Button
               type="button"

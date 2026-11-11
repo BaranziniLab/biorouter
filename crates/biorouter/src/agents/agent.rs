@@ -4303,11 +4303,22 @@ enum WrapUp {
     UsageLimit,
 }
 
+/// The request the loop top is about to send, as the usage limit gate
+/// estimates it ([`Agent::usage_limit_gate`]): borrowed from the loop, read
+/// only when a limit is in force.
+pub(super) struct NextRequestShape<'a> {
+    pub messages: &'a [Message],
+    pub system_prompt: &'a str,
+    pub tools: &'a [Tool],
+    pub provider: &'a str,
+    pub model: String,
+}
+
 /// What the usage limit gate decided before a model request
 /// ([`Agent::usage_limit_gate`]). Both arms carry events in yield order.
 pub(super) enum UsageLimitGate {
     Proceed,
-    /// The once-per-reply warning; the request goes ahead.
+    /// The near-limit warning, once per crossing; the request goes ahead.
     Notices(Vec<AgentEvent>),
     /// A limit is reached: end the turn with no further model request.
     Stop(Vec<AgentEvent>),
@@ -11965,18 +11976,50 @@ impl Agent {
     }
 
     /// The usage limit gate, asked before every model request of a reply
-    /// ([`crate::agents::usage_limit`]). Reached: the turn ends here, with no
-    /// further provider call and no wrap-up call, on a durable notice naming the
-    /// limit. A steer does not resume it ([`TurnExit::Final`], like the BR-35
-    /// spend cap). At 80% of a limit: one inline warning per reply. A failed
-    /// read proceeds (logged). Once a reply has stopped, later asks stop again
-    /// with no second notice. A plain `async fn` the loop boxes.
-    async fn usage_limit_gate(&self, session_id: &str, turns_taken: u32) -> UsageLimitGate {
+    /// ([`crate::agents::usage_limit`]). Reached, or the request about to be
+    /// sent estimated to pass a limit (`next`, the loop top's request): the
+    /// turn ends here, with no further provider call and no wrap-up call, on a
+    /// durable notice naming the limit and, for an estimate, how much is left.
+    /// A steer does not resume it ([`TurnExit::Final`], like the BR-35 spend
+    /// cap). At 80% of a limit: one stored warning per crossing
+    /// ([`crate::agents::usage_limit::announce_warning_once`]). A failed read
+    /// proceeds (logged). Once a reply has stopped, later asks stop again with
+    /// no second notice. A plain `async fn` the loop boxes.
+    async fn usage_limit_gate(
+        &self,
+        session_id: &str,
+        turns_taken: u32,
+        next: Option<NextRequestShape<'_>>,
+    ) -> UsageLimitGate {
         use crate::agents::usage_limit;
         if self.usage_limit_reply.stopped() {
             return UsageLimitGate::Stop(Vec::new());
         }
-        let check = match usage_limit::check(&self.config.session_manager, session_id).await {
+        let config = crate::config::UsageLimits::load();
+        let session_manager = &self.config.session_manager;
+        let checked = match next {
+            Some(next) => {
+                usage_limit::check_next(session_manager, session_id, &config, || {
+                    let estimate = crate::context_mgmt::estimate_request_size(
+                        next.messages,
+                        next.system_prompt,
+                        next.tools,
+                    ) as u64;
+                    let previous = self.usage_limit_reply.previous_prompt_estimate(session_id);
+                    self.usage_limit_reply
+                        .record_prompt_estimate(session_id, estimate);
+                    usage_limit::NextRequestInputs {
+                        provider: Some(next.provider.to_string()),
+                        model: Some(next.model),
+                        prompt_estimate: Some(estimate),
+                        previous_prompt_estimate: previous,
+                    }
+                })
+                .await
+            }
+            None => usage_limit::check_with(session_manager, session_id, &config).await,
+        };
+        let check = match checked {
             Ok(check) => check,
             Err(e) => {
                 warn!(
@@ -11986,7 +12029,7 @@ impl Agent {
                 return UsageLimitGate::Proceed;
             }
         };
-        if let Some(hit) = check.reached {
+        if let Some(hit) = check.reached.clone() {
             self.usage_limit_reply.take_stop();
             self.record_turn_exit(TurnExit::Final);
             crate::agents::subagent_handle::begin_parent_closing(session_id);
@@ -11994,6 +12037,7 @@ impl Agent {
                 session_id,
                 axis = hit.amount.axis(),
                 scope = ?hit.scope,
+                projected = hit.next_request.is_some(),
                 "usage limit reached; ending the turn before the next model request"
             );
             emit_loop_safety(
@@ -12013,8 +12057,8 @@ impl Agent {
             );
             return UsageLimitGate::Stop(events);
         }
-        match check.warning {
-            Some(hit) if self.usage_limit_reply.take_warning() => {
+        match self.usage_limit_warning_due(&check).await {
+            Some(hit) => {
                 emit_loop_safety(
                     LoopSafetyKind::UsageLimitWarn,
                     session_id,
@@ -12022,20 +12066,85 @@ impl Agent {
                     None,
                     Some(hit.amount.axis()),
                 );
-                UsageLimitGate::Notices(vec![AgentEvent::Message(inline_notice_user_only(
-                    usage_limit::warning_notice(&hit),
-                ))])
+                UsageLimitGate::Notices(vec![AgentEvent::Message(
+                    self.durable_notice(session_id, usage_limit::warning_notice(&hit))
+                        .await,
+                )])
             }
-            _ => UsageLimitGate::Proceed,
+            None => UsageLimitGate::Proceed,
+        }
+    }
+
+    /// The near-limit warning `check` makes due, once per crossing as the
+    /// chat's record says. When the record cannot be read or written, once per
+    /// reply instead.
+    async fn usage_limit_warning_due(
+        &self,
+        check: &crate::agents::usage_limit::LimitCheck,
+    ) -> Option<crate::agents::usage_limit::LimitHit> {
+        match crate::agents::usage_limit::announce_warning_once(&self.config.session_manager, check)
+            .await
+        {
+            Ok(due) => {
+                if due.is_some() {
+                    self.usage_limit_reply.take_warning();
+                }
+                due
+            }
+            Err(e) => {
+                warn!(
+                    session_id = check.billing_session_id.as_str(),
+                    "could not read the usage limit warnings given; warning once this reply: {e:#}"
+                );
+                check
+                    .warning
+                    .clone()
+                    .filter(|_| self.usage_limit_reply.take_warning())
+            }
+        }
+    }
+
+    /// What the composer and the prologue estimate the chat's next request
+    /// from: the bound provider and model, and no prompt size (so the
+    /// estimate is the previous request plus its answer).
+    async fn usage_limit_resting_inputs(&self) -> crate::agents::usage_limit::NextRequestInputs {
+        let (provider, model) = match self.provider().await {
+            Ok(provider) => (
+                Some(provider.get_name().to_string()),
+                Some(provider.get_model_config().model_name),
+            ),
+            Err(_) => (None, None),
+        };
+        crate::agents::usage_limit::NextRequestInputs {
+            provider,
+            model,
+            ..Default::default()
         }
     }
 
     /// The prologue's half of the usage limit: a message sent to a chat that is
-    /// already at a limit is stored by the caller and gets this durable notice,
-    /// and no model request is made. `None` when no limit is reached.
+    /// already at a limit, or whose next request is estimated to pass one, is
+    /// stored by the caller and gets this durable notice, and no model request
+    /// is made. `None` when the chat may go on.
     async fn usage_limit_paused_notice(&self, session_id: &str) -> Option<Message> {
         use crate::agents::usage_limit;
-        let hit = usage_limit::reached_limit(&self.config.session_manager, session_id).await?;
+        let config = crate::config::UsageLimits::load();
+        let inputs = self.usage_limit_resting_inputs().await;
+        let hit =
+            match usage_limit::check_next(&self.config.session_manager, session_id, &config, || {
+                inputs
+            })
+            .await
+            {
+                Ok(check) => check.reached?,
+                Err(e) => {
+                    warn!(
+                        session_id,
+                        "usage limit check failed, not enforced this time: {e:#}"
+                    );
+                    return None;
+                }
+            };
         self.record_turn_exit(TurnExit::Final);
         emit_loop_safety(
             LoopSafetyKind::UsageLimitStop,
@@ -12046,6 +12155,47 @@ impl Agent {
         );
         Some(
             self.durable_notice(session_id, usage_limit::stop_notice(&hit))
+                .await,
+        )
+    }
+
+    /// The end of a turn the usage limit did not stop: when the turn took the
+    /// chat (or the month) to a limit, or left too little for the next request
+    /// as the composer estimates it, the durable stop notice is stored now, so
+    /// the reason is in the transcript after a reload; when it crossed 80% of
+    /// one, the stored warning is. Nothing otherwise.
+    async fn usage_limit_turn_end_notice(&self, session_id: &str) -> Option<Message> {
+        use crate::agents::usage_limit;
+        if self.usage_limit_reply.stopped() {
+            return None;
+        }
+        let config = crate::config::UsageLimits::load();
+        let inputs = self.usage_limit_resting_inputs().await;
+        let check =
+            match usage_limit::check_next(&self.config.session_manager, session_id, &config, || {
+                inputs
+            })
+            .await
+            {
+                Ok(check) => check,
+                Err(e) => {
+                    warn!(
+                        session_id,
+                        "usage limit check failed at the end of the turn: {e:#}"
+                    );
+                    return None;
+                }
+            };
+        if let Some(hit) = check.reached.as_ref() {
+            self.usage_limit_reply.take_stop();
+            return Some(
+                self.durable_notice(session_id, usage_limit::stop_notice(hit))
+                    .await,
+            );
+        }
+        let hit = self.usage_limit_warning_due(&check).await?;
+        Some(
+            self.durable_notice(session_id, usage_limit::warning_notice(&hit))
                 .await,
         )
     }
@@ -13711,7 +13861,17 @@ impl Agent {
                 // Usage limits (per chat, default per chat, monthly), asked before
                 // every model request. Reached ends the turn here: no further
                 // provider call, no wrap-up call, and a steer is stored unanswered.
-                match boxed_off_frame(|| self.usage_limit_gate(&session_config.id, turns_taken)).await {
+                match boxed_off_frame(|| self.usage_limit_gate(
+                    &session_config.id,
+                    turns_taken,
+                    Some(NextRequestShape {
+                        messages: conversation.messages(),
+                        system_prompt: &system_prompt,
+                        tools: &tools,
+                        provider: reply_provider.get_name(),
+                        model: reply_provider.get_model_config().model_name,
+                    }),
+                )).await {
                     UsageLimitGate::Proceed => {}
                     UsageLimitGate::Notices(events) => {
                         for event in events {
@@ -15072,7 +15232,7 @@ impl Agent {
                             // exit gates (done gate, self-critique, Stop hooks,
                             // `turn_end` monitors) that would spend again.
                             match boxed_off_frame(|| {
-                                self.usage_limit_gate(&session_config.id, turns_taken)
+                                self.usage_limit_gate(&session_config.id, turns_taken, None)
                             })
                             .await
                             {
@@ -15965,6 +16125,17 @@ impl Agent {
             }
 
             crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
+
+            // A turn that took the chat to its usage limit (or past 80% of
+            // it) says so in the stored transcript now, not only when the next
+            // message is refused. Skipped when a limit already stopped it.
+            if let Some(notice) = boxed_off_frame(|| {
+                self.usage_limit_turn_end_notice(&session_config.id)
+            })
+            .await
+            {
+                yield AgentEvent::Message(notice);
+            }
 
             // Owner rule A1: whatever decision models did this turn (monitors,
             // `decide` batches, phase gates) is ONE stored marker, never a row

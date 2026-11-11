@@ -70,7 +70,7 @@ macro_rules! side_request_sql {
 
 pub mod side_usage;
 mod spend;
-pub use spend::SpendSnapshot;
+pub use spend::{RequestUsage, SpendSnapshot};
 
 pub const CURRENT_SCHEMA_VERSION: i32 = 21;
 

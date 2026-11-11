@@ -18,6 +18,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
+use biorouter::agents::usage_limit::{self, MonthlyLimitState};
 use biorouter::config::usage::{LimitChange, UsageLimitsUpdate};
 use biorouter::config::{percent_of, Config, UsageLimits};
 use biorouter::session::{UsageGroup, UsageReportRow, UsageSummary};
@@ -125,6 +126,33 @@ pub struct UsageSummaryResponse {
     pub default_session_token_limit: Option<i64>,
     /// Default per-chat dollar limit for chats without their own, or `null`.
     pub default_session_dollar_limit: Option<f64>,
+    /// The monthly limit is reached: every chat makes no model request until
+    /// it is raised or lifted, or the next local month begins. The reply loop's
+    /// own reading (`usage_limit::monthly_state_with`), so a new chat's
+    /// composer and Settings agree with it.
+    pub monthly_reached: bool,
+    /// The monthly limit is at 80% or more and not reached.
+    pub monthly_near: bool,
+    /// What the monthly limit compares with: billed tokens this month, or
+    /// `null` when no monthly limit is in force.
+    pub monthly_used_tokens: Option<i64>,
+    /// Priced dollars this month as the monthly limit counts them; `null` when
+    /// no monthly limit is in force or nothing is priced.
+    pub monthly_used_usd: Option<f64>,
+}
+
+/// `response` with the monthly limit's state as the reply loop reads it.
+fn with_monthly_state(
+    mut response: UsageSummaryResponse,
+    state: Option<&MonthlyLimitState>,
+) -> UsageSummaryResponse {
+    if let Some(state) = state {
+        response.monthly_reached = state.reached.is_some();
+        response.monthly_near = state.reached.is_none() && state.warning.is_some();
+        response.monthly_used_tokens = Some(state.spend.month_tokens);
+        response.monthly_used_usd = state.spend.month_usd;
+    }
+    response
 }
 
 /// Assemble the summary response from the raw totals + configured limits. Pure,
@@ -154,6 +182,10 @@ fn build_summary_response(summary: UsageSummary, limits: UsageLimits) -> UsageSu
         dollar_percent,
         default_session_token_limit: limits.default_session_tokens().map(|limit| limit as i64),
         default_session_dollar_limit: limits.default_session_usd(),
+        monthly_reached: false,
+        monthly_near: false,
+        monthly_used_tokens: None,
+        monthly_used_usd: None,
     }
 }
 
@@ -179,7 +211,14 @@ pub async fn get_usage_summary(
         .get_usage_summary()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(build_summary_response(summary, UsageLimits::load())))
+    let limits = UsageLimits::load();
+    let monthly = usage_limit::monthly_state_with(state.session_manager(), &limits)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(with_monthly_state(
+        build_summary_response(summary, limits),
+        monthly.as_ref(),
+    )))
 }
 
 /// A field that may be absent (keep), `null` (unlimited) or a value (set).
@@ -470,6 +509,58 @@ mod tests {
         assert!(json["tokenPercent"].is_null());
         assert_eq!(json["defaultSessionTokenLimit"], 5_000);
         assert!(json["defaultSessionDollarLimit"].is_null());
+    }
+
+    #[test]
+    fn the_summary_says_whether_the_monthly_limit_is_reached_or_near() {
+        use biorouter::agents::usage_limit::{
+            evaluate, resolve, ChatLimitOverride, MonthlyLimitState,
+        };
+        use biorouter::session::SpendSnapshot;
+        let limits = UsageLimits {
+            monthly_dollar_limit: Some(4.02),
+            ..UsageLimits::default()
+        };
+        let state_at = |usd: f64| {
+            let spend = SpendSnapshot {
+                month_tokens: 7_700_000,
+                month_usd: Some(usd),
+                month_usd_complete: true,
+                month: "2026-11".into(),
+                ..SpendSnapshot::default()
+            };
+            let (reached, warning) = evaluate(
+                &resolve(Some(ChatLimitOverride::Unlimited), &limits),
+                &spend,
+            );
+            MonthlyLimitState {
+                spend,
+                reached,
+                warning,
+            }
+        };
+        let summary = || summary_with_mtd(totals(1_000, Some(4.0), false));
+
+        let none = with_monthly_state(build_summary_response(summary(), limits.clone()), None);
+        assert!(!none.monthly_reached && !none.monthly_near);
+        assert_eq!(none.monthly_used_usd, None);
+
+        let near = with_monthly_state(
+            build_summary_response(summary(), limits.clone()),
+            Some(&state_at(4.01)),
+        );
+        assert!(near.monthly_near && !near.monthly_reached);
+        assert_eq!(near.monthly_used_usd, Some(4.01));
+        assert_eq!(near.monthly_used_tokens, Some(7_700_000));
+
+        let reached = with_monthly_state(
+            build_summary_response(summary(), limits.clone()),
+            Some(&state_at(4.03)),
+        );
+        assert!(reached.monthly_reached && !reached.monthly_near);
+        let json = serde_json::to_value(&reached).unwrap();
+        assert_eq!(json["monthlyReached"], true, "{json}");
+        assert_eq!(json["monthlyNear"], false, "{json}");
     }
 
     #[test]

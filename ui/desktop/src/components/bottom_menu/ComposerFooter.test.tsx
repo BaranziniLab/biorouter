@@ -227,6 +227,7 @@ describe('ComposerFooter (spec 3.7)', () => {
     const usageLimit: SessionUsageLimitController = {
       sessionId: 'chat-1',
       state: null,
+      month: null,
       loadFailed: false,
       saving: false,
       saveError: null,

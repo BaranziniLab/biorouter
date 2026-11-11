@@ -15,6 +15,8 @@ describe('reading a typed limit', () => {
     ['5.50', 5.5],
     [' 1,250 ', 1250],
     ['.5', 0.5],
+    ['0.013', 0.013],
+    ['$0.0125', 0.0125],
   ])('reads %j as $%d', (text, value) => {
     expect(parseLimitInput(text, 'usd')).toEqual({ ok: true, value });
   });
@@ -35,6 +37,11 @@ describe('reading a typed limit', () => {
     expect(parseLimitInput(text, 'tokens').ok).toBe(false);
   });
 
+  it('refuses a dollar amount past four decimals instead of rounding it', () => {
+    expect(parseLimitInput('0.01255', 'usd')).toEqual({ ok: false, reason: 'precision' });
+    expect(parseLimitInput('0.0125', 'usd')).toEqual({ ok: true, value: 0.0125 });
+  });
+
   it('refuses a token count that rounds to nothing', () => {
     expect(parseLimitInput('0.2', 'tokens').ok).toBe(false);
   });
@@ -43,14 +50,16 @@ describe('reading a typed limit', () => {
 describe('writing a limit', () => {
   it('formats dollars and tokens as the cards show them', () => {
     expect(formatLimitUsd(5)).toBe('$5.00');
-    expect(formatLimitUsd(0.004)).toBe('<$0.01');
+    expect(formatLimitUsd(0.004)).toBe('$0.004');
+    expect(formatLimitUsd(0.013)).toBe('$0.013');
     expect(formatLimitTokens(1)).toBe('1 token');
     expect(formatLimitTokens(500_000)).toBe('500,000 tokens');
   });
 
   it('seeds a field with the stored amount as a person would type it', () => {
     expect(limitInputValue(5, 'usd')).toBe('5');
-    expect(limitInputValue(5.256, 'usd')).toBe('5.26');
+    expect(limitInputValue(5.256, 'usd')).toBe('5.256');
+    expect(limitInputValue(0.013, 'usd')).toBe('0.013');
     expect(limitInputValue(500_000, 'tokens')).toBe('500000');
     expect(limitInputValue(null, 'tokens')).toBe('');
     expect(limitInputValue(0, 'usd')).toBe('');

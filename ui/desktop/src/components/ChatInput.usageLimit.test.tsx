@@ -11,7 +11,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { SessionUsageLimitResponse } from '../api';
 import { USAGE_LIMIT_COPY } from './bottom_menu/copy';
 
-const api = vi.hoisted(() => ({ getLimit: vi.fn() }));
+const api = vi.hoisted(() => ({ getLimit: vi.fn(), getSummary: vi.fn() }));
 
 vi.mock('./ConfigContext', () => ({
   useConfig: () => ({
@@ -55,6 +55,7 @@ vi.mock('../api', () => ({
   ollamaContextWindow: vi.fn(async () => ({ data: { model: 'x', context_window: null } })),
   updateWorkingDir: vi.fn(async () => ({ data: {} })),
   getSessionUsageLimit: api.getLimit,
+  getUsageSummary: api.getSummary,
   putSessionUsageLimit: vi.fn(),
 }));
 vi.mock('../utils/userAction', async (importOriginal) => ({
@@ -75,6 +76,7 @@ function limitState(overrides: Partial<SessionUsageLimitResponse> = {}): Session
     monthDollarLimitInert: false,
     monthly: { maxTokens: null, maxUsd: null },
     paused: false,
+    pausedByEstimate: false,
     reason: null,
     used: {
       chatTokens: 0,
@@ -98,6 +100,7 @@ const pausedBy = (reason: 'chat' | 'month') =>
 beforeEach(() => {
   vi.clearAllMocks();
   api.getLimit.mockResolvedValue({ data: limitState() });
+  api.getSummary.mockResolvedValue({ data: { monthlyReached: false, monthlyNear: false } });
   Object.assign(window, {
     appConfig: { get: () => '/default/workdir' },
     electron: {
@@ -114,17 +117,21 @@ beforeEach(() => {
 const setView = vi.fn();
 const handleSubmit = vi.fn();
 
-function composer(chatState = ChatState.Idle, usageLimitNoticeKey?: string) {
+function composer(
+  chatState = ChatState.Idle,
+  usageLimitNoticeKey?: string,
+  { sessionId = 'chat-a', inputTokens = 0 }: { sessionId?: string; inputTokens?: number } = {}
+) {
   return (
     <ChatInput
-      sessionId="chat-a"
+      sessionId={sessionId}
       handleSubmit={handleSubmit}
       chatState={chatState}
       onStop={vi.fn()}
       initialValue="hello"
       setView={setView}
       totalTokens={0}
-      accumulatedInputTokens={0}
+      accumulatedInputTokens={inputTokens}
       accumulatedOutputTokens={0}
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
@@ -205,5 +212,38 @@ describe('the composer while a usage limit holds the chat', () => {
     await waitFor(() => expect(api.getLimit).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(screen.queryByTestId('composer-usage-limit-notice')).toBeNull());
     expect(send()).not.toBeDisabled();
+  });
+
+  it('says the next request would pass the limit when that is why the chat is paused', async () => {
+    api.getLimit.mockResolvedValue({
+      data: { ...pausedBy('chat'), pausedByEstimate: true, nextRequest: { tokens: 36_000 } },
+    });
+    render(composer());
+    const notice = await screen.findByTestId('composer-usage-limit-notice');
+    expect(notice).toHaveTextContent(USAGE_LIMIT_COPY.noticeChatNext);
+    expect(send()).toBeDisabled();
+  });
+
+  it('holds Send in a new chat while the monthly limit is reached', async () => {
+    api.getSummary.mockResolvedValue({ data: { monthlyReached: true, monthlyNear: false } });
+    render(composer(ChatState.Idle, undefined, { sessionId: '' }));
+    const notice = await screen.findByTestId('composer-usage-limit-notice');
+    expect(notice).toHaveAttribute('data-reason', 'month');
+    expect(notice).toHaveTextContent(USAGE_LIMIT_COPY.noticeMonth);
+    expect(api.getSummary).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'X-User-Action': 'proof' } })
+    );
+    expect(api.getLimit).not.toHaveBeenCalled();
+    expect(send()).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', code: 'Enter' });
+    expect(handleSubmit).not.toHaveBeenCalled();
+  });
+
+  it('reads the limit again when the chat’s usage moves between turns', async () => {
+    const { rerender } = render(composer());
+    await waitFor(() => expect(api.getLimit).toHaveBeenCalledTimes(1));
+    // A title's side call lands after the turn and moves the chat's counters.
+    rerender(composer(ChatState.Idle, undefined, { inputTokens: 77 }));
+    await waitFor(() => expect(api.getLimit).toHaveBeenCalledTimes(2));
   });
 });

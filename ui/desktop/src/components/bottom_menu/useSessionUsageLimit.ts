@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getSessionUsageLimit,
+  getUsageSummary,
   putSessionUsageLimit,
   type SessionUsageLimitResponse,
   type SetSessionUsageLimitRequest,
@@ -18,9 +19,14 @@ import {
  * to hold Send and show the composer notice, and hands the same controller to the cost card in
  * the footer, so a change made in the card lifts the notice at once.
  *
- * Read when the chat changes, whenever `refreshKey` changes (`ChatInput` moves it after each turn
- * and when a stored limit notice lands), when the cost card opens (`reload`), and when Settings
- * says a limit changed (`USAGE_LIMITS_CHANGED_EVENT`). Every call carries `userActionHeaders()`,
+ * Read when the chat changes, whenever `refreshKey` changes (`ChatInput` moves it after each turn,
+ * when the chat's recorded usage moves, a title's side call included, and when a stored limit
+ * notice lands), when the cost card opens (`reload`), and when Settings says a limit changed
+ * (`USAGE_LIMITS_CHANGED_EVENT`).
+ *
+ * A composer with no chat yet (Home, a new tab) has no per-chat limit to read, but the monthly
+ * limit already holds it: it reads the month from `GET /usage/summary` instead (`month`), so Send
+ * is held there too rather than refused by the daemon after the person pressed it. Every call carries `userActionHeaders()`,
  * because a private chat's limit is refused without the proof. An answer for a chat the composer
  * no longer shows, or one a newer read has superseded, is dropped.
  */
@@ -29,6 +35,8 @@ export interface SessionUsageLimitController {
   sessionId: string | null;
   /** The last answer for `sessionId`, or `null` before the first one. */
   state: SessionUsageLimitResponse | null;
+  /** With no chat: the monthly limit's state, or `null` before the read or when it failed. */
+  month: { reached: boolean; near: boolean } | null;
   loadFailed: boolean;
   saving: boolean;
   /** Why the last write failed, or `null`. */
@@ -58,6 +66,8 @@ export function useSessionUsageLimit(
   const [savingFor, setSavingFor] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<SessionUsageLimitController['saveError']>(null);
   const [openCardRequest, setOpenCardRequest] = useState(0);
+  const [month, setMonth] = useState<{ reached: boolean; near: boolean } | null>(null);
+  const monthSeq = useRef(0);
   const current = useRef(chatId);
   const mounted = useRef(true);
   const seq = useRef(0);
@@ -94,13 +104,35 @@ export function useSessionUsageLimit(
     }
   }, []);
 
+  const loadMonth = useCallback(async () => {
+    const mine = ++monthSeq.current;
+    const wanted = () => mounted.current && current.current === null && monthSeq.current === mine;
+    try {
+      const result = await getUsageSummary({
+        headers: await userActionHeaders(),
+        throwOnError: false,
+      });
+      if (!result.data) throw new Error('usage summary');
+      if (!wanted()) return;
+      setMonth({
+        reached: result.data.monthlyReached === true,
+        near: result.data.monthlyNear === true,
+      });
+    } catch {
+      // The daemon still refuses a request at the limit; the composer just cannot say so first.
+      if (wanted()) setMonth(null);
+    }
+  }, []);
+
   const reload = useCallback(() => {
     if (current.current) void load(current.current);
-  }, [load]);
+    else void loadMonth();
+  }, [load, loadMonth]);
 
   useEffect(() => {
     if (chatId) void load(chatId);
-  }, [chatId, refreshKey, load]);
+    else void loadMonth();
+  }, [chatId, refreshKey, load, loadMonth]);
 
   useEffect(() => {
     const onChanged = (event: Event) => {
@@ -153,6 +185,7 @@ export function useSessionUsageLimit(
   return {
     sessionId: chatId,
     state: chatId && held?.sessionId === chatId ? held.state : null,
+    month: chatId ? null : month,
     loadFailed: chatId !== null && loadFailedFor === chatId,
     saving: chatId !== null && savingFor === chatId,
     saveError,

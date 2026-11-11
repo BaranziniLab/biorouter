@@ -19,9 +19,25 @@ used.
 | Default per-chat limit | Settings > App > Usage | The same, for every chat that has no limit of its own |
 | Monthly limit | Settings > App > Usage | Every chat, deleted chats included, in the current LOCAL calendar month |
 
-Each limit can be in tokens, in dollars, or both. Tokens are the billed total of every
-request: fresh input, output, cache reads and cache writes. Dollars are priced the same
-way the Usage panel prices them, cache included.
+Each limit can be in dollars, in tokens, or both. The editors start in dollars whenever
+the chat's model (or, in Settings, the current model) has a price, and in tokens when it
+has none, saying that a dollar limit cannot stop an unpriced model. Settings > App > Show
+costs hides the running cost, not the limit: a dollar limit can be set and is shown with
+that switch off. Dollars are priced the same way the Usage panel prices them, cache
+included. Tokens are the billed total of every request: fresh input, output, cache reads
+and cache writes.
+
+A dollar limit keeps every decimal it was given, up to four: `0.013` is stored as
+`0.013`, never rounded to a cent, and an amount with a fifth decimal is refused with a
+message rather than rounded.
+
+Every surface prints dollars one way (`formatUsd` in `ui/desktop/src/utils/formatUsd.ts`,
+`format_usd` in `usage_limit.rs`, which both run the cases in
+`ui/desktop/src/utils/formatUsdCases.json`): two decimals from $1 up, and below $1 three
+significant digits but never fewer than three decimals, so $0.0085 reads `$0.0085` in the
+cost, in its per-model row and in a notice. Where a used amount and its limit are read
+side by side, both take the fewest decimals that tell them apart, so `$0.177 of $0.18`
+never reads `$0.18 of $0.18`.
 
 A chat's limit has three states:
 
@@ -37,16 +53,31 @@ the month.
 
 ## What happens at a limit
 
-Before every model request in a reply, Biorouter compares what was used with the limits
-in force.
+Before every model request in a reply, Biorouter compares what was used, plus an
+estimate of the request about to be sent, with the limits in force.
 
-- **At 80%** of any limit, the chat shows one notice per reply that starts "This chat is
-  near its usage limit" or "Near the monthly usage limit".
+- **At 80%** of any limit, the chat stores one notice that starts "This chat is near its
+  usage limit" or "Near the monthly usage limit". It is given once per crossing, not
+  before every reply, and it survives a reload. Which warnings were given is kept on the
+  chat's row (`extension_data`, `usage_limit_notice/v1`), keyed by the limit's scope,
+  axis and value (and the month, for the monthly limit); a limit that changes, is lifted,
+  or is back under 80% after it was raised is forgotten there, so its next crossing warns
+  again. Writing the chat's own limit clears the record.
+- **When the next request would pass a limit**, the turn ends before it, so the last
+  request no longer runs whole past the limit. The stored notice says what is used, the
+  limit, what the next request is estimated at and how much is left. When one request
+  alone is estimated past the whole limit (a limit smaller than one request), it says so:
+  "One request is estimated at $0.0086, more than the whole limit of $0.005, so no request
+  fits under it."
 - **At 100%** the turn ends there. No further model request is made, and no wrap-up
   request either, because that would spend past the limit too. The chat stores a notice
   that names the limit, the limit's size and the amount used, and says where to raise or
   lift it: the cost in the composer for a chat limit, Settings > App > Usage for the
   default or the monthly limit.
+- **When a turn ends having reached a limit** (a request billed more than its estimate),
+  or leaving too little for the next request, the same stop notice is stored as the turn
+  ends, so the reason is in the transcript after a reload rather than only when the next
+  message is refused. A turn that crossed 80% stores the warning the same way.
 - **A message sent to a chat at a limit** is stored and answered with the same notice. No
   model request is made, and automatic compaction does not run, since a compaction is a
   model request.
@@ -78,6 +109,27 @@ Other spending doors follow the same rule:
   stopped, a chat still called "New chat" gets the first words of its first message as
   its title, and a chat that already has a title keeps it. The check is the same one the
   turn makes before each model request (`SessionManager::maybe_update_name`).
+
+## How the next request is estimated
+
+`usage_limit::project_request` estimates the next request from the ledger
+(`SessionManager::last_request_usage`, the chat's own last turn request, never a side call
+or a decision):
+
+- **Inside a turn**, the previous request's billed prompt is scaled by how much the
+  context manager's size estimate of the request grew since it was sent
+  (`context_mgmt::estimate_request_size`, held per chat on the agent), so a large tool
+  result counts before it is sent.
+- **At a reply's first request, in the composer and in the prologue**, the estimate is the
+  previous prompt plus its answer, which joins the history. The three use the same rule, so
+  they agree on whether the chat is paused.
+- **Before a chat's first request**, the prompt is the context manager's size estimate.
+- The previous request's cache read and cache write shares and its output carry over. A
+  chat's first request takes them from the model's last request in any chat
+  (`last_request_usage_for_model`), or assumes no cache.
+- Dollars are priced at the bound model's rates (its long-context rate past the threshold),
+  or the previous request's model when the bound one has no price. An estimate with no
+  price is never compared with a dollar limit.
 
 ## When a dollar limit cannot fire
 
@@ -119,33 +171,44 @@ chat in the sidebar (coordinator ruling 16).
 
 | Route | Gate | What it does |
 | --- | --- | --- |
-| `GET /sessions/{session_id}/usage-limit` | `session_reach` | The chat's effective limit and where it came from, its own setting, the defaults, the monthly limit, what was used, and `paused`, `reason` and `warn`. The month's totals (`used.monthTokens`, `used.monthUsd`) sum every chat, private ones included, so they are `null` unless the request carries the user-action proof |
+| `GET /sessions/{session_id}/usage-limit` | `session_reach` | The chat's effective limit and where it came from, its own setting, the defaults, the monthly limit, what was used, and `paused`, `reason` and `warn`. `paused` also holds when the next request is estimated to pass a limit: `pausedByEstimate` is then `true`, and `nextRequest` (`tokens`, `usd`) is the estimate. The month's totals (`used.monthTokens`, `used.monthUsd`) sum every chat, private ones included, so they are `null` unless the request carries the user-action proof |
 | `PUT /sessions/{session_id}/usage-limit` | `session_reach`, then the user-action proof | `{ "mode": "inherit" \| "unlimited" \| "limit", "maxTokens"?, "maxUsd"? }`; answers in the `GET` shape. A subagent's chat is refused: set the limit on its parent |
 | `PUT /usage/limits` | The user-action proof | `{ monthlyTokenLimit?, monthlyDollarLimit?, defaultSessionTokenLimit?, defaultSessionDollarLimit? }`; a field left out is kept and `null` is unlimited |
-| `GET /usage/summary` | The user-action proof | Month to date against the monthly limits, plus the default per-chat limits |
+| `GET /usage/summary` | The user-action proof | Month to date against the monthly limits, plus the default per-chat limits, and the monthly limit's state as the reply loop reads it: `monthlyReached`, `monthlyNear`, `monthlyUsedTokens`, `monthlyUsedUsd`. A new chat's composer reads `monthlyReached` to hold Send before the chat exists, and Settings shows the monthly limit's progress from these |
 
 The renderer recognises the stored notices by their prefixes, which are mirrored in
 `ui/desktop/src/components/conversation/usageLimitNotice.ts`; a Rust test reads that file.
 
 In the desktop app a chat's own limit is set from the cost under its composer (the cost
 card's Limit section), and the monthly and default limits in Settings > App > Usage; see
-[Shared controls](../desktop-ui/shared-controls.md#the-cost-cards-limit-section).
+[Shared controls](../desktop-ui/shared-controls.md#the-cost-cards-limit-section). The
+composer reads the chat's limit when it opens, after every turn, when a stored limit
+notice lands and whenever the chat's recorded usage moves (a title's side call lands after
+the turn). A composer with no chat yet reads the monthly state from `GET /usage/summary`
+and holds Send while the monthly limit is reached. Under the monthly limit's row, Settings
+shows what the month used against it and whether it is near or reached.
 
 ## Where the code is
 
 - `crates/biorouter/src/agents/usage_limit.rs`: the stored override, the resolver, the
-  comparison, the notice texts and the per-reply warn and stop state.
+  comparison, the next-request estimate (`project_request`, `estimate_next_request`,
+  `check_next`), the warning record (`announce_warning_once`), the dollar formatter, the
+  notice texts and the per-reply warn and stop state.
 - `crates/biorouter/src/session/session_manager/spend.rs`: `SessionManager::spend_snapshot`,
-  the one spend read every check uses.
+  the one spend read every check uses, and `last_request_usage`, the request an estimate
+  starts from.
 - `crates/biorouter/src/agents/agent.rs`: `Agent::usage_limit_gate` (before every model
-  request and before an overflow compaction) and `Agent::usage_limit_paused_notice` (the
-  prologue).
+  request, with the estimate, and before an overflow compaction, without it),
+  `Agent::usage_limit_paused_notice` (the prologue) and `Agent::usage_limit_turn_end_notice`
+  (the end of a turn the limit did not stop).
 - `crates/biorouter/src/config/usage.rs`: the `usage:` section and its merge write.
 - `crates/biorouter-server/src/routes/usage_limit.rs` and `routes/usage.rs`: the routes.
 
-Tests: `cargo test -p biorouter --lib -- usage_limit config::usage`,
-`cargo test -p biorouter --test usage_limit_agent_loop`, and
-`cargo test -p biorouter-server --lib -- routes::usage routes::usage_limit`.
+Tests: `cargo test -p biorouter --lib -- usage_limit spend config::usage`,
+`cargo test -p biorouter --test usage_limit_agent_loop`,
+`cargo test -p biorouter-server --lib -- routes::usage routes::usage_limit`, and in
+`ui/desktop`, `npx vitest run src/utils/formatUsd.test.ts src/components/bottom_menu
+src/components/settings/usage src/components/usage src/components/ChatInput.usageLimit.test.tsx`.
 
 ## Related documentation
 

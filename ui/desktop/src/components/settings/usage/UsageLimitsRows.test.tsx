@@ -12,8 +12,9 @@ import {
 
 /**
  * Settings > App > Usage's Limits group (owner requirement 3): the monthly limit and the default
- * limit per chat, "No limit" until set, in tokens or dollars (dollars only while Show costs is
- * on), saved through `PUT /usage/limits` with the person's proof.
+ * limit per chat, "No limit" until set, in dollars (first, for a priced model) or tokens, whether
+ * or not Show costs is on, saved through `PUT /usage/limits` with the person's proof. The monthly
+ * row also says what the month used against its limit and whether it is near or reached.
  */
 const mocks = vi.hoisted(() => ({
   put: vi.fn(),
@@ -49,14 +50,52 @@ describe('the Limits group', () => {
     expect(row('defaultPerChat')).toHaveTextContent(copy.noLimit);
   });
 
-  it('shows the stored values, without dollar figures when Show costs is off', () => {
-    const limits = { ...NONE, monthlyDollarLimit: 50, defaultSessionTokenLimit: 2_000_000 };
+  it('shows the stored values, a sub-cent limit as stored, and the limit with Show costs off', () => {
+    const limits = { ...NONE, monthlyDollarLimit: 50, defaultSessionDollarLimit: 0.013 };
     const { rerender } = render(<UsageLimitsRows limits={limits} showCosts onSaved={vi.fn()} />);
     expect(row('monthly')).toHaveTextContent('$50.00');
-    expect(row('defaultPerChat')).toHaveTextContent('2,000,000 tokens');
+    expect(row('defaultPerChat')).toHaveTextContent('$0.013');
     rerender(<UsageLimitsRows limits={limits} showCosts={false} onSaved={vi.fn()} />);
-    expect(row('monthly').textContent).not.toMatch(/\$/);
-    expect(row('monthly')).toHaveTextContent(copy.dollarLimitHidden);
+    expect(row('monthly')).toHaveTextContent('$50.00');
+  });
+
+  it('shows the monthly limit\u2019s progress, near and reached', () => {
+    const limits = { ...NONE, monthlyDollarLimit: 4.02 };
+    const progress = { usedTokens: 7_700_000, usedUsd: 4.01, reached: false, near: true };
+    const { rerender } = render(
+      <UsageLimitsRows limits={limits} showCosts monthProgress={progress} onSaved={vi.fn()} />
+    );
+    const line = screen.getByTestId('usage-limit-progress-monthly');
+    expect(line).toHaveTextContent(copy.monthUsed('$4.01', '$4.02'));
+    expect(line).toHaveTextContent(copy.monthNear);
+    expect(line).toHaveAttribute('data-limit-state', 'warn');
+
+    rerender(
+      <UsageLimitsRows
+        limits={limits}
+        showCosts
+        monthProgress={{ ...progress, usedUsd: 4.03, reached: true, near: false }}
+        onSaved={vi.fn()}
+      />
+    );
+    expect(screen.getByTestId('usage-limit-progress-monthly')).toHaveTextContent(copy.monthReached);
+    expect(screen.getByTestId('usage-limit-progress-monthly')).toHaveAttribute(
+      'data-limit-state',
+      'paused'
+    );
+
+    // Show costs off hides the month's dollar spend, never the state.
+    rerender(
+      <UsageLimitsRows
+        limits={limits}
+        showCosts={false}
+        monthProgress={{ ...progress, reached: true, near: false }}
+        onSaved={vi.fn()}
+      />
+    );
+    const hidden = screen.getByTestId('usage-limit-progress-monthly');
+    expect(hidden).not.toHaveTextContent('$4.01');
+    expect(hidden).toHaveTextContent(copy.monthReached);
   });
 
   it('is pending, with Change waiting, while the first read runs', () => {
@@ -121,15 +160,42 @@ describe('the Limits group', () => {
     );
   });
 
-  it('offers tokens only with Show costs off, and refuses what is not an amount', async () => {
+  it('offers dollars first with Show costs off, keeps a sub-cent amount, and refuses more decimals', async () => {
     const user = userEvent.setup();
+    mocks.put.mockResolvedValue({ data: { defaultSessionDollarLimit: 0.013 } });
     render(<UsageLimitsRows limits={NONE} showCosts={false} onSaved={vi.fn()} />);
-    await user.click(screen.getByRole('button', { name: copy.changeName(copy.monthly) }));
-    expect(screen.queryByRole('radio')).toBeNull();
-    const field = screen.getByLabelText(copy.amountLabel(copy.monthly));
+    await user.click(screen.getByRole('button', { name: copy.changeName(copy.defaultPerChat) }));
+    expect(screen.getByRole('radio', { name: copy.dollars })).toBeChecked();
+    const field = screen.getByLabelText(copy.amountLabel(copy.defaultPerChat));
+    // The field's name says its unit.
+    expect(field).toHaveAccessibleName(copy.amountName(copy.defaultPerChat, copy.dollars));
     await user.type(field, 'zero{Enter}');
-    expect(screen.getByRole('alert')).toHaveTextContent(copy.invalidTokens);
+    expect(screen.getByRole('alert')).toHaveTextContent(copy.invalidUsd);
+    await user.clear(field);
+    await user.type(field, '0.01255{Enter}');
+    expect(screen.getByRole('alert')).toHaveTextContent(copy.invalidUsdPrecision);
     expect(mocks.put).not.toHaveBeenCalled();
+    await user.clear(field);
+    await user.type(field, '0.013{Enter}');
+    await waitFor(() =>
+      expect(mocks.put).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { defaultSessionDollarLimit: 0.013, defaultSessionTokenLimit: null },
+        })
+      )
+    );
+  });
+
+  it('starts in tokens for an unpriced model, and says why a dollar limit cannot stop it', async () => {
+    const user = userEvent.setup();
+    render(<UsageLimitsRows limits={NONE} showCosts priced={false} onSaved={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: copy.changeName(copy.monthly) }));
+    expect(screen.getByRole('radio', { name: copy.tokens })).toBeChecked();
+    expect(screen.queryByTestId('usage-limit-monthly-unpriced')).toBeNull();
+    await user.click(screen.getByRole('radio', { name: copy.dollars }));
+    expect(screen.getByTestId('usage-limit-monthly-unpriced')).toHaveTextContent(
+      copy.unpricedDollar
+    );
   });
 
   it('says a refused write could not be tied to a person, and keeps the editor open', async () => {
@@ -166,33 +232,31 @@ describe('the Limits group', () => {
 });
 
 describe('a row’s write', () => {
-  it('clears the other unit, and leaves a hidden dollar limit alone with Show costs off', () => {
-    expect(limitsUpdate('monthly', { unit: 'usd', value: 5 }, true)).toEqual({
+  it('clears the other unit', () => {
+    expect(limitsUpdate('monthly', { unit: 'usd', value: 5 })).toEqual({
       monthlyDollarLimit: 5,
       monthlyTokenLimit: null,
     });
-    expect(limitsUpdate('monthly', { unit: 'tokens', value: 9 }, true)).toEqual({
+    expect(limitsUpdate('monthly', { unit: 'tokens', value: 9 })).toEqual({
       monthlyTokenLimit: 9,
       monthlyDollarLimit: null,
     });
-    expect(limitsUpdate('defaultPerChat', { unit: 'tokens', value: 9 }, false)).toEqual({
+    expect(limitsUpdate('defaultPerChat', { unit: 'tokens', value: 9 })).toEqual({
       defaultSessionTokenLimit: 9,
+      defaultSessionDollarLimit: null,
     });
-    expect(limitsUpdate('defaultPerChat', null, false)).toEqual({
+    expect(limitsUpdate('defaultPerChat', null)).toEqual({
       defaultSessionTokenLimit: null,
       defaultSessionDollarLimit: null,
     });
   });
 
   it('reads a stored 0 as no limit, as the daemon does', () => {
-    expect(configuredLimitReading({ ...NONE, monthlyTokenLimit: 0 }, 'monthly', true)).toBe(
-      copy.noLimit
-    );
+    expect(configuredLimitReading({ ...NONE, monthlyTokenLimit: 0 }, 'monthly')).toBe(copy.noLimit);
     expect(
       configuredLimitReading(
         { ...NONE, monthlyTokenLimit: 1_000, monthlyDollarLimit: 2 },
-        'monthly',
-        true
+        'monthly'
       )
     ).toBe('$2.00 · 1,000 tokens');
   });
