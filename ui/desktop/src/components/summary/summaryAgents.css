@@ -62,7 +62,6 @@
    hover wash has room. */
 .br-agents__row,
 .br-agents__phase-toggle,
-.br-agents__group-toggle,
 .br-agents__more {
   display: flex;
   width: calc(100% + 16px);
@@ -93,14 +92,12 @@
 
 .br-agents__row:hover,
 .br-agents__phase-toggle:not([data-static]):hover,
-.br-agents__group-toggle:hover,
 .br-agents__more:hover {
   background-color: var(--br-control-hover, var(--background-fill-strong));
 }
 
 .br-agents__row:focus-visible,
 .br-agents__phase-toggle:focus-visible,
-.br-agents__group-toggle:focus-visible,
 .br-agents__more:focus-visible,
 .br-agents__retry:focus-visible {
   outline: none;
@@ -487,7 +484,6 @@
 @media (prefers-reduced-motion: reduce) {
   .br-agents__row,
   .br-agents__phase-toggle,
-  .br-agents__group-toggle,
   .br-agents__more,
   .br-agents__chevron {
     transition: none;

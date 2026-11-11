@@ -345,6 +345,7 @@ export function ChatSummary({
             onOpenChange={setDetailsOpen}
             controls={detailsId}
             testId="summary-details-toggle"
+            countDescribes
           />
           {detailsOpen ? (
             <dl

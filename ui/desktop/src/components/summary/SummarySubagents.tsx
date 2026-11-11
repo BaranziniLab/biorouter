@@ -586,7 +586,7 @@ function AgentGrid({
       <ul
         ref={listRef}
         className="br-agent-grid__cells"
-        aria-label={title ? copy.gridLabel(title) : copy.subagentListLabel}
+        aria-label={title ? copy.gridLabel(title) : copy.gridOfChat}
         onKeyDown={onKeyDown}
       >
         {group.rows.map((row, i) => {
@@ -679,7 +679,7 @@ function GroupBody({
         <AgentGrid group={view.group} size={size} title={view.title} controls={controls} />
       ) : null}
       <ul
-        aria-label={view.title ? copy.rowsLabel(view.title) : copy.subagentListLabel}
+        aria-label={view.title ? copy.rowsLabel(view.title) : copy.rowsOfChat}
         className="br-agents__list"
         data-layout={size === 'rows' ? 'comfortable' : 'dense'}
       >

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import { ChevronRight } from '../icons/app-icons';
 import './summaryAgents.css';
 
@@ -32,6 +32,7 @@ export function SummarySectionHeading({
   trailing,
   children,
   testId,
+  countDescribes = false,
 }: {
   label: string;
   /** The visible count, beside the label; read by the caller's live region. */
@@ -44,7 +45,14 @@ export function SummarySectionHeading({
   /** The caller's `sr-only` live count, kept a sibling of the heading's `h3`. */
   children?: ReactNode;
   testId?: string;
+  /**
+   * The count is the toggle's accessible description (This chat's "211k tokens"),
+   * for a section with no live count of its own to read it.
+   */
+  countDescribes?: boolean;
 }) {
+  const countId = useId();
+  const hasCount = count !== undefined && count !== null && count !== '';
   return (
     <div
       className="br-summary__heading"
@@ -57,6 +65,7 @@ export function SummarySectionHeading({
           className="br-summary__toggle"
           aria-expanded={open}
           aria-controls={open ? controls : undefined}
+          aria-describedby={countDescribes && hasCount ? countId : undefined}
           data-testid={testId}
           onClick={() => onOpenChange(!open)}
         >
@@ -64,8 +73,8 @@ export function SummarySectionHeading({
             <ChevronRight />
           </span>
           <span className="br-summary__toggle-label">{label}</span>
-          {count !== undefined && count !== null && count !== '' ? (
-            <span className="br-summary__count" aria-hidden="true">
+          {hasCount ? (
+            <span id={countId} className="br-summary__count" aria-hidden="true">
               {count}
             </span>
           ) : null}

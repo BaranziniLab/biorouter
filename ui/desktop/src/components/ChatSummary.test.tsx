@@ -129,12 +129,13 @@ describe('compact chat summary', () => {
     expect(dl).not.toHaveAttribute('aria-busy');
   });
 
-  it('keeps the statistics behind a closed Details whose summary is the token figure (F-1)', () => {
+  it('keeps the statistics in a closed This chat whose heading carries the token figure (F-1)', () => {
     render(<ChatSummary {...props} />);
     const trigger = screen.getByRole('button', { name: summaryCopy.details });
+    expect(summaryCopy.details).toBe('This chat');
     expect(trigger).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText(summaryCopy.toolCalls)).not.toBeInTheDocument();
-    // The closed summary is the token figure alone, read as the trigger's description.
+    // The heading's figure is the token count alone, read as the toggle's description.
     expect(trigger).toHaveAccessibleDescription(summaryCopy.detailsSummary('211k'));
     expect(summaryCopy.detailsSummary('211k')).toBe('211k tokens');
     openDetails();
