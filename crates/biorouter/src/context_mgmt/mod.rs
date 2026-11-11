@@ -845,6 +845,15 @@ fn fixed_request_bytes(system_prompt: &str, tools: &[Tool]) -> (usize, usize) {
     (bytes, overhead)
 }
 
+/// [`estimate_request_tokens`] for callers outside this module: the usage
+/// limits size a chat's first request with it, and scale the previous
+/// request's billed prompt by how much it grows since
+/// (`agents::usage_limit::project_request`). It over-counts by design, so a
+/// ratio of two of them is what to trust, more than either alone.
+pub fn estimate_request_size(messages: &[Message], system_prompt: &str, tools: &[Tool]) -> usize {
+    estimate_request_tokens(messages, system_prompt, tools)
+}
+
 /// A byte-count-based token estimate for the whole request (system prompt +
 /// agent-visible messages + tool schemas). No tokenizer, no allocation per
 /// message — it walks the text that is already in memory.

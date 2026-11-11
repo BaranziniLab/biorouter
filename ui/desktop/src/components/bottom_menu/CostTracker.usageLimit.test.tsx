@@ -44,6 +44,8 @@ function limitState(overrides: Partial<SessionUsageLimitResponse> = {}): Session
     monthDollarLimitInert: false,
     monthly: { maxTokens: null, maxUsd: null },
     paused: false,
+    pausedByEstimate: false,
+    nextRequest: null,
     reason: null,
     used: {
       chatTokens: 12_000,
@@ -294,7 +296,7 @@ describe('the cost item with a usage limit to manage', () => {
     expect(await within(dialog).findByRole('alert')).toHaveTextContent(USAGE_LIMIT_COPY.needUser);
   });
 
-  it('shows tokens only, and offers no dollar unit, with Show costs off', async () => {
+  it('hides the spend but not the limit with Show costs off, and still offers dollars', async () => {
     const user = userEvent.setup();
     localStorage.setItem('show_pricing', 'false');
     mocks.getLimit.mockResolvedValue({
@@ -310,9 +312,13 @@ describe('the cost item with a usage limit to manage', () => {
     const dialog = await openCard(await screen.findByTestId('chat-usage'));
     const section = within(dialog).getByTestId('usage-limit-section');
     await waitFor(() => expect(section).toHaveTextContent('200,000 tokens'));
-    expect(dialog.textContent).not.toMatch(/\$/);
+    // The limit is the person's own number; what was spent is the running cost the switch hides.
+    expect(section).toHaveTextContent('$5.00 · 200,000 tokens');
+    expect(dialog).not.toHaveTextContent('$1.20');
     await user.click(within(dialog).getByRole('button', { name: USAGE_LIMIT_COPY.setLimit }));
-    expect(within(dialog).queryByRole('radio')).toBeNull();
+    // Dollars first for a priced chat, Show costs or not.
+    expect(within(dialog).getByRole('radio', { name: USAGE_LIMIT_COPY.dollars })).toBeChecked();
+    await user.click(within(dialog).getByRole('radio', { name: USAGE_LIMIT_COPY.tokens }));
     await user.type(within(dialog).getByLabelText(USAGE_LIMIT_COPY.fieldLabel), '1m{Enter}');
     await waitFor(() =>
       expect(mocks.putLimit).toHaveBeenCalledWith(
@@ -338,6 +344,51 @@ describe('the cost item with a usage limit to manage', () => {
     );
     const dialog = await openCard(usageTrigger());
     expect(within(dialog).getByRole('alert')).toHaveTextContent(USAGE_LIMIT_COPY.pausedChat);
+  });
+
+  it('says the next request would pass the limit, and how much is left', async () => {
+    mocks.getLimit.mockResolvedValue({
+      data: limitState({
+        limit: { maxTokens: null, maxUsd: 0.18, source: 'chat' },
+        chatOverride: { mode: 'limit', maxUsd: 0.18 },
+        used: { ...limitState().used, chatUsd: 0.1766 },
+        paused: true,
+        pausedByEstimate: true,
+        nextRequest: { tokens: 36_000, usd: 0.0074 },
+        reason: 'chat',
+      }),
+    });
+    render(<Harness modelCostRows={[pricedRow]} />);
+    const dialog = await openCard(await screen.findByTestId('chat-cost'));
+    await waitFor(() =>
+      expect(within(dialog).getByRole('alert')).toHaveTextContent(USAGE_LIMIT_COPY.pausedChatNext)
+    );
+    const section = within(dialog).getByTestId('usage-limit-section');
+    // Used and limit never read alike: $0.177, not $0.18.
+    expect(section).toHaveTextContent('$0.177 of $0.18 used');
+    expect(section).toHaveTextContent(USAGE_LIMIT_COPY.nextRequest('$0.0074', '$0.0034'));
+  });
+
+  it('names the field by its unit, refuses a fifth decimal, and says an unpriced chat needs tokens', async () => {
+    const user = userEvent.setup();
+    mocks.pricing.mockResolvedValue(null);
+    render(<Harness modelCostRows={[]} />);
+    const dialog = await openCard(usageTrigger());
+    await user.click(within(dialog).getByRole('button', { name: USAGE_LIMIT_COPY.setLimit }));
+    // No price: tokens first, and dollars say why they cannot stop this chat.
+    expect(within(dialog).getByRole('radio', { name: USAGE_LIMIT_COPY.tokens })).toBeChecked();
+    const field = within(dialog).getByLabelText(USAGE_LIMIT_COPY.fieldLabel);
+    expect(field).toHaveAccessibleName(USAGE_LIMIT_COPY.fieldNameTokens);
+    await user.click(within(dialog).getByRole('radio', { name: USAGE_LIMIT_COPY.dollars }));
+    expect(within(dialog).getByTestId('usage-limit-unpriced')).toHaveTextContent(
+      USAGE_LIMIT_COPY.unpricedDollar
+    );
+    expect(field).toHaveAccessibleName(USAGE_LIMIT_COPY.fieldNameDollars);
+    await user.type(field, '0.01255{Enter}');
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(
+      USAGE_LIMIT_COPY.invalidUsdPrecision
+    );
+    expect(mocks.putLimit).not.toHaveBeenCalled();
   });
 
   it('tints the trigger at 80% of a limit', async () => {

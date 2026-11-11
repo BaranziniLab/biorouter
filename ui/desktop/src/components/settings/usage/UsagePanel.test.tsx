@@ -110,6 +110,8 @@ function summary(overrides: Partial<UsageSummaryResponse> = {}): UsageSummaryRes
     monthlyDollarLimit: null,
     tokenPercent: null,
     dollarPercent: null,
+    monthlyReached: false,
+    monthlyNear: false,
     ...overrides,
   };
 }
@@ -149,9 +151,9 @@ describe('formatters', () => {
     ).toBe('Unavailable');
   });
 
-  it('formats cost, folding sub-cent and null', () => {
+  it('formats cost in the shared dollar format, and null as unavailable', () => {
     expect(formatCost(5)).toBe('$5.00');
-    expect(formatCost(0.004)).toBe('<$0.01');
+    expect(formatCost(0.004)).toBe('$0.004');
     expect(formatCost(null)).toBe('Unavailable');
     expect(formatCost(undefined)).toBe('Unavailable');
     expect(formatCostEstimate(5)).toBe('$5.00');

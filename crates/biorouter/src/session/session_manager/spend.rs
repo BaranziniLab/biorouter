@@ -45,6 +45,42 @@ pub struct SpendSnapshot {
     pub month: String,
 }
 
+/// The token buckets of one earlier model request, as the ledger holds them.
+/// The usage limits estimate the next request from it
+/// (`agents::usage_limit::project_request`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, sqlx::FromRow)]
+pub struct RequestUsage {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub provider: Option<String>,
+    pub model_id: Option<String>,
+}
+
+impl RequestUsage {
+    /// The whole prompt: fresh input plus cache read plus cache write, which
+    /// the ledger keeps disjoint.
+    pub fn prompt_tokens(&self) -> i64 {
+        self.input_tokens + self.cache_read_tokens + self.cache_creation_tokens
+    }
+}
+
+/// The columns of [`RequestUsage`], for a ledger row that is a turn's model
+/// request: side calls (`side:`) and decision calls (`decision:`) are left
+/// out, since neither is the shape of the chat's next request.
+const REQUEST_USAGE_SQL: &str = "SELECT COALESCE(input_tokens, 0) AS input_tokens,
+            COALESCE(output_tokens, 0) AS output_tokens,
+            COALESCE(cache_read_tokens, 0) AS cache_read_tokens,
+            COALESCE(cache_creation_tokens, 0) AS cache_creation_tokens,
+            provider,
+            model_id
+       FROM token_events
+      WHERE (event_key IS NULL
+             OR (event_key NOT LIKE 'side:%' AND event_key NOT LIKE 'decision:%'))
+        AND COALESCE(input_tokens, 0) + COALESCE(cache_read_tokens, 0)
+            + COALESCE(cache_creation_tokens, 0) > 0";
+
 /// The chat's own ledger rows plus its direct subagents', in the shared grain
 /// shape (prompt bands included) so they price exactly like the usage summary.
 fn chat_grain_sql() -> String {
@@ -60,6 +96,37 @@ impl SessionManager {
     /// since pricing may consult the network-backed catalog.
     pub async fn spend_snapshot(&self, session_id: &str, with_usd: bool) -> Result<SpendSnapshot> {
         self.storage.spend_snapshot(session_id, with_usd).await
+    }
+
+    /// The last model request `session_id` made itself (not a side call, not a
+    /// decision, not a subagent's), or `None` before its first.
+    pub async fn last_request_usage(&self, session_id: &str) -> Result<Option<RequestUsage>> {
+        let pool = self.storage.pool().await?;
+        Ok(sqlx::query_as::<_, RequestUsage>(&format!(
+            "{REQUEST_USAGE_SQL} AND session_id = ?1 ORDER BY id DESC LIMIT 1"
+        ))
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?)
+    }
+
+    /// The last model request any chat made to `provider`'s `model`, which
+    /// gives a chat's first request the cache hit rate the model has been
+    /// getting.
+    pub async fn last_request_usage_for_model(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Result<Option<RequestUsage>> {
+        let pool = self.storage.pool().await?;
+        Ok(sqlx::query_as::<_, RequestUsage>(&format!(
+            "{REQUEST_USAGE_SQL} AND provider = ?1 COLLATE NOCASE AND model_id = ?2 COLLATE NOCASE
+              ORDER BY id DESC LIMIT 1"
+        ))
+        .bind(provider)
+        .bind(model)
+        .fetch_optional(pool)
+        .await?)
     }
 }
 
@@ -217,6 +284,62 @@ mod tests {
         assert!(!rows[0].cost_is_partial);
         assert_eq!(rows[0].long_context_turns, 1);
         assert_eq!(rows[0].turns, 2);
+    }
+
+    /// The last request is the chat's own last turn request: a side call
+    /// after it, a subagent's request and another chat's are not it.
+    #[tokio::test]
+    async fn the_last_request_is_the_chats_own_last_turn_request() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let chat = sm
+            .create_session(temp.path().to_path_buf(), "sol".into(), SessionType::User)
+            .await
+            .unwrap();
+        let other = sm
+            .create_session(temp.path().to_path_buf(), "other".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert_eq!(sm.last_request_usage(&chat.id).await.unwrap(), None);
+
+        sm.apply_usage_event(sol_turn(&chat.id, "t1", 1_000, 0, 10))
+            .await
+            .unwrap();
+        sm.apply_usage_event(sol_turn(&chat.id, "t2", 200, 30_000, 40))
+            .await
+            .unwrap();
+        sm.apply_side_usage_event(super::super::SideUsageEntry {
+            event_key: "side:session_name:1".into(),
+            session_id: chat.id.clone(),
+            provider: "versa_azure".into(),
+            model_id: SOL.into(),
+            input_tokens: Some(77),
+            output_tokens: Some(40),
+        })
+        .await
+        .unwrap();
+        sm.apply_usage_event(sol_turn(&other.id, "o1", 5, 5, 5))
+            .await
+            .unwrap();
+
+        let last = sm.last_request_usage(&chat.id).await.unwrap().unwrap();
+        assert_eq!(last.input_tokens, 200);
+        assert_eq!(last.cache_read_tokens, 30_000);
+        assert_eq!(last.output_tokens, 40);
+        assert_eq!(last.prompt_tokens(), 30_200);
+
+        let any = sm
+            .last_request_usage_for_model("VERSA_AZURE", SOL)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(any.input_tokens, 5, "the newest request to that model");
+        assert_eq!(
+            sm.last_request_usage_for_model("versa_azure", "another-model")
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     /// A deleted chat's usage is folded per day and model with no per-request

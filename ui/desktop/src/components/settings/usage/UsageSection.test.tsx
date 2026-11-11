@@ -42,6 +42,8 @@ const summaryBody = (turns: number): UsageSummaryResponse => {
     monthlyDollarLimit: null,
     tokenPercent: null,
     dollarPercent: null,
+    monthlyReached: false,
+    monthlyNear: false,
   };
 };
 const summaryWith = (turns: number) => ({ data: summaryBody(turns) }) as never;

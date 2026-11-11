@@ -6205,11 +6205,17 @@ export type SessionUsageLimitResponse = {
      */
     monthDollarLimitInert: boolean;
     monthly: UsageLimitAmounts;
+    nextRequest?: UsageLimitNextRequest | null;
     /**
      * A limit is reached: the chat makes no model request until it is raised
      * or lifted (or, for the month, the next local month begins).
      */
     paused: boolean;
+    /**
+     * `paused` because the next request is estimated to pass the limit named
+     * by `reason`, not because it is reached.
+     */
+    pausedByEstimate: boolean;
     reason?: UsageLimitReason | null;
     used: UsageLimitUsed;
     /**
@@ -7331,6 +7337,17 @@ export type UsageLimitAmounts = {
 export type UsageLimitMode = 'inherit' | 'unlimited' | 'limit';
 
 /**
+ * What the chat's next request is estimated to bill.
+ */
+export type UsageLimitNextRequest = {
+    tokens: number;
+    /**
+     * `null` when the chat's model has no price.
+     */
+    usd?: number | null;
+};
+
+/**
  * Which limit is reached.
  */
 export type UsageLimitReason = 'chat' | 'month';
@@ -7504,9 +7521,30 @@ export type UsageSummaryResponse = UsageSummary & {
      */
     monthlyDollarLimit?: number | null;
     /**
+     * The monthly limit is at 80% or more and not reached.
+     */
+    monthlyNear: boolean;
+    /**
+     * The monthly limit is reached: every chat makes no model request until
+     * it is raised or lifted, or the next local month begins. The reply loop's
+     * own reading (`usage_limit::monthly_state_with`), so a new chat's
+     * composer and Settings agree with it.
+     */
+    monthlyReached: boolean;
+    /**
      * Configured monthly token allowance, or `null` when unset.
      */
     monthlyTokenLimit?: number | null;
+    /**
+     * What the monthly limit compares with: billed tokens this month, or
+     * `null` when no monthly limit is in force.
+     */
+    monthlyUsedTokens?: number | null;
+    /**
+     * Priced dollars this month as the monthly limit counts them; `null` when
+     * no monthly limit is in force or nothing is priced.
+     */
+    monthlyUsedUsd?: number | null;
     /**
      * MTD billed tokens as a percent of the token limit; `null` when no limit
      * is set or the historical billed total is incomplete.

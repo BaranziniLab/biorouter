@@ -330,8 +330,6 @@ export const USAGE_LIMIT_COPY = {
   checking: 'Checking the limit…',
   loadFailed: 'The limit could not be loaded.',
   noLimit: 'No limit',
-  /** A dollar limit while Settings > App > Show costs is off: no figure is shown. */
-  dollarLimitHidden: 'Dollar limit',
   /** Where the limit in force comes from, under its value. */
   source: {
     chat: 'Set for this chat',
@@ -347,6 +345,15 @@ export const USAGE_LIMIT_COPY = {
   month: (reading: string) => `This month: ${reading}`,
   pausedChat: 'This chat reached its limit. Raise or remove it to continue.',
   pausedMonth: 'The monthly limit is reached. Raise it in Settings to continue.',
+  /** Paused because the next request is estimated to pass the limit, not because it is reached. */
+  pausedChatNext: "The next request would pass this chat's limit. Raise or remove it to continue.",
+  pausedMonthNext:
+    'The next request would pass the monthly limit. Raise it in Settings to continue.',
+  /** "Next request: about $0.0074, $0.0035 left." Amounts come in formatted. */
+  nextRequest: (estimate: string, left: string) => `Next request: about ${estimate}, ${left} left.`,
+  /** One request alone is estimated past the whole limit. */
+  nextRequestTooBig: (estimate: string) =>
+    `One request is estimated at ${estimate}, more than the whole limit.`,
   warnChat: 'This chat is near its limit.',
   warnMonth: 'Usage is near the monthly limit.',
   chatDollarInert: 'Nothing this chat used has a price, so its dollar limit cannot stop it.',
@@ -360,13 +367,20 @@ export const USAGE_LIMIT_COPY = {
   noLimitForChatName: 'No limit for this chat',
   useDefault: 'Use default',
   fieldLabel: 'Limit for this chat',
+  /** The field's accessible name, which says the unit the visible label leaves to the switch. */
+  fieldNameDollars: 'Limit for this chat, in dollars',
+  fieldNameTokens: 'Limit for this chat, in tokens',
   unitLabel: 'Limit unit',
   dollars: 'Dollars',
   tokens: 'Tokens',
   save: 'Save',
   cancel: 'Cancel',
   invalidUsd: 'Enter an amount above $0.',
+  invalidUsdPrecision: 'Use at most 4 decimal places, such as 0.0125.',
   invalidTokens: 'Enter a number of tokens above 0, such as 500k.',
+  /** The dollar unit is chosen for a chat whose model has no price. */
+  unpricedDollar:
+    "This chat's model has no price, so a dollar limit cannot stop it. Set a token limit instead.",
   saveFailed: 'The limit could not be saved. Try again.',
   needUser: 'Biorouter could not confirm this change came from you. Try again.',
   openSettings: 'Open usage settings',
@@ -378,6 +392,8 @@ export const USAGE_LIMIT_COPY = {
   /** The one-line composer notice while a limit holds the chat. */
   noticeChat: 'This chat reached its usage limit.',
   noticeMonth: 'The monthly usage limit is reached.',
+  noticeChatNext: "This chat's next request would pass its usage limit.",
+  noticeMonthNext: 'The next request would pass the monthly usage limit.',
   noticeChatAction: 'Change limit',
   noticeMonthAction: 'Open usage settings',
   /** Send's tooltip while the chat is paused. */

@@ -22940,6 +22940,7 @@
           "monthly",
           "used",
           "paused",
+          "pausedByEstimate",
           "warn",
           "chatDollarLimitInert",
           "monthDollarLimitInert",
@@ -22975,9 +22976,21 @@
           "monthly": {
             "$ref": "#/components/schemas/UsageLimitAmounts"
           },
+          "nextRequest": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UsageLimitNextRequest"
+              }
+            ],
+            "nullable": true
+          },
           "paused": {
             "type": "boolean",
             "description": "A limit is reached: the chat makes no model request until it is raised\nor lifted (or, for the month, the next local month begins)."
+          },
+          "pausedByEstimate": {
+            "type": "boolean",
+            "description": "`paused` because the next request is estimated to pass the limit named\nby `reason`, not because it is reached."
           },
           "reason": {
             "allOf": [
@@ -25363,6 +25376,26 @@
           "limit"
         ]
       },
+      "UsageLimitNextRequest": {
+        "type": "object",
+        "description": "What the chat's next request is estimated to bill.",
+        "required": [
+          "tokens"
+        ],
+        "properties": {
+          "tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "usd": {
+            "type": "number",
+            "format": "double",
+            "description": "`null` when the chat's model has no price.",
+            "nullable": true
+          }
+        }
+      },
       "UsageLimitReason": {
         "type": "string",
         "description": "Which limit is reached.",
@@ -25622,6 +25655,10 @@
           },
           {
             "type": "object",
+            "required": [
+              "monthlyReached",
+              "monthlyNear"
+            ],
             "properties": {
               "defaultSessionDollarLimit": {
                 "type": "number",
@@ -25647,10 +25684,30 @@
                 "description": "Configured monthly dollar budget, or `null` when unset.",
                 "nullable": true
               },
+              "monthlyNear": {
+                "type": "boolean",
+                "description": "The monthly limit is at 80% or more and not reached."
+              },
+              "monthlyReached": {
+                "type": "boolean",
+                "description": "The monthly limit is reached: every chat makes no model request until\nit is raised or lifted, or the next local month begins. The reply loop's\nown reading (`usage_limit::monthly_state_with`), so a new chat's\ncomposer and Settings agree with it."
+              },
               "monthlyTokenLimit": {
                 "type": "integer",
                 "format": "int64",
                 "description": "Configured monthly token allowance, or `null` when unset.",
+                "nullable": true
+              },
+              "monthlyUsedTokens": {
+                "type": "integer",
+                "format": "int64",
+                "description": "What the monthly limit compares with: billed tokens this month, or\n`null` when no monthly limit is in force.",
+                "nullable": true
+              },
+              "monthlyUsedUsd": {
+                "type": "number",
+                "format": "double",
+                "description": "Priced dollars this month as the monthly limit counts them; `null` when\nno monthly limit is in force or nothing is priced.",
                 "nullable": true
               },
               "tokenPercent": {
