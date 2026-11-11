@@ -90,14 +90,9 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Accent only for what needs the person: a monitor that fired. */
-.br-decisions__row[data-state='fired'] .br-decisions__glyph {
-  color: var(--text-accent);
-}
-
-.br-decisions__row[data-state='error'] .br-decisions__glyph {
-  color: var(--text-warning);
-}
+/* A row's circle carries its own ink (summaryAgentGrid.css): the warning amber
+   once a monitor fired, the danger red for an error, a muted success tint for a
+   quiet monitor and for answers that landed. */
 
 /* THE MONITORS BUTTON (F-16): a 24px quiet icon button on the heading line,
    after the toggle, whether the section is open or closed. The Button's own
@@ -141,11 +136,14 @@
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
-/* A PHASE GATE'S CHIP at the end of its phase's line (SummarySubagents.tsx,
-   spec 3.3): 20px, the inner radius, 12px words and a 12px glyph, resting on the
-   control ground one step back from the filled card (no fill on a fill) and the
-   hover step under the pointer. The transparent 1px border is what forced
-   colours draw. "Add gate" wears the same chip in the same slot. */
+/* A PHASE GATE'S MARK at the end of its phase's line (SummarySubagents.tsx,
+   spec 3.3): a 20px control holding the gate's 10px circle (decision-model
+   work, in the agent grid's notation). At rest it has no fill, so a passed or
+   waiting gate is a small mark beside the count; a gate that wants a look ("Needs
+   you", "Not passed", "Blocked") adds its word and rests on the control ground
+   one step back from the filled card (no fill on a fill). The hover step under
+   the pointer either way. The transparent 1px border is what forced colours
+   draw. "Add gate" wears the worded chip in the same slot. */
 .br-agents__gate-slot {
   display: inline-flex;
   flex: none;
@@ -185,6 +183,11 @@
   height: 12px;
 }
 
+.br-agents__gate:not([data-attention], [data-add-gate]) {
+  padding: 0 5px;
+  background-color: transparent;
+}
+
 button.br-agents__gate:hover {
   background-color: var(--br-control-hover, var(--background-fill-strong));
   color: var(--text-default);
@@ -197,9 +200,14 @@ button.br-agents__gate:focus-visible {
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
-/* A gate that waits for the person: its glyph and word in the accent. */
+/* A gate's word wears its circle's ink: the danger red for one not passed or
+   blocked, the warning amber for one that waits for the person. */
+.br-agents__gate[data-attention] {
+  color: var(--text-danger);
+}
+
 .br-agents__gate[data-needs-person] {
-  color: var(--text-accent);
+  color: var(--text-warning);
 }
 
 /* "Add gate": quiet until the phase is hovered or the button focused, but

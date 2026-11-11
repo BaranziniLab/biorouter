@@ -13,12 +13,15 @@ export function useSectionToggle(defaultOpen: boolean): [boolean, (open: boolean
 }
 
 /**
- * The one collapsible heading of the Chat summary (To do, Decisions), drawn like
- * the roster's group toggle (`.br-agents__group-toggle`): the label, a muted
- * count, and a chevron on the right that turns 90° when open, 28px, no fill at
- * rest and the card's hover step under the pointer. The toggle is a button inside
- * the `h3`, so the heading stays a heading; `trailing` (the Monitors button) sits
- * after it on the same line. The live count is the caller's, a sibling, as before.
+ * The one heading of every Chat summary section (To do, Plan or Agents,
+ * Decisions, This chat): a chevron in the rows' glyph column that turns 90° when
+ * open, the label in the app's caps style, and the count or status on the right
+ * in muted figures. 28px, no fill at rest and the card's hover step under the
+ * pointer. Its label sits on the rows' text edge, so a section reads as the
+ * heading of what is under it, and a phase line inside it (13px, sentence case)
+ * never reads as a section. The toggle is a button inside the `h3`, so the
+ * heading stays a heading; `trailing` (the Monitors button) sits after it on the
+ * same line. The live count is the caller's, a sibling, as before.
  */
 export function SummarySectionHeading({
   label,
@@ -57,15 +60,15 @@ export function SummarySectionHeading({
           data-testid={testId}
           onClick={() => onOpenChange(!open)}
         >
+          <span className="br-agents__chevron" data-open={open ? '' : undefined} aria-hidden="true">
+            <ChevronRight />
+          </span>
           <span className="br-summary__toggle-label">{label}</span>
           {count !== undefined && count !== null && count !== '' ? (
             <span className="br-summary__count" aria-hidden="true">
               {count}
             </span>
           ) : null}
-          <span className="br-agents__chevron" data-open={open ? '' : undefined} aria-hidden="true">
-            <ChevronRight />
-          </span>
         </button>
       </h3>
       {trailing}

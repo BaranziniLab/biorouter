@@ -31,8 +31,16 @@ export const summaryCopy = {
   retry: 'Retry',
 
   statsLabel: 'Chat statistics',
-  /** The disclosure the statistics sit behind (F-1). */
-  details: 'Details',
+  /**
+   * The section the chat's own figures sit in, closed by default (F-1): what the
+   * chat itself used, apart from its plan, its agents and its decisions.
+   */
+  details: 'This chat',
+  /** The chat's model, by its short name. */
+  model: 'Model',
+  /** The chat's privacy tier, while tiers are on. */
+  privacy: 'Privacy',
+  tierWords: { private: 'Private', public: 'Public' },
   /**
    * Its closed summary: the token figure alone, "392k tokens". Nothing when there
    * is no figure ("N/A": a model with no certified total, such as a running
@@ -60,8 +68,23 @@ export const summaryCopy = {
   buttonWithSubagents: (base: string, running: number) =>
     `${base}, ${running} ${running === 1 ? 'subagent' : 'subagents'} running`,
 
-  /** The subagents and phases sections (`summary/SummarySubagents.tsx`). */
+  /** The Plan and Agents sections (`summary/SummarySubagents.tsx`). */
   agents: {
+    /** The section of a chat with a phase plan: its phases, each with its agents. */
+    plan: 'Plan',
+    /** The Plan section's accessible name, with the plan's title: "Plan: Fever notes". */
+    planLabel: (title: string | null | undefined) =>
+      title?.trim() ? `Plan: ${title.trim()}` : 'Plan',
+    /** The section of a chat with subagents and no plan, and a group's fallback title. */
+    agents: 'Agents',
+    /** A group's grid of squares: "Agents, Read the trials". */
+    gridLabel: (group: string) => `Agents, ${group}`,
+    /** A group's rows: "Agents listed, Read the trials". */
+    rowsLabel: (group: string) => `Agents listed, ${group}`,
+    /** "Show 12 more", under a group's first rows. */
+    showMore: (count: number) => `Show ${count} more`,
+    /** Said of a subagent whose own model is a decision model. */
+    decisionModel: 'Decision model',
     phases: 'Phases',
     /** The Phases section's accessible name, with the plan's title: "Phases: Fever notes". */
     phasesLabel: (title: string | null | undefined) =>
@@ -75,6 +98,8 @@ export const summaryCopy = {
     phaseKindWords: (kind: string) => `${kind.toLowerCase()} phase`,
     subagents: 'Subagents',
     otherSubagents: 'Other subagents',
+    /** The Plan section's group for subagents in no phase the plan knows. */
+    otherAgents: 'Other agents',
     subagentListLabel: 'Subagents of this chat',
     /** Read after a list's count: "4 of 10 done". */
     doneSuffix: ' done',
@@ -129,6 +154,10 @@ export const summaryCopy = {
       none: 'None',
       /** After the first names of a long list: "and 10 more". */
       more: (count: number) => `and ${count} more`,
+      /** Where a language model runs, by the tier it runs at. */
+      tier: { private: 'Private', public: 'Public' },
+      /** The monitors that watch a subagent: "Watched by Latch stop". */
+      watchedBy: (names: string) => `Watched by ${names}`,
       tokens: (value: string) => `${value} tokens`,
       toolCalls: (count: string, n: number) => `${count} ${n === 1 ? 'tool call' : 'tool calls'}`,
       messages: (count: string, n: number) => `${count} ${n === 1 ? 'message' : 'messages'}`,
