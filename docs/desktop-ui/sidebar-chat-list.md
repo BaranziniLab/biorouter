@@ -163,6 +163,14 @@ changes or clears its own usage limit from the cost card (`usage_limit::set_for_
 [Usage limits](../agent-loop/usage-limits.md)). Picking a
 folder for an empty chat in the desktop is a change to that chat as well, and stamps it.
 
+A change to a chat's monitors moves it too, like a composer extension or skill toggle (D-3, live
+QA of 2026-11-10): a person's add, edit, switch or removal in the Monitors dialog, and
+`biorouter session monitors add|remove`. An agent's `workspace_monitor` on another chat moves that
+chat, as `workspace_set_tools` does. A parent's save that changes the copy of an "also watch"
+monitor on a running subagent moves that subagent, and a save that changes nothing in a child
+writes nothing there, so the child stays where it is. A monitor's own checks and notices do not
+move a chat beyond the turn they run in, and their usage never does (below).
+
 Opening a chat is not activity, and neither is any side effect of opening it. Resuming it,
 restoring the model it records on a cold agent, reloading and saving its extensions, and ACP
 applying the client's directory to an empty chat while it loads leave `updated_at` alone, from the
@@ -197,7 +205,8 @@ token ledger (`apply_usage_event`) still stamps. See
 
 The tests: the store's `opening_is_not_activity_tests` (`session/session_manager.rs`, including the
 same-model rebind, a switch, the housekeeping save, and the writes behind the composer toggles,
-`workspace_set_tools` and a Crew grant), the side usage write's
+`workspace_set_tools` and a Crew grant), `saving_a_chats_monitors_is_activity` and
+`a_sync_that_changes_nothing_writes_nothing` (`decision/settings.rs`), the side usage write's
 `a_side_usage_write_bills_once_and_leaves_the_gauge_schedule_and_activity_alone` (the same file),
 the door census
 `only_the_opening_and_housekeeping_doors_enter_a_scope` (`session/activity.rs`, which fails if any

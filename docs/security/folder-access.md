@@ -99,7 +99,33 @@ monospaced face, `~` never stands in for it, and it still wraps after a separato
 
 Revocation is checked by operations that already hold a file capability as well as
 future operations. It does not undo a completed edit. Read-only permission never silently
-upgrades to write permission. Grants are not inherited by another chat.
+upgrades to write permission. Grants are not inherited by another chat, with the one exception
+in [Subagents](#subagents).
+
+## Subagents
+
+A subagent is a chat of its own, so it has its own working folder and its own grants. Two rules
+connect it to the chat that started it (`DelegatedChat` in `crates/biorouter/src/folder_access.rs`):
+
+- **Its folder card appears where you are watching.** A card a subagent raises waits in the
+  subagent's own session, which nobody may be looking at, since a background subagent has no tab.
+  It is also shown in the chat you are watching (the top of the chain when work was delegated more
+  than once), through the same relay as the subagent's other approval cards, and it is one
+  decision: an answer in either place decides it. This widens who can see and click
+  the card, never who may decide: a folder decision still needs a person's proof. A denial ends
+  the subagent's call with "Folder authorization required for <folder>. … Access was not
+  approved."; a card nobody answered ends it with "… The request expired before anyone answered
+  it, so access was not given."
+- **A direct subagent uses its parent's session grants.** The folders you allowed with **Allow for
+  this session** in a chat also cover the subagents that chat starts, when the subagent is at the
+  same privacy tier. They are the parent's own grants, read on each request, so revoking one in
+  the parent ends it for the subagent as well. Nothing else is inherited: not a grandparent's
+  grants, not a grant given in a sibling's or the subagent's own card (which stays on that
+  subagent), not an Allow once, not the parent's working folder, not grants owned by another
+  desktop connection, and nothing for an agent-created chat that is not a subagent or a subagent
+  at another tier. Every session grant comes from a person, because a folder card requires a
+  person's proof. The inherited folders are not listed in the subagent's own working-folder card;
+  they are listed, and revoked, in the parent's.
 
 In the local CLI or TUI, `/folder-access` lists the same session grants and
 `/folder-access revoke <id>` revokes a selected grant. These commands act locally; they do not
@@ -176,7 +202,11 @@ file operation after restarting. Denial and cancellation do not require the fold
 result reads in place, exact once scopes, session grants, read/write escalation, revocation,
 denial, cancellation, concurrent requests, session isolation, unattended recovery, and Unix
 symbolic-link retargeting. Core authority tests ensure the folder proof cannot approve another
-protected action. Server tests exercise scope separation and the startup digest protocol.
+protected action. Server tests exercise scope separation and the startup digest protocol. `cargo test -p biorouter --lib folder_access::delegation_tests` covers subagents: a
+subagent's card shown and answered in the parent, the denial and expiry sentences, a parent's
+person-given session grant covering its direct subagent, no other chat inheriting one, and a
+subagent at another tier not inheriting. `a_subagents_file_call_uses_its_parents_person_given_session_grant`
+(`agents/extension_manager.rs`) holds the dispatch path to it.
 UI tests verify a refused key remains retryable, duplicate clicks produce one decision, and a
 failed revocation remains visible. `bottom_menu/FolderAccessCard.test.tsx` and, in Chromium,
 `bottom_menu/footerCard.browser.test.tsx` cover how the card writes a folder (the `~` form, the

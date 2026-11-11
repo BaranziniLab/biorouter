@@ -141,7 +141,10 @@ model's. A model pulled through Ollama is removed with `ollama rm`. See the
 Ollama that declare the decision capability, and Baseten's when a Baseten API key is saved. Each
 line names the model as `provider/model` (the spelling `--model` takes everywhere), with
 Baseten's by their aliases (`baseten_decision/joey-1`, `elephant-1`, `mammoth-1`), its privacy
-tier, whether it runs on this computer, its context window in tokens, the question kinds it
+tier and where it runs (`this computer`, `Baseten`, or `Ollama` or `Ollama cloud` for an Ollama
+model that is not on this computer; a `-cloud` or `:cloud` tag reads `Ollama cloud` even on a
+loopback `OLLAMA_HOST`), its context window in tokens (16,000 for Baseten's three, 2,048 for
+`tev1:0.8b`, 16,384 for `clef-flash:latest`), the question kinds it
 answers (yes/no, choice, score) and the adapter that reads its probabilities. The list is in the
 order the automatic choice tries it: local models first, with the shipped default `tev1:0.8b`
 first among the Ollama models and the rest by name, then Baseten's smallest first. A copy Ollama
@@ -515,6 +518,12 @@ Stream a session's live events into your terminal — the same frames biorouter 
 
 - **`--follow`**: Keep watching after the current turn ends. Without it, `watch` exits as soon as the session reports a finish or an error
 
+**A chat with nothing running.** Without `--follow`, a chat this command can see that has no
+running turn gets one line on stderr, "nothing is running in session 20251108_2, so there is no
+turn to watch. To wait for its next turn, add --follow.", and the command exits 0. A chat it
+cannot see (a private chat, for example, because `watch` sends no proof that a person acted)
+still opens the stream, and the daemon's refusal is what is printed.
+
 **Usage:**
 
 ```bash
@@ -705,16 +714,24 @@ of the desktop's decision history view.
 - **`--batch <BATCH_ID>`**: Only calls of one `decide` batch
 - **`--outcome <OUTCOME>`**: Only `passed`, `failed`, `decided`, `error` or `refused` calls
 - **`--min-p <P>`**, **`--max-p <P>`**: Only calls whose lowest pass probability is in the range
-- **`--errors`**: Only calls that failed or were refused
-- **`-l, --limit <N>`**: Calls per page, 20 by default and at most 200
+- **`--errors`**: Only calls that ended in an error or were refused
+- **`-l, --limit <N>`**: Calls per page, 1 to 200 (20 by default); a value outside that range is
+  refused
 - **`--before <CURSOR>`**: The next page: the cursor the previous page's last line printed
-- **`--json`**: Print the summary and the page as JSON
+- **`--json`**, **`--format json`**: Print the summary and the page as JSON (the two spellings
+  are the same, here and in `session monitors list` and `session gates`)
 - **`--user-action-key-stdin`**: Read the raw user-action key from the first line of stdin, so a
   daemon that holds a key lists a private chat's decisions
 
 **What it prints.** First the aggregates, one line per source and criterion (count, how many
-passed and failed, errors, the last answer and its probability, the model), then one line per
-source for each recent turn. A page of calls follows, newest first: the time, the source, the
+met the threshold and how many did not, errors, the last answer and its probability, the model),
+then one line per source for each recent turn. The counts are in each source's words: a
+monitor's checks "fired" or were "quiet", a gate's "passed" or were "not passed", and any other
+call "passed the threshold" or "did not". `--json` and `--outcome` keep `passed` and `failed`. A
+probability beside an answer is that answer's own (`no  P 0.69`, never P(yes) beside a no); where
+the newest call was not read, the aggregate's probability is the watched answer's and reads
+`threshold P`. A turn is shown by the last eight characters of its id, which tell turns apart (the first eight
+are a clock and repeat within a minute). A page of calls follows, newest first: the time, the source, the
 criterion (and the chunk), the answers, the probability, the outcome, the model and the latency.
 A model is named by its short name: an Ollama tag as it is (`tev1:0.8b`), and a Baseten model by
 its alias (`joey-1`), never by the slug the log records; `--json` keeps the slug.
@@ -723,14 +740,14 @@ its alias (`joey-1`), never by the slug the log records; `--json` keeps the slug
 Decisions in session 20261104_1: 618 calls
 
 By source:
-  monitor  Form reached  18 checks · 18 failed · last no P 0.31 ██▌░░░░░ · tev1:0.8b
-  tool     decide        600 calls · 41 passed · 557 failed · 2 errors · last yes P 0.93 ███████▌ · tev1:0.8b
+  monitor  Form reached  18 checks · 18 quiet · last no · P 0.69 █████▌░░ · tev1:0.8b
+  tool     decide        600 calls · 41 passed the threshold · 557 did not · 2 errors · last yes · P 0.93 ███████▌ · tev1:0.8b
 
 Recent turns:
-  0193a1b2  monitor  Form reached  18 checks · 18 failed · last P 0.31 · 10:42:01 to 10:44:12
+  c3d4e5f6  monitor  Form reached  18 checks · 18 quiet · last P 0.31 · 10:42:01 to 10:44:12
 
 Calls, newest first (20 of 618):
-  11-04 10:44:12  monitor  Form reached  no  P 0.31 ██▌░░░░░  failed  tev1:0.8b  22 ms
+  11-04 10:44:12  monitor  Form reached  no  P 0.69 █████▌░░  quiet  tev1:0.8b  22 ms
   ...
 More: biorouter session decisions 20261104_1 --before <cursor>
 ```
@@ -759,14 +776,15 @@ List, add or remove the decision-model monitors that watch a chat. A monitor ask
 model one question about the chat's recent messages after each agent iteration, or once as a turn
 ends. When the probability of the wanted answer reaches its threshold (or falls below it, for a
 `--below` monitor), it stops the turn, shows a notice, or tells the model. A turn that ran
-monitors shows one summary line per monitor, never one line per check. A chat takes at most 8
+monitors shows one summary line per monitor, never one line per check, and counts its checks
+as fired or quiet ("Monitor Form reached: 18 checks this turn · 18 quiet · last P 0.31"). A chat takes at most 8
 monitors. They are the same monitors the desktop's Monitors dialog edits, and a change applies at
 the chat's next check, in a running turn too.
 
 **Arguments:**
 
 - **`<SESSION_ID>`** (required): The chat
-- **`list [--json]`**: The chat's monitors and its default decision model
+- **`list [--json | --format json]`**: The chat's monitors and its default decision model
 - **`add`**: Add a monitor, with the options below
 - **`remove <MONITOR>`**: Remove a monitor by its id or name
 
@@ -900,7 +918,8 @@ app. See [Decision gates](../agent-loop/orchestration-phases.md#decision-gates).
 - **`--user-action-key-stdin`**: As for [`session monitors`](#session-monitors)
 
 **What `list` prints.** One entry per phase: its id, title and status, then its gate (the
-questions, the threshold, the attempts used, the last result, whether it is blocked, who set it
+questions, the threshold, the attempts used, the last result ("not passed last time (lowest
+P(yes) 0.42)", never "failed"), whether it is blocked, who set it
 and your decision), the model it asks, how many times its attempts were given again, the last
 error, what it holds, a "needs you" line when it waits for you, and "your pass stands" or "your
 skip stands" on an open phase. A held phase reads "waits for build's gate", naming the holder by
@@ -1064,12 +1083,29 @@ Execute commands from an instruction file or stdin.
 - **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths
 - **`--max-tool-repetitions <NUMBER>`**: Maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops
 - **`--max-turns <NUMBER>`**: Maximum number of turns allowed without user input (`0` means Unlimited, the default)
-- **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan: the default decision model, one line per monitor, the plan and each gate, and a note that these apply once to the new chat and that a monitor's decision model reads that chat's newest messages
+- **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan. It first runs the same checks `run` and an import run, so a workflow `run` would refuse is refused here too, with the same sentence after "This workflow would not start: ". See [What `--explain` prints](#what---explain-prints)
 - **`--render-workflow`**: Print the rendered workflow instead of running it
 - **`-q, --quiet`**: Quiet mode. Suppress non-response output, printing only the model response to stdout
 - **`--output-format <FORMAT>`**: Output format (`text`, `json`, or `stream-json`). Default is `text`. Use JSON structured output for automation and scripting: `json` for results after completion, `stream-json` for events as they occur
 - **`--provider`**: Specify the provider to use for this session (overrides environment variable)
 - **`--model`**: Specify the model to use for this session (overrides environment variable)
+
+**What `--explain` prints.** The Supervision section names each decision model by its alias and
+where it runs (`joey-1 · Baseten`, `tev1:0.8b · this computer`), or "the chat's default decision
+model" when the workflow names none. It has the default decision model, one line per monitor
+saying when it is checked, which model it asks and its question, when it fires, what it does and
+what an error does, the phase plan, and one line per gate:
+
+```text
+   - Monitor "Reached ten": after each iteration, asks joey-1 · Baseten "Has the agent already echoed 10 or a larger number?"; when P(yes) ≥ 0.70, it stops the turn (stops again while it holds); an error pauses the turn
+   - Phase plan "Count plan": 2 phases: count, check
+   - Phase "check" gate: 1 question, each must reach P(yes) ≥ 0.80 before the phase completes, 2 attempts; asked of joey-1 · Baseten
+```
+
+Two notes close the section: these apply once, to the new chat, before its first message, and a
+monitor's decision model reads the newest messages of that chat; and "Each decision model is
+checked when the run starts: that it is installed or reachable, and that the chat may use it."
+`--explain` checks the file's structure, not the models.
 
 **A workflow's monitors and phase plan.** A workflow that declares `decision_settings` or an
 `orchestration_plan` ([the workflow schema reference](../workflows/workflow-schema-reference.md#supervision-decision_settings-and-orchestration_plan))
@@ -1087,6 +1123,27 @@ reads "Another workflow already gave this chat its monitors and phase plan befor
 message, so the ones this workflow declares were not applied to it. Run the workflow in a new chat
 to get them." Resuming such a chat with the workflow that set it up says nothing. The run then goes
 on.
+
+**Exit status.** `run` exits with one of these, so a script can tell them apart:
+
+| Status | Meaning |
+|---|---|
+| 0 | The run finished, including a run whose phase plan still has phases pending |
+| 1 | A failure, such as a workflow that was not started |
+| 2 | The command needs a terminal it does not have |
+| 3 | The chat's supervision ended the run short of its work: a monitor stopped the turn, or the plan ended with a phase its gate holds (its last check did not pass) or a phase left blocked |
+| 70 and up | A turn that aborted: 70 a provider failure, 75 a provider that refused the credentials, 76 a tool loop, 77 a worker that never answered, 78 a session store failure, 79 to 81 a provider reply that could not be completed |
+
+On status 3, one line on stderr says what stopped the run and how to carry the chat on, with no
+"Error:" before it, because nothing failed:
+
+```text
+Monitor "Form reached" stopped this run (exit status 3). To carry on, send the chat a message: biorouter run --resume --session-id 20261110_5 --text "<message>", or open it with biorouter session --resume --session-id 20261110_5.
+This run ended with phase "verify" held by its gate, which did not pass (exit status 3). See the gates with biorouter session gates 20261110_5. To carry on, …
+```
+
+A `--no-session` run has no chat to carry on and says so. Only `biorouter run` exits 3 for this:
+the debug chat for a failed extension and `biorouter bench` treat such a turn as completed.
 
 **Usage:**
 
@@ -1135,7 +1192,9 @@ and the latency.
   `BIOROUTER_DECISION_MODEL` (or `BIOROUTER_DECISION_PROVIDER`), else the first model in the list
   that may read the text: local first, `tev1:0.8b` first among the Ollama models, never a copy
   Ollama cannot load. The model is chosen once, before anything is sent, and used for every
-  request of the run
+  request of the run. `--model` takes `provider/model`. A `BIOROUTER_DECISION_MODEL` that names
+  no provider (and no `BIOROUTER_DECISION_PROVIDER` beside it) is not used, and a warning on
+  stderr says so and how to write it
 - **`--choice <NAME[=DESCRIPTION]>`**: Makes the question a choice; repeat it once per option (2
   to 26). The model reads the description, and the answer is the name
 - **`--levels <LEVEL,LEVEL,...>`**: Makes the question a score with 1 to 10 levels, lowest first
@@ -1201,8 +1260,10 @@ usage: 2 requests on baseten_decision/mammoth-1: 1,200,000 input and 3 output to
 text, exactly as it does for the agent: a private chat never reaches a model hosted outside your
 institution, and the refusal comes before anything is sent. Its advice follows where the model
 came from: a model you named with `--model`, or the chat's own default, is refused with "Name a
-private decision model", and one the configured default chose with "Set
-BIOROUTER_DECISION_MODEL to a private model". The text is yours, not the chat's, and
+private decision model (`biorouter models decision list` shows them), or start this work in a
+public chat.", and one the configured default chose with "Set BIOROUTER_DECISION_MODEL to a
+private model". A refusal the terminal prints names this command, never the agent's
+`decision_models` tool. The text is yours, not the chat's, and
 it is kept in the chat's decision history at the chat's reach, which is why a chat that is not
 private gets the note above. Without `--session` there is no chat to protect and nothing is
 logged. When the model the command resolved is hosted outside your institution (Baseten's are),

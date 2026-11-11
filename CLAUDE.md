@@ -279,7 +279,7 @@ is not dead code.
     the row records, at every door. What counts as activity is coordinator ruling 16: a
     message or turn, a rename, an explicit switch to a different model, a composer
     extension or skill toggle, `workspace_set_tools` aimed at the chat, a Crew grant on
-    it, a change to its own usage limit (`usage_limit::set_for_session`). ⚠ The scope does not follow a `tokio::spawn`, so a door awaits its setup writes
+    it, a change to its own usage limit (`usage_limit::set_for_session`), a change to its monitors (D-3, 2026-11-10; `saving_a_chats_monitors_is_activity`). ⚠ The scope does not follow a `tokio::spawn`, so a door awaits its setup writes
     inline, and `only_the_opening_and_housekeeping_doors_enter_a_scope` counts every door
     that enters one (six files, measured 2026-10-11): wrapping a deliberate change in a
     scope fails that census rather than quietly freezing a chat. The renderer shows a
@@ -1379,7 +1379,7 @@ value's *location* is as load-bearing as the number.
 - **The composer is one card and one muted footer line** (`ChatInput.tsx`, spec
   3.7; `ChatInput.structure.test.tsx` pins the shape). The card holds the queue,
   notices, chips and the text, then one 32px controls row: `+`, the Tools chip,
-  the model and effort chip, and Send. Under the card, a 12px muted footer
+  the model and effort chip, and Send (a decision chat draws no `+` and no Tools chip). Under the card, a 12px muted footer
   (`bottom_menu/ComposerFooter.tsx`): the working folder on the left, the context
   ring and the chat's cost on the right, only the folder on Home. The three
   footer items open the same light hover card (`bottom_menu/useFooterCard.ts`,
