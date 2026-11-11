@@ -369,8 +369,9 @@ fn composite(lead: Arc<dyn Provider>, worker: Arc<dyn Provider>) -> LeadWorkerPr
 
 /// `LeadWorkerProvider` is the tree's only composite, and it is the exact shape
 /// DR-26's *"may hand back something other than what was asked for"* warning
-/// describes: `factory::create` returns one whenever `BIOROUTER_LEAD_MODEL` is
-/// set, and `get_name()` answers for the **lead alone**.
+/// describes: a chat saved in the retired lead/worker mode restores as one
+/// (`factory::create_from_persisted`), and `get_name()` answers for the **lead
+/// alone**.
 ///
 /// It already overrides `tier()` for that reason. Leaving `affiliation()` on the
 /// trait default produces the one combination DR-26's vocabulary says cannot

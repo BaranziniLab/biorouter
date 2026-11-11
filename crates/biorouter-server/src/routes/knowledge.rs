@@ -1401,10 +1401,10 @@ pub async fn restore_state(
 /// Returns a 400 error if the provider name is unknown or model config is invalid.
 ///
 /// The tier comes back from here rather than being re-derived by each caller,
-/// because `providers::create` intercepts `BIOROUTER_LEAD_MODEL` *before* the
-/// registry lookup and can hand back a composite that is not the requested
-/// name's provider at all. `ProviderCompleter::paired` reads it off the same
-/// `Arc` the completer wraps, so the two cannot come from different providers.
+/// because it is a property of the constructed instance, not of the requested
+/// name (`ollama` is Private on a loopback `OLLAMA_HOST` and Public off it).
+/// `ProviderCompleter::paired` reads it off the same `Arc` the completer
+/// wraps, so the two cannot come from different providers.
 async fn build_completer(
     model: &ModelRef,
     cancel: Option<CancellationToken>,
@@ -1450,9 +1450,8 @@ async fn build_completer(
 /// instance*, never re-derived from `model.provider`. That name-keyed lookup is
 /// precisely what [`ProviderCompleter::paired`] exists to close: `ollama`'s
 /// registry entry is Private unconditionally while its instance reads the
-/// resolved base URL, and `providers::create` intercepts `BIOROUTER_LEAD_MODEL`
-/// before the registry is consulted at all. The completer that comes back is
-/// dropped: a scan has nothing to say to a model.
+/// resolved base URL. The completer that comes back is dropped: a scan has
+/// nothing to say to a model.
 ///
 /// ⚠ **This read-only lint used to answer with a hardcoded `Public`**, on the
 /// reasoning that a scan constructs no provider and so has no instance to read

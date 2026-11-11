@@ -85,11 +85,11 @@ impl ProviderCompleter {
     /// literals leaves open — the one the CLI and the probe are most exposed to,
     /// because they resolve a provider by NAME.
     ///
-    /// [`Provider::tier`] is an instance method for exactly this reason:
-    /// `providers::create("ollama", ..)` can return a lead/worker composite
-    /// (the factory intercepts `BIOROUTER_LEAD_MODEL` *before* the registry
-    /// lookup), and the composite's tier is the *least* of its two halves, not
-    /// the name that was asked for.
+    /// [`Provider::tier`] is an instance method for exactly this reason: one
+    /// provider name constructs instances of different tiers (`ollama` is
+    /// Private on a loopback `OLLAMA_HOST` and Public off it), and a restored
+    /// lead/worker composite's tier is the *least* of its two halves, not the
+    /// name it answers to.
     ///
     /// Returns `Self`, not `Box<dyn Completer>`: each caller boxes it where it
     /// already did, and the concrete type keeps `self.provider` readable *from
