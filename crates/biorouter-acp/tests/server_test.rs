@@ -24,14 +24,48 @@ use test_case::test_case;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wiremock::MockServer;
 
+/// How long one step of a test may take before it fails. A step here takes well
+/// under a second (a debug build on a loaded CI runner takes a few), so a step
+/// that runs this long is stuck, and failing it names the step instead of
+/// leaving the job to its 90 minute timeout with no output.
+const STEP_LIMIT: Duration = Duration::from_secs(60);
+
+/// How long a whole ACP client run may take, from spawning the server to the
+/// client's last request. The slowest test here runs a few tool calls.
+const CLIENT_RUN_LIMIT: Duration = Duration::from_secs(120);
+
+/// How long the runtime may take to shut down once a test is done. Dropping a
+/// runtime waits for every blocking task without a limit, so a stuck one would
+/// hang the test after its last assertion.
+const SHUTDOWN_LIMIT: Duration = Duration::from_secs(30);
+
 fn run_async_test(future: impl Future<Output = ()>) {
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_stack_size(16 * 1024 * 1024)
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(future);
+        .unwrap();
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.block_on(future)));
+    let shutdown_started = std::time::Instant::now();
+    runtime.shutdown_timeout(SHUTDOWN_LIMIT);
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+    assert!(
+        shutdown_started.elapsed() < SHUTDOWN_LIMIT,
+        "the test's runtime did not shut down within {SHUTDOWN_LIMIT:?}: a blocking task it started never returned"
+    );
+}
+
+/// Await `future`, failing the test with `step` in the message if it takes
+/// longer than [`STEP_LIMIT`].
+async fn bounded<T>(step: &str, future: impl Future<Output = T>) -> T {
+    match tokio::time::timeout(STEP_LIMIT, future).await {
+        Ok(value) => value,
+        Err(_) => panic!("{step} did not finish within {STEP_LIMIT:?}"),
+    }
 }
 
 #[test]
@@ -518,28 +552,33 @@ fn test_acp_load_session_is_not_activity() {
         let mock_server = setup_mock_openai(Vec::new()).await;
 
         let sm = SessionManager::new(data_dir.path().to_path_buf());
-        let chat = sm
-            .create_session(
-                data_dir.path().to_path_buf(),
-                "R-30 chat".into(),
-                SessionType::User,
-            )
-            .await
-            .unwrap();
-        sm.add_message(&chat.id, &Message::user().with_text("hello"))
-            .await
-            .unwrap();
-        let empty = sm
-            .create_session(
-                data_dir.path().to_path_buf(),
-                "R-30 empty chat".into(),
-                SessionType::User,
-            )
-            .await
-            .unwrap();
-        let chat_before = sm.get_session(&chat.id, false).await.unwrap().updated_at;
-        let empty_before = sm.get_session(&empty.id, false).await.unwrap().updated_at;
-        sm.close().await;
+        let (chat, empty, chat_before, empty_before) =
+            bounded("writing the two chats before the load", async {
+                let chat = sm
+                    .create_session(
+                        data_dir.path().to_path_buf(),
+                        "R-30 chat".into(),
+                        SessionType::User,
+                    )
+                    .await
+                    .unwrap();
+                sm.add_message(&chat.id, &Message::user().with_text("hello"))
+                    .await
+                    .unwrap();
+                let empty = sm
+                    .create_session(
+                        data_dir.path().to_path_buf(),
+                        "R-30 empty chat".into(),
+                        SessionType::User,
+                    )
+                    .await
+                    .unwrap();
+                let chat_before = sm.get_session(&chat.id, false).await.unwrap().updated_at;
+                let empty_before = sm.get_session(&empty.id, false).await.unwrap().updated_at;
+                (chat, empty, chat_before, empty_before)
+            })
+            .await;
+        bounded("closing the store that wrote the chats", sm.close()).await;
         // `datetime('now')` has one-second resolution: load in a later second,
         // so a stamp cannot hide inside the second the rows were written in.
         tokio::time::sleep(Duration::from_millis(1_100)).await;
@@ -555,10 +594,14 @@ fn test_acp_load_session_is_not_activity() {
                 let ids = [chat.id.clone(), empty.id.clone()];
                 move |cx, _updates| async move {
                     for id in ids {
-                        cx.send_request(LoadSessionRequest::new(id, cwd.clone()))
-                            .block_task()
-                            .await
-                            .unwrap();
+                        let step = format!("session/load of {id}");
+                        bounded(
+                            &step,
+                            cx.send_request(LoadSessionRequest::new(id.clone(), cwd.clone()))
+                                .block_task(),
+                        )
+                        .await
+                        .unwrap_or_else(|e| panic!("{step} failed: {e}"));
                     }
                 }
             },
@@ -566,9 +609,14 @@ fn test_acp_load_session_is_not_activity() {
         .await;
 
         let sm = SessionManager::new(data_dir.path().to_path_buf());
-        let chat_after = sm.get_session(&chat.id, false).await.unwrap();
-        let empty_after = sm.get_session(&empty.id, false).await.unwrap();
-        sm.close().await;
+        let (chat_after, empty_after) = bounded("reading the two chats after the load", async {
+            (
+                sm.get_session(&chat.id, false).await.unwrap(),
+                sm.get_session(&empty.id, false).await.unwrap(),
+            )
+        })
+        .await;
+        bounded("closing the store that read the chats", sm.close()).await;
 
         assert_eq!(
             chat_after.provider_name.as_deref(),
@@ -588,6 +636,69 @@ fn test_acp_load_session_is_not_activity() {
             empty_after.updated_at, empty_before,
             "applying the directory while loading is not activity either"
         );
+    });
+}
+
+/// A `session/load` the server cannot complete is answered with the error, and
+/// the connection stays open for the client's next request.
+///
+/// The handler used to hand the error back to sacp, which treats an error from
+/// a handler as a reason to close the connection and sends no response. The
+/// client then waited for an answer that never came: measured with this test
+/// and no watch on the server, the load was still waiting when the 60 second
+/// step limit ended it, with nothing in the log saying which request or why.
+/// A `session/new` on the same connection afterwards shows it is still open.
+#[test]
+fn test_acp_failed_load_is_answered_and_the_connection_stays_open() {
+    run_async_test(async {
+        let data_dir = tempfile::tempdir().unwrap();
+        let work_dir = tempfile::tempdir().unwrap();
+        let mock_server = setup_mock_openai(Vec::new()).await;
+
+        run_acp_client(
+            &mock_server,
+            &[],
+            data_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            {
+                let cwd = work_dir.path().to_path_buf();
+                move |cx, updates| async move {
+                    let error = bounded(
+                        "session/load of a chat that does not exist",
+                        cx.send_request(LoadSessionRequest::new("no-such-chat", cwd.clone()))
+                            .block_task(),
+                    )
+                    .await
+                    .expect_err("loading a chat that does not exist must fail");
+                    assert_eq!(error.code, sacp::Error::invalid_params().code);
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("Failed to load session no-such-chat"),
+                        "the error names the chat it could not load: {error}"
+                    );
+
+                    let session = bounded(
+                        "session/new after the failed load",
+                        cx.send_request(NewSessionRequest::new(cwd)).block_task(),
+                    )
+                    .await
+                    .expect("the connection still serves after a failed load");
+                    wait_for_command(&updates, "dictate").await;
+                    assert!(
+                        !updates
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|notification| &*notification.session_id.0 == "no-such-chat"),
+                        "a load that failed announced nothing for its chat"
+                    );
+                    assert!(!session.session_id.0.is_empty());
+                }
+            },
+        )
+        .await;
     });
 }
 
@@ -687,7 +798,7 @@ async fn spawn_server_in_process(
 ) -> (
     tokio::io::DuplexStream,
     tokio::io::DuplexStream,
-    tokio::task::JoinHandle<()>,
+    tokio::task::JoinHandle<Result<(), String>>,
 ) {
     let api_client = ApiClient::new(
         mock_server.uri(),
@@ -712,9 +823,9 @@ async fn spawn_server_in_process(
 
     let agent = Arc::new(BioRouterAcpAgent::with_config(config).await.unwrap());
     let handle = tokio::spawn(async move {
-        if let Err(e) = serve(agent, server_read.compat(), server_write.compat_write()).await {
-            tracing::error!("ACP server error: {e}");
-        }
+        serve(agent, server_read.compat(), server_write.compat_write())
+            .await
+            .map_err(|e| format!("{e:#}"))
     });
 
     (client_read, client_write, handle)
@@ -724,6 +835,11 @@ async fn spawn_server_in_process(
 /// after the `initialize` handshake. The caller decides whether to create a new
 /// session or load an existing one, so a test can simulate a client restart by
 /// calling this twice against the same `data_root`.
+///
+/// The server only stops when the client hangs up, so a server that stops first
+/// has dropped the connection, and a request it never answered would leave the
+/// client waiting forever: the run fails at once with the server's own error.
+/// The whole run is also bounded by [`CLIENT_RUN_LIMIT`].
 async fn run_acp_client<F, Fut>(
     mock_server: &MockServer,
     builtins: &[&str],
@@ -735,8 +851,31 @@ async fn run_acp_client<F, Fut>(
     F: FnOnce(JrConnectionCx<ClientToAgent>, Arc<Mutex<Vec<SessionNotification>>>) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let (client_read, client_write, _handle) =
-        spawn_server_in_process(mock_server, builtins, data_root, mode).await;
+    let run = async {
+        let (client_read, client_write, server) =
+            spawn_server_in_process(mock_server, builtins, data_root, mode).await;
+        let client = run_acp_client_on(client_read, client_write, select, test_fn);
+        tokio::select! {
+            () = client => {}
+            ended = server => panic!(
+                "the ACP server stopped before the client finished, so a request may never be answered: {ended:?}"
+            ),
+        }
+    };
+    if tokio::time::timeout(CLIENT_RUN_LIMIT, run).await.is_err() {
+        panic!("the ACP client run did not finish within {CLIENT_RUN_LIMIT:?}");
+    }
+}
+
+async fn run_acp_client_on<F, Fut>(
+    client_read: tokio::io::DuplexStream,
+    client_write: tokio::io::DuplexStream,
+    select: Option<PermissionOptionKind>,
+    test_fn: F,
+) where
+    F: FnOnce(JrConnectionCx<ClientToAgent>, Arc<Mutex<Vec<SessionNotification>>>) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let updates = Arc::new(Mutex::new(Vec::new()));
 
     let transport = sacp::ByteStreams::new(client_write.compat_write(), client_read.compat());

@@ -1177,10 +1177,16 @@ impl JrMessageHandler for BioRouterAcpHandler {
         use sacp::util::MatchMessageFrom;
         use sacp::JrRequestCx;
 
+        // A request the agent cannot complete is ANSWERED with its error. An
+        // error returned from this handler instead makes sacp close the whole
+        // connection without responding, and the client then waits forever for
+        // the answer: a `session/load` of a deleted chat took the connection
+        // down with it, and an in-process test client hung with nothing in the
+        // log. Only a failure to write to the client itself is returned.
         MatchMessageFrom::new(message, &cx)
             .if_request(
                 |req: InitializeRequest, req_cx: JrRequestCx<InitializeResponse>| async {
-                    req_cx.respond(self.agent.on_initialize(req).await?)
+                    req_cx.respond_with_result(self.agent.on_initialize(req).await)
                 },
             )
             .await
@@ -1192,18 +1198,33 @@ impl JrMessageHandler for BioRouterAcpHandler {
             .await
             .if_request(
                 |req: NewSessionRequest, req_cx: JrRequestCx<NewSessionResponse>| async {
-                    let response = self.agent.on_new_session(req).await?;
-                    let session_id = response.session_id.clone();
-                    req_cx.respond(response)?;
-                    self.agent.announce_dictate_command(session_id, &cx)
+                    match self.agent.on_new_session(req).await {
+                        Ok(response) => {
+                            let session_id = response.session_id.clone();
+                            req_cx.respond(response)?;
+                            self.agent.announce_dictate_command(session_id, &cx)
+                        }
+                        Err(error) => {
+                            warn!(%error, "session/new failed");
+                            req_cx.respond_with_error(error)
+                        }
+                    }
                 },
             )
             .await
             .if_request(
                 |req: LoadSessionRequest, req_cx: JrRequestCx<LoadSessionResponse>| async {
                     let session_id = req.session_id.clone();
-                    req_cx.respond(self.agent.on_load_session(req, &cx).await?)?;
-                    self.agent.announce_dictate_command(session_id, &cx)
+                    match self.agent.on_load_session(req, &cx).await {
+                        Ok(response) => {
+                            req_cx.respond(response)?;
+                            self.agent.announce_dictate_command(session_id, &cx)
+                        }
+                        Err(error) => {
+                            warn!(%session_id, %error, "session/load failed");
+                            req_cx.respond_with_error(error)
+                        }
+                    }
                 },
             )
             .await
