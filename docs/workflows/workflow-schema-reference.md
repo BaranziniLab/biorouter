@@ -651,7 +651,7 @@ The record the Monitors dialog, `biorouter session monitors` and `PUT /sessions/
 | `defaultModel` | Object | `{provider, model}`, the chat's default decision model. Left out, the chat uses the configured one, else the first one it may use |
 | `monitors` | Array | At most 8 monitors, each the stored monitor record: `id`, `name`, `question` (`instructions`, `kind`), and optional `model`, `timing` (`post_iteration` or `turn_end`), `window` (`entries`, `maxChars`, `toolCalls`), `threshold`, `direction` (`at_or_above` or `below`), `option`, `consecutive`, `rearmBelow`, `rearmAbove`, `action` (`notify`, `stop` or `steer`), `onError` (`notify` or `pause`), `maxEvalsPerTurn`, `enabled` and `applyToSubagents` |
 
-A question's kind is written `kind: {binary: {}}` (or `kind: !binary {}`), `{choice: {options: {...}}}` or `{score: {levels: [...]}}`. A workflow's monitors are always the person's, so `setBy`, `setBySession` and `inheritedFrom`, which record who set a monitor in a running chat, are refused. `applyToSubagents: true` is allowed: the monitor is copied onto every subagent the chat starts.
+A question's kind is written `kind: {binary: {}}`; Biorouter reads the older `kind: !binary {}` tag too but never writes it, and `biorouter run --render-workflow` writes through the same writer as a saved workflow. The kind can also be `{choice: {options: {...}}}` or `{score: {levels: [...]}}`. A workflow's monitors are always the person's, so `setBy`, `setBySession` and `inheritedFrom`, which record who set a monitor in a running chat, are refused. `applyToSubagents: true` is allowed: the monitor is copied onto every subagent the chat starts.
 
 #### `orchestration_plan`
 

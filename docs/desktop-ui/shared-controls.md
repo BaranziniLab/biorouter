@@ -12,7 +12,7 @@ Every screen in the app draws its controls from `ui/desktop/src/components/ui/`,
 |---|---|---|
 | A change that applies now | `Switch` | 32 by 20, a 16px knob inset 2px in both states, on the right of its row. Named by the row's visible label, never "Toggle …". |
 | Picking items, or an option sent with a form | `Checkbox` | A 16px box in a 24px hit target, the label 8px to its right. |
-| 2 to 4 short values that need no explanation | `SegmentedControl` | A radiogroup. One thumb slides under the choice and never uses the accent. The thumb is a step lighter than its track in both modes (`--background-default` in light, `--background-strong` in dark, where the default ground is darker than the track and the choice would read as a hole). |
+| 2 to 4 short values that need no explanation | `SegmentedControl` | A radiogroup. One thumb slides under the choice and never uses the accent. The thumb is a step lighter than its track in both modes (`--background-default` in light, `--background-strong` in dark, where the default ground is darker than the track and the choice would read as a hole). A change that Radix and the arrow-key handling both ask for is passed to `onValueChange` once; that guard lasts only for the synchronous burst of the two asks (it is reset in a microtask), so a parent that ignores a change does not swallow the next press of the same segment. |
 | 4 or more values, or values that each need a line | `Select` or a menu | The chosen row carries a trailing 16px check. |
 | Sections of a page | `Tabs` | One underline that travels under the active tab. |
 | An explanation | `InfoTip` | See below. |

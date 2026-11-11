@@ -263,7 +263,7 @@ The dialog is a manager, like the Knowledge bases manager: an editor's Save, a r
 Remove each write at once, and there is no footer and no second Cancel. The dialog's × closes it,
 also while a change is saving; the write finishes and the summary still updates. After each write
 the foot row says "Saved" with a check (muted, `role="status"`), or "Saving…" while it runs, and a
-refusal takes its place in danger ink.
+refusal takes its place in danger ink. Opening an editor clears an earlier "Saved" or "Removed", which described that write and would read as if the new monitor were saved.
 
 **Every write applies one change to what is stored now.** Before each write the dialog reads
 `GET /sessions/{id}/decision-settings` again and applies only the person's one change to that
@@ -306,7 +306,7 @@ A row is the monitor's name, at most one owner badge, and its switch:
   sentences, which model it uses, where it runs and when it checks ("Uses tev1:0.8b on this
   computer, after each step."), then what else is set: "Stops only once", "pauses if the model
   can't answer", "also watches subagents" (`monitorPeek`). The same words describe the switch to a
-  screen reader. The peek holds no actions, because an InfoTip holds plain text only.
+  screen reader. The peek opens below the row's line, where above it would cover the row's own name. It holds no actions, because an InfoTip holds plain text only.
 - **Edit and Remove** are in the row's `⋯` and on right-click. Remove asks nothing, because it
   offers Undo.
 - A stored monitor that is on but names a model the chat can no longer use shows the reason in
@@ -496,11 +496,9 @@ button overrides a gate.
 
 - **Viewing a gate**, the body shows, in order: the status with its glyph ("Not asked yet",
   "Passed", "Not passed · 1 of 2 attempts used", "Blocked", "Blocked: needs you", "Your pass
-  stands", "Passed by you" and the others), with an InfoTip saying what Pass and Skip each do;
+  stands", "Passed by you" and the others; a phase that is closed reads as its gate did, "Passed" or "Not passed", and "Completed" only for a gate never asked), with an InfoTip saying what Pass and Skip each do;
   for a gate that did not pass or is blocked, the one number that explains it ("Lowest P(yes) 0.03
-  · threshold 0.90"); the sentences that say what the person can do ("Only you can move this phase
-  on now: …" after every attempt failed, what the agent can still do after an error block or its
-  own block, "The last check decided nothing: …" after an error); the questions as a plain list;
+  · threshold 0.90"); a gate waiting for the person gets one warning line, "Waiting for you.", with a "Why it waits" InfoTip holding the reason ("Only you can move this phase on now: …" after every attempt failed, or the block's reason after an error block or the agent's own block); the other sentences that say what the person can do (what the agent can still do, "The last check decided nothing: …" after an error); the questions as a plain list;
   what it holds while the phase is open ("Review the probe waits until this gate passes."; a held
   phase the plan no longer names reads "a later phase", never its id); and a closed **Details**
   with the threshold ("Every question must reach P(yes) 0.90"), the last check when it is not
@@ -510,8 +508,8 @@ button overrides a gate.
 - **The footer** holds Skip this phase and Pass this phase, each with a tooltip ("Lets the agent
   move on without this phase. It is marked skipped." and "Counts the phase as passed, as if its
   gate had passed."). Pass is the primary button only when the person is needed (blocked and
-  waiting for them, or blocked by errors with no attempt left); in every other state both are
-  secondary and the footer has no primary, because the safe course is to close. At its start a
+  waiting for them, or blocked by errors with no attempt left); in every other state it is
+  secondary and the footer has no primary, because the safe course is to close. Skip is always the quiet (ghost) button. At its start a
   `⋯` named "More gate actions" holds Try again (once an attempt was used or the gate blocked),
   Edit gate, Decision history (which closes the dialog and opens the history on the gate) and,
   last after a separator, Remove gate…, which asks first ("Remove this gate?": its questions and
@@ -565,17 +563,15 @@ daemon ran.
 
 - **The closed row** says what was checked, and its meta stays short, because a row's meta never
   truncates: "Checked 30 chunks against 1 question · 10 yes", or "… · 41 yes, 6 to review, 2
-  errors". The yes count is given for one yes or no question only; a choice, a score or several
+  errors". The yes count is given for one yes or no question only (from the daemon's four groups when it sends them, where a yes is a pass; "N yes by majority" for a vote); a choice, a score or several
   questions add only the error count. While the call runs it reads "Checking 30 chunks against 1
   question".
 - **The open well** starts with one muted line: the model and where it runs (`joey-1 ·
-  Baseten`), the errors when there are any, and "598 of 600 chunks checked" only when fewer
+  Baseten`), a private model's padlock right after its name (in `PRIVATE_MARK_INK`, as on the decision card), the errors when there are any, and "598 of 600 chunks checked" only when fewer
   chunks were checked than sent and the errors do not account for it. When the batch is
   uncalibrated, the history's sentence follows ("This model's probabilities are its own
   estimate.", with its InfoTip). Then, for at most three questions, the question in plain words
-  (never its name; "Question 1" when the call gave none) and one muted counts line: "10 of 30 yes"
-  (the denominator is the chunks that answered it), or each answer's count in option order for a
-  choice or a score ("rrms 300 · spms 200 · none 98"), then "· 6 to review" when there are any.
+  (never its name; "Question 1" when the call gave none) and one muted counts line: the answers, each with its number first, then the review count said as part of them, "1 yes · 19 no · 4 of them to review" (a yes is a pass; the review count is never a group beside the answers). A choice or a score gives each answer in option order ("300 rrms · 200 spms · 98 none · 12 of them to review"). A vote of several models opens its well with "Vote of 3 models: …" and counts the majority, "Majority 7 yes · 13 no · the models agreed on 19 of 20", with ties counted when there are any.
   A fourth question and beyond are "2 more questions in the decision history". Grouped errors
   follow, and the well ends with the history link, named "Open this decide call in the decision
   history". While the call runs only the question texts show.
@@ -598,7 +594,7 @@ A turn that made decision calls ends with one marker row (`components/decisions/
 
 - **Closed**, it is a short summary with no names and no probabilities (a last probability does
   not say which outcome it is): one part per kind of source, counts first, such as "Monitors
-  checked 10 times, none fired", "Monitor checked 5 times, quiet", "1 decide call read 30 chunks",
+  checked 10 times, none fired", "Monitor checked 5 times, quiet", "1 decide call read 30 chunks" (the calls are the sum of the items' `calls` from the daemon, because one item holds every `decide` call of the turn: three calls of 200 chunks read "3 decide calls read 600 chunks"),
   "Gate checked twice, not passed" or "Decision chat answered 3 times", each ending ", 2 errors"
   when it had any. The parts are ranked by what matters most (errors, then a gate not passed, then
   a monitor that fired, then the rest; ties keep monitors, decide calls, gates, the rest), at most
@@ -633,6 +629,8 @@ When a chat's model is a decision model (`isDecisionProvider` in `decisionWire.t
 is reduced to what a decision model can use. `ChatInput` draws `DecisionComposer` above the text
 box, and leaves out what means nothing there:
 
+- **No `/` or `@` list.** A decision model reads the text and nothing else, so neither popover opens (a typed `/compact` still answers that there is nothing to compact). A send waits for up to 3 seconds for the question typed just before it to be stored (`settleDecisionQuestion` in `DecisionComposer.tsx`, awaited by `ChatInput`), while the composer clears at once.
+- **The model menu names where the model runs.** For a decision provider the model dialog and the chip's menu read "Runs on this computer" or "Runs on Baseten" (`decisionModelPlace`), then the tier, on a line that wraps. The local affiliation's "On this machine" is not repeated, and the chip shows the alias (`joey-1`).
 - **No `+` menu and no Tools chip**: a decision model reads the pasted text and calls no tools.
   The model menu (`settings/models/bottom_bar/ModelsBottomBar.tsx`) has no Effort, no "Lead and
   worker…" and no line saying the model can read files on this computer; its privacy line stays.
