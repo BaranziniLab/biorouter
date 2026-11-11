@@ -292,10 +292,20 @@ fn tokens_with_lines(code: &str) -> Vec<(&str, usize)> {
     out
 }
 
+/// Types whose names end in `Command` but which start no process. Each needs a
+/// reason; a type that can spawn never belongs here.
+const NOT_SPAWN_TYPES: &[(&str, &str)] = &[(
+    "AvailableCommand",
+    "an ACP slash command entry sent to the client in AvailableCommandsUpdate \
+     (agent_client_protocol), not a process",
+)];
+
 /// Whether `name` spawns: `Command` (any type named `…Command`, as the old
-/// substring rule counted `TokioCommand::new`), or one of `aliases`.
+/// substring rule counted `TokioCommand::new`, except the few in
+/// `NOT_SPAWN_TYPES`), or one of `aliases`.
 fn names_command(name: &str, aliases: &BTreeSet<String>) -> bool {
-    name.ends_with("Command") || aliases.contains(name)
+    (name.ends_with("Command") && !NOT_SPAWN_TYPES.iter().any(|(t, _)| *t == name))
+        || aliases.contains(name)
 }
 
 /// Every other name `codes` give `Command`: `use … Command as X` (in a group
