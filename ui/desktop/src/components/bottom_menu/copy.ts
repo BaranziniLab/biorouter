@@ -117,7 +117,6 @@ export const MODEL_COPY = {
   fullIdTooltip: (id: string) => `Model: ${id}`,
   currentModel: 'Current model',
   changeModel: 'Change model…',
-  leadWorker: 'Lead and worker…',
   effortGroup: 'Effort',
   /** The Effort InfoTip's name reads "About effort". */
   aboutEffort: 'effort',

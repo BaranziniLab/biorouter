@@ -3272,7 +3272,6 @@ export default function ChatInput({
               privacyTier={sessionPrivacyTier}
               privacyBasis={privacyBasis}
               setView={setView}
-              handOffKey={handOffKey}
             />
           </div>
           {sendOrStop}

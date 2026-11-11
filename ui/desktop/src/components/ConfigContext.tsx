@@ -103,18 +103,24 @@ const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
  * state, so it is announced to all of them (`utils/sessionBindingSync`), each of
  * which re-reads the pair. `ModelAndProviderContext.changeModel` announces its
  * own writes; the ones caught HERE are those that never pass through it — the
- * local and coding-agent onboarding cards, Lead/Worker settings, Settings' reset
- * — which until now left even their own window's chip naming the previous model.
+ * local and coding-agent onboarding cards, Settings' reset — which until now
+ * left even their own window's chip naming the previous model.
  *
  * `CREW_TASK_MODEL` (design OW-11) rides the same announcement: Crew's composer
  * and Ask my agent state the model a task starts on, which falls back to the
  * pair above, and a chat composer that re-reads the pair for it finds nothing
  * changed. It is a preference, not a capability key: the daemon never reads it.
+ *
+ * The default worker model's two keys ride it too, so every window's Settings
+ * row says the model subagents run on after another window changed it. Neither
+ * is a capability key: a subagent always runs at its chat's privacy tier.
  */
 const APP_MODEL_SELECTION_KEYS: ReadonlySet<string> = new Set([
   'BIOROUTER_PROVIDER',
   'BIOROUTER_MODEL',
   'CREW_TASK_MODEL',
+  'BIOROUTER_WORKER_PROVIDER',
+  'BIOROUTER_WORKER_MODEL',
 ]);
 
 export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
@@ -215,11 +221,10 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
         throwOnError: true,
         // Issue #56 DR-16: this is the GUI's ONLY path to `/config/upsert`, and
         // real settings screens write capability keys through it —
-        // BIOROUTER_LEAD_MODEL / BIOROUTER_LEAD_PROVIDER from Lead/Worker
-        // settings, OLLAMA_HOST and LLAMACPP_EXTERNAL_HOST from the provider
-        // forms. Those are the user editing their own settings; the daemon
-        // guards the same four keys against a model curling the route, and
-        // without this header it could not tell the two apart.
+        // OLLAMA_HOST and LLAMACPP_EXTERNAL_HOST from the provider forms.
+        // Those are the user editing their own settings; the daemon guards the
+        // same keys against a model curling the route, and without this header
+        // it could not tell the two apart.
         headers: await userActionHeaders(),
       });
       await reloadConfigAfterWrite();

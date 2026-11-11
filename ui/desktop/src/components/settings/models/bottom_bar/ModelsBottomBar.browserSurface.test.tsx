@@ -1,16 +1,14 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelsBottomBar from './ModelsBottomBar';
-import { MODEL_COPY } from '../../../bottom_menu/copy';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 import { BROWSER_SURFACE_MARKER } from '../../../../utils/surface';
 
 /**
  * SD-1 at the composer's model chip — the surface a browser user is most likely
  * to reach first, because it is the only model control visible without opening
- * Settings. Both of its menu items write capability config keys:
- * "Change model" through `/config/set_provider`, "Lead/worker settings" through
- * `/config/upsert` on `BIOROUTER_PROVIDER` and `BIOROUTER_LEAD_*`.
+ * Settings. Its menu item "Change model" writes capability config keys through
+ * `/config/set_provider`.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -47,9 +45,6 @@ vi.mock('../../../ModelAndProviderContext', () => ({
 // OPENED the dialog, which an empty stub cannot report.
 vi.mock('../subcomponents/SwitchModelModal', () => ({
   SwitchModelModal: () => <div>SWITCH-MODEL-MODAL</div>,
-}));
-vi.mock('../subcomponents/LeadWorkerSettings', () => ({
-  LeadWorkerSettings: () => <div>LEAD-WORKER-MODAL</div>,
 }));
 
 const dropdownRef = { current: null } as unknown as React.RefObject<HTMLDivElement>;
@@ -94,12 +89,12 @@ describe('ModelsBottomBar on a browser-served surface', () => {
   });
 
   /**
-   * ⚠ **Fails against today's code**: neither item carries `disabled`, so
-   * neither renders `aria-disabled`, and `findByTestId` has no note to resolve.
-   * Today the chip offers "Change model", the dialog opens, and the refusal
-   * arrives as a toast written for an AI agent.
+   * Before SD-1 the item carried no `disabled`, so it rendered no
+   * `aria-disabled` and `findByTestId` had no note to resolve: the chip offered
+   * "Change model", the dialog opened, and the refusal arrived as a toast
+   * written for an AI agent.
    */
-  it('greys out both menu items and says who chose the model', async () => {
+  it('greys out Change model and says who chose the model', async () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     renderBar();
     openChip();
@@ -108,10 +103,6 @@ describe('ModelsBottomBar on a browser-served surface', () => {
     expect(note.textContent).toMatch(/biorouter serve/);
 
     expect(screen.getByRole('menuitem', { name: /Change model/ })).toHaveAttribute(
-      'aria-disabled',
-      'true'
-    );
-    expect(screen.getByRole('menuitem', { name: MODEL_COPY.leadWorker })).toHaveAttribute(
       'aria-disabled',
       'true'
     );

@@ -3,10 +3,10 @@ import { lastInputWasKey } from '../../ui/inputTrail';
 
 /**
  * Where a dialog puts focus when its controls load AFTER it mounts (the Configure dialog's key
- * fields, the Lead/worker dialog's models). Radix picks "the first tabbable control" at mount,
- * and at that moment the body is a placeholder, so the pick was the footer's first button: Remove
- * on a configured provider, or the × in the Lead/worker dialog. A keyboard user opened a form on a
- * destructive button, or on its own close control, and the ring said so.
+ * fields). Radix picks "the first tabbable control" at mount, and at that moment the body is a
+ * placeholder, so the pick was the footer's first button: Remove on a configured provider, or the
+ * × in the since-retired Lead/worker dialog. A keyboard user opened a form on a destructive
+ * button, or on its own close control, and the ring said so.
  *
  * Two halves, used together:
  *

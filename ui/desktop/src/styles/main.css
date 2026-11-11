@@ -2625,7 +2625,7 @@ body:has(
 }
 
 /* A Select that opens its menu INSIDE a dialog (no portal: the model switcher,
-   the lead and worker settings, a custom provider's form) is not reached by
+   a custom provider's form) is not reached by
    the rule above. The dialog box is `fixed`, at `--z-modal` and transformed, so
    it is a stacking context: the menu's own 500 counts only inside it, and the
    whole dialog competes at 400 in the page, under the yielded toast (499).

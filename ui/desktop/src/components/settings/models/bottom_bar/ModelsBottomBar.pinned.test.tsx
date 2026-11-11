@@ -62,7 +62,6 @@ vi.mock('../subcomponents/SwitchModelModal', () => ({
 }));
 /** Read through a function, so TypeScript does not narrow it after a reset. */
 const lastSwitchProps = (): Record<string, unknown> | null => switchModal.props;
-vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
 const dropdownRef = { current: null } as unknown as React.RefObject<HTMLDivElement>;
 

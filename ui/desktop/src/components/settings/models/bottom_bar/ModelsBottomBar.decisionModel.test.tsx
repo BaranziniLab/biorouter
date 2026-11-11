@@ -40,7 +40,6 @@ vi.mock('../../../ModelAndProviderContext', () => ({
   }),
 }));
 vi.mock('../subcomponents/SwitchModelModal', () => ({ SwitchModelModal: () => null }));
-vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
 const row = (name: string, tier: 'public' | 'private') => ({
   name,
@@ -96,7 +95,7 @@ describe('the model chip of a decision chat', () => {
   });
 
   /** B-3: the menu offers nothing that means nothing in a decision chat. */
-  it('offers no Effort and no Lead and worker', async () => {
+  it('offers no Effort', async () => {
     render(
       <ModelsBottomBar
         sessionId="chat-1"
@@ -108,7 +107,6 @@ describe('the model chip of a decision chat', () => {
     );
     await openMenu();
     expect(screen.queryByRole('group', { name: MODEL_COPY.effortGroup })).toBeNull();
-    expect(screen.queryByRole('menuitem', { name: MODEL_COPY.leadWorker })).toBeNull();
     expect(screen.getByLabelText(/Current model/).getAttribute('aria-label')).not.toMatch(/Effort/);
   });
 
@@ -166,7 +164,7 @@ describe('the model chip of a decision chat', () => {
     expect(screen.queryByText('decision-models/joey-1')).toBeNull();
   });
 
-  it('keeps Effort, Lead and worker and the disclosure for a chat model', async () => {
+  it('keeps Effort and the disclosure for a chat model', async () => {
     render(
       <ModelsBottomBar
         sessionId="chat-4"
@@ -178,7 +176,6 @@ describe('the model chip of a decision chat', () => {
     );
     await openMenu();
     expect(screen.getByRole('group', { name: MODEL_COPY.effortGroup })).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: MODEL_COPY.leadWorker })).toBeInTheDocument();
     expect(await screen.findByTestId('non-private-model-chip-note')).toHaveTextContent('SHORT');
   });
 });

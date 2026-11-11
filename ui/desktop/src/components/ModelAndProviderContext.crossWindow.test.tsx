@@ -86,9 +86,6 @@ vi.mock('./ConfigContext', () => ({
 vi.mock('./settings/models/subcomponents/SwitchModelModal', () => ({
   SwitchModelModal: () => null,
 }));
-vi.mock('./settings/models/subcomponents/LeadWorkerSettings', () => ({
-  LeadWorkerSettings: () => null,
-}));
 
 Object.defineProperty(window, 'appConfig', {
   writable: true,

@@ -214,8 +214,8 @@ export function subscribeAppModelSelectionChanges(listener: () => void): () => v
  *
  * Local listeners run synchronously, as {@link announceSessionBinding}'s do, so
  * the window that wrote re-reads too. That is not redundant: the writer is not
- * always `ModelAndProviderContext` itself (onboarding and Lead/Worker write
- * these keys through `ConfigContext.upsert`), and a read issued after the write
+ * always `ModelAndProviderContext` itself (onboarding writes these keys
+ * through `ConfigContext.upsert`), and a read issued after the write
  * is what settles a race with another window's write.
  */
 export function announceAppModelSelection(): void {
