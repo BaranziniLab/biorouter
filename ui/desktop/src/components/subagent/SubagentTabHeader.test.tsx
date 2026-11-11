@@ -272,7 +272,7 @@ describe('SubagentTabHeader', () => {
     // but a toggle that can only ever open onto nothing is a dead control.
     render(<SubagentTabHeader {...props} spawnContext={undefined} />);
     expect(screen.getByText(copy.of)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: copy.context })).toBeNull();
+    expect(screen.queryByRole('button', { name: SUBAGENT_HEADER_COPY.instructions })).toBeNull();
   });
 
   /**

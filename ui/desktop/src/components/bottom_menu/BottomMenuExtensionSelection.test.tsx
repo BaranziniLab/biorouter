@@ -819,9 +819,19 @@ describe('extensionsEmptyText', () => {
       "Couldn't load this chat's extensions."
     );
   });
-  it('says there are none only once the chat answered with none', () => {
+  it('says none were added only once the chat answered with none, and that built-ins stay on', () => {
     expect(extensionsEmptyText({ query: '', answered: true, failed: false })).toBe(
-      'No extensions available'
+      'No extensions added to this chat. Built-in capabilities are always on; manage them in Settings.'
     );
+  });
+  it('speaks of the next chat on Home, where the list is the next chat’s', () => {
+    expect(extensionsEmptyText({ query: '', answered: true, failed: false, isHubView: true })).toBe(
+      'No extensions added for the next chat. Built-in capabilities are always on; manage them in Settings.'
+    );
+  });
+  it('never calls an empty list unavailable', () => {
+    for (const text of [EXTENSIONS_COPY.empty, EXTENSIONS_COPY.emptyNextChat]) {
+      expect(text).not.toMatch(/available/i);
+    }
   });
 });

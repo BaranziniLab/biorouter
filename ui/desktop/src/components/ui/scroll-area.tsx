@@ -237,11 +237,16 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       }
     }, [isAtBottom, isFollowing, onScrollChange, handleScrollProp]);
 
-    // Auto-scroll when content changes and user is following
-    React.useEffect(() => {
-      if (!autoScroll || !viewportRef.current) return;
+    // Read by the content observer below, which runs outside React's commits.
+    const isFollowingRef = React.useRef(isFollowing);
+    isFollowingRef.current = isFollowing;
 
+    // Follow content that has grown to the end, when the reader follows it. Called
+    // after a commit (the effect below) and when the content's box changes height
+    // with no commit of this component at all (the observer below).
+    const followIfGrown = React.useCallback(() => {
       const viewport = viewportRef.current;
+      if (!viewport) return;
       const currentScrollHeight = viewport.scrollHeight;
 
       // Only auto-scroll if:
@@ -252,7 +257,7 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       // 5. The owner does not hold this growth below the fold (`followGrowth`)
       if (
         currentScrollHeight > lastScrollHeightRef.current &&
-        isFollowing &&
+        isFollowingRef.current &&
         !userScrolledUpRef.current &&
         !isActivelyScrollingRef.current &&
         (followGrowthRef.current?.() ?? true)
@@ -279,7 +284,33 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       }
 
       lastScrollHeightRef.current = currentScrollHeight;
-    }, [children, autoScroll, isFollowing]);
+    }, []);
+
+    // Auto-scroll when content changes and user is following
+    React.useEffect(() => {
+      if (!autoScroll) return;
+      followIfGrown();
+    }, [children, autoScroll, isFollowing, followIfGrown]);
+
+    // ⚠ A ROW CAN GROW WITHOUT A COMMIT HERE (G-7). The effect above runs only when
+    // `children` changes, and a disclosure that opens inside a row (the `decide`
+    // card, a decision turn marker, anything holding its own open state) re-renders
+    // that row alone: the transcript's children are the same elements, so the
+    // effect never ran and the opened panel grew under the composer of a view that
+    // was following the end. An image that finishes loading does the same. So the
+    // content's own box is observed too, and a growth it reports goes through the
+    // same follow, with the same conditions and the same `followGrowth` veto. A
+    // growth that a commit also reports is followed once: whichever runs first
+    // records the new height, and the other then sees nothing grow.
+    const contentRef = React.useRef<HTMLDivElement>(null);
+    React.useEffect(() => {
+      const content = contentRef.current;
+      if (!autoScroll || !content) return;
+      if (typeof ResizeObserver === 'undefined') return;
+      const observer = new ResizeObserver(() => followIfGrown());
+      observer.observe(content);
+      return () => observer.disconnect();
+    }, [autoScroll, followIfGrown]);
 
     // THE BOTTOM ANCHOR (`anchorBottomOnResize`). Remembers where the viewport's
     // bottom edge sits in content coordinates, and when the viewport changes
@@ -408,7 +439,10 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
           ref={viewportRef}
           className="br-scroll-viewport h-full w-full rounded-[inherit] [&>div]:!block"
         >
-          <div className={cn(paddingX ? `px-${paddingX}` : '', paddingY ? `py-${paddingY}` : '')}>
+          <div
+            ref={contentRef}
+            className={cn(paddingX ? `px-${paddingX}` : '', paddingY ? `py-${paddingY}` : '')}
+          >
             {children}
             {autoScroll && <div ref={viewportEndRef} style={{ height: '1px' }} />}
           </div>

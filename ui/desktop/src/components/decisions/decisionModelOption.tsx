@@ -21,12 +21,17 @@ import { decisionModelPlace } from './decisionWords';
  * - a model this chat may not use is disabled and says why: the R4 line for a public
  *   model in a private chat, whatever the daemon said, else the daemon's own reason
  *   with backticks removed (R5);
- * - the selected value (`context: 'value'`) is the name alone.
+ * - the selected value (`context: 'value'`) is the name alone, except the default row's,
+ *   which says what the default resolves to when that is known: "Default model (tev1:0.8b)".
+ *   In the menu the model sits in the secondary text; once picked, the name is all that
+ *   shows, and "Default model" alone left the gate editor's person guessing which model ran.
  */
 
 export const DECISION_MODEL_OPTION_COPY = {
   defaultModel: 'Default model',
   defaultModelHint: "the chat's decision model",
+  /** The default row as the selected value, when the model it resolves to is known. */
+  defaultModelNamed: (alias: string) => `Default model (${alias})`,
   privateModel: 'Private model',
   publicRefused: "Public model: it can't read a private chat.",
 } as const;
@@ -53,8 +58,10 @@ export interface DecisionModelOption {
   value: string;
   /** What the row reads as, spoken: `tev1:0.8b, Private model, this computer · 2K tokens`. */
   label: string;
-  /** The alias, or "Default model". Also the selected value's text. */
+  /** The alias, or "Default model". Also the selected value's text, unless `selectedName`. */
   name: string;
+  /** The selected value's text when it differs from `name`: "Default model (tev1:0.8b)". */
+  selectedName?: string;
   /** Muted text after the name: the place and window, the default's model, or the reason. */
   secondary: string | null;
   /** Draws the lock with the hidden "Private model". Never on a disabled row. */
@@ -119,14 +126,16 @@ export function decisionModelOptions({
   browser,
 }: DecisionModelOptionsInput): DecisionModelOption[] {
   const defaultReason = chatRefusal ? plainReason(chatRefusal) || null : null;
+  const defaultAlias = decisionModelLabel(defaultModel);
   const defaultSecondary =
-    defaultReason ??
-    decisionModelLabel(defaultModel) ??
-    DECISION_MODEL_OPTION_COPY.defaultModelHint;
+    defaultReason ?? defaultAlias ?? DECISION_MODEL_OPTION_COPY.defaultModelHint;
   const rows: DecisionModelOption[] = [
     {
       value: '',
       name: DECISION_MODEL_OPTION_COPY.defaultModel,
+      ...(defaultAlias
+        ? { selectedName: DECISION_MODEL_OPTION_COPY.defaultModelNamed(defaultAlias) }
+        : {}),
       label: spoken(DECISION_MODEL_OPTION_COPY.defaultModel, false, defaultSecondary),
       secondary: defaultSecondary,
       isPrivate: false,
@@ -175,7 +184,9 @@ export function formatDecisionModelOption(
   meta?: { context?: 'menu' | 'value' }
 ): ReactNode {
   const option = raw as DecisionModelOption;
-  if (meta?.context === 'value') return <span className="truncate">{option.name}</span>;
+  if (meta?.context === 'value') {
+    return <span className="truncate">{option.selectedName ?? option.name}</span>;
+  }
   return (
     <span
       className="flex min-w-0 flex-wrap items-baseline gap-x-2"

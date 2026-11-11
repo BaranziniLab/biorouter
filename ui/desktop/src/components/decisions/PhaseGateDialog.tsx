@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { MoreHorizontal, Plus, X } from '../icons/app-icons';
 import {
   fetchDecisionCatalog,
+  fetchDecisionSettings,
   formatProbability,
   phaseGateState,
   type DecisionHistoryFilter,
@@ -278,6 +279,7 @@ function GateEditor({
   modelsFailed,
   chatTier,
   chatRefusal,
+  defaultModel,
   disabled,
   replacing,
   scaleFor,
@@ -294,6 +296,8 @@ function GateEditor({
   modelsFailed: boolean;
   chatTier: DecisionTier | null;
   chatRefusal: string | null;
+  /** The chat's stored default decision model, named on the default row; `null` when unknown or unset. */
+  defaultModel: DecisionModelRef | null;
   disabled: boolean;
   replacing: boolean;
   /**
@@ -317,7 +321,12 @@ function GateEditor({
 }) {
   const base = useId();
   const steps = gateThresholdSteps(scaleFor);
-  const options: DecisionModelOption[] = decisionModelOptions({ models, chatTier, chatRefusal });
+  const options: DecisionModelOption[] = decisionModelOptions({
+    models,
+    chatTier,
+    chatRefusal,
+    defaultModel,
+  });
   const selectedKey = decisionModelKey(draft.model);
   if (draft.model && !options.some((option) => option.value === selectedKey)) {
     const name = decisionModelDisplay(draft.model, null) ?? selectedKey;
@@ -755,6 +764,11 @@ export interface PhaseGateDialogProps {
   models?: DecisionModelEntry[];
   /** For tests, with `models`: the catalog's `sessionUnavailableReason`. */
   chatRefusal?: string | null;
+  /**
+   * The chat's default decision model (what a gate with no model asks), instead of
+   * reading `GET /sessions/{id}/decision-settings` when the editor opens.
+   */
+  defaultModel?: DecisionModelRef | null;
 }
 
 type Busy = PhaseGateChoice | 'remove' | 'save' | null;
@@ -795,6 +809,7 @@ export function PhaseGateDialog({
   onChanged,
   models: givenModels,
   chatRefusal: givenChatRefusal,
+  defaultModel: givenDefaultModel,
 }: PhaseGateDialogProps) {
   // The phase as the last write answered it, until the caller reads a newer one.
   const [answered, setAnswered] = useState<{
@@ -826,12 +841,14 @@ export function PhaseGateDialog({
   const [fetchedModels, setFetchedModels] = useState<DecisionModelEntry[]>([]);
   const [fetchedRefusal, setFetchedRefusal] = useState<string | null>(null);
   const [modelsFailed, setModelsFailed] = useState(false);
+  const [fetchedDefaultModel, setFetchedDefaultModel] = useState<DecisionModelRef | null>(null);
 
   const phase = answered ? answered.phase : givenPhase;
   const phases = answered ? answered.phases : (givenPhases ?? (givenPhase ? [givenPhase] : []));
   const gate = phase?.gate ?? null;
   const models = givenModels ?? fetchedModels;
   const chatRefusal = givenModels ? (givenChatRefusal ?? null) : fetchedRefusal;
+  const defaultModel = givenDefaultModel !== undefined ? givenDefaultModel : fetchedDefaultModel;
   const phaseId = phase?.id ?? givenPhase?.id ?? '';
 
   // Each open starts from what the side panel read; a phase with no gate opens the
@@ -876,6 +893,22 @@ export function PhaseGateDialog({
       });
     return () => controller.abort();
   }, [editorOpen, givenModels, sessionId]);
+
+  // The chat's default decision model, so the default row says what it resolves
+  // to. Best effort: an unreadable answer leaves the row as plain "Default model".
+  const readDefaultModel = givenDefaultModel === undefined;
+  useEffect(() => {
+    if (!editorOpen || !readDefaultModel || !sessionId) return;
+    const controller = new AbortController();
+    fetchDecisionSettings(sessionId, controller.signal)
+      .then(({ data }) => {
+        if (!controller.signal.aborted) setFetchedDefaultModel(data?.defaultModel ?? null);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setFetchedDefaultModel(null);
+      });
+    return () => controller.abort();
+  }, [editorOpen, readDefaultModel, sessionId]);
 
   const settle = (result: PhaseGateResult) => {
     if (!result.ok) {
@@ -1099,6 +1132,7 @@ export function PhaseGateDialog({
           modelsFailed={modelsFailed}
           chatTier={chatTier}
           chatRefusal={chatRefusal}
+          defaultModel={defaultModel}
           disabled={working}
           replacing={!!gate}
           scaleFor={scaleFor}

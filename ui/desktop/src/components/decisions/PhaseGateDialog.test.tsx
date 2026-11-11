@@ -20,6 +20,7 @@ const api = vi.hoisted(() => ({
   decide: vi.fn(),
   put: vi.fn(),
   remove: vi.fn(),
+  settings: vi.fn(),
   headers: vi.fn(),
 }));
 vi.mock('../../api/sdk.gen', async (original) => ({
@@ -27,6 +28,7 @@ vi.mock('../../api/sdk.gen', async (original) => ({
   decidePhaseGate: api.decide,
   putPhaseGate: api.put,
   deletePhaseGate: api.remove,
+  getDecisionSettings: api.settings,
 }));
 vi.mock('../../utils/userAction', () => ({ userActionHeaders: api.headers }));
 
@@ -152,6 +154,9 @@ beforeEach(() => {
   api.remove.mockReset();
   api.headers.mockReset();
   api.headers.mockResolvedValue(PROOF);
+  api.settings.mockReset();
+  // A daemon with no stored settings for the chat: the default row stays unnamed.
+  api.settings.mockResolvedValue({ data: undefined, response: { status: 404 } });
 });
 
 /** Opens the footer's `⋯` and picks an item by its test id. */
@@ -741,6 +746,41 @@ describe('the editor', () => {
       model: 'tev1:0.8b',
       adapter: 'logprob',
     });
+  });
+
+  it('names what the default model resolves to, read from the chat’s decision settings', async () => {
+    api.settings.mockResolvedValue({
+      data: { defaultModel: { provider: 'ollama_decision', model: 'tev1:0.8b' }, monitors: [] },
+      response: { status: 200 },
+    });
+    draw();
+    await pickFromMenu('phase-gate-edit');
+    openMoreOptions();
+    await waitFor(() =>
+      expect(screen.getByTestId('phase-gate-model')).toHaveTextContent(
+        DECISION_MODEL_OPTION_COPY.defaultModelNamed('tev1:0.8b')
+      )
+    );
+    expect(api.settings.mock.calls[0][0].path).toEqual({ session_id: 's1' });
+  });
+
+  it('keeps the default model unnamed when the chat stores none or the read fails', async () => {
+    draw({ defaultModel: null });
+    await pickFromMenu('phase-gate-edit');
+    openMoreOptions();
+    const field = screen.getByTestId('phase-gate-model');
+    expect(field).toHaveTextContent(DECISION_MODEL_OPTION_COPY.defaultModel);
+    expect(field).not.toHaveTextContent('Default model (');
+    // Given by the caller, so nothing is read.
+    expect(api.settings).not.toHaveBeenCalled();
+  });
+
+  it('a default model the caller names is shown without a read', async () => {
+    draw({ defaultModel: { provider: 'ollama_decision', model: 'tev1:0.8b', adapter: null } });
+    await pickFromMenu('phase-gate-edit');
+    openMoreOptions();
+    expect(screen.getByTestId('phase-gate-model')).toHaveTextContent('Default model (tev1:0.8b)');
+    expect(api.settings).not.toHaveBeenCalled();
   });
 
   it('offers each model by alias and place, a model this chat may not use disabled with its reason shown', async () => {
