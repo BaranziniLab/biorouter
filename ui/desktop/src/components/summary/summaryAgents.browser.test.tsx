@@ -411,8 +411,12 @@ describe('the subagents in the summary card, in a real layout engine', () => {
         expect(line.right).toBeLessThanOrEqual(measured.card.right);
 
       const peekOf = (id: string) =>
-        tab.evaluate((child) => {
+        tab.evaluate(async (child) => {
           const row = document.querySelector(`[data-testid="subagent-row-${child}"]`)!;
+          // The row's fill eases in over --dur-fast-min (95ms), so a read taken
+          // as the peek mounts sees the transition's first frame, still
+          // transparent. Measure the settled row.
+          await Promise.all(row.getAnimations().map((animation) => animation.finished));
           const card = document.querySelector(`[data-testid="subagent-card-${child}"]`);
           const box = row.getBoundingClientRect();
           const peek = card?.getBoundingClientRect();
@@ -430,6 +434,9 @@ describe('the subagents in the summary card, in a real layout engine', () => {
       const resting = await peekOf('child-1');
       await tab.click('[data-testid="subagent-row-child-1"]');
       await tab.waitForSelector('[data-testid="subagent-card-child-1"]');
+      // Off the row, so the fill measured is the kept one and not the hover's,
+      // which is the same step.
+      await tab.mouse.move(0, 0);
       const kept = await peekOf('child-1');
       expect(kept.open).toBe(1);
       expect(kept.pinned).toBe('true');
