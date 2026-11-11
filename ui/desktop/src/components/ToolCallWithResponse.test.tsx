@@ -1174,6 +1174,63 @@ describe('summarizeToolCall', () => {
     expect(screen.getByText('Error: No matches found for: web search')).toBeInTheDocument();
   });
 
+  // Live QA, 2026-11-11: the failed `decide` row printed the error taxonomy's
+  // header and the repetition guard's text for the agent.
+  it("shows a failed call's error without the [tool_error] header or the agent's text", () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-loop-stop',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'decisions__decide',
+          arguments: {
+            questions: { has_ms: { instructions: 'Does this note state MS?' } },
+            chunks: [{ id: 'note-1', text: 'Neuro follow-up' }],
+          },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-loop-stop',
+          toolResult: {
+            status: 'success',
+            value: {
+              isError: true,
+              content: [
+                {
+                  type: 'text',
+                  text:
+                    '[tool_error kind=transient retryable=true] A dependency blipped. One retry ' +
+                    "is reasonable.\nBiorouter stopped this tool call: 'decisions__decide' has " +
+                    'now been called with identical arguments 5 times without a changed result. ' +
+                    'The user did NOT decline it; this is an automatic repetition guard.',
+                },
+              ],
+            },
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/^Failed/).closest('button') as HTMLElement);
+
+    const notice = screen.getByRole('alert');
+    expect(notice).toHaveTextContent(
+      'Biorouter stopped the agent repeating the same step (decide, 5 times).'
+    );
+    for (const raw of ['[tool_error', 'retryable=', 'did NOT decline', 'decisions__decide']) {
+      expect(notice).not.toHaveTextContent(raw);
+    }
+  });
+
   it('contains an unexpected tool-card render failure instead of crashing the chat', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const toolRequest: ToolRequestMessageContent = {

@@ -42,6 +42,7 @@ import { isUIResource } from '@mcp-ui/client';
 import { CallToolResponse, Content, EmbeddedResource } from '../api';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { crossAffiliationOffer } from '../utils/crossAffiliation';
+import { personFacingToolError } from '../utils/repetitionStop';
 import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import { stripHiddenCharacters } from '../utils/untrustedText';
@@ -2227,11 +2228,18 @@ function ToolCallView({
 /** Longest live progress line the collapsed row carries before it is elided. */
 const MAX_LIVE_DETAIL_LENGTH = 64;
 
+/**
+ * A failed call's error, in the words the person reads: without the error
+ * taxonomy's `[tool_error …]` header and its advice to the agent, and a
+ * repetition stop as one plain sentence (`utils/repetitionStop.ts`). Callers
+ * that parse the raw text (the cross-affiliation offer) read it before this.
+ */
 function ToolFailureNotice({ title, message }: { title?: string; message: string }) {
+  const shown = personFacingToolError(message);
   return (
     <div role="alert" className="min-w-0">
       {title && <div className="text-secondary text-text-danger">{title}</div>}
-      <ToolContentPreview text={message}>
+      <ToolContentPreview text={shown}>
         {(text) => (
           <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-code text-text-default [overflow-wrap:anywhere]">
             {text}

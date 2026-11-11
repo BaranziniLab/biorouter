@@ -548,6 +548,51 @@ fn failure_stop_reason(tool_name: &str, streak: u32) -> String {
     )
 }
 
+/// What the PERSON is told when a repetition stop ends the turn.
+///
+/// A stop's `reason` is written for the agent ("The user did NOT decline it…
+/// Change approach…") and stays the denied call's tool result, where the agent
+/// reads it. It used to be the turn's ending too, and shown to the person it
+/// read as a model failure addressed to somebody else (live QA, 2026-11-11: a
+/// red "Model request failed" over the agent's own instructions). So the
+/// ending is this plain sentence instead, naming the step the way a tool row
+/// does (`decide`, not `decisions__decide`) and the run that tripped the
+/// guard.
+///
+/// The desktop draws the same four sentences when an older daemon sends the
+/// agent's text (`ui/desktop/src/utils/repetitionStop.ts`); keep them equal.
+pub fn repetition_stop_notice(result: &InspectionResult, tool_name: &str) -> String {
+    let step = tool_name.rsplit("__").next().unwrap_or(tool_name);
+    let (what, unit) = match result.finding_id.as_deref() {
+        Some(REPETITION_NEAR_DUP_HARD_FINDING_ID) => ("repeating nearly the same step", "times"),
+        Some(REPETITION_OSCILLATION_HARD_FINDING_ID) => {
+            ("going back and forth between the same two steps", "calls")
+        }
+        Some(FAILURE_LOOP_HARD_FINDING_ID) => {
+            ("retrying a step that keeps failing the same way", "times")
+        }
+        _ => ("repeating the same step", "times"),
+    };
+    match stop_run_length(&result.reason, tool_name) {
+        Some(run) => format!("Biorouter stopped the agent {what} ({step}, {run} {unit})."),
+        None => format!("Biorouter stopped the agent {what} ({step})."),
+    }
+}
+
+/// The run length a hard-stop reason states: "… 5 times …" in the exact,
+/// near-duplicate and failure stops, "your last 6 tool calls …" in the
+/// oscillation stop. Read out of the reason because every formatter above
+/// writes it there and nowhere else; the quoted tool name is removed first so a
+/// name with digits in it cannot be read as the count. Pinned against all four
+/// formatters in `the_person_hears_a_plain_sentence_for_every_hard_stop`.
+fn stop_run_length(reason: &str, tool_name: &str) -> Option<u32> {
+    static RUN: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\b(\d+) (?:times|tool calls)\b").expect("valid run-length pattern")
+    });
+    let reason = reason.replace(&format!("'{tool_name}'"), "''");
+    RUN.captures(&reason)?.get(1)?.as_str().parse().ok()
+}
+
 // Helper struct for internal tracking
 #[derive(Debug, Clone)]
 struct InternalToolCall {
@@ -1630,6 +1675,82 @@ impl ToolInspector for RepetitionInspector {
 mod tests {
     use super::*;
     use rmcp::object;
+
+    /// Live QA, 2026-11-11: five identical `decisions__decide` calls ended the
+    /// turn under a red "Model request failed" carrying the agent's own
+    /// instructions ("The user did NOT decline it…"). The person now reads one
+    /// plain sentence per kind of stop, with the step's short name and the run
+    /// that tripped the guard, and the agent keeps its text.
+    #[test]
+    fn the_person_hears_a_plain_sentence_for_every_hard_stop() {
+        let tool = "decisions__decide";
+        let stop = |finding: &str, reason: String| InspectionResult {
+            tool_request_id: "1".into(),
+            action: InspectionAction::Deny,
+            reason,
+            confidence: 1.0,
+            inspector_name: REPETITION_INSPECTOR_NAME.into(),
+            finding_id: Some(finding.into()),
+        };
+        for (result, expected) in [
+            (
+                stop(
+                    REPETITION_HARD_FINDING_ID,
+                    RepetitionInspector::hard_stop_reason(tool, 5),
+                ),
+                "Biorouter stopped the agent repeating the same step (decide, 5 times).",
+            ),
+            (
+                stop(
+                    REPETITION_NEAR_DUP_HARD_FINDING_ID,
+                    RepetitionInspector::near_dup_stop_reason(tool, 6),
+                ),
+                "Biorouter stopped the agent repeating nearly the same step (decide, 6 times).",
+            ),
+            (
+                stop(
+                    REPETITION_OSCILLATION_HARD_FINDING_ID,
+                    RepetitionInspector::oscillation_stop_reason(tool, 8),
+                ),
+                "Biorouter stopped the agent going back and forth between the same two steps \
+                 (decide, 8 calls).",
+            ),
+            (
+                stop(FAILURE_LOOP_HARD_FINDING_ID, failure_stop_reason(tool, 3)),
+                "Biorouter stopped the agent retrying a step that keeps failing the same way \
+                 (decide, 3 times).",
+            ),
+        ] {
+            let notice = repetition_stop_notice(&result, tool);
+            assert_eq!(notice, expected);
+            for agent_words in [
+                "decisions__decide",
+                "did NOT decline",
+                "Change approach",
+                "'",
+            ] {
+                assert!(!notice.contains(agent_words), "{notice}");
+            }
+        }
+
+        // A digit in the tool's own name is not the count.
+        let named = "tool2__step_10_times";
+        assert_eq!(
+            repetition_stop_notice(
+                &stop(
+                    REPETITION_HARD_FINDING_ID,
+                    RepetitionInspector::hard_stop_reason(named, 4),
+                ),
+                named,
+            ),
+            "Biorouter stopped the agent repeating the same step (step_10_times, 4 times)."
+        );
+        // A reason that states no run still yields a sentence, without one.
+        assert_eq!(
+            repetition_stop_notice(&stop(REPETITION_HARD_FINDING_ID, "stopped".into()), tool),
+            "Biorouter stopped the agent repeating the same step (decide)."
+        );
+    }
 
     fn call(name: &str, args: Value) -> InternalToolCall {
         InternalToolCall::from_tool_call(&CallToolRequestParams {

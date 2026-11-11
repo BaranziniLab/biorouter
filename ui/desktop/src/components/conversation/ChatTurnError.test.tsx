@@ -117,6 +117,43 @@ describe('ChatTurnError', () => {
     expect(presentation.message).toContain('dropped before the response finished');
   });
 
+  // Live QA, 2026-11-11: five identical `decisions__decide` calls ended the turn
+  // under a red "Model request failed" carrying the guard's text for the agent.
+  describe('a turn the repetition guard stopped', () => {
+    const AGENT_TEXT =
+      "Biorouter stopped this tool call: 'decisions__decide' has now been called with " +
+      'identical arguments 5 times without a changed result. The user did NOT decline it; ' +
+      'this is an automatic repetition guard.';
+    const NOTICE = 'Biorouter stopped the agent repeating the same step (decide, 5 times).';
+    const loop = (message: string) =>
+      error({ message, code: 'tool_loop', scope: 'inference', retryable: false });
+
+    it('is a plain notice, from the sentence the daemon sends or the agent text it used to', () => {
+      for (const message of [NOTICE, AGENT_TEXT]) {
+        expect(presentChatTurnError(loop(message))).toEqual({
+          title: 'Stopped a repeated step',
+          message: NOTICE,
+        });
+      }
+      expect(presentChatTurnError(loop('')).message).toBe(
+        'Biorouter stopped the agent repeating the same step.'
+      );
+    });
+
+    it('renders as one quiet status line: no alert, no failure title, no agent text', () => {
+      render(<ChatTurnError error={loop(AGENT_TEXT)} onRetry={vi.fn()} />);
+
+      expect(screen.queryByRole('alert')).toBeNull();
+      const line = screen.getByRole('status');
+      expect(line).toHaveTextContent(NOTICE);
+      for (const raw of ['Model request failed', 'did NOT decline', 'decisions__decide']) {
+        expect(line).not.toHaveTextContent(raw);
+      }
+      expect(screen.getByTestId('chat-turn-loop-stop')).toBeInTheDocument();
+      expect(screen.queryByTestId('chat-turn-error-retry')).toBeNull();
+    });
+  });
+
   it('renders a Retry action for a retryable error and invokes onRetry once', () => {
     const onRetry = vi.fn();
     render(

@@ -19,8 +19,11 @@ gate that enforces it.
 **They get every built-in capability, on the same terms as any other provider.**
 Developer (shell, text editor, analyze, image processor),
 Biorouter Copilot (the sole native desktop observation and control capability), Web & Documents, Knowledge, Workspace, Skills, Extension Manager, Memory,
-To Do, Chat Recall, Agent Drafter and Auto Visualiser all reach the child over
-the bridge. What still does *not* is a **third-party** extension's tools, which
+To Do, Chat Recall, Decisions, Agent Drafter and Auto Visualiser all reach the
+child over the bridge. (Decisions was missing until 2026-11-11: a bundled
+capability reaches the bridge only through its entry in
+`CODING_AGENT_BRIDGE_POLICIES`, and without one its tools were dropped while its
+instructions still reached the prompt.) What still does *not* is a **third-party** extension's tools, which
 remain admitted case by case rather than wholesale.
 
 ⚠ **This changed, and the previous text described the old behaviour.** The
