@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ChatSummary, type ChatSummaryProps } from '../ChatSummary';
 import { parseSessionSubagents, type SessionSubagents } from '../../utils/sessionSubagents';
+import { parseDecisionSettings } from '../../utils/sessionDecisions';
 import { wireRow, wireSubagents } from '../../utils/sessionSubagents.fixture';
 import { summaryCopy } from './copy';
 
@@ -39,16 +40,56 @@ describe('the Chat summary with subagents', () => {
     render(<ChatSummary {...props} subagents={subagents} />);
     fireEvent.click(screen.getByRole('button', { name: summaryCopy.details }));
     const todo = screen.getByRole('region', { name: summaryCopy.todo });
-    const agents = screen.getByRole('region', { name: summaryCopy.agents.subagents });
+    const agents = screen.getByRole('region', { name: summaryCopy.agents.agents });
     const stats = screen.getByLabelText(summaryCopy.statsLabel);
     expect(todo.compareDocumentPosition(agents) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(agents.compareDocumentPosition(stats) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(agents.closest('[data-summary-body]')).not.toBeNull();
   });
 
+  it('says on a subagent’s card which of the chat’s monitors watch it too', async () => {
+    const settings = parseDecisionSettings({
+      defaultModel: null,
+      monitors: [
+        {
+          id: 'scope',
+          name: 'Scope drift',
+          question: { instructions: 'Off task?', kind: { binary: {} } },
+          threshold: 0.8,
+          applyToSubagents: true,
+        },
+        {
+          id: 'cost',
+          name: 'Cost check',
+          question: { instructions: 'Over budget?', kind: { binary: {} } },
+          threshold: 0.8,
+        },
+      ],
+    });
+    render(
+      <ChatSummary
+        {...props}
+        subagents={subagents}
+        decisions={{
+          sessionId: 'parent',
+          data: { summary: null, settings },
+          loading: false,
+          error: false,
+          refresh: vi.fn(),
+          onOpenHistory: vi.fn(),
+          onOpenMonitors: vi.fn(),
+        }}
+      />
+    );
+    fireEvent.click(screen.getByTestId('subagent-row-a'), { detail: 1 });
+    const card = await screen.findByTestId('subagent-card-a');
+    expect(card).toHaveTextContent(summaryCopy.agents.peek.watchedBy('Scope drift'));
+    expect(card).not.toHaveTextContent('Cost check');
+  });
+
   it('draws nothing for them when the prop is absent or the roster is empty', () => {
     const { rerender } = render(<ChatSummary {...props} />);
-    expect(screen.queryByRole('region', { name: summaryCopy.agents.subagents })).toBeNull();
+    expect(screen.queryByRole('region', { name: summaryCopy.agents.agents })).toBeNull();
     rerender(
       <ChatSummary
         {...props}
@@ -58,7 +99,7 @@ describe('the Chat summary with subagents', () => {
         }}
       />
     );
-    expect(screen.queryByRole('region', { name: summaryCopy.agents.subagents })).toBeNull();
+    expect(screen.queryByRole('region', { name: summaryCopy.agents.agents })).toBeNull();
   });
 });
 

@@ -178,14 +178,17 @@ describe('the Decisions section', () => {
     }
   });
 
-  it('marks a quiet monitor with an open eye, never a cross', () => {
+  it('marks every source with a circle, and a quiet monitor as finished, never the failed cross', () => {
     draw();
     openSection();
-    const glyph = screen
+    const marks = [...document.querySelectorAll('.br-decisions__row .br-agent-mark')];
+    expect(marks.length).toBeGreaterThan(1);
+    for (const mark of marks) expect(mark).toHaveAttribute('data-shape', 'circle');
+    const quiet = screen
       .getByTestId('decision-source-monitor:form')
-      .querySelector('.br-decisions__glyph svg');
-    expect(glyph?.getAttribute('class') ?? '').toMatch(/eye/);
-    expect(glyph?.getAttribute('class') ?? '').not.toMatch(/\bx\b|lucide-x/);
+      .querySelector('.br-decisions__glyph .br-agent-mark');
+    expect(quiet).toHaveAttribute('data-kind', 'done');
+    expect(quiet).not.toHaveAttribute('data-kind', 'failed');
   });
 
   it('opens the decision history filtered to the row it came from', () => {

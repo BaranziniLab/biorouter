@@ -589,8 +589,9 @@ export type RecordGlyphState =
  * A record's glyph by SHAPE: a raised flag for a fired monitor, an open eye for a
  * quiet one (never a cross), a check and a cross for a gate, a plain ring for an
  * answer whatever a threshold said, a warning for an error and a lock for a
- * refusal. The shapes `DECISION_STATE_ICONS` in `summary/SummaryDecisions.tsx`
- * draws for the same states.
+ * refusal. The Chat summary's Decisions rows say the same states with the agent
+ * grid's circles instead (`DECISION_STATE_MARKS` in `summary/agentGrid.ts`), the
+ * shape a source shares there with the roster's decision-model work.
  */
 export const RECORD_GLYPHS: Record<RecordGlyphState, EntityIcon> = {
   monitorFired: Flag,

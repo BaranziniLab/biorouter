@@ -81,14 +81,13 @@ export const summaryCopy = {
     gridLabel: (group: string) => `Agents, ${group}`,
     /** A group's rows: "Agents listed, Read the trials". */
     rowsLabel: (group: string) => `Agents listed, ${group}`,
+    /** The grid and the rows of a chat with no plan. */
+    gridOfChat: 'Agents of this chat',
+    rowsOfChat: 'Agents listed',
     /** "Show 12 more", under a group's first rows. */
     showMore: (count: number) => `Show ${count} more`,
     /** Said of a subagent whose own model is a decision model. */
     decisionModel: 'Decision model',
-    phases: 'Phases',
-    /** The Phases section's accessible name, with the plan's title: "Phases: Fever notes". */
-    phasesLabel: (title: string | null | undefined) =>
-      title?.trim() ? `Phases: ${title.trim()}` : 'Phases',
     /** Read after the phase count by assistive technology only: "1 of 4 phases complete". */
     phasesCountSuffix: ' phases complete',
     phaseListLabel: 'Phases of the plan',
@@ -96,18 +95,13 @@ export const summaryCopy = {
     phaseAgentsSuffix: ' subagents done',
     /** A phase's accessible kind: "research phase". */
     phaseKindWords: (kind: string) => `${kind.toLowerCase()} phase`,
-    subagents: 'Subagents',
-    otherSubagents: 'Other subagents',
     /** The Plan section's group for subagents in no phase the plan knows. */
     otherAgents: 'Other agents',
-    subagentListLabel: 'Subagents of this chat',
     /** Read after a list's count: "4 of 10 done". */
     doneSuffix: ' done',
     running: (count: number) => `${count} running`,
     failed: (count: number) => `${count} failed`,
     blocked: (count: number) => `${count} blocked`,
-    groups: { running: 'Running', attention: 'Needs attention', done: 'Done' },
-    showAll: (count: number) => `Show all ${count}`,
     showFewer: 'Show fewer',
     refreshFailed: 'Subagents could not refresh.',
     /** A row's second line while it works (F-2). */

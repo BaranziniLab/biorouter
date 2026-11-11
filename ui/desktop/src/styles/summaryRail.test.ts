@@ -385,6 +385,10 @@ describe('the subagents keep the summary’s rules', () => {
     join(__dirname, '../components/summary/summaryAgents.css'),
     'utf8'
   ).replace(/\/\*[\s\S]*?\*\//g, '');
+  const GRID_CSS = readFileSync(
+    join(__dirname, '../components/summary/summaryAgentGrid.css'),
+    'utf8'
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
   const AGENTS_TSX = codeWithoutComments(
     readFileSync(join(__dirname, '../components/summary/SummarySubagents.tsx'), 'utf8')
   );
@@ -421,31 +425,70 @@ describe('the subagents keep the summary’s rules', () => {
   });
 
   it('gives every row the 28px of the card’s other rows', () => {
-    const rows = agentsRule(
-      '.br-agents__row, .br-agents__phase-toggle, .br-agents__group-toggle, .br-agents__more'
-    );
+    const rows = agentsRule('.br-agents__row, .br-agents__phase-toggle, .br-agents__more');
     expect(property(rows, 'min-height')).toBe('28px');
     expect(property(rows, 'font-size')).toBe('var(--text-secondary)');
   });
 
   it('parts its sections from the to-do list and the statistics by 12px of space', () => {
-    expect(property(agentsRule('.br-summary__body > * + .br-agents'), 'margin-top')).toBe('12px');
-    expect(property(agentsRule('.br-agents + .br-summary__stats'), 'margin-top')).toBe('12px');
+    expect(property(agentsRule('.br-summary__body > * + .br-agents__section'), 'margin-top')).toBe(
+      '12px'
+    );
     expect(property(agentsRule('.br-agents__section + .br-agents__section'), 'margin-top')).toBe(
       '12px'
     );
   });
 
-  it('restates the focus fill wherever it paints a row, and stops turning under reduced motion', () => {
+  it('draws a phase as a band of the page ground, parted from the next by the card’s fill', () => {
+    const band = agentsRule('.br-agents__phase');
+    // One step back from the filled card: a fill never sits on a fill.
+    expect(property(band, 'background-color')).toBe(
+      'var(--br-control-ground, var(--background-default))'
+    );
+    expect(property(band, 'border-radius')).toBe('var(--radius-element)');
+    expect(property(agentsRule('.br-agents__phase + .br-agents__phase'), 'margin-top')).toBe('4px');
+  });
+
+  it('labels a section in the app’s one caps style, at the supporting size', () => {
+    const label = agentsRule('.br-summary__toggle-label');
+    expect(property(label, 'text-transform')).toBe('uppercase');
+    expect(property(label, 'letter-spacing')).toBe('var(--text-caps--letter-spacing, 0.04em)');
+  });
+
+  it('restates the focus fill wherever it paints a row, and stops the pulse under reduced motion', () => {
     const focus = agentsRule(
-      '.br-agents__row:focus-visible, .br-agents__phase-toggle:focus-visible, .br-agents__group-toggle:focus-visible, .br-agents__more:focus-visible, .br-agents__retry:focus-visible'
+      '.br-agents__row:focus-visible, .br-agents__phase-toggle:focus-visible, .br-agents__more:focus-visible, .br-agents__retry:focus-visible'
     );
     expect(property(focus, 'background-color')).toBe('var(--background-focus)');
     expect(property(focus, 'box-shadow')).toBe('inset 0 0 0 2px var(--border-focus)');
-    const reduced = AGENTS_CSS.slice(AGENTS_CSS.indexOf('@media (prefers-reduced-motion: reduce)'));
-    expect(reduced).toMatch(
-      /\.br-agents__row\[data-status='running'\] \.br-agents__glyph > svg \{\s*animation: none;/
+    // A running mark breathes (opacity only), and never under reduced motion.
+    expect(GRID_CSS).toMatch(
+      /\.br-agent-mark\[data-pulse\] \.br-agent-mark__core \{\s*animation: br-agent-mark-pulse/
     );
+    const reduced = GRID_CSS.slice(GRID_CSS.indexOf('@media (prefers-reduced-motion: reduce)'));
+    expect(reduced).toMatch(
+      /\.br-agent-mark\[data-pulse\] \.br-agent-mark__core \{\s*animation: none;/
+    );
+    const frames = GRID_CSS.match(/@keyframes br-agent-mark-pulse \{[\s\S]*?\}\s*\}/)?.[0] ?? '';
+    expect([...frames.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1])).toEqual(['opacity']);
+  });
+
+  it('inks every status with an existing semantic token, and draws it in forced colours', () => {
+    for (const [kind, ink] of [
+      ['running', 'var(--text-info)'],
+      ['waiting', 'var(--text-warning)'],
+      ['failed', 'var(--text-danger)'],
+    ]) {
+      const rule = GRID_CSS.match(
+        new RegExp(`\\.br-agent-mark\\[data-kind='${kind}'\\] \\{([^}]*)\\}`)
+      );
+      expect(property(rule?.[1] ?? '', 'color'), kind).toBe(ink);
+    }
+    expect(GRID_CSS).toMatch(/\.br-agent-mark\[data-kind='done'\] \{[^}]*--text-success/);
+    // The grid declares no type of its own.
+    expect(GRID_CSS).not.toMatch(/font-size:/);
+    const forced = GRID_CSS.slice(GRID_CSS.indexOf('@media (forced-colors: active)'));
+    expect(forced).toMatch(/\.br-agent-mark \{\s*color: CanvasText;/);
   });
 
   it('draws its rows as plain buttons, so the card’s three Buttons stay three', () => {

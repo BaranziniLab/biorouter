@@ -124,24 +124,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* DETAILS: the chat's statistics behind the shared Disclosure, closed by default
-   (F-1). Its trigger takes the rows' left edge, and its summary ("392k tokens")
-   sits in the label's muted 12px. */
+/* THIS CHAT: the chat's own figures, a section like the others (F-1), closed by
+   default, 12px under whatever sits above it. */
 .br-summary__body > * + .br-summary__details {
   margin-top: 12px;
-}
-
-/* The trigger is a Button, 14/500 at every rung: here it takes the summary's
-   12px label role, so the card keeps its two sizes. */
-.br-summary__details .biorouter-disclosure-trigger {
-  font-size: var(--text-supporting);
-  line-height: var(--text-supporting--line-height);
-  font-weight: 400;
-}
-
-/* The rows sit 4px under the trigger, not a form's 12px. */
-.br-summary__details .biorouter-disclosure-body {
-  padding-top: 4px;
 }
 
 /* The bar itself is the primitive's `size="thin"` (4px); only its gap and its
