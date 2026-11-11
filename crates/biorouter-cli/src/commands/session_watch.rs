@@ -283,13 +283,15 @@ fn key_verdict(code: u16, body: &str) -> KeyVerdict {
 ///
 /// `ErrorResponse` answers `{"message": …}` and the reach gate answers plain
 /// text where a route hands its refusal back directly. Both are the daemon's
-/// own words and are shown as they are.
+/// own words and are shown as they are, except that a decision-model refusal
+/// written for the agent names the command a person runs, not the agent's
+/// tool (R4, [`super::decide::terminal_advice`]).
 pub(crate) fn refusal_sentence(body: &str) -> Option<String> {
     let text = json_object(body)
         .and_then(|value| value.get("message")?.as_str().map(str::to_string))
         .unwrap_or_else(|| body.to_string());
     let text = text.trim();
-    (!text.is_empty()).then(|| text.to_string())
+    (!text.is_empty()).then(|| super::decide::terminal_advice(text))
 }
 
 /// Make a request without the key and, only if the daemon refuses it for want
@@ -3321,6 +3323,18 @@ mod tests {
             refusal_sentence("{\"error\":\"x\"}"),
             Some("{\"error\":\"x\"}".to_string())
         );
+        // R4: a decision-model refusal the daemon wrote for the agent names
+        // the command a person runs.
+        let refused = refusal_sentence(
+            "Phase \"verify\"'s gate cannot be answered in this chat: Name a private decision \
+             model (decision_models lists them). Nothing was changed.",
+        )
+        .unwrap();
+        assert!(
+            refused.contains("(`biorouter models decision list` shows them)"),
+            "{refused}"
+        );
+        assert!(!refused.contains("decision_models"), "{refused}");
     }
 
     /// The person at the terminal, typing `key` — and counting how often they

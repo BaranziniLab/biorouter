@@ -785,9 +785,10 @@ pub struct PhaseGateInput {
         skip_serializing_if = "Option::is_none"
     )]
     pub allow_uncalibrated: Option<bool>,
-    /// Optional decision model as provider/model, from decision_models. Left
-    /// out, this chat's default decision model, else the configured default,
-    /// else the first model this chat may use.
+    /// Optional decision model as provider/model, or by its name when that
+    /// names one model decision_models lists (`tev1:0.8b`). Left out, this
+    /// chat's default decision model, else the configured default, else the
+    /// first model this chat may use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }

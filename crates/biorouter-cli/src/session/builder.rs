@@ -313,8 +313,18 @@ async fn offer_extension_debugging_help(
 
     // Process the debugging request
     println!("{}", style("Analyzing the extension failure...").yellow());
-    match debug_session.headless(debug_prompt).await {
-        Ok(_) => {
+    let result = debug_session.headless(debug_prompt).await;
+    match crate::commands::supervision_stop::ran_to_an_end(result) {
+        Ok(Some(_)) => {
+            // Its supervision ended the chat early; that is not a failure.
+            // (The run's own sentence names exit status 3, which this is not.)
+            println!(
+                "{}",
+                style("The debugging chat was stopped early by its supervision. Check the suggestions above.")
+                    .yellow()
+            );
+        }
+        Ok(None) => {
             println!(
                 "{}",
                 style("Debugging chat completed. Check the suggestions above.").green()

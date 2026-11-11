@@ -49,6 +49,7 @@ use biorouter::decision::{
     DecisionService, DecisionSession, DecisionUsage, ModelSource, ProbabilitySource, Question,
     Threshold,
 };
+use biorouter::privacy::alt_provider::{refusal_for, RefusalAudience};
 use biorouter::privacy::ProviderTier;
 use biorouter::providers::decision::catalog::{
     baseten_display_name, ollama_base_url, BASETEN_DECISION_PROVIDER, OLLAMA_DECISION_PROVIDER,
@@ -797,12 +798,10 @@ pub fn render_batch(rows: &[BatchRow], question: &Question) -> Vec<String> {
 /// a terminal is given it: the agent lists the models with its
 /// `decision_models` tool, a person with `biorouter models decision list`.
 /// The refusal is built where the agent's and the person's share it, so the
-/// terminal swaps the one phrase as it prints it.
+/// terminal swaps the one phrase as it prints it, through the one function
+/// every surface uses ([`refusal_for`] with [`RefusalAudience::Cli`]).
 pub fn terminal_advice(text: &str) -> String {
-    text.replace(
-        "(decision_models lists them)",
-        "(`biorouter models decision list` shows them)",
-    )
+    refusal_for(text, RefusalAudience::Cli)
 }
 
 /// `error` with [`terminal_advice`] applied when its sentence carries the

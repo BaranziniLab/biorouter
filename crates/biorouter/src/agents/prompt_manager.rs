@@ -666,6 +666,12 @@ impl PromptManager {
         }
     }
 
+    /// The workflow generator's instructions. ⚠ `workflow.md` teaches the
+    /// `{{ key }}` parameter syntax, so its body sits in a `{% raw %}` block:
+    /// rendered as a template with an empty context, every `{{ key }}` in it
+    /// became an empty string, the model was told to write parameters as ``
+    /// and copied that, and a draft came back as "a job named `` using ``"
+    /// with no parameters (H-4).
     pub async fn get_workflow_prompt(&self) -> String {
         let context: HashMap<&str, Value> = HashMap::new();
         prompt_template::render_global_file("workflow.md", &context)
@@ -759,6 +765,25 @@ mod tests {
         info.directly_callable_tools
             .clone_from(&info.available_tools);
         info
+    }
+
+    /// H-4: the generator is shown the `{{ key }}` syntax it must write, not
+    /// the empty strings a template render left of it.
+    #[tokio::test]
+    async fn the_workflow_prompt_keeps_its_parameter_syntax() {
+        let prompt = PromptManager::new().get_workflow_prompt().await;
+        assert!(
+            prompt.contains("Use `{{ parameter_key }}` to refer to a parameter"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("as `{{ key }}`"), "{prompt}");
+        assert!(
+            prompt.contains("for {{ gene_symbol }} at a {{ detail_level }} level"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("``"), "{prompt}");
+        assert!(prompt.starts_with("Turn this conversation"), "{prompt}");
+        assert!(!prompt.contains("raw %}"), "{prompt}");
     }
 
     #[test]

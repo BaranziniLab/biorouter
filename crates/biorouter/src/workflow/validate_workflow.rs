@@ -45,6 +45,7 @@ pub fn validate_workflow_template_from_content(
     let (workflow, _) = parse_workflow_content(workflow_content, workflow_dir)?;
 
     validate_prompt_or_instructions(&workflow)?;
+    validate_builtin_extensions(&workflow)?;
     // The monitors and the phase plan the workflow declares, checked here so
     // every door that validates a workflow (the CLI, the import, the HTTP
     // routes, the agent's `manage_workflow`) refuses what a chat could not
@@ -57,6 +58,47 @@ pub fn validate_workflow_template_from_content(
     }
 
     Ok(workflow)
+}
+
+/// H-5: a `type: builtin` extension must name one Biorouter ships. One that
+/// does not used to be accepted here and then skipped at run time with a
+/// warning, which left an unexplained "failed to load" notice in every chat
+/// the workflow ran in. The name is matched exactly as the extension manager
+/// looks it up when it starts the extension; a platform capability written as
+/// a built-in (`workspace`, the drafter's usual slip) is told how to write it.
+fn validate_builtin_extensions(workflow: &Workflow) -> Result<()> {
+    use crate::agents::extension::{ExtensionConfig, PLATFORM_EXTENSIONS};
+    let key = |name: &str| {
+        crate::agents::extension_manager::normalize(&crate::config::extensions::name_to_key(name))
+    };
+    for extension in workflow.extensions.iter().flatten() {
+        let ExtensionConfig::Builtin { name, .. } = extension else {
+            continue;
+        };
+        // Exactly the lookup the extension manager starts a built-in with.
+        if biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(name.as_str()) {
+            continue;
+        }
+        let mut known: Vec<&str> = biorouter_mcp::BUILTIN_EXTENSIONS.keys().copied().collect();
+        known.sort_unstable();
+        let platform = PLATFORM_EXTENSIONS
+            .keys()
+            .find(|platform| key(platform) == key(name))
+            .map(|platform| {
+                format!(
+                    " `{platform}` is a platform capability: write it as `type: platform`, \
+                     `name: {platform}`."
+                )
+            })
+            .unwrap_or_default();
+        return Err(anyhow::anyhow!(
+            "The workflow names a built-in extension `{}` that Biorouter does not have. \
+             Built-in extensions: {}.{platform}",
+            name.trim(),
+            known.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn validate_prompt_or_instructions(workflow: &Workflow) -> Result<()> {
@@ -212,6 +254,45 @@ parameters:
         assert_eq!(workflow.description, "A test workflow for validation");
         assert!(workflow.instructions.is_some());
         println!("Workflow: {:?}", workflow.prompt);
+    }
+
+    /// H-5: an unknown built-in extension is refused here, naming the known
+    /// ones, and a platform capability written as a built-in is told how to
+    /// write it.
+    #[test]
+    fn an_unknown_builtin_extension_is_refused_with_the_known_names() {
+        let file = |name: &str, kind: &str| {
+            format!(
+                "title: Fan out\ndescription: d\nprompt: Do the work.\nextensions:\n  - type: {kind}\n    name: {name}\n"
+            )
+        };
+        let refused = validate_workflow_template_from_content(&file("workspace", "builtin"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("built-in extension `workspace` that Biorouter does not have"),
+            "{refused}"
+        );
+        assert!(refused.contains("developer"), "{refused}");
+        assert!(
+            refused.contains("write it as `type: platform`"),
+            "{refused}"
+        );
+
+        let refused = validate_workflow_template_from_content(&file("nosuch", "builtin"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("`nosuch`"), "{refused}");
+        assert!(!refused.contains("platform capability"), "{refused}");
+
+        // Started by exact name, so a different spelling would not start either.
+        assert!(
+            validate_workflow_template_from_content(&file("Developer", "builtin"), None).is_err()
+        );
+        for accepted in [file("developer", "builtin"), file("workspace", "platform")] {
+            validate_workflow_template_from_content(&accepted, None)
+                .unwrap_or_else(|e| panic!("{accepted}: {e}"));
+        }
     }
 
     /// A workflow's monitors and phase plan are validated with the rest of the

@@ -1307,22 +1307,45 @@ impl CliSession {
         let result = self
             .process_message(message, false, CancellationToken::default())
             .await;
-        // A monitor's notice says "Send a message to carry on", which a run
-        // that has ended cannot do: say how to carry on from a terminal.
-        let carry_on = self
-            .agent
-            .take_monitor_stop(&self.session_id)
-            .map(|_| monitor_stop_hint(&self.session_id, self.ephemeral_store_dir.is_some()));
+        // H-6 / D-4: a run a monitor stopped, or whose plan ended with a
+        // phase held by its gate or left blocked, exits 3 with one line that
+        // says so and how to carry on. Read before the session ends: a
+        // `--no-session` store closes with it.
+        let stopped = self.supervision_stopped().await;
         self.end_session("prompt_input_exit").await;
         result?;
-        if let Some(line) = carry_on {
-            eprintln!("{line}");
-        }
         if let Some(code) = self.last_abort.clone() {
+            if let Some(stopped) = &stopped {
+                eprintln!("{stopped}");
+            }
             let message = format!("the turn did not complete: {}", code.wire_code());
             return Err(TurnFailed::new(code, message).into());
         }
-        Ok(())
+        match stopped {
+            Some(stopped) => Err(stopped.into()),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether this run's supervision ended it short of its work: the
+    /// monitor that stopped its turn (taken once), else the plan's phases
+    /// held by their gates or left blocked
+    /// ([`crate::commands::supervision_stop`]).
+    async fn supervision_stopped(
+        &self,
+    ) -> Option<crate::commands::supervision_stop::SupervisionStopped> {
+        use crate::commands::supervision_stop::{monitor_stopped, plan_held};
+        let no_session = self.ephemeral_store_dir.is_some();
+        if let Some(stop) = self.agent.take_monitor_stop(&self.session_id) {
+            return Some(monitor_stopped(&stop.name, &self.session_id, no_session));
+        }
+        let plan = biorouter::agents::orchestration_plan::snapshot(
+            &self.agent.config.session_manager,
+            &self.session_id,
+            &[],
+        )
+        .await?;
+        plan_held(&plan, &self.session_id, no_session)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2168,25 +2191,6 @@ impl CliSession {
     fn push_message(&mut self, message: Message) {
         self.messages.push(message);
     }
-}
-
-/// What `biorouter run` says after a monitor stopped its turn. The monitor's
-/// notice tells a person in a chat to send a message to carry on; a run has
-/// ended by then, so this names the commands that carry the chat on. A
-/// `--no-session` run kept no chat to go back to, so it says only that it
-/// stopped. The run still exits 0: the command reference gives no exit code
-/// to a turn a monitor stopped.
-pub(crate) fn monitor_stop_hint(session_id: &str, no_session: bool) -> String {
-    if no_session {
-        return "A monitor stopped this run. It ran with --no-session, so there is no chat to \
-                carry on."
-            .to_string();
-    }
-    format!(
-        "A monitor stopped this run. To carry on, send the chat a message: biorouter run \
-         --resume --session-id {session_id} --text \"<message>\", or open it with biorouter \
-         session --resume --session-id {session_id}."
-    )
 }
 
 /// Item B, for the terminal: Ctrl-C stops the subagents this chat started, as
@@ -3727,17 +3731,69 @@ mod tests {
         );
     }
 
-    /// A run a monitor stopped names the commands that carry its chat on.
-    #[test]
-    fn a_run_a_monitor_stopped_says_how_to_carry_on() {
-        let line = monitor_stop_hint("20261110_5", false);
+    /// H-6's wiring: what `headless` turns into exit status 3 is read from
+    /// this chat's stored plan. A plan whose phases are open but unchecked is
+    /// not held; one with a phase left blocked is, and is named.
+    #[tokio::test]
+    async fn a_run_reads_its_plan_to_tell_a_held_end_from_a_finished_one() {
+        use biorouter::agents::orchestration_plan::{
+            self as orchestration_plan, OrchestratePhaseInput, PlanPhaseInput, PLAN_STATE,
+            PLAN_VERSION,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let session = test_cli_session(manager.clone(), "text").await;
+        assert!(session.supervision_stopped().await.is_none(), "no plan");
+
+        let phase = |id: &str| OrchestratePhaseInput {
+            phase: PlanPhaseInput {
+                id: id.into(),
+                title: format!("{id} title"),
+                kind: Some("research".into()),
+                goal: None,
+                depends_on: Vec::new(),
+            },
+            gate: None,
+            monitors: None,
+        };
+        let plan = orchestration_plan::apply_workflow_plan(
+            "Screen",
+            None,
+            vec![phase("screen"), phase("report")],
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let mut record = orchestration_plan::plan_record(&plan);
+        let write = |record: serde_json::Value| {
+            let manager = manager.clone();
+            let id = session.session_id.clone();
+            async move {
+                manager
+                    .update_extension_state(&id, PLAN_STATE, PLAN_VERSION, |_| Ok(record))
+                    .await
+                    .unwrap();
+            }
+        };
+        write(record.clone()).await;
         assert!(
-            line.contains("biorouter run --resume --session-id 20261110_5 --text"),
-            "{line}"
+            session.supervision_stopped().await.is_none(),
+            "open, unchecked phases are not a held end"
         );
-        assert!(line.contains("biorouter session --resume --session-id 20261110_5"));
-        assert!(!line.contains("Send a message"), "{line}");
-        assert!(monitor_stop_hint("x", true).contains("--no-session"));
+
+        record["phases"][1]["status"] = serde_json::json!("blocked");
+        write(record).await;
+        let stopped = session
+            .supervision_stopped()
+            .await
+            .expect("a blocked phase holds the run");
+        assert!(
+            stopped
+                .sentence()
+                .starts_with("This run ended with phase \"report\" blocked (exit status 3)."),
+            "{stopped}"
+        );
     }
 
     /// Item 9's wiring: `headless` does not end, and does not close the
