@@ -9,7 +9,10 @@
 //!
 //! The resolution order, decided once in [`child_model_for_spawn`]:
 //!
-//! 1. A provider or a model the spawn names.
+//! 1. A provider or a model the spawn names. A provider named alone runs on
+//!    that provider's own default model, and one that is not set up on this
+//!    computer is refused before anything exists (`subagent_tool`'s
+//!    `provider_setup_refusal`); the default worker is never refused that way.
 //! 2. The default worker model, when one is set and it is not the chat's own.
 //! 3. The chat's own model.
 //!

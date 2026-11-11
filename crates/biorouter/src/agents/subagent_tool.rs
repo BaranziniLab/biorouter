@@ -1015,11 +1015,19 @@ pub struct SubagentSettings {
 /// long; the rest are counted ("+3 more") rather than named.
 const MODELS_LISTED_PER_PROVIDER: usize = 6;
 
+/// What a spawn that names no provider and no model runs on, said once in the
+/// `settings.provider` description: the resolution order of
+/// [`default_worker::child_model_for_spawn`] after the named step.
+pub(crate) const UNNAMED_SPAWN_MODEL_SENTENCE: &str = "Omit provider and model to use the \
+     user's default worker model, or this chat's model when none is set.";
+
 /// The `settings.provider` description. With a roster it names, one line each,
 /// the chat providers set up on this computer with their models, then one line
 /// of the hosted providers that are not set up and one of the local engines
 /// that are not; without one (the static listing,
 /// before [`describe_provider_choices`] runs) it says only what is refused.
+/// Both say once what omitting the provider and the model runs on
+/// ([`UNNAMED_SPAWN_MODEL_SENTENCE`]).
 ///
 /// The decision-model sentence is named from the list the refusal checks, so
 /// the advice cannot drift from it.
@@ -1031,23 +1039,23 @@ pub(crate) fn provider_override_description(
         crate::providers::decision::chat::DECISION_CHAT_PROVIDERS.join(", ")
     );
     let Some(roster) = roster else {
-        return format!("Override LLM provider. Use a chat model: {decision}");
+        return format!(
+            "Override LLM provider. Use a chat model: {decision} {UNNAMED_SPAWN_MODEL_SENTENCE}"
+        );
     };
 
     let mut lines = Vec::new();
     let configured: Vec<_> = roster.configured().collect();
     if configured.is_empty() {
-        lines.push(
+        lines.push(format!(
             "Run the subagent on another chat provider. No chat provider is set up on this \
-             computer, so omit this to keep yours."
-                .to_string(),
-        );
+             computer. {UNNAMED_SPAWN_MODEL_SENTENCE}"
+        ));
     } else {
-        lines.push(
-            "Run the subagent on another chat provider; omit to keep yours. Set up on this \
-             computer (provider: models):"
-                .to_string(),
-        );
+        lines.push(format!(
+            "Run the subagent on another chat provider. {UNNAMED_SPAWN_MODEL_SENTENCE} Set up \
+             on this computer (provider: models):"
+        ));
         for status in configured {
             lines.push(format!("- {}: {}", status.name, listed_models(status)));
         }
@@ -1184,7 +1192,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
                     "model": {"type": "string", "description": model_description},
                     "temperature": {"type": "number", "description": "Override temperature"}
                 },
-                "description": "Override model/provider settings. Omit provider and model to use the user's default worker model, or this chat's model when none is set."
+                "description": "Override model/provider settings."
             },
             "summary": {
                 "type": "boolean",
@@ -9240,16 +9248,18 @@ mod tests {
         ])
     }
 
-    /// The whole text, written out, so a change to the wording fails here: one
-    /// line per configured provider with its default first, at most six names
-    /// and a count of the rest, then the providers that are not set up by name,
-    /// then the decision-model sentence the refusal is named from.
+    /// The whole text, written out, so a change to the wording fails here: what
+    /// omitting the provider and the model runs on, one line per configured
+    /// provider with its default first, at most six names and a count of the
+    /// rest, then the providers that are not set up by name, then the
+    /// decision-model sentence the refusal is named from.
     #[test]
     fn the_provider_description_lists_what_is_set_up_and_what_is_not() {
         assert_eq!(
             provider_override_description(Some(&qa_roster())),
-            "Run the subagent on another chat provider; omit to keep yours. Set up on this \
-             computer (provider: models):\n\
+            "Run the subagent on another chat provider. Omit provider and model to use the \
+             user's default worker model, or this chat's model when none is set. Set up on \
+             this computer (provider: models):\n\
              - claude_code: sonnet (default), opus, haiku\n\
              - versa_azure: gpt-5.5-2026-04-24 (default), gpt-5.4, gpt-5.4-mini, gpt-5.2, \
              gpt-5.1, gpt-5, +3 more\n\
@@ -9332,10 +9342,10 @@ mod tests {
         );
     }
 
-    /// No chat provider set up: the model is told to keep its own rather than
-    /// offered an empty list.
+    /// No chat provider set up: the model is told what omitting the provider
+    /// runs on rather than offered an empty list.
     #[test]
-    fn with_nothing_set_up_the_description_says_keep_yours() {
+    fn with_nothing_set_up_the_description_says_what_omitting_runs_on() {
         use crate::providers::readiness::{ChatProviderRoster, ProviderReadiness};
         let roster = ChatProviderRoster::from_rows([(
             roster_metadata("openai", "gpt-5.5", &[]),
@@ -9345,7 +9355,8 @@ mod tests {
         assert!(
             description.starts_with(
                 "Run the subagent on another chat provider. No chat provider is set up on this \
-                 computer, so omit this to keep yours."
+                 computer. Omit provider and model to use the user's default worker model, or \
+                 this chat's model when none is set."
             ),
             "{description}"
         );
@@ -9387,6 +9398,33 @@ mod tests {
         let provider = settings["provider"]["description"].as_str().unwrap();
         assert!(provider.contains("is refused"), "{provider}");
         assert!(provider.contains("baseten_decision"), "{provider}");
+    }
+
+    /// The default worker sentence is said once in `settings.provider`, in the
+    /// static listing and in the roster text the model is offered alike, and
+    /// nowhere else in the spawn's schema.
+    #[test]
+    fn the_provider_description_names_the_default_worker_once() {
+        let empty = crate::providers::readiness::ChatProviderRoster::default();
+        for description in [
+            provider_override_description(None),
+            provider_override_description(Some(&qa_roster())),
+            provider_override_description(Some(&empty)),
+        ] {
+            assert_eq!(
+                description.matches(UNNAMED_SPAWN_MODEL_SENTENCE).count(),
+                1,
+                "{description}"
+            );
+        }
+        let mut tool = create_subagent_tool(&[]);
+        describe_provider_choices(&mut tool, &qa_roster());
+        let schema = serde_json::to_string(&*tool.input_schema).unwrap();
+        assert_eq!(
+            schema.matches("default worker model").count(),
+            1,
+            "{schema}"
+        );
     }
 
     /// The tool description says how many run at once and that the rest
