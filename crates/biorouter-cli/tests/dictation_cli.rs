@@ -22,9 +22,11 @@
 //! * (PR-23, DD-56) `install --suggest-from-chats` and `--no-suggest-from-chats` decide the
 //!   `dictionary` capability at the first verified install, which writes the activation
 //!   marker whatever they say, and `--yes` alone leaves it off; a later install neither
-//!   asks again nor changes the choice; without a terminal and in an agent's shell
-//!   nothing is asked, and at a pseudo terminal the question comes first unless a flag
-//!   answers it;
+//!   asks again nor changes the choice, and given either flag says the earlier choice
+//!   stands (MSG-SUGGEST-KEPT); under a managed `dictionary_agent_writes: false` the first
+//!   install's `--suggest-from-chats` is answered with the policy's sentence; without a
+//!   terminal and in an agent's shell nothing is asked, and at a pseudo terminal the
+//!   question comes first unless a flag answers it;
 //! * `biorouter transcribe` (PR-12): `jfk.wav` with the `for-tests` model exits 3 with
 //!   `{schema: 1, error_code: "no_speech", message}`, from a file and from standard input;
 //!   generated silence exits 3 before any worker is needed; both hold in an agent's shell
@@ -467,10 +469,46 @@ fn a_managed_rule_against_agent_writes_keeps_the_capability_off_at_install() {
     let output = install_detector_with(root.path(), &["--suggest-from-chats"]);
     assert_eq!(suggestions(root.path()), "off", "{}", stderr(&output));
     assert_eq!(activation_marker(root.path()), Some(1));
-    assert!(
-        !stderr(&output).trim().is_empty(),
+    assert_eq!(
+        stderr(&output).trim(),
+        biorouter::permission::managed_inspector::MANAGED_DENY_REASON,
         "the refused flag is answered with the policy's reason"
     );
+}
+
+/// MSG-SUGGEST-KEPT.
+const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page.";
+
+/// DD-56: a later verified install given either flag keeps the recorded choice and says
+/// so, naming the switch that changes it (MSG-SUGGEST-KEPT). The first install's flag and
+/// a later install without a flag print nothing of the kind.
+#[test]
+fn a_later_install_given_a_flag_says_the_earlier_choice_stands() {
+    if !can_install() {
+        return;
+    }
+    let root = sandbox();
+    let first = install_detector_with(root.path(), &["--no-suggest-from-chats"]);
+    assert!(
+        !stderr(&first).contains(MSG_SUGGEST_KEPT),
+        "{}",
+        stderr(&first)
+    );
+    for flags in [
+        &["--suggest-from-chats"][..],
+        &["--no-suggest-from-chats"][..],
+    ] {
+        let later = install_detector_with(root.path(), flags);
+        assert_eq!(stderr(&later).trim(), MSG_SUGGEST_KEPT, "{flags:?}");
+        assert_eq!(suggestions(root.path()), "off", "{flags:?}");
+    }
+    let plain = install_detector_with(root.path(), &[]);
+    assert!(
+        !stderr(&plain).contains(MSG_SUGGEST_KEPT),
+        "{}",
+        stderr(&plain)
+    );
+    assert_eq!(activation_marker(root.path()), Some(1));
 }
 
 /// PR-23: without a terminal `install` asks nothing, with or without a suggest flag, and

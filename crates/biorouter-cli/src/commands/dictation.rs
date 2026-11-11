@@ -99,6 +99,10 @@ pub fn msg_installed(id: &str, path: &Path) -> String {
     format!("Installed {id} ({}).", path.display())
 }
 
+/// MSG-SUGGEST-KEPT: a later install given `--suggest-from-chats` or
+/// `--no-suggest-from-chats` keeps the choice the first install recorded (DD-56).
+pub const MSG_SUGGEST_KEPT: &str = "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page.";
+
 /// MSG-CONFIRM-INSTALL.
 pub fn msg_confirm_install(id: &str) -> String {
     format!("Download and install {id}?")
@@ -974,6 +978,9 @@ pub async fn handle_install_with_choice(
             .get_param::<u8>(biorouter::dictation::activation::ACTIVATION_VERSION_KEY),
         Err(biorouter::config::ConfigError::NotFound(_))
     );
+    // Such a later install given either flag says, once it is verified, that the recorded
+    // choice stands (MSG-SUGGEST-KEPT) rather than dropping the flag without a word.
+    let flag_kept = chosen_before && suggest_from_chats_choice.is_some();
     // Managed `dictionary_agent_writes: false` refuses turning the capability on, as
     // `dictionary settings --suggest-from-chats on` and the desktop's hidden box do: the
     // question is not asked, and an explicit flag is answered with the policy's reason.
@@ -994,7 +1001,7 @@ pub async fn handle_install_with_choice(
     if let Some(from) = &args.from {
         let installed = install_from(&policy, from, &target, mode, terminal, args.yes)?;
         if installed {
-            biorouter::dictation::activation::activate_first_install(suggest_from_chats)?;
+            record_suggest_choice(suggest_from_chats, flag_kept)?;
         }
         return Ok(());
     }
@@ -1130,12 +1137,21 @@ pub async fn handle_install_with_choice(
             if outcomes.iter().any(|o| o.id == entry.id && o.downloaded) {
                 start_warm_up(entry, args.system);
             }
-            biorouter::dictation::activation::activate_first_install(suggest_from_chats)?;
+            record_suggest_choice(suggest_from_chats, flag_kept)?;
             Ok(())
         }
         Err(InstallError::Offline) => Err(anyhow!(msg_offline(&target))),
         Err(error) => Err(anyhow!(error.to_string())),
     }
+}
+
+/// After a verified install: the first one records the suggestion choice (DD-56), and a
+/// later one leaves it as it is, saying so when a flag asked for one (MSG-SUGGEST-KEPT).
+fn record_suggest_choice(suggest: bool, flag_kept: bool) -> Result<()> {
+    if flag_kept {
+        eprintln!("{}", style(MSG_SUGGEST_KEPT).yellow());
+    }
+    biorouter::dictation::activation::activate_first_install(suggest)
 }
 
 /// `install --from <file|dir>` (DD-24).
@@ -1772,6 +1788,7 @@ mod tests {
             (msg_already_found("m", "user", p), "m is already installed (user, /m/x.bin)."),
             (msg_already_in("m", folder), "m is already installed in /m."),
             (msg_installed("m", p), "Installed m (/m/x.bin)."),
+            (MSG_SUGGEST_KEPT.into(), "This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page."),
             (msg_confirm_install("m"), "Download and install m?"),
             (msg_confirm_terminal("install", "m"), "Installing a speech model needs your confirmation at a terminal. To install without one, run: biorouter dictation install --yes m"),
             (msg_confirm_terminal("remove", "m"), "Removing a speech model needs your confirmation at a terminal. To remove it without one, run: biorouter dictation remove --yes m"),

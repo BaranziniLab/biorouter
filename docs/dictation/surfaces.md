@@ -1257,6 +1257,7 @@ Two groups of message ids were retired on 2026-11-05 and are not reused: the Cop
 | MSG-BELOW-MINIMUM | \<model> needs at least \<n> GB of memory, and this computer has less. Install it anyway? | CLI `install` |
 | MSG-ALREADY | \<model> is already installed (\<location>, \<path>). (for `--system` and `--from`: \<model> is already installed in \<folder>.) | CLI `install` |
 | MSG-INSTALLED | Installed \<model> (\<path>). | CLI `install` and `install --from` |
+| MSG-SUGGEST-KEPT | This install keeps your earlier choice about suggesting dictionary words from your chats; to change it, run `biorouter dictionary settings --suggest-from-chats` with on or off, or use Suggest dictionary words from my chats on the Dictionary page. | CLI `install` and `install --from` on stderr, after a verified install given `--suggest-from-chats` or `--no-suggest-from-chats` once the activation marker records a choice (DD-56); the flag changes nothing then |
 | MSG-WARMING | Preparing \<model> for its first use in the background. | CLI `install` on a Metal host |
 | MSG-WARM-UP-SYSTEM | Each account's first dictation prepares \<model> for that account. To prepare it now, run `biorouter dictation warm-up <model>` as that account. | CLI `install` with `--system`, or run as root or Administrator, on a Metal host: the shaders compile into each account's own Metal cache, so nothing is started |
 | MSG-RETIRED | \<id> is retired; Biorouter uses \<model> in its place. | Every CLI model command given a retired id |
