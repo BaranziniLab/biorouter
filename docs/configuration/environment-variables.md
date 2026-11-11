@@ -47,26 +47,18 @@ These variables are needed when using custom endpoints, enterprise deployments, 
 | `BIOROUTER_PROVIDER__HOST` | Custom API endpoint for the provider | URL (e.g. `"https://api.openai.com"`) | Provider-specific default |
 | `BIOROUTER_PROVIDER__API_KEY` | Authentication key for the provider | API key string | None |
 
-### Lead/worker model configuration
+### Default worker model
 
-These variables configure a lead/worker model pattern where a powerful lead model handles initial planning and complex reasoning, then switches to a faster or cheaper worker model for execution. The switch happens automatically based on your settings.
+These variables choose the default worker model: the model a [subagent](../agent-loop/subagents.md#model-control) runs on when the agent names none, typically a lighter or more token-efficient model than the chat's own. Both must be set for it to apply; with either unset, subagents run on the chat's model. A model the agent names for a subagent always wins. The desktop app sets them from **Settings > Models > Default model > Default worker model**, and `biorouter configure` from Settings, then Default Worker Model.
 
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
-| `BIOROUTER_LEAD_MODEL` | **Required to enable lead mode.** Name of the lead model | Model name (e.g. `"gpt-4o"`, `"claude-sonnet-4-20250514"`) | None |
-| `BIOROUTER_LEAD_PROVIDER` | Provider for the lead model | [See available providers](../getting-started/choosing-a-model-provider.md) | Falls back to `BIOROUTER_PROVIDER` |
-| `BIOROUTER_LEAD_TURNS` | Number of initial turns using the lead model before switching to the worker model | Integer | 3 |
-| `BIOROUTER_LEAD_FAILURE_THRESHOLD` | Consecutive failures before fallback to the lead model | Integer | 2 |
-| `BIOROUTER_LEAD_FALLBACK_TURNS` | Number of turns to use the lead model in fallback mode | Integer | 2 |
+| `BIOROUTER_WORKER_PROVIDER` | Provider of the default worker model | [See available providers](../getting-started/choosing-a-model-provider.md) | None (subagents use the chat's model) |
+| `BIOROUTER_WORKER_MODEL` | Name of the default worker model | Model name (e.g. `"gpt-4o-mini"`) | None (subagents use the chat's model) |
 
-A _turn_ is one complete prompt-response interaction. With the default settings:
+A subagent always runs at its chat's privacy tier. When the default worker model would cross it (a public model under a private chat, or a private model under a public one), or when it is a decision model or cannot be started, the subagent runs on the chat's model and the agent is told why. The spawn is never refused because of the default.
 
-- Use the lead model for the first 3 turns.
-- Use the worker model starting on the 4th turn.
-- Fall back to the lead model if the worker model struggles for 2 consecutive turns.
-- Use the lead model for 2 turns, then switch back to the worker model.
-
-The lead model and worker model names are displayed at the start of the biorouter CLI session. If you do not export a `BIOROUTER_MODEL` for your session, the worker model defaults to the `BIOROUTER_MODEL` in your [configuration file](config-file-reference.md).
+The default worker model replaced lead/worker mode, and the `BIOROUTER_LEAD_*` variables are retired. A lead/worker setup in your [configuration file](config-file-reference.md) is carried across once, when `biorouterd` or the command line tool first starts on this version: the lead model becomes `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` (the model new chats start on), the old `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` become the default worker model, and every `BIOROUTER_LEAD_*` key is removed. With `BIOROUTER_LEAD_TURNS` at `0` the worker answered every turn, so it stays the model new chats start on. A `BIOROUTER_LEAD_MODEL` set only in the environment is ignored, with a warning in the log.
 
 ### Planning mode configuration
 
@@ -183,8 +175,7 @@ These variables override the default context window size (token limit) for your 
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
 | `BIOROUTER_CONTEXT_LIMIT` | Override context limit for the main model | Integer (number of tokens) | Model-specific default or 128,000 |
-| `BIOROUTER_LEAD_CONTEXT_LIMIT` | Override context limit for the lead model in lead/worker mode | Integer (number of tokens) | Falls back to `BIOROUTER_CONTEXT_LIMIT` or model default |
-| `BIOROUTER_WORKER_CONTEXT_LIMIT` | Override context limit for the worker model in lead/worker mode | Integer (number of tokens) | Falls back to `BIOROUTER_CONTEXT_LIMIT` or model default |
+| `BIOROUTER_WORKER_CONTEXT_LIMIT` | Override context limit for the [default worker model](#default-worker-model) | Integer (number of tokens) | Falls back to `BIOROUTER_CONTEXT_LIMIT` or model default |
 | `BIOROUTER_PLANNER_CONTEXT_LIMIT` | Override context limit for the planner model | Integer (number of tokens) | Falls back to `BIOROUTER_CONTEXT_LIMIT` or model default |
 
 ## Tool configuration

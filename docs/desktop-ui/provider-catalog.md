@@ -170,43 +170,39 @@ one-class paint by specificity, so the order the style sheets are bundled in doe
 A row's action opens `ProviderConfigurationModal`, whose key fields load after the dialog mounts (the
 form says "Loading…" until the saved values are in). Radix picks the first tabbable control at mount, which
 was the footer's **Remove** on a configured provider, or Cancel on a new one, so a keyboard user opened
-the dialog on a destructive button. The Lead/worker dialog (`LeadWorkerSettings`) loads its models the same
-way and opened on its own × with the ring showing. Both now use the two halves in
-`settings/models/dialogFocus.ts`: `restOnDialog` (the dialog's `onOpenAutoFocus`) rests focus on the dialog
-box, which draws no ring and where a screen reader reads the title, and `useHandFocusOnReady` moves it to the
-first enabled field (Configure) or the switch (Lead/worker) once the body is in, **only while the box still
-holds it**: a person who has already tabbed to Cancel stays on Cancel. The opener is recorded before either
-runs, so Escape and Cancel still return focus to the row's button. `ProviderConfigurationModal.focus.test.tsx`
-and `LeadWorkerSettings.focus.test.tsx` hold it, and each line that makes it true was checked by removing it.
+the dialog on a destructive button. It now uses the two halves in `settings/models/dialogFocus.ts`:
+`restOnDialog` (the dialog's `onOpenAutoFocus`) rests focus on the dialog box, which draws no ring and where a
+screen reader reads the title, and `useHandFocusOnReady` moves it to the first enabled field once the body is in,
+**only while the box still holds it**: a person who has already tabbed to Cancel stays on Cancel. The opener is
+recorded before either runs, so Escape and Cancel still return focus to the row's button.
+`ProviderConfigurationModal.focus.test.tsx` holds it, and each line that makes it true was checked by removing it.
 
 **After a pointer open, only a text field takes the hand-off** (V4-R4-1). A focus a script moves after a mouse
 click can match `:focus-visible` in Chromium (it decides from the menu item the pointer just picked), so the
-Lead/worker switch wore the inset grey ring after "Lead and worker..." was clicked. `restOnDialog` records
-whether the last input was a key (`lastInputWasKey` from `ui/inputTrail`, the tracker `ui/dialog.tsx` already
-reads for its own quiet open), and `useHandFocusOnReady` skips a control that is not a text entry when it was
-not: focus stays on the dialog box, which draws none, and the next Tab reaches the first control. A Configure
-dialog opened with the mouse still lands in its first key field, because a text field is always ringed and wants
-the cursor. A keyboard open hands focus on as before. jsdom has no `:focus-visible`, so
-`LeadWorkerSettings.focusRing.browser.test.tsx` drives the real menu with Playwright's mouse and keyboard in
-Chromium and reads `:focus-visible` off the focused node; it fails against the previous `dialogFocus.ts`.
+switch of the since-retired Lead/worker dialog wore the inset grey ring after its menu item was clicked.
+`restOnDialog` records whether the last input was a key (`lastInputWasKey` from `ui/inputTrail`, the tracker
+`ui/dialog.tsx` already reads for its own quiet open), and `useHandFocusOnReady` skips a control that is not a
+text entry when it was not: focus stays on the dialog box, which draws none, and the next Tab reaches the first
+control. A Configure dialog opened with the mouse still lands in its first key field, because a text field is
+always ringed and wants the cursor. A keyboard open hands focus on as before.
 
 **The shared dialog now makes every pointer open quiet by itself, and this module is still needed** (V4-R5-1).
 `useReturnFocusToOpener` in `ui/dialog.tsx` rests any dialog opened without a key on its box, unless Radix's first
 stop is a text field, so a dialog that does nothing about focus gets the quiet open for free. These two dialogs
-cannot rely on that, for two reasons. Their first control does not exist when the dialog mounts, so there is
+cannot rely on that, for two reasons. Its first control does not exist when the dialog mounts, so there is
 nothing for the shared rule to look at: `restOnDialog` runs first (the shared hook calls the caller's
 `onOpenAutoFocus` and stands down when it cancels the event), keeps the box as the resting place, and records the
 modality for `useHandFocusOnReady`, which decides the hand-off once the body arrives. And a keyboard open must
 still land on the first control after the late load, which only the hand-off does. The two rules agree about a
 pointer open (the box, unless a text field) because one was written after the other; the shared dialog does not
 hand focus on, so deleting `dialogFocus.ts` would leave a late-loading form with no first stop at all.
-`dialogFocus.ts` keeps its own small text-entry test for the hand-off: both callers' selectors name a switch or a
-plain input, never the shared `Select`'s typing input that the shared rule excludes.
+`dialogFocus.ts` keeps its own small text-entry test for the hand-off: its caller's selector names a plain input,
+never the shared `Select`'s typing input that the shared rule excludes.
 
 ## The Llama Server card's model picker is the shared select
 
 `LlamaServerInlineCard` (the first row of the Local tab, open by default in onboarding, and the expanded row in
-Settings) picks its model with `ui/Select` inside the shared `Field`, the same select the Switch models and Lead/worker dialogs use. It
+Settings) picks its model with `ui/Select` inside the shared `Field`, the same select the Switch models dialog uses. It
 was a native `<select>` until vision round 4 (V4-R4-3), which drew the OS chevron and opened the OS popup, the
 only ones in the app. The options are the same strings as before ("Gemma 4 E4B · 9.6 GB · Needs download"), the
 label still points at the field (`for` and `inputId` are both `llamacpp-model-select`), and the menu is portalled
@@ -260,30 +256,6 @@ them on the way out: this function and the Configuration editor both use `senten
 `settings/config/configLabels.ts`, which keeps acronyms and product names. A key with no curated name falls
 back to its role ("API key", "API host") or to the key without the provider's prefix ("Access key ID").
 
-## A disabled field dims once
-
-With Lead/worker mode off, the two model selects and the three number fields are disabled, and each control
-dims itself to the one 50% step every disabled control takes (the Select trigger's `opacity-50`, the Input's
-`disabled:opacity-50`). The group around them used to dim to 50% as well, so a field was painted at 25%: the
-placeholder was barely legible and, in dark, a number field's fill faded into the dialog. `.br-model-fields`
-in `model-dialogs.css` now carries no opacity, and the labels and InfoTips stay at full ink so a person can
-still read what a field is for. `LeadWorkerSettings.fill.browser.test.tsx` reads the product of opacities in
-Chromium (0.5 for every field, 1 for every label, light and dark) and puts the old rule back to prove it
-would see the defect.
-
-## Save settings waits for a change
-
-Lead/worker's Save is disabled while it would write back what is saved, so the shared Button draws it like Cancel
-(`.br-button-inert`, [shared-controls.md](shared-controls.md), "A Button that cannot act") and it turns coral the
-moment a change exists (V4-R7-4, ruling 22). The load keeps one snapshot of the eight values it set, and "changed"
-is what Save would write: with the pair on, the seven upserted values; with it off, only the removal, so a pair that
-was off and is off again is no change even if the inert fields were touched. A load that failed leaves the baseline
-unknown and Save enabled, because a dialog that could not read the config should not claim there is nothing to save.
-`LeadWorkerSettings.save.test.tsx` holds the rules, and `LeadWorkerSettings.fill.browser.test.tsx` reads Save's
-ground and ink in Chromium (Cancel's on open, the accent after a change, Cancel's again when it is changed back).
-`hostManagedSettings.browserSurface.test.tsx` makes a change before it reads Save, so its browser-surface cases
-are disabled for the surface and not for want of a change.
-
 ## A machine string is not spellchecked
 
 Chromium underlines any word its dictionary does not know, and the fields in the Configure dialogs, the Add
@@ -302,9 +274,9 @@ The tests read the property the engine reads, not the markup alone: `customProvi
 reports `true`, and the jsdom suites (`DefaultProviderSetupForm.test.tsx`, `ConfigSettings.privacy.test.tsx`)
 check all three attributes on every field. Take the spread off any of the three components and a case fails.
 The same `<Input machine />` is on First run's Institutional card (the endpoint, API version and region fields behind
-Advanced; its three key fields are passwords), on the Switch models dialog's custom model id and on Lead/worker's two
-custom model ids (their tests: `InstitutionalSetupCard.test.tsx`, `SwitchModelModal.machineString.test.tsx`,
-`LeadWorkerSettings.test.tsx`; take one `machine` off and a case fails). The Public card's only field is a password and
+Advanced; its three key fields are passwords) and on the Switch models dialog's custom model id (their tests:
+`InstitutionalSetupCard.test.tsx`, `SwitchModelModal.machineString.test.tsx`; take one `machine` off and a case
+fails). The Public card's only field is a password and
 needs nothing. The extension dialogs and the Add skill and New schedule dialogs take it in their own files.
 
 ## The page band
@@ -449,8 +421,8 @@ same groups) could not run on one. Their keys are their chat siblings' (`BASETEN
 classifies them by the daemon's tier and hands them back per tab as `decisionProviders`, and in
 Settings the tab says, in one quiet line with an InfoTip, that they are chosen per chat in the
 model picker's Decision models group. First run says nothing about them. The same rule holds
-off the grid: `biorouter configure` leaves them out of its provider list and its lead and worker
-lists, and a privacy barrier card's list of private models to switch to
+off the grid: `biorouter configure` leaves them out of its provider list and its default worker
+model list, and a privacy barrier card's list of private models to switch to
 (`available_private_providers` in `crates/biorouter-server/src/routes/agent.rs`) leaves out
 `ollama_decision`, so the card never offers a model the grid does not show. See
 [Decision models in the desktop app](decision-models.md).
@@ -628,8 +600,8 @@ This is what makes "get in first" honest rather than a trapdoor. `composerNoProv
 holds the decision and the copy, and both consumers read it:
 
 - the composer's model chip reads **"Choose a model"** and opens the catalog
-  (`setView('ConfigureProviders')`) instead of a dropdown whose items — "Change Model",
-  "Lead/Worker Settings" — are adjustments to a model that does not exist;
+  (`setView('ConfigureProviders')`) instead of a dropdown whose controls ("Change model…" and
+  Effort) are adjustments to a model that does not exist;
 - the composer shows one line above the input, **"No model yet — choose a provider to start
   chatting"**, with the link, and refuses to send by button *and* by Enter.
 
