@@ -4063,6 +4063,12 @@ impl CachedClassification {
     }
 }
 
+/// The tier and institutions of the provider a chat's turn uses (DD-57, O-35).
+type DictionaryTurnOrigin = (
+    crate::privacy::ProviderTier,
+    Option<crate::privacy::affiliation::ModelAffiliation>,
+);
+
 /// The main biorouter Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
@@ -4088,6 +4094,11 @@ pub struct Agent {
     /// with an available tool loses.
     pub(super) subagent_tool_enabled: AtomicBool,
     dictionary_learning: AtomicBool,
+    /// The provider each chat's current turn uses, as the chat extractor stamps an
+    /// observation with it (DD-57). `reply_internal` pins it once it has chosen the
+    /// turn's provider, and a prepared turn clears it, so a steer that arrives before
+    /// the turn has chosen learns nothing rather than the previous turn's model.
+    dictionary_turn_origin: std::sync::Mutex<HashMap<String, DictionaryTurnOrigin>>,
     /// T3-SH-4. The last model call this chat made was refused for its
     /// credentials, so the next turn rebuilds the provider from the row before
     /// it runs (`rebind_from_row`, the tier check included).
@@ -5376,6 +5387,7 @@ impl Agent {
             subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
             dictionary_learning: AtomicBool::new(true),
+            dictionary_turn_origin: std::sync::Mutex::new(HashMap::new()),
             credentials_refused: AtomicBool::new(false),
             provider_failed_last_turn: AtomicBool::new(false),
             final_output_tool: Arc::new(Mutex::new(None)),
@@ -5514,6 +5526,13 @@ impl Agent {
         Self::reset_queue_for(&mut q, turn.clone(), true);
         drop(q);
         self.forget_live_acks();
+        // The chat extractor's turn origin belongs to the turn that pinned it. A
+        // steer accepted before this turn's `reply_internal` chooses its provider
+        // must find none, not the previous turn's (DD-57).
+        self.dictionary_turn_origin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         turn
     }
 
@@ -5552,6 +5571,99 @@ impl Agent {
     ) -> Result<TurnId, InterruptRefused> {
         self.try_queue_soft_interrupt_keyed(text, provenance, None)
             .map(|admission| admission.turn)
+    }
+
+    /// Pin the provider this chat's turn uses, for the chat extractor's stamps (DD-57).
+    /// It waits for the lock rather than trying it: an insert skipped while a steer's
+    /// read held the lock would leave the previous turn's tier and institutions pinned
+    /// for this turn, and a steer would then be stamped with a model this turn does not
+    /// use. The lock guards one map insert or lookup, so the wait is that long, and a
+    /// poisoned lock is recovered, because no panic can leave the map half written. The
+    /// read side keeps `try_lock` in [`Agent::queue_dictionary_observation`], where a
+    /// contended or poisoned lock means nothing is learned.
+    fn pin_dictionary_turn_origin(&self, session_id: &str, origin: DictionaryTurnOrigin) {
+        self.dictionary_turn_origin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session_id.to_owned(), origin);
+    }
+
+    /// Queue the chat extractor's look at a person's message (DD-57), stamped with the
+    /// provider this chat's turn pinned in `reply_internal`. Never awaited by the turn:
+    /// it returns at once, and drops the work when the turn has not chosen its provider
+    /// yet or two observations are already in flight.
+    pub fn queue_dictionary_observation(
+        &self,
+        session_id: &str,
+        text: String,
+        admitted_stamp: u64,
+    ) {
+        use crate::privacy::affiliation::{dictionary_row_institutions, WriterModel};
+        use crate::security::dictionary_store::store;
+
+        if !self.dictionary_learning_enabled()
+            || crate::dictation::activation::process_surface()
+                == crate::dictation::activation::Surface::Acp
+        {
+            return;
+        }
+        let origin = match self.dictionary_turn_origin.try_lock() {
+            Ok(origins) => origins.get(session_id).copied(),
+            Err(_) => None,
+        };
+        let Some((origin_tier, origin_affiliation)) = origin else {
+            return;
+        };
+        let Some(permit) = crate::dictation::extractor::try_reserve() else {
+            return;
+        };
+        let sessions = self.config.session_manager.clone();
+        let extensions = self.extension_manager.clone();
+        let session_id = session_id.to_owned();
+        tokio::spawn(async move {
+            let _permit = permit;
+            if !extensions.is_extension_enabled("dictionary").await {
+                return;
+            }
+            let policy = crate::managed::ManagedPolicy::load();
+            if !policy.dictation().dictionary.is_allowed()
+                || !policy.dictation().dictionary_agent_writes.is_allowed()
+            {
+                return;
+            }
+            let Ok(session) = sessions.get_session(&session_id, false).await else {
+                return;
+            };
+            if !crate::dictation::extractor::chat_may_learn(&session).await {
+                return;
+            }
+            let tier = crate::dictation::extractor::stamp_tier(session.privacy_tier, origin_tier);
+            let affiliation = if tier.is_private() {
+                dictionary_row_institutions(
+                    WriterModel::Known(origin_affiliation),
+                    sessions.session_affiliations(&session_id).await,
+                )
+                .stored_ids()
+                .map(|institutions| store::RowAffiliation { institutions })
+            } else {
+                None
+            };
+            let _ = tokio::task::spawn_blocking(move || {
+                let dictionary = crate::security::dictionary_store::open_store();
+                let _ = crate::dictation::extractor::observe(
+                    &dictionary,
+                    crate::dictation::extractor::Observation {
+                        session_id: &session_id,
+                        text: &text,
+                        eligible: true,
+                        admitted_stamp,
+                        tier,
+                        affiliation,
+                    },
+                );
+            })
+            .await;
+        });
     }
 
     /// [`Agent::try_queue_soft_interrupt`] with a client idempotency key (D5).
@@ -10063,6 +10175,7 @@ impl Agent {
         // minted an id for its prompt still learns the one the store did.
         let mut user_message = user_message;
         let mut prestream_persisted: Vec<Message> = Vec::new();
+        let mut dictionary_pending: Option<(String, u64)> = None;
 
         // Taken by value first: the persist below needs `&mut user_message`, so
         // the scan cannot keep a borrow of its content alive across it.
@@ -10547,6 +10660,16 @@ impl Agent {
                 session_manager
                     .add_message_adopting_uid(&session_config.id, &mut user_message)
                     .await?;
+                // DD-57: only words the person wrote and can see, and only while the
+                // setting is on; the text is not copied otherwise, and never more of it
+                // than the extractor reads.
+                if crate::dictation::extractor::person_wrote(&user_message) {
+                    if let Some(stamp) = crate::dictation::extractor::admission_stamp() {
+                        let mut text = user_message.as_concat_text();
+                        text.truncate(crate::dictation::extractor::capped(&text).len());
+                        dictionary_pending = Some((text, stamp));
+                    }
+                }
                 prestream_persisted.push(user_message.clone());
             }
         }
@@ -10826,7 +10949,7 @@ impl Agent {
                 }
             };
 
-            let mut reply_stream = self.reply_internal(final_conversation, rewrite_basis, session_config, session, cancel_token, planning_signal).await?;
+            let mut reply_stream = self.reply_internal(final_conversation, rewrite_basis, session_config, session, cancel_token, planning_signal, dictionary_pending.take()).await?;
             while let Some(event) = reply_stream.next().await {
                 yield event?;
             }
@@ -11317,7 +11440,7 @@ impl Agent {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn reply_internal(
         &self,
         conversation: Conversation,
@@ -11326,6 +11449,7 @@ impl Agent {
         session: Session,
         cancel_token: Option<CancellationToken>,
         planning_signal: Option<crate::agents::planning_gate::MultiStep>,
+        dictionary_pending: Option<(String, u64)>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
         let session_manager = self.config.session_manager.clone();
         let provider_conversation = crate::conversation::without_bedrock_reasoning(&conversation);
@@ -11335,6 +11459,15 @@ impl Agent {
             Some(provider) => Arc::clone(provider),
             None => self.provider().await?,
         };
+        // DD-57: the chat extractor stamps this turn's messages and steers with the
+        // provider the turn really uses, never the mutable provider slot.
+        self.pin_dictionary_turn_origin(
+            &session_config.id,
+            (reply_provider.tier(), reply_provider.affiliation()),
+        );
+        if let Some((text, stamp)) = dictionary_pending {
+            self.queue_dictionary_observation(&session_config.id, text, stamp);
+        }
         let context = self
             .prepare_reply_context(
                 &session_config.id,
@@ -20627,6 +20760,423 @@ mod tests {
             expected,
             "the same chat without its Crew scope is offered the capability, so the scope \
              was what withheld it"
+        );
+    }
+
+    /// PR-24 (DD-57): a Crew scoped chat teaches the dictionary nothing. Such a chat's turn
+    /// cannot reach a model here, because `check_provider_use` asks the workspace broker
+    /// before the message is stored, so this drives the entry the reply path and
+    /// `/interrupt` both call, `queue_dictionary_observation`, with the origin
+    /// `reply_internal` pins, and the real worker decides. The same chat without its scope
+    /// learns the same message, so the scope is what stopped it. It runs in a process of
+    /// its own because it turns `learn_from_chats` on in the store every test here shares.
+    #[tokio::test]
+    async fn a_crew_scoped_chat_queues_no_dictionary_suggestion() {
+        use crate::dictation::extractor::{admission_stamp, observations_in_flight};
+        use crate::security::dictionary_store::open_store;
+
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = tempfile::TempDir::new().unwrap();
+        let _root = crate::test_sandbox::relocate_path_root(root.path().to_str().unwrap());
+
+        async fn until(what: &str, done: impl Fn() -> bool) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+        let current = || open_store().view().unwrap().content_stamp();
+        let rows_named = |written: &str| {
+            open_store()
+                .view()
+                .unwrap()
+                .entries()
+                .iter()
+                .filter(|row| row.written == written)
+                .count()
+        };
+
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            root.path().join("sessions"),
+        ));
+        let chat = sessions
+            .create_session(
+                root.path().to_path_buf(),
+                "crew chat".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&sessions),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                root.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let target = crate::agents::extension_manager::resolve_bundled_extension("dictionary")
+            .expect("Dictionary is a bundled capability");
+        agent
+            .add_extension(target.into_config("crew extractor test".into()))
+            .await
+            .unwrap();
+        open_store()
+            .write(|file| {
+                file.settings.learn_from_chats = true;
+                Ok(())
+            })
+            .unwrap();
+        until("the settings watcher to read the store", || {
+            admission_stamp() == Some(current())
+        })
+        .await;
+        agent
+            .dictionary_turn_origin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                chat.id.clone(),
+                (crate::privacy::ProviderTier::Public, None),
+            );
+
+        let crew = crate::crew::install_test_scope(&chat.id, None).await;
+        agent.queue_dictionary_observation(&chat.id, "CREWT24".into(), current());
+        until("the extractor's worker queue to empty", || {
+            observations_in_flight() == 0
+        })
+        .await;
+        crate::crew::remove_test_scope(&crew, &chat.id).await;
+        assert_eq!(
+            rows_named("CREWT24"),
+            0,
+            "a Crew scoped chat suggested a term"
+        );
+
+        agent.queue_dictionary_observation(&chat.id, "CREWT24".into(), current());
+        until(
+            "the same chat, without its scope, to learn the term",
+            || rows_named("CREWT24") == 1,
+        )
+        .await;
+    }
+
+    /// PR-24 (DD-57): a steer accepted into a prepared turn, before that turn's
+    /// `reply_internal` has chosen its provider, learns nothing, even though the chat's
+    /// previous turn pinned one. `prepare_soft_interrupt_turn` forgets the old pin, so the
+    /// steer is never stamped with a model the new turn may not use. The permit is taken
+    /// before `queue_dictionary_observation` returns, so waiting for none in flight is a
+    /// real barrier. The control pins the new turn's provider, as `reply_internal` does,
+    /// and the same steer then lands. Its own process, because it turns
+    /// `learn_from_chats` on in the store every test here shares.
+    #[tokio::test]
+    async fn a_prepared_turn_forgets_the_previous_turns_dictionary_origin() {
+        use crate::dictation::extractor::{admission_stamp, observations_in_flight};
+        use crate::security::dictionary_store::open_store;
+
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = tempfile::TempDir::new().unwrap();
+        let _root = crate::test_sandbox::relocate_path_root(root.path().to_str().unwrap());
+
+        async fn until(what: &str, done: impl Fn() -> bool) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+        let current = || open_store().view().unwrap().content_stamp();
+        let rows_named = |written: &str| {
+            open_store()
+                .view()
+                .unwrap()
+                .entries()
+                .iter()
+                .filter(|row| row.written == written)
+                .count()
+        };
+
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            root.path().join("sessions"),
+        ));
+        let chat = sessions
+            .create_session(
+                root.path().to_path_buf(),
+                "stale origin chat".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&sessions),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                root.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let target = crate::agents::extension_manager::resolve_bundled_extension("dictionary")
+            .expect("Dictionary is a bundled capability");
+        agent
+            .add_extension(target.into_config("stale origin test".into()))
+            .await
+            .unwrap();
+        open_store()
+            .write(|file| {
+                file.settings.learn_from_chats = true;
+                Ok(())
+            })
+            .unwrap();
+        until("the settings watcher to read the store", || {
+            admission_stamp() == Some(current())
+        })
+        .await;
+        let pin = |agent: &Agent| {
+            agent
+                .dictionary_turn_origin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    chat.id.clone(),
+                    (crate::privacy::ProviderTier::Public, None),
+                );
+        };
+
+        // The previous turn's pin, then the next turn prepared and a steer accepted into it,
+        // as `/interrupt` accepts one and then queues its observation.
+        pin(&agent);
+        let turn = agent.prepare_soft_interrupt_turn();
+        let Ok(admission) = agent.try_queue_soft_interrupt_keyed(
+            "STALE24".into(),
+            None,
+            Some("stale-origin-steer".into()),
+        ) else {
+            panic!("the prepared turn refused the steer");
+        };
+        assert_eq!(admission.turn.as_str(), turn.as_str());
+        assert!(!admission.duplicate);
+        agent.queue_dictionary_observation(&chat.id, "STALE24".into(), current());
+        until("the extractor's worker queue to empty", || {
+            observations_in_flight() == 0
+        })
+        .await;
+        assert_eq!(
+            rows_named("STALE24"),
+            0,
+            "a steer learned under the previous turn's provider"
+        );
+
+        pin(&agent);
+        agent.queue_dictionary_observation(&chat.id, "STALE24".into(), current());
+        until(
+            "the steer to land once the new turn pins its provider",
+            || rows_named("STALE24") == 1,
+        )
+        .await;
+    }
+
+    /// PR-24 (DD-57): a turn's pin waits for a reader that holds the lock, as a
+    /// steer's lookup holds it, and then replaces the previous turn's origin. A pin that
+    /// tried the lock would return at once with the old origin still pinned, so the
+    /// first assertion catches it whenever the pinning thread runs within 200 ms.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turns_pin_waits_for_a_reader_and_replaces_the_previous_origin() {
+        use crate::privacy::{ModelAffiliation, ProviderTier};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            Arc::new(crate::session::SessionManager::new(
+                temp.path().join("sessions"),
+            )),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                temp.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        )));
+        let previous = (ProviderTier::Public, None);
+        let current = (ProviderTier::Private, Some(ModelAffiliation::Local));
+        agent.pin_dictionary_turn_origin("chat", previous);
+
+        let reader = agent
+            .dictionary_turn_origin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (pinned, was_pinned) = std::sync::mpsc::channel();
+        let pinner = {
+            let agent = Arc::clone(&agent);
+            std::thread::spawn(move || {
+                agent.pin_dictionary_turn_origin("chat", current);
+                let _ = pinned.send(());
+            })
+        };
+        assert!(
+            was_pinned
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "the pin returned while a reader held the lock, so it skipped its insert"
+        );
+        drop(reader);
+        pinner.join().unwrap();
+        assert_eq!(
+            agent
+                .dictionary_turn_origin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get("chat")
+                .copied(),
+            Some(current),
+            "the previous turn's origin stayed pinned"
+        );
+    }
+
+    /// PR-24 (DD-57): `reply_internal` pins the new turn's origin over the previous
+    /// turn's even when it cannot try the lock. A reader that panicked while it held the
+    /// lock poisoned it, so `try_lock` answers `Err` here as it does while a reader holds
+    /// it, deterministically; the turn must still pin its own private model, and a steer
+    /// is then stamped with that model rather than the public one before it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turn_pins_its_own_dictionary_origin_over_the_previous_turns() {
+        use crate::privacy::{ModelAffiliation, ProviderTier};
+        use std::sync::atomic::Ordering;
+
+        struct LocalModel {
+            completions: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for LocalModel {
+            fn metadata() -> crate::providers::base::ProviderMetadata {
+                crate::providers::base::ProviderMetadata::empty()
+            }
+
+            fn get_name(&self) -> &str {
+                "pr24-pin-local"
+            }
+
+            fn tier(&self) -> ProviderTier {
+                ProviderTier::Private
+            }
+
+            fn affiliation(&self) -> Option<ModelAffiliation> {
+                Some(ModelAffiliation::Local)
+            }
+
+            fn get_model_config(&self) -> crate::model::ModelConfig {
+                crate::model::ModelConfig::new_or_fail("pr24-pin-model")
+            }
+
+            async fn complete_with_model(
+                &self,
+                _model_config: &crate::model::ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> std::result::Result<
+                (Message, crate::providers::base::ProviderUsage),
+                crate::providers::errors::ProviderError,
+            > {
+                self.completions.fetch_add(1, Ordering::SeqCst);
+                Ok((
+                    Message::assistant().with_text("done"),
+                    crate::providers::base::ProviderUsage::new(
+                        "pr24-pin-model".to_owned(),
+                        crate::providers::base::Usage::default(),
+                    ),
+                ))
+            }
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            temp.path().join("sessions"),
+        ));
+        let chat = sessions
+            .create_session(
+                temp.path().to_path_buf(),
+                "pin origin chat".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            Arc::clone(&sessions),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                temp.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        )));
+        let completions = Arc::new(AtomicUsize::new(0));
+        agent
+            .update_provider(
+                Arc::new(LocalModel {
+                    completions: Arc::clone(&completions),
+                }),
+                &chat.id,
+            )
+            .await
+            .unwrap();
+
+        agent.pin_dictionary_turn_origin(&chat.id, (ProviderTier::Public, None));
+        let poisoner = Arc::clone(&agent);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner
+                .dictionary_turn_origin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            panic!("a reader panicked while it held the dictionary origin lock");
+        })
+        .join();
+        assert!(
+            agent.dictionary_turn_origin.try_lock().is_err(),
+            "premise: trying the lock fails, as it does while a reader holds it"
+        );
+
+        let stream = agent
+            .reply(
+                Message::user().with_text("hello"),
+                SessionConfig {
+                    id: chat.id.clone(),
+                    schedule_id: None,
+                    max_turns: Some(1),
+                    max_tool_calls: None,
+                    budget: None,
+                    retry_config: None,
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::pin!(stream);
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+        assert!(
+            completions.load(Ordering::SeqCst) > 0,
+            "premise: the turn reached its model, so it passed the pin"
+        );
+        assert_eq!(
+            agent
+                .dictionary_turn_origin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&chat.id)
+                .copied(),
+            Some((ProviderTier::Private, Some(ModelAffiliation::Local))),
+            "the previous turn's public origin stayed pinned for this turn"
         );
     }
 

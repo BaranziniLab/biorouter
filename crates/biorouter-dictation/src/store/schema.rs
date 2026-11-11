@@ -28,8 +28,19 @@ pub const USAGE_FILE: &str = "usage.json";
 /// The file every writer locks.
 pub const LOCK_FILE: &str = ".lock";
 
-/// `settings.learn_from_chats` in a new store. PR-24 sets it from the M-21 result; until
-/// then the chat extractor does not exist and the setting starts off.
+/// `settings.learn_from_chats` in a new store: off.
+///
+/// The chat extractor (PR-24, DD-57) ships off, decided by the owner on 2026-11-10,
+/// because its precision gate M-21 has not run. The gate is an offline run over the
+/// person written messages of 200 of the owner's own sessions, leaving out every session
+/// that used a private model or holds patient data, with candidate tokens labelled by
+/// the owner (O-23). The session store records neither whose sessions are the owner's
+/// nor which hold patient data, so no test, build step or default can choose that set,
+/// and the labels can only come from the owner. Until a run reaches precision 0.8 or
+/// more at `seen ≥ 2`, the person turns learning on with **Also find terms in my
+/// messages automatically** on the Dictionary page or with
+/// `biorouter dictionary settings --learn-from-chats on`, and the page says why it
+/// starts off (MSG-LEARN-FROM-CHATS-HELP).
 pub const LEARN_FROM_CHATS_DEFAULT: bool = false;
 
 /// The current time as the store writes it: whole seconds, so a timestamp reads

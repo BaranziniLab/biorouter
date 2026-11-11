@@ -1468,6 +1468,14 @@ const REGISTRY: &[Guard] = &[
                        `session_reach` admitted the caller",
             },
             Site {
+                file: "crates/biorouter/src/dictation/extractor.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`stamp_tier` (PR-24, DD-57): the chat extractor's stamp, over the \
+                       chat's stored tier and the provider its turn pinned, as a stamp reads \
+                       it (Private unless Public)",
+            },
+            Site {
                 file: "crates/biorouter/src/dictation/mod.rs",
                 counts: c(0, 0, 1),
                 kind: SiteKind::Guard,

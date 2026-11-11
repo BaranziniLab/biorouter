@@ -200,6 +200,60 @@ impl StoreFile {
             .any(|stone| stone.tier == tier && stone.fold_key == fold)
     }
 
+    /// Count only the distinct sessions needed to make an auto suggestion reviewable.
+    /// Auto `seen` saturates at two; further sightings cannot change the decision.
+    pub fn observe_auto_suggestion(
+        &mut self,
+        written: &str,
+        tier: EntryTier,
+        session_id: &str,
+        affiliation: Option<RowAffiliation>,
+        at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        let written = validate::term(written)?;
+        let fold = fold_key(&written);
+        if self.tombstoned(&fold, tier) {
+            return Ok(());
+        }
+        // DD-57: a term the caller can already list is not proposed again. A private
+        // caller lists the public rows too (every row but an `auto` row seen once), so a
+        // term already public gets no private twin. A public caller lists no private
+        // row, so a private row changes nothing for it.
+        if tier.is_private()
+            && self.entries.iter().any(|row| {
+                row.tier != tier
+                    && row.fold_key() == fold
+                    && !(row.source == EntrySource::Auto && row.seen < 2)
+            })
+        {
+            return Ok(());
+        }
+        if let Some(row) = self
+            .entries
+            .iter_mut()
+            .find(|row| row.tier == tier && row.fold_key() == fold)
+        {
+            if row.source != EntrySource::Auto
+                || row.status != EntryStatus::Suggested
+                || row.seen >= 2
+                || row.suggested_in.as_deref() == Some(session_id)
+            {
+                return Ok(());
+            }
+            row.seen = 2;
+            row.suggested_in = Some(session_id.to_owned());
+            row.touch(at);
+            return Ok(());
+        }
+        let mut term = NewTerm::person(written, tier);
+        term.source = EntrySource::Auto;
+        term.status = EntryStatus::Suggested;
+        term.suggested_in = Some(session_id.to_owned());
+        term.affiliation = if tier.is_private() { affiliation } else { None };
+        let _ = self.add(term, Reach::All, at)?;
+        Ok(())
+    }
+
     /// Add a term ("Uniqueness", "Caps per tier", "Who stamps the tier").
     ///
     /// A person's term (`user`, `import`) is refused beyond 5,000 active rows in its tier,
@@ -1176,5 +1230,101 @@ mod tests {
             Err(StoreError::Cap(CapKind::Active))
         ));
         assert!(file.tombstoned("spoke", EntryTier::Public));
+    }
+    #[test]
+    fn auto_suggestions_count_distinct_sessions_and_never_demote() {
+        let mut file = StoreFile::default();
+        file.observe_auto_suggestion("EPAS1", EntryTier::Public, "a", None, at(0))
+            .unwrap();
+        file.observe_auto_suggestion("EPAS1", EntryTier::Public, "a", None, at(1))
+            .unwrap();
+        assert_eq!(file.entries[0].seen, 1);
+        assert_eq!(file.entries[0].status, EntryStatus::Suggested);
+        file.observe_auto_suggestion("EPAS1", EntryTier::Public, "b", None, at(2))
+            .unwrap();
+        file.observe_auto_suggestion("EPAS1", EntryTier::Public, "a", None, at(3))
+            .unwrap();
+        assert_eq!(file.entries[0].seen, 2);
+        let rev = file.entries[0].rev;
+        file.accept(&file.entries[0].id.clone(), at(4)).unwrap();
+        file.observe_auto_suggestion("EPAS1", EntryTier::Public, "c", None, at(5))
+            .unwrap();
+        assert_eq!(file.entries[0].status, EntryStatus::Active);
+        assert_eq!(file.entries[0].rev, rev + 1);
+    }
+
+    #[test]
+    fn a_private_auto_row_keeps_its_creation_institutions() {
+        let mut file = StoreFile::default();
+        file.observe_auto_suggestion(
+            "EPAS1",
+            EntryTier::Private,
+            "first",
+            Some(RowAffiliation {
+                institutions: vec!["ucsf".into()],
+            }),
+            at(0),
+        )
+        .unwrap();
+        file.observe_auto_suggestion(
+            "EPAS1",
+            EntryTier::Private,
+            "second",
+            Some(RowAffiliation {
+                institutions: vec!["stanford".into()],
+            }),
+            at(1),
+        )
+        .unwrap();
+        assert_eq!(file.entries[0].seen, 2);
+        assert_eq!(
+            file.entries[0].affiliation.as_ref().unwrap().institutions,
+            ["ucsf"]
+        );
+    }
+
+    #[test]
+    fn auto_suggestions_respect_tier_and_tombstones() {
+        let mut file = StoreFile::default();
+        file.observe_auto_suggestion("UCSF", EntryTier::Public, "a", None, at(0))
+            .unwrap();
+        let public_id = file.entries[0].id.clone();
+        file.observe_auto_suggestion("UCSF", EntryTier::Private, "a", None, at(1))
+            .unwrap();
+        assert_eq!(file.entries.len(), 2);
+        assert_eq!(file.entries[0].id, public_id);
+        let private_id = file.entries[1].id.clone();
+        file.remove(&private_id, at(2)).unwrap();
+        file.observe_auto_suggestion("UCSF", EntryTier::Private, "b", None, at(3))
+            .unwrap();
+        assert_eq!(file.entries.len(), 1);
+        assert_eq!(file.entries[0].id, public_id);
+    }
+
+    /// DD-57 skips rows the caller can already list. A private caller lists every public
+    /// row but an `auto` row seen once, so those get no private twin.
+    #[test]
+    fn a_private_sighting_of_a_term_the_caller_can_list_adds_no_twin() {
+        let mut file = StoreFile::default();
+        assert!(matches!(
+            file.add(
+                NewTerm::person("UCSF", EntryTier::Public),
+                Reach::All,
+                at(0)
+            )
+            .unwrap(),
+            AddOutcome::Created { .. }
+        ));
+        file.observe_auto_suggestion("UCSF", EntryTier::Private, "a", None, at(1))
+            .unwrap();
+        assert_eq!(file.entries.len(), 1);
+        file.observe_auto_suggestion("EPAS1", EntryTier::Public, "a", None, at(2))
+            .unwrap();
+        file.observe_auto_suggestion("EPAS1", EntryTier::Public, "b", None, at(3))
+            .unwrap();
+        file.observe_auto_suggestion("EPAS1", EntryTier::Private, "c", None, at(4))
+            .unwrap();
+        assert_eq!(file.entries.len(), 2);
+        assert!(file.entries.iter().all(|row| row.tier == EntryTier::Public));
     }
 }

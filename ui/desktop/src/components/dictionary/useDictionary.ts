@@ -448,6 +448,13 @@ export function setSuggestFromChats(suggest: boolean): Promise<Outcome<Dictionar
   return write((headers) => activateDictionary({ body: { suggest_from_chats: suggest }, headers }));
 }
 
+/** `learn_from_chats`: the chat extractor's switch (PR-24), through `POST /dictionary/settings`. */
+export function setLearnFromChats(learn: boolean): Promise<Outcome<DictionarySettings>> {
+  return write((headers) =>
+    changeDictionarySettings({ body: { learn_from_chats: learn }, headers })
+  );
+}
+
 export function acceptTerms(ids: readonly string[]): Promise<Outcome<{ accepted: number }>> {
   return write((headers) => acceptDictionarySuggestions({ body: { ids: [...ids] }, headers }));
 }
@@ -575,6 +582,7 @@ export interface DictionaryHook extends DictionarySnapshot {
   keep: typeof keepTerms;
   setAgentWrites: typeof setAgentWrites;
   setSuggestFromChats: typeof setSuggestFromChats;
+  setLearnFromChats: typeof setLearnFromChats;
   importPlan: typeof planImport;
   importApply: typeof applyImport;
   exportFile: typeof exportTerms;
@@ -600,6 +608,7 @@ export function useDictionary(): DictionaryHook {
     keep: keepTerms,
     setAgentWrites,
     setSuggestFromChats,
+    setLearnFromChats,
     importPlan: planImport,
     importApply: applyImport,
     exportFile: exportTerms,

@@ -58,6 +58,8 @@ export const DICTIONARY_MESSAGES = {
     'Also fix near misses corrects close misspellings, and Exact spelling only corrects only what you listed. Help recognition only never changes the text after transcription.',
   'MSG-REVIEW-HELP':
     'An accepted term starts shaping dictation. A dismissed one is not suggested again.',
+  'MSG-LEARN-FROM-CHATS-HELP':
+    'Biorouter looks for terms in your messages, on this computer, and suggests them for you to accept. It starts off because how well it picks terms is not checked yet.',
   'MSG-PRIVATIZE-CONFIRM':
     'Dictation then uses this term only when you dictate into private chats.',
   'MSG-EXPORT-SAVED': 'Saved <file> to <folder>.',
@@ -149,6 +151,8 @@ export const DICTIONARY_LABELS = {
     suggest: 'Wait for my review',
     onRequest: 'Add when I ask, suggest otherwise',
     add: 'Add without asking',
+    /** `learn_from_chats`, the chat extractor's switch (PR-24, DD-57). */
+    learnFromChats: 'Also find terms in my messages automatically',
   },
   sources: {
     user: 'Added by you',

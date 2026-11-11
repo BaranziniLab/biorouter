@@ -16,6 +16,7 @@
 
 pub mod activation;
 pub mod bias;
+pub mod extractor;
 pub mod file;
 pub mod paths;
 pub mod service;

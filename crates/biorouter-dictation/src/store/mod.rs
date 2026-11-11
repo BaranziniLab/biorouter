@@ -600,6 +600,25 @@ impl DictionaryStore {
         Ok(result)
     }
 
+    /// A bounded write only when the store is still the opt-in version admitted by
+    /// the caller. A cross-process OFF to ON change gets a new file stamp and drops
+    /// the stale observation, even if its final setting is ON again.
+    pub fn try_write_within_at_stamp<T>(
+        &self,
+        budget: Duration,
+        expected_stamp: u64,
+        change: impl FnOnce(&mut StoreFile) -> Result<T, StoreError>,
+    ) -> Result<Option<T>, StoreError> {
+        let Some(lock) = StoreLock::within(&self.dir, budget)? else {
+            return Ok(None);
+        };
+        let current = Stamp::at(&self.store_path())?.map_or(0, |stamp| stamp.digest());
+        if current != expected_stamp {
+            return Ok(None);
+        }
+        self.change_locked(&lock, change).map(Some)
+    }
+
     /// Change the store: an exclusive lock, a fresh parse, `change`, then the temporary
     /// file, flushed and renamed. The daemon's and the CLI's ordinary writes wait for the
     /// lock. A change that leaves the file as it was writes nothing, so the file stays
@@ -1444,5 +1463,24 @@ mod tests {
         println!(
             "view cold (parse): {cold:?}; view warm (two stats): {warm:?}; add one term: {write:?}; view after a write: {after_write:?}; flush 30 usage bumps: {flush:?}; view after another handle's usage bump: {usage_reread:?}; import 1,000 new rows: {import:?}"
         );
+    }
+    #[test]
+    fn stale_opt_in_stamp_cannot_write_after_a_setting_change() {
+        let (_root, store) = store();
+        let before = store.view().unwrap().content_stamp();
+        store
+            .write(|file| {
+                file.settings.learn_from_chats = true;
+                Ok(())
+            })
+            .unwrap();
+        let outcome = store
+            .try_write_within_at_stamp(Duration::from_millis(50), before, |file| {
+                file.settings.learn_from_chats = false;
+                Ok(())
+            })
+            .unwrap();
+        assert!(outcome.is_none());
+        assert!(store.view().unwrap().settings().learn_from_chats);
     }
 }

@@ -112,7 +112,7 @@ The store file:
 }
 ```
 
-`learn_from_chats` in a new store takes the compiled default `LEARN_FROM_CHATS_DEFAULT`, which PR-24 sets from the M-21 result ([The M-21 gate](#the-m-21-gate)). `agent_writes` starts at `on_request` (O-3, decided by the owner on 2026-11-05).
+`learn_from_chats` in a new store takes the compiled default `LEARN_FROM_CHATS_DEFAULT`, which PR-24 sets from the M-21 result ([The M-21 gate](#the-m-21-gate)); it ships `false`, because M-21 has not run (owner decision, 2026-11-10). `agent_writes` starts at `on_request` (O-3, decided by the owner on 2026-11-05).
 
 PR-16 adds one optional key, `sightings`: the observations the store has applied ([The observations route](#the-observations-route)), so a resend counts once. Each holds digests only, never the correction's words: `key`, the first 32 hexadecimal digits of the SHA-256 of (`record_id`, `from`, `to`), the stamp `tier`, `at`, and for a rejection `rejected`, the digest of (entry id, `from`) whose second distinct sighting changes the entry. At most 1,000 per tier are kept, the oldest dropped first (`MAX_SIGHTINGS_PER_TIER`). A store that has had no observation writes no `sightings` key, so its bytes are what PR-13 wrote. At the cap the key adds 208,021 B to a 7,800 row file of 4,064,540 B, and the parse a dictation's `view()` pays once after each change takes 5 % longer (136 ms against 130 ms in a debug build, `store::observe::tests::measure_the_sightings_cost`) [M, 2026-11-06]; at the release build's 8.7 ms reparse that is about 0.4 ms, paid once per change to the store and never between a stop and the text.
 
@@ -544,7 +544,7 @@ pub fn dictionary_row_institutions(
 | `publicize` | removed, because public rows carry none |
 | Import | the file's `affiliation` on a row marked `"tier": "private"` when it is `null` or `{"institutions": [...]}` with 1 to 8 ids of 1 to 64 characters and no control character; `null` for a row that carries none (a text or CSV line, a JSON row without the key); `{"institutions": []}` for any other value, because a value that is present but cannot be read is unknown, and `null` would reach every private target |
 
-The desktop composer has no `/dictionary add` in this plan; a chat's door there is the context menu. A later pull request that adds one sends `origin_session_id` the same way. The extractor reads the chat's record once per message, only when a candidate survives the filters, and before it takes the store lock, so the read does not count against the 50 ms lock budget [I].
+The desktop composer has no `/dictionary add` in this plan; a chat's door there is the context menu. A later pull request that adds one sends `origin_session_id` the same way. The extractor's worker reads the chat's record once per message, before it looks for a candidate: the session row, for the chat's kind and stored tier, and `session_affiliations` when the stamp is private. Both reads come before the store is read or locked, so neither counts against the 50 ms lock budget, and a message with no candidate then returns without reading the store [C `crates/biorouter/src/agents/agent.rs` `queue_dictionary_observation`; `crates/biorouter/src/dictation/extractor.rs` `observe`].
 
 The value is set when the row is created. A later write that finds the row (a second sighting, an agent's add of the same term, a correction) leaves it as it is, so a row's institutions change only when the person publicizes it. Stamps follow the real model and the chat's real record even with the privacy master switch off or the mixing policy `open`, so turning either back restores the filter with correct rows; dispatch adds nothing to the record while the switch is off [C `session_manager.rs` `record_session_affiliation`].
 
@@ -1222,17 +1222,17 @@ Updated in PR-23: `ui/desktop/src/utils/toolGlyph.ts` `BUILT_IN_EXTENSION_KEYS` 
 
 ### Hook points
 
+As built in PR-24, nothing on the turn waits for the extractor. The turn queues an observation and goes on; a worker does the rest:
+
 ```rust
-pub async fn observe_user_text(
-    session: &Session,
-    classification: SessionClassification, // the cached post ratchet classification
-    provider_tier: ProviderTier,           // the bound provider's tier
-    text: &str,
-);
+// crates/biorouter/src/agents/agent.rs: returns at once
+pub fn queue_dictionary_observation(&self, session_id: &str, text: String, admitted_stamp: u64);
+// crates/biorouter/src/dictation/extractor.rs: the worker's store work, off the turn
+pub fn observe(store: &DictionaryStore, item: Observation<'_>) -> Result<(), StoreError>;
 ```
 
-1. In `reply_with_computer_use_scope` [C `crates/biorouter/src/agents/agent.rs:10002`], right after the user message is persisted in the `Ok(None)` arm of the command check. Every consumer awaits `Agent::reply`, so the desktop, `serve`, the CLI front ends and `run` are covered.
-2. At `/interrupt` admission in `crates/biorouter-server/src/routes/reply.rs`, for a steer that is not a duplicate (`try_queue_soft_interrupt_keyed` [C]).
+1. In `reply_with_computer_use_scope` [C `crates/biorouter/src/agents/agent.rs`], right after the user message is persisted in the `Ok(None)` arm of the command check, the turn copies the text, and only when the setting is on and the message is the person's own. `reply_internal` queues it once it has chosen the turn's provider, whose tier and institutions it pins for the chat. The pin waits for the lock (`Agent::pin_dictionary_turn_origin`, recovering a poisoned one), so a steer's lookup that holds it a moment never leaves the previous turn's model pinned; the lookup only tries the lock, and learns nothing when it cannot take it. Every consumer awaits `Agent::reply`, so the desktop, `serve`, the CLI front ends and `run` are covered.
+2. At `/interrupt` admission in `crates/biorouter-server/src/routes/reply.rs`, for a steer that is not a duplicate (`try_queue_soft_interrupt_keyed` [C]). A steer is stamped with the provider the running turn pinned. A prepared turn clears the pins (`prepare_soft_interrupt_turn`), so a steer that arrives before that turn has chosen its provider is not observed, rather than stamped with the previous turn's model. A steer admitted while the chat's agent is still starting (`queue_initializing_steer`) is not observed either.
 
 ### When it runs
 
@@ -1240,7 +1240,7 @@ All of these hold: the session's roster has `dictionary` enabled (`ExtensionMana
 
 ### What it reads and skips
 
-It reads only person written user messages. It skips: provenance `AgentInjection` or `SpawnContext`; every ACP session (stdio and `--ws`), because the Jupyter persona delivers other people's messages as user messages [I]; Crew scoped, app, SubAgent, Scheduled, Hidden and Terminal sessions (a Terminal session's message carries shell history); slash commands; tool output and assistant text, which never reach it. Protected spans of correction step 1 (code, URLs, paths) are skipped.
+It reads only person written user messages the person can see (`extractor::person_wrote`: a user message, user visible, of text alone, with no provenance or `UserDirect`), the rule PR-23's `dictionary__add_terms` applies to the person's latest message, because rows only the model reads (hook context, nudges, compaction summaries) are stored with the user role too. It skips: provenance `AgentInjection` or `SpawnContext`; every ACP session (stdio and `--ws`), because the Jupyter persona delivers other people's messages as user messages [I]; Crew scoped, app, SubAgent, Scheduled, Hidden and Terminal sessions (a Terminal session's message carries shell history); slash commands; tool output and assistant text, which never reach it. Protected spans of correction step 1 (code, URLs, paths) are skipped, and a backtick that no later one closes protects the rest of the text, so code in a block left open, or one the cap below cut through, is never proposed. As built in PR-24, provenance, an app's or `--ws` agent (`Agent.dictionary_learning` off) and an ACP stdio process (`activation::process_surface`) are refused before anything is queued, and the session kind and Crew scope by the worker (`extractor::chat_may_learn`), where a Crew registry that cannot be read counts as a grant, as dispatch counts it.
 
 ### Candidate rules
 
@@ -1255,13 +1255,15 @@ static INTERIOR: &str = r"\b[a-z]+[A-Z][A-Za-z0-9]*\b|\b[A-Z][a-z]+[A-Z][A-Za-z0
 
 Minus: a stop list (`OK`, `API`, `JSON`, `URL`, `HTTP`, `HTTPS`, `PDF`, `CSV`, `USA`, `AM`, `PM`, `FYI`, `TODO`, `ASAP` and the like, kept in `extractor.rs`); the validator; the stamp tier's tombstones; rows the caller can already list; and any token `guardrails::pii::PiiDetector::scan` flags [C `pii.rs:227`]. At most 3 candidates per message.
 
+Only the first 16 KiB of a message is read (`MAX_OBSERVED_BYTES`, `extractor::capped`), cut back to its last whitespace within the cap, so no character, token, link or path is split; a first 16 KiB with no whitespace at all is not prose, and nothing of it is read. The reply path and `/interrupt` copy no more than that off the turn, and `candidates` cuts again before it scans. A term after the cut is not proposed from that message. The skipped spans are sorted and merged once per message, and one index moves through them as the hits do, so the work is one pass over each rather than every span for every hit [C `crates/biorouter/src/dictation/extractor.rs` `candidates`].
+
 ### What it writes
 
 `suggested`, `source: auto`, stamped through `chat_reach` over the cached classification and the bound provider (Private unless it answers Public, [Who stamps the tier](#who-stamps-the-tier)), with the institutions of [Private rows and institutions](#private-rows-and-institutions) on a private row: the bound provider's united with the session's `session_affiliations` (O-35). A new candidate gets `seen: 1` and `suggested_in` = the session. A sighting from a different session than `suggested_in` raises `seen` and moves `suggested_in`. Rows with `seen` below 2 are never listed, so a term appears for review only after the person wrote it in two different chats. The text is never logged.
 
 ### Performance budget
 
-Candidate finding is pure and takes microseconds. The write uses `try_write_within(50 ms)`; on contention or timeout the observation is dropped. It is awaited inline, so a short `biorouter run` keeps its observation. Target: p99 under 50 ms with a 5,000 entry store and two writers.
+Candidate finding is pure and takes microseconds. As built in PR-24, nothing is awaited by the turn. The reply path reads one atomic, which a single watcher thread sets every 100 ms from the store's settings (the version of the store when `learn_from_chats` is on, nothing otherwise), copies the text only when it is set, and queues a detached worker; at most two observations are in flight and a third is dropped. The worker writes with `try_write_within_at_stamp(50 ms)`: on contention, on a timeout, or when the store has changed since the watcher read it, the observation is dropped. Two consequences follow. The first message of a process, before the watcher's first read, is not observed, so a one shot `biorouter run` usually learns nothing. And every write to the store, the extractor's own included, drops the observations admitted before the watcher's next read. Target: p99 under 50 ms with a 5,000 entry store and two writers, measured by hand with `measure_an_observation_at_the_cap_with_two_writers` (`cargo test -p biorouter --lib dictation::extractor::tests::measure -- --ignored --nocapture`).
 
 ### The M-21 gate
 
@@ -1269,7 +1271,11 @@ Candidate finding is pure and takes microseconds. The write uses `try_write_with
 
 The run reads the owner's own chats, so the owner decided on 2026-11-05 how it runs (O-23): on the owner's own machine, over the person written messages of 200 of the owner's sessions, excluding every session that used a private model or holds patient data; the owner, or a person the owner names, labels only the candidate tokens, never whole messages; nothing leaves the machine. Below 0.8, `LEARN_FROM_CHATS_DEFAULT` is false and the reason is recorded.
 
+As shipped in PR-24, `learn_from_chats` starts off, decided by the owner on 2026-11-10: M-21 has not run. The session store records neither which sessions are the owner's own nor which hold patient data, so no test or build step can choose the 200 sessions, and the labels can only come from the owner, so the run waits for them. The reason is recorded at `LEARN_FROM_CHATS_DEFAULT` in `crates/biorouter-dictation/src/store/schema.rs` and shown on the page as MSG-LEARN-FROM-CHATS-HELP, the InfoTip of **Also find terms in my messages automatically**. The precision helpers (the `#[ignore]` M-21 tests in `tests/dictation_extractor_precision.rs`, and `scripts/dictation/pr24_precision.py`) run only by hand, take the owner's run folder from `PR24_PRECISION_ROOT` and do nothing when it is unset, and no default test or CI step opens a session store.
+
 **Acceptance.** PR-24, driven through `Agent::reply` for the desktop and CLI consumers: `AgentInjection` provenance and SubAgent, Scheduled, Terminal, Crew scoped, app, ACP stdio and `--ws` sessions produce nothing; a private chat produces a private suggestion whose `affiliation` unites the bound provider's institutions with the session's `session_affiliations`, so a local model in a chat whose record holds `ucsf` gives `{ucsf}` (O-35); a token `PiiDetector` flags is skipped; `seen` counts once per session; p99 under 50 ms with a 5,000 entry store and two writers.
+
+Where each lands, as built: `crates/biorouter/tests/dictation_extractor_agent.rs` drives `Agent::reply` for provenance, the session kinds, an app's and a `--ws` agent (learning off, as `configure_agent` and `deny_stdio_mcp` set it), the private stamps `null` and `{ucsf}`, the PII skip and the per session count, each with a control in a person's own chat; `dictation_extractor_acp.rs`, a binary of its own, marks the process as ACP stdio the way `run` does; a Crew scoped chat cannot reach a model without a workspace broker, so the lib test `a_crew_scoped_chat_queues_no_dictionary_suggestion` drives `queue_dictionary_observation` with the scope installed and then removed; the lib test `a_prepared_turn_forgets_the_previous_turns_dictionary_origin` accepts a steer into a prepared turn after the previous turn's pin and shows it learns nothing until the new turn pins its provider, and the server lib test `interrupt_without_a_pinned_turn_provider_does_not_learn` sends one through `/interrupt` with no pin; `a_turns_pin_waits_for_a_reader_and_replaces_the_previous_origin` holds the lock while a turn pins, and `a_turn_pins_its_own_dictionary_origin_over_the_previous_turns` drives `Agent::reply` with the lock poisoned, so trying it fails, and finds the new turn's private model pinned over the previous public one; the extractor's lib tests cover the 16 KiB cut, a large text of protected spans read in under 2 s, the sweep against checking every span, an unclosed code block, a message with no candidate leaving the store unread, and a row only the model reads (also through `Agent::reply` in `dictation_extractor_agent.rs`); the timing is the ignored `measure_an_observation_at_the_cap_with_two_writers`.
 
 ## The left sidebar Dictionary page
 
@@ -1371,6 +1377,8 @@ Not built in PR-20 (DD-94: a control appears in the pull request that makes it w
 | **Agent's terms**: **Wait for my review**, **Add when I ask, suggest otherwise**, **Add without asking** | `agent_writes` | raising is disabled before the click when `authority.raise_settings.allowed` is false, with its reason |
 | **Suggest dictionary words from my chats** | `suggest_from_chats`: the `dictionary` capability for new chats, through `POST /dictionary/activation` and `activation.rs` | turning it on is disabled before the click when `authority.raise_settings.allowed` is false |
 | **Also find terms in my messages automatically** | `learn_from_chats` | off with the M-21 reason when the gate failed; turning it on is disabled before the click when `authority.raise_settings.allowed` is false |
+
+As built in PR-24, **Also find terms in my messages automatically** is the shared checkbox beside **Suggest dictionary words from my chats**, writing `learn_from_chats` through `POST /dictionary/settings` (`setLearnFromChats` in `useDictionary.ts`). Its InfoTip, MSG-LEARN-FROM-CHATS-HELP, says what it does and why it starts off, and the box points at that sentence with `aria-describedby`. Turning it on is disabled before the click when `authority.raise_settings.allowed` is false; turning it off always works. Like the controls beside it, it shows only once the settings answer has arrived, and not under managed `dictionary: false`.
 
 ### On `serve` and remote backends
 

@@ -604,6 +604,9 @@ describe('agent dictionary settings', () => {
     expect(
       screen.queryByRole('checkbox', { name: 'Suggest dictionary words from my chats' })
     ).toBeNull();
+    expect(
+      screen.queryByRole('checkbox', { name: DICTIONARY_LABELS.agentSettings.learnFromChats })
+    ).toBeNull();
     expect(api.changeDictionarySettings).not.toHaveBeenCalled();
     expect(api.activateDictionary).not.toHaveBeenCalled();
   });
@@ -679,6 +682,73 @@ describe('agent dictionary settings', () => {
     await waitFor(() =>
       expect(api.activateDictionary).toHaveBeenCalledWith(
         expect.objectContaining({ body: { suggest_from_chats: true } })
+      )
+    );
+  });
+
+  it('offers the chat extractor switch off, says why, and turns it on through the settings', async () => {
+    renderPage();
+    const learn = await screen.findByRole('checkbox', {
+      name: DICTIONARY_LABELS.agentSettings.learnFromChats,
+    });
+    expect(learn).not.toBeChecked();
+    expect(learn).toBeEnabled();
+    expect(learn).toHaveAccessibleDescription(DICTIONARY_MESSAGES['MSG-LEARN-FROM-CHATS-HELP']);
+    // The InfoTip sits beside the label, never inside it, so a click on it toggles nothing.
+    expect(learn.closest('label')?.querySelector('[data-slot="info-tip-trigger"]')).toBeNull();
+    fireEvent.click(learn);
+    await waitFor(() =>
+      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { learn_from_chats: true } })
+      )
+    );
+    expect(api.activateDictionary).not.toHaveBeenCalled();
+  });
+
+  it('keeps the chat extractor switch from turning on when the host denies raising settings', async () => {
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          authority: {
+            ...settings().authority,
+            raise_settings: { allowed: false, reason: 'Use the host command.' },
+          },
+        })
+      )
+    );
+    renderPage();
+    const learn = await screen.findByRole('checkbox', {
+      name: DICTIONARY_LABELS.agentSettings.learnFromChats,
+    });
+    expect(learn).toBeDisabled();
+    fireEvent.click(learn);
+    expect(api.changeDictionarySettings).not.toHaveBeenCalled();
+  });
+
+  it('lets a known no-raise caller turn the chat extractor off', async () => {
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          learn_from_chats: true,
+          authority: {
+            ...settings().authority,
+            raise_settings: { allowed: false, reason: 'Use the host command.' },
+          },
+        })
+      )
+    );
+    renderPage();
+    const learn = await screen.findByRole('checkbox', {
+      name: DICTIONARY_LABELS.agentSettings.learnFromChats,
+    });
+    expect(learn).toBeChecked();
+    expect(learn).toBeEnabled();
+    fireEvent.click(learn);
+    await waitFor(() =>
+      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { learn_from_chats: false } })
       )
     );
   });

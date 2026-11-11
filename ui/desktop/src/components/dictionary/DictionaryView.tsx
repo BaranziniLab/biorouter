@@ -25,6 +25,7 @@ import {
 } from '../ui/dropdown-menu';
 import { EmptyState } from '../ui/empty-state';
 import { FilterInput } from '../ui/filter-input';
+import { InfoTip, useInfoTipId } from '../ui/info-tip';
 import { Note } from '../ui/note';
 import { RowActionMenuItems, type RowActionItem } from '../ui/row-actions';
 import { ScrollArea } from '../ui/scroll-area';
@@ -89,10 +90,10 @@ async function copyTerm(entry: DictionaryEntryView): Promise<void> {
  * In a served browser, the daemon's authority fields decide which writes and
  * private term actions are available. Managed `dictionary: false` shows MSG-POLICY and the list read
  * only, with **Export…** and deleting still allowed. The settings area at the
- * page's foot arrives with the controls it needs (DD-94): **Agent's terms** and
- * **Suggest dictionary words from my chats** with the `dictionary` capability
- * (PR-23), **Also find terms in my messages automatically** with the chat
- * extractor (PR-24).
+ * page's foot holds the controls that work end to end (DD-94): **Agent's terms**
+ * and **Suggest dictionary words from my chats** for the `dictionary` capability
+ * (PR-23), and **Also find terms in my messages automatically** for the chat
+ * extractor (PR-24), whose InfoTip says why it starts off (M-21 has not run).
  */
 export default function DictionaryView() {
   const dictionary = useDictionary();
@@ -108,6 +109,7 @@ export default function DictionaryView() {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const learnHelpId = useInfoTipId();
 
   // The page mounting is a sign dictation may be used: the status store loads and the
   // device list warms ("The status store" in `docs/dictation/surfaces.md`).
@@ -481,6 +483,35 @@ export default function DictionaryView() {
                 />
                 {DICTATION_ACTIONS.suggestFromChats}
               </label>
+              {/* The chat extractor's switch (PR-24). Turning it on is a raise, as for the
+                  capability above; turning it off always works. The InfoTip sits beside the
+                  label, never inside it, and carries the reason it starts off. */}
+              <div className="flex items-center text-label">
+                <label className="flex items-center gap-2">
+                  <Checkbox
+                    checked={dictionary.settings.learn_from_chats}
+                    disabled={
+                      !authority ||
+                      (!dictionary.settings.learn_from_chats && !canRaiseAgentSettings)
+                    }
+                    aria-describedby={learnHelpId}
+                    data-testid="dictionary-learn-from-chats"
+                    onChange={(event) => {
+                      if (!authority || (event.target.checked && !canRaiseAgentSettings)) return;
+                      void dictionary.setLearnFromChats(event.target.checked).then((result) => {
+                        if (!result.ok)
+                          toastError({ title: DICTIONARY_LABELS.title, msg: result.error.message });
+                      });
+                    }}
+                  />
+                  {DICTIONARY_LABELS.agentSettings.learnFromChats}
+                </label>
+                <InfoTip
+                  id={learnHelpId}
+                  label={DICTIONARY_LABELS.agentSettings.learnFromChats}
+                  help={dictionaryMessage('MSG-LEARN-FROM-CHATS-HELP')}
+                />
+              </div>
             </div>
           </ReadableContent>
         ) : null}
