@@ -1,5 +1,9 @@
 # Asynchronous operation outcomes
 
+> **What this is.** The `io.biorouter/operation` envelope a job tool attaches to a status result, and how Biorouter reads it: a failed job is not a failed tool call.
+> **Status:** Current. Code: `crates/biorouter/src/agents/operation_outcome.rs`, with the readers named under Consumers.
+> **Audience:** extension authors whose tools start jobs, and anyone changing how tool results are classified.
+
 A status lookup can succeed while the operation it describes has failed. BioRouter keeps these facts separate: `isError` describes the tool call; the operation envelope describes the asynchronous job. A successful lookup of a failed job keeps `isError: false`.
 
 ## Producer contract
@@ -33,4 +37,9 @@ The transcript preserves the envelope across save and reload. The tool card show
 
 The failure census reports failed tool calls and failed operations separately. It counts a failed operation once per extension and operation id, even if several status or wait tools report it repeatedly. The loop monitor can use the typed failure as no-progress evidence without changing the lookup's protocol result or reclassifying its error text.
 
-Code Execution records an operation envelope on the corresponding `biorouter/tool-calls` telemetry record. A script can inspect or handle a failed status lookup as an ordinary returned value. BioRouter does not invent an exception or mark the outer script failed merely because it observed a failed operation. The census and nested UI still show the operation failure and its original extension. Only a result from the built-in `code_execution__execute_code` dispatch (or its resolved bare `execute_code` name) can supply this nested telemetry; another extension cannot attribute a failure to a different extension. The loop guard tracks the outer dispatch identity so repeated wrappers cannot bypass its stop. The outer result does not claim to be that operation when a script has transformed or handled the value.
+Code Execution records an operation envelope on the corresponding `biorouter/tool-calls` telemetry record. A script can inspect or handle a failed status lookup as an ordinary returned value. BioRouter does not invent an exception or mark the outer script failed merely because it observed a failed operation. The census and nested UI still show the operation failure and its original extension. Only a result from the built-in `code_execution__execute_code`, `code_execution__wait_for` or `code_execution__watch_job` dispatch (or their resolved bare names) can supply this nested telemetry (each status check `wait_for` makes, and the first check `watch_job` makes, is a record); another extension cannot attribute a failure to a different extension. The loop guard tracks the outer dispatch identity so repeated wrappers cannot bypass its stop. The outer result does not claim to be that operation when a script has transformed or handled the value.
+
+## Related documentation
+
+- [Waiting on jobs](waiting-on-jobs.md)
+- [Code Execution](../extensions/built-in/code-execution.md)

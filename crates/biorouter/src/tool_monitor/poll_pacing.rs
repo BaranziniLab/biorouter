@@ -204,7 +204,9 @@ pub fn held_note(held: Duration, interval: Duration) -> String {
         "Biorouter held this status check for {} s, because the same check of this job ran \
          less than {} s ago. Every check you make re-reads the whole conversation, so wait \
          for a job with code_execution__wait_for, or with sleep() and a status call inside \
-         one execute_code script, instead of checking again.",
+         one execute_code script, instead of checking again. For a job that may take more \
+         than a few minutes, call code_execution__watch_job and end your turn: this chat \
+         resumes by itself when the job finishes.",
         seconds_up(held),
         seconds_up(interval)
     )

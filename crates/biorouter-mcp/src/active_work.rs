@@ -33,6 +33,12 @@ pub enum ActiveWorkKind {
     ForegroundCommand,
     /// A turn started on someone else's session (BR-71 `workspace_send_prompt`).
     DetachedTurn,
+    /// A job watch (`code_execution__watch_job`): Biorouter checks a job's
+    /// status in the background, with no model turn per check, and resumes
+    /// the chat once when the job ends. Registered so the person can see what
+    /// is being waited on and cancel it; it lives in memory only, so a daemon
+    /// restart drops it.
+    JobWatch,
 }
 
 impl ActiveWorkKind {
@@ -43,6 +49,7 @@ impl ActiveWorkKind {
             ActiveWorkKind::Subagent => "subagent",
             ActiveWorkKind::ForegroundCommand => "foreground_command",
             ActiveWorkKind::DetachedTurn => "detached_turn",
+            ActiveWorkKind::JobWatch => "job_watch",
         }
     }
 
@@ -61,6 +68,8 @@ impl ActiveWorkKind {
             ActiveWorkKind::Subagent => "sub",
             ActiveWorkKind::ForegroundCommand => "fg",
             ActiveWorkKind::DetachedTurn => "dturn",
+            // The watch's own id, which the model also uses to cancel it.
+            ActiveWorkKind::JobWatch => "watch",
         }
     }
 }
@@ -318,6 +327,16 @@ mod tests {
             "`{id}` collides with the server's own turn-<n> ids"
         );
         assert!(id.starts_with("dturn-"), "unexpected prefix: {id}");
+    }
+
+    /// A job watch's registry id is also the handle the model cancels it by
+    /// (`code_execution__watch_job` with `cancel`), so its shape is a contract.
+    #[test]
+    fn job_watch_ids_are_watch_prefixed_and_named_job_watch() {
+        let reg = fresh();
+        let id = reg.register(ActiveWorkKind::JobWatch, "w", None, Some("s".into()), None);
+        assert!(id.starts_with("watch-"), "unexpected prefix: {id}");
+        assert_eq!(reg.get(&id).unwrap().kind.as_str(), "job_watch");
     }
 
     #[test]

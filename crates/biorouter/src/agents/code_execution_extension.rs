@@ -41,6 +41,13 @@ use tokio_util::sync::CancellationToken;
 pub static EXTENSION_NAME: &str = "code_execution";
 
 mod wait;
+mod watch;
+
+/// End every job watch of a chat (`code_execution__watch_job`) without
+/// resuming it, as when the chat is deleted. A watch also notices a deleted
+/// chat on its own before its next check; this makes it immediate.
+#[allow(unused_imports)] // Reached from the delete route once it calls it.
+pub use watch::cancel_watches_for_session as cancel_job_watches_for_session;
 
 const MAX_JS_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_JS_RESULT_BYTES: usize = 4 * 1024 * 1024;
@@ -159,19 +166,20 @@ impl ScriptFailure {
 }
 
 /// Whether a dispatched name reaches one of this extension's tools that make
-/// tool calls of their own, `execute_code` and `wait_for`: the prefixed form,
-/// or the bare one `ExtensionManager::prefixed_tool_name` resolves, because
-/// models strip prefixes. The agent loop asks this to decide which of its calls
-/// need a judge for the calls they make (QA finding F7), and the monitors to
-/// decide whose `biorouter/tool-calls` records they may read. `wait_for` is
-/// here for the first reason: without the judge its status checks would run
-/// unjudged.
+/// tool calls of their own, `execute_code`, `wait_for` and `watch_job`: the
+/// prefixed form, or the bare one `ExtensionManager::prefixed_tool_name`
+/// resolves, because models strip prefixes. The agent loop asks this to decide
+/// which of its calls need a judge for the calls they make (QA finding F7), and
+/// the monitors to decide whose `biorouter/tool-calls` records they may read.
+/// `wait_for` and `watch_job` are here for the first reason: without the judge
+/// their first status check would run unjudged (and every later check repeats
+/// that admitted call).
 pub(crate) fn is_execute_code_call(name: &str) -> bool {
     let bare = name
         .strip_prefix(EXTENSION_NAME)
         .and_then(|rest| rest.strip_prefix("__"))
         .unwrap_or(name);
-    matches!(bare, "execute_code" | "wait_for")
+    matches!(bare, "execute_code" | "wait_for" | "watch_job")
 }
 
 /// What one dispatched sub-call's result says about a job, for `wait_for`,
@@ -1963,8 +1971,9 @@ fn request_from_handler(name: &str, payload: String) -> Result<String, ScriptFai
         .and_then(|r| r)
 }
 
-/// Register `sleep(seconds)` and `wait_for({...})`, which the tool handler
-/// serves (see `wait`): a script waits on a job inside one model turn.
+/// Register `sleep(seconds)`, `wait_for({...})` and `watch_job({...})`, which
+/// the tool handler serves (see `wait` and `watch`): a script waits on a job
+/// inside one model turn, or sets a watch and ends.
 fn register_wait_functions(ctx: &mut Context, tools: &[ToolInfo]) -> Result<(), String> {
     let sleep = NativeFunction::from_copy_closure(|_this, args, ctx| {
         let seconds = args
@@ -1980,7 +1989,8 @@ fn register_wait_functions(ctx: &mut Context, tools: &[ToolInfo]) -> Result<(), 
         if seconds > wait::MAX_SLEEP_SECS as f64 {
             return Err(JsNativeError::range()
                 .with_message(format!(
-                    "sleep() waits at most {} s per call; call it in a loop for a longer wait                      (a script may wait {} s in all), or use wait_for()",
+                    "sleep() waits at most {} s per call; call it in a loop for a longer wait \
+                     (a script may wait {} s in all), or use wait_for() or watch_job()",
                     wait::MAX_SLEEP_SECS,
                     wait::SCRIPT_WAIT_BUDGET_SECS
                 ))
@@ -2024,6 +2034,37 @@ fn register_wait_functions(ctx: &mut Context, tools: &[ToolInfo]) -> Result<(), 
     );
     ctx.register_global_callable(js_string!("wait_for"), 1, wait_for)
         .map_err(|e| format!("Failed to register wait_for: {e}"))?;
+
+    let importable: Vec<String> = tools.iter().map(|tool| tool.full_name.clone()).collect();
+    let watch_job = NativeFunction::from_copy_closure_with_captures(
+        |_this, args, importable: &Vec<String>, ctx| {
+            let spec = args
+                .first()
+                .cloned()
+                .unwrap_or(JsValue::undefined())
+                .to_json(ctx)
+                .map_err(|e| JsNativeError::error().with_message(e.to_string()))?
+                .unwrap_or(Value::Null);
+            let tool = spec.get("tool").and_then(Value::as_str).unwrap_or_default();
+            if spec.get("cancel").is_none() && !importable.iter().any(|name| name == tool) {
+                return Err(JsNativeError::error()
+                    .with_message(format!(
+                        "watch_job: `{tool}` is not a tool this script can call. Name a tool \
+                         from the importable modules by its full name, server__tool."
+                    ))
+                    .into());
+            }
+            let payload =
+                serialize_json_limited(&spec, MAX_JS_TOOL_ARGUMENT_BYTES, "watch_job spec", false)
+                    .map_err(|error| JsNativeError::error().with_message(error))?;
+            request_from_handler(wait::WATCH_REQUEST, payload)
+                .map(|report| parse_result_to_js(&report, ctx))
+                .map_err(|error| error.into_js_error(ctx))
+        },
+        importable,
+    );
+    ctx.register_global_callable(js_string!("watch_job"), 1, watch_job)
+        .map_err(|e| format!("Failed to register watch_job: {e}"))?;
     Ok(())
 }
 
@@ -2308,21 +2349,51 @@ struct TodoTaskRecord {
     title: String,
 }
 
-fn todo_task_from_result(
+/// The checklist items a `todo__todo_update` call changed, for the UI's
+/// executed-calls view: one record per id the call named, in the order it
+/// named them, each verified against the result the Todo extension returned.
+///
+/// The call names its ids at the top level (`id`), in `updates[].id`, or
+/// both, and the result carries them as `task` (one item) or `tasks` (a
+/// batch). Only User-audience or untagged JSON content is read: the Todo
+/// extension keeps that JSON for the person while the model reads a terse
+/// line, and an assistant-only block is never projected into the person's
+/// view. An id the result does not confirm, with a non-empty title, is left
+/// out rather than guessed.
+fn todo_tasks_from_result(
     tool_name: &str,
     arguments: &str,
     result: &CallToolResult,
-) -> Option<TodoTaskRecord> {
+) -> Vec<TodoTaskRecord> {
     if tool_name != "todo__todo_update" || result.is_error.unwrap_or(false) {
-        return None;
+        return Vec::new();
     }
-    let arguments: Value = serde_json::from_str(arguments).ok()?;
-    let requested_id = arguments.get("id")?.as_str()?;
-    let id = requested_id.strip_prefix('#').unwrap_or(requested_id);
-    if id.is_empty() || id.len() > MAX_TODO_TASK_ID_BYTES {
-        return None;
+    let Ok(arguments) = serde_json::from_str::<Value>(arguments) else {
+        return Vec::new();
+    };
+    let named = arguments.get("id").into_iter().chain(
+        arguments
+            .get("updates")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|update| update.get("id")),
+    );
+    let mut ids: Vec<String> = Vec::new();
+    // A string id only, as the request spelled it: the projection names what
+    // the call asked for, never a coerced guess at it.
+    for id in named.filter_map(Value::as_str) {
+        let id = id.strip_prefix('#').unwrap_or(id).to_string();
+        if id.is_empty() || id.len() > MAX_TODO_TASK_ID_BYTES || ids.contains(&id) {
+            continue;
+        }
+        ids.push(id);
+    }
+    if ids.is_empty() {
+        return Vec::new();
     }
     let mut remaining = MAX_TODO_TASK_INPUT_BYTES;
+    let mut confirmed: Vec<(String, String)> = Vec::new();
     for content in result.content.iter().filter(|content| {
         content
             .audience()
@@ -2331,33 +2402,47 @@ fn todo_task_from_result(
         let RawContent::Text(text) = &content.raw else {
             continue;
         };
-        remaining = remaining.checked_sub(text.text.len())?;
+        let Some(left) = remaining.checked_sub(text.text.len()) else {
+            return Vec::new();
+        };
+        remaining = left;
         let Ok(value) = serde_json::from_str::<Value>(&text.text) else {
             continue;
         };
-        let Some(task) = value.get("task").and_then(Value::as_object) else {
-            continue;
-        };
-        if task.get("id").and_then(Value::as_str) != Some(id) {
-            continue;
+        let tasks = value
+            .get("task")
+            .into_iter()
+            .chain(
+                value
+                    .get("tasks")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten(),
+            )
+            .filter_map(Value::as_object);
+        for task in tasks {
+            let (Some(id), Some(title)) = (
+                task.get("id").and_then(Value::as_str),
+                task.get("text").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            if !title.trim().is_empty() && !confirmed.iter().any(|(seen, _)| seen == id) {
+                confirmed.push((id.to_string(), title.to_string()));
+            }
         }
-        let Some(title) = task.get("text").and_then(Value::as_str) else {
-            continue;
-        };
-        if title.trim().is_empty() {
-            continue;
-        }
-        let title = if title.len() <= MAX_TODO_TASK_TITLE_BYTES {
-            title.to_string()
-        } else {
-            truncate_record_text(title, MAX_TODO_TASK_TITLE_BYTES - '…'.len_utf8())
-        };
-        return Some(TodoTaskRecord {
-            id: id.to_string(),
-            title,
-        });
     }
-    None
+    ids.into_iter()
+        .filter_map(|id| {
+            let (_, title) = confirmed.iter().find(|(seen, _)| *seen == id)?;
+            let title = if title.len() <= MAX_TODO_TASK_TITLE_BYTES {
+                title.clone()
+            } else {
+                truncate_record_text(title, MAX_TODO_TASK_TITLE_BYTES - '…'.len_utf8())
+            };
+            Some(TodoTaskRecord { id, title })
+        })
+        .collect()
 }
 
 /// Truncate `text` to at most `max_bytes` bytes on a char boundary, marking
@@ -2403,6 +2488,10 @@ struct ToolCallRecord {
     /// Presentation-only projection of a matching, user-visible Todo result.
     #[serde(skip_serializing_if = "Option::is_none")]
     todo_task: Option<TodoTaskRecord>,
+    /// The same projection for a batched `todo_update` that changed more than
+    /// one item (`updates`); `todo_task` is then absent.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    todo_tasks: Vec<TodoTaskRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     operation: Option<OperationOutcome>,
 }
@@ -2417,6 +2506,7 @@ impl ToolCallRecord {
             failure: None,
             result_bytes: Some(result_bytes),
             todo_task: None,
+            todo_tasks: Vec::new(),
             operation: None,
         }
     }
@@ -2445,6 +2535,7 @@ impl ToolCallRecord {
             }),
             result_bytes: None,
             todo_task: None,
+            todo_tasks: Vec::new(),
             operation: None,
         }
     }
@@ -2937,7 +3028,8 @@ impl CodeExecutionClient {
 
                 Waiting on a long-running job: every model turn re-reads the whole conversation, so do not
                 return to the model just to check on it. Call wait_for once, or wait inside one script with
-                wait_for() or sleep() and a status call, and return only the final status.
+                wait_for() or sleep() and a status call, and return only the final status. For a job that may
+                run longer than a few minutes, call watch_job and end your turn: the chat resumes by itself.
             "#}.to_string()),
         };
 
@@ -3079,6 +3171,7 @@ impl CodeExecutionClient {
             self.context.extension_manager.clone(),
             Arc::clone(&collected_artifacts),
             cancellation_token.clone(),
+            Some(watch::host_for(session_id, &self.context.session_manager)),
         );
         let tool_handler = tokio::spawn(crate::native_client::carry(async move {
             if no_human_surface {
@@ -3586,7 +3679,7 @@ impl CodeExecutionClient {
         Result<String, ScriptFailure>,
         &'static str,
         Option<String>,
-        Option<TodoTaskRecord>,
+        Vec<TodoTaskRecord>,
         Option<OperationOutcome>,
     ) {
         let (outcome, _reading) = Self::dispatch_sub_call_observed(
@@ -3621,7 +3714,7 @@ impl CodeExecutionClient {
             Result<String, ScriptFailure>,
             &'static str,
             Option<String>,
-            Option<TodoTaskRecord>,
+            Vec<TodoTaskRecord>,
             Option<OperationOutcome>,
         ),
         StatusReading,
@@ -3648,7 +3741,7 @@ impl CodeExecutionClient {
                     Err(agent_loop_tool_refusal(tool_name).into()),
                     "agent_loop_tool",
                     None,
-                    None,
+                    Vec::new(),
                     None,
                 ),
                 StatusReading::default(),
@@ -3660,7 +3753,7 @@ impl CodeExecutionClient {
                     Err("Extension manager not available".to_string().into()),
                     "unavailable",
                     None,
-                    None,
+                    Vec::new(),
                     None,
                 ),
                 StatusReading::default(),
@@ -3690,16 +3783,17 @@ impl CodeExecutionClient {
                     let (value, kind, user) =
                         Self::completed_sub_call_outcome(tool_name, &result, collected_artifacts)
                             .await;
-                    let todo_task = value
-                        .as_ref()
-                        .ok()
-                        .and_then(|_| todo_task_from_result(tool_name, arguments, &result));
+                    let todo_tasks = if value.is_ok() {
+                        todo_tasks_from_result(tool_name, arguments, &result)
+                    } else {
+                        Vec::new()
+                    };
                     (
                         (
                             value,
                             kind,
                             user,
-                            todo_task,
+                            todo_tasks,
                             OperationOutcome::from_call(&result),
                         ),
                         reading,
@@ -3715,7 +3809,7 @@ impl CodeExecutionClient {
                             }),
                             provenance.kind.as_str(),
                             None,
-                            None,
+                            Vec::new(),
                             None,
                         ),
                         StatusReading::default(),
@@ -3727,7 +3821,7 @@ impl CodeExecutionClient {
                     Err(format!("Dispatch error from {tool_name}: {e}").into()),
                     "dispatch_error",
                     None,
-                    None,
+                    Vec::new(),
                     None,
                 ),
                 StatusReading::default(),
@@ -3898,7 +3992,7 @@ impl CodeExecutionClient {
         cancellation_token: &CancellationToken,
         pacing: PacingMode,
     ) -> (Result<String, ScriptFailure>, StatusReading) {
-        let ((result, mut failure_kind, user_error, todo_task, operation), reading) =
+        let ((result, mut failure_kind, user_error, mut todo_tasks, operation), reading) =
             Self::dispatch_sub_call_observed(
                 session_id,
                 cap,
@@ -3932,7 +4026,11 @@ impl CodeExecutionClient {
             let record = match &result {
                 Ok(value) => {
                     let mut record = ToolCallRecord::ok(tool_name, arguments, value.len());
-                    record.todo_task = todo_task;
+                    if todo_tasks.len() == 1 {
+                        record.todo_task = todo_tasks.pop();
+                    } else {
+                        record.todo_tasks = todo_tasks;
+                    }
                     record.operation = operation;
                     record
                 }
@@ -4039,6 +4137,37 @@ impl CodeExecutionClient {
         Some(wait::report_json(&plan, &report).map_err(ScriptFailure::from))
     }
 
+    /// Serve one of the script's host functions (`sleep`, `wait_for`,
+    /// `watch_job`; see [`wait::is_host_request`]). `None` on Stop.
+    async fn serve_host_request(
+        name: &str,
+        arguments: &str,
+        parts: watch::WatchRequestParts<'_>,
+        waited: &mut Duration,
+        watch_host: Option<&Arc<dyn watch::WatchHost>>,
+    ) -> Option<Result<String, ScriptFailure>> {
+        if name == wait::SLEEP_REQUEST {
+            return Self::serve_sleep(arguments, waited, parts.turn).await;
+        }
+        if name == wait::WAIT_REQUEST {
+            return Self::serve_wait_for(
+                parts.session_id,
+                parts.cap,
+                parts.judge,
+                arguments,
+                waited,
+                parts.extension_manager,
+                parts.collected,
+                parts.turn,
+            )
+            .await;
+        }
+        let turn = parts.turn.clone();
+        let answer = watch::serve_script_watch(parts, watch_host, arguments).await;
+        (!turn.is_cancelled()).then_some(answer)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn run_tool_handler(
         session_id: String,
         cap: crate::privacy::CallCapability,
@@ -4047,6 +4176,9 @@ impl CodeExecutionClient {
         extension_manager: Option<std::sync::Weak<crate::agents::ExtensionManager>>,
         collected_artifacts: Arc<Mutex<CollectedArtifacts>>,
         cancellation_token: CancellationToken,
+        // What a script's `watch_job()` resumes the chat through; `None`
+        // where there is no chat to resume (the handler's own tests).
+        watch_host: Option<Arc<dyn watch::WatchHost>>,
     ) {
         let mut tool_calls = 0;
         // Time this script has spent in sleep() and wait_for().
@@ -4065,25 +4197,27 @@ impl CodeExecutionClient {
             let Some((tool_name, arguments, response_tx)) = next else {
                 break;
             };
-            // `sleep()` and `wait_for()`: served here, not dispatched. A Stop
-            // drops the response, which ends the script's wait at once.
-            if tool_name == wait::SLEEP_REQUEST || tool_name == wait::WAIT_REQUEST {
-                let answer = if tool_name == wait::SLEEP_REQUEST {
-                    Self::serve_sleep(&arguments, &mut waited, &cancellation_token).await
-                } else {
-                    Self::serve_wait_for(
-                        &session_id,
-                        cap,
-                        judge.as_ref(),
-                        &arguments,
-                        &mut waited,
-                        extension_manager.as_ref(),
-                        &collected_artifacts,
-                        &cancellation_token,
-                    )
-                    .await
+            // `sleep()`, `wait_for()` and `watch_job()`: served here, not
+            // dispatched. A Stop drops the response, which ends the script's
+            // wait at once.
+            if wait::is_host_request(&tool_name) {
+                let parts = watch::WatchRequestParts {
+                    session_id: &session_id,
+                    cap,
+                    judge: judge.as_ref(),
+                    extension_manager: extension_manager.as_ref(),
+                    collected: &collected_artifacts,
+                    turn: &cancellation_token,
                 };
-                match answer {
+                let served = Self::serve_host_request(
+                    &tool_name,
+                    &arguments,
+                    parts,
+                    &mut waited,
+                    watch_host.as_ref(),
+                )
+                .await;
+                match served {
                     Some(answer) => {
                         let _ = response_tx.send(answer);
                         continue;
@@ -4366,7 +4500,16 @@ impl McpClientTrait for CodeExecutionClient {
                         WAITING ON A JOB (one model turn, not one per check):
                         Every model turn re-reads the whole conversation, so never end a script and come back
                         just to check whether a job has finished. Wait inside the SAME script, or with the
-                        top-level code_execution__wait_for tool, and return only the final status.
+                        top-level code_execution__wait_for tool, and return only the final status. For a job
+                        that may take longer than a few minutes, set a watch and end your turn: the chat
+                        resumes by itself when the job finishes, at no cost per check.
+                        ```javascript
+                        import { submit_job } from "module_name";
+                        const job = submit_job({ query: "..." });
+                        const w = watch_job({ tool: "module_name__job_status", arguments: { job_id: job.job_id },
+                                              note: "Summarise the export when it is done." });
+                        record_result(w);  // { state: "watching", watch_id } - then end your turn
+                        ```
                         ```javascript
                         import { submit_job, job_status } from "module_name";
                         const job = submit_job({ query: "..." });
@@ -4384,11 +4527,15 @@ impl McpClientTrait for CodeExecutionClient {
                         ```
                         - sleep(seconds) pauses the script and spends no tokens: at most 280 s per call, and
                           a script may wait 600 s in all (sleep and wait_for together). Past that, record what
-                          you have and call code_execution__wait_for.
+                          you have and call code_execution__watch_job.
                         - wait_for({ tool, arguments, until, timeout_seconds, min_interval_seconds }) works like
                           code_execution__wait_for; `tool` is the full name, server__tool. It returns
                           { state, checks, elapsed_seconds, last_result }, with state "finished", "changed",
                           "matched", "not_a_job" or "timed_out".
+                        - watch_job({ tool, arguments, until, note, max_wait_minutes }) works like
+                          code_execution__watch_job. It returns { state: "watching", watch_id } (end the script
+                          and your turn), or { state: "finished" | "matched" | "not_a_job", last_result } when
+                          the first check already ended it.
                         - Check no more often than the job asks (recommended_poll_seconds, retry_after), and
                           not more often than every 30 s unless the job asks for less: Biorouter holds a repeated
                           check of a running job until its interval has passed.
@@ -4439,12 +4586,13 @@ impl McpClientTrait for CodeExecutionClient {
                 McpTool::new(
                     "wait_for".to_string(),
                     indoc! {r#"
-                        Wait for a long-running job WITHOUT a model turn per check. Every model turn re-reads
-                        the whole conversation, so checking a job from the model every few seconds is the most
-                        expensive way to wait. After starting a job, call this once: Biorouter calls the status
-                        tool itself on an interval, spends no model tokens between checks, and returns ONE
-                        compact result when the job is no longer active, when the result changes, or when the
-                        timeout passes. Never return to the model just to check on a job.
+                        Wait for a job WITHOUT a model turn per check. Every model turn re-reads the whole
+                        conversation, so checking a job from the model every few seconds is the most expensive
+                        way to wait; a check made here costs nothing. After starting a job, call this once:
+                        Biorouter calls the status tool itself on an interval and returns ONE compact result
+                        when the job is no longer active, when the result changes, or when the timeout passes.
+                        Never return to the model just to check on a job. The turn stays open while it waits,
+                        so for a job that may take longer than a few minutes use code_execution__watch_job.
 
                         ARGUMENTS:
                         - tool: the status tool's full name, server__tool (e.g. "cdwagent__CDW-query_job_status").
@@ -4454,8 +4602,8 @@ impl McpClientTrait for CodeExecutionClient {
                           io.biorouter/operation envelope); "changed" to stop when the result changes (timing
                           fields such as elapsed_seconds are ignored); or {"pointer": "/status", "values":
                           ["completed", "failed"]} to stop when the value at that JSON pointer is one of them.
-                        - timeout_seconds (optional): default 240, at most 280. On timeout the job is still
-                          running: call wait_for again with the same arguments.
+                        - timeout_seconds (optional): default 240, at most 600. On timeout the job is still
+                          running: call watch_job (or wait_for again) with the same arguments.
                         - min_interval_seconds (optional): seconds between checks, default 30, at least 10. A
                           longer recommended_poll_seconds, retry_after or poll_after in the result is honoured.
 
@@ -4467,6 +4615,40 @@ impl McpClientTrait for CodeExecutionClient {
                 )
                 .annotate(ToolAnnotations {
                     title: Some("Wait for a job".to_string()),
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    idempotent_hint: Some(false),
+                    open_world_hint: Some(true),
+                }),
+                McpTool::new(
+                    "watch_job".to_string(),
+                    indoc! {r#"
+                        Watch a long-running job and END YOUR TURN: Biorouter checks the job's status in the
+                        background with no model turns, and resumes THIS chat once when the job finishes,
+                        when its checks keep failing, or when the watch times out. Every model turn re-reads
+                        the whole conversation, so this is the cheapest way to wait on a job that takes
+                        minutes to hours.
+
+                        ARGUMENTS:
+                        - tool, arguments, until: as for code_execution__wait_for.
+                        - min_interval_seconds (optional): the first check comes after at least 30 s (or the
+                          job's own recommended interval, if longer); later checks slow down to every 5 min.
+                        - max_wait_minutes (optional): default 60, at most 240.
+                        - note (optional, at most 500 characters): what to do when resumed. It comes back
+                          with the job's last status.
+                        - cancel (optional): a watch id such as "watch-3", or "all", to cancel instead.
+
+                        It checks once now: a job that is already done is answered at once. Otherwise you get
+                        a watch id; end your turn and do not check the job yourself. A chat paused by a usage
+                        limit is not resumed (it gets a note), and a Biorouter restart drops the watch. Inside
+                        execute_code the same watch is watch_job({...}), so one script can submit a job and
+                        watch it.
+                    "#}
+                    .to_string(),
+                    schema::<watch::WatchJobParams>(),
+                )
+                .annotate(ToolAnnotations {
+                    title: Some("Watch a job".to_string()),
                     read_only_hint: Some(false),
                     destructive_hint: Some(false),
                     idempotent_hint: Some(false),
@@ -4545,6 +4727,19 @@ impl McpClientTrait for CodeExecutionClient {
         meta: McpMeta,
         cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
+        if name == "watch_job" {
+            return Ok(self
+                .handle_watch_job(
+                    &meta.session_id,
+                    meta.capability,
+                    arguments,
+                    cancellation_token,
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
+                }));
+        }
         if name == "wait_for" {
             return Ok(self
                 .handle_wait_for(
@@ -5466,6 +5661,7 @@ mod tests {
             None,
             Arc::clone(&collected),
             token.clone(),
+            None,
         ));
 
         token.cancel();
@@ -5488,6 +5684,7 @@ mod tests {
             None,
             Arc::clone(&collected),
             CancellationToken::new(),
+            None,
         ));
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -5902,6 +6099,7 @@ mod tests {
             Some(Arc::downgrade(&manager)),
             Arc::clone(&collected),
             CancellationToken::new(),
+            None,
         ));
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         call_tx
@@ -6246,6 +6444,84 @@ record_result({ status: out.trim() });"#,
             assert!(script_result.is_ok(), "{script_result:?}");
             assert!(record.get("todo_task").is_none(), "{record}");
         }
+    }
+
+    /// A batched `todo_update` (`updates`) records every item it changed, in
+    /// the order the call named them, as `todo_tasks`; a batch of one is the
+    /// single-item `todo_task` it always was.
+    #[tokio::test]
+    async fn nested_todo_metadata_records_every_item_of_a_batched_update() {
+        let batch = Content::text(
+            serde_json::json!({
+                "message": "Updated 2 items: #2, #5",
+                "tasks": [
+                    {"id": "2", "text": "load the cohort", "status": "completed"},
+                    {"id": "5", "text": "plot it", "status": "in_progress"},
+                ],
+            })
+            .to_string(),
+        );
+        let (record, script_result) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({"updates": [
+                {"id": "#2", "status": "completed"},
+                {"id": "5", "status": "in_progress"},
+                {"id": "9", "status": "completed"},
+            ]}),
+            CallToolResult::success(vec![batch]),
+        )
+        .await;
+        assert!(script_result.is_ok(), "{script_result:?}");
+        assert!(record.get("todo_task").is_none(), "{record}");
+        assert_eq!(
+            record["todo_tasks"],
+            serde_json::json!([
+                {"id": "2", "title": "load the cohort"},
+                {"id": "5", "title": "plot it"},
+            ]),
+            "an id the result does not confirm is left out: {record}"
+        );
+
+        let (record, _) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({"updates": [{"id": "3", "status": "completed"}]}),
+            CallToolResult::success(vec![todo_metadata_content("3", "verify")]),
+        )
+        .await;
+        assert_eq!(record["todo_task"]["title"], "verify", "{record}");
+        assert!(record.get("todo_tasks").is_none(), "{record}");
+    }
+
+    /// The Todo extension answers the model with a terse line and keeps its
+    /// JSON for the person in a User-audience block: the projection reads that
+    /// block and never the model's.
+    #[tokio::test]
+    async fn nested_todo_metadata_reads_the_person_s_copy_of_a_terse_result() {
+        let (record, script_result) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({"id": "4", "status": "completed"}),
+            CallToolResult::success(vec![
+                Content::text("ok #4").with_audience(vec![Role::Assistant]),
+                todo_metadata_content("4", "write the summary").with_audience(vec![Role::User]),
+            ]),
+        )
+        .await;
+        assert!(script_result.is_ok(), "{script_result:?}");
+        assert_eq!(record["todo_task"]["id"], "4", "{record}");
+        assert_eq!(
+            record["todo_task"]["title"], "write the summary",
+            "{record}"
+        );
+
+        let (record, _) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({"id": "4", "status": "completed"}),
+            CallToolResult::success(vec![
+                todo_metadata_content("4", "MODEL_ONLY").with_audience(vec![Role::Assistant])
+            ]),
+        )
+        .await;
+        assert!(record.get("todo_task").is_none(), "{record}");
     }
 
     #[tokio::test]
