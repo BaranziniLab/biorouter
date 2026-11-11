@@ -47,6 +47,10 @@ mod watch;
 /// resuming it, as when the chat is deleted. A watch also notices a deleted
 /// chat on its own before its next check; this makes it immediate.
 pub use watch::cancel_watches_for_session as cancel_job_watches_for_session;
+/// Retire a chat's job watches whose job a status read outside the watch saw
+/// end (`tool_monitor::poll_pacing::after_dispatch` calls it for every
+/// dispatched status result).
+pub use watch::retire_watches_seen_ending as retire_job_watches_seen_ending;
 
 const MAX_JS_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_JS_RESULT_BYTES: usize = 4 * 1024 * 1024;
@@ -4133,7 +4137,8 @@ impl CodeExecutionClient {
         if report.end == wait::WaitEnd::Cancelled {
             return None;
         }
-        Some(wait::report_json(&plan, &report).map_err(ScriptFailure::from))
+        let watching = watch::active_watch_for(session_id, &plan.tool, &plan.arguments);
+        Some(wait::report_json(&plan, &report, watching.as_deref()).map_err(ScriptFailure::from))
     }
 
     /// Serve one of the script's host functions (`sleep`, `wait_for`,
@@ -4366,7 +4371,10 @@ impl CodeExecutionClient {
             wait::run_wait(&plan, &mut checker, wait::wait_unit(), &cancellation_token).await;
         let collected = collected_artifacts.lock().await;
         let meta = Self::collected_meta(&collected);
-        let mut result = match wait::report_text(&plan, &report) {
+        // A wait that timed out on a call this chat already watches does not
+        // offer a watch again: the watch resumes the chat when the job ends.
+        let watching = watch::active_watch_for(session_id, &plan.tool, &plan.arguments);
+        let mut result = match wait::report_text(&plan, &report, watching.as_deref()) {
             Ok(text) => CallToolResult::success(vec![Content::text(text)]),
             Err(error) => CallToolResult::error(vec![Content::text(format!("Error: {error}"))]),
         };

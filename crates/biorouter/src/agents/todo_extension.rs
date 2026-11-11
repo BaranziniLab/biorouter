@@ -85,12 +85,16 @@ pub fn todo_sidecar_schema() -> serde_json::Value {
         "type": "object",
         "description": "Optional: checklist updates to apply with this call, e.g. \
             {\"done\":[3,4],\"add\":[\"write the report\"]}. done/blocked: item ids; \
-            add: new items; plan: replaces the plan. The next open item becomes current \
-            on its own. Prefer this to a separate todo call.",
+            add: new items; plan: replaces the plan. Omit any key you have no value for. \
+            Applied only if this call succeeds. The next open item becomes current on its \
+            own. Prefer this to a separate todo call.",
         "properties": {
             "done": ids.clone(),
             "blocked": ids,
-            "start": {"type": ["integer", "string"]},
+            "start": {
+                "type": ["integer", "string"],
+                "description": "One item to work on out of order; omit when none."
+            },
             "add": {"type": "array", "items": {"type": "string"}},
             "plan": {"type": "string"}
         }
@@ -153,12 +157,18 @@ fn parse_sidecar(value: &serde_json::Value) -> Result<Sidecar, String> {
             "done" | "completed" | "complete" => sidecar.done.extend(sidecar_ids(key, entry)?),
             "blocked" => sidecar.blocked.extend(sidecar_ids(key, entry)?),
             "start" | "current" | "in_progress" => {
-                sidecar.start = Some(match entry {
-                    serde_json::Value::Array(list) if list.len() == 1 => {
-                        item_id_value(key, &list[0])?
-                    }
-                    one => item_id_value(key, one)?,
-                })
+                let one = match entry {
+                    serde_json::Value::Array(list) if list.len() == 1 => &list[0],
+                    serde_json::Value::Array(list) if list.is_empty() => continue,
+                    one => one,
+                };
+                // Models fill an optional field they have no value for with a
+                // placeholder: 0, "0", "" (or null, skipped above). No item
+                // has id 0, so each means "none" and is taken silently.
+                if is_placeholder_id(one) {
+                    continue;
+                }
+                sidecar.start = Some(item_id_value(key, one)?);
             }
             "add" => {
                 let wrapped = Some(JsonObject::from_iter([(key.clone(), entry.clone())]));
@@ -188,6 +198,18 @@ fn parse_sidecar(value: &serde_json::Value) -> Result<Sidecar, String> {
         }
     }
     Ok(sidecar)
+}
+
+/// A `start` value that means "none": `0`, `"0"`, `"#0"` or an empty string.
+fn is_placeholder_id(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::Number(number) => number.as_u64() == Some(0),
+        serde_json::Value::String(text) => {
+            matches!(text.trim().trim_start_matches('#').trim(), "" | "0")
+        }
+        _ => false,
+    }
 }
 
 /// A sidecar id list: an array of ids, or one id on its own.
@@ -705,20 +727,23 @@ impl TodoClient {
     ) -> Result<Vec<Content>, String> {
         let args = arguments.as_ref().ok_or("Missing arguments")?;
         let updates = update_requests(args)?;
-        let single = updates.len() == 1;
 
         let (ids, user) = self
             .with_state(session_id, move |state| {
                 // Nothing is persisted when this returns an error, so an
                 // unknown id anywhere in the batch leaves every item as it was.
-                let mut ids = Vec::with_capacity(updates.len());
+                let mut ids: Vec<String> = Vec::with_capacity(updates.len());
                 for update in updates {
                     if !state.update_item(&update.id, update.status, update.text) {
                         return Err(unknown_id_message(state, &update.id));
                     }
-                    ids.push(update.id);
+                    // Each item once: a model that names one item both at the
+                    // top level and in `updates` changed one item, not two.
+                    if !ids.contains(&update.id) {
+                        ids.push(update.id);
+                    }
                 }
-                let user = if single {
+                let user = if ids.len() == 1 {
                     let id = &ids[0];
                     serde_json::json!({
                         "message": format!("Updated item #{id}"),
@@ -1675,6 +1700,100 @@ mod tests {
         )
         .await;
         assert!(text(&unknown).contains("#1, #2, #3"), "{}", text(&unknown));
+    }
+
+    /// A model that names one item both at the top level and in `updates`
+    /// changed one item: the answer names it once (live: "ok #3,#3,#4,#5").
+    #[tokio::test]
+    async fn todo_update_names_each_item_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "todo dedupe").await;
+        call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] one\n- [ ] two\n- [ ] three\n- [ ] four"}),
+        )
+        .await;
+        let result = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({
+                "id": "3",
+                "status": "pending",
+                "updates": [
+                    {"id": "3", "status": "pending"},
+                    {"id": "4", "status": "pending"}
+                ]
+            }),
+        )
+        .await;
+        assert_eq!(model_text(&result), "ok #3,#4");
+        assert!(
+            text(&result).contains("Updated 2 items: #3, #4"),
+            "{}",
+            text(&result)
+        );
+
+        let single = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"id": "2", "status": "completed",
+                "updates": [{"id": "2", "status": "completed"}]}),
+        )
+        .await;
+        assert_eq!(model_text(&single), "ok #2");
+        assert!(
+            text(&single).contains("Updated item #2"),
+            "{}",
+            text(&single)
+        );
+    }
+
+    /// Placeholders for "no current item" are taken as absent, silently.
+    #[test]
+    fn a_placeholder_start_is_no_start() {
+        for start in [
+            serde_json::json!(0),
+            serde_json::json!("0"),
+            serde_json::json!("#0"),
+            serde_json::json!(""),
+            serde_json::json!("  "),
+            serde_json::json!([]),
+            serde_json::Value::Null,
+        ] {
+            for key in ["start", "current", "in_progress"] {
+                let mut value = serde_json::json!({"done": [1]});
+                value[key] = start.clone();
+                let sidecar = parse_sidecar(&value).unwrap();
+                assert_eq!(sidecar.start, None, "{key}: {start}");
+                assert_eq!(sidecar.done, vec!["1".to_string()]);
+            }
+        }
+        assert_eq!(
+            parse_sidecar(&serde_json::json!({"start": 3}))
+                .unwrap()
+                .start,
+            Some("3".to_string())
+        );
+        assert_eq!(
+            parse_sidecar(&serde_json::json!({"start": ["#2"]}))
+                .unwrap()
+                .start
+                .as_deref()
+                .map(|id| id.trim_start_matches('#')),
+            Some("2")
+        );
+        let schema = todo_sidecar_schema();
+        assert!(
+            schema["properties"]["start"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("omit when none"),
+            "{schema}"
+        );
     }
 
     /// Finishing one item and starting the next used to take two calls, each

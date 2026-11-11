@@ -53,6 +53,19 @@ pub enum PacingMode {
     /// but remember it so a direct check right after `wait_for` returns is
     /// spaced from it.
     RecordOnly,
+    /// A background check a `watch_job` watch makes. Recorded and never held,
+    /// like [`Self::RecordOnly`], and the one check that never retires a
+    /// watch: every other status read of the same call that sees the job
+    /// ended does ([`after_dispatch`]).
+    WatchCheck,
+}
+
+impl PacingMode {
+    /// Whether a check in this mode may be held. `wait_for` and a watch space
+    /// their own checks.
+    fn holds(self) -> bool {
+        matches!(self, Self::DelayAndNote | Self::DelayQuietly)
+    }
 }
 
 tokio::task_local! {
@@ -145,10 +158,10 @@ pub async fn before_dispatch(
     let key = key_for(session_id, tool, arguments);
     let record = records().get(&key).copied();
     let interval = record.map_or(Duration::ZERO, |record| record.interval);
-    let hold = if mode == PacingMode::RecordOnly {
-        Duration::ZERO
-    } else {
+    let hold = if mode.holds() {
         hold_for(record, Instant::now())
+    } else {
+        Duration::ZERO
     };
     let mut held = Duration::ZERO;
     if !hold.is_zero() {
@@ -214,6 +227,12 @@ pub fn held_note(held: Duration, interval: Duration) -> String {
 
 /// Remember this check when its result is an identified active job, forget it
 /// otherwise, and report a hold.
+///
+/// It also hands the result to the chat's job watches: a status read of a
+/// watched call (the model's own check, a `wait_for`, a script's call) that
+/// sees the job ended retires the watch, so the chat is not woken for a job
+/// the model has already read the end of. A watch's own check is the one
+/// read that does not ([`PacingMode::WatchCheck`]).
 pub fn after_dispatch(
     paced: Paced,
     tool: &str,
@@ -223,6 +242,14 @@ pub fn after_dispatch(
     let Some(key) = paced.key else {
         return;
     };
+    if paced.mode != PacingMode::WatchCheck {
+        crate::agents::code_execution_extension::retire_job_watches_seen_ending(
+            &key.session,
+            tool,
+            arguments,
+            result,
+        );
+    }
     if identified_active_job(tool, arguments, result) {
         match interval_secs(configured_min_interval(), poll_hint_seconds(result)) {
             Some(interval) => remember(
@@ -259,7 +286,7 @@ pub fn after_dispatch(
                 }),
             );
         }
-        PacingMode::RecordOnly => {}
+        PacingMode::RecordOnly | PacingMode::WatchCheck => {}
     }
 }
 
@@ -406,6 +433,24 @@ mod tests {
         .await;
         assert_eq!(started.elapsed(), Duration::ZERO);
         assert_eq!(paced.mode, PacingMode::RecordOnly);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_watch_s_own_checks_are_never_held() {
+        let session = "pace-watch-check";
+        let tool = "cdw__status";
+        remember_for_test(session, tool, Some(&args("a")), Duration::from_secs(60));
+        let started = Instant::now();
+        let paced = with_mode(
+            PacingMode::WatchCheck,
+            before_dispatch(session, tool, Some(&args("a")), &CancellationToken::new()),
+        )
+        .await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(paced.mode, PacingMode::WatchCheck);
+        let mut result = active("a");
+        after_dispatch(paced, tool, Some(&args("a")), &mut result);
+        assert_eq!(result.content.len(), 1, "a watch's check carries no note");
     }
 
     #[tokio::test(start_paused = true)]

@@ -101,6 +101,27 @@ describe('deriveTrailingActivity', () => {
     expect(activity?.label).toBe('Running the tool');
   });
 
+  it('reads a watch_job call as setting a watch, not as a running tool', () => {
+    const watchRequest = {
+      type: 'toolRequest',
+      id: 'w1',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'code_execution__watch_job',
+          arguments: { tool: 'cdw__status', arguments: { job_id: 'j1' } },
+        },
+      },
+    } as Message['content'][number];
+    const activity = deriveTrailingActivity({
+      ...live,
+      messages: [message('assistant', [watchRequest])],
+    });
+
+    expect(activity?.phase).toBe('running');
+    expect(activity?.label).toBe('Setting a watch on the job');
+  });
+
   it('returns null while assistant prose is streaming, since the text is the feedback', () => {
     expect(
       deriveTrailingActivity({

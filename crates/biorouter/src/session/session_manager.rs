@@ -3550,6 +3550,25 @@ impl SessionManager {
             return Ok(());
         }
 
+        // A chat at a usage limit makes no model request, a title included:
+        // the same decision the reply loop's gate makes before each request
+        // (`agents::usage_limit::reached_limit`). Live, a chat paused by its
+        // monthly limit still billed a naming call after every message.
+        let provider = match provider {
+            Some(provider)
+                if crate::agents::usage_limit::reached_limit(self, id)
+                    .await
+                    .is_some() =>
+            {
+                tracing::debug!(
+                    session_id = id,
+                    "usage limit reached; naming the chat without a model"
+                );
+                None
+            }
+            provider => provider,
+        };
+
         // Without a model only the placeholder is replaced: a title an earlier
         // turn's model wrote is better than one cut from the first message.
         let Some(provider) = provider else {
@@ -23004,6 +23023,147 @@ mod subagent_children_tests {
                 .session
                 .message_count,
             3
+        );
+    }
+}
+
+#[cfg(test)]
+mod naming_at_a_limit_tests {
+    use super::*;
+    use crate::model::ModelConfig;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage};
+    use crate::providers::errors::ProviderError;
+    use rmcp::model::Tool;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A namer that counts how often it is asked.
+    struct CountingNamer(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Provider for CountingNamer {
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Err(ProviderError::ExecutionError("unused".to_string()))
+        }
+
+        async fn generate_session_name(
+            &self,
+            _messages: &Conversation,
+        ) -> Result<String, ProviderError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok("Generated title".to_string())
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("mock-model").unwrap()
+        }
+
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata {
+                name: "mock".to_string(),
+                display_name: "Mock".to_string(),
+                description: "mock".to_string(),
+                default_model: "mock-model".to_string(),
+                known_models: vec![],
+                model_doc_link: String::new(),
+                config_keys: vec![],
+                allows_unlisted_models: false,
+                tier: Default::default(),
+                runs_locally: false,
+                institutions: Vec::new(),
+            }
+        }
+
+        fn get_name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    /// A chat at its usage limit makes no model request, so it is not named by
+    /// one either: it gets the title cut from its first message. Below the
+    /// limit the namer runs as before.
+    #[tokio::test]
+    async fn a_chat_at_its_usage_limit_is_named_without_a_model() {
+        use crate::agents::usage_limit::{self, ChatLimitOverride};
+        let temp = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let mut chats = Vec::new();
+        for (name, limit) in [("capped", 10_u64), ("open", 1_000_000)] {
+            let session = sm
+                .create_session(
+                    temp.path().to_path_buf(),
+                    crate::session::DEFAULT_SESSION_NAME.to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(
+                &session.id,
+                &Message::user().with_text(format!("Explain the {name} chat in one line.")),
+            )
+            .await
+            .unwrap();
+            sm.add_message(&session.id, &Message::assistant().with_text("ok"))
+                .await
+                .unwrap();
+            usage_limit::set_for_session(
+                &sm,
+                &session.id,
+                Some(ChatLimitOverride::Limit {
+                    max_tokens: Some(limit),
+                    max_usd: None,
+                }),
+            )
+            .await
+            .unwrap();
+            sm.record_token_event(
+                &session.id,
+                Some(500),
+                Some(20),
+                520,
+                Some("mock-model"),
+                Some("mock"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            chats.push((name, session.id));
+        }
+        let (_, capped) = &chats[0];
+        let (_, open) = &chats[1];
+        assert!(
+            usage_limit::reached_limit(&sm, capped).await.is_some(),
+            "the fixture really is at its limit"
+        );
+        assert!(usage_limit::reached_limit(&sm, open).await.is_none());
+
+        sm.maybe_update_name(capped, Arc::new(CountingNamer(asked.clone())))
+            .await
+            .unwrap();
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "no naming call at the limit"
+        );
+        assert_eq!(
+            sm.get_session(capped, false).await.unwrap().name,
+            "Explain the capped chat in one line."
+        );
+
+        sm.maybe_update_name(open, Arc::new(CountingNamer(asked.clone())))
+            .await
+            .unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sm.get_session(open, false).await.unwrap().name,
+            "Generated title"
         );
     }
 }

@@ -579,9 +579,31 @@ pub async fn elide_stale_tool_results(
     working_dir: &Path,
     can_read_saved_output: bool,
 ) -> Conversation {
+    elide_stale_tool_results_reporting(
+        session_manager,
+        session_id,
+        conversation,
+        working_dir,
+        can_read_saved_output,
+    )
+    .await
+    .0
+}
+
+/// [`elide_stale_tool_results`], also saying whether a NEW batch was stored
+/// for this request. Such a request already breaks the provider's prompt
+/// cache from the first newly elided result on, so other rare rewrites (the
+/// MOIM blocks' consolidation, `agents::moim`) ride on it.
+pub async fn elide_stale_tool_results_reporting(
+    session_manager: &crate::session::SessionManager,
+    session_id: &str,
+    conversation: Conversation,
+    working_dir: &Path,
+    can_read_saved_output: bool,
+) -> (Conversation, bool) {
     let params = ElisionParams::from_config();
     if !params.enabled {
-        return conversation;
+        return (conversation, false);
     }
     let state = match session_manager
         .get_extension_state(
@@ -595,13 +617,13 @@ pub async fn elide_stale_tool_results(
             Ok(state) => state,
             Err(e) => {
                 debug!("tool-result elision state unreadable ({e}); sending results in full");
-                return conversation;
+                return (conversation, false);
             }
         },
         Ok(None) => ToolResultElisions::default(),
         Err(e) => {
             debug!("could not read tool-result elision state ({e}); sending results in full");
-            return conversation;
+            return (conversation, false);
         }
     };
 
@@ -610,8 +632,8 @@ pub async fn elide_stale_tool_results(
     } else {
         Vec::new()
     };
-    let state = if candidates.is_empty() {
-        state
+    let (state, batch_ran) = if candidates.is_empty() {
+        (state, false)
     } else {
         match run_batch(
             session_manager,
@@ -622,11 +644,149 @@ pub async fn elide_stale_tool_results(
         )
         .await
         {
-            Some(grown) => grown,
-            None => state,
+            Some(grown) => (grown, true),
+            None => (state, false),
         }
     };
-    apply_elisions(conversation, &state)
+    (apply_elisions(conversation, &state), batch_ran)
+}
+
+/// A tool result whose full text is in a file, for the index a compaction
+/// summary carries ([`crate::context_mgmt::with_saved_output_index`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedToolOutput {
+    pub tool: String,
+    pub path: String,
+    pub chars: usize,
+    pub lines: usize,
+}
+
+/// Saved tool results, keyed by tool call id.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SavedToolOutputs {
+    pub entries: BTreeMap<String, SavedToolOutput>,
+}
+
+/// Before a compaction summarizes `conversation`, make sure every larger tool
+/// result in it has its full text in a file, and say where.
+///
+/// A summary cannot carry a 27k-character file listing the person asked to
+/// see, so after a compaction a sensible model ran the tool again, which
+/// pushed the context over the trigger again (live, 2026-11-10: one reply
+/// compacted six times and re-read the same files after each). With the files
+/// named in the summary it reads or searches them instead.
+///
+/// A result an elision batch already saved keeps its file, and so does one
+/// `large_response_handler` saved for this chat; any other result of at least
+/// `BIOROUTER_TOOL_RESULT_ELISION_MIN_CHARS` characters (exempt tools aside)
+/// is written to `<working dir>/.biorouter/tool-output/` now. Nothing is saved
+/// when the chat has no tool to read a file back with. Never fails: a result
+/// that cannot be saved is simply not listed.
+pub async fn save_outputs_for_compaction(
+    session_manager: &crate::session::SessionManager,
+    session_id: &str,
+    conversation: &Conversation,
+    working_dir: &Path,
+    can_read_saved_output: bool,
+) -> SavedToolOutputs {
+    let mut out = SavedToolOutputs::default();
+    if !can_read_saved_output {
+        return out;
+    }
+    let state = match session_manager
+        .get_extension_state(
+            session_id,
+            ToolResultElisions::EXTENSION_NAME,
+            ToolResultElisions::VERSION,
+        )
+        .await
+    {
+        Ok(Some(value)) => ToolResultElisions::from_value(&value).unwrap_or_default(),
+        _ => ToolResultElisions::default(),
+    };
+    let params = ElisionParams::from_config();
+    let visible: Vec<&Message> = conversation
+        .messages()
+        .iter()
+        .filter(|m| m.is_agent_visible())
+        .collect();
+    let names = tool_names_by_id(&visible);
+    let mut candidates = Vec::new();
+    for message in &visible {
+        for content in &message.content {
+            let MessageContent::ToolResponse(response) = content else {
+                continue;
+            };
+            if let Some(entry) = state.entries.get(&response.id) {
+                out.entries.insert(
+                    response.id.clone(),
+                    SavedToolOutput {
+                        tool: entry.tool.clone(),
+                        path: entry.path.clone(),
+                        chars: entry.chars,
+                        lines: entry.lines,
+                    },
+                );
+                continue;
+            }
+            let Ok(result) = &response.tool_result else {
+                continue;
+            };
+            let Some(text) = model_text(result) else {
+                continue;
+            };
+            let chars = text.chars().count();
+            if chars < params.min_chars {
+                continue;
+            }
+            let tool = names
+                .get(&response.id)
+                .cloned()
+                .unwrap_or_else(|| "tool".to_string());
+            if is_exempt_tool(&tool) {
+                continue;
+            }
+            candidates.push(ElisionCandidate {
+                id: response.id.clone(),
+                existing_handle: existing_handle(&text),
+                is_error: result.is_error == Some(true),
+                tool,
+                text,
+                estimated_tokens: estimate_tokens(chars),
+            });
+        }
+    }
+    if candidates.is_empty() {
+        return out;
+    }
+    let owned_session = session_id.to_string();
+    let owned_dir = working_dir.to_path_buf();
+    match tokio::task::spawn_blocking(move || {
+        save_candidates(
+            candidates,
+            &owned_session,
+            &owned_dir,
+            &fallback_handle_dir(),
+        )
+    })
+    .await
+    {
+        Ok(saved) => {
+            for (id, entry) in saved {
+                out.entries.insert(
+                    id,
+                    SavedToolOutput {
+                        tool: entry.tool,
+                        path: entry.path,
+                        chars: entry.chars,
+                        lines: entry.lines,
+                    },
+                );
+            }
+        }
+        Err(e) => warn!("saving tool results before a compaction failed ({e})"),
+    }
+    out
 }
 
 /// The conversation as the model is sent it, using the elisions stored on

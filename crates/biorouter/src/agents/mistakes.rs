@@ -194,10 +194,9 @@ pub enum RetryPoint {
 }
 
 /// Where a failed call stood. `conversation` is the conversation the call was
-/// built from, before the per-request `<info-msg>` block: that block is
-/// inserted as its own user row after trailing tool results, so the request as
-/// sent never ends on one. `added` is what this iteration produced before it
-/// failed.
+/// built from, before the `<info-msg>` blocks are placed (each stays where it
+/// was first injected and a new one is added only when its content changed,
+/// see `moim.rs`). `added` is what this iteration produced before it failed.
 ///
 /// Whitespace alone is not a partial reply, as it is not an answer anywhere
 /// else in the stream decoding (R14): a first call that streamed `"\n\n"` and

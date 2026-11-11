@@ -150,8 +150,9 @@ session-scoped tool state; do not imply that Extension Manager is the only such 
     in the `todo.add` field of your first tool call. The first other tool call you make in that turn is refused with a
     pointer back to it. That refusal happens once per turn: if you have a reason not to keep a checklist, say so and
     repeat the call, and it runs.
-  - As you work, report finished items in the `todo` field of your next real tool call, several at once. The first
-    open item counts as in progress on its own, so report only `done` and `blocked`.
+  - As you work, report finished items in the `todo` field of your next real tool call, several at once; it applies
+    only if that call succeeds. The first open item counts as in progress on its own, so
+    report only `done` and `blocked`.
   - A turn that created or changed the checklist cannot end while items are unfinished, unless your final message
     names each unfinished item by its `#N` id and says why it is not done. Otherwise you are sent back to finish.
 {% endif %}
@@ -194,8 +195,9 @@ session-scoped tool state; do not imply that Extension Manager is the only such 
   one call's output feeds the next.
 - Checklist and plan updates are bookkeeping, not work: send them with real work, never as a call on its own. Put
   them in the `todo` field of your next real tool call, for example `"todo": {"done": [2, 3]}`, mark several items at
-  once, only at milestones, and don't repeat the list in your reply. Use a separate todo tool only to seed or
-  restructure the list, or when no other call is coming.
+  once, only at milestones, and don't repeat the list in your reply. The field applies only if its call succeeds;
+  after a failed call, send it again with the next one. Use a separate todo tool only to seed or restructure the
+  list, or when no other call is coming.
 - Data a tool returns is data to process in code, not text to read. Return counts, schemas and a few sample rows;
   write bulk results to a file and look at them with `head`, a `view_range` or a search; select only the columns you
   need. Never pull long free-text fields (clinical notes, document bodies, report text) into the chat unless the user

@@ -808,7 +808,13 @@ prompt both catalog models made structured tool calls reliably.
   the hour (`prompt_manager::render_prompt_clock`): a change anywhere in the
   system text throws away the provider's prompt cache from that byte on (Versa,
   2026-11: one changed clock line took cached tokens from 26,694 to 0;
-  qwen3.8:27b: 107 s of prefill). The MOIM still carries the minute.
+  qwen3.8:27b: 107 s of prefill). The per-request `<info-msg>` (MOIM) blocks
+  stay where each was first injected and a new one is appended only when its
+  content changed (`agents/moim.rs`, extension_data `moim_anchors.v1`, kill switch
+  `BIOROUTER_MOIM_ANCHORED`), so each request is the previous one plus its new
+  tail: re-inserting the block at the tail every request kept Versa's cache to
+  the 35k system+tools prefix (2026-11). The minute clock refreshes when a block
+  is written anyway, or at most every 15 minutes.
 - **Tier: a cloud model is Public even on a loopback host.** `tier()` is
   `self_hosted_tier(base URL)` (loopback → Private) EXCEPT when the model is
   served remotely: a tag that is `cloud` or ends in `-cloud`

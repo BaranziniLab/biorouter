@@ -326,7 +326,7 @@ pub(super) fn comparable(value: &str) -> String {
     }
 }
 
-fn pointer_matches(found: &Value, values: &[Value]) -> bool {
+pub(super) fn pointer_matches(found: &Value, values: &[Value]) -> bool {
     values.iter().any(|wanted| match (found, wanted) {
         (Value::String(found), Value::String(wanted)) => found.eq_ignore_ascii_case(wanted),
         (found, wanted) => found == wanted,
@@ -518,8 +518,15 @@ pub(super) fn checks_words(checks: u32) -> String {
     }
 }
 
-/// What the model is told. `Err` for a failed or cancelled wait.
-pub(super) fn report_text(plan: &WaitPlan, report: &WaitReport) -> Result<String, String> {
+/// What the model is told. `Err` for a failed or cancelled wait. `watching`
+/// is the id of this chat's live `watch_job` watch of the same call, if any:
+/// a timeout then tells the model to end its turn rather than offering a
+/// second watch.
+pub(super) fn report_text(
+    plan: &WaitPlan,
+    report: &WaitReport,
+    watching: Option<&str>,
+) -> Result<String, String> {
     let over = format!(
         "{} over {}",
         checks_words(report.checks),
@@ -542,14 +549,23 @@ pub(super) fn report_text(plan: &WaitPlan, report: &WaitReport) -> Result<String
              {{\"pointer\": \"/field\", \"values\": [...]}}.",
             plan.tool
         ),
-        WaitEnd::TimedOut => format!(
-            "wait_for timed out after {} ({}): the job is still running. Call \
-             code_execution__wait_for again with the same arguments to keep waiting (one \
-             model turn per wait instead of one per check), or code_execution__watch_job \
-             and end your turn to be woken when it finishes (no model turn until then).",
-            duration_words(report.elapsed_secs),
-            checks_words(report.checks)
-        ),
+        WaitEnd::TimedOut => match watching {
+            Some(id) => format!(
+                "wait_for timed out after {} ({}): the job is still running. {id} already \
+                 watches this job, so end your turn now: this chat resumes by itself when it \
+                 finishes. Do not check the job again meanwhile.",
+                duration_words(report.elapsed_secs),
+                checks_words(report.checks)
+            ),
+            None => format!(
+                "wait_for timed out after {} ({}): the job is still running. Call \
+                 code_execution__wait_for again with the same arguments to keep waiting (one \
+                 model turn per wait instead of one per check), or code_execution__watch_job \
+                 and end your turn to be woken when it finishes (no model turn until then).",
+                duration_words(report.elapsed_secs),
+                checks_words(report.checks)
+            ),
+        },
         WaitEnd::Failed(error) => {
             return Err(format!(
                 "wait_for stopped: check {} of {} failed ({over}): {error}",
@@ -576,11 +592,19 @@ struct ScriptReport<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<&'a Value>,
     last_result: Value,
+    /// The live watch of the same call, on a timeout: end the script and the
+    /// turn, and the chat resumes when the job ends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    watch_id: Option<&'a str>,
 }
 
 /// What a script's `wait_for()` returns, as JSON. `Err` for a failed or
 /// cancelled wait, which the script receives as a thrown error.
-pub(super) fn report_json(plan: &WaitPlan, report: &WaitReport) -> Result<String, String> {
+pub(super) fn report_json(
+    plan: &WaitPlan,
+    report: &WaitReport,
+    watching: Option<&str>,
+) -> Result<String, String> {
     let (state, value) = match &report.end {
         WaitEnd::Finished => ("finished", None),
         WaitEnd::Changed => ("changed", None),
@@ -588,7 +612,7 @@ pub(super) fn report_json(plan: &WaitPlan, report: &WaitReport) -> Result<String
         WaitEnd::NotAJob => ("not_a_job", None),
         WaitEnd::TimedOut => ("timed_out", None),
         WaitEnd::Failed(_) | WaitEnd::Cancelled => {
-            return report_text(plan, report).map(|_| String::new())
+            return report_text(plan, report, None).map(|_| String::new())
         }
     };
     let last_result = report.last.as_deref().map_or(Value::Null, |last| {
@@ -600,6 +624,7 @@ pub(super) fn report_json(plan: &WaitPlan, report: &WaitReport) -> Result<String
         elapsed_seconds: report.elapsed_secs,
         value,
         last_result,
+        watch_id: watching.filter(|_| report.end == WaitEnd::TimedOut),
     })
     .map_err(|error| error.to_string())
 }
@@ -669,7 +694,7 @@ mod tests {
         assert_eq!(report.end, WaitEnd::Finished);
         assert_eq!(report.checks, 3);
         assert_eq!(report.elapsed_secs, 60);
-        let text = report_text(&plan, &report).unwrap();
+        let text = report_text(&plan, &report, None).unwrap();
         assert!(
             text.contains("no longer active (3 checks over 1 min 0 s)"),
             "{text}"
@@ -726,7 +751,7 @@ mod tests {
         );
         let report = run_wait(&plan, &mut checker, UNIT, &CancellationToken::new()).await;
         assert_eq!(report.end, WaitEnd::Matched(json!("Done")));
-        let script = report_json(&plan, &report).unwrap();
+        let script = report_json(&plan, &report, None).unwrap();
         let script: Value = serde_json::from_str(&script).unwrap();
         assert_eq!(script["state"], "matched");
         assert_eq!(script["last_result"]["job"]["status"], "Done");
@@ -745,7 +770,7 @@ mod tests {
         // Checks at 0, 30, 60 and 90, then a last one at the deadline.
         assert_eq!(report.checks, 5);
         assert_eq!(report.elapsed_secs, 100);
-        let text = report_text(&plan, &report).unwrap();
+        let text = report_text(&plan, &report, None).unwrap();
         assert!(text.contains("still running"), "{text}");
         assert!(text.contains("call") || text.contains("Call"), "{text}");
     }
@@ -790,7 +815,7 @@ mod tests {
         let report = run_wait(&plan, &mut checker, UNIT, &token).await;
         assert_eq!(report.end, WaitEnd::Cancelled);
         assert_eq!(started.elapsed(), Duration::from_secs(5));
-        assert!(report_text(&plan, &report).is_err());
+        assert!(report_text(&plan, &report, None).is_err());
     }
 
     #[tokio::test(start_paused = true)]
@@ -804,7 +829,7 @@ mod tests {
         let report = run_wait(&plan, &mut checker, UNIT, &CancellationToken::new()).await;
         assert_eq!(report.end, WaitEnd::NotAJob);
         assert_eq!(report.checks, 1);
-        assert!(report_text(&plan, &report)
+        assert!(report_text(&plan, &report, None)
             .unwrap()
             .contains("until: \"changed\""));
     }
@@ -818,9 +843,9 @@ mod tests {
         }]);
         let plan = plan(Until::Inactive, 240, 30);
         let report = run_wait(&plan, &mut checker, UNIT, &CancellationToken::new()).await;
-        let error = report_text(&plan, &report).unwrap_err();
+        let error = report_text(&plan, &report, None).unwrap_err();
         assert!(error.contains("check 1 of cdw__status failed"), "{error}");
-        assert!(report_json(&plan, &report).is_err());
+        assert!(report_json(&plan, &report, None).is_err());
     }
 
     fn params(value: Value) -> WaitForParams {
@@ -910,7 +935,7 @@ mod tests {
             elapsed_secs: 0,
             last: Some("x".repeat(MAX_LAST_RESULT_BYTES * 2)),
         };
-        let text = report_text(&plan, &report).unwrap();
+        let text = report_text(&plan, &report, None).unwrap();
         assert!(text.len() < MAX_LAST_RESULT_BYTES + 400);
         assert!(text.contains("Call the status tool directly"), "{text}");
     }
