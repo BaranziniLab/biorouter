@@ -1,5 +1,6 @@
 import type { Message } from '../../api';
 import { presentStoredTurnError } from '../conversation/ChatTurnError';
+import { isSubagentResultMessage } from './subagentResult';
 import {
   getElicitationContent,
   getSecretRequestContent,
@@ -70,8 +71,12 @@ function hasCard(message: Message): boolean {
   );
 }
 
-/** The assistant's first visible block is a tool row: no thinking and no prose above it. */
+/**
+ * The assistant's first visible block is a tool row: no thinking and no prose
+ * above it. A subagent's result draws as one tool-style row (`SubagentResultRow`).
+ */
 function startsWithToolRow(message: Message): boolean {
+  if (isSubagentResultMessage(message)) return true;
   if (getToolRequests(message).length === 0) return false;
   const { visibleText, cotText } = splitAssistantText(message);
   return !visibleText && !cotText;
@@ -79,6 +84,7 @@ function startsWithToolRow(message: Message): boolean {
 
 /** The assistant's last visible block is a tool row: no card under it. */
 function endsWithToolRow(message: Message): boolean {
+  if (isSubagentResultMessage(message)) return true;
   return getToolRequests(message).length > 0 && !hasCard(message);
 }
 
@@ -145,11 +151,11 @@ export function messageGaps(messages: Message[], isUser: (message: Message) => b
  * An answer whose floating actions rise straight into the row above it: words
  * and no tool call (`BioRouterMessage` floats the cluster on exactly these),
  * no thought (a thought puts its own short line between the cluster and that
- * row) and not the daemon's stored error notice (it draws as the error row,
- * which carries no actions).
+ * row), and neither the daemon's stored error notice (it draws as the error
+ * row, which carries no actions) nor a subagent's result (a row, no actions).
  */
 function floatsActionsIntoRowAbove(message: Message): boolean {
-  if (getToolRequests(message).length > 0) return false;
+  if (getToolRequests(message).length > 0 || isSubagentResultMessage(message)) return false;
   const { visibleText, cotText } = splitAssistantText(message);
   if (!visibleText || cotText) return false;
   const allText = message.content.every((content) => content.type === 'text');
