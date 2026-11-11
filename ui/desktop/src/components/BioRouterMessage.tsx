@@ -40,6 +40,8 @@ import {
 import { DecisionCard } from './decisions/DecisionCard';
 import { messageDecisionId } from '../utils/sessionDecisions';
 import { approvalCardExpired } from '../utils/approvalExpiry';
+import { readSubagentResult } from './transcript/subagentResult';
+import { SubagentResultRow } from './transcript/SubagentResultRow';
 
 interface BioRouterMessageProps {
   sessionId: string;
@@ -215,6 +217,23 @@ export default function BioRouterMessage({
         : null,
     [displayText, message.content, toolRequests.length]
   );
+  // A delegated subagent's result is stored as an agent-injected assistant
+  // message whose text is written for the model (an injection frame around
+  // the result's JSON). It draws as one row in the tool rows' look, never as
+  // that text.
+  const subagentResult = useMemo(() => readSubagentResult(message), [message]);
+  if (subagentResult) {
+    return (
+      <div className="biorouter-message flex w-full justify-start min-w-0">
+        <SubagentResultRow
+          result={subagentResult}
+          onOpenArtifact={onOpenArtifact}
+          workingDir={workingDir}
+        />
+      </div>
+    );
+  }
+
   if (decisionId && toolRequests.length === 0) {
     return (
       <div className="biorouter-message flex w-full justify-start min-w-0">
