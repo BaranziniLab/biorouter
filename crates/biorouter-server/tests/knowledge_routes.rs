@@ -2693,8 +2693,6 @@ mod privacy_ratchet {
     fn lock_env_for(host: &str) -> env_lock::EnvGuard<'static> {
         env_lock::lock_env([
             ("BIOROUTER_KNOWLEDGE_TEST_MODE", None),
-            ("BIOROUTER_LEAD_MODEL", None),
-            ("BIOROUTER_LEAD_PROVIDER", None),
             ("OLLAMA_HOST", Some(host.to_string())),
             ("OLLAMA_TIMEOUT", Some("1".to_string())),
         ])
@@ -2815,23 +2813,15 @@ mod privacy_ratchet {
         }
     }
 
-    // ⚠ The other half of provenance — that `providers::create` intercepts
-    // `BIOROUTER_LEAD_MODEL` BEFORE the registry lookup, so the INSTANCE it
-    // returns need not be the requested name's provider — is asserted in
-    // `biorouter-cli`'s
-    // `the_cli_capability_follows_the_instance_not_the_name_the_user_typed`,
-    // which reads `build_completer`'s returned tier directly and runs no macro.
-    //
-    // It cannot be asserted here. These routes only expose the tier by running
-    // a macro, and a lead/worker composite whose lead is a public provider makes
-    // that macro issue a real request on a client with a 600-second timeout —
-    // the run this replaces sat there for thirteen minutes. What this file DOES
-    // pin is the property that matters at the route: the matrix above sends the
-    // SAME provider name (`ollama`) in both rows and varies only `OLLAMA_HOST`,
-    // so a route keyed on `body.model.provider` gives one answer twice and fails
-    // a row. That the tier and the completer come from one `Arc` is
-    // `the_completer_and_the_capability_come_from_the_same_provider`, and every
-    // production caller of `ProviderCompleter::new` is gone.
+    // What this file pins is the property that matters at the route: the matrix
+    // above sends the SAME provider name (`ollama`) in both rows and varies only
+    // `OLLAMA_HOST`, so a route keyed on `body.model.provider` gives one answer
+    // twice and fails a row. That the tier and the completer come from one `Arc`
+    // is `the_completer_and_the_capability_come_from_the_same_provider`, and
+    // every production caller of `ProviderCompleter::new` is gone. (Lead/worker
+    // mode, whose `BIOROUTER_LEAD_MODEL` intercept could hand back a composite
+    // under the requested name, is retired: `providers::create` builds the
+    // provider it is asked for.)
 
     // ── Issue #56, Task 10C: the barrier at CP2, over HTTP ───────────────────
 

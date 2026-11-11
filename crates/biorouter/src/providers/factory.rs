@@ -11,7 +11,7 @@ use super::{
     gcpvertexai::GcpVertexAIProvider,
     githubcopilot::GithubCopilotProvider,
     google::GoogleProvider,
-    lead_worker::{LeadWorkerProvider, LeadWorkerRoutingState, PersistedProviderConfig},
+    lead_worker::{LeadWorkerProvider, PersistedProviderConfig},
     litellm::LiteLLMProvider,
     llamacpp::LlamaCppProvider,
     ollama::OllamaProvider,
@@ -42,10 +42,6 @@ use crate::{
 };
 use anyhow::Result;
 use tokio::sync::OnceCell;
-
-const DEFAULT_LEAD_TURNS: usize = 3;
-const DEFAULT_FAILURE_THRESHOLD: usize = 2;
-const DEFAULT_FALLBACK_TURNS: usize = 2;
 
 static REGISTRY: OnceCell<RwLock<ProviderRegistry>> = OnceCell::const_new();
 
@@ -234,14 +230,15 @@ pub(crate) async fn create_from_persisted(
     create_unpersisted(name, model).await
 }
 
+/// A provider from the registry, for the model given.
+///
+/// ⚠ Lead/worker mode is retired (owner, 2026-11-11): a `BIOROUTER_LEAD_MODEL`
+/// no longer turns this into a lead/worker composite. A chat runs on its own
+/// model and a subagent on the default worker model (`agents::default_worker`);
+/// `config::retired_lead_worker` carries an old setup across at start. Only a
+/// session that was SAVED as a composite still restores as one, through
+/// [`create_from_persisted`], so an old chat keeps working the way it did.
 async fn create_unpersisted(name: &str, model: ModelConfig) -> Result<Arc<dyn Provider>> {
-    let config = crate::config::Config::global();
-
-    if let Ok(lead_model_name) = config.get_param::<String>("BIOROUTER_LEAD_MODEL") {
-        tracing::info!("Creating lead/worker provider from environment variables");
-        return create_lead_worker_from_env(name, &model, &lead_model_name).await;
-    }
-
     let constructor = get_from_registry(name).await?.constructor.clone();
     constructor(model).await
 }
@@ -259,57 +256,6 @@ pub async fn create_with_named_model(
 ) -> Result<Arc<dyn Provider>> {
     let config = ModelConfig::new(model_name)?;
     create(provider_name, config).await
-}
-
-async fn create_lead_worker_from_env(
-    default_provider_name: &str,
-    default_model: &ModelConfig,
-    lead_model_name: &str,
-) -> Result<Arc<dyn Provider>> {
-    let config = crate::config::Config::global();
-
-    let lead_provider_name = config
-        .get_param::<String>("BIOROUTER_LEAD_PROVIDER")
-        .unwrap_or_else(|_| default_provider_name.to_string());
-
-    let lead_turns = config
-        .get_param::<usize>("BIOROUTER_LEAD_TURNS")
-        .unwrap_or(DEFAULT_LEAD_TURNS);
-    let failure_threshold = config
-        .get_param::<usize>("BIOROUTER_LEAD_FAILURE_THRESHOLD")
-        .unwrap_or(DEFAULT_FAILURE_THRESHOLD);
-    let fallback_turns = config
-        .get_param::<usize>("BIOROUTER_LEAD_FALLBACK_TURNS")
-        .unwrap_or(DEFAULT_FALLBACK_TURNS);
-
-    let lead_model_config = ModelConfig::new_with_context_env(
-        lead_model_name.to_string(),
-        Some("BIOROUTER_LEAD_CONTEXT_LIMIT"),
-    )?;
-
-    let worker_model_config = create_worker_model_config(default_model)?;
-
-    let registry = get_registry().await;
-    let lead_provider = create_provider_from_binding(
-        ProviderRestoreBinding::registry(lead_provider_name, lead_model_config),
-        registry,
-    )
-    .await?;
-    let worker_provider = create_provider_from_binding(
-        ProviderRestoreBinding::registry(default_provider_name.to_string(), worker_model_config),
-        registry,
-    )
-    .await?;
-
-    Ok(Arc::new(LeadWorkerProvider::new_with_settings_and_state(
-        lead_provider,
-        worker_provider,
-        lead_turns,
-        failure_threshold,
-        fallback_turns,
-        uuid::Uuid::new_v4().to_string(),
-        LeadWorkerRoutingState::default(),
-    )))
 }
 
 async fn create_lead_worker_from_persisted(
@@ -417,27 +363,13 @@ async fn create_provider_from_binding(
     }
 }
 
-fn create_worker_model_config(default_model: &ModelConfig) -> Result<ModelConfig> {
-    let mut worker_config =
-        crate::providers::lead_worker::model_config_without_restore_marker(default_model.clone());
-
-    let global_config = crate::config::Config::global();
-
-    if let Ok(limit) = global_config.get_param::<usize>("BIOROUTER_WORKER_CONTEXT_LIMIT") {
-        worker_config = worker_config.with_context_limit(Some(limit));
-    } else if let Ok(limit) = global_config.get_param::<usize>("BIOROUTER_CONTEXT_LIMIT") {
-        worker_config = worker_config.with_context_limit(Some(limit));
-    }
-
-    Ok(worker_config)
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::conversation::message::Message;
     use crate::providers::base::{ProviderUsage, Usage};
     use crate::providers::errors::ProviderError;
+    use crate::providers::lead_worker::LeadWorkerRoutingState;
     use rmcp::model::Tool;
 
     macro_rules! fake_provider {
@@ -1010,37 +942,25 @@ pub(crate) mod tests {
         );
     }
 
-    #[test_case::test_case(None, None, None, DEFAULT_LEAD_TURNS, DEFAULT_FAILURE_THRESHOLD, DEFAULT_FALLBACK_TURNS ; "defaults")]
-    #[test_case::test_case(Some("7"), Some("4"), Some("3"), 7, 4, 3 ; "custom")]
+    /// Lead/worker mode is retired (owner, 2026-11-11). A `BIOROUTER_LEAD_*`
+    /// setup still readable from the environment builds the provider it was
+    /// asked for, not a composite: `config::retired_lead_worker` maps a saved
+    /// setup onto the default worker model at start, and an environment-only
+    /// one is ignored with a warning there.
     #[tokio::test]
-    async fn test_create_lead_worker_provider(
-        lead_turns: Option<&str>,
-        failure_threshold: Option<&str>,
-        fallback_turns: Option<&str>,
-        expected_turns: usize,
-        expected_failure: usize,
-        expected_fallback: usize,
-    ) {
+    async fn a_retired_lead_model_no_longer_builds_a_composite() {
         let _guard = env_lock::lock_env([
             ("BIOROUTER_LEAD_MODEL", Some("gpt-4o")),
-            ("BIOROUTER_LEAD_PROVIDER", None),
-            ("BIOROUTER_LEAD_TURNS", lead_turns),
-            ("BIOROUTER_LEAD_FAILURE_THRESHOLD", failure_threshold),
-            ("BIOROUTER_LEAD_FALLBACK_TURNS", fallback_turns),
+            ("BIOROUTER_LEAD_PROVIDER", Some("openai")),
+            ("BIOROUTER_LEAD_TURNS", Some("3")),
             ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
         ]);
 
         let provider = create("openai", ModelConfig::new_or_fail("gpt-4o-mini"))
             .await
             .unwrap();
-        let lw = provider.as_lead_worker().unwrap();
-        let (lead, worker) = lw.get_model_info();
-        assert_eq!(lead, "gpt-4o");
-        assert_eq!(worker, "gpt-4o-mini");
-        assert_eq!(
-            lw.get_settings(),
-            (expected_turns, expected_failure, expected_fallback)
-        );
+        assert!(provider.as_lead_worker().is_none());
+        assert_eq!(provider.get_model_config().model_name, "gpt-4o-mini");
     }
 
     #[tokio::test]
@@ -1420,82 +1340,6 @@ pub(crate) mod tests {
                 "the rejected endpoint leaked into the public error: {error}"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn test_create_regular_provider_without_lead_config() {
-        let _guard = env_lock::lock_env([
-            ("BIOROUTER_LEAD_MODEL", None),
-            ("BIOROUTER_LEAD_PROVIDER", None),
-            ("BIOROUTER_LEAD_TURNS", None),
-            ("BIOROUTER_LEAD_FAILURE_THRESHOLD", None),
-            ("BIOROUTER_LEAD_FALLBACK_TURNS", None),
-            ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
-        ]);
-
-        let provider = create("openai", ModelConfig::new_or_fail("gpt-4o-mini"))
-            .await
-            .unwrap();
-        assert!(provider.as_lead_worker().is_none());
-        assert_eq!(provider.get_model_config().model_name, "gpt-4o-mini");
-    }
-
-    #[test_case::test_case(None, None, 16_000 ; "no overrides uses default")]
-    #[test_case::test_case(Some("32000"), None, 32_000 ; "worker limit overrides default")]
-    #[test_case::test_case(Some("32000"), Some("64000"), 32_000 ; "worker limit takes priority over global")]
-    fn test_worker_model_context_limit(
-        worker_limit: Option<&str>,
-        global_limit: Option<&str>,
-        expected_limit: usize,
-    ) {
-        let _guard = env_lock::lock_env([
-            ("BIOROUTER_WORKER_CONTEXT_LIMIT", worker_limit),
-            ("BIOROUTER_CONTEXT_LIMIT", global_limit),
-        ]);
-
-        let default_model =
-            ModelConfig::new_or_fail("gpt-3.5-turbo").with_context_limit(Some(16_000));
-
-        let result = create_worker_model_config(&default_model).unwrap();
-        assert_eq!(result.context_limit, Some(expected_limit));
-    }
-
-    #[test]
-    fn worker_model_preserves_every_field_except_the_restore_marker_and_context_override() {
-        let _guard = env_lock::lock_env([
-            ("BIOROUTER_WORKER_CONTEXT_LIMIT", Some("64000")),
-            ("BIOROUTER_CONTEXT_LIMIT", None),
-        ]);
-        let mut default_model = restore_test_model("worker-model");
-        default_model.temperature = Some(0.4);
-        default_model.max_tokens = Some(4_096);
-        default_model.toolshim = true;
-        default_model.toolshim_model = Some("tool-model".into());
-        default_model.fast_model = Some("fast-model".into());
-        default_model.reasoning_effort = Some(crate::agents::effort::ReasoningEffort::Deep);
-        default_model.request_params = Some(std::collections::HashMap::from([
-            ("keep".into(), serde_json::json!({"nested": true})),
-            (
-                crate::providers::provider_binding::RESTORE_CONFIG_KEY.into(),
-                serde_json::json!({"type": "old"}),
-            ),
-        ]));
-
-        let worker = create_worker_model_config(&default_model).unwrap();
-        assert_eq!(worker.context_limit, Some(64_000));
-        assert_eq!(worker.temperature, default_model.temperature);
-        assert_eq!(worker.max_tokens, default_model.max_tokens);
-        assert_eq!(worker.toolshim, default_model.toolshim);
-        assert_eq!(worker.toolshim_model, default_model.toolshim_model);
-        assert_eq!(worker.fast_model, default_model.fast_model);
-        assert_eq!(worker.reasoning_effort, default_model.reasoning_effort);
-        assert_eq!(
-            worker.request_params,
-            Some(std::collections::HashMap::from([(
-                "keep".into(),
-                serde_json::json!({"nested": true}),
-            )]))
-        );
     }
 
     /// No built-in provider offers UCSF's gateway as a setup default.

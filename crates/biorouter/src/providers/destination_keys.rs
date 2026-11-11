@@ -251,19 +251,6 @@ pub const NOT_DESTINATION_CONFIG_KEYS: &[(&str, &str)] = &[
         "the credential itself, not where it goes",
     ),
     (
-        "BIOROUTER_LEAD_MODEL",
-        "which model runs; a privacy capability key",
-    ),
-    (
-        "BIOROUTER_LEAD_PROVIDER",
-        "which configured provider runs; a capability key",
-    ),
-    ("BIOROUTER_CONTEXT_LIMIT", "token budget"),
-    ("BIOROUTER_WORKER_CONTEXT_LIMIT", "token budget"),
-    ("BIOROUTER_LEAD_TURNS", "handoff policy"),
-    ("BIOROUTER_LEAD_FAILURE_THRESHOLD", "handoff policy"),
-    ("BIOROUTER_LEAD_FALLBACK_TURNS", "handoff policy"),
-    (
         "BIOROUTER_CODING_AGENT_TOOL_TIMEOUT_SECS",
         "transport timeout",
     ),

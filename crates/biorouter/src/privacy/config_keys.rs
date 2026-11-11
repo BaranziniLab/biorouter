@@ -26,11 +26,16 @@ pub const CAPABILITY_CONFIG_KEYS: &[&str] = &[
     // The default provider itself. Read through `config_value!` (base.rs), so
     // the literal never appears in a `get_param(` call — seeded, not scanned.
     "BIOROUTER_PROVIDER",
-    // Its presence alone switches `create()` to the lead/worker path
-    // (factory.rs, BEFORE the registry lookup), which changes the tier of every
-    // provider name rather than of one.
+    // The retired lead/worker pair's lead (owner, 2026-11-11). Nothing builds a
+    // composite from these any more, but `config::retired_lead_worker` writes
+    // them into `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` at the next start, so a
+    // write to one is a write to the default provider one restart later. The
+    // migration reads the config FILE's values (never `get_param`, whose
+    // environment branch would carry an environment variable into the file), so
+    // the scan below cannot see these reads: seeded, and
+    // `the_retired_lead_keys_are_capability_keys_while_the_migration_moves_them`
+    // ties the seed to the migration.
     "BIOROUTER_LEAD_MODEL",
-    // Names the lead half, whose tier is one of the two `least()` takes.
     "BIOROUTER_LEAD_PROVIDER",
     // Task 5's third test: a self-hosted provider is Private only while its base
     // URL is loopback. These two keys ARE that base URL, so writing one moves
@@ -65,14 +70,6 @@ pub const CAPABILITY_CONFIG_KEYS: &[&str] = &[
 /// Every other key the tier-input files read, each with the reason it does not
 /// determine capability. A key must be in exactly one of these two lists.
 pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
-    ("BIOROUTER_CONTEXT_LIMIT", "token budget, not a tier input"),
-    (
-        "BIOROUTER_LEAD_TURNS",
-        "handoff policy between two already-tiered halves",
-    ),
-    ("BIOROUTER_LEAD_FAILURE_THRESHOLD", "handoff policy"),
-    ("BIOROUTER_LEAD_FALLBACK_TURNS", "handoff policy"),
-    ("BIOROUTER_WORKER_CONTEXT_LIMIT", "token budget"),
     ("OLLAMA_TIMEOUT", "transport timeout"),
     // The native `/api/chat` request's options (2026-10). Each is sent to the
     // server `OLLAMA_HOST` already names, so none moves a request off this
@@ -268,8 +265,8 @@ mod tests {
 
     #[test]
     fn every_config_key_the_tier_resolver_reads_is_classified() {
-        // Scans the five files Task 5 touches to define `tier()` plus
-        // factory.rs's BIOROUTER_LEAD_MODEL intercept, extracts every
+        // Scans the files Task 5 touches to define `tier()` plus factory.rs
+        // (and DR-33's decision files), extracts every
         // `get_param("KEY")` literal, and requires each to appear in EXACTLY ONE
         // of the two lists. Adding a config read to any of them fails this test
         // until someone decides whether it determines capability. That is the
@@ -279,10 +276,13 @@ mod tests {
         // moved into `llamacpp_sidecar.rs`, which is not a tier-input file
         // (the key is a sampling option either way; see its row in
         // `destination_keys.rs`).
+        // 19 measured 2026-11-11: lead/worker mode is retired, so factory.rs no
+        // longer reads the five `BIOROUTER_LEAD_*` keys, the worker's context
+        // limit or the global one it fell back to.
         let scanned = scan_get_param_keys();
         assert_eq!(
             scanned.len(),
-            26,
+            19,
             "the tier-input files' config surface changed: {scanned:?}"
         );
         for key in &scanned {
@@ -324,10 +324,17 @@ mod tests {
         //
         // The two `config_value!` keys are excused, for the reason given above
         // each of them: the scan reads `get_param("…")` literals, and neither
-        // literal exists in the source.
-        for key in
-            classified.filter(|key| !matches!(*key, "BIOROUTER_PROVIDER" | "BIOROUTER_MODEL"))
-        {
+        // literal exists in the source. So are the two retired lead keys, which
+        // the migration reads from the file's values (their own test below).
+        for key in classified.filter(|key| {
+            !matches!(
+                *key,
+                "BIOROUTER_PROVIDER"
+                    | "BIOROUTER_MODEL"
+                    | "BIOROUTER_LEAD_MODEL"
+                    | "BIOROUTER_LEAD_PROVIDER"
+            )
+        }) {
             assert!(
                 scanned.iter().any(|read| read == key),
                 "{key} is classified but no tier-input file reads it; delete its row"
@@ -409,6 +416,50 @@ mod tests {
         // The one key the decision files do read is already a capability key.
         assert!(scanned.iter().any(|read| read == "OLLAMA_HOST"));
         assert!(is_capability_key("OLLAMA_HOST"));
+    }
+
+    /// The retired lead keys stay capability keys for exactly as long as the
+    /// migration writes them into the default provider and model. If it stops
+    /// (it is deleted, or stops moving them), this fails and asks for the two
+    /// rows to be reconsidered rather than left gated for a reason that is gone.
+    #[test]
+    fn the_retired_lead_keys_are_capability_keys_while_the_migration_moves_them() {
+        let migration = include_str!("../config/retired_lead_worker.rs");
+        for key in ["BIOROUTER_LEAD_MODEL", "BIOROUTER_LEAD_PROVIDER"] {
+            assert!(
+                migration.contains(&format!("\"{key}\"")),
+                "the migration no longer names {key}"
+            );
+            assert!(is_capability_key(key), "{key}");
+        }
+        for written in ["\"BIOROUTER_PROVIDER\"", "\"BIOROUTER_MODEL\""] {
+            assert!(
+                migration.contains(written),
+                "the migration no longer writes {written}"
+            );
+        }
+        assert!(
+            !scan_get_param_keys()
+                .iter()
+                .any(|key| key.starts_with("BIOROUTER_LEAD_")),
+            "a tier-input file reads a retired lead key again; lead/worker mode is retired"
+        );
+    }
+
+    /// The default worker model is not a tier input: a subagent always runs at
+    /// its chat's tier (R4, DR-19 in `subagent_tool::judge_child`), and a
+    /// default the rules refuse falls back to the chat's model. So writing it
+    /// over HTTP needs no proof, like the Crew task model.
+    #[test]
+    fn the_default_worker_model_is_not_a_capability_key() {
+        use crate::agents::default_worker::{WORKER_MODEL_KEY, WORKER_PROVIDER_KEY};
+        for key in [WORKER_PROVIDER_KEY, WORKER_MODEL_KEY] {
+            assert!(!is_capability_key(key), "{key}");
+            assert!(
+                !scan_get_param_keys().iter().any(|read| read == key),
+                "{key} is read by a tier-input file"
+            );
+        }
     }
 
     #[test]

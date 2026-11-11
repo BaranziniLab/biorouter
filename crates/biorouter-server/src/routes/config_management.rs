@@ -682,10 +682,13 @@ fn config_value_refusal(key: &str, value: &Value) -> Option<String> {
     }
 }
 
-/// Whether `key` holds a provider NAME: the one new chats start on, or the
-/// lead half of a lead/worker pair.
+/// Whether `key` holds a provider NAME: the one new chats start on, the default
+/// worker model's, or the retired lead provider (which
+/// `config::retired_lead_worker` carries onto `BIOROUTER_PROVIDER` at the next
+/// start, so it is checked like the key it becomes).
 fn names_a_provider(key: &str) -> bool {
     key.eq_ignore_ascii_case("BIOROUTER_PROVIDER")
+        || key.eq_ignore_ascii_case(biorouter::agents::default_worker::WORKER_PROVIDER_KEY)
         || key.eq_ignore_ascii_case("BIOROUTER_LEAD_PROVIDER")
 }
 
@@ -981,10 +984,11 @@ pub async fn remove_config(
     // `OLLAMA_HOST` falls back to `localhost` (`providers/ollama.rs`) and
     // `self_hosted_tier` maps loopback to Private, so deleting it moves `ollama`
     // from Public to Private by exactly the mechanism `upsert_config`'s guard
-    // exists to block. `LLAMACPP_EXTERNAL_HOST` is the same shape, and deleting
-    // `BIOROUTER_LEAD_MODEL` / `BIOROUTER_LEAD_PROVIDER` collapses the
-    // lead/worker pair whose tier is the `least()` of two halves — which can
-    // only move the result upward.
+    // exists to block. `LLAMACPP_EXTERNAL_HOST` is the same shape. The retired
+    // `BIOROUTER_LEAD_MODEL` / `BIOROUTER_LEAD_PROVIDER` are carried onto
+    // `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` at the next start
+    // (`config::retired_lead_worker`), so deleting one decides what that
+    // migration writes into the default.
     //
     // Guarded with the SAME predicate as `upsert_config`, not with the subset
     // that can demonstrably raise: the plan exempted this route on an argument
@@ -1372,10 +1376,9 @@ const AFFILIATION_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// affiliation of the instance that *would be bound*, not with a claim derived
 /// from the provider's name. A name-keyed table (`versa_* => ucsf`) would keep
 /// claiming the institution for a module repointed at another host, which
-/// `tier()` has already demoted to Public. `create` also applies the lead/worker
-/// interception, so with `BIOROUTER_LEAD_MODEL` set each row reports the
-/// **composite's** affiliation — the meet of the pair, which is what binding that
-/// row would actually give the chat.
+/// `tier()` has already demoted to Public. (`create` no longer builds a
+/// lead/worker composite from `BIOROUTER_LEAD_MODEL`: that mode is retired, so
+/// each row is the one provider binding it would give the chat.)
 ///
 /// ⚠ **`None` here means "nothing to show", and it is deliberately the answer to
 /// three different questions**: the provider is public (the honest answer — a
@@ -3956,6 +3959,7 @@ mod tests {
         let registered = ["openai".to_string(), "versa_azure".to_string()];
         for key in [
             "BIOROUTER_PROVIDER",
+            "BIOROUTER_WORKER_PROVIDER",
             "BIOROUTER_LEAD_PROVIDER",
             "biorouter_provider",
         ] {

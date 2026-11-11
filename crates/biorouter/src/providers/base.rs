@@ -832,11 +832,10 @@ pub trait Provider: Send + Sync {
     /// The least-private component of what this **instance** actually resolved.
     ///
     /// An instance method, never a lookup on `get_name()`: `get_name()` on a
-    /// composite returns the lead's name (see `LeadWorkerProvider`), and
-    /// `providers::create` can hand back something other than what was asked
-    /// for (the factory intercepts `BIOROUTER_LEAD_MODEL` *before* the registry
-    /// lookup, so `create("ollama", ..)` can return a composite whose lead is
-    /// `anthropic`).
+    /// composite returns the lead's name (see `LeadWorkerProvider`, which a chat
+    /// saved in the retired lead/worker mode still restores as), and one
+    /// provider name constructs instances of different tiers (`ollama` follows
+    /// `OLLAMA_HOST`).
     ///
     /// DEFAULT = Public. Fail-safe: a provider module that forgets this gets
     /// less reach, never more — and a custom declarative provider that shadows
