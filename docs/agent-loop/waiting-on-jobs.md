@@ -95,7 +95,7 @@ Two functions are available inside `execute_code`:
 - `wait_for({ tool, arguments, until, timeout_seconds, min_interval_seconds })` does the same wait from a script and returns `{ state, checks, elapsed_seconds, last_result }`. `state` is `finished`, `changed`, `matched`, `not_a_job` or `timed_out`. A failed check throws, like any failed tool call. `tool` must be one of the script's importable tools.
 - `sleep(seconds)` pauses the script without spending tokens. One call may sleep at most 280 seconds.
 
-A script may spend at most 600 seconds in `sleep()` and `wait_for()` together. Past that, `sleep()` throws and says to record what the script has and continue with `code_execution__wait_for` or a new script. The `execute_code` description points longer jobs at `code_execution__watch_job`. Stop ends a sleeping or waiting script at once.
+A script may spend at most 600 seconds in `sleep()` and `wait_for()` together. Past that, `sleep()` throws and says to record what the script has and continue with `code_execution__wait_for` or a new script. The `execute_code` description points longer jobs at `code_execution__watch_job`. Stop ends a sleeping or waiting script at once. While it sleeps or waits, a script hands back the tool-dispatch slot its `execute_code` call holds (the daemon runs at most eight tool calls at once, across every chat), so sleeping scripts never hold up other tool calls; it takes the slot back before it carries on.
 
 ```javascript
 import { submit_job, job_status } from "module_name";
@@ -144,3 +144,4 @@ A job tool helps the host most when its status result:
 - [Long-running tasks](long-running-tasks.md)
 - [Turn cancellation and process reaping](turn-cancellation-and-process-reaping.md)
 - [Code Execution](../extensions/built-in/code-execution.md)
+- [Todo capability: how progress reaches the checklist](../extensions/built-in/todo.md#how-progress-reaches-the-checklist)

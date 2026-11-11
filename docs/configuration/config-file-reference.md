@@ -50,6 +50,7 @@ Set these at the root level of `config.yaml`.
 | `BIOROUTER_TOOL_RESULT_ELISION_PROTECT_TOKENS` | How much of the newest tool output, in estimated tokens, is always sent in full | A whole number of tokens | 40000 | No |
 | `BIOROUTER_TOOL_RESULT_ELISION_MIN_PRUNABLE_TOKENS` | How much older tool output must be ready to replace before any is replaced. Replacing in rare batches keeps the provider's prompt cache | A whole number of tokens | 25000 | No |
 | `BIOROUTER_TOOL_RESULT_ELISION_MIN_CHARS` | Shortest tool result that may be replaced | A whole number of characters | 1500 | No |
+| `BIOROUTER_MONITOR_STOP_SETTLE_SECS` | How long a turn a [decision-model monitor](../agent-loop/decision-models.md#a-stop-stops-the-chats-subagents) stopped waits for the subagents that stop stopped, so their work can be collected | A whole number of seconds | 30 | No |
 | `usage` | The monthly and default per-chat [usage limits](../agent-loop/usage-limits.md), a section with `monthly_token_limit`, `monthly_dollar_limit`, `default_session_token_limit` and `default_session_dollar_limit` | Each a positive number; missing, 0 or negative is unlimited | Unlimited | No |
 | `otel_exporter_otlp_endpoint` | OpenTelemetry protocol (OTLP) endpoint URL for [observability](environment-variables.md#opentelemetry-protocol-otlp) | URL (e.g. `http://localhost:4318`) | None | No |
 | `otel_exporter_otlp_timeout` | Export timeout in milliseconds for [observability](environment-variables.md#opentelemetry-protocol-otlp) | Integer (ms) | 10000 | No |

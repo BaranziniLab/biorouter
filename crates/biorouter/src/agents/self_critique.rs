@@ -157,18 +157,9 @@ impl Agent {
     /// [`run_prompt_hook_in_session`], exactly as the `/goal` Stop-hook
     /// evaluator does.
     ///
-    /// The chat comes from the task's session scope. Prefer
-    /// [`Self::run_self_critique_in_session`] where the chat's id is in hand.
-    pub(crate) async fn run_self_critique(&self, conversation: &Conversation) -> Option<String> {
-        let session_id = crate::session_context::current_session_id();
-        self.run_self_critique_in_session(session_id.as_deref(), conversation)
-            .await
-    }
-
-    /// [`Self::run_self_critique`] charging the judge's model call to
-    /// `session_id` as a side call. The critique payload carries no session id,
-    /// so without this the plain runner could not attribute the spend, and the
-    /// cost card and the usage limits would miss it.
+    /// The judge's model call is charged to `session_id` as a side call. The
+    /// critique payload carries no session id, so without it the spend could
+    /// not be attributed, and the cost card and the usage limits would miss it.
     pub(crate) async fn run_self_critique_in_session(
         &self,
         session_id: Option<&str>,

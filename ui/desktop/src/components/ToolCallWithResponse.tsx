@@ -89,6 +89,8 @@ type ExecutedToolCall = {
   error?: string;
   resultBytes?: number;
   todoTask?: { id: string; title: string };
+  /** The items a batched `todo_update` (several `updates`) changed. */
+  todoTasks?: { id: string; title: string }[];
   operation?: OperationOutcome;
 };
 
@@ -170,29 +172,62 @@ function isBoundedMetadataText(value: unknown, maxBytes: number): value is strin
   return true;
 }
 
-function normalizeExecutedTodoTask(record: Record<string, unknown>): ExecutedToolCall['todoTask'] {
+type ExecutedTodoTasks = Pick<ExecutedToolCall, 'todoTask' | 'todoTasks'>;
+
+/**
+ * The ids a `todo_update` call named, as it spelled them (string ids only):
+ * the top-level `id` and every `updates[].id`.
+ */
+function namedTodoIds(args: Record<string, unknown>): string[] {
+  const updates = Array.isArray(args.updates) ? args.updates : [];
+  const ids: string[] = [];
+  for (const value of [args.id, ...updates.map((entry) => recordOf(entry)?.id)]) {
+    if (typeof value !== 'string') continue;
+    const id = value.replace(/^#/, '');
+    if (isBoundedMetadataText(id, MAX_EXECUTED_TASK_ID_BYTES) && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/** A recorded task, kept only when the call named its id and its title is usable text. */
+function verifiedTodoTask(value: unknown, ids: string[]): { id: string; title: string } | null {
+  const task = recordOf(value);
+  if (
+    !task ||
+    Array.isArray(task) ||
+    typeof task.id !== 'string' ||
+    !ids.includes(task.id) ||
+    !isBoundedMetadataText(task.title, MAX_EXECUTED_TASK_TITLE_BYTES) ||
+    !task.title.trim()
+  ) {
+    return null;
+  }
+  return { id: task.id, title: task.title };
+}
+
+/**
+ * The checklist items a successful nested `todo_update` changed, from the
+ * backend's verified projection: `todo_task` for one item, `todo_tasks` for a
+ * batch of several. Each is checked again against the ids the recorded
+ * arguments name, so a title never attaches to an item the call did not touch.
+ */
+function normalizeExecutedTodoTasks(record: Record<string, unknown>): ExecutedTodoTasks {
   if (
     record.tool !== 'todo__todo_update' ||
     record.status !== 'ok' ||
     !isBoundedMetadataText(record.args, MAX_EXECUTED_ARGUMENT_BYTES)
   ) {
-    return undefined;
+    return {};
   }
   const args = parsedCallArguments(record.args);
-  const task = recordOf(record.todo_task);
-  if (!args || Array.isArray(args) || typeof args.id !== 'string' || !task || Array.isArray(task)) {
-    return undefined;
-  }
-  const id = args.id.replace(/^#/, '');
-  if (
-    !isBoundedMetadataText(id, MAX_EXECUTED_TASK_ID_BYTES) ||
-    task.id !== id ||
-    !isBoundedMetadataText(task.title, MAX_EXECUTED_TASK_TITLE_BYTES) ||
-    !task.title.trim()
-  ) {
-    return undefined;
-  }
-  return { id, title: task.title };
+  if (!args || Array.isArray(args)) return {};
+  const ids = namedTodoIds(args);
+  if (ids.length === 0) return {};
+  const todoTask = verifiedTodoTask(record.todo_task, ids) ?? undefined;
+  const todoTasks = Array.isArray(record.todo_tasks)
+    ? record.todo_tasks.flatMap((task) => verifiedTodoTask(task, ids) ?? [])
+    : [];
+  return { todoTask, todoTasks: todoTasks.length > 0 ? todoTasks : undefined };
 }
 
 /**
@@ -211,7 +246,7 @@ function normalizeExecutedCalls(value: unknown): ExecutedToolCall[] {
         status: record.status === 'error' ? 'error' : 'ok',
         error: typeof record.error === 'string' && record.error.trim() ? record.error : undefined,
         resultBytes: typeof record.result_bytes === 'number' ? record.result_bytes : undefined,
-        todoTask: normalizeExecutedTodoTask(record),
+        ...normalizeExecutedTodoTasks(record),
         operation: parseOperationOutcome(record.operation) ?? undefined,
       },
     ];
@@ -910,6 +945,27 @@ const countedTodoUpdate = (statuses: (string | null)[]): string => {
   if (shared === 'blocked') return `Blocking ${tasksPhrase(count)}`;
   if (shared === 'pending') return `Returning ${tasksPhrase(count)} to pending`;
   return `Updating ${tasksPhrase(count)}`;
+};
+
+/**
+ * A nested batched `todo_update` whose result named several changed items:
+ * the counted outcome ("Completing 2 tasks", counted from the arguments when
+ * they survived the record's size cap) followed by the confirmed titles.
+ */
+const summarizeTodoBatch = (
+  args: Record<string, unknown>,
+  tasks: { id: string; title: string }[]
+): string => {
+  const batch = Array.isArray(args.updates)
+    ? args.updates.filter((entry): entry is Record<string, unknown> => !!recordOf(entry))
+    : [];
+  const hasTopLevel = args.id !== undefined && args.id !== null;
+  const entries = hasTopLevel ? [args, ...batch] : batch;
+  const counted =
+    entries.length > 0
+      ? countedTodoUpdate(entries.map((entry) => namedArgument(entry, ['status'])))
+      : `Updating ${tasksPhrase(tasks.length)}`;
+  return `${counted}: ${tasks.map((task) => `“${lineValue(task.title)}”`).join(', ')}`;
 };
 
 const sidecarIdCount = (value: unknown): number =>
@@ -2025,9 +2081,16 @@ function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; drop
 function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
   const operationError = operationFailureText(call.operation ?? null);
   const parsedArgs = parsedCallArguments(call.args);
-  const taskSummary = call.todoTask
-    ? summarizeTodoCall('todo_update', parsedArgs ?? {}, undefined, lineValue(call.todoTask.title))
-    : null;
+  const taskSummary = call.todoTasks
+    ? summarizeTodoBatch(parsedArgs ?? {}, call.todoTasks)
+    : call.todoTask
+      ? summarizeTodoCall(
+          'todo_update',
+          parsedArgs ?? {},
+          undefined,
+          lineValue(call.todoTask.title)
+        )
+      : null;
   const summary =
     taskSummary ?? summarizeToolCall({ name: call.tool, arguments: parsedArgs ?? {} });
   const glyph = toolGlyphFor(call.tool, parsedArgs);

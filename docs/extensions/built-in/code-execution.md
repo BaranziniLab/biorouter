@@ -83,7 +83,7 @@ Every model request re-reads the whole conversation, so a model that checks a jo
 
 - **`code_execution__wait_for`** calls the job's status tool on an interval and answers once, when the job is no longer active, when the result changes, or when its timeout (default 240 seconds, at most 600) passes.
 - **`code_execution__watch_job`** checks once, returns a watch id such as `watch-3`, and lets the model end its turn. Biorouter keeps checking in the background, starting every 30 seconds and slowing to every 5 minutes, for up to 60 minutes by default (240 at most), and then resumes the chat once with the job's last status and the model's own note. A chat paused by a usage limit gets a note instead of a turn. You can cancel a watch from the active work list, by pressing Stop during the turn that set it, or by asking the model; a watch is not kept across a restart of Biorouter.
-- **Inside a script**, `wait_for({...})` does the same wait as the tool, and `sleep(seconds)` pauses the script (at most 280 seconds per call, 600 seconds per script in all).
+- **Inside a script**, `wait_for({...})` does the same wait as the tool, `watch_job({...})` sets a watch and returns `{state: "watching", watch_id}` (the script then ends and so does the turn) or, for a job already done, its last status, and `sleep(seconds)` pauses the script (`sleep()` at most 280 seconds per call; `sleep()` and `wait_for()` together at most 600 seconds per script).
 
 ```javascript
 import { submit_job } from "module_name";
@@ -166,7 +166,7 @@ The file has been saved to the root directory as `LOG.md`.
 
 ## Related documentation
 
-- [Waiting on jobs](../../agent-loop/waiting-on-jobs.md) — `wait_for`, `watch_job`, `sleep()` and the pacing of repeated status checks.
+- [Waiting on jobs](../../agent-loop/waiting-on-jobs.md): `wait_for`, `watch_job`, `sleep()` and the pacing of repeated status checks.
 - [Developer capability](developer.md) — the `shell` and `text_editor` tools most Code Mode scripts import, and the access controls that constrain them.
 - [Todo capability](todo.md) — the checklist tools that stay directly callable in Code Mode, and the plan-first rules that use them.
 - [Extension Manager capability](extension-manager.md) — the other lever for keeping the active tool count and context usage down.

@@ -11,7 +11,7 @@ Workflows are reusable Biorouter configurations that package up instructions and
 - [Workflow file format](#workflow-file-format)
 - [Workflow location](#workflow-location)
 - [Core workflow schema](#core-workflow-schema)
-- [Field specifications](#field-specifications) — [activities](#activities), [extensions](#extensions), [parameters](#parameters), [response](#response), [retry](#retry), [settings](#settings), [subworkflows](#subworkflows), [supervision](#supervision-decision_settings-and-orchestration_plan)
+- [Field specifications](#field-specifications): [activities](#activities), [extensions](#extensions), [parameters](#parameters), [response](#response), [retry](#retry), [settings](#settings), [subworkflows](#subworkflows), [supervision](#supervision-decision_settings-and-orchestration_plan)
 - [Desktop metadata fields](#desktop-metadata-fields)
 - [Template support](#template-support)
 - [Validation rules](#validation-rules)

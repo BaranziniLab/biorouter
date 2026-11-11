@@ -46,7 +46,6 @@ mod watch;
 /// End every job watch of a chat (`code_execution__watch_job`) without
 /// resuming it, as when the chat is deleted. A watch also notices a deleted
 /// chat on its own before its next check; this makes it immediate.
-#[allow(unused_imports)] // Reached from the delete route once it calls it.
 pub use watch::cancel_watches_for_session as cancel_job_watches_for_session;
 
 const MAX_JS_SOURCE_BYTES: usize = 256 * 1024;
@@ -4014,13 +4013,13 @@ impl CodeExecutionClient {
         });
         // Centralized attribution: whichever path failed, the error the
         // script (and therefore the step-level result) sees names the
-        // tool — see `attribute_sub_call_error`.
+        // tool; see `attribute_sub_call_error`.
         let result = result.map_err(|mut error| {
             error.message = attribute_sub_call_error(tool_name, error.message);
             error
         });
         // Per-call telemetry for the UI's executed-calls view (issue #28).
-        // The Err string is intentionally NOT recorded — see
+        // The Err string is intentionally NOT recorded; see
         // `ToolCallRecord::failed`.
         {
             let record = match &result {
@@ -4146,11 +4145,23 @@ impl CodeExecutionClient {
         waited: &mut Duration,
         watch_host: Option<&Arc<dyn watch::WatchHost>>,
     ) -> Option<Result<String, ScriptFailure>> {
+        // The script's `execute_code` call holds one of the eight dispatch
+        // permits the whole daemon shares. A timed wait does no work, so it
+        // hands the permit back for its length, as a parked approval does
+        // (`script_call_gate`): eight sleeping scripts must not stall every
+        // other tool call. `None` where the call holds none to hand back.
+        let permit = parts
+            .judge
+            .and_then(|judge| judge.gate.parked_permit_handle());
         if name == wait::SLEEP_REQUEST {
-            return Self::serve_sleep(arguments, waited, parts.turn).await;
+            let sleep = Self::serve_sleep(arguments, waited, parts.turn);
+            return match permit {
+                Some(permit) => permit.while_parked(sleep).await,
+                None => sleep.await,
+            };
         }
         if name == wait::WAIT_REQUEST {
-            return Self::serve_wait_for(
+            let wait_for = Self::serve_wait_for(
                 parts.session_id,
                 parts.cap,
                 parts.judge,
@@ -4159,8 +4170,11 @@ impl CodeExecutionClient {
                 parts.extension_manager,
                 parts.collected,
                 parts.turn,
-            )
-            .await;
+            );
+            return match permit {
+                Some(permit) => permit.while_parked(wait_for).await,
+                None => wait_for.await,
+            };
         }
         let turn = parts.turn.clone();
         let answer = watch::serve_script_watch(parts, watch_host, arguments).await;
@@ -4301,7 +4315,7 @@ impl CodeExecutionClient {
                     session = %session_id,
                     "an execute_code call dispatched by the agent loop reached the handler with \
                      no script-call judge installed; refusing the script rather than running its \
-                     tool calls unjudged (a task-local does not survive a tokio::spawn — see \
+                     tool calls unjudged (a task-local does not survive a tokio::spawn; see \
                      agents::script_call_gate)"
                 );
                 Err(crate::agents::script_call_gate::JUDGE_LOST_REFUSAL.to_string())
@@ -9082,6 +9096,74 @@ mod wait_tests {
                 .is_none(),
             "a stopped sleep answers nothing, which ends the script"
         );
+    }
+
+    /// A script's `sleep()` holds no dispatch permit while it waits, and takes
+    /// it back before the script resumes.
+    #[tokio::test]
+    async fn a_scripts_sleep_hands_its_dispatch_permit_back() {
+        use crate::agents::script_call_gate::test_support::gate;
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let guard = crate::agents::tool_dispatch_limits::ToolDispatchGuard::for_test(Arc::clone(
+            &semaphore,
+        ))
+        .await;
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the script holds the permit"
+        );
+
+        let dir = tempfile::TempDir::new().expect("a scratch directory");
+        let hooks = Arc::new(crate::hooks::HooksManager::new(Arc::new(
+            tokio::sync::Mutex::new(None),
+        )));
+        let (gate, _permissions) =
+            gate(dir.path(), crate::config::BioRouterMode::Auto, hooks, false).await;
+        gate.hold_dispatch_permit(Some(guard.parking_handle()));
+        let judge = ScriptJudge {
+            gate: Arc::new(gate),
+            risks: crate::permission::tool_risk::ToolRiskRegistry::new(),
+        };
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        let token = CancellationToken::new();
+        let mut waited = Duration::ZERO;
+        let parts = watch::WatchRequestParts {
+            session_id: "sleep-permit",
+            cap: crate::privacy::CallCapability::for_test_restricted(),
+            judge: Some(&judge),
+            extension_manager: None,
+            collected: &collected,
+            turn: &token,
+        };
+        // 30 units: 300 ms under test.
+        let sleep = CodeExecutionClient::serve_host_request(
+            wait::SLEEP_REQUEST,
+            "30",
+            parts,
+            &mut waited,
+            None,
+        );
+        let watch = async {
+            for _ in 0..100 {
+                if semaphore.available_permits() == 1 {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            false
+        };
+        let (slept, freed) = tokio::join!(sleep, watch);
+        assert!(freed, "a sleeping script must hold no dispatch permit");
+        assert_eq!(slept.unwrap().unwrap(), "30");
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the permit is taken back before the script resumes"
+        );
+        drop(guard);
+        assert_eq!(semaphore.available_permits(), 1);
     }
 
     #[tokio::test]

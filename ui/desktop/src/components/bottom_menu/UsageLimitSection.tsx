@@ -56,12 +56,17 @@ export function chatUsedReading(state: SessionUsageLimitResponse, showCosts: boo
   return parts.join(' · ');
 }
 
-/** The month's line when a monthly limit is in force, or `null`. */
+/**
+ * The month's line when a monthly limit is in force, or `null`. Also `null` when the
+ * daemon withheld the month's totals (`monthTokens: null`, a request without the
+ * user-action proof): a reading of nothing would read as nothing used.
+ */
 export function monthUsedReading(
   state: SessionUsageLimitResponse,
   showCosts: boolean
 ): string | null {
   const { monthly, used } = state;
+  if (used.monthTokens == null) return null;
   const parts: string[] = [];
   if (showCosts && monthly.maxUsd != null) {
     const spent = used.monthUsd != null ? formatLimitUsd(used.monthUsd) : formatLimitUsd(0);

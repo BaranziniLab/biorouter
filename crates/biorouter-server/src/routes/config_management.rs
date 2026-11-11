@@ -280,7 +280,9 @@ pub struct DetectableProvidersResponse {
                                       Privacy, \
                                       with its typed confirmation, or (issue #56, DR-27) \
                                       relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system \
-                                      authentication that did not happen"),
+                                      authentication that did not happen, or the `usage` limits \
+                                      section was written without proof the request came from \
+                                      the user"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
                                       decides what privacy capability new chats start at, so \
                                       writing it requires proof the request came from the user. \
@@ -329,6 +331,11 @@ pub async fn upsert_config(
                 ),
             ));
         }
+    }
+    // The usage limits are enforced, so writing their section needs the same
+    // proof `PUT /usage/limits` asks for.
+    if let Some(refusal) = usage_limits_refusal(&query.key, &headers) {
+        return Err(refusal);
     }
     // Issue #56 DR-16, open question 24. `/config/upsert` writes ANY key, and a
     // handful of them decide what capability the next session comes up with —
@@ -851,6 +858,28 @@ const MIXING_POLICY_NEEDS_USER: &str =
      retry; the same call will be refused again, and no setting, hook or permission mode changes \
      it. Tell the user what you need and let them decide.";
 
+/// What `/config/upsert` and `/config/remove` say to a caller that wrote or
+/// deleted the usage-limits section without the user-action proof.
+///
+/// The limits are enforced in the reply loop, so this section is a spending
+/// control: `PUT /usage/limits` takes the proof for that reason, and the
+/// generic config routes must not be a way around it. Written for a model,
+/// because a model is who reaches it.
+const USAGE_LIMITS_NEED_USER: &str =
+    "Biorouter's usage limits are a setting only the person at the keyboard may change, and this \
+     request carried no proof it came from them. Nothing was changed. Do not retry; the same \
+     call will be refused again. Tell the user the limit was reached and let them raise it from \
+     the chat's cost card or Settings > Usage.";
+
+/// The refusal for a write or delete of the usage-limits section that carries
+/// no user-action proof, or `None` when the key is another one or the proof is
+/// there. Independent of the privacy master switch: a budget is not a privacy
+/// control, and turning privacy tiers off must not lift it.
+fn usage_limits_refusal(key: &str, headers: &http::HeaderMap) -> Option<(StatusCode, String)> {
+    (biorouter::config::usage::is_usage_limits_key(key) && !is_user_action(headers))
+        .then(|| (StatusCode::FORBIDDEN, USAGE_LIMITS_NEED_USER.to_string()))
+}
+
 /// …and when the value is not one of the three modes.
 ///
 /// Naming all three, because the caller cannot act on "invalid value" and a
@@ -890,7 +919,9 @@ fn master_switch_refusal(key: &str) -> String {
                                       switch and may only be changed from Settings > App > \
                                       Privacy, \
                                       never removed, and (issue #56, DR-27) \
-                                      `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"),
+                                      `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted, \
+                                      or the `usage` limits section was removed without proof \
+                                      the request came from the user"),
         (status = 404, description = "Configuration key not found"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
                                       decides what privacy capability new chats start at, and a \
@@ -938,6 +969,10 @@ pub async fn remove_config(
                 query.key
             ),
         ));
+    }
+    // Deleting the usage section lifts every monthly and default limit at once.
+    if let Some(refusal) = usage_limits_refusal(&query.key, &headers) {
+        return Err(refusal);
     }
     // Issue #56 DR-16. The FIFTH channel to the capability keys, and the one the
     // task's own four-channel enumeration missed.
@@ -5204,5 +5239,70 @@ mod destination_route_tests {
             stored("BIOROUTER_PROVIDER"),
             Some(Value::from("custom_elsewhere"))
         );
+    }
+}
+
+/// The usage limits are enforced, so the generic config routes must not be a
+/// way to write or delete their section without the proof `PUT /usage/limits`
+/// asks for.
+#[cfg(test)]
+mod usage_limits_config_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use serial_test::serial;
+
+    fn headers_with(user_action: Option<&str>) -> http::HeaderMap {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Secret-Key", "test".parse().unwrap());
+        if let Some(key) = user_action {
+            headers.insert("X-User-Action", key.parse().unwrap());
+        }
+        headers
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn a_caller_without_proof_cannot_write_or_delete_the_usage_section() {
+        install_test_user_action_key();
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"monthly_token_limit": 1}),
+        ] {
+            let refused = upsert_config(
+                headers_with(None),
+                Json(UpsertConfigQuery {
+                    key: "usage".to_string(),
+                    value,
+                    is_secret: false,
+                    confirm: None,
+                }),
+            )
+            .await
+            .expect_err("an unproven write of the usage section is refused");
+            assert_eq!(refused.0, StatusCode::FORBIDDEN);
+            assert_eq!(refused.1, USAGE_LIMITS_NEED_USER);
+        }
+        let refused = remove_config(
+            headers_with(None),
+            Json(ConfigKeyQuery {
+                key: "usage".to_string(),
+                is_secret: false,
+            }),
+        )
+        .await
+        .expect_err("an unproven delete of the usage section is refused");
+        assert_eq!(refused.0, StatusCode::FORBIDDEN);
+        assert_eq!(refused.1, USAGE_LIMITS_NEED_USER);
+    }
+
+    #[test]
+    #[serial]
+    fn the_proof_admits_the_usage_section_and_other_keys_are_untouched() {
+        install_test_user_action_key();
+        assert!(usage_limits_refusal("usage", &headers_with(Some(TEST_USER_ACTION_KEY))).is_none());
+        assert!(usage_limits_refusal("BIOROUTER_MAX_TURNS", &headers_with(None)).is_none());
+        assert!(usage_limits_refusal("usage", &headers_with(None)).is_some());
     }
 }

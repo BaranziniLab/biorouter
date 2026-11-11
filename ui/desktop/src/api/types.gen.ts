@@ -88,7 +88,8 @@ export type ActiveWorkItemDto = {
      */
     id: string;
     /**
-     * `background_job`, `subagent`, `detached_turn`, or `scheduled_run`.
+     * `background_job`, `subagent`, `foreground_command`, `detached_turn`,
+     * `job_watch`, or `scheduled_run`.
      */
     kind: string;
     /**
@@ -7353,7 +7354,16 @@ export type UsageLimitUsed = {
      * The local month the month figures cover, `YYYY-MM`.
      */
     month: string;
-    monthTokens: number;
+    /**
+     * Billed tokens this month over every chat. `null` when the request
+     * carried no proof of a person: the month is an aggregate over every
+     * chat, private ones included, and `GET /usage/summary` withholds it
+     * from such a caller for the same reason.
+     */
+    monthTokens?: number | null;
+    /**
+     * `null` when nothing this month is priced, or withheld as `month_tokens` is.
+     */
     monthUsd?: number | null;
     monthUsdComplete: boolean;
 };
@@ -9264,7 +9274,7 @@ export type RemoveConfigData = {
 
 export type RemoveConfigErrors = {
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > App > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > App > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted, or the `usage` limits section was removed without proof the request came from the user
      */
     403: unknown;
     /**
@@ -9344,7 +9354,7 @@ export type UpsertConfigErrors = {
      */
     400: unknown;
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > App > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > App > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen, or the `usage` limits section was written without proof the request came from the user
      */
     403: unknown;
     /**

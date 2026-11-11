@@ -128,11 +128,24 @@ pub struct ToolDispatchGuard {
 }
 
 impl ToolDispatchGuard {
+    /// A guard holding one permit of `semaphore` and no path locks, for a test
+    /// in another module that needs an exact count instead of the process-wide
+    /// semaphore every test in the binary shares.
+    #[cfg(test)]
+    pub(crate) async fn for_test(semaphore: Arc<Semaphore>) -> Self {
+        Self {
+            permit: acquire_permit_cell(&semaphore).await,
+            semaphore,
+            _path_guards: Vec::new(),
+        }
+    }
+
     /// A handle for a tool that **parks on a person** to hand its concurrency
     /// permit back for the duration of the wait.
     ///
-    /// Only for genuine parking — an approval card, an elicitation — never around
-    /// work. The permit exists to bound work, and a tool waiting on a human is
+    /// Only for genuine parking (an approval card, an elicitation, a script's
+    /// timed `sleep()` or `wait_for()`), never around work. The permit exists
+    /// to bound work, and a tool waiting on a human is
     /// doing none; holding one there is what turns eight parked calls into a
     /// stalled daemon (`Semaphore::new(8)`, shared by every session in the
     /// process), which is the hazard `agent::is_parking_workspace_tool` was

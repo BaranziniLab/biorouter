@@ -302,7 +302,7 @@ impl Agent {
             // The round-trip was spent, so bill it — but not as a compaction:
             // it did not replace the context. No PostCompact either, since
             // nothing was compacted.
-            self.update_session_metrics(
+            self.update_compaction_metrics(
                 session_config,
                 &summarization_usage,
                 false,
@@ -330,8 +330,13 @@ impl Agent {
         // Without this, session.total_tokens stays at the pre-compact value:
         // the UI gauge keeps reading the old number, and the next reply's
         // check_if_compaction_needed re-triggers a full LLM summarization.
-        self.update_session_metrics(session_config, &summarization_usage, true, &usage_event_key)
-            .await?;
+        self.update_compaction_metrics(
+            session_config,
+            &summarization_usage,
+            true,
+            &usage_event_key,
+        )
+        .await?;
 
         Ok(Some(Message::assistant().with_system_notification(
             SystemNotificationType::InlineMessage,

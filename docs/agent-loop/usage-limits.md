@@ -62,7 +62,11 @@ Other spending doors follow the same rule:
   running subagent is held to its parent chat's limit at each of its own model requests.
 - **Scheduled runs.** A run that would start while the month is at its limit is refused
   before it creates anything. The refusal shows as the schedule's last error, and the
-  firing is given back, so a schedule with a run count does not use up its runs.
+  firing is given back, so a schedule with a run count does not use up its runs. A run
+  that reaches a limit part-way (the default per-chat limit applies to each run's own
+  chat, and the month can fill while it runs) is a failed run, not a success: its stop
+  shows as the schedule's last error, the last-run time does not move, and the firing is
+  given back the same way.
 - **Overflow compaction.** When a request overflows the model's window and the chat is
   already at a limit, the chat is not compacted and the turn ends.
 - **Decision models.** A monitor, a `decide` batch or a phase gate is counted, through the
@@ -99,7 +103,9 @@ usage:
 A missing, zero or negative value is unlimited. `config.yaml` can still be edited by
 anything with a shell on this machine, the agent's own shell included (DR-17), so these
 limits stop accidental spend; they are not a barrier against a determined local
-process.
+process. Over HTTP the section takes the user-action proof on every route that writes
+it: `PUT /usage/limits`, and `POST /config/upsert` or `POST /config/remove` with the key
+`usage`, which answer `403` without it.
 
 A chat's own limit is stored on its row, in `extension_data` under `usage_limit/v1`.
 Changing it is a deliberate change to the chat, so it counts as activity and moves the
@@ -109,7 +115,7 @@ chat in the sidebar (coordinator ruling 16).
 
 | Route | Gate | What it does |
 | --- | --- | --- |
-| `GET /sessions/{session_id}/usage-limit` | `session_reach` | The chat's effective limit and where it came from, its own setting, the defaults, the monthly limit, what was used, and `paused`, `reason` and `warn` |
+| `GET /sessions/{session_id}/usage-limit` | `session_reach` | The chat's effective limit and where it came from, its own setting, the defaults, the monthly limit, what was used, and `paused`, `reason` and `warn`. The month's totals (`used.monthTokens`, `used.monthUsd`) sum every chat, private ones included, so they are `null` unless the request carries the user-action proof |
 | `PUT /sessions/{session_id}/usage-limit` | `session_reach`, then the user-action proof | `{ "mode": "inherit" \| "unlimited" \| "limit", "maxTokens"?, "maxUsd"? }`; answers in the `GET` shape. A subagent's chat is refused: set the limit on its parent |
 | `PUT /usage/limits` | The user-action proof | `{ monthlyTokenLimit?, monthlyDollarLimit?, defaultSessionTokenLimit?, defaultSessionDollarLimit? }`; a field left out is kept and `null` is unlimited |
 | `GET /usage/summary` | The user-action proof | Month to date against the monthly limits, plus the default per-chat limits |

@@ -1,6 +1,17 @@
 use super::base::Config;
 use serde::{Deserialize, Serialize};
 
+/// The config key the [`UsageLimits`] live under. Writing or deleting it over
+/// HTTP needs the user-action proof (`routes::config_management`), the same
+/// proof `PUT /usage/limits` asks for, so a model holding only the daemon
+/// secret cannot raise or lift a limit through the generic config routes.
+pub const USAGE_LIMITS_CONFIG_KEY: &str = "usage";
+
+/// Is `key` the usage-limits section? One predicate for every verb.
+pub fn is_usage_limits_key(key: &str) -> bool {
+    key == USAGE_LIMITS_CONFIG_KEY
+}
+
 /// The `usage` section of `config.yaml`: the monthly limits and the default
 /// per-chat limits. Every field is optional and independent.
 ///
@@ -75,7 +86,9 @@ impl UsageLimits {
 
     /// [`Self::load`] against a given config.
     pub fn load_from(config: &Config) -> Self {
-        config.get_param::<UsageLimits>("usage").unwrap_or_default()
+        config
+            .get_param::<UsageLimits>(USAGE_LIMITS_CONFIG_KEY)
+            .unwrap_or_default()
     }
 
     /// The monthly token limit in force, `None` when unlimited.
@@ -105,7 +118,7 @@ impl UsageLimits {
         config: &Config,
         update: &UsageLimitsUpdate,
     ) -> Result<Self, super::base::ConfigError> {
-        config.update_param::<serde_yaml::Value, _, _>("usage", |section| {
+        config.update_param::<serde_yaml::Value, _, _>(USAGE_LIMITS_CONFIG_KEY, |section| {
             if !section.is_mapping() {
                 *section = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
             }

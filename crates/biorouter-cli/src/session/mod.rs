@@ -1037,6 +1037,52 @@ impl CliSession {
         Ok(())
     }
 
+    /// Capture this session's setup into `workflow`. A failure to read it is
+    /// reported and the draft kept; `false` when a Crew grant made while the
+    /// model was writing refuses the draft, which is then neither saved nor
+    /// shown.
+    async fn enrich_workflow(&self, workflow: &mut biorouter::workflow::Workflow) -> bool {
+        use biorouter::session::session_manager::CrewContextRefusal;
+
+        match knowledge_service_for_enrichment() {
+            Ok(knowledge) => {
+                match biorouter::workflow::service::session_enrichment(
+                    &self.agent,
+                    &knowledge,
+                    &self.session_id,
+                    None,
+                )
+                .await
+                {
+                    Ok(enrichment) => {
+                        biorouter::workflow::service::apply_session_enrichment(workflow, enrichment)
+                    }
+                    // A grant made while the model was writing: the draft now
+                    // restates Crew context, so it is neither saved nor shown.
+                    Err(e) if e.downcast_ref::<CrewContextRefusal>().is_some() => {
+                        output::render_error(&e.to_string());
+                        return false;
+                    }
+                    Err(e) => println!(
+                        "{}",
+                        console::style(format!(
+                            "Could not capture this session's setup into the workflow: {e}"
+                        ))
+                        .yellow()
+                    ),
+                }
+            }
+            Err(e) => println!(
+                "{}",
+                console::style(format!(
+                    "Could not read knowledge bases for the workflow: {e}"
+                ))
+                .yellow()
+            ),
+        }
+        true
+    }
+
     /// `/workflow` — capture this chat as a reusable workflow.
     ///
     /// Goes through the same two steps the desktop's "create workflow from this
@@ -1089,42 +1135,8 @@ impl CliSession {
             }
         };
 
-        match knowledge_service_for_enrichment() {
-            Ok(knowledge) => {
-                match biorouter::workflow::service::session_enrichment(
-                    &self.agent,
-                    &knowledge,
-                    &self.session_id,
-                    None,
-                )
-                .await
-                {
-                    Ok(enrichment) => biorouter::workflow::service::apply_session_enrichment(
-                        &mut workflow,
-                        enrichment,
-                    ),
-                    // A grant made while the model was writing: the draft now
-                    // restates Crew context, so it is neither saved nor shown.
-                    Err(e) if e.downcast_ref::<CrewContextRefusal>().is_some() => {
-                        output::render_error(&e.to_string());
-                        return WorkflowCapture::Refused;
-                    }
-                    Err(e) => println!(
-                        "{}",
-                        console::style(format!(
-                            "Could not capture this session's setup into the workflow: {e}"
-                        ))
-                        .yellow()
-                    ),
-                }
-            }
-            Err(e) => println!(
-                "{}",
-                console::style(format!(
-                    "Could not read knowledge bases for the workflow: {e}"
-                ))
-                .yellow()
-            ),
+        if !self.enrich_workflow(&mut workflow).await {
+            return WorkflowCapture::Refused;
         }
 
         match self.save_workflow(&workflow, filepath_opt.as_deref()) {

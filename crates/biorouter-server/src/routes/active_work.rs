@@ -65,7 +65,8 @@ const SCHED_PREFIX: &str = "sched:";
 pub struct ActiveWorkItemDto {
     /// Unique id; also the handle for `POST /active_work/{id}/cancel`.
     pub id: String,
-    /// `background_job`, `subagent`, `detached_turn`, or `scheduled_run`.
+    /// `background_job`, `subagent`, `foreground_command`, `detached_turn`,
+    /// `job_watch`, or `scheduled_run`.
     pub kind: String,
     /// Short human-readable label (command, task prompt, or schedule id).
     pub title: String,

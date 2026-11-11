@@ -5,6 +5,7 @@ import type { SessionUsageLimitResponse } from '../../api';
 import type { ModelCostRow } from '../../hooks/useCostTracking';
 import { USAGE_LIMIT_COPY } from './copy';
 import { CostTracker } from './CostTracker';
+import { monthUsedReading } from './UsageLimitSection';
 import { useSessionUsageLimit } from './useSessionUsageLimit';
 
 /**
@@ -423,5 +424,18 @@ describe('the cost item with a usage limit to manage', () => {
     const dialog = await openCard(usageTrigger());
     expect(dialog).toHaveTextContent(USAGE_LIMIT_COPY.noChatYet);
     expect(mocks.getLimit).not.toHaveBeenCalled();
+  });
+});
+
+describe('the month line', () => {
+  it('reads the month against its limit', () => {
+    const state = limitState({ monthly: { maxTokens: 100_000, maxUsd: null } });
+    expect(monthUsedReading(state, true)).toContain('90,000');
+  });
+
+  it('says nothing when the daemon withheld the month totals', () => {
+    const base = limitState({ monthly: { maxTokens: 100_000, maxUsd: 5 } });
+    const state = { ...base, used: { ...base.used, monthTokens: null, monthUsd: null } };
+    expect(monthUsedReading(state, true)).toBeNull();
   });
 });

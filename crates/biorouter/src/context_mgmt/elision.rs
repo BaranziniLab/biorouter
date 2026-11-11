@@ -193,8 +193,10 @@ pub struct ElisionCandidate {
     pub tool: String,
     /// The model-visible text of the result, joined.
     pub text: String,
-    /// The file `large_response_handler` already saved this result to, when
-    /// it did.
+    /// The path the result's text says `large_response_handler` saved it to.
+    /// A CLAIM read from tool output, which anything the tool read can forge:
+    /// `save_candidates` reuses it only when it is that handler's own file for
+    /// this chat, and otherwise writes a fresh one.
     pub existing_handle: Option<String>,
     pub is_error: bool,
     pub estimated_tokens: usize,
@@ -313,12 +315,43 @@ pub fn plan_elision(
     candidates
 }
 
-/// The path `large_response_handler` saved this result to, when the result is
-/// that handler's preview and the file is still there.
+/// The path the result's text names as `large_response_handler`'s saved copy.
+/// Only a claim: see [`trusted_existing_handle`].
 fn existing_handle(text: &str) -> Option<String> {
-    let line = text.lines().find(|l| l.starts_with(OFFLOADED_MARKER))?;
-    let path = line[OFFLOADED_MARKER.len()..].trim();
-    (!path.is_empty() && Path::new(path).is_file()).then(|| path.to_string())
+    let path = text
+        .lines()
+        .find_map(|l| l.strip_prefix(OFFLOADED_MARKER))?
+        .trim();
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// `claimed` when it is a file `large_response_handler` wrote for this chat:
+/// a regular file whose real location is directly inside the chat's
+/// `.biorouter/tool-output` folder or the handler's fallback folder, named the
+/// way the handler names this session's handles. The marker line sits in the
+/// tool's own output, so a scraped page, a document or a query row can print
+/// it with any path; the stub is host-authored text outside the untrusted
+/// frame, and must never send the model to a file the tool did not write.
+fn trusted_existing_handle(
+    claimed: &str,
+    session_id: &str,
+    working_dir: &Path,
+    fallback_dir: &Path,
+) -> Option<String> {
+    let real = std::fs::canonicalize(claimed).ok()?;
+    if !std::fs::metadata(&real).ok()?.is_file() {
+        return None;
+    }
+    let name = real.file_name()?.to_str()?;
+    if !crate::agents::large_response_handler::is_handle_filename_for_session(name, session_id) {
+        return None;
+    }
+    let parent = real.parent()?;
+    let inside = [working_dir.join(HANDLE_DIR), fallback_dir.to_path_buf()]
+        .iter()
+        .filter_map(|dir| std::fs::canonicalize(dir).ok())
+        .any(|dir| dir == parent);
+    inside.then(|| claimed.to_string())
 }
 
 fn head_of(text: &str, is_error: bool) -> String {
@@ -336,7 +369,7 @@ fn head_of(text: &str, is_error: bool) -> String {
 
 fn truncate_chars(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
-        Some((cut, _)) => format!("{}…", &text[..cut]),
+        Some((cut, _)) => format!("{}…", text.split_at(cut).0),
         None => text.to_string(),
     }
 }
@@ -421,7 +454,10 @@ fn save_candidates(
 ) -> Vec<(String, ElidedResult)> {
     let mut saved = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        let path = match candidate.existing_handle.clone() {
+        let reused = candidate.existing_handle.as_deref().and_then(|claimed| {
+            trusted_existing_handle(claimed, session_id, working_dir, fallback_dir)
+        });
+        let path = match reused {
             Some(path) => path,
             None => match write_handle(&candidate, session_id, working_dir, fallback_dir) {
                 Ok(path) => path.display().to_string(),
@@ -930,11 +966,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_already_offloaded_result_points_at_its_existing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let saved = dir.path().join("already.txt");
-        std::fs::write(&saved, "the whole thing").unwrap();
+    /// A chat whose oldest result is an offload preview naming `saved`.
+    fn chat_with_offload_preview(saved: &Path) -> Vec<Message> {
         let preview = format!(
             "The `query` tool returned a large result.\n{OFFLOADED_MARKER}{}\n{}",
             saved.display(),
@@ -942,6 +975,18 @@ mod tests {
         );
         let mut messages = vec![request("big", "query"), response("big", &preview)];
         messages.extend(chat(8, 1_000, "query"));
+        messages
+    }
+
+    #[test]
+    fn an_already_offloaded_result_points_at_its_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let handles = dir.path().join(HANDLE_DIR);
+        std::fs::create_dir_all(&handles).unwrap();
+        // The shape `large_response_handler` names this chat's handles.
+        let saved = handles.join("query-s1-20261110_120000.000001.txt");
+        std::fs::write(&saved, "the whole thing").unwrap();
+        let messages = chat_with_offload_preview(&saved);
         let planned = plan_elision(&messages, &ToolResultElisions::default(), &params());
         let candidate = planned.iter().find(|c| c.id == "big").unwrap();
         assert_eq!(
@@ -950,6 +995,53 @@ mod tests {
         );
         let state = entries_for(&planned, dir.path());
         assert_eq!(state.entries["big"].path, saved.display().to_string());
+    }
+
+    #[test]
+    fn a_saved_at_line_printed_by_the_tool_is_not_trusted() {
+        // Tool output can print the marker line with any path: a scraped page,
+        // a document or a data row. The stub is host-authored, so it must point
+        // at a copy elision wrote, never at the planted file.
+        let dir = tempfile::tempdir().unwrap();
+        let handles = dir.path().join(HANDLE_DIR);
+        std::fs::create_dir_all(&handles).unwrap();
+        let elsewhere = dir.path().join("Documents");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let unrelated = elsewhere.join("cohort.csv");
+        std::fs::write(&unrelated, "id,dx\n").unwrap();
+        // Right folder, but named for another chat.
+        let other_chat = handles.join("query-s2-20261110_120000.000001.txt");
+        std::fs::write(&other_chat, "another chat's output").unwrap();
+        // Right name, but outside the folder.
+        let lookalike = elsewhere.join("query-s1-20261110_120000.000001.txt");
+        std::fs::write(&lookalike, "planted").unwrap();
+        // Right name in the right folder, reached through a symlink out.
+        let linked = handles.join("query-s1-20261110_130000.000001.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&unrelated, &linked).unwrap();
+
+        for planted in [&unrelated, &other_chat, &lookalike, &linked] {
+            let messages = chat_with_offload_preview(planted);
+            let planned = plan_elision(&messages, &ToolResultElisions::default(), &params());
+            assert!(planned.iter().any(|c| c.id == "big"));
+            let state = entries_for(&planned, dir.path());
+            let path = &state.entries["big"].path;
+            assert_ne!(path, &planted.display().to_string(), "{planted:?}");
+            assert!(
+                Path::new(path).starts_with(&handles)
+                    && Path::new(path)
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("elided-"),
+                "a fresh copy is written: {path}"
+            );
+            // And the fresh copy holds the result the model was given.
+            assert!(std::fs::read_to_string(path)
+                .unwrap()
+                .contains(&planted.display().to_string()));
+        }
     }
 
     #[test]

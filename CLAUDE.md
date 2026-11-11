@@ -804,11 +804,11 @@ prompt both catalog models made structured tool calls reliably.
   Ollama ships CUDA. Deleting a Llama Server row that came from Ollama removes
   the tags whose `/api/show` FROM line names the listed blob, never
   `ollama_name`, because on Apple Silicon the bare tag is the MLX build.
-- **Prompt clock:** for a local engine (`prompt_manager::is_local_engine`) the
-  system prompt states the date, not the hour. The clock sits near the top of
-  the prompt, so an hourly change re-prefilled everything after it: measured on
-  qwen3.8:27b, 8,191 of 30,745 tokens reused and 107 s of prefill on the first
-  request after each hour boundary. The MOIM still carries the minute.
+- **Prompt clock:** for every provider the system prompt states the date, not
+  the hour (`prompt_manager::render_prompt_clock`): a change anywhere in the
+  system text throws away the provider's prompt cache from that byte on (Versa,
+  2026-11: one changed clock line took cached tokens from 26,694 to 0;
+  qwen3.8:27b: 107 s of prefill). The MOIM still carries the minute.
 - **Tier: a cloud model is Public even on a loopback host.** `tier()` is
   `self_hosted_tier(base URL)` (loopback → Private) EXCEPT when the model is
   served remotely: a tag that is `cloud` or ends in `-cloud`
