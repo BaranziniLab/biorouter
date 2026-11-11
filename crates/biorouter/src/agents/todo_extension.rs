@@ -298,14 +298,14 @@ where
         .update_extension_data(session_id, |data| {
             // ⚠ Never `TodoState::load(..).unwrap_or_default()` here. `load`
             // reports a blob this build cannot parse as `None`, and the write
-            // below replaces the WHOLE `todo.v1` key — so one `todo_add`
+            // below replaces the WHOLE `todo.v1` key, so one `todo_add`
             // against a checklist a newer build wrote would silently destroy
             // it. Refuse instead: the blob stays exactly where it is.
             let loaded = TodoState::try_load(data).map_err(|unreadable| {
                 format!(
                     "This session's stored checklist (`{}`) was written by a newer build \
                      of Biorouter and cannot be read here. Leaving it untouched rather \
-                     than overwriting it — update Biorouter to change this checklist.",
+                     than overwriting it. Update Biorouter to change this checklist.",
                     unreadable.key
                 )
             });
@@ -450,7 +450,7 @@ pub struct TodoClient {
     /// H6: until the client-wide `McpClientBox` mutex was removed, every
     /// `call_tool` on this extension was serialized for free, which is what made
     /// `with_state` safe. Now that tool calls on one extension overlap, this
-    /// extension carries its own lock. It is deliberately narrow — it guards
+    /// extension carries its own lock. It is deliberately narrow: it guards
     /// only the session-metadata round trip (sub-millisecond, local), not the
     /// MCP dispatch path, so it costs nothing and cannot reintroduce H6.
     ///

@@ -401,7 +401,7 @@ const WORKSPACE_LIST_MAX_SCAN_ROWS: usize = 20_000;
 
 // `Default` is derived so `handle_list` can fall back to it when the call
 // carries no arguments at all. Constructing the struct field-by-field there
-// breaks every time this struct gains a field — which it has already done
+// breaks every time this struct gains a field, which it has already done
 // twice (decisions 17 and 23 added `offset`/`limit` and
 // `parent_session_id`/`only_subagents`). Plain `//`, because a doc comment
 // here becomes the tool schema's top-level description, sent to the model on
@@ -7209,13 +7209,13 @@ fn monitor_rule_words(
 }
 
 /// BR-71 §8.1 / decision 7: the user's focus-etiquette preference. When on, the
-/// workspace never opens a tab or a window on its own — it posts a notification
+/// workspace never opens a tab or a window on its own: it posts a notification
 /// naming the conversation instead, and the tool result says so, so the model
 /// does not claim to have opened something.
 ///
 /// Config key, read through the same store every other daemon-visible
 /// preference uses (`Config::global().get_param`, e.g. `SECURITY_COMMAND_POLICY`
-/// in `security/mod.rs`). Default OFF — background-open stays the design's
+/// in `security/mod.rs`). Default OFF: background-open stays the design's
 /// default (§4.1 "opens in the background, never stealing the composer").
 pub const ANNOUNCE_ONLY_KEY: &str = "WORKSPACE_ANNOUNCE_ONLY";
 
@@ -10630,7 +10630,7 @@ pub(crate) mod tests {
     /// §4.1's "never truncating silently", proven on the REAL production path.
     ///
     /// A `max_chars` raised to its 200k ceiling produces a body of roughly 50k
-    /// tokens — well over BR-6's ~10k-token inline budget. In production this
+    /// tokens, well over BR-6's ~10k-token inline budget. In production this
     /// tool is an ordinary extension tool, so its result leaves
     /// `dispatch_tool_call` and goes straight into
     /// [`large_response_handler::process_tool_response`], which offloads the

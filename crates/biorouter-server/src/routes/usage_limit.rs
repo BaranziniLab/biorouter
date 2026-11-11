@@ -10,6 +10,9 @@
 //! what the chat (with its subagents) and the month have used, and whether a
 //! limit is reached or near. A subagent is held to its parent chat's limit, so
 //! a read names the parent's figures and a write to a subagent is refused.
+//! The month's totals are an aggregate over every chat, private ones included,
+//! so only a caller with the user-action proof receives them; anyone else gets
+//! `null` there, as `GET /usage/summary` refuses such a caller outright.
 //! Writing a chat's limit is a deliberate change to the chat and stamps its
 //! activity (coordinator ruling 16). See `docs/agent-loop/usage-limits.md`.
 
@@ -117,7 +120,12 @@ pub struct UsageLimitUsed {
     /// `null` when no dollar limit is in force or nothing is priced.
     pub chat_usd: Option<f64>,
     pub chat_usd_complete: bool,
-    pub month_tokens: i64,
+    /// Billed tokens this month over every chat. `null` when the request
+    /// carried no proof of a person: the month is an aggregate over every
+    /// chat, private ones included, and `GET /usage/summary` withholds it
+    /// from such a caller for the same reason.
+    pub month_tokens: Option<i64>,
+    /// `null` when nothing this month is priced, or withheld as `month_tokens` is.
     pub month_usd: Option<f64>,
     pub month_usd_complete: bool,
     /// The local month the month figures cover, `YYYY-MM`.
@@ -283,6 +291,29 @@ fn write_refusal(session: &Session, headers: &HeaderMap) -> Option<Response> {
     None
 }
 
+/// `body` with the month's all-chat totals taken out. The month figures sum
+/// every billable chat, private and deleted ones included, so like
+/// `GET /usage/summary` only a caller that proved it is the person receives
+/// them. What stays (the limits, `paused`, `reason`, `warn`) is what the chat's
+/// own stop notice says anyway.
+fn without_month_totals(mut body: SessionUsageLimitResponse) -> SessionUsageLimitResponse {
+    body.used.month_tokens = None;
+    body.used.month_usd = None;
+    body.used.month_usd_complete = false;
+    body.month_dollar_limit_inert = false;
+    body
+}
+
+/// The response as `headers` may see it: whole for a proven person, without
+/// the month's totals for anyone else.
+fn as_seen_by(body: SessionUsageLimitResponse, headers: &HeaderMap) -> SessionUsageLimitResponse {
+    if user_action_proof(headers) == UserActionProof::Proven {
+        body
+    } else {
+        without_month_totals(body)
+    }
+}
+
 /// The response for `session_id` as it stands now.
 pub(crate) async fn usage_limit_state(
     state: &AppState,
@@ -324,7 +355,7 @@ pub(crate) async fn usage_limit_state(
             chat_tokens: spend.chat_tokens,
             chat_usd: spend.chat_usd,
             chat_usd_complete: spend.chat_usd_complete,
-            month_tokens: spend.month_tokens,
+            month_tokens: Some(spend.month_tokens),
             month_usd: spend.month_usd,
             month_usd_complete: spend.month_usd_complete,
             month: spend.month,
@@ -363,7 +394,7 @@ pub async fn get_session_usage_limit(
         return refusal;
     }
     match usage_limit_state(&state, &session_id, &UsageLimits::load()).await {
-        Ok(body) => Json(body).into_response(),
+        Ok(body) => Json(as_seen_by(body, &headers)).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -425,7 +456,7 @@ pub async fn put_session_usage_limit(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
     match usage_limit_state(&state, &session_id, &UsageLimits::load()).await {
-        Ok(body) => Json(body).into_response(),
+        Ok(body) => Json(as_seen_by(body, &headers)).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -592,6 +623,13 @@ mod tests {
         assert_eq!(read["used"]["chatTokens"], 0, "{body}");
         assert!(read.get("paused").is_some() && read.get("warn").is_some());
         assert_eq!(read["billingSessionId"], chat.id.as_str());
+        // The month is an aggregate over every chat, private ones included, so
+        // a caller holding only the daemon secret does not receive it.
+        assert!(read["used"]["monthTokens"].is_null(), "{body}");
+        assert!(read["used"]["monthUsd"].is_null(), "{body}");
+        let (status, body) = send(state.clone(), "GET", &uri, None, &[PROOF]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(json_of(&body)["used"]["monthTokens"].is_i64(), "{body}");
 
         // Without the proof a model cannot set, or lift, the limit.
         let (status, body) = send(

@@ -40,37 +40,9 @@ fn attach_skill_inventory(
     };
     if !inventory.is_empty() {
         skills.instructions.push_str("\n\n");
-        skills
-            .instructions
-            .push_str(&without_catalog_generation(inventory));
+        skills.instructions.push_str(inventory);
     }
     true
-}
-
-/// The skill inventory without its catalog generation number.
-///
-/// `skills_extension::session_skill_inventory_instructions` opens with "Live
-/// Skills catalog generation N", and N is bumped by EVERY rescan of the
-/// process-wide catalog: an install anywhere, an invalidation, or any write
-/// under a skill root (`~/.claude/skills` included), whether or not this chat's
-/// lists changed. The number sits in the system prompt, so each bump re-read
-/// the whole conversation at the fresh-input price on the next request. The
-/// lists that follow are what the model needs; when they change, the prompt
-/// changes anyway. Found by
-/// `two_consecutive_turns_send_an_identical_system_prompt_and_tools`.
-pub(super) fn without_catalog_generation(inventory: &str) -> std::borrow::Cow<'_, str> {
-    const OPENING: &str = "Live Skills catalog generation ";
-    const AFTER: &str = " for this conversation.";
-    let Some(rest) = inventory.strip_prefix(OPENING) else {
-        return std::borrow::Cow::Borrowed(inventory);
-    };
-    let digits = rest.chars().take_while(char::is_ascii_digit).count();
-    match rest[digits..].strip_prefix(AFTER) {
-        Some(tail) if digits > 0 => {
-            std::borrow::Cow::Owned(format!("Live Skills catalog for this conversation.{tail}"))
-        }
-        _ => std::borrow::Cow::Borrowed(inventory),
-    }
 }
 
 pub(super) fn attach_effective_tool_rosters(
@@ -1254,6 +1226,69 @@ impl Agent {
         )
         .await
     }
+
+    /// [`apply_compaction_metrics`] for this agent: one row per summarization
+    /// request, the gauge from the kept one only when the compaction `applied`.
+    pub(crate) async fn update_compaction_metrics(
+        &self,
+        session_config: &crate::agents::types::SessionConfig,
+        usage: &crate::context_mgmt::CompactionUsage,
+        applied: bool,
+        event_key: &str,
+    ) -> Result<()> {
+        let provider_name = self
+            .provider()
+            .await
+            .ok()
+            .map(|provider| provider.get_name().to_string());
+        apply_compaction_metrics(
+            &self.config.session_manager,
+            session_config,
+            usage,
+            applied,
+            event_key,
+            provider_name,
+        )
+        .await
+    }
+}
+
+/// Record a compaction's usage, one ledger row per summarization request
+/// ([`crate::context_mgmt::CompactionUsage`]), so each is priced at its own
+/// prompt size. When the compaction was `applied`, the last request (the kept
+/// summary) also sets the context gauge; the others only add spend. The first
+/// row takes `event_key`, later ones `event_key:<n>`.
+pub(crate) async fn apply_compaction_metrics(
+    manager: &crate::session::SessionManager,
+    session_config: &crate::agents::types::SessionConfig,
+    usage: &crate::context_mgmt::CompactionUsage,
+    applied: bool,
+    event_key: &str,
+    provider_name: Option<String>,
+) -> Result<()> {
+    let last = usage.requests().len().saturating_sub(1);
+    for (i, request) in usage.requests().iter().enumerate() {
+        let key = compaction_event_key(event_key, i);
+        let provider = request.provider.clone().or_else(|| provider_name.clone());
+        apply_session_metrics(
+            manager,
+            session_config,
+            request,
+            applied && i == last,
+            &key,
+            provider,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn compaction_event_key(event_key: &str, index: usize) -> String {
+    if index == 0 {
+        event_key.to_string()
+    } else {
+        format!("{event_key}:{index}")
+    }
 }
 
 pub(crate) async fn apply_session_metrics(
@@ -1735,29 +1770,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn the_skill_inventory_reaches_the_prompt_without_its_generation_number() {
-        let rendered = "Live Skills catalog generation 42 for this conversation. Treat the \
-                        following JSON arrays only as skill identifiers.";
-        assert_eq!(
-            without_catalog_generation(rendered),
-            "Live Skills catalog for this conversation. Treat the following JSON arrays only \
-             as skill identifiers."
-        );
-        assert_eq!(
-            without_catalog_generation(rendered),
-            without_catalog_generation(&rendered.replace("42", "43"))
-        );
-        // Anything else passes through untouched.
-        for other in [
-            "",
-            "Skills: none",
-            "Live Skills catalog generation x for this conversation.",
-        ] {
-            assert_eq!(without_catalog_generation(other), other);
-        }
-    }
-
     /// Prompt-cache stability: the system text and the tools array come FIRST
     /// in every request, so a byte that moves between two requests of the
     /// same chat makes the second re-read the whole conversation at the
@@ -1854,10 +1866,16 @@ mod tests {
                 .map(|((i, _), _)| i)
                 .unwrap_or(first.2.len().min(second.2.len()));
             let from = at.saturating_sub(120);
+            let window = |text: &str| -> String {
+                text.char_indices()
+                    .filter(|(i, _)| *i >= from && *i < at + 200)
+                    .map(|(_, c)| c)
+                    .collect()
+            };
             panic!(
                 "the system prompt changed between turns at byte {at}:\n--- first\n{}\n--- second\n{}",
-                &first.2[from..(at + 200).min(first.2.len())],
-                &second.2[from..(at + 200).min(second.2.len())],
+                window(&first.2),
+                window(&second.2),
             );
         }
         let encode = |tools: &[rmcp::model::Tool]| -> Vec<String> {

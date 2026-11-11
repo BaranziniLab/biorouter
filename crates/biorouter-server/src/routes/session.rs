@@ -1068,6 +1068,8 @@ async fn delete_session(
     let released =
         biorouter::pending_user_action::PendingUserActions::global().cancel_session(&session_id);
     biorouter::folder_access::FolderAccessManager::global().end_session(&session_id);
+    // A job watch of a deleted chat must never check or resume anything.
+    biorouter::agents::cancel_job_watches_for_session(&session_id);
     if released > 0 {
         tracing::info!(
             session_id = %session_id,

@@ -15,6 +15,8 @@ pub(crate) mod chatrecall_extension;
 // sub-calls' full arguments (their records are truncated).
 pub(crate) mod code_delta;
 pub(crate) mod code_execution_extension;
+/// End a chat's job watches at once (the delete route).
+pub use code_execution_extension::cancel_job_watches_for_session;
 // Decision models: the `decide` and `decision_models` tools (a default-on
 // platform extension the delegation gate does not count).
 pub mod decisions_extension;
@@ -32,7 +34,7 @@ pub mod final_output_tool;
 pub mod goal;
 pub mod knowledge_source_tool;
 pub mod knowledge_tool;
-mod large_response_handler;
+pub(crate) mod large_response_handler;
 pub mod loop_phase;
 pub mod mcp_client;
 pub mod mcp_pool;

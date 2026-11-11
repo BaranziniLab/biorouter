@@ -2187,7 +2187,7 @@ fn auto_compaction_notice(provider: &dyn Provider) -> String {
 }
 
 /// Code Execution's job waits: `wait_for` sleeps between status checks for up
-/// to 280 s, and `watch_job` waits on a job the same way. Both name forms. Like
+/// to 600 s (240 by default), and `watch_job` waits on a job the same way. Both name forms. Like
 /// a parking workspace tool, a wait does no work of its own while it holds the
 /// call open, and its checks run one at a time through
 /// `ExtensionManager::dispatch_tool_call`, which takes no dispatch permit, so
@@ -2604,6 +2604,157 @@ fn hook_context_message(hook_contexts: &[String]) -> Option<Message> {
 /// 128-byte slot in that generator's `poll` frame (issue #87), so a three-call
 /// chain costs three where one call costs one. Please build these through the
 /// constructors rather than re-inlining the chains. See [`ToolBatchMaps`].
+/// The opening tag of the reply's `<explicit-resource-context>` message.
+const EXPLICIT_RESOURCE_CONTEXT_OPEN: &str = "<explicit-resource-context>";
+
+/// Is `message` the reply's in-memory explicit resource context: the model-only,
+/// never-stored user message `prepare_reply_context` appends?
+fn is_explicit_resource_context(message: &Message) -> bool {
+    message.id.is_none()
+        && message.role == rmcp::model::Role::User
+        && message.metadata.agent_visible
+        && !message.metadata.user_visible
+        && message
+            .as_concat_text()
+            .starts_with(EXPLICIT_RESOURCE_CONTEXT_OPEN)
+}
+
+/// Carry the reply's explicit resource context across a compaction that
+/// replaced `before` with `after`.
+///
+/// The context (the bodies of skills the person selected, marked mandatory,
+/// and the extension and knowledge-base context) is built once per reply and
+/// never stored, so a mid-turn or overflow compaction, which summarises and
+/// returns the STORED history, drops it, and the rest of the reply would run
+/// without instructions the person marked mandatory. It is not rebuilt: a
+/// skill already inlined this session would come back as a pointer, and the
+/// knowledge prefetch would run again. It goes back where it sat: right after
+/// the last user text message the model sees (the preserved prompt), or at the
+/// end when there is none.
+fn carry_explicit_resource_context(before: &Conversation, after: Conversation) -> Conversation {
+    let carried: Vec<Message> = before
+        .messages()
+        .iter()
+        .filter(|m| is_explicit_resource_context(m))
+        .cloned()
+        .collect();
+    if carried.is_empty() || after.messages().iter().any(is_explicit_resource_context) {
+        return after;
+    }
+    let mut messages = after.into_messages();
+    let at = messages
+        .iter()
+        .rposition(|m| {
+            m.role == rmcp::model::Role::User
+                && m.is_agent_visible()
+                && !m.content.is_empty()
+                && m.content
+                    .iter()
+                    .all(|c| matches!(c, MessageContent::Text(_)))
+        })
+        .map_or(messages.len(), |i| i + 1);
+    messages.splice(at..at, carried);
+    Conversation::new_unvalidated(messages)
+}
+
+#[cfg(test)]
+mod explicit_resource_context_compaction_tests {
+    use super::*;
+    use crate::conversation::message::MessageMetadata;
+
+    fn context_message() -> Message {
+        Message::user()
+            .with_text(format!(
+                "{EXPLICIT_RESOURCE_CONTEXT_OPEN}\nThe user explicitly selected these skills \
+                 for this request: `cohort-analysis`.\n</explicit-resource-context>"
+            ))
+            .with_visibility(false, true)
+    }
+
+    fn stored(message: Message, id: &str) -> Message {
+        message.with_id(id)
+    }
+
+    /// The reply's history as the loop holds it mid-turn: the stored prompt,
+    /// the never-stored context, then rounds of tool work.
+    fn mid_turn() -> Conversation {
+        Conversation::new_unvalidated(vec![
+            stored(Message::user().with_text("analyse the cohort"), "m1"),
+            context_message(),
+            stored(Message::assistant().with_text("Reading the data."), "m2"),
+        ])
+    }
+
+    /// What a compaction returns: the summary, the continuation and the
+    /// preserved prompt, all stored.
+    fn compacted() -> Conversation {
+        Conversation::new_unvalidated(vec![
+            stored(
+                Message::user()
+                    .with_text("summary of the work so far")
+                    .with_metadata(MessageMetadata::agent_only()),
+                "s1",
+            ),
+            stored(
+                Message::assistant()
+                    .with_text("continuing")
+                    .with_metadata(MessageMetadata::agent_only()),
+                "s2",
+            ),
+            stored(Message::user().with_text("analyse the cohort"), "s3"),
+        ])
+    }
+
+    #[test]
+    fn a_compaction_keeps_the_replys_explicit_resource_context() {
+        let after = carry_explicit_resource_context(&mid_turn(), compacted());
+        let messages = after.messages();
+        assert_eq!(messages.len(), 4);
+        assert!(
+            is_explicit_resource_context(&messages[3]),
+            "the context sits after the preserved prompt, where it sat at the reply's start"
+        );
+        assert_eq!(messages[2].as_concat_text(), "analyse the cohort");
+        assert!(!messages[3].metadata.user_visible);
+    }
+
+    #[test]
+    fn the_context_goes_after_the_last_user_text_not_after_tool_work() {
+        let mut after = compacted().into_messages();
+        after.push(stored(Message::assistant().with_text("more work"), "s4"));
+        let after =
+            carry_explicit_resource_context(&mid_turn(), Conversation::new_unvalidated(after));
+        let messages = after.messages();
+        assert!(is_explicit_resource_context(&messages[3]));
+        assert_eq!(messages[4].as_concat_text(), "more work");
+    }
+
+    #[test]
+    fn nothing_is_added_without_a_context_or_twice() {
+        let plain = Conversation::new_unvalidated(vec![stored(
+            Message::user().with_text("analyse the cohort"),
+            "m1",
+        )]);
+        assert_eq!(
+            carry_explicit_resource_context(&plain, compacted()).messages(),
+            compacted().messages()
+        );
+        let once = carry_explicit_resource_context(&mid_turn(), compacted());
+        let twice = carry_explicit_resource_context(&mid_turn(), once.clone());
+        assert_eq!(twice.messages(), once.messages());
+        // A STORED message that happens to start with the tag is not the
+        // reply's context: only the never-stored model-only one is carried.
+        let typed = Conversation::new_unvalidated(vec![stored(
+            Message::user().with_text(format!("{EXPLICIT_RESOURCE_CONTEXT_OPEN} typed")),
+            "m1",
+        )]);
+        assert_eq!(
+            carry_explicit_resource_context(&typed, compacted()).messages(),
+            compacted().messages()
+        );
+    }
+}
+
 fn inline_notice<S: Into<String>>(text: S) -> Message {
     Message::assistant().with_system_notification(SystemNotificationType::InlineMessage, text)
 }
@@ -5227,6 +5378,21 @@ async fn run_background_compaction(
     fixed_prompt: Option<(String, Vec<Tool>)>,
 ) {
     let session_id = session_config.id.clone();
+    // A compaction is spend. A chat (or the month) at its usage limit makes no
+    // model call until the person raises or lifts it, and a reply that just
+    // stopped on its limit is usually a heavy one, over the trigger. Asked here
+    // rather than at the spawn so every caller is covered; the synchronous
+    // compaction at the top of the next reply sits behind the prologue's gate.
+    if let Some(hit) =
+        crate::agents::usage_limit::reached_limit(&session_manager, &session_id).await
+    {
+        tracing::debug!(
+            session_id,
+            axis = hit.amount.axis(),
+            "skipping background compaction: a usage limit is reached"
+        );
+        return;
+    }
     let fixed_prompt = fixed_prompt
         .as_ref()
         .map(|(system_prompt, tools)| (system_prompt.as_str(), tools.as_slice()));
@@ -7154,7 +7320,7 @@ impl Agent {
             conversation.push(
                 Message::user()
                     .with_text(format!(
-                        "<explicit-resource-context>\n{context}\n</explicit-resource-context>"
+                        "{EXPLICIT_RESOURCE_CONTEXT_OPEN}\n{context}\n</explicit-resource-context>"
                     ))
                     .with_visibility(false, true),
             );
@@ -8097,7 +8263,8 @@ impl Agent {
                 return Err(e);
             }
         };
-        usages.push(usage);
+        // One entry per summarization request, never a sum (`CompactionUsage`).
+        usages.extend(usage.into_requests());
 
         let first_attempt = session_manager
             .replace_conversation_preserving_tail(
@@ -8200,7 +8367,7 @@ impl Agent {
                     return Ok(OverflowCompactionSwap::unpersisted(compacted, usages));
                 }
             };
-        usages.push(retry_usage);
+        usages.extend(retry_usage.into_requests());
 
         match session_manager
             .replace_conversation_preserving_tail(session_id, &recompacted, basis.revision, &fresh)
@@ -9228,8 +9395,6 @@ impl Agent {
     }
 
     /// Dispatch a single tool call to the appropriate client
-    #[instrument(skip(self, tool_call, request_id), fields(input, output))]
-    #[allow(clippy::too_many_lines)]
     pub async fn dispatch_tool_call(
         &self,
         mut tool_call: CallToolRequestParams,
@@ -9243,10 +9408,16 @@ impl Agent {
         // of its own. It is the host's, not the tool's: taken out here, before
         // anything below reads the arguments, so the tool, the poll pacing's
         // argument hash and every refusal see exactly what the tool declared.
+        // Taken whatever the todo capability's state (none of these tools
+        // declares a `todo` field, so stripping one is always harmless) but
+        // applied only while that capability is on: with it off the schema
+        // carried no field, and a stray one must not write a checklist.
         // Applied as soon as it is taken, which is still before the tool's
         // body runs (that is a deferred future the batch drives later). Never
-        // fails the call it rode on; a sidecar that cannot be applied is
-        // logged.
+        // fails the call it rode on; a sidecar that cannot be applied in full
+        // is logged, and its sentence is added to that call's result for the
+        // model alone, since the model gets no other answer for a sidecar.
+        let mut sidecar_note = None;
         if super::reply_parts::call_has_todo_sidecar(
             tool_call.name.as_ref(),
             tool_call.arguments.as_ref(),
@@ -9254,23 +9425,73 @@ impl Agent {
             if let Some(sidecar) =
                 super::todo_extension::take_todo_sidecar(&mut tool_call.arguments)
             {
-                if let Err(e) = boxed_off_frame(|| {
-                    super::todo_extension::apply_todo_sidecar(
-                        &self.config.session_manager,
-                        &session.id,
-                        sidecar,
-                    )
-                })
-                .await
+                if self
+                    .extension_manager
+                    .is_extension_enabled(super::todo_extension::EXTENSION_NAME)
+                    .await
                 {
-                    warn!(
-                        session_id = %session.id,
-                        tool = %tool_call.name,
-                        "checklist update on a tool call was not applied in full: {e:#}"
-                    );
+                    if let Err(e) = boxed_off_frame(|| {
+                        super::todo_extension::apply_todo_sidecar(
+                            &self.config.session_manager,
+                            &session.id,
+                            sidecar,
+                        )
+                    })
+                    .await
+                    {
+                        warn!(
+                            session_id = %session.id,
+                            tool = %tool_call.name,
+                            "checklist update on a tool call was not applied in full: {e:#}"
+                        );
+                        // Every sidecar error already opens with "todo" and
+                        // says what was and was not applied.
+                        let sentence = e.to_string();
+                        sidecar_note = Some(if sentence.starts_with("todo") {
+                            sentence
+                        } else {
+                            format!("todo: {sentence}")
+                        });
+                    }
                 }
             }
         }
+        let (request_id, result) = Box::pin(self.dispatch_tool_call_after_sidecar(
+            tool_call,
+            request_id,
+            cancellation_token,
+            session,
+        ))
+        .await;
+        let Some(note) = sidecar_note else {
+            return (request_id, result);
+        };
+        let result = result.map(|mut call| {
+            let inner = call.result;
+            call.result = Box::new(Box::pin(async move {
+                let mut outcome = inner.await;
+                if let Ok(done) = outcome.as_mut() {
+                    done.content.push(
+                        Content::text(note).with_audience(vec![rmcp::model::Role::Assistant]),
+                    );
+                }
+                outcome
+            }));
+            call
+        });
+        (request_id, result)
+    }
+
+    /// [`Self::dispatch_tool_call`] once the checklist sidecar is off the call.
+    #[instrument(skip(self, tool_call, request_id), fields(input, output))]
+    #[allow(clippy::too_many_lines)]
+    async fn dispatch_tool_call_after_sidecar(
+        &self,
+        mut tool_call: CallToolRequestParams,
+        request_id: String,
+        cancellation_token: Option<CancellationToken>,
+        session: &Session,
+    ) -> (String, Result<ToolCallResult, ErrorData>) {
         let crew_admission = match crate::crew::manager() {
             Ok(crew) => {
                 crew.authorize_session_tool(&session.id, tool_call.name.as_ref())
@@ -11367,7 +11588,7 @@ impl Agent {
                             // would reset the live gauge to the summary's size and
                             // suppress the next compaction check on a history that
                             // never shrank.
-                            self.update_session_metrics(
+                            self.update_compaction_metrics(
                                 &session_config,
                                 &summarization_usage,
                                 false,
@@ -11384,7 +11605,7 @@ impl Agent {
                             // (or, if that failed, the view we started from).
                             latest_conversation
                         } else {
-                        self.update_session_metrics(
+                        self.update_compaction_metrics(
                             &session_config,
                             &summarization_usage,
                             true,
@@ -12966,7 +13187,10 @@ impl Agent {
         events.push(AgentEvent::Message(inline_notice("Compaction complete")));
         MidTurnCompactionOutcome {
             events,
-            conversation: Some(crate::conversation::without_bedrock_reasoning(&continued)),
+            conversation: Some(carry_explicit_resource_context(
+                conversation,
+                crate::conversation::without_bedrock_reasoning(&continued),
+            )),
         }
     }
 
@@ -14713,8 +14937,12 @@ impl Agent {
                                 break;
                             }
                             // A compaction is spend: none once a usage limit is
-                            // reached. The gate stops the turn, and the loop top
-                            // stops again without a second notice.
+                            // reached. This `break` leaves only the provider-stream
+                            // loop; the gate has latched the reply as stopped, and
+                            // the iteration tail reads that latch to end the turn
+                            // after this iteration's rows are stored, before the
+                            // exit gates (done gate, self-critique, Stop hooks,
+                            // `turn_end` monitors) that would spend again.
                             match boxed_off_frame(|| {
                                 self.usage_limit_gate(&session_config.id, turns_taken)
                             })
@@ -14814,7 +15042,10 @@ impl Agent {
                                             // by the watermark yet be unknown to the next
                                             // swap, which then deleted it.
                                             yield AgentEvent::HistoryReplaced(stored.clone());
-                                            conversation = crate::conversation::without_bedrock_reasoning(&stored);
+                                            conversation = carry_explicit_resource_context(
+                                                &conversation,
+                                                crate::conversation::without_bedrock_reasoning(&stored),
+                                            );
                                         }
                                         None => {
                                             // Twice declined. Do NOT clobber: keep going
@@ -14827,7 +15058,10 @@ impl Agent {
                                                  continuing in memory with the stored history intact",
                                                 session_config.id
                                             );
-                                            conversation = crate::conversation::without_bedrock_reasoning(&swap.compacted);
+                                            conversation = carry_explicit_resource_context(
+                                                &conversation,
+                                                crate::conversation::without_bedrock_reasoning(&swap.compacted),
+                                            );
                                         }
                                     }
                                     break;
@@ -15012,6 +15246,10 @@ impl Agent {
                 if pending_turn_abort.is_some() {
                     // The typed failure is emitted after this iteration's messages
                     // and usage have been persisted below.
+                } else if self.usage_limit_reply.stopped() {
+                    // A usage limit stopped the turn inside the stream loop (the
+                    // context-overflow arm). No retry logic and no exit gates:
+                    // the turn ends below once this iteration is stored.
                 } else if did_restart_for_catalog_this_iteration {
                     // Resume only after the completed tool records become durable below.
                 } else if did_restart_for_steer_this_iteration {
@@ -15255,6 +15493,15 @@ impl Agent {
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     deferred_turn_abort = Some((code, message));
+                    break;
+                }
+
+                // A usage limit reached inside the stream loop. The gate already
+                // recorded `TurnExit::Final` and stored the notice; what is left
+                // is to end the turn before anything below makes another model
+                // call (monitors, done gate, self-critique, Stop hooks, `/goal`).
+                if self.usage_limit_reply.stopped() {
+                    native_supervision_required = true;
                     break;
                 }
 
@@ -15506,7 +15753,10 @@ impl Agent {
                         && self_critique_passes < self_critique_config.max_passes
                         && !is_token_cancelled(&cancel_token)
                     {
-                        if let Some(reason) = self.run_self_critique(&conversation).await {
+                        if let Some(reason) = self
+                            .run_self_critique_in_session(Some(&session_config.id), &conversation)
+                            .await
+                        {
                             self_critique_passes += 1;
                             emit_loop_safety(
                                 LoopSafetyKind::SelfCritiqueRevise,
@@ -19280,6 +19530,124 @@ mod tests {
                 .any(|item| item.text == "write the report"),
             "{checklist:?}"
         );
+    }
+
+    /// A developer fixture plus the session, for the sidecar tests below.
+    async fn sidecar_fixture() -> (
+        Agent,
+        String,
+        Session,
+        Arc<std::sync::Mutex<Vec<Option<rmcp::model::JsonObject>>>>,
+    ) {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let developer = ExtensionConfig::stdio(
+            "developer",
+            "unused-fixture-command",
+            "developer fixture",
+            30_u64,
+        );
+        agent
+            .extension_manager
+            .add_client(
+                developer.key(),
+                developer,
+                Arc::new(RecordingShellClient {
+                    seen: Arc::clone(&seen),
+                }),
+                None,
+                None,
+            )
+            .await;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        (agent, session_id, session, seen)
+    }
+
+    fn shell_call_with_todo(todo: serde_json::Value) -> rmcp::model::CallToolRequestParams {
+        let mut arguments = rmcp::object!({"command": "wc -l rows.csv"});
+        arguments.insert("todo".to_string(), todo);
+        rmcp::model::CallToolRequestParams {
+            task: None,
+            meta: None,
+            name: "developer__shell".into(),
+            arguments: Some(arguments),
+        }
+    }
+
+    /// With the todo capability off the schemas carried no `todo` field, so a
+    /// stray one is still taken off the call but writes no checklist.
+    #[tokio::test]
+    async fn a_checklist_sidecar_is_stripped_but_not_applied_while_todo_is_off() {
+        let (agent, session_id, session, seen) = sidecar_fixture().await;
+        agent
+            .extension_manager
+            .remove_extension(crate::agents::todo_extension::EXTENSION_NAME)
+            .await
+            .unwrap();
+
+        let (_, dispatched) = agent
+            .dispatch_tool_call(
+                shell_call_with_todo(serde_json::json!({"add": ["write the report"]})),
+                "call-1".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        let result = dispatched.expect("dispatched").result.await;
+        assert!(result.is_ok(), "{result:?}");
+        let seen = seen.lock().unwrap().clone();
+        assert!(!seen[0].as_ref().unwrap().contains_key("todo"));
+
+        let stored = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let checklist = crate::session::extension_data::TodoState::load(&stored.extension_data);
+        assert!(
+            checklist
+                .as_ref()
+                .is_none_or(|state| state.items.is_empty()),
+            "{checklist:?}"
+        );
+    }
+
+    /// The model gets no answer of its own for a sidecar, so one that could
+    /// not be applied in full says so, to the model alone, in the result of
+    /// the call it rode on.
+    #[tokio::test]
+    async fn a_sidecar_that_names_a_missing_item_says_so_in_that_calls_result() {
+        let (agent, _session_id, session, _seen) = sidecar_fixture().await;
+        let (_, seeded) = agent
+            .dispatch_tool_call(
+                shell_call_with_todo(serde_json::json!({"add": ["load", "fit"]})),
+                "call-1".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        let seeded = seeded.expect("dispatched").result.await.unwrap();
+        assert_eq!(seeded.content.len(), 1, "a clean sidecar adds nothing");
+
+        let (_, dispatched) = agent
+            .dispatch_tool_call(
+                shell_call_with_todo(serde_json::json!({"done": [1, 99]})),
+                "call-2".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        let result = dispatched.expect("dispatched").result.await.unwrap();
+        let note = result.content.last().expect("a note");
+        assert_eq!(note.audience(), Some(&vec![rmcp::model::Role::Assistant]));
+        let text = note.as_text().expect("text").text.clone();
+        assert!(text.starts_with("todo: no checklist item #99"), "{text}");
     }
 
     async fn agent_with_one_extension_for_tests() -> (Agent, String) {
@@ -26504,6 +26872,165 @@ mod gate_b_turn_tests {
 }
 
 #[cfg(test)]
+mod usage_limit_compaction_tests {
+    //! A background compaction is spend, so a chat at its usage limit gets none.
+    use super::*;
+    use crate::agents::usage_limit::{self, ChatLimitOverride};
+    use crate::model::ModelConfig;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::session::SideUsageEntry;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+
+    struct CountingSummarizer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for CountingSummarizer {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("mock", "", "", "", vec![""], "", vec![])
+        }
+        fn get_name(&self) -> &str {
+            "mock"
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text(
+                    "## User Intent\nplot the data\n## Technical Concepts\nplotting\n\
+                     ## Files\nnone\n## Pending Tasks\nnone\n",
+                ),
+                ProviderUsage::new("test".to_string(), Usage::default()),
+            ))
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            let mut config = ModelConfig::new_or_fail("test");
+            config.context_limit = Some(100);
+            config
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chat_at_its_usage_limit_is_not_compacted_in_the_background() {
+        let dir = TempDir::new().unwrap();
+        let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let session = manager
+            .create_session(
+                PathBuf::from("."),
+                "limit-compaction".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        for i in 0..6 {
+            manager
+                .add_message(
+                    &session.id,
+                    &Message::user().with_text(format!("question {i}")),
+                )
+                .await
+                .unwrap();
+            manager
+                .add_message(
+                    &session.id,
+                    &Message::assistant().with_text(format!("answer {i}")),
+                )
+                .await
+                .unwrap();
+        }
+        // 90 of a 100-token window: over the 0.8 trigger.
+        manager
+            .update(&session.id)
+            .total_tokens(Some(90))
+            .apply()
+            .await
+            .unwrap();
+        usage_limit::set_for_session(
+            &manager,
+            &session.id,
+            Some(ChatLimitOverride::Limit {
+                max_tokens: Some(50),
+                max_usd: None,
+            }),
+        )
+        .await
+        .unwrap();
+        manager
+            .apply_side_usage_event(SideUsageEntry {
+                event_key: "limit-compaction:1".to_string(),
+                session_id: session.id.clone(),
+                provider: "mock".to_string(),
+                model_id: "test".to_string(),
+                input_tokens: Some(60),
+                output_tokens: Some(0),
+            })
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(CountingSummarizer {
+            calls: Arc::clone(&calls),
+        });
+        let hooks = Arc::new(crate::hooks::HooksManager::new(Arc::new(
+            tokio::sync::Mutex::new(None),
+        )));
+        let config = SessionConfig {
+            id: session.id.clone(),
+            schedule_id: None,
+            max_turns: None,
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+        run_background_compaction(
+            Arc::clone(&provider),
+            Arc::clone(&manager),
+            Arc::clone(&hooks),
+            config.clone(),
+            dir.path().to_path_buf(),
+            0.8,
+            None,
+        )
+        .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no summarisation call at the limit"
+        );
+
+        // The control: lifted, the same chat is compacted, so the assertion
+        // above is not vacuous.
+        usage_limit::set_for_session(&manager, &session.id, Some(ChatLimitOverride::Unlimited))
+            .await
+            .unwrap();
+        run_background_compaction(
+            provider,
+            Arc::clone(&manager),
+            hooks,
+            config,
+            dir.path().to_path_buf(),
+            0.8,
+            None,
+        )
+        .await;
+        assert!(
+            calls.load(Ordering::SeqCst) > 0,
+            "a lifted limit compacts again"
+        );
+    }
+}
+
+#[cfg(test)]
 mod session_scope_tests {
     //! The chat turn's provider call runs with the session in scope.
     //!
@@ -28520,8 +29047,7 @@ mod mid_turn_compaction_tests {
 
         // The request after the compaction carries the summary, not the
         // original exchange.
-        let requests = requests.lock().unwrap();
-        let last = requests.last().unwrap();
+        let last = requests.lock().unwrap().last().cloned().unwrap();
         let visible: Vec<String> = last
             .iter()
             .filter(|m| m.is_agent_visible())

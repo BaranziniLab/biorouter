@@ -180,12 +180,12 @@ struct SummarizeContext {
 /// # Returns
 /// * A tuple containing:
 ///   - `Conversation`: The compacted messages
-///   - `ProviderUsage`: Provider usage from summarization
+///   - `CompactionUsage`: every summarization request it was billed for
 pub async fn compact_messages(
     provider: &dyn Provider,
     conversation: &Conversation,
     manual_compact: bool,
-) -> Result<(Conversation, ProviderUsage)> {
+) -> Result<(Conversation, CompactionUsage)> {
     let keep_last_turns = Config::global()
         .get_param::<usize>("BIOROUTER_COMPACT_KEEP_LAST_TURNS")
         .unwrap_or(DEFAULT_COMPACT_KEEP_LAST_TURNS);
@@ -238,7 +238,7 @@ pub async fn compact_messages_with_recovery(
     provider: &dyn Provider,
     conversation: &Conversation,
     recovery: OverflowRecovery,
-) -> Result<(Conversation, ProviderUsage)> {
+) -> Result<(Conversation, CompactionUsage)> {
     match recovery {
         OverflowRecovery::Compact => {
             let keep_last_turns = Config::global()
@@ -368,7 +368,7 @@ async fn compact_messages_with_window(
     conversation: &Conversation,
     manual_compact: bool,
     keep_last_turns: usize,
-) -> Result<(Conversation, ProviderUsage)> {
+) -> Result<(Conversation, CompactionUsage)> {
     info!("Performing message compaction");
 
     let messages = conversation.messages();
@@ -515,10 +515,7 @@ async fn compact_messages_with_window(
         final_messages.extend(pins.eviction_notices());
         return Ok((
             Conversation::new_unvalidated(final_messages),
-            ProviderUsage::new(
-                provider.get_model_config().model_name.clone(),
-                crate::providers::base::Usage::default(),
-            ),
+            CompactionUsage::default(),
         ));
     }
 
@@ -880,6 +877,37 @@ pub fn overflow_beyond_compaction(
     ))
 }
 
+/// The provider-reported token count for `session`, when it can be trusted.
+///
+/// The provider-reported figure is trusted only while it is at least the
+/// fewest tokens this request can possibly be. Ollama's `/v1` silently kept
+/// the first 4 and last ~2046 tokens of a 31k-token prompt and REPORTED
+/// `prompt_tokens: 2046`, so every later turn read "2% of the window" and
+/// never compacted while the model worked from the tail of its tool list. A
+/// compaction also stores only the summary's own size here, under a verbatim
+/// tail that can be far larger. Either way the stored number undercounts and
+/// an estimate is the honest answer (`None`).
+fn trusted_reported_tokens(
+    session: &crate::session::Session,
+    messages: &[Message],
+    cold_path_context: Option<(&str, &[Tool])>,
+) -> Option<usize> {
+    let reported = usize::try_from(session.total_tokens?).unwrap_or(0);
+    let (system_prompt, tools) = cold_path_context.unwrap_or_default();
+    let floor = request_token_floor(messages, system_prompt, tools);
+    if reported >= floor {
+        return Some(reported);
+    }
+    debug!(
+        reported,
+        floor,
+        "Compaction check: provider-reported usage is below what this request \
+         can possibly occupy (truncated by the server, or stored by a compaction); \
+         estimating instead"
+    );
+    None
+}
+
 /// Check if messages exceed the auto-compaction threshold
 ///
 /// `cold_path_context` supplies the system prompt and tool schemas for the
@@ -930,36 +958,7 @@ pub async fn check_if_compaction_needed(
         return Ok(false);
     };
 
-    // The provider-reported figure is trusted only while it is at least the
-    // fewest tokens this request can possibly be. Ollama's `/v1` silently kept
-    // the first 4 and last ~2046 tokens of a 31k-token prompt and REPORTED
-    // `prompt_tokens: 2046`, so every later turn read "2% of the window" and
-    // never compacted while the model worked from the tail of its tool list. A
-    // compaction also stores only the summary's own size here, under a verbatim
-    // tail that can be far larger. Either way the stored number undercounts and
-    // the estimate below is the honest answer.
-    let reported = session
-        .total_tokens
-        .map(|tokens| usize::try_from(tokens).unwrap_or(0));
-    let trusted = match (reported, cold_path_context) {
-        (Some(reported), context) => {
-            let (system_prompt, tools) = context.unwrap_or_default();
-            let floor = request_token_floor(messages, system_prompt, tools);
-            if reported >= floor {
-                Some(reported)
-            } else {
-                debug!(
-                    reported,
-                    floor,
-                    "Compaction check: provider-reported usage is below what this request \
-                     can possibly occupy (truncated by the server, or stored by a compaction); \
-                     estimating instead"
-                );
-                None
-            }
-        }
-        (None, _) => None,
-    };
+    let trusted = trusted_reported_tokens(session, messages, cold_path_context);
 
     // o200k under-counts non-OpenAI tokenizers, so inflate the raw estimate by a
     // small, conservative per-provider margin to keep the trigger calibrated
@@ -1223,7 +1222,7 @@ pub async fn run_eager_compaction(
     }
 
     let usage_event_key = uuid::Uuid::new_v4().to_string();
-    crate::agents::reply_parts::apply_session_metrics(
+    crate::agents::reply_parts::apply_compaction_metrics(
         &session_manager,
         &session_config,
         &usage,
@@ -1244,22 +1243,25 @@ pub(crate) async fn record_unapplied_compaction_usage(
     session_manager: &crate::session::SessionManager,
     session_id: &str,
     provider_name: &str,
-    usage: &ProviderUsage,
+    usage: &CompactionUsage,
 ) {
     // Through the side-call ledger (`side_usage`), like every other call a
     // chat makes outside its turns: a `side:` key, so it is not counted as a
-    // turn, and its cached input priced as cached rather than left out.
+    // turn, and its cached input priced as cached rather than left out. One
+    // row per request, so each is priced at its own prompt size.
     use crate::session::session_manager::side_usage;
-    if let Err(e) = side_usage::record_with(
-        session_manager,
-        session_id,
-        side_usage::SideCall::Compaction,
-        provider_name,
-        usage,
-    )
-    .await
-    {
-        warn!("BR-12: could not record the usage of a compaction that did not land: {e}");
+    for request in usage.requests() {
+        if let Err(e) = side_usage::record_with(
+            session_manager,
+            session_id,
+            side_usage::SideCall::Compaction,
+            provider_name,
+            request,
+        )
+        .await
+        {
+            warn!("BR-12: could not record the usage of a compaction that did not land: {e}");
+        }
     }
 }
 
@@ -1402,20 +1404,67 @@ async fn complete_summary(
     }
 }
 
+/// What a compaction was billed for: one entry per summarization request that
+/// came back, never a sum of them.
+///
+/// ⚠ **One request, one ledger row.** Long-context pricing bands each row by its
+/// own prompt size (`request_cost`, `prompt_band_sql!`), so a validated retry
+/// summed into one row read as ONE request of twice the size: two 200k-token
+/// summarization prompts on gpt-5.6-sol became one 400k prompt, billed at the
+/// over-272k rate neither request reached, and the cost card, the dollar limits
+/// and the BR-35 cap all overstated the spend. Callers record each entry on its
+/// own ([`record_unapplied_compaction_usage`],
+/// `reply_parts::apply_compaction_metrics`).
+///
+/// The request whose summary was KEPT is last, because it is the one whose
+/// output becomes the new context and so sets the context gauge.
+#[derive(Debug, Clone, Default)]
+pub struct CompactionUsage {
+    requests: Vec<ProviderUsage>,
+}
+
+impl CompactionUsage {
+    fn one(usage: ProviderUsage) -> Self {
+        Self {
+            requests: vec![usage],
+        }
+    }
+
+    /// `self`'s requests, then `later`'s.
+    fn then(mut self, later: CompactionUsage) -> Self {
+        self.requests.extend(later.requests);
+        self
+    }
+
+    /// Every billed request, in order, the kept summary's last.
+    pub fn requests(&self) -> &[ProviderUsage] {
+        &self.requests
+    }
+
+    pub fn into_requests(self) -> Vec<ProviderUsage> {
+        self.requests
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+
+    /// The token counts of every request added together, for display and
+    /// tests. Never price or record this as one request.
+    pub fn total(&self) -> Option<ProviderUsage> {
+        let (first, rest) = self.requests.split_first()?;
+        Some(
+            rest.iter()
+                .fold(first.clone(), |total, next| total.combine_with(next)),
+        )
+    }
+}
+
 /// A summarization that did not produce a summary, with what it still spent:
 /// a junk first summary is billed even when the retry then fails.
 struct SummaryFailure {
     error: ProviderError,
-    spent: Option<ProviderUsage>,
-}
-
-/// Add `next` to a running total of billed usage.
-fn add_spent(total: Option<ProviderUsage>, next: Option<&ProviderUsage>) -> Option<ProviderUsage> {
-    match (total, next) {
-        (Some(total), Some(next)) => Some(total.combine_with(next)),
-        (None, Some(next)) => Some(next.clone()),
-        (total, None) => total,
-    }
+    spent: CompactionUsage,
 }
 
 /// Fill in token counts a provider did not report, so a billed call is never
@@ -1441,39 +1490,49 @@ async fn ensure_summary_tokens(
 /// propagated so [`do_compact`] can fall through to a smaller payload; a
 /// provider error on the *retry* falls back to the non-empty first result.
 ///
-/// The usage returned, on success and on failure alike, is the SUM of every
-/// completion that came back: the discarded first summary was billed too.
+/// The usage returned, on success and on failure alike, lists every completion
+/// that came back, one entry each ([`CompactionUsage`]): the discarded first
+/// summary was billed too. The kept one is last.
 async fn summarize_with_validation(
     provider: &dyn Provider,
     use_fast_model: bool,
     system_prompt: &str,
     request: &[Message],
-) -> Result<(Message, ProviderUsage), SummaryFailure> {
+) -> Result<(Message, CompactionUsage), SummaryFailure> {
     let (response, mut usage) = complete_summary(provider, use_fast_model, system_prompt, request)
         .await
-        .map_err(|error| SummaryFailure { error, spent: None })?;
+        .map_err(|error| SummaryFailure {
+            error,
+            spent: CompactionUsage::default(),
+        })?;
     ensure_summary_tokens(&mut usage, system_prompt, request, &response).await;
     if summary_is_usable(&response) {
-        return Ok((response, usage));
+        return Ok((response, CompactionUsage::one(usage)));
     }
 
     warn!("Compaction summary failed validation (empty or missing sections); retrying once");
     match complete_summary(provider, use_fast_model, system_prompt, request).await {
         Ok((retry_response, mut retry_usage)) => {
             ensure_summary_tokens(&mut retry_usage, system_prompt, request, &retry_response).await;
-            let both = usage.combine_with(&retry_usage);
             if summary_is_usable(&retry_response)
                 || !summary_text(&retry_response).trim().is_empty()
             {
-                Ok((retry_response, both))
+                Ok((
+                    retry_response,
+                    CompactionUsage::one(usage).then(CompactionUsage::one(retry_usage)),
+                ))
             } else if !summary_text(&response).trim().is_empty() {
-                Ok((response, both))
+                // The first summary is kept, so its request goes last.
+                Ok((
+                    response,
+                    CompactionUsage::one(retry_usage).then(CompactionUsage::one(usage)),
+                ))
             } else {
                 Err(SummaryFailure {
                     error: ProviderError::ExecutionError(
                         "Compaction produced an empty summary even after one retry".to_string(),
                     ),
-                    spent: Some(both),
+                    spent: CompactionUsage::one(usage).then(CompactionUsage::one(retry_usage)),
                 })
             }
         }
@@ -1481,10 +1540,10 @@ async fn summarize_with_validation(
             if summary_text(&response).trim().is_empty() {
                 Err(SummaryFailure {
                     error: retry_err,
-                    spent: Some(usage),
+                    spent: CompactionUsage::one(usage),
                 })
             } else {
-                Ok((response, usage))
+                Ok((response, CompactionUsage::one(usage)))
             }
         }
     }
@@ -1496,8 +1555,9 @@ async fn summarize_with_validation(
 #[derive(Debug)]
 pub struct CompactionFailed {
     message: String,
-    /// Every completion this compaction got back before it gave up.
-    pub spent: ProviderUsage,
+    /// Every completion this compaction got back before it gave up, one entry
+    /// per request.
+    pub spent: CompactionUsage,
 }
 
 impl std::fmt::Display for CompactionFailed {
@@ -1509,27 +1569,27 @@ impl std::fmt::Display for CompactionFailed {
 impl std::error::Error for CompactionFailed {}
 
 /// The usage a failed compaction still spent, when the error carries it.
-pub fn spent_usage_of(error: &anyhow::Error) -> Option<&ProviderUsage> {
+pub fn spent_usage_of(error: &anyhow::Error) -> Option<&CompactionUsage> {
     error
         .downcast_ref::<CompactionFailed>()
         .map(|failed| &failed.spent)
 }
 
 /// Wrap a compaction error with what was spent before it, if anything was.
-fn failed_with_spent(error: anyhow::Error, spent: Option<ProviderUsage>) -> anyhow::Error {
-    match spent {
-        Some(spent) => anyhow::Error::new(CompactionFailed {
-            message: error.to_string(),
-            spent,
-        }),
-        None => error,
+fn failed_with_spent(error: anyhow::Error, spent: CompactionUsage) -> anyhow::Error {
+    if spent.is_empty() {
+        return error;
     }
+    anyhow::Error::new(CompactionFailed {
+        message: error.to_string(),
+        spent,
+    })
 }
 
 async fn do_compact(
     provider: &dyn Provider,
     messages: &[Message],
-) -> Result<(Message, ProviderUsage), anyhow::Error> {
+) -> Result<(Message, CompactionUsage), anyhow::Error> {
     let agent_visible_messages: Vec<&Message> = messages
         .iter()
         .filter(|msg| msg.is_agent_visible())
@@ -1604,7 +1664,7 @@ async fn do_compact(
 
     // What earlier attempts were billed for. A context-length refusal bills
     // nothing, but a validated retry inside an attempt does.
-    let mut spent: Option<ProviderUsage> = None;
+    let mut spent = CompactionUsage::default();
 
     for (attempt, plan) in attempts.iter().enumerate() {
         let filtered_messages = filter_tool_responses(&agent_visible_messages, plan.remove_percent);
@@ -1657,12 +1717,12 @@ async fn do_compact(
                 response.role = Role::User;
 
                 // Token counts were filled in per completion inside
-                // `summarize_with_validation`; this adds earlier attempts.
-                let total = add_spent(spent, Some(&provider_usage)).unwrap_or(provider_usage);
-                return Ok((response, total));
+                // `summarize_with_validation`; earlier attempts go first, so the
+                // kept summary's request stays last.
+                return Ok((response, spent.then(provider_usage)));
             }
             Err(SummaryFailure { error, spent: cost }) => {
-                spent = add_spent(spent, cost.as_ref());
+                spent = spent.then(cost);
                 if matches!(error, ProviderError::ContextLengthExceeded(_)) {
                     if attempt < attempts.len() - 1 {
                         continue;
@@ -2860,7 +2920,8 @@ mod tests {
     }
 
     /// Both completions of a validated retry were billed, so compaction reports
-    /// their sum, not only the kept summary's usage.
+    /// both, as two requests: one ledger row each, so each is priced at its own
+    /// prompt size rather than as one request of twice the size.
     #[tokio::test]
     async fn a_retried_summary_reports_the_usage_of_both_attempts() {
         let good = Message::assistant().with_text(
@@ -2878,8 +2939,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(provider.calls(), 2);
-        assert_eq!(usage.usage.input_tokens, Some(2_000));
-        assert_eq!(usage.usage.output_tokens, Some(100));
+        assert_eq!(
+            usage.requests().len(),
+            2,
+            "two requests, never one summed row"
+        );
+        for request in usage.requests() {
+            assert_eq!(request.usage.input_tokens, Some(1_000));
+            assert_eq!(request.usage.output_tokens, Some(50));
+        }
+        let total = usage.total().unwrap();
+        assert_eq!(total.usage.input_tokens, Some(2_000));
+        assert_eq!(total.usage.output_tokens, Some(100));
     }
 
     /// A compaction that gives up after a billed attempt carries that usage in
@@ -2897,8 +2968,10 @@ mod tests {
             .await
             .expect_err("two empty summaries fail the compaction");
         let spent = spent_usage_of(&error).expect("the error names what was spent");
-        assert_eq!(spent.usage.input_tokens, Some(1_400));
-        assert_eq!(spent.usage.output_tokens, Some(6));
+        assert_eq!(spent.requests().len(), 2);
+        let total = spent.total().unwrap();
+        assert_eq!(total.usage.input_tokens, Some(1_400));
+        assert_eq!(total.usage.output_tokens, Some(6));
         assert!(error.to_string().contains("empty summary"), "{error}");
     }
 
@@ -3116,6 +3189,58 @@ mod tests {
                 |c| matches!(c, MessageContent::Text(t) if t.text.contains("<mock summary>"))
             )),
             "the compacted history should carry the summary"
+        );
+    }
+
+    /// A validated retry is two provider requests, so it is two ledger rows,
+    /// each priced at its own prompt size. Summed into one row it read as one
+    /// request of twice the size, and long-context pricing billed it at a rate
+    /// neither request reached.
+    #[tokio::test]
+    async fn a_retried_summary_is_recorded_as_one_ledger_row_per_request() {
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+        let provider: Arc<dyn Provider> = Arc::new(
+            MockProvider::new(mock_summary(), 100)
+                .with_first_response(Message::assistant().with_text("no"))
+                .with_usage(Usage::new(Some(1_000), Some(50), Some(1_050))),
+        );
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            None,
+            || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::Swapped);
+
+        let pool = manager.storage().pool().await.unwrap();
+        let rows: Vec<(Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT input_tokens, output_tokens FROM token_events WHERE session_id = ? \
+             ORDER BY rowid",
+        )
+        .bind(&id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![(Some(1_000), Some(50)), (Some(1_000), Some(50))],
+            "one row per request, never one row of 2,000 input tokens"
+        );
+        let session = manager.get_session(&id, false).await.unwrap();
+        assert_eq!(session.accumulated_input_tokens, Some(2_000));
+        assert_eq!(
+            session.total_tokens,
+            Some(50),
+            "the gauge is the kept summary's size, not the sum of both"
         );
     }
 

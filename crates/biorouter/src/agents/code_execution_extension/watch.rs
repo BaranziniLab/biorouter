@@ -121,7 +121,6 @@ pub(super) enum StopCause {
     /// Stop was pressed during the turn that set it.
     TurnStopped,
     /// The chat was deleted ([`cancel_watches_for_session`]).
-    #[cfg_attr(not(test), allow(dead_code))]
     ChatDeleted,
 }
 
@@ -160,12 +159,8 @@ fn watches() -> std::sync::MutexGuard<'static, HashMap<String, WatchEntry>> {
 
 /// Cancel every watch of a chat, as for a deleted chat. Returns how many were
 /// cancelled. Each ends without resuming the chat. (A watch whose chat was
-/// deleted also notices on its own, before its next check.)
-///
-/// No production caller yet: the delete route reaches it through the
-/// `agents` re-export once that is added; until then the incarnation check
-/// does the same job lazily.
-#[cfg_attr(not(test), allow(dead_code))]
+/// deleted also notices on its own, before its next check.) Called by the
+/// delete route through the `agents` re-export.
 pub fn cancel_watches_for_session(session_id: &str) -> usize {
     let watches = watches();
     let mut cancelled = 0;

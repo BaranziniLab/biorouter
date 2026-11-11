@@ -709,7 +709,7 @@ pub const MOIM_PLAN_CHARS: usize = 1_200;
 /// The first [`MOIM_PLAN_CHARS`] characters of `plan`, cut on a char boundary.
 fn plan_excerpt(plan: &str) -> &str {
     match plan.char_indices().nth(MOIM_PLAN_CHARS) {
-        Some((at, _)) => &plan[..at],
+        Some((at, _)) => plan.split_at(at).0,
         None => plan,
     }
 }

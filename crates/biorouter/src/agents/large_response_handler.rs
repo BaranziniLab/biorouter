@@ -412,6 +412,14 @@ fn handle_filename(ctx: &LargeResponseContext) -> String {
     )
 }
 
+/// Whether `file_name` has the shape [`handle_filename`] gives a handle written
+/// for `session_id`: `<tool>-<session>-<timestamp>.txt`. Elision uses it, with
+/// a check of the folder, before it trusts a path printed in a tool result.
+pub(crate) fn is_handle_filename_for_session(file_name: &str, session_id: &str) -> bool {
+    let segment = format!("-{}-", sanitize(session_id, "session"));
+    file_name.ends_with(".txt") && file_name.contains(&segment)
+}
+
 fn sanitize(raw: &str, fallback: &str) -> String {
     let cleaned: String = raw
         .chars()

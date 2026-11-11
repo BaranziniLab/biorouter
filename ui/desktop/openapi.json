@@ -2015,7 +2015,7 @@
             }
           },
           "403": {
-            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > App > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > App > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted, or the `usage` limits section was removed without proof the request came from the user"
           },
           "404": {
             "description": "Configuration key not found"
@@ -2109,7 +2109,7 @@
             "description": "Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which must be a whole number of at least 0 (0 means unlimited)"
           },
           "403": {
-            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > App > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen"
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > App > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen, or the `usage` limits section was written without proof the request came from the user"
           },
           "409": {
             "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user. Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is user-only in every mode. Also a key that decides where a provider sends its requests and credentials (a host, an endpoint), when the write would change what it resolves to"
@@ -11244,7 +11244,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`background_job`, `subagent`, `detached_turn`, or `scheduled_run`."
+            "description": "`background_job`, `subagent`, `foreground_command`, `detached_turn`,\n`job_watch`, or `scheduled_run`."
           },
           "runningForSeconds": {
             "type": "integer",
@@ -25386,7 +25386,6 @@
         "required": [
           "chatTokens",
           "chatUsdComplete",
-          "monthTokens",
           "monthUsdComplete",
           "month"
         ],
@@ -25410,11 +25409,14 @@
           },
           "monthTokens": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "Billed tokens this month over every chat. `null` when the request\ncarried no proof of a person: the month is an aggregate over every\nchat, private ones included, and `GET /usage/summary` withholds it\nfrom such a caller for the same reason.",
+            "nullable": true
           },
           "monthUsd": {
             "type": "number",
             "format": "double",
+            "description": "`null` when nothing this month is priced, or withheld as `month_tokens` is.",
             "nullable": true
           },
           "monthUsdComplete": {

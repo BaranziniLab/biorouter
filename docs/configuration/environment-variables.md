@@ -158,6 +158,7 @@ These variables control how biorouter manages conversation sessions and context.
 | `BIOROUTER_TOOL_RESULT_ELISION_PROTECT_TOKENS` | How much of the newest tool output, in estimated tokens, is always sent in full | A whole number of tokens | 40000 |
 | `BIOROUTER_TOOL_RESULT_ELISION_MIN_PRUNABLE_TOKENS` | How much older tool output must be ready to replace before any is replaced. Replacing in rare batches keeps the provider's prompt cache | A whole number of tokens | 25000 |
 | `BIOROUTER_TOOL_RESULT_ELISION_MIN_CHARS` | Shortest tool result that may be replaced | A whole number of characters | 1500 |
+| `BIOROUTER_MONITOR_STOP_SETTLE_SECS` | How long a turn a [decision-model monitor](../agent-loop/decision-models.md#a-stop-stops-the-chats-subagents) stopped waits for the subagents that stop stopped, so their work can be collected | A whole number of seconds | 30 |
 
 Ordinary chats have no turn or tool-call limit by default. Existing positive limits remain in effect until you change them; select **Unlimited** in Settings > Chat > Approvals or set the value to `0`. Stop, explicit reply budgets, and loop recovery remain active. See [Long-running tasks](../agent-loop/long-running-tasks.md).
 

@@ -850,7 +850,7 @@ mod tests {
     }
 
     /// The live (non-test) clock is computed at `build()` time, as the Local
-    /// date — not frozen at construction, not UTC, and never the hour. Robust
+    /// date: not frozen at construction, not UTC, and never the hour. Robust
     /// across midnight by accepting either day.
     #[test]
     fn test_live_clock_is_fresh_local_date() {

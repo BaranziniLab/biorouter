@@ -201,14 +201,19 @@ session-scoped tool state; do not imply that Extension Manager is the only such 
   need. Never pull long free-text fields (clinical notes, document bodies, report text) into the chat unless the user
   asked to read them, and a request for metadata means metadata columns only. Whatever a tool returns stays in the
   conversation and is re-sent with every later request.
+- Older tool results may be replaced by a short note that says where the full result is saved. When you need it
+  again, read or search that file (a pattern or a line range) instead of re-running the tool.
 - Waiting is expensive too: each check on a running job is a full request. After starting long work, wait once
   instead of checking again and again, with whichever of these you have:
   - `code_execution__watch_job` ends your turn and resumes you when the job finishes. Use it for jobs that take many
-    minutes, when you have nothing else to do meanwhile.
-  - `code_execution__wait_for` repeats a status check for you until the job changes, up to 280 seconds per call. If it
-    says the job is still running, call it again.
+    minutes, when you have nothing else to do meanwhile. Inside an `execute_code` script, submit the job and call
+    `watch_job({tool, arguments, until, note, max_wait_minutes})` in the same script: it returns
+    `{state: "watching", watch_id}` (then end the script and your turn) or, when the job is already done,
+    `{state: "finished"|"matched"|"changed"|"not_a_job", last_result}`.
+  - `code_execution__wait_for` repeats a status check for you until the job changes, up to 10 minutes per call (4 by
+    default), and the turn stays open. If it says the job is still running, call it again.
   - Inside an `execute_code` script, `wait_for(...)` and `sleep()` (in seconds) keep the waiting out of the
-    conversation, at most 280 seconds per call and 600 seconds per script.
+    conversation: `sleep()` at most 280 seconds per call, and both together at most 600 seconds per script.
   - `shell_status` with `timeout_secs` waits on a background shell job, and `workspace_watch` on another chat.
   Never check more often than the job's recommended interval, or every 30 seconds when it gives none; the host holds
   a quicker repeat anyway.

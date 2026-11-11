@@ -253,6 +253,12 @@ const EXPECTED: &[Site] = &[
                difference between one decision and three that can disagree",
     },
     Site {
+        needle: "CallCapability::sample(",
+        file: "crates/biorouter/src/agents/code_execution_extension/watch.rs",
+        count: 1,
+        what: "`LiveHost::check_context`: one sample per background check of a job watch (`code_execution__watch_job`). A check runs minutes to hours after the turn that admitted the watch and has no turn of its own whose capability it could inherit, so it decides the pair from the chat's model bound NOW and carries it through that check's boundary refusals and its dispatch. Inheriting the admitting turn's pair would let a chat moved onto a public model keep fetching a private extension's status into its context. The judge is not re-asked; only the admitted call repeats",
+    },
+    Site {
         needle: "CallCapability::public_enforced(",
         file: "crates/biorouter/src/providers/tool_turn.rs",
         count: 1,

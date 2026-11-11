@@ -1698,6 +1698,59 @@ describe('ToolCallWithResponse nested todo metadata', () => {
     expect(screen.getByText(`Blocked “${auditTitle}”`)).toBeInTheDocument();
   });
 
+  it('names every item a batched update changed', () => {
+    renderNestedCalls([
+      {
+        ...record,
+        args: JSON.stringify({
+          updates: [
+            { id: '#1', status: 'completed' },
+            { id: '2', status: 'completed' },
+          ],
+        }),
+        todo_task: undefined,
+        todo_tasks: [
+          { id: '1', title: 'Load the cohort' },
+          { id: '2', title: 'Fit the model' },
+        ],
+      },
+    ]);
+    expect(
+      screen.getByText('Completed 2 tasks: “Load the cohort”, “Fit the model”')
+    ).toBeInTheDocument();
+  });
+
+  it('drops a batched title for an item the call did not name', () => {
+    renderNestedCalls([
+      {
+        ...record,
+        args: JSON.stringify({
+          updates: [
+            { id: '1', status: 'completed' },
+            { id: '2', status: 'blocked' },
+          ],
+        }),
+        todo_task: undefined,
+        todo_tasks: [
+          { id: '1', title: 'Load the cohort' },
+          { id: '9', title: 'UNVERIFIED_TITLE' },
+        ],
+      },
+    ]);
+    expect(screen.getByText('Updated 2 tasks: “Load the cohort”')).toBeInTheDocument();
+    expect(screen.queryByText(/UNVERIFIED_TITLE/)).toBeNull();
+  });
+
+  it('titles a one-item batch from its single task record', () => {
+    renderNestedCalls([
+      {
+        ...record,
+        args: JSON.stringify({ updates: [{ id: '1', status: 'completed' }] }),
+      },
+    ]);
+    expect(screen.getByText('Completed “Verify actual nested task 🧬”')).toBeInTheDocument();
+  });
+
   it('cuts an item past any row width once, at its end', () => {
     const title = `${auditTitle} ${auditTitle}`;
     renderNestedCalls([{ ...record, todo_task: { id: '1', title } }]);

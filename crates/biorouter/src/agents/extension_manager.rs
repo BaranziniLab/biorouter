@@ -3427,7 +3427,14 @@ impl ExtensionManager {
 
     async fn prefixed_tool_name(&self, tool_name: &str) -> String {
         if !tool_name.contains("__")
-            && ["execute_code", "read_module", "search_modules", "wait_for"].contains(&tool_name)
+            && [
+                "execute_code",
+                "read_module",
+                "search_modules",
+                "wait_for",
+                "watch_job",
+            ]
+            .contains(&tool_name)
             && self.extensions.lock().await.contains_key("code_execution")
         {
             format!("code_execution__{tool_name}")

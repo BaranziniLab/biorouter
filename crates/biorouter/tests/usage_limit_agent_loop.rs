@@ -354,3 +354,123 @@ async fn the_monthly_limit_pauses_a_chat_that_lifted_its_own_limit() -> Result<(
     assert!(stop.contains("Settings > App > Usage"), "{stop}");
     Ok(())
 }
+
+/// Spends past the chat's limit on its first call and answers it with a
+/// context overflow, so the limit is reached between the loop-top check and
+/// the overflow arm's compaction. Any later call (a compaction, a judge)
+/// answers `{"ok": true}`, and every call is counted.
+struct MockOverflowAfterSpend {
+    calls: Arc<AtomicUsize>,
+    session_manager: Arc<biorouter::session::SessionManager>,
+    session_id: std::sync::OnceLock<String>,
+}
+
+#[async_trait]
+impl Provider for MockOverflowAfterSpend {
+    async fn complete(
+        &self,
+        _system_prompt: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            let id = self.session_id.get().expect("session id set").clone();
+            self.session_manager
+                .apply_side_usage_event(SideUsageEntry {
+                    event_key: "overflow:spend".to_string(),
+                    session_id: id,
+                    provider: "mock-overflow".to_string(),
+                    model_id: "mock-model".to_string(),
+                    input_tokens: Some(500),
+                    output_tokens: Some(0),
+                })
+                .await
+                .map_err(|e| ProviderError::ExecutionError(e.to_string()))?;
+            return Err(ProviderError::ContextLengthExceeded(
+                "the prompt is too long".to_string(),
+            ));
+        }
+        let usage = ProviderUsage::new(
+            "mock-model".to_string(),
+            Usage::new(Some(10), Some(5), Some(15)),
+        );
+        Ok((Message::assistant().with_text("{\"ok\": true}"), usage))
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        self.complete(system_prompt, messages, tools).await
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new("mock-model").unwrap()
+    }
+
+    fn metadata() -> ProviderMetadata {
+        MockSpendyProvider::metadata()
+    }
+
+    fn get_name(&self) -> &str {
+        "mock-overflow"
+    }
+}
+
+#[tokio::test]
+async fn a_limit_reached_at_a_context_overflow_ends_the_turn_there() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let agent = Agent::new();
+    let session = agent
+        .config
+        .session_manager
+        .create_session(
+            PathBuf::default(),
+            "usage-limit-overflow".to_string(),
+            SessionType::User,
+        )
+        .await?;
+    let id = session.id.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = MockOverflowAfterSpend {
+        calls: Arc::clone(&calls),
+        session_manager: Arc::clone(&agent.config.session_manager),
+        session_id: std::sync::OnceLock::new(),
+    };
+    provider.session_id.set(id.clone()).unwrap();
+    agent.update_provider(Arc::new(provider), &id).await?;
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(100),
+            max_usd: None,
+        }),
+    )
+    .await?;
+
+    // Self-critique on: a turn that fell through to the exit gates would make
+    // one more model call (the judge) after the limit was reached.
+    Config::global().set_param("BIOROUTER_SELF_CRITIQUE", true)?;
+    let result = drain(&agent, config(&id, 5)).await;
+    Config::global().delete("BIOROUTER_SELF_CRITIQUE")?;
+    let responses = result?;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "no compaction and no exit-gate call after the limit is reached"
+    );
+    let live = notices(&responses);
+    assert!(
+        live.iter()
+            .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
+        "{live:?}"
+    );
+    assert!(!live.iter().any(|n| n.contains("Compacting")), "{live:?}");
+    Ok(())
+}
