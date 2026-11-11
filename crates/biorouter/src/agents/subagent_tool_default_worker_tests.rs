@@ -189,6 +189,67 @@ async fn a_named_provider_and_model_win_over_the_default_worker() {
     assert_eq!(privacy.default_worker_note, None);
 }
 
+/// A spawn that names a provider and no model is a named spawn: it runs on
+/// that provider's own default model, never the default worker's model, even
+/// when the default worker is on the same provider.
+#[tokio::test]
+async fn a_named_provider_without_a_model_gets_that_providers_default_model() {
+    let provider_only = params(json!({
+        "instructions": "do the thing",
+        "settings": { "provider": "ollama" }
+    }));
+    let (child, privacy) = resolve(
+        public_chat(),
+        &provider_only,
+        Some(("ollama", "worker-model")),
+        OFF_BOX,
+    )
+    .await
+    .unwrap();
+    assert_eq!(child.provider.get_name(), "ollama");
+    assert_eq!(
+        child.provider.get_model_config().model_name,
+        crate::providers::ollama::OLLAMA_DEFAULT_MODEL
+    );
+    assert_eq!(privacy.default_worker_note, None);
+}
+
+/// The early refusal of a provider that is not set up judges only a provider
+/// the spawn NAMES. A default worker on a provider that is not usable here is
+/// never refused: the subagent runs on the chat's model and the parent is told.
+#[tokio::test]
+async fn an_unusable_default_worker_is_not_refused_and_falls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = overrides(Some(("codex", "gpt-5.5")), OFF_BOX);
+    config.insert(
+        "CODEX_COMMAND".to_string(),
+        dir.path()
+            .join("no-such-codex")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let parent = public_chat();
+    let task_config = TaskConfig::new(
+        Arc::clone(&parent),
+        "parent-1",
+        std::path::Path::new("."),
+        vec![],
+    );
+    let (refusal, resolved) = crate::config::with_config_overrides(config, async {
+        (
+            provider_setup_refusal(&unnamed(), parent.get_name()).await,
+            resolve_child_privacy(task_config, &unnamed()).await,
+        )
+    })
+    .await;
+    assert_eq!(refusal, None, "the default worker is not a named provider");
+    let (child, privacy) = resolved.expect("the default never fails a spawn");
+    assert!(Arc::ptr_eq(&child.provider, &parent));
+    let note = privacy.default_worker_note.expect("the parent is told");
+    assert!(note.contains("gpt-5.5 (codex)"), "{note}");
+    assert!(note.contains("could not be started"), "{note}");
+}
+
 #[tokio::test]
 async fn a_temperature_alone_still_runs_on_the_default_worker() {
     let warm = params(json!({
