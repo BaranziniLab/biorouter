@@ -483,6 +483,11 @@ for (const [name, nativeFallback] of [
         ),
         contentType: 'application/json',
       });
+      // The page keeps polling /dictation/status through the route above, so a
+      // poll can be in flight when the context closes. Remove the routes first,
+      // ignoring a callback that was already running, so teardown is not
+      // reported as the test failing (seen once on Firefox in rust.yml).
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
       await context.close();
     } finally {
       await browser?.close();
