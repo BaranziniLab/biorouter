@@ -1225,7 +1225,7 @@ fn seed_door(consent: &SeedConsent) -> SaveDoor<'static> {
 fn names_phrase(names: &[LoweredBy]) -> String {
     let mut phrases: Vec<String> = Vec::new();
     for name in names {
-        let phrase = format!("{} · {}", name.model, name.host.place());
+        let phrase = format!("{} · {}", name.model_name(), name.host.place());
         if !phrases.contains(&phrase) {
             phrases.push(phrase);
         }
@@ -1258,7 +1258,7 @@ fn seed_tier_change(
             .with_plan(plan);
         if let Some(name) = decision_axes::public_standing_names(&inputs).first() {
             return Err(SeedRefusal::refused(scheduled_private_run_refusal(
-                &name.model,
+                &name.model_name(),
             )));
         }
     }
@@ -1389,7 +1389,7 @@ pub async fn seed(
         plan: plan.as_ref().map(orchestration_plan::plan_record),
         marker,
     };
-    let lowering_model = change.public_names.first().map(|name| name.model.clone());
+    let lowering_model = change.public_names.first().map(|name| name.model_name());
     let written = manager
         .write_public_basis(id, change.basis, move |data: &mut ExtensionData| {
             write.apply(data)

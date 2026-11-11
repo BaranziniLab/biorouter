@@ -295,9 +295,9 @@ fn runs_on(names: &[LoweredBy]) -> String {
     for name in names {
         let place = name.host.place();
         match places.iter_mut().find(|(p, _)| *p == place) {
-            Some((_, models)) if models.contains(&name.model) => {}
-            Some((_, models)) => models.push(name.model.clone()),
-            None => places.push((place, vec![name.model.clone()])),
+            Some((_, models)) if models.contains(&name.model_name()) => {}
+            Some((_, models)) => models.push(name.model_name()),
+            None => places.push((place, vec![name.model_name()])),
         }
     }
     if places.is_empty() {
@@ -332,6 +332,18 @@ fn model_label(name: &LoweredBy) -> String {
     format!("{provider}/{}", name.model)
 }
 
+/// `provider/model` for each counted public name, each model once, in the
+/// order first named (a monitor and a gate on one model are one model).
+fn model_labels(names: &[LoweredBy]) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for label in names.iter().map(model_label) {
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
+}
+
 /// What a refusal says could not run.
 fn subject(name: &LoweredBy) -> String {
     match name.source {
@@ -354,20 +366,47 @@ fn way_out(name: &LoweredBy, audience: RefusalAudience) -> String {
         RefusalAudience::Person => format!(
             "Start a new chat and choose {} before its first message, or make this chat public \
              from History.",
-            name.model
+            name.model_name()
         ),
         RefusalAudience::Cli => format!(
             "Choose a model on this computer (`biorouter models decision list` shows them), or \
              start a new chat with `biorouter session --decision-model {}`.",
             model_label(name)
         ),
-        RefusalAudience::Agent => format!(
-            "This would change whether this chat is private, or needs a model a private chat \
-             can't use, which only the person can choose. Name a private decision model {}, or \
-             tell the person; do not retry.",
-            crate::privacy::alt_provider::MODEL_LIST_ADVICE_AGENT
-        ),
+        RefusalAudience::Agent => agent_way_out(),
     }
+}
+
+/// The way out an agent's refusal ends with: it cannot change the tier, the
+/// person can.
+fn agent_way_out() -> String {
+    format!(
+        "This would change whether this chat is private, or needs a model a private chat can't \
+         use, which only the person can choose. Name a private decision model {}, or tell the \
+         person; do not retry.",
+        crate::privacy::alt_provider::MODEL_LIST_ADVICE_AGENT
+    )
+}
+
+/// What an agent is told when it names `model`, a public decision model, for
+/// a private chat at a door that does not go through [`tier_change`]: a
+/// spawn's monitors, which the child is born with at the parent's
+/// classification (design §3.4). The same reason [`tier_change`] gives an
+/// agent for [`TierEffect::RefusedPrivate`] (live QA M3-2), without the
+/// subject, so the door names what could not be put where. `None` when the
+/// model is not declared public: doubt never refuses here, and the door's own
+/// usability check decides.
+pub fn agent_public_model_on_private_chat(model: &DecisionModelRef) -> Option<String> {
+    let declared = crate::privacy::decision_axes::declared_name(model)?;
+    if declared.tier.is_private() {
+        return None;
+    }
+    Some(format!(
+        "this chat is private, so {}, {}, can't read it. {}",
+        crate::providers::decision::catalog::decision_model_short_name(model),
+        declared.host.model_noun(),
+        agent_way_out()
+    ))
 }
 
 /// The reason, without the leading "Nothing was saved", that `effect` refuses
@@ -384,13 +423,13 @@ fn refusal_reason(
         TierEffect::RefusedPrivate => format!(
             "{}. This chat is private, so {}, {noun}, can't read it. {}",
             subject(name),
-            name.model,
+            name.model_name(),
             way_out(name, audience)
         ),
         TierEffect::RefusedNotEligible => format!(
             "this chat already has messages on a private model, so it becomes private at its \
              next message and {} · {place} couldn't read it. {}",
-            name.model,
+            name.model_name(),
             way_out(name, audience)
         ),
         _ => return None,
@@ -464,7 +503,7 @@ pub fn tier_change(
             LoweringConsent::Unconfirmed => {
                 return Err(NeedsPublicDecisionConfirmation {
                     sentence: tier_effect_line(effect, &public_names).unwrap_or_default(),
-                    models: public_names.iter().map(model_label).collect(),
+                    models: model_labels(&public_names),
                 }
                 .into())
             }
@@ -490,7 +529,7 @@ pub fn tier_change(
             row.id.clone(),
             door.author,
             door.door,
-            public_names.iter().map(model_label).collect(),
+            model_labels(&public_names),
         )),
         BasisIntent::Clear => BasisWrite::Clear,
         BasisIntent::Keep => BasisWrite::Keep,
@@ -576,7 +615,7 @@ pub async fn save_checked_by(
             let model = change
                 .public_names
                 .first()
-                .map(|name| name.model.clone())
+                .map(|name| name.model_name())
                 .unwrap_or_else(|| "a public decision model".to_string());
             Err(PublicBasisNotEligible(public_basis_not_eligible_sentence(&model)).into())
         }
@@ -1568,6 +1607,88 @@ mod tests {
         assert_eq!(effect(&offline), TierEffect::BecomesPublic);
         assert_eq!(effect(&offline), effect(&live));
         assert_eq!(offline.tier_context, live.tier_context);
+    }
+
+    /// Live QA M3-5: the models a confirmation and a basis carry name each
+    /// model once, however many sources name it.
+    #[test]
+    fn model_labels_name_each_model_once() {
+        use crate::privacy::decision_axes::{HostLabel, NameSource};
+        let name = |source, label: &str, model: &str| LoweredBy {
+            source,
+            label: label.to_string(),
+            model: model.to_string(),
+            host: HostLabel::Baseten,
+            others: 0,
+        };
+        let names = [
+            name(NameSource::Monitor, "Done", "joey-1"),
+            name(NameSource::Gate, "Draft", "joey-1"),
+            name(NameSource::Default, "", "elephant-1"),
+        ];
+        assert_eq!(
+            model_labels(&names),
+            vec![
+                format!("{BASETEN_DECISION_PROVIDER}/joey-1"),
+                format!("{BASETEN_DECISION_PROVIDER}/elephant-1"),
+            ]
+        );
+    }
+
+    /// A Baseten model stored by its slug is named by its alias in every
+    /// sentence, while the record and the CLI's model label keep the slug
+    /// (live check 2026-11-11: the live Monitors dialog read "This chat stays
+    /// public: decision-models/baseten-joey-2b-latest runs on Baseten.").
+    #[test]
+    fn sentences_name_a_baseten_slug_by_its_alias() {
+        use crate::privacy::decision_axes::{HostLabel, NameSource};
+        let slug = "decision-models/baseten-joey-2b-latest";
+        let name = LoweredBy {
+            source: NameSource::Monitor,
+            label: "Done".to_string(),
+            model: slug.to_string(),
+            host: HostLabel::Baseten,
+            others: 0,
+        };
+        assert_eq!(name.model_name(), "joey-1");
+        let names = [name.clone(), name.clone()];
+        assert_eq!(
+            tier_effect_line(TierEffect::StaysPublic, &names).as_deref(),
+            Some("This chat stays public: joey-1 runs on Baseten.")
+        );
+        assert_eq!(
+            tier_effect_line(TierEffect::BecomesPublic, &names).as_deref(),
+            Some("This chat will be public: joey-1 runs on Baseten.")
+        );
+        assert_eq!(
+            name.person_phrase(),
+            "monitor \"Done\" uses joey-1, a Baseten model"
+        );
+        assert_eq!(name.agent_phrase(), "monitor \"Done\", joey-1 on Baseten");
+        let refused =
+            refusal_reason(TierEffect::RefusedPrivate, &name, RefusalAudience::Person).unwrap();
+        assert!(!refused.contains(slug), "{refused}");
+        assert!(refused.contains("joey-1"), "{refused}");
+        assert_eq!(
+            model_labels(&names),
+            vec![format!("{BASETEN_DECISION_PROVIDER}/{slug}")]
+        );
+        let agent = agent_public_model_on_private_chat(&DecisionModelRef::new(
+            BASETEN_DECISION_PROVIDER,
+            slug,
+        ))
+        .unwrap();
+        assert!(
+            agent.starts_with("this chat is private, so joey-1, a Baseten model, can't read it."),
+            "{agent}"
+        );
+        assert_eq!(
+            crate::decision::monitor::model_phrase(&DecisionModelRef::new(
+                BASETEN_DECISION_PROVIDER,
+                slug
+            )),
+            "joey-1 · Baseten"
+        );
     }
 
     #[test]

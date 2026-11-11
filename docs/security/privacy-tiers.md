@@ -319,6 +319,17 @@ this section is the ledger.
     it, the refusal ends "Name a private decision model (decision_models lists them), or start
     this work in a public chat." When it came from the configured default, it ends "Set
     BIOROUTER_DECISION_MODEL to a private model, or start this work in a public chat."
+    An agent that SAVES a public name for a private chat is refused before that, at its door,
+    in DR-33's agent sentence ("This chat is private, so joey-1, a Baseten model, can't read
+    it. This would change whether this chat is private, … which only the person can choose.
+    … tell the person; do not retry."): `workspace_monitor` (which reaches the caller's own
+    chat as well as its direct subagents, so an agent asked to monitor itself is told this rather
+    than that the chat is out of reach; the own-chat target skips the direct-child check, for the
+    auto-injected child-scope grant too, which is safe only because every add still meets this
+    tier check, while the coding-agent bridge's preflight still demands a direct child) and a
+    spawn's `monitors` from a private chat
+    (`agent_public_model_on_private_chat` in `decision/save.rs`; live QA M3-1, M3-2,
+    2026-11-11).
   - **Gate A's barrier never offers a decision provider.** The list of private models a refused
     model switch offers (`available_private_providers` in
     `crates/biorouter-server/src/routes/agent.rs`) leaves out `ollama_decision`, which is Private

@@ -2145,7 +2145,11 @@ fn declares_public(model: &DecisionModelRef) -> bool {
 /// its label.
 pub fn model_phrase(model: &DecisionModelRef) -> String {
     match crate::privacy::decision_axes::declared_name(model) {
-        Some(declared) => format!("{} · {}", model.model, declared.host.place()),
+        Some(declared) => format!(
+            "{} · {}",
+            crate::providers::decision::catalog::decision_model_short_name(model),
+            declared.host.place()
+        ),
         None => model.label(),
     }
 }

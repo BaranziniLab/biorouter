@@ -218,7 +218,7 @@ A subagent's chat has monitors of its own, and they come from these places:
 | A workflow | A sub-workflow's `decision_settings` monitors, when the agent spawns that sub-workflow. | The person |
 | The agent, for a phase | The phase's `monitors` in `workspace_orchestrate`, given to every subagent spawned into the phase afterwards. | The agent |
 | The agent, at spawn | The `subagent` tool's `monitors` field. | The agent |
-| The agent, later | `workspace_monitor` on a subagent it started (`list`, `add`, `remove`). | The agent |
+| The agent, later | `workspace_monitor` on a subagent it started (`list`, `add`, `remove`). The same tool reaches the agent's own chat when `session_id` is left out; a public model there on a private chat is refused with DR-33's agent sentence. | The agent |
 | The person, on the child | The Monitors dialog in the subagent's tab, or `biorouter session monitors <child>`. | The person |
 
 A child starts with them in this order: the copies of the parent's enabled "also watch" monitors, the sub-workflow's, the phase's, then the spawn's. A spawn monitor replaces a phase monitor with the same id; any other shared id is refused. A child's default decision model is the parent's, else the sub-workflow's.

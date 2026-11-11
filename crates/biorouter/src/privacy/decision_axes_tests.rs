@@ -1662,3 +1662,16 @@ fn the_fold_counts_the_public_names_it_does_not_name() {
         .iter()
         .all(|name| name.others == 0));
 }
+
+/// Live QA M3-5: a monitor and a gate on one model are one accepted model, so
+/// `public_basis.v1` names it once, in the order first named.
+#[test]
+fn a_basis_names_each_model_once() {
+    let basis = PublicBasis::new(
+        "s",
+        BasisAuthor::Person,
+        "test",
+        vec![BASETEN.to_string(), CLOUD.to_string(), BASETEN.to_string()],
+    );
+    assert_eq!(basis.models, vec![BASETEN.to_string(), CLOUD.to_string()]);
+}

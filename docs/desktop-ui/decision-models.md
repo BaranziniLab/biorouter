@@ -471,12 +471,30 @@ line with one InfoTip (`decisions/TierEffectLine.tsx`; the words are `TIER_EFFEC
 The phase gate dialog's editor does the same for a gate's model (or, for a gate with none, the
 chat's default): the line above Save gate, and Save gate as the answer.
 
+### The chat's default decision model
+
+The top of the Monitors dialog, in a chat and before the first message alike, is one select,
+"Decision model for this chat" (`DefaultModelField` in `MonitorsDialog.tsx`), with the picker's
+own rows (`decisions/decisionModelOption.tsx`). Its first row, "Chosen automatically", clears the
+default, so a decision that names no model is chosen within the chat's tier (a model on this
+computer first). A monitor, a gate or a `decide` call that names no model runs on it. A pick is
+applied at once, like a row's switch, and keeps the monitors as stored. A public row that would
+make the chat public reads "Makes this chat public"; picking it shows "This chat will be public:
+joey-1 runs on Baseten." under the select with Cancel and Make it public, and only the answer is
+sent (`acceptPublicDecisionModels`), in draft mode to the draft. The daemon's line after a save
+names a Baseten model by its alias even when the chat stored its slug ("joey-1 runs on Baseten",
+never `decision-models/baseten-joey-2b-latest`; `LoweredBy::model_name`), as do `privacyBasis.model`
+and every refusal. Live QA M1-1 (2026-11-11) found
+the dialog offered monitors only, so a person could not set the default the CLI sets with
+`biorouter session monitors <id> default`. Tests: `decisions/MonitorsDialog.tierEffect.test.tsx`.
+
 ### Before the first message
 
 `decisions/DraftMonitorsDialog.tsx` is the Monitors dialog for a chat that has no session row yet,
 shared by both composers (Home's `Hub` and a blank chat's `BaseChat`), which would otherwise
-diverge. It edits the default decision model and the monitors only, and writes nothing to the
-daemon. The draft lives in renderer memory beside the held chat model
+diverge. It edits the default decision model (the select above) and the monitors only, and writes
+nothing to the daemon. The tip beside "This chat will be public" names the chat model the way the
+model chip does (`gpt-5.5`, not `gpt-5.5-2026-04-24`), here and in a chat's own Monitors dialog. The draft lives in renderer memory beside the held chat model
 (`decisions/draftDecisionSettings.ts`), keyed by the composer (a chat tab, or Home's draft key), so
 it outlives a tab switch and a trip to Settings and is never written to disk. The list is read
 with `GET /decisions/models?boundProvider=<p>&boundModel=<m>`, so each row carries what it would
@@ -502,13 +520,16 @@ show only the lock, as for any chat.
 | Surface | What it shows |
 |---|---|
 | The chat's privacy pill (`SessionNamePill`, `PrivacyBadge`) | "Public", with the InfoTip "Public: monitor "Done" uses joey-1 · Baseten. A chat is as private as its least private model, so it can't use private extensions, knowledge bases or chats." For a subagent of a public chat: "Public: it is part of a public chat's work." The Private tip reads "Private. Biorouter only lets private models, decision models included, read this chat." |
-| The model chip and its menu (`ModelEffortChip`, `ModelsBottomBar`) | Versa keeps its lock (the chip describes the model). The chat's line in its tooltip and menu header reads "Public chat. This chat is public because of its decision models." |
+| The model chip and its menu (`ModelEffortChip`, `ModelsBottomBar`) | Versa keeps its lock (the chip describes the model). The chat's line in its tooltip and menu header names the reason, as the pill's tip does: "Public chat: monitor "Done" uses joey-1 · Baseten." (`privacyBasisChipLine`). A chat in the tab strip draws no pill, so this is where the reason shows (live QA M1-2, M2-3). |
 | The model switch (`SwitchModelModal`) | On a chat its decision models keep public, "This chat stays public: its decision models include joey-1 · Baseten." in place of "After your next message this chat becomes private" |
 | A workflow's start | "Start this workflow?", "This workflow uses joey-1 · Baseten, so this chat will be public.", with Start it and Cancel |
 | The declassify dialog (History) | The public monitors and default the declassification turns off ("Monitor "Done" uses joey-1 · Baseten and will be turned off."), with the InfoTip "After this, a public decision model you choose can read the whole chat." The lines come from the chat's settings and the catalog's tiers; the daemon turns them off whatever the dialog read |
 | A refusal card | The daemon's sentence, which on a chat made public by a decision model names it: "This chat is public because monitor "Done" uses joey-1, a Baseten model, so it can't use the private extension OMOP. …" |
 
-The plan card does not yet say which phase's gate is the last public one.
+A gate's line in the plan text (the tool result card the person reads, `gate_words` in
+`agents/orchestration_plan.rs`) names the gate's decision model when it names one: "1 question at
+P(yes) >= 0.50 with joey-1 · Baseten, 0 of 3 attempts used, …" (live QA M2-4). The plan card does
+not yet say which phase's gate is the last public one.
 
 ### The install panel
 
