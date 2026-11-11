@@ -42,6 +42,7 @@ pub mod pricing;
 pub(crate) mod provider_binding;
 pub mod provider_registry;
 pub mod provider_test;
+pub mod readiness;
 pub(crate) mod retry;
 #[cfg(feature = "aws-providers")]
 pub mod sagemaker_tgi;

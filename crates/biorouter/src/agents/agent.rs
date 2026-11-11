@@ -1168,6 +1168,21 @@ const CODING_AGENT_BRIDGE_ALLOWED_TODO_TOOLS: &[&str] = &[
 
 const CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS: &[&str] = &["chatrecall__chatrecall"];
 
+// The Decisions capability (`decisions_extension.rs`), default ON. It was
+// absent from this table, and the table is the only door a BUNDLED extension
+// has onto the bridge: `enabled_coding_agent_bridge_extension_targets` skips
+// every name `resolve_bundled_extension` knows, so a built-in with no policy
+// here is dropped silently. A Claude Code or Codex chat therefore saw the
+// Decisions instructions in its system prompt and no `decide` tool, while a
+// chat on any other provider had both.
+//
+// Bridging it adds no new gate and drops none. A bridged call still reaches
+// `ExtensionManager::dispatch_tool_call` (Gate C, with the capability pinned
+// for this turn), and every model it names still goes through
+// `DecisionService`'s use gate (Gate H), exactly as on the direct path.
+const CODING_AGENT_BRIDGE_ALLOWED_DECISIONS_TOOLS: &[&str] =
+    &["decisions__decide", "decisions__decision_models"];
+
 const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
     "workspace__workspace_read_conversation",
@@ -1320,6 +1335,11 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         capability_name: "Chat Recall",
         target_name: "chatrecall",
         tools: CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Decisions",
+        target_name: "decisions",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_DECISIONS_TOOLS,
     },
     CodingAgentBridgePolicy {
         capability_name: "Knowledge",
@@ -3684,7 +3704,16 @@ fn repetition_denial_abort(
         tool_request_id = %request.id,
         "repetition policy denied a tool signature; terminating this user turn"
     );
-    Some((code, result.reason.clone()))
+    // The turn's ending is read by the PERSON (the desktop's turn row, the
+    // CLI's last line); `result.reason` is the agent's and stays the denied
+    // call's tool result. See `repetition_stop_notice`.
+    let tool_name = request
+        .tool_call
+        .as_ref()
+        .map(|call| call.name.to_string())
+        .unwrap_or_default();
+    let notice = crate::tool_monitor::repetition_stop_notice(result, &tool_name);
+    Some((code, notice))
 }
 
 /// PAR-04: give every tool a cancel abandoned an explicit "cancelled" result.
@@ -10964,16 +10993,31 @@ impl Agent {
         // knowledge; only the Agent has the map. Restore the enriched
         // description here so a session that defines sub-workflows still tells
         // the model their names — the pre-merge behaviour.
+        //
+        // The model also learns here which chat providers are set up on this
+        // computer, for `settings.provider` (live QA 2026-11-11: told nothing,
+        // it sent a Versa model name to Claude Code and Codex). Only the
+        // MODEL's list: it costs a readiness pass over the registry (cached for
+        // a few seconds), which the permission editor has no use for.
         if subagents_enabled {
             let sub_workflows: Vec<_> = self.sub_workflows.lock().await.values().cloned().collect();
-            if !sub_workflows.is_empty() {
-                if let Some(spawn) = prefixed_tools
-                    .iter_mut()
-                    .find(|t| t.name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED)
-                {
+            let roster = match audience {
+                ToolAudience::Model => {
+                    Some(crate::providers::readiness::cached_chat_provider_roster().await)
+                }
+                ToolAudience::PermissionEditor => None,
+            };
+            if let Some(spawn) = prefixed_tools
+                .iter_mut()
+                .find(|t| t.name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED)
+            {
+                if !sub_workflows.is_empty() {
                     spawn.description = Some(
                         crate::agents::subagent_tool::build_tool_description(&sub_workflows).into(),
                     );
+                }
+                if let Some(roster) = roster.as_deref() {
+                    crate::agents::subagent_tool::describe_provider_choices(spawn, roster);
                 }
             }
         }
@@ -21169,6 +21213,126 @@ mod tests {
         assert!(revoked.contains("not available"), "{revoked}");
     }
 
+    /// Live QA, 2026-11-11: a Claude Code chat listed every tool it had and
+    /// none from Decisions ("Decisions is loaded but exposes no tools"), while
+    /// a Versa chat in the same sandbox had `decide` and `decision_models`.
+    /// Decisions is a bundled capability with no bridge policy, and a bundled
+    /// extension has no other way onto the bridge, so the plan dropped it.
+    ///
+    /// Both coding-agent providers build the same plan, so both are measured,
+    /// and the call is dispatched rather than only planned: the argument error
+    /// that comes back is the Decisions extension's own answer, which it can
+    /// only give once the call has passed `dispatch_tool_call` (Gate C).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_offers_the_decision_tools_while_decisions_is_on() {
+        use crate::agents::decisions_extension::{
+            DECIDE_TOOL_NAME, DECISION_MODELS_TOOL_NAME, EXTENSION_NAME as DECISIONS,
+        };
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let target = resolve_bundled_extension(DECISIONS).expect("Decisions is bundled");
+        agent
+            .add_extension(target.into_config("decisions bridge regression".into()))
+            .await
+            .expect("enable Decisions");
+        let decision_tools = [DECIDE_TOOL_NAME, DECISION_MODELS_TOOL_NAME];
+        let tools = agent.list_tools(&session_id, None).await;
+        for expected in decision_tools {
+            assert!(
+                tools.iter().any(|tool| tool.name.as_ref() == expected),
+                "precondition: the live registry must expose {expected}"
+            );
+        }
+
+        for provider_name in ["claude_code", "codex"] {
+            let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+                name: provider_name,
+            });
+            let plan = agent
+                .prepare_coding_agent_bridge_plan(&provider, &tools)
+                .await
+                .unwrap_or_else(|| panic!("{provider_name} needs a bridge plan"));
+            for expected in decision_tools {
+                assert_eq!(
+                    plan.tools
+                        .iter()
+                        .filter(|tool| tool.name.as_ref() == expected)
+                        .count(),
+                    1,
+                    "{provider_name} must be offered {expected} exactly once"
+                );
+            }
+            let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
+            let result = coding_agent_bridge::BridgeToolDispatch::dispatch(
+                &dispatch,
+                &session_id,
+                CallToolRequestParams {
+                    name: DECIDE_TOOL_NAME.into(),
+                    arguments: Some(object!({"questions": {}, "chunks": []})),
+                    meta: None,
+                    task: None,
+                },
+                // A coding-agent chat is Public, with the switch on.
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{provider_name}: a bridged decide must dispatch: {error}")
+            });
+            assert_eq!(result.is_error, Some(true), "{provider_name}");
+            let text = result
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<String>();
+            assert!(
+                text.contains("Ask between 1 and"),
+                "{provider_name}: the call must reach the Decisions extension: {text}"
+            );
+        }
+
+        // And off means off: with the capability detached, neither tool is
+        // offered, and the plan built while it was on stops admitting calls.
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+            name: "claude_code",
+        });
+        let stale_plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Claude Code needs a bridge plan");
+        agent
+            .extension_manager
+            .remove_extension(DECISIONS)
+            .await
+            .expect("detach Decisions");
+        let refusal = agent
+            .chat_bridge_dispatch(&provider, None, stale_plan)
+            .enforce_tool_access(
+                &session_id,
+                &CallToolRequestParams {
+                    name: DECISION_MODELS_TOOL_NAME.into(),
+                    arguments: Some(object!({})),
+                    meta: None,
+                    task: None,
+                },
+            )
+            .await
+            .expect_err("a detached Decisions must revoke the old grant");
+        assert!(refusal.contains("no longer enabled"), "{refusal}");
+        let tools = agent.list_tools(&session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Claude Code needs a bridge plan");
+        assert!(
+            plan.tools
+                .iter()
+                .all(|tool| !tool.name.starts_with("decisions__")),
+            "a chat with Decisions off must not be offered its tools"
+        );
+    }
+
     /// ⚠ The name still says "withholds arbitrary host tools", and that is
     /// still what it measures — but the set of tools that counts as *arbitrary*
     /// shrank. Every BUILT-IN capability is now bridged, Developer, Biorouter
@@ -21219,6 +21383,8 @@ mod tests {
             "memory__retrieve_memories",
             "todo__todo_update",
             "chatrecall__chatrecall",
+            "decisions__decide",
+            "decisions__decision_models",
             "workspace__subagent",
             "workspace__workspace_watch",
             "workspace__workspace_send_prompt",
@@ -21265,6 +21431,7 @@ mod tests {
             "developer",
             "computercontroller",
             "webdocuments",
+            "decisions",
         ] {
             let target = resolve_bundled_extension(name).expect("reviewed bundled target");
             agent
@@ -21314,6 +21481,12 @@ mod tests {
         assert_eq!(
             prefixed("webdocuments"),
             expected(CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS)
+        );
+        // A tool added to Decisions must reach a coding agent too: this
+        // capability was missing from the bridge entirely until 2026-11-11.
+        assert_eq!(
+            prefixed("decisions"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_DECISIONS_TOOLS)
         );
     }
 

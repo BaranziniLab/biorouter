@@ -567,6 +567,62 @@ fn decision_model_refusal(provider: &str) -> Option<String> {
     })
 }
 
+/// The refusal for a spawn whose `settings.provider` names a chat provider that
+/// is not set up on this computer, or `None`.
+///
+/// Live QA, 2026-11-11: the agent was told nothing about which providers were
+/// set up, named `codex` on a machine without it, and every such child failed
+/// its first request. Asked before anything exists, against the same readiness
+/// the Providers and Models page shows, read fresh (never the description's
+/// cached copy) because a person may have just set the provider up.
+///
+/// Not asked when the spawn names the parent's own provider (the parent is
+/// running on it, however it was set up) or a decision model, which
+/// [`decision_model_refusal`] answers with its own sentence. A model name
+/// missing from the provider's known list is not refused: catalogs go stale,
+/// and the description's list is the guidance.
+async fn provider_setup_refusal(params: &SubagentParams, parent_provider: &str) -> Option<String> {
+    let requested = params.settings.as_ref()?.provider.as_deref()?;
+    if requested == parent_provider
+        || crate::providers::decision::chat::is_decision_chat_provider(requested)
+    {
+        return None;
+    }
+    let roster = crate::providers::readiness::chat_provider_roster().await;
+    provider_setup_refusal_in(&roster, requested)
+}
+
+/// [`provider_setup_refusal`]'s sentence, from a roster. Pure, so the wording is
+/// testable for any machine.
+fn provider_setup_refusal_in(
+    roster: &crate::providers::readiness::ChatProviderRoster,
+    requested: &str,
+) -> Option<String> {
+    use crate::providers::readiness::ProviderReadiness;
+    let why = match roster.get(requested).map(|status| &status.readiness) {
+        Some(ProviderReadiness::Configured) => return None,
+        Some(ProviderReadiness::NotConfigured) => {
+            format!("{requested} isn't set up on this computer.")
+        }
+        Some(ProviderReadiness::Unavailable(reason)) => format!(
+            "{requested} isn't usable on this computer: {}.",
+            reason.trim_end_matches('.')
+        ),
+        None => format!("{requested} is not a chat provider Biorouter knows."),
+    };
+    let configured: Vec<&str> = roster.configured().map(|s| s.name.as_str()).collect();
+    let next = if configured.is_empty() {
+        "No chat provider is set up here, so leave the provider out to keep this chat's own."
+            .to_string()
+    } else {
+        format!(
+            "Set up chat providers: {}. Pick one of those, or leave the provider out.",
+            configured.join(", ")
+        )
+    };
+    Some(format!("{why} {next}"))
+}
+
 /// The provider a child is about to be constructed under: the one `settings`
 /// names, else the parent's own. A `model` or `temperature` override keeps the
 /// parent's provider name ([`apply_provider_override_and_composite_fork`]), and
@@ -953,13 +1009,131 @@ pub struct SubagentSettings {
     pub temperature: Option<f32>,
 }
 
-pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
-    let description = build_tool_description(sub_workflows);
-    // Named from the list the refusal checks, so the advice cannot drift from it.
-    let provider_description = format!(
-        "Override LLM provider. Use a chat model: a decision model provider ({}) is refused.",
+/// How many of one provider's model names the `settings.provider` description
+/// lists. Tool descriptions go to the model every turn, and some catalogs are
+/// long; the rest are counted ("+3 more") rather than named.
+const MODELS_LISTED_PER_PROVIDER: usize = 6;
+
+/// The `settings.provider` description. With a roster it names, one line each,
+/// the chat providers set up on this computer with their models, then one line
+/// of the providers that are not set up; without one (the static listing,
+/// before [`describe_provider_choices`] runs) it says only what is refused.
+///
+/// The decision-model sentence is named from the list the refusal checks, so
+/// the advice cannot drift from it.
+pub(crate) fn provider_override_description(
+    roster: Option<&crate::providers::readiness::ChatProviderRoster>,
+) -> String {
+    let decision = format!(
+        "A decision model provider ({}) is refused.",
         crate::providers::decision::chat::DECISION_CHAT_PROVIDERS.join(", ")
     );
+    let Some(roster) = roster else {
+        return format!("Override LLM provider. Use a chat model: {decision}");
+    };
+
+    let mut lines = Vec::new();
+    let configured: Vec<_> = roster.configured().collect();
+    if configured.is_empty() {
+        lines.push(
+            "Run the subagent on another chat provider. No chat provider is set up on this \
+             computer, so omit this to keep yours."
+                .to_string(),
+        );
+    } else {
+        lines.push(
+            "Run the subagent on another chat provider; omit to keep yours. Set up on this \
+             computer (provider: models):"
+                .to_string(),
+        );
+        for status in configured {
+            lines.push(format!("- {}: {}", status.name, listed_models(status)));
+        }
+    }
+    let not_set_up: Vec<_> = roster.not_configured().map(|s| s.name.as_str()).collect();
+    if !not_set_up.is_empty() {
+        lines.push(format!(
+            "Not set up on this computer, refused: {}.",
+            not_set_up.join(", ")
+        ));
+    }
+    lines.push(decision);
+    lines.join("\n")
+}
+
+/// One configured provider's models for its description line: the default
+/// first and marked, then the other known names, capped at
+/// [`MODELS_LISTED_PER_PROVIDER`].
+fn listed_models(status: &crate::providers::readiness::ChatProviderStatus) -> String {
+    let mut names: Vec<String> = Vec::new();
+    if !status.default_model.is_empty() {
+        names.push(format!("{} (default)", status.default_model));
+    }
+    let others: Vec<&String> = status
+        .known_models
+        .iter()
+        .filter(|name| **name != status.default_model)
+        .collect();
+    let room = MODELS_LISTED_PER_PROVIDER.saturating_sub(names.len());
+    names.extend(others.iter().take(room).map(|name| (*name).clone()));
+    if others.len() > room {
+        names.push(format!("+{} more", others.len() - room));
+    }
+    if names.is_empty() {
+        "no model list; name one in model".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// The `settings.model` description.
+pub(crate) fn model_override_description(
+    roster: Option<&crate::providers::readiness::ChatProviderRoster>,
+) -> String {
+    if roster.is_some() {
+        "Override model: a name from that provider's list under provider. Omit it to get \
+         the provider's default."
+            .to_string()
+    } else {
+        "Override model. With provider set and no model, the child gets that provider's \
+         default."
+            .to_string()
+    }
+}
+
+/// Write what this computer has set up into the spawn tool the model is about
+/// to see: `settings.provider` and `settings.model` get the roster's
+/// descriptions. `Agent::list_tools_for` calls it, the one place that holds the
+/// spawn tool and can await the provider registry; the workspace extension's
+/// static listing ([`create_subagent_tool`]) carries the roster-less text.
+pub(crate) fn describe_provider_choices(
+    tool: &mut Tool,
+    roster: &crate::providers::readiness::ChatProviderRoster,
+) {
+    let mut schema = (*tool.input_schema).clone();
+    let Some(settings) = schema
+        .get_mut("properties")
+        .and_then(|properties| properties.get_mut("settings"))
+        .and_then(|settings| settings.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    for (field, description) in [
+        ("provider", provider_override_description(Some(roster))),
+        ("model", model_override_description(Some(roster))),
+    ] {
+        if let Some(property) = settings.get_mut(field).and_then(Value::as_object_mut) {
+            property.insert("description".to_string(), Value::String(description));
+        }
+    }
+    tool.input_schema = std::sync::Arc::new(schema);
+}
+
+pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
+    let description = build_tool_description(sub_workflows);
+    let provider_description = provider_override_description(None);
+    let model_description = model_override_description(None);
 
     let schema = json!({
         "type": "object",
@@ -986,7 +1160,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
                 "type": "object",
                 "properties": {
                     "provider": {"type": "string", "description": provider_description},
-                    "model": {"type": "string", "description": "Override model"},
+                    "model": {"type": "string", "description": model_description},
                     "temperature": {"type": "number", "description": "Override temperature"}
                 },
                 "description": "Override model/provider settings."
@@ -1155,6 +1329,7 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          instead: the subagent stopped for a reason you share.\n\n\
          For parallel execution, make multiple `subagent` tool calls in the same message.",
     );
+    desc.push_str(&concurrency_sentence());
 
     desc.push_str(
         "\n\nThe child starts in the background and this call returns its session id \
@@ -1187,6 +1362,21 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
     }
 
     desc
+}
+
+/// How many subagents run at once and what happens to the rest, so the model
+/// can plan a swarm. Read from the same knobs the spawn gates read.
+///
+/// The total is the smaller of the in-flight ceiling and the concurrency plus
+/// the queue, because a spawn past either is refused.
+fn concurrency_sentence() -> String {
+    let running = max_concurrent_subagents();
+    let total = max_inflight_subagents().min(running.saturating_add(max_pending_subagents()));
+    format!(
+        " Up to {running} subagents run at once; the rest wait in a queue and start as slots \
+         free (at most {total} running and queued in all), so you can start that many in one \
+         message."
+    )
 }
 
 fn get_subworkflow_params_description(sub_workflow: &SubWorkflow) -> String {
@@ -2078,6 +2268,16 @@ async fn execute_subagent(
     cancellation_token: Option<CancellationToken>,
     force_background: bool,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    // First, before a phase, a monitor, an in-flight slot or a row: a provider
+    // that is not set up here would fail the child's first request, so the
+    // parent is told now, with the providers it can name instead.
+    if let Some(refusal) = provider_setup_refusal(&params, task_config.provider.get_name()).await {
+        return Err(ErrorData {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(refusal),
+            data: None,
+        });
+    }
     // Held until this returns: past `spawn_background_subagent` (whose handle
     // the barrier then sees) on the detached path, past the child's whole run
     // on the blocking one. While it is held, `complete` cannot close the phase
@@ -3044,10 +3244,26 @@ async fn apply_provider_override_and_composite_fork(
             if settings.provider.is_some()
                 || (settings.model.is_some() && task_config.provider.as_lead_worker().is_some())
             {
-                let mut model_config =
+                let parent_config = task_config.provider.get_model_config();
+                let mut model_config = if provider_name != task_config.provider.get_name() {
+                    // A different provider: the parent's model name and the limits that came
+                    // with it mean nothing there (a Versa chat's `gpt-5.5-2026-04-24` sent to
+                    // Claude Code or Codex fails the child's first request). Start from the
+                    // model the spawn named, or else the new provider's own default, and keep
+                    // only the reasoning effort, which every provider reads its own way.
+                    let model_name = match &settings.model {
+                        Some(model) => model.clone(),
+                        None => default_model_for_provider(&provider_name).await?,
+                    };
+                    let mut fresh = crate::model::ModelConfig::new(&model_name)
+                        .map_err(|e| anyhow!("Model '{}' is not usable: {}", model_name, e))?;
+                    fresh.reasoning_effort = parent_config.reasoning_effort;
+                    fresh
+                } else {
                     crate::providers::lead_worker::model_config_without_restore_marker(
-                        task_config.provider.get_model_config(),
-                    );
+                        parent_config,
+                    )
+                };
                 if let Some(model) = &settings.model {
                     model_config.model_name = model.clone();
                 }
@@ -3109,6 +3325,23 @@ async fn apply_provider_override_and_composite_fork(
         }
     }
     Ok(())
+}
+
+/// The model a spawn gets when it names a provider and no model: that provider's own default,
+/// as the provider registry declares it.
+async fn default_model_for_provider(provider_name: &str) -> Result<String> {
+    providers::providers()
+        .await
+        .into_iter()
+        .find(|(metadata, _)| metadata.name == provider_name)
+        .map(|(metadata, _)| metadata.default_model)
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "Provider '{}' has no default model; name one in settings.model",
+                provider_name
+            )
+        })
 }
 
 fn narrow_child_extensions_by_name(task_config: &mut TaskConfig, params: &SubagentParams) {
@@ -8788,6 +9021,291 @@ mod tests {
         .await
         .expect("an ordinary chat provider still resolves");
         assert_eq!(child.provider.get_name(), "ollama");
+        // Naming only a provider gives the child that provider's default model, never the
+        // parent's model name (a Versa chat's `gpt-5.5-…` sent to Claude Code or Codex failed
+        // every child's first request, live QA 2026-11-11).
+        assert_eq!(
+            child.provider.get_model_config().model_name,
+            crate::providers::ollama::OLLAMA_DEFAULT_MODEL
+        );
+    }
+
+    // --- which chat providers are set up, as the spawning model is told -----
+    // Live QA, 2026-11-11: told nothing about which providers were set up, the
+    // agent sent a Versa model name to `claude_code` and `codex`, and every such
+    // child failed its first request.
+
+    fn roster_metadata(
+        name: &str,
+        default_model: &str,
+        models: &[&str],
+    ) -> crate::providers::base::ProviderMetadata {
+        let mut metadata = crate::providers::base::ProviderMetadata::empty();
+        metadata.name = name.to_string();
+        metadata.default_model = default_model.to_string();
+        metadata.known_models = models
+            .iter()
+            .map(|model| crate::providers::base::ModelInfo::new(*model, 128_000))
+            .collect();
+        metadata
+    }
+
+    /// The live-QA machine: Versa and Claude Code set up, Codex's CLI missing,
+    /// OpenAI never set up, and a decision provider that must not be listed as
+    /// a chat provider.
+    fn qa_roster() -> crate::providers::readiness::ChatProviderRoster {
+        use crate::providers::readiness::{ChatProviderRoster, ProviderReadiness};
+        ChatProviderRoster::from_rows([
+            (
+                roster_metadata(
+                    "versa_azure",
+                    "gpt-5.5-2026-04-24",
+                    &[
+                        "gpt-5.5-2026-04-24",
+                        "gpt-5.4",
+                        "gpt-5.4-mini",
+                        "gpt-5.2",
+                        "gpt-5.1",
+                        "gpt-5",
+                        "gpt-5-mini",
+                        "o3",
+                        "o4-mini",
+                    ],
+                ),
+                ProviderReadiness::Configured,
+            ),
+            (
+                roster_metadata("claude_code", "sonnet", &["sonnet", "opus", "haiku"]),
+                ProviderReadiness::Configured,
+            ),
+            (
+                roster_metadata("codex", "gpt-5.5", &["gpt-5.5"]),
+                ProviderReadiness::Unavailable(
+                    crate::providers::coding_agent::discovery::CodingAgentKind::Codex
+                        .not_installed_summary(),
+                ),
+            ),
+            (
+                roster_metadata("openai", "gpt-5.5", &["gpt-5.5"]),
+                ProviderReadiness::NotConfigured,
+            ),
+            (
+                roster_metadata("baseten_decision", "joey-1", &["joey-1"]),
+                ProviderReadiness::Configured,
+            ),
+        ])
+    }
+
+    /// The whole text, written out, so a change to the wording fails here: one
+    /// line per configured provider with its default first, at most six names
+    /// and a count of the rest, then the providers that are not set up by name,
+    /// then the decision-model sentence the refusal is named from.
+    #[test]
+    fn the_provider_description_lists_what_is_set_up_and_what_is_not() {
+        assert_eq!(
+            provider_override_description(Some(&qa_roster())),
+            "Run the subagent on another chat provider; omit to keep yours. Set up on this \
+             computer (provider: models):\n\
+             - claude_code: sonnet (default), opus, haiku\n\
+             - versa_azure: gpt-5.5-2026-04-24 (default), gpt-5.4, gpt-5.4-mini, gpt-5.2, \
+             gpt-5.1, gpt-5, +3 more\n\
+             Not set up on this computer, refused: codex, openai.\n\
+             A decision model provider (baseten_decision, ollama_decision) is refused."
+        );
+    }
+
+    /// No chat provider set up: the model is told to keep its own rather than
+    /// offered an empty list.
+    #[test]
+    fn with_nothing_set_up_the_description_says_keep_yours() {
+        use crate::providers::readiness::{ChatProviderRoster, ProviderReadiness};
+        let roster = ChatProviderRoster::from_rows([(
+            roster_metadata("openai", "gpt-5.5", &[]),
+            ProviderReadiness::NotConfigured,
+        )]);
+        let description = provider_override_description(Some(&roster));
+        assert!(
+            description.starts_with(
+                "Run the subagent on another chat provider. No chat provider is set up on this \
+                 computer, so omit this to keep yours."
+            ),
+            "{description}"
+        );
+        assert!(
+            description.contains("Not set up on this computer, refused: openai."),
+            "{description}"
+        );
+    }
+
+    /// The model sees the roster in the schema it is offered, and nothing else
+    /// in that schema moves.
+    #[test]
+    fn describe_provider_choices_writes_the_roster_into_the_spawn_schema() {
+        let roster = qa_roster();
+        let mut tool = create_subagent_tool(&[]);
+        let before = tool.input_schema.clone();
+        describe_provider_choices(&mut tool, &roster);
+
+        let settings = &tool.input_schema["properties"]["settings"]["properties"];
+        assert_eq!(
+            settings["provider"]["description"],
+            provider_override_description(Some(&roster))
+        );
+        assert_eq!(
+            settings["model"]["description"],
+            model_override_description(Some(&roster))
+        );
+        assert_eq!(
+            settings["temperature"],
+            before["properties"]["settings"]["properties"]["temperature"]
+        );
+        assert_eq!(
+            tool.input_schema["properties"]["instructions"],
+            before["properties"]["instructions"]
+        );
+        // The decision-model refusal is still named where the model chooses.
+        let provider = settings["provider"]["description"].as_str().unwrap();
+        assert!(provider.contains("is refused"), "{provider}");
+        assert!(provider.contains("baseten_decision"), "{provider}");
+    }
+
+    /// The tool description says how many run at once and that the rest
+    /// queue, from the knobs the gates read, so a swarm can be planned.
+    #[test]
+    fn the_description_says_how_many_run_at_once_and_that_the_rest_queue() {
+        let desc = build_tool_description(&[]);
+        assert!(
+            desc.contains(&format!(
+                "Up to {} subagents run at once; the rest wait in a queue",
+                max_concurrent_subagents()
+            )),
+            "{desc}"
+        );
+    }
+
+    /// The refusal names what can be picked instead, with the reason when a
+    /// provider is set up but cannot run.
+    #[test]
+    fn the_setup_refusal_names_the_providers_that_are_set_up() {
+        let roster = qa_roster();
+        assert_eq!(
+            provider_setup_refusal_in(&roster, "codex").as_deref(),
+            Some(
+                "codex isn't usable on this computer: Codex is not installed, or is not on a \
+                 path Biorouter searches. Set up chat providers: claude_code, versa_azure. Pick \
+                 one of those, or leave the provider out."
+            )
+        );
+        assert_eq!(
+            provider_setup_refusal_in(&roster, "openai").as_deref(),
+            Some(
+                "openai isn't set up on this computer. Set up chat providers: claude_code, \
+                 versa_azure. Pick one of those, or leave the provider out."
+            )
+        );
+        assert_eq!(
+            provider_setup_refusal_in(&roster, "no_such_provider").as_deref(),
+            Some(
+                "no_such_provider is not a chat provider Biorouter knows. Set up chat \
+                 providers: claude_code, versa_azure. Pick one of those, or leave the provider \
+                 out."
+            )
+        );
+        assert_eq!(provider_setup_refusal_in(&roster, "versa_azure"), None);
+        assert_eq!(provider_setup_refusal_in(&roster, "claude_code"), None);
+
+        let nothing = crate::providers::readiness::ChatProviderRoster::default();
+        assert_eq!(
+            provider_setup_refusal_in(&nothing, "codex").as_deref(),
+            Some(
+                "codex is not a chat provider Biorouter knows. No chat provider is set up \
+                 here, so leave the provider out to keep this chat's own."
+            )
+        );
+    }
+
+    /// `CODEX_COMMAND` pinned to a path that does not exist, task-locally: Codex
+    /// then reads Unavailable on any machine, whatever is installed.
+    fn codex_missing(dir: &std::path::Path) -> HashMap<String, String> {
+        HashMap::from([(
+            "CODEX_COMMAND".to_string(),
+            dir.join("no-such-codex").to_string_lossy().into_owned(),
+        )])
+    }
+
+    /// Through both real doors: refused before the queue, before a row.
+    #[tokio::test]
+    async fn a_spawn_on_a_provider_that_is_not_set_up_is_refused_and_creates_no_child() {
+        // Every concurrency permit held, as for the decision-model refusal: a
+        // spawn that got past the check would park in the blocking door's
+        // queue and time out.
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+        let _held = hold_every_subagent_permit().await;
+        let dir = tempfile::tempdir().unwrap();
+        for door in BOTH_DOORS {
+            let (result, sessions) = spawn_through(
+                door,
+                json!({
+                    "instructions": "Summarise the cohort.",
+                    "settings": { "provider": "codex", "model": "gpt-5.5-2026-04-24" }
+                }),
+                public_tiered_parent(),
+                codex_missing(dir.path()),
+            )
+            .await;
+            let err = result.expect_err("a provider that is not set up cannot run a subagent");
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{door:?}");
+            assert!(
+                err.message.starts_with(
+                    "codex isn't usable on this computer: Codex is not installed, or is not on \
+                     a path Biorouter searches."
+                ),
+                "{door:?}: {}",
+                err.message
+            );
+            assert!(
+                err.message.ends_with("leave the provider out.")
+                    || err.message.ends_with("keep this chat's own."),
+                "{door:?}: {}",
+                err.message
+            );
+            assert_eq!(
+                sessions, 0,
+                "{door:?}: the refusal must precede the child's row"
+            );
+        }
+    }
+
+    /// The parent's own provider is never asked about (the parent is running on
+    /// it), and a decision model keeps its own refusal; anything else is.
+    #[tokio::test]
+    async fn the_setup_check_skips_the_parents_provider_and_decision_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let ask = |provider: &str| -> SubagentParams {
+            serde_json::from_value(json!({
+                "instructions": "x",
+                "settings": { "provider": provider }
+            }))
+            .unwrap()
+        };
+        let (own, other, decision, none) =
+            crate::config::with_config_overrides(codex_missing(dir.path()), async {
+                (
+                    provider_setup_refusal(&ask("codex"), "codex").await,
+                    provider_setup_refusal(&ask("codex"), "tiered-parent").await,
+                    provider_setup_refusal(&ask("baseten_decision"), "tiered-parent").await,
+                    provider_setup_refusal(
+                        &serde_json::from_value(json!({ "instructions": "x" })).unwrap(),
+                        "tiered-parent",
+                    )
+                    .await,
+                )
+            })
+            .await;
+        assert_eq!(own, None, "the parent's own provider is not asked about");
+        assert!(other.is_some(), "another chat's provider is");
+        assert_eq!(decision, None, "a decision model keeps its own refusal");
+        assert_eq!(none, None, "no provider named, nothing to check");
     }
 
     // --- monitors a spawn puts on its subagent, and why a stop stopped it ---
