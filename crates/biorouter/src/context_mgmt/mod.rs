@@ -11,7 +11,9 @@ use serde::Serialize;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+pub mod elision;
 pub mod pins;
+pub mod prompt_fingerprint;
 
 pub use pins::{
     pin_is_eligible, select_pins, EvictedPin, PinEvictionReason, PinLimits, PinSelection,
@@ -901,7 +903,13 @@ pub async fn check_if_compaction_needed(
     session: &crate::session::Session,
     cold_path_context: Option<(&str, &[Tool])>,
 ) -> Result<bool> {
-    let messages = conversation.messages();
+    // Measure what the model is SENT: older tool results the chat has elided
+    // are stubs there (`elision`), and the provider-reported figure below
+    // counts the stubs. Judged against the full text instead, the floor check
+    // would distrust that figure and estimate a request the model never got,
+    // and compaction would fire long before the model's context was large.
+    let agent_view = elision::agent_view_for_session(conversation, session);
+    let messages = agent_view.as_ref().unwrap_or(conversation).messages();
     let config = Config::global();
     let threshold = threshold_override.unwrap_or_else(|| {
         config
@@ -1238,25 +1246,19 @@ pub(crate) async fn record_unapplied_compaction_usage(
     provider_name: &str,
     usage: &ProviderUsage,
 ) {
-    if usage.usage.input_tokens.is_none() && usage.usage.output_tokens.is_none() {
-        return;
-    }
-    // A side entry has no cache columns, so cached input (rare on a
-    // summarization request, whose prompt is unique) is left out rather than
-    // priced as fresh input.
-    let input = usage.usage.input_tokens.map(i64::from);
-    let entry = crate::session::SideUsageEntry {
-        event_key: format!("compaction:{}", uuid::Uuid::new_v4()),
-        session_id: session_id.to_string(),
-        provider: usage
-            .provider
-            .clone()
-            .unwrap_or_else(|| provider_name.to_string()),
-        model_id: usage.model.clone(),
-        input_tokens: input,
-        output_tokens: usage.usage.output_tokens.map(i64::from),
-    };
-    if let Err(e) = session_manager.apply_side_usage_event(entry).await {
+    // Through the side-call ledger (`side_usage`), like every other call a
+    // chat makes outside its turns: a `side:` key, so it is not counted as a
+    // turn, and its cached input priced as cached rather than left out.
+    use crate::session::session_manager::side_usage;
+    if let Err(e) = side_usage::record_with(
+        session_manager,
+        session_id,
+        side_usage::SideCall::Compaction,
+        provider_name,
+        usage,
+    )
+    .await
+    {
         warn!("BR-12: could not record the usage of a compaction that did not land: {e}");
     }
 }
