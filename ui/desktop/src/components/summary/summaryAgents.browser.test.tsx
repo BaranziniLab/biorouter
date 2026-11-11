@@ -501,13 +501,16 @@ describe('the subagents in the summary card, in a real layout engine', () => {
     } finally {
       await tab.close();
     }
-    // Four rows are comfortable, and the blocked one (the fourth) shows its result line.
+    // Four rows are comfortable, and the blocked one (the fourth) ended on a
+    // result line that is a table's header row: no summary, so its status word
+    // (live QA 2026-11-11: "Abstract · Flaw type(s) · Evidence · Bri…").
     const comfortable = await mount({ agents: 4, markdownResult: true });
     try {
       const lines = await comfortable.tab.evaluate(() =>
         [...document.querySelectorAll<HTMLElement>('.br-agents__meta')].map((m) => m.textContent)
       );
-      expect(lines.join(' // ')).toContain('Patient · sodium (Na)');
+      expect(lines.join(' // ')).toContain('Needs an answer');
+      expect(lines.join(' // ')).not.toContain('Patient');
       expect(lines.some((line) => line?.includes('|'))).toBe(false);
     } finally {
       await comfortable.tab.close();

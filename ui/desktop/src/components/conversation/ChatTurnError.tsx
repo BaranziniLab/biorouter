@@ -1,12 +1,19 @@
-import { AlertTriangle } from '../icons/app-icons';
+import { AlertTriangle, Info } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Disclosure } from '../ui/disclosure';
+import { TranscriptRow } from '../TranscriptRow';
 import { transcriptCopy } from '../transcript/copy';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
 import { isConnectionError } from '../../utils/conversionUtils';
 import { crewTurnRefusalOf } from '../crew/access/crewTurnRefusal';
 import { cn } from '../../utils';
+import {
+  REPETITION_STOP_FALLBACK,
+  REPETITION_STOP_TITLE,
+  TOOL_LOOP_CODE,
+  repetitionStopNotice,
+} from '../../utils/repetitionStop';
 
 export interface ChatTurnErrorPresentation {
   title: string;
@@ -117,6 +124,19 @@ export function presentChatTurnError(error: ChatTurnErrorData): ChatTurnErrorPre
   const crewRefusal = STOP_TITLES[error.code] ? null : crewTurnRefusalOf(error);
   if (crewRefusal) return { title: crewRefusal.title, message: crewRefusal.message };
 
+  // The repetition guard ended the turn. Nothing failed and nobody needs to
+  // retry: the person is told, in one sentence, which step Biorouter stopped
+  // and how often it had run. The guard's own reason is written for the agent
+  // ("The user did NOT decline it…") and stays its tool result; an older
+  // daemon sent it here, so it is translated rather than shown (live QA,
+  // 2026-11-11). Never "Model request failed", and no Details.
+  if (error.code === TOOL_LOOP_CODE) {
+    return {
+      title: REPETITION_STOP_TITLE,
+      message: repetitionStopNotice(error.message) ?? REPETITION_STOP_FALLBACK,
+    };
+  }
+
   let title = 'Model request failed';
   if (STOP_TITLES[error.code]) {
     title = STOP_TITLES[error.code];
@@ -226,6 +246,19 @@ export function ChatTurnError({
   onRetry?: () => void;
 }) {
   const presentation = presentChatTurnError(error);
+  // A repetition stop is a notice, not a failure: one quiet transcript line in
+  // muted ink, announced politely, with no danger glyph and no Retry (the same
+  // call would be stopped again). The line is the sentence itself, as a
+  // confirmed Stop's line is (`ChatTurnStopped`).
+  if (error.code === TOOL_LOOP_CODE) {
+    return (
+      <div data-testid="chat-turn-loop-stop" className="mt-6 w-full">
+        <div role="status">
+          <TranscriptRow icon={Info} glyph="loop-stop" label={presentation.message} />
+        </div>
+      </div>
+    );
+  }
   // A turn refused for its Crew access would be refused again: the way on is the chat's Crew bar.
   const canRetry = error.retryable && !!onRetry && !crewTurnRefusalOf(error);
 
