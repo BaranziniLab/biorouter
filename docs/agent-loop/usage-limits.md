@@ -74,6 +74,10 @@ Other spending doors follow the same rule:
   part-way would leave a monitor's verdict unknown.
 - **Workflow generation.** The model call that turns a chat into a workflow is added to
   the chat's usage, so it counts too.
+- **Chat titles.** A chat at a limit is not named by a model. After a message the limit
+  stopped, a chat still called "New chat" gets the first words of its first message as
+  its title, and a chat that already has a title keeps it. The check is the same one the
+  turn makes before each model request (`SessionManager::maybe_update_name`).
 
 ## When a dollar limit cannot fire
 

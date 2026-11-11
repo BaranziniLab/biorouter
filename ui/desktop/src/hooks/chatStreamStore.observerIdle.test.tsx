@@ -135,3 +135,61 @@ describe('an injected message on an observer feed', () => {
     expect(state).not.toBe(ChatState.Idle);
   });
 });
+
+/**
+ * `code_execution__watch_job`: the daemon resumes a chat by itself when the
+ * job ends, so the open tab is asked to follow it (an `observe` workspace
+ * frame) and must render that turn live. Before the daemon sent that frame
+ * the turn was stored and shown only after a reload (live run, chats 7 and 9).
+ */
+describe('a chat a job watch resumes', () => {
+  function assistantMessage(id: string, text: string): MessageEvent {
+    return {
+      type: 'Message',
+      message: {
+        id,
+        role: 'assistant',
+        created: Math.floor(Date.now() / 1000),
+        content: [{ type: 'text', text }],
+        metadata: { userVisible: true, agentVisible: true },
+      },
+      token_state: tokenState,
+    } as unknown as MessageEvent;
+  }
+
+  it('shows the watching notice while idle, then streams the resumed turn live', async () => {
+    const notice = {
+      type: 'Message',
+      message: {
+        id: 'm-watching',
+        role: 'assistant',
+        created: Math.floor(Date.now() / 1000),
+        content: [
+          {
+            type: 'systemNotification',
+            notificationType: 'inlineMessage',
+            msg: 'Watching cdw__status (watch-3). This chat will continue by itself when the job finishes; no model requests are made meanwhile.',
+          },
+        ],
+        metadata: { userVisible: true, agentVisible: false },
+      },
+      token_state: tokenState,
+    } as unknown as MessageEvent;
+    const started = { type: 'TurnStarted', turn_id: 'turn-14' } as unknown as MessageEvent;
+
+    const { state, messages } = await observeOnce(`obs-watch-${++sessionSeq}`, [
+      turnStateIdle,
+      notice,
+      started,
+      messageFrame('m-wake', '[watch watch-3] cdw__status: the job is no longer active'),
+      assistantMessage('m-answer', 'WATCH-RESUMED-ANSWER'),
+    ]);
+
+    const text = JSON.stringify(messages);
+    expect(text).toContain('Watching cdw__status (watch-3)');
+    expect(text).toContain('[watch watch-3]');
+    expect(text).toContain('WATCH-RESUMED-ANSWER');
+    // The turn the daemon started is running in this tab, not idle.
+    expect(state).not.toBe(ChatState.Idle);
+  });
+});

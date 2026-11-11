@@ -122,6 +122,11 @@ pub(super) enum StopCause {
     TurnStopped,
     /// The chat was deleted ([`cancel_watches_for_session`]).
     ChatDeleted,
+    /// Another read of the same status call in the chat (the model's own
+    /// check, a `wait_for`, a script's call) saw the job end
+    /// ([`retire_watches_seen_ending`]). The model has that result already, so
+    /// the chat is neither resumed nor told.
+    SeenEnded,
 }
 
 /// One live watch, as the registry holds it.
@@ -130,6 +135,12 @@ struct WatchEntry {
     tool: String,
     /// The status call's arguments, canonical, to spot a duplicate watch.
     arguments: String,
+    /// The arguments the first check was admitted with, canonical. The same as
+    /// `arguments` unless the judge rewrote the call; a read of either one is
+    /// a read of this job.
+    admitted: String,
+    /// When the job counts as done, to judge a status read made elsewhere.
+    until: Until,
     stop: CancellationToken,
     cause: Arc<std::sync::Mutex<Option<StopCause>>>,
 }
@@ -171,6 +182,92 @@ pub fn cancel_watches_for_session(session_id: &str) -> usize {
     cancelled
 }
 
+/// Retire every watch of this chat on `tool` with these arguments when
+/// `result`, read outside the watch, shows the job ended: its state reads
+/// finished, or the watch's `until` pointer matches. Called for every status
+/// result the dispatch choke point returns
+/// (`tool_monitor::poll_pacing::after_dispatch`), except a watch's own checks.
+/// Returns how many watches were retired. Cheap when the chat has no watch.
+///
+/// Without it a model that ignored "end your turn", read the job's end itself
+/// and answered was woken again when the watch noticed the same end.
+pub fn retire_watches_seen_ending(
+    session_id: &str,
+    tool: &str,
+    arguments: Option<&JsonObject>,
+    result: &CallToolResult,
+) -> usize {
+    if result.is_error == Some(true) {
+        return 0;
+    }
+    // The registry lock is not held while the result is read: it is the one
+    // every dispatch in the process takes on its way out.
+    if !watches()
+        .values()
+        .any(|e| e.session_id == session_id && e.tool == tool)
+    {
+        return 0;
+    }
+    let key = canonical(&arguments.cloned().unwrap_or_default());
+    let finished =
+        crate::tool_monitor::job_status::activity_of_result(tool, result) == JobActivity::Finished;
+    let watches = watches();
+    let mut retired = 0;
+    for (id, entry) in watches.iter().filter(|(_, e)| {
+        e.session_id == session_id && e.tool == tool && (e.arguments == key || e.admitted == key)
+    }) {
+        let ended = finished
+            || match &entry.until {
+                Until::Pointer { pointer, values } => {
+                    pointer_matches_result(result, pointer, values)
+                }
+                Until::Inactive | Until::Changed => false,
+            };
+        if ended {
+            tracing::info!(
+                session_id,
+                watch = %id,
+                tool,
+                "a status read outside the watch saw the job end; retiring the watch"
+            );
+            entry.cancel(StopCause::SeenEnded);
+            retired += 1;
+        }
+    }
+    retired
+}
+
+/// Whether any JSON value in `result` holds one of `values` at `pointer`.
+fn pointer_matches_result(result: &CallToolResult, pointer: &str, values: &[Value]) -> bool {
+    let structured = result.structured_content.iter().cloned();
+    let texts = result
+        .content
+        .iter()
+        .filter_map(|content| content.as_text())
+        .filter_map(|text| serde_json::from_str::<Value>(text.text.trim()).ok());
+    structured.chain(texts).any(|json| {
+        json.pointer(pointer)
+            .is_some_and(|found| wait::pointer_matches(found, values))
+    })
+}
+
+/// The id of this chat's live watch of `tool` with these arguments, if any.
+pub(super) fn active_watch_for(
+    session_id: &str,
+    tool: &str,
+    arguments: &JsonObject,
+) -> Option<String> {
+    let key = canonical(arguments);
+    watches()
+        .iter()
+        .find(|(_, e)| {
+            e.session_id == session_id
+                && e.tool == tool
+                && (e.arguments == key || e.admitted == key)
+        })
+        .map(|(id, _)| id.clone())
+}
+
 fn watch_number(id: &str) -> u64 {
     id.rsplit('-')
         .next()
@@ -207,6 +304,14 @@ pub(super) trait WatchHost: Send + Sync {
     async fn start_turn(&self, session_id: &str, text: &str) -> Result<String, String>;
     /// Store `text` in the chat as a note, with no turn.
     async fn append_note(&self, session_id: &str, text: &str) -> Result<(), String>;
+    /// Store `text` as a notice the person reads and the model never does
+    /// (a user-only inline message), with no turn.
+    async fn append_notice(&self, session_id: &str, text: &str) -> Result<(), String>;
+    /// Ask a window that shows this chat to follow it live, as
+    /// `workspace_send_prompt` does for a chat it writes into: a turn or a
+    /// message the watch adds is not one the window started, so without this
+    /// its open tab shows it only after a reload. Best-effort.
+    async fn show_in_open_tab(&self, session_id: &str);
 }
 
 /// The provenance every watch message carries: injected by Biorouter on this
@@ -338,6 +443,62 @@ impl WatchHost for LiveHost {
         );
         Ok(())
     }
+
+    async fn append_notice(&self, session_id: &str, text: &str) -> Result<(), String> {
+        let mut message = watching_notice(text);
+        self.session_manager
+            .add_message_adopting_uid(session_id, &mut message)
+            .await
+            .map_err(|e| e.to_string())?;
+        crate::session_events::publish(
+            session_id,
+            crate::session_events::SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+                message,
+            )),
+        );
+        Ok(())
+    }
+
+    async fn show_in_open_tab(&self, session_id: &str) {
+        let Some(services) = crate::workspace_services::get() else {
+            return;
+        };
+        if !services.gui_attached() {
+            return;
+        }
+        // The frame `workspace_send_prompt` sends (`reflect_in_target_tab`),
+        // routed to the window that holds the chat. It names the chat and
+        // nothing else: the tab then reads the chat through the observer
+        // route, whose own reach gate decides what it may show.
+        let _ = services
+            .gui_command_near(
+                serde_json::json!({
+                    "type": "workspace", "cmd": "observe",
+                    "session_id": session_id,
+                }),
+                false,
+                session_id,
+            )
+            .await;
+    }
+}
+
+/// The user-only notice a chat shows while a watch waits for its job.
+fn watching_notice(text: &str) -> crate::conversation::message::Message {
+    crate::conversation::message::Message::assistant()
+        .with_system_notification(
+            crate::conversation::message::SystemNotificationType::InlineMessage,
+            text,
+        )
+        .user_only()
+}
+
+/// What the person reads once the turn that set a watch has ended.
+pub(super) fn watching_text(tool: &str, id: &str) -> String {
+    format!(
+        "Watching {tool} ({id}). This chat will continue by itself when the job finishes; no \
+         model requests are made meanwhile."
+    )
 }
 
 /// Whether a chat in `mode` can raise an approval card. The same answer as
@@ -477,7 +638,7 @@ async fn background_check(
         Some(&weak),
         &collected,
         stop,
-        PacingMode::RecordOnly,
+        PacingMode::WatchCheck,
     )
     .await;
     Some(CheckReading {
@@ -623,7 +784,7 @@ pub(super) fn wake_text(spec: &WatchSpec, report: &WatchReport) -> Option<String
         // The model asked for it and was told; a deleted chat has nobody to
         // tell. (`run_watch` reports a cancellation as `WatchEnd::Cancelled`,
         // never as the wait's own `Cancelled`.)
-        WatchEnd::Cancelled(StopCause::Agent | StopCause::ChatDeleted)
+        WatchEnd::Cancelled(StopCause::Agent | StopCause::ChatDeleted | StopCause::SeenEnded)
         | WatchEnd::ChatGone
         | WatchEnd::Job(WaitEnd::Cancelled) => return None,
     };
@@ -717,6 +878,9 @@ pub(super) async fn deliver(
             )
             .await;
         }
+        // Asked before the turn starts as well as after, so a tab that
+        // attaches in time sees the turn's start and every frame of it live.
+        host.show_in_open_tab(session_id).await;
         match host.start_turn(session_id, text).await {
             Ok(turn) => return Delivery::TurnStarted(turn),
             Err(error) if is_busy(&error) => last_error = error,
@@ -734,11 +898,23 @@ pub(super) async fn deliver(
     .await
 }
 
+/// Which watch a [`follow_creating_turn`] follows, and in which chat.
+struct CreatingTurn {
+    session_id: String,
+    watch_id: String,
+    tool: String,
+}
+
 /// Watch the creating turn for Stop until it ends. A cancelled token after the
 /// turn has ended is cleanup, not Stop, which is why the turn's state is asked.
+///
+/// When the turn ends and the watch is still live, the chat gets a user-only
+/// notice saying it is being watched, and its open tab is asked to follow it:
+/// the turn that set a watch otherwise ends with nothing on screen, and the
+/// turn the watch starts later is not one the window started.
 async fn follow_creating_turn(
     host: Arc<dyn WatchHost>,
-    session_id: String,
+    turn: CreatingTurn,
     creating: CancellationToken,
     stop: CancellationToken,
     cause: Arc<std::sync::Mutex<Option<StopCause>>>,
@@ -749,22 +925,40 @@ async fn follow_creating_turn(
             biased;
             () = stop.cancelled() => return,
             () = creating.cancelled() => {
-                if host.turn_active(&session_id) {
+                if host.turn_active(&turn.session_id) {
                     cause
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .get_or_insert(StopCause::TurnStopped);
                     stop.cancel();
+                    return;
                 }
-                return;
+                break;
             }
             () = tokio::time::sleep(unit) => {
-                if !host.turn_active(&session_id) {
-                    return;
+                if !host.turn_active(&turn.session_id) {
+                    break;
                 }
             }
         }
     }
+    announce_watch(host.as_ref(), &turn, &stop).await;
+}
+
+/// The notice and the open-tab request for a watch whose creating turn has
+/// ended. Nothing when the watch is already over (the model's own read of the
+/// job's end retired it, or it was cancelled).
+async fn announce_watch(host: &dyn WatchHost, turn: &CreatingTurn, stop: &CancellationToken) {
+    if stop.is_cancelled() || !watches().contains_key(&turn.watch_id) {
+        return;
+    }
+    if let Err(error) = host
+        .append_notice(&turn.session_id, &watching_text(&turn.tool, &turn.watch_id))
+        .await
+    {
+        tracing::warn!(session_id = %turn.session_id, watch = %turn.watch_id, "a job watch could not store its notice: {error}");
+    }
+    host.show_in_open_tab(&turn.session_id).await;
 }
 
 /// The background half of one watch, from the first sleep to the wake.
@@ -781,6 +975,16 @@ async fn watch_task(
     // Out of the registry first, so the active work list and a duplicate check
     // stop showing a watch that has ended, then end the creating-turn follower.
     watches().remove(&spec.id);
+    // A read elsewhere that saw the job end can land between `run_watch`
+    // returning on the same end and the line above; nothing can cancel the
+    // watch after it. The model has read that end, so the wake is skipped
+    // either way.
+    let seen_ended = matches!(
+        *cause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        Some(StopCause::SeenEnded)
+    );
     biorouter_mcp::active_work::active_work().deregister(&spec.id);
     stop.cancel();
     tracing::info!(
@@ -803,6 +1007,9 @@ async fn watch_task(
     {
         return;
     }
+    if seen_ended {
+        return;
+    }
     let Some(text) = wake_text(&spec, &report) else {
         return;
     };
@@ -819,6 +1026,12 @@ async fn watch_task(
         }
     };
     tracing::info!(session_id = %spec.session_id, watch = %spec.id, ?delivery, "job watch delivered");
+    // What the watch added, a turn or a note, was not started by any window,
+    // so a tab showing the chat is asked to follow it (a turn it is driving
+    // itself keeps its own stream; the renderer refuses the attach then).
+    if delivery != Delivery::Lost {
+        host.show_in_open_tab(&spec.session_id).await;
+    }
 }
 
 /// The status call's arguments in one canonical spelling.
@@ -940,19 +1153,32 @@ fn launch(
         )
     };
     spec.id = id.clone();
+    let admitted = serde_json::from_str::<Value>(&spec.admitted)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .map_or_else(
+            || canonical(&spec.plan.arguments),
+            |object| canonical(&object),
+        );
     watches().insert(
         id.clone(),
         WatchEntry {
             session_id: session_id.to_string(),
             tool: spec.plan.tool.clone(),
             arguments: canonical(&spec.plan.arguments),
+            admitted,
+            until: spec.plan.until.clone(),
             stop: stop.clone(),
             cause: Arc::clone(&cause),
         },
     );
     tokio::spawn(follow_creating_turn(
         Arc::clone(&host),
-        session_id.to_string(),
+        CreatingTurn {
+            session_id: session_id.to_string(),
+            watch_id: id.clone(),
+            tool: spec.plan.tool.clone(),
+        },
         turn.clone(),
         stop.clone(),
         Arc::clone(&cause),
@@ -1529,11 +1755,19 @@ mod watch_tests {
         busy_turns: AtomicU32,
         limit: std::sync::Mutex<Option<String>>,
         actions: std::sync::Mutex<Vec<String>>,
+        notices: std::sync::Mutex<Vec<String>>,
+        observes: AtomicUsize,
     }
 
     impl FakeHost {
         pub(super) fn actions(&self) -> Vec<String> {
             self.actions.lock().unwrap().clone()
+        }
+        pub(super) fn notices(&self) -> Vec<String> {
+            self.notices.lock().unwrap().clone()
+        }
+        pub(super) fn observes(&self) -> usize {
+            self.observes.load(Ordering::SeqCst)
         }
         fn act(&self, what: &str, text: &str) {
             self.actions.lock().unwrap().push(format!("{what}: {text}"));
@@ -1593,6 +1827,13 @@ mod watch_tests {
         async fn append_note(&self, _session_id: &str, text: &str) -> Result<(), String> {
             self.act("note", text);
             Ok(())
+        }
+        async fn append_notice(&self, _session_id: &str, text: &str) -> Result<(), String> {
+            self.notices.lock().unwrap().push(text.to_string());
+            Ok(())
+        }
+        async fn show_in_open_tab(&self, _session_id: &str) {
+            self.observes.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -1987,6 +2228,258 @@ mod watch_tests {
             "{text}"
         );
         assert_eq!(h.calls.load(Ordering::SeqCst), 0, "nothing was checked");
+    }
+
+    fn object(value: Value) -> JsonObject {
+        value.as_object().cloned().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_resumed_turn_is_shown_in_the_open_tab() {
+        let h = harness(vec![job("running"), job("completed")]).await;
+        let id = watch_id(&text_of(&watch(&h, job_args("open-tab")).await));
+        until_ended(&id).await;
+        let actions = h.host.actions();
+        assert_eq!(actions.len(), 1, "{actions:?}");
+        assert!(actions[0].starts_with("turn: [watch "), "{actions:?}");
+        // Once when the creating turn ended, once before the wake's turn
+        // started and once after: the tab follows the chat before the turn
+        // begins, so it sees the turn's start live.
+        assert!(h.host.observes() >= 2, "observes: {}", h.host.observes());
+    }
+
+    #[tokio::test]
+    async fn the_turn_that_sets_a_watch_ends_on_a_notice_for_the_person() {
+        let h = harness(vec![job("running")]).await;
+        h.host.turn_active.store(true, Ordering::SeqCst);
+        let id = watch_id(&text_of(&watch(&h, job_args("notice")).await));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            h.host.notices().is_empty(),
+            "nothing while the turn still runs"
+        );
+        assert_eq!(h.host.observes(), 0);
+
+        h.host.turn_active.store(false, Ordering::SeqCst);
+        for _ in 0..200 {
+            if !h.host.notices().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let notices = h.host.notices();
+        assert_eq!(notices, vec![watching_text("fixture__status", &id)]);
+        assert!(
+            notices[0].contains("will continue by itself"),
+            "{notices:?}"
+        );
+        assert_eq!(h.host.observes(), 1, "the open tab is asked to follow");
+        assert!(h.host.actions().is_empty(), "the job is still running");
+        cancel_by_agent(&h.session_id, &id).unwrap();
+        until_ended(&id).await;
+    }
+
+    #[test]
+    fn the_notice_is_for_the_person_only() {
+        let notice = watching_notice(&watching_text("cdw__status", "watch-1"));
+        assert!(notice.is_user_visible());
+        assert!(!notice.is_agent_visible());
+    }
+
+    #[tokio::test]
+    async fn a_direct_read_of_the_job_s_end_retires_the_watch_without_a_wake() {
+        let h = harness(vec![job("running")]).await;
+        h.host.turn_active.store(true, Ordering::SeqCst);
+        let id = watch_id(&text_of(&watch(&h, job_args("direct")).await));
+        let args = object(serde_json::json!({"job_id": "direct"}));
+
+        // A read that still shows the job running, of another job, or in
+        // another chat, retires nothing.
+        assert_eq!(
+            retire_watches_seen_ending(
+                &h.session_id,
+                "fixture__status",
+                Some(&args),
+                &job("running")
+            ),
+            0
+        );
+        let other = object(serde_json::json!({"job_id": "else"}));
+        assert_eq!(
+            retire_watches_seen_ending(
+                &h.session_id,
+                "fixture__status",
+                Some(&other),
+                &job("completed")
+            ),
+            0
+        );
+        assert_eq!(
+            retire_watches_seen_ending(
+                "another-chat",
+                "fixture__status",
+                Some(&args),
+                &job("completed")
+            ),
+            0
+        );
+        assert_eq!(
+            retire_watches_seen_ending(
+                &h.session_id,
+                "fixture__status",
+                Some(&args),
+                &CallToolResult::error(vec![Content::text("completed")])
+            ),
+            0,
+            "a failed lookup says nothing about the job"
+        );
+        assert!(is_live(&id));
+
+        assert_eq!(
+            retire_watches_seen_ending(
+                &h.session_id,
+                "fixture__status",
+                Some(&args),
+                &job("completed")
+            ),
+            1
+        );
+        h.host.turn_active.store(false, Ordering::SeqCst);
+        until_ended(&id).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(h.host.actions().is_empty(), "{:?}", h.host.actions());
+        assert!(
+            h.host.notices().is_empty(),
+            "a retired watch is not announced"
+        );
+        assert!(biorouter_mcp::active_work::active_work().get(&id).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_pointer_watch_retires_when_its_value_is_read_elsewhere() {
+        let h = harness(vec![job("running")]).await;
+        h.host.turn_active.store(true, Ordering::SeqCst);
+        let mut args = job_args("pointer");
+        args["until"] = serde_json::json!({"pointer": "/stage", "values": ["exported"]});
+        let id = watch_id(&text_of(&watch(&h, args).await));
+        let call = object(serde_json::json!({"job_id": "pointer"}));
+        let read = |stage: &str| {
+            CallToolResult::success(vec![Content::text(
+                serde_json::json!({"job_id": "pointer", "status": "running", "stage": stage})
+                    .to_string(),
+            )])
+        };
+        assert_eq!(
+            retire_watches_seen_ending(
+                &h.session_id,
+                "fixture__status",
+                Some(&call),
+                &read("plotting")
+            ),
+            0
+        );
+        assert_eq!(
+            retire_watches_seen_ending(
+                &h.session_id,
+                "fixture__status",
+                Some(&call),
+                &read("EXPORTED")
+            ),
+            1
+        );
+        until_ended(&id).await;
+        assert!(h.host.actions().is_empty(), "{:?}", h.host.actions());
+    }
+
+    #[tokio::test]
+    async fn a_script_that_reads_the_end_itself_is_not_woken_again() {
+        // Chat 9 of the live run: the model set a watch, ignored "end your
+        // turn", read the job's end itself and answered; the watch then woke
+        // the chat a second time for the same end.
+        // No job id in the result, so the poll pacing does not hold the
+        // script's own check (that hold is `poll_pacing`'s to test) and the
+        // script reads the end before the watch's first background check.
+        let bare = |status: &str| {
+            CallToolResult::success(vec![Content::text(
+                serde_json::json!({ "status": status }).to_string(),
+            )])
+        };
+        let h = harness(vec![bare("running"), bare("completed")]).await;
+        h.host.turn_active.store(true, Ordering::SeqCst);
+        let result = h
+            .client
+            .handle_execute_code(
+                &h.session_id,
+                CallCapability::for_test_restricted(),
+                serde_json::json!({ "code": r#"
+                    import { status } from "fixture";
+                    const w = watch_job({ tool: "fixture__status", arguments: { job_id: "s9" } });
+                    const s = status({ job_id: "s9" });
+                    record_result({ w, s });
+                "# })
+                .as_object()
+                .cloned(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = text_of(&result);
+        assert_ne!(result.is_error, Some(true), "{text}");
+        assert!(text.contains("completed"), "{text}");
+        let id = watch_id(&text);
+        h.host.turn_active.store(false, Ordering::SeqCst);
+        until_ended(&id).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(h.host.actions().is_empty(), "{:?}", h.host.actions());
+        assert!(h.host.notices().is_empty(), "{:?}", h.host.notices());
+    }
+
+    #[tokio::test]
+    async fn a_watch_s_own_checks_do_not_retire_it() {
+        let h = harness(vec![job("running"), job("completed")]).await;
+        let id = watch_id(&text_of(&watch(&h, job_args("own")).await));
+        until_ended(&id).await;
+        let actions = h.host.actions();
+        assert_eq!(
+            actions.len(),
+            1,
+            "the watch still wakes the chat: {actions:?}"
+        );
+        assert!(actions[0].starts_with("turn: [watch "), "{actions:?}");
+    }
+
+    #[tokio::test]
+    async fn a_wait_for_timeout_on_a_watched_call_does_not_offer_a_second_watch() {
+        let h = harness(vec![job("running")]).await;
+        h.host.turn_active.store(true, Ordering::SeqCst);
+        let id = watch_id(&text_of(&watch(&h, job_args("timeout")).await));
+        let result = h
+            .client
+            .handle_wait_for(
+                &h.session_id,
+                CallCapability::for_test_restricted(),
+                serde_json::json!({
+                    "tool": "fixture__status",
+                    "arguments": {"job_id": "timeout"},
+                    "timeout_seconds": 20,
+                    "min_interval_seconds": 10,
+                })
+                .as_object()
+                .cloned(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = text_of(&result);
+        assert!(text.contains("timed out"), "{text}");
+        assert!(
+            text.contains(&format!("{id} already watches this job")),
+            "{text}"
+        );
+        assert!(!text.contains("code_execution__watch_job"), "{text}");
+        assert!(is_live(&id), "a running job's read retires nothing");
+        cancel_by_agent(&h.session_id, &id).unwrap();
+        until_ended(&id).await;
     }
 }
 

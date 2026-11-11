@@ -871,6 +871,16 @@ impl OverflowCompactionSwap {
 /// (`OverflowRecovery::SummarizeAll`), and after that stops for the rest of the
 /// reply rather than summarising every round. The reactive overflow ladder is
 /// untouched and still catches a request the provider refuses.
+///
+/// And however each one went, a reply compacts at most
+/// [`MAX_MID_TURN_COMPACTIONS`] times. A compaction that worked can be undone
+/// by the next few tool results when the trigger sits close to the fixed
+/// prefix: live (2026-11-10, a 40k ceiling over a 36k prefix) a model asked to
+/// show five files re-read them after each summary and one reply compacted six
+/// times, each a 15k-token summarizer call. After the cap the reply goes on
+/// (or ends) uncompacted; the summary names the files those results are saved
+/// in (`Agent::with_saved_tool_outputs`), and a request the provider refuses
+/// for its size still reaches the overflow recovery.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct MidTurnCompaction {
     /// A compaction ran before the last request and the check since has not
@@ -878,9 +888,15 @@ pub(super) struct MidTurnCompaction {
     awaiting_effect: bool,
     /// The next step's rung: 0 summarises the older prefix, 1 everything.
     level: u8,
-    /// Both rungs ran and the context stayed over: no more this reply.
+    /// Both rungs ran and the context stayed over, or the reply has compacted
+    /// [`MAX_MID_TURN_COMPACTIONS`] times: no more this reply.
     exhausted: bool,
+    /// Compactions this reply has run between its tool rounds.
+    compactions: u8,
 }
+
+/// The most compactions one reply runs between its own tool rounds.
+pub(super) const MAX_MID_TURN_COMPACTIONS: u8 = 2;
 
 impl MidTurnCompaction {
     /// The strategy to compact with now, given whether the check says the
@@ -891,7 +907,15 @@ impl MidTurnCompaction {
             return None;
         }
         if !needed {
-            *self = Self::default();
+            // The ladder starts over; the count does not.
+            *self = Self {
+                compactions: self.compactions,
+                ..Self::default()
+            };
+            return None;
+        }
+        if self.compactions >= MAX_MID_TURN_COMPACTIONS {
+            self.exhausted = true;
             return None;
         }
         if self.awaiting_effect {
@@ -906,6 +930,7 @@ impl MidTurnCompaction {
             }
         };
         self.awaiting_effect = true;
+        self.compactions = self.compactions.saturating_add(1);
         Some(recovery)
     }
 }
@@ -2274,6 +2299,42 @@ struct ToolBatchMaps {
     request_to_original_tool_call: HashMap<String, CallToolRequestParams>,
     request_to_executed_tool_call: HashMap<String, CallToolRequestParams>,
     request_to_tool_name: HashMap<String, String>,
+}
+
+/// What the model is told when a call's checklist update was dropped because
+/// the call failed (`Agent::dispatch_tool_call`).
+pub(crate) const SIDECAR_NOT_APPLIED_ON_FAILURE: &str =
+    "todo: the checklist update on this call was not applied, because the call failed";
+
+/// Apply a call's checklist sidecar once the call succeeded, returning the
+/// sentence the model is told when it could not be applied in full. Boxed by
+/// the caller's future, off the reply loop's frame.
+async fn apply_sidecar_after_success(
+    session_manager: &SessionManager,
+    session_id: &str,
+    tool_name: &str,
+    sidecar: Value,
+) -> Option<String> {
+    let applied = Box::pin(super::todo_extension::apply_todo_sidecar(
+        session_manager,
+        session_id,
+        sidecar,
+    ))
+    .await;
+    let e = applied.err()?;
+    warn!(
+        session_id,
+        tool = tool_name,
+        "checklist update on a tool call was not applied in full: {e:#}"
+    );
+    // Every sidecar error already opens with "todo" and says what was and was
+    // not applied.
+    let sentence = e.to_string();
+    Some(if sentence.starts_with("todo") {
+        sentence
+    } else {
+        format!("todo: {sentence}")
+    })
 }
 
 /// Build the future `make` returns in this function's own frame, and hand it
@@ -7693,19 +7754,19 @@ impl Agent {
         let _phase = super::phase_timing::Phase::start("agent.assemble_turn_context");
 
         // Older, larger tool results leave the MODEL's copy in rare persisted
-        // batches; the stored transcript keeps every byte. Before MOIM, so
-        // MOIM still lands at the tail. Boxed: it reads the chat's elision
+        // batches; the stored transcript keeps every byte. Before MOIM, so a
+        // batch can tell MOIM the prefix breaks here anyway. Boxed: it reads the chat's elision
         // state and, when a batch is due, writes files, none of which belongs
         // on the reply generator's frame. See `context_mgmt::elision`.
         let elision_phase = super::phase_timing::Phase::start("agent.elide_tool_results");
-        let conversation = boxed_off_frame(|| async {
+        let (conversation, elision_batch_ran) = boxed_off_frame(|| async {
             // A stub sends the model to a saved file; without Developer there
             // is nothing to read it with, so no new batch is planned.
             let can_read_saved_output = self
                 .extension_manager
                 .is_extension_enabled("developer")
                 .await;
-            crate::context_mgmt::elision::elide_stale_tool_results(
+            crate::context_mgmt::elision::elide_stale_tool_results_reporting(
                 &self.config.session_manager,
                 session_id,
                 conversation.clone(),
@@ -7721,15 +7782,24 @@ impl Agent {
         // The planning gate's "write the checklist first", for as long as a
         // multi-step turn's list is empty. See `planning_gate`.
         let reminder = self.planning_reminder(session_id).await;
-        let (conversation, moim_injected) = super::moim::inject_moim(
-            session_id,
-            conversation,
-            &self.extension_manager,
-            working_dir,
-            &self.normalizer,
-            cancel,
-            reminder.as_deref(),
-        )
+        // Anchored: each block stays where it was first sent, and a new one is
+        // appended only when the context changed, so this request is the last
+        // one plus its new tail and the provider's prompt cache reaches the
+        // whole conversation. Boxed: it reads and writes the chat's anchors.
+        // See `agents::moim`.
+        let (conversation, moim_injected) = boxed_off_frame(|| {
+            super::moim::inject_anchored_moim(
+                session_id,
+                conversation,
+                &self.extension_manager,
+                working_dir,
+                &self.normalizer,
+                cancel,
+                reminder.as_deref(),
+                &self.config.session_manager,
+                elision_batch_ran,
+            )
+        })
         .await;
         drop(moim_phase);
 
@@ -8265,6 +8335,8 @@ impl Agent {
         };
         // One entry per summarization request, never a sum (`CompactionUsage`).
         usages.extend(usage.into_requests());
+        let compacted =
+            Box::pin(self.with_saved_tool_outputs(session_id, &raw_conversation, compacted)).await;
 
         let first_attempt = session_manager
             .replace_conversation_preserving_tail(
@@ -8310,6 +8382,45 @@ impl Agent {
         );
         self.retry_overflow_compaction(session_id, basis, recovery, compacted, usages)
             .await
+    }
+
+    /// Name, in a compaction's summary, the file holding each larger tool
+    /// result the summary replaced, saving the ones not yet in a file
+    /// (`context_mgmt::elision::save_outputs_for_compaction`). Without it a
+    /// model asked to look at files re-read them after every compaction and
+    /// pushed the context straight back over the trigger. Best effort: any
+    /// failure returns `compacted` unchanged. A plain `async fn` callers box.
+    async fn with_saved_tool_outputs(
+        &self,
+        session_id: &str,
+        original: &Conversation,
+        compacted: Conversation,
+    ) -> Conversation {
+        let working_dir = match self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+        {
+            Ok(session) => session.working_dir,
+            Err(e) => {
+                debug!("no working directory to save tool results before compaction ({e})");
+                return compacted;
+            }
+        };
+        let can_read_saved_output = self
+            .extension_manager
+            .is_extension_enabled("developer")
+            .await;
+        let saved = crate::context_mgmt::elision::save_outputs_for_compaction(
+            &self.config.session_manager,
+            session_id,
+            original,
+            &working_dir,
+            can_read_saved_output,
+        )
+        .await;
+        crate::context_mgmt::with_saved_output_index(compacted, original, &saved)
     }
 
     /// The second and last attempt behind [`Self::swap_overflow_compaction`],
@@ -8368,6 +8479,8 @@ impl Agent {
                 }
             };
         usages.extend(retry_usage.into_requests());
+        let recompacted =
+            Box::pin(self.with_saved_tool_outputs(session_id, &fresh, recompacted)).await;
 
         match session_manager
             .replace_conversation_preserving_tail(session_id, &recompacted, basis.revision, &fresh)
@@ -9412,50 +9525,34 @@ impl Agent {
         // declares a `todo` field, so stripping one is always harmless) but
         // applied only while that capability is on: with it off the schema
         // carried no field, and a stray one must not write a checklist.
-        // Applied as soon as it is taken, which is still before the tool's
-        // body runs (that is a deferred future the batch drives later). Never
-        // fails the call it rode on; a sidecar that cannot be applied in full
-        // is logged, and its sentence is added to that call's result for the
-        // model alone, since the model gets no other answer for a sidecar.
-        let mut sidecar_note = None;
+        //
+        // Applied only once the call has SUCCEEDED, never before its body
+        // runs: a model that ticks off the steps a call does, in that call,
+        // otherwise kept a checklist saying "done" for work that failed (live,
+        // 2026-11-10: 5 of 5 ticked by a script that died on a syntax error,
+        // and a standalone `todo_update` spent putting three back). A call
+        // that fails, or is refused before it runs, applies nothing and says
+        // so. Never fails the call it rode on; a sidecar that cannot be
+        // applied in full is logged, and its sentence is added to that call's
+        // result for the model alone, since the model gets no other answer
+        // for a sidecar.
+        let mut sidecar = None;
         if super::reply_parts::call_has_todo_sidecar(
             tool_call.name.as_ref(),
             tool_call.arguments.as_ref(),
         ) {
-            if let Some(sidecar) =
-                super::todo_extension::take_todo_sidecar(&mut tool_call.arguments)
+            if let Some(taken) = super::todo_extension::take_todo_sidecar(&mut tool_call.arguments)
             {
                 if self
                     .extension_manager
                     .is_extension_enabled(super::todo_extension::EXTENSION_NAME)
                     .await
                 {
-                    if let Err(e) = boxed_off_frame(|| {
-                        super::todo_extension::apply_todo_sidecar(
-                            &self.config.session_manager,
-                            &session.id,
-                            sidecar,
-                        )
-                    })
-                    .await
-                    {
-                        warn!(
-                            session_id = %session.id,
-                            tool = %tool_call.name,
-                            "checklist update on a tool call was not applied in full: {e:#}"
-                        );
-                        // Every sidecar error already opens with "todo" and
-                        // says what was and was not applied.
-                        let sentence = e.to_string();
-                        sidecar_note = Some(if sentence.starts_with("todo") {
-                            sentence
-                        } else {
-                            format!("todo: {sentence}")
-                        });
-                    }
+                    sidecar = Some(taken);
                 }
             }
         }
+        let tool_name = tool_call.name.to_string();
         let (request_id, result) = Box::pin(self.dispatch_tool_call_after_sidecar(
             tool_call,
             request_id,
@@ -9463,22 +9560,45 @@ impl Agent {
             session,
         ))
         .await;
-        let Some(note) = sidecar_note else {
+        let Some(sidecar) = sidecar else {
             return (request_id, result);
         };
-        let result = result.map(|mut call| {
-            let inner = call.result;
-            call.result = Box::new(Box::pin(async move {
-                let mut outcome = inner.await;
-                if let Ok(done) = outcome.as_mut() {
-                    done.content.push(
-                        Content::text(note).with_audience(vec![rmcp::model::Role::Assistant]),
-                    );
-                }
-                outcome
-            }));
-            call
-        });
+        let result = match result {
+            Ok(mut call) => {
+                let inner = call.result;
+                let session_manager = Arc::clone(&self.config.session_manager);
+                let session_id = session.id.clone();
+                call.result = Box::new(Box::pin(async move {
+                    let mut outcome = inner.await;
+                    let note = match outcome.as_ref() {
+                        Ok(done) if done.is_error != Some(true) => {
+                            apply_sidecar_after_success(
+                                &session_manager,
+                                &session_id,
+                                &tool_name,
+                                sidecar,
+                            )
+                            .await
+                        }
+                        _ => Some(SIDECAR_NOT_APPLIED_ON_FAILURE.to_string()),
+                    };
+                    if let (Some(note), Ok(done)) = (note, outcome.as_mut()) {
+                        done.content.push(
+                            Content::text(note).with_audience(vec![rmcp::model::Role::Assistant]),
+                        );
+                    }
+                    outcome
+                }));
+                Ok(call)
+            }
+            // Refused before it ran: the error is all the model gets, so the
+            // sentence rides on it.
+            Err(mut error) => {
+                error.message =
+                    format!("{} ({SIDECAR_NOT_APPLIED_ON_FAILURE})", error.message).into();
+                Err(error)
+            }
+        };
         (request_id, result)
     }
 
@@ -11560,6 +11680,12 @@ impl Agent {
                 self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::AutoCompaction);
                 match compact_messages(self.provider().await?.as_ref(), &conversation_to_compact, false).await {
                     Ok((compacted_conversation, summarization_usage)) => {
+                        let compacted_conversation = boxed_off_frame(|| self.with_saved_tool_outputs(
+                            &session_config.id,
+                            &conversation_to_compact,
+                            compacted_conversation,
+                        ))
+                        .await;
                         // The swap and the basis re-pairing are one step, and both
                         // happen before anything is yielded; see
                         // `land_auto_compaction` for why.
@@ -13107,8 +13233,10 @@ impl Agent {
         if needed && decision.is_none() {
             warn!(
                 session_id,
-                "the context is still over the compaction trigger after summarising \
-                 everything; no further compaction this reply"
+                compactions = state.compactions,
+                "the context is over the compaction trigger again, after summarising \
+                 everything or after {MAX_MID_TURN_COMPACTIONS} compactions this reply; no \
+                 further compaction this reply"
             );
         }
         decision
@@ -15090,9 +15218,9 @@ impl Agent {
                             // spent retry budget still stops, with the conversation
                             // preserved so the user can just say "continue".
                             // The conversation, not `conversation_with_moim`: the
-                            // per-request `<info-msg>` block is inserted as its own
-                            // user row AFTER trailing tool results, so the request as
-                            // sent never ends on one.
+                            // `<info-msg>` blocks are user rows the request carries
+                            // between and after tool results (`agents::moim`), so the
+                            // request as sent says nothing about where it ended.
                             let retry_point = crate::agents::mistakes::retry_point(
                                 conversation.messages(),
                                 messages_to_add.messages(),
@@ -16897,11 +17025,19 @@ mod tests {
         assert_eq!(state.decide(true), None);
         assert!(state.exhausted);
 
-        // A compaction that got under the trigger starts the ladder over.
+        // A compaction that got under the trigger starts the ladder over...
         let mut state = MidTurnCompaction::default();
         assert_eq!(state.decide(true), Some(OverflowRecovery::Compact));
         assert_eq!(state.decide(false), None);
         assert_eq!(state.decide(true), Some(OverflowRecovery::Compact));
+        // ...but not the count: a third time over in the same reply, after
+        // two compactions that each worked, compacts no more.
+        assert_eq!(state.decide(false), None);
+        assert_eq!(state.decide(true), None);
+        assert!(state.exhausted);
+        assert_eq!(state.decide(false), None);
+        assert_eq!(state.decide(true), None, "for the rest of the reply");
+        assert_eq!(state.compactions, MAX_MID_TURN_COMPACTIONS);
     }
 
     #[test]
@@ -19437,11 +19573,16 @@ mod tests {
             _meta: crate::agents::mcp_client::McpMeta,
             _cancel_token: CancellationToken,
         ) -> Result<CallToolResult, rmcp::ServiceError> {
+            // `exit 1` fails, so a test can see what a failed call does.
+            let fails = arguments
+                .as_ref()
+                .and_then(|args| args.get("command"))
+                .is_some_and(|command| command == "exit 1");
             self.seen.lock().unwrap().push(arguments);
             Ok(CallToolResult {
-                content: vec![Content::text("ran")],
+                content: vec![Content::text(if fails { "exit status 1" } else { "ran" })],
                 structured_content: None,
-                is_error: Some(false),
+                is_error: Some(fails),
                 meta: None,
             })
         }
@@ -19648,6 +19789,141 @@ mod tests {
         assert_eq!(note.audience(), Some(&vec![rmcp::model::Role::Assistant]));
         let text = note.as_text().expect("text").text.clone();
         assert!(text.starts_with("todo: no checklist item #99"), "{text}");
+    }
+
+    fn checklist_of(stored: &Session) -> Vec<(String, crate::session::extension_data::TodoStatus)> {
+        crate::session::extension_data::TodoState::load(&stored.extension_data)
+            .map(|state| {
+                state
+                    .items
+                    .iter()
+                    .map(|item| (item.text.clone(), item.status))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A sidecar is applied only once its call succeeded: a model that ticks
+    /// off the steps a call does, in that call, must not be left with "done"
+    /// for work that failed. The model is told the update was not applied.
+    #[tokio::test]
+    async fn a_sidecar_is_applied_after_its_call_succeeds_and_not_when_it_fails() {
+        use crate::session::extension_data::TodoStatus;
+        let (agent, session_id, session, _seen) = sidecar_fixture().await;
+        let (_, seeded) = agent
+            .dispatch_tool_call(
+                shell_call_with_todo(serde_json::json!({"add": ["load", "fit"]})),
+                "call-1".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        let seeded = seeded.expect("dispatched");
+        // Not applied while the call has not run.
+        let before = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        assert!(
+            checklist_of(&before).is_empty(),
+            "applied before the call ran"
+        );
+        seeded.result.await.unwrap();
+
+        let mut failing = shell_call_with_todo(serde_json::json!({"done": [1, 2]}));
+        failing
+            .arguments
+            .as_mut()
+            .unwrap()
+            .insert("command".into(), serde_json::json!("exit 1"));
+        let (_, dispatched) = agent
+            .dispatch_tool_call(failing, "call-2".to_string(), None, &session)
+            .await;
+        let result = dispatched.expect("dispatched").result.await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let note = result.content.last().expect("a note");
+        assert_eq!(note.audience(), Some(&vec![rmcp::model::Role::Assistant]));
+        assert_eq!(
+            note.as_text().expect("text").text,
+            SIDECAR_NOT_APPLIED_ON_FAILURE
+        );
+        let stored = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            checklist_of(&stored),
+            vec![
+                ("load".to_string(), TodoStatus::Pending),
+                ("fit".to_string(), TodoStatus::Pending)
+            ],
+            "a failed call ticks nothing"
+        );
+
+        // The same update on a call that succeeds lands, with no note.
+        let (_, dispatched) = agent
+            .dispatch_tool_call(
+                shell_call_with_todo(serde_json::json!({"done": [1, 2]})),
+                "call-3".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        let result = dispatched.expect("dispatched").result.await.unwrap();
+        assert_eq!(result.content.len(), 1, "{:?}", result.content);
+        let stored = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        assert!(
+            checklist_of(&stored)
+                .iter()
+                .all(|(_, status)| *status == TodoStatus::Completed),
+            "{:?}",
+            checklist_of(&stored)
+        );
+    }
+
+    /// Models send `start: 0` or `start: ""` to mean "none": treated as absent,
+    /// with no note in the result.
+    #[tokio::test]
+    async fn a_placeholder_start_adds_no_note() {
+        let (agent, _session_id, session, _seen) = sidecar_fixture().await;
+        let (_, seeded) = agent
+            .dispatch_tool_call(
+                shell_call_with_todo(serde_json::json!({"add": ["load", "fit"]})),
+                "call-1".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        seeded.expect("dispatched").result.await.unwrap();
+        for (index, start) in [
+            serde_json::json!(0),
+            serde_json::json!("0"),
+            serde_json::json!(""),
+            serde_json::Value::Null,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (_, dispatched) = agent
+                .dispatch_tool_call(
+                    shell_call_with_todo(serde_json::json!({"done": [1], "start": start})),
+                    format!("call-start-{index}"),
+                    None,
+                    &session,
+                )
+                .await;
+            let result = dispatched.expect("dispatched").result.await.unwrap();
+            assert_eq!(result.content.len(), 1, "{index}: {:?}", result.content);
+        }
     }
 
     async fn agent_with_one_extension_for_tests() -> (Agent, String) {

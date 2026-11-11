@@ -161,6 +161,108 @@ const MANUAL_COMPACT_CONTINUATION_TEXT: &str =
 Do not mention that you read a summary or that conversation summarization occurred.
 Just continue the conversation naturally based on the summarized context";
 
+/// How many saved tool results a summary names; the newest are kept.
+const MAX_SAVED_OUTPUTS_LISTED: usize = 60;
+/// How much of a call's arguments the summary repeats, so the model can tell
+/// which file is which once the calls themselves are summarized away.
+const SAVED_OUTPUT_ARGS_CHARS: usize = 160;
+
+/// The first line of the saved-output index a summary carries.
+pub const SAVED_OUTPUT_INDEX_HEADER: &str =
+    "Tool output from before this summary is saved in files. \
+     To see a result again, read or search its file (rg, or a line range) instead of running \
+     the tool again:";
+
+/// Name, at the end of a compaction's summary, the file holding each tool
+/// result the summary replaced (see
+/// [`elision::save_outputs_for_compaction`]). `original` is the conversation
+/// that was compacted. A result the compaction kept verbatim is not listed,
+/// and a compaction without a summary (or with nothing saved) is returned as
+/// it is. Deterministic, so the same compaction always says the same thing.
+pub fn with_saved_output_index(
+    compacted: Conversation,
+    original: &Conversation,
+    saved: &elision::SavedToolOutputs,
+) -> Conversation {
+    if saved.entries.is_empty() {
+        return compacted;
+    }
+    let still_visible: std::collections::HashSet<&str> = compacted
+        .messages()
+        .iter()
+        .filter(|m| m.is_agent_visible())
+        .flat_map(|m| m.content.iter())
+        .filter_map(|c| c.as_tool_response().map(|r| r.id.as_str()))
+        .collect();
+    let mut arguments: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let mut summarized: Vec<&str> = Vec::new();
+    for message in original.messages().iter().filter(|m| m.is_agent_visible()) {
+        for content in &message.content {
+            match content {
+                MessageContent::ToolRequest(request) => {
+                    if let Ok(call) = &request.tool_call {
+                        let args = call
+                            .arguments
+                            .as_ref()
+                            .map(|a| serde_json::Value::Object(a.clone()).to_string())
+                            .unwrap_or_default();
+                        arguments.insert(request.id.as_str(), args);
+                    }
+                }
+                MessageContent::ToolResponse(response) => {
+                    let id = response.id.as_str();
+                    if saved.entries.contains_key(id) && !still_visible.contains(id) {
+                        summarized.push(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if summarized.is_empty() {
+        return compacted;
+    }
+    let continuation_texts = [
+        RECENT_WINDOW_CONTINUATION_TEXT,
+        CONVERSATION_CONTINUATION_TEXT,
+        TOOL_LOOP_CONTINUATION_TEXT,
+        MANUAL_COMPACT_CONTINUATION_TEXT,
+    ];
+    let mut messages = compacted.messages().clone();
+    let Some(summary_index) = messages.windows(2).position(|pair| {
+        pair[0].role == Role::User
+            && pair[0].is_agent_visible()
+            && !pair[0].is_user_visible()
+            && pair[1].role == Role::Assistant
+            && continuation_texts.contains(&pair[1].as_concat_text().as_str())
+    }) else {
+        return compacted;
+    };
+
+    let omitted = summarized.len().saturating_sub(MAX_SAVED_OUTPUTS_LISTED);
+    let mut index = String::from(SAVED_OUTPUT_INDEX_HEADER);
+    for id in &summarized[omitted..] {
+        let entry = &saved.entries[*id];
+        let args = arguments
+            .get(id)
+            .map(|args| truncate_middle_out(args, SAVED_OUTPUT_ARGS_CHARS))
+            .filter(|args| !args.is_empty() && args != "{}")
+            .map(|args| format!(" {args}"))
+            .unwrap_or_default();
+        index.push_str(&format!(
+            "\n- {}{args} ({} characters, {} lines): {}",
+            entry.tool, entry.chars, entry.lines, entry.path
+        ));
+    }
+    if omitted > 0 {
+        index.push_str(&format!(
+            "\n({omitted} older saved result(s) are not listed; they are in the same folder.)"
+        ));
+    }
+    messages[summary_index] = messages[summary_index].clone().with_text(index);
+    Conversation::new_unvalidated(messages)
+}
+
 #[derive(Serialize)]
 struct SummarizeContext {
     messages: String,
@@ -4108,6 +4210,142 @@ mod pin_tests {
         assert!(
             !find(&compacted, &twin_body).is_agent_visible(),
             "an UNPINNED note is summarized away, which is why `note` pins"
+        );
+    }
+}
+
+#[cfg(test)]
+mod saved_output_tests {
+    use super::tests::MockProvider;
+    use super::*;
+    use crate::session::{SessionManager, SessionType};
+    use rmcp::model::{AnnotateAble, CallToolRequestParams, RawContent};
+
+    fn round(id: &str, file: &str, body: &str) -> Vec<Message> {
+        vec![
+            Message::assistant().with_tool_request(
+                id,
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "developer__shell".into(),
+                    arguments: Some(
+                        serde_json::json!({ "command": format!("cat {file}") })
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                    meta: None,
+                }),
+            ),
+            Message::user().with_tool_response(
+                id,
+                Ok(rmcp::model::CallToolResult {
+                    content: vec![RawContent::text(body).no_annotation()],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+        ]
+    }
+
+    /// The summary of a compaction names the file holding each larger tool
+    /// result it replaced, with the call that produced it, so the model reads
+    /// the file instead of running the tool again; small results and results
+    /// the compaction kept verbatim are not listed.
+    #[tokio::test]
+    async fn a_summary_names_the_files_of_the_results_it_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(dir.path().join("sessions"));
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let session = sm
+            .create_session(work.clone(), "c".into(), SessionType::User)
+            .await
+            .unwrap();
+
+        let wide_1 = format!("WIDE 1 HEADER\n{}", "w1 alpha beta\n".repeat(300));
+        let wide_2 = format!("WIDE 2 HEADER\n{}", "w2 gamma delta\n".repeat(300));
+        let mut messages = vec![Message::user().with_text("Show me wide_1 and wide_2.")];
+        messages.extend(round("call_1", "wide_1.txt", &wide_1));
+        messages.extend(round("call_small", "tiny.txt", "tiny"));
+        messages.extend(round("call_2", "wide_2.txt", &wide_2));
+        let original = Conversation::new_unvalidated(messages);
+
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let (compacted, _) =
+            compact_messages_with_recovery(&provider, &original, OverflowRecovery::SummarizeAll)
+                .await
+                .unwrap();
+
+        let saved =
+            elision::save_outputs_for_compaction(&sm, &session.id, &original, &work, true).await;
+        assert_eq!(saved.entries.len(), 2, "{saved:?}");
+        let indexed = with_saved_output_index(compacted.clone(), &original, &saved);
+
+        let summary = indexed
+            .messages()
+            .iter()
+            .find(|m| m.as_concat_text().contains("<mock summary>"))
+            .expect("the summary")
+            .as_concat_text();
+        assert!(summary.contains(SAVED_OUTPUT_INDEX_HEADER), "{summary}");
+        for (id, file, body) in [
+            ("call_1", "wide_1.txt", &wide_1),
+            ("call_2", "wide_2.txt", &wide_2),
+        ] {
+            let path = &saved.entries[id].path;
+            assert!(summary.contains(path.as_str()), "{summary}");
+            assert!(summary.contains(&format!("cat {file}")), "{summary}");
+            assert_eq!(&std::fs::read_to_string(path).unwrap(), body);
+            assert!(path.contains(".biorouter/tool-output"), "{path}");
+        }
+        assert!(!summary.contains("tiny.txt"), "{summary}");
+        // Only the summary changed.
+        assert_eq!(indexed.messages().len(), compacted.messages().len());
+
+        // Without a tool to read a file back, nothing is saved or listed.
+        let none =
+            elision::save_outputs_for_compaction(&sm, &session.id, &original, &work, false).await;
+        assert!(none.entries.is_empty());
+        assert_eq!(
+            with_saved_output_index(compacted.clone(), &original, &none),
+            compacted
+        );
+    }
+
+    /// A result the compaction kept verbatim (the recent window) is still in
+    /// front of the model, so it is not listed.
+    #[test]
+    fn results_still_visible_are_not_listed() {
+        let body = "x".repeat(3_000);
+        let mut messages = vec![Message::user().with_text("go")];
+        messages.extend(round("call_1", "a.txt", &body));
+        let original = Conversation::new_unvalidated(messages.clone());
+        let mut saved = elision::SavedToolOutputs::default();
+        saved.entries.insert(
+            "call_1".into(),
+            elision::SavedToolOutput {
+                tool: "developer__shell".into(),
+                path: "/tmp/x.txt".into(),
+                chars: 3_000,
+                lines: 1,
+            },
+        );
+        // A "compaction" that kept everything visible, with a summary pair.
+        let mut compacted = vec![
+            Message::user()
+                .with_text("<summary>")
+                .with_metadata(MessageMetadata::agent_only()),
+            Message::assistant()
+                .with_text(RECENT_WINDOW_CONTINUATION_TEXT)
+                .with_metadata(MessageMetadata::agent_only()),
+        ];
+        compacted.extend(messages);
+        let compacted = Conversation::new_unvalidated(compacted);
+        assert_eq!(
+            with_saved_output_index(compacted.clone(), &original, &saved),
+            compacted
         );
     }
 }

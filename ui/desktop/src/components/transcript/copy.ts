@@ -108,6 +108,7 @@ export const transcriptCopy = {
     compacting: 'Compacting the chat',
     waitingForAnswer: 'Waiting for your answer',
     runningOne: 'Running the tool',
+    settingWatch: 'Setting a watch on the job',
     runningMany: (count: number) => `Running ${count} tools`,
     steering: 'Steering the current turn',
     steeringAfter: (tool: string) => `Your message will be added when ${tool} finishes`,
