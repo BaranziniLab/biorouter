@@ -42,15 +42,16 @@
   list-style: none;
 }
 
-/* A PHASE GROUP IS A BAND (the reference's group blocks): the page ground, one
-   step back from the card's fill (a fill never sits on a fill), with the
-   element radius, so a phase, its grid, its rows and its gate read as one chunk
-   and the next phase as the next one. Bands are parted by 4px of the card's
-   fill; no line. The rows inside still bleed 8px, now to the band's edges. */
+/* A PHASE GROUP IS A BAND (the reference's group blocks), so a phase, its grid,
+   its rows and its gate read as one chunk and the next phase as the next one.
+   It takes the control ground the fill rule gives it: in the rail's filled card
+   the page ground, one step back (a fill never sits on a fill); in the header
+   popover, which is the page ground, the fill. Bands are parted by 4px; no line.
+   The rows inside still bleed 8px, now to the band's edges. */
 .br-agents__phase {
   padding: 0 8px 2px;
   border-radius: var(--radius-element);
-  background-color: var(--br-control-ground, var(--background-default));
+  background-color: var(--br-control-ground, var(--background-fill));
 }
 
 .br-agents__phase + .br-agents__phase {

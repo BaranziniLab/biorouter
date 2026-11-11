@@ -536,6 +536,7 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
     const three = await mount({ scenario: 'three', todos: true, height: 760 });
     try {
       await three.click('[data-testid="summary-details-toggle"]');
+      await three.mouse.move(0, 0);
       await shot(three, 'agents-3.png');
     } finally {
       await three.close();
