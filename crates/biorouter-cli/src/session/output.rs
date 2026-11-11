@@ -1649,7 +1649,8 @@ pub fn display_session_info(
 
     println!("  {} {}", style("▌").fg(ACCENT), style(headline).bold());
 
-    // Lead/worker mode shows both model tiers; otherwise a single model row.
+    // A chat saved in the retired lead/worker mode still restores as a pair and
+    // shows both models; every other chat shows a single model row.
     match provider_instance.and_then(|p| p.as_lead_worker()) {
         Some(lead_worker) => {
             let (lead_model, worker_model) = lead_worker.get_model_info();

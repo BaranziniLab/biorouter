@@ -1,4 +1,7 @@
 use crate::workflows::github_workflow::BIOROUTER_WORKFLOW_GITHUB_REPO_CONFIG_KEY;
+use biorouter::agents::default_worker::{
+    configured_default_worker_in, DefaultWorker, WORKER_MODEL_KEY, WORKER_PROVIDER_KEY,
+};
 use biorouter::agents::extension::ToolInfo;
 use biorouter::agents::extension_manager::get_parameter_names;
 use biorouter::agents::Agent;
@@ -925,21 +928,6 @@ async fn chat_providers() -> Vec<(
     available
 }
 
-/// What the lead/worker setup says when the default model is a decision model:
-/// the worker is the default model, and a decision model cannot take a chat's
-/// turns.
-const LEAD_WORKER_NEEDS_A_CHAT_DEFAULT: &str =
-    "Your default model is a decision model, which answers questions with probabilities and \
-     cannot take a chat's turns, so lead/worker mode does not apply. Choose a chat model as \
-     your default first (biorouter configure, then Configure Providers).";
-
-/// Why lead/worker mode cannot be set up over this default provider, or None.
-fn lead_worker_refusal(default_provider: Option<&str>) -> Option<&'static str> {
-    default_provider
-        .is_some_and(is_decision_chat_provider)
-        .then_some(LEAD_WORKER_NEEDS_A_CHAT_DEFAULT)
-}
-
 #[allow(clippy::too_many_lines)]
 pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     // Get global config instance
@@ -1683,9 +1671,9 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
             "Set maximum number of turns without user input",
         )
         .item(
-            "lead_worker",
-            "Lead/Worker Model",
-            "Use a stronger lead model for planning and a worker model for execution",
+            "default_worker",
+            "Default Worker Model",
+            "The model subagents use unless the agent picks another",
         )
         .item(
             "keyring",
@@ -1721,8 +1709,8 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
         "max_turns" => {
             configure_max_turns_dialog()?;
         }
-        "lead_worker" => {
-            configure_lead_worker_dialog().await?;
+        "default_worker" => {
+            configure_default_worker_dialog().await?;
         }
         "keyring" => {
             configure_keyring_dialog()?;
@@ -1743,79 +1731,66 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Configure lead/worker mode: a stronger "lead" model handles the first
-/// turns of a session (and failure recovery), then the default (worker)
-/// model takes over. Mirrors the GUI's Lead/Worker settings; previously this
-/// was only reachable through BIOROUTER_LEAD_* environment variables.
-pub async fn configure_lead_worker_dialog() -> anyhow::Result<()> {
-    let config = Config::global();
-
-    let current_lead_model: Option<String> = config.get_param("BIOROUTER_LEAD_MODEL").ok();
-    let enabled = current_lead_model.is_some();
-
-    if enabled {
-        let _ = cliclack::log::info(format!(
-            "Lead/worker mode is currently ON (lead model: {})",
-            current_lead_model.as_deref().unwrap_or("unknown")
-        ));
-    } else {
-        let _ = cliclack::log::info(
-            "Lead/worker mode runs a stronger lead model for the first turns of a chat, then switches to your default (worker) model.",
-        );
+/// What the dialog says about the current default worker model.
+fn default_worker_status(worker: Option<&DefaultWorker>) -> String {
+    match worker {
+        Some(worker) => format!(
+            "Subagents use {} unless the agent picks another model.",
+            worker.label()
+        ),
+        None => "Subagents use the chat's model unless the agent picks another. Choose a \
+                 lighter model to save tokens."
+            .to_string(),
     }
+}
+
+/// Configure the default worker model: the model subagents use unless the
+/// agent names another. It replaces lead/worker mode (owner, 2026-11-11) and
+/// mirrors Settings > Models > Default worker model in the desktop app.
+pub async fn configure_default_worker_dialog() -> anyhow::Result<()> {
+    let config = Config::global();
+    let current = configured_default_worker_in(config);
+    let _ = cliclack::log::info(default_worker_status(current.as_ref()));
 
     let action = cliclack::select("What would you like to do?")
         .item(
-            "configure",
-            if enabled {
-                "Update lead/worker settings"
+            "choose",
+            if current.is_some() {
+                "Choose another default worker model"
             } else {
-                "Enable lead/worker mode"
+                "Choose a default worker model"
             },
             "",
         )
         .item(
-            "disable",
-            "Disable lead/worker mode",
-            if enabled { "" } else { "(already off)" },
+            "same",
+            "Same as the chat's model",
+            if current.is_some() { "" } else { "(current)" },
         )
         .interact()?;
 
-    if action == "disable" {
-        for key in [
-            "BIOROUTER_LEAD_MODEL",
-            "BIOROUTER_LEAD_PROVIDER",
-            "BIOROUTER_LEAD_TURNS",
-            "BIOROUTER_LEAD_FAILURE_THRESHOLD",
-            "BIOROUTER_LEAD_FALLBACK_TURNS",
-        ] {
-            let _ = config.delete(key);
-        }
-        let _ = cliclack::log::success("Lead/worker mode disabled.");
+    if action == "same" {
+        // Both keys in one write, so a reader never sees one half left behind.
+        config.edit_values(|values| {
+            values.shift_remove(WORKER_PROVIDER_KEY);
+            values.shift_remove(WORKER_MODEL_KEY);
+        })?;
+        let _ = cliclack::log::success(default_worker_status(None));
         return Ok(());
     }
 
-    // The worker is the default model, so a decision model there leaves
-    // nothing for the lead to hand turns to.
-    if let Some(refusal) = lead_worker_refusal(config.get_biorouter_provider().ok().as_deref()) {
-        let _ = cliclack::log::warning(refusal);
-        return Ok(());
-    }
-
-    // Pick the lead provider, defaulting to the configured lead provider or
-    // the main provider.
     let mut available_providers = chat_providers().await;
     available_providers.sort_by(|a, b| a.0.display_name.cmp(&b.0.display_name));
     let provider_items: Vec<(&String, &str, &str)> = available_providers
         .iter()
         .map(|(p, _)| (&p.name, p.display_name.as_str(), p.description.as_str()))
         .collect();
-    let default_provider: String = config
-        .get_param("BIOROUTER_LEAD_PROVIDER")
-        .ok()
+    let default_provider: String = current
+        .as_ref()
+        .map(|worker| worker.provider.clone())
         .or_else(|| config.get_biorouter_provider().ok())
         .unwrap_or_default();
-    let provider_name = cliclack::select("Which provider should the lead model use?")
+    let provider_name = cliclack::select("Which provider should subagents use?")
         .initial_value(&default_provider)
         .items(&provider_items)
         .interact()?;
@@ -1824,9 +1799,8 @@ pub async fn configure_lead_worker_dialog() -> anyhow::Result<()> {
         .find(|(p, _)| &p.name == provider_name)
         .expect("Selected provider must exist in metadata");
 
-    // Pick the lead model, fetching the provider's model list when possible.
     let spin = spinner();
-    spin.start("Fetching models for the lead provider...");
+    spin.start("Fetching models...");
     let models_res = {
         let temp_model_config = ModelConfig::new(&provider_meta.default_model)?;
         let temp_provider = create(provider_name, temp_model_config).await?;
@@ -1839,57 +1813,26 @@ pub async fn configure_lead_worker_dialog() -> anyhow::Result<()> {
     let model: String = match models_res {
         Ok(Some(models)) if !models.is_empty() => select_model_from_list(&models, provider_meta)?,
         _ => {
-            let default_model =
-                current_lead_model.unwrap_or_else(|| provider_meta.default_model.clone());
-            cliclack::input("Enter the lead model name:")
+            let default_model = current
+                .as_ref()
+                .filter(|worker| &worker.provider == provider_name)
+                .map(|worker| worker.model.clone())
+                .unwrap_or_else(|| provider_meta.default_model.clone());
+            cliclack::input("Enter the model name:")
                 .default_input(&default_model)
                 .interact()?
         }
     };
 
-    let prompt_turns = |question: &str, key: &str, default: u32| -> anyhow::Result<u32> {
-        let current: u32 = config.get_param(key).unwrap_or(default);
-        let value: String = cliclack::input(question)
-            .default_input(&current.to_string())
-            .validate(|input: &String| {
-                if input.trim().parse::<u32>().is_ok() {
-                    Ok(())
-                } else {
-                    Err("Please enter a positive whole number")
-                }
-            })
-            .interact()?;
-        Ok(value.trim().parse::<u32>().expect("validated above"))
-    };
-
-    let lead_turns = prompt_turns(
-        "Initial turns handled by the lead model:",
-        "BIOROUTER_LEAD_TURNS",
-        3,
-    )?;
-    let failure_threshold = prompt_turns(
-        "Consecutive worker failures before falling back to the lead model:",
-        "BIOROUTER_LEAD_FAILURE_THRESHOLD",
-        2,
-    )?;
-    let fallback_turns = prompt_turns(
-        "Turns the lead model handles during a fallback:",
-        "BIOROUTER_LEAD_FALLBACK_TURNS",
-        2,
-    )?;
-
-    config.set_param("BIOROUTER_LEAD_MODEL", &model)?;
-    config.set_param("BIOROUTER_LEAD_PROVIDER", provider_name)?;
-    config.set_param("BIOROUTER_LEAD_TURNS", lead_turns)?;
-    config.set_param("BIOROUTER_LEAD_FAILURE_THRESHOLD", failure_threshold)?;
-    config.set_param("BIOROUTER_LEAD_FALLBACK_TURNS", fallback_turns)?;
-
-    let worker_model: String = config
-        .get_biorouter_model()
-        .unwrap_or_else(|_| "your default model".to_string());
+    // Both halves in one write, so a subagent never starts on a provider
+    // paired with another provider's model.
+    config.set_params(&[
+        (WORKER_MODEL_KEY, model.as_str()),
+        (WORKER_PROVIDER_KEY, provider_name.as_str()),
+    ])?;
     let _ = cliclack::log::success(format!(
-        "Lead/worker mode enabled. {} ({}) leads, {} handles the rest.",
-        model, provider_meta.display_name, worker_model
+        "Subagents now use {} ({}) unless the agent picks another model.",
+        model, provider_meta.display_name
     ));
     Ok(())
 }
@@ -2702,12 +2645,12 @@ fn print_non_private_model_disclosure(
 
 #[cfg(test)]
 mod decision_provider_tests {
-    use super::{chat_providers, lead_worker_refusal, LEAD_WORKER_NEEDS_A_CHAT_DEFAULT};
+    use super::{chat_providers, default_worker_status};
     use biorouter::providers::providers;
 
     /// The two decision providers are registered, and neither is offered as a
-    /// chat's provider or as a lead model: a decision model cannot pass the
-    /// chat check, and as a lead it would turn every chat into a decision chat.
+    /// chat's provider or as a default worker model: a decision model cannot
+    /// pass the chat check, and it cannot carry out a subagent's task.
     #[tokio::test]
     async fn configure_offers_no_decision_provider() {
         let registered: Vec<String> = providers().await.into_iter().map(|(m, _)| m.name).collect();
@@ -2728,14 +2671,21 @@ mod decision_provider_tests {
     }
 
     #[test]
-    fn lead_worker_does_not_apply_over_a_decision_default() {
+    fn the_dialog_says_what_subagents_use() {
+        use biorouter::agents::default_worker::DefaultWorker;
         assert_eq!(
-            lead_worker_refusal(Some("ollama_decision")),
-            Some(LEAD_WORKER_NEEDS_A_CHAT_DEFAULT)
+            default_worker_status(None),
+            "Subagents use the chat's model unless the agent picks another. Choose a lighter \
+             model to save tokens."
         );
-        assert!(lead_worker_refusal(Some("baseten_decision")).is_some());
-        assert_eq!(lead_worker_refusal(Some("openai")), None);
-        assert_eq!(lead_worker_refusal(None), None);
+        let worker = DefaultWorker {
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+        };
+        assert_eq!(
+            default_worker_status(Some(&worker)),
+            "Subagents use gpt-4o-mini (openai) unless the agent picks another model."
+        );
     }
 }
 
