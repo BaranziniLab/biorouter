@@ -52,6 +52,7 @@ import 'dotenv/config';
 import {
   checkServerStatus,
   startBiorouterd,
+  externalBackendUrlFromEnv,
   getBiorouterCliBinaryPath,
   type BiorouterdResult,
   type SharedDaemonLink,
@@ -171,6 +172,7 @@ import {
   setTrayRef,
   setupAutoUpdater,
   updateTrayMenu,
+  setDictationAnywhereTrayActions,
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
 import { startMainThreadWatchdog } from './utils/mainThreadWatchdog';
@@ -196,6 +198,9 @@ import {
   isAppOrigin,
   shouldOpenExternalNavigation,
 } from './utils/permissionPolicy';
+import { readLaptopDictationPolicy } from './utils/managedDictationPolicy';
+import { effectiveBackendUrl, remoteHttpBackendUrl } from './utils/remoteDictationHttp';
+import { dictationMessage } from './components/dictation/copy';
 import {
   ARTIFACT_WRAPPER_CSP,
   injectArtifactHostTheme,
@@ -218,6 +223,30 @@ import {
   type EmbeddedBrowserBounds,
 } from './utils/embeddedBrowser';
 import { heicToPng } from './utils/heicConvert';
+import {
+  managedAppHasFocusedField,
+  insertIntoManagedAppFocusedField,
+} from './utils/embeddedBrowser';
+import {
+  DEFAULT_ANYWHERE_SETTINGS,
+  INITIAL_ANYWHERE_STATE,
+  REVIEW_TEXT_MS,
+  clipboardOutcome,
+  nextAnywhereState,
+  parseAnywhereSettings,
+  reviewTextBeforeExpiry,
+  sameAnywhereStart,
+  switchKeepsStart,
+  switchGovernsSource,
+  canStartAnywhere,
+  anywhereAtRest,
+  currentAnywhereSettingsRequest,
+  usableAnywhereTrigger,
+  deliverSettingsWhenReady,
+  afterAnywhereSettingsWriteFailure,
+  type AnywhereSource,
+} from './utils/dictationAnywhere';
+import type { Transcript } from './components/dictation/dictationApi';
 import {
   bindManagedAppPreviewBackend,
   fetchDaemonAppOrigin,
@@ -2311,6 +2340,8 @@ const createChat = async (
   // Handle window closure
   mainWindow.on('closed', () => {
     windowMap.delete(windowId);
+    anywhereSettingsReadyWindows.delete(windowId);
+    anywhereSettingsPendingNavigation.delete(windowId);
     managedAppPreviewBackends.delete(windowId);
     windowWorkingDirs.delete(windowId);
     localBackendWindows.delete(windowId);
@@ -3539,8 +3570,941 @@ function isDictationSender(event: Electron.IpcMainInvokeEvent | Electron.IpcMain
   );
 }
 
+let anywhereCaptureWindow: BrowserWindow | null = null;
+let anywhereReviewWindow: BrowserWindow | null = null;
+let anywhereCaptureReady = false;
+let anywherePendingStart: {
+  source: AnywhereSource;
+  privateConfirmed: boolean;
+  generation: number;
+  pressedAtEpochMs: number;
+  settingsRevision: number;
+} | null = null;
+let anywhereGeneration = 0;
+let anywhereCaptureOpening: Promise<BrowserWindow | null> | null = null;
+let anywhereCaptureIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let anywhereCaptureBlocker: number | null = null;
+let anywhereStartSentGeneration: number | null = null;
+let anywhereState = INITIAL_ANYWHERE_STATE;
+let anywhereSettings = DEFAULT_ANYWHERE_SETTINGS;
+let anywhereShortcut: string | null = null;
+let anywhereSettingsRevision = 0;
+let anywhereOffRequested = false;
+let anywhereSettingsSaveFailed = false;
+let anywhereSettingsQueue: Promise<void> = Promise.resolve();
+let anywhereSettingsNavigationIntent = 0;
+let anywhereSettingsOpening: Promise<BrowserWindow | null> | null = null;
+const anywhereSettingsReadyWindows = new Set<number>();
+const anywhereSettingsPendingNavigation = new Map<number, number>();
+let anywhereReviewText: string | null = null;
+let anywhereReviewExpiresAt: number | null = null;
+let anywhereReviewRevision = 0;
+let anywhereReviewMessage = '';
+let anywhereReviewPrivateChoice: ((include: boolean | null) => void) | null = null;
+let anywhereReviewTimer: ReturnType<typeof setTimeout> | null = null;
+let anywherePreviewTarget: { owner: BrowserWindow; viewId: string } | null = null;
+
+function anywhereStorePath(): string {
+  return path.join(biorouterConfigDir(), 'dictation', 'anywhere.json');
+}
+
+async function readAnywhereSettings() {
+  try {
+    anywhereSettings = parseAnywhereSettings(
+      JSON.parse(await fs.readFile(anywhereStorePath(), 'utf8'))
+    );
+  } catch {
+    anywhereSettings = DEFAULT_ANYWHERE_SETTINGS;
+  }
+  return anywhereSettings;
+}
+
+async function writeAnywhereSettings(settings: typeof DEFAULT_ANYWHERE_SETTINGS) {
+  const filename = anywhereStorePath();
+  await fs.mkdir(path.dirname(filename), { recursive: true, mode: 0o700 });
+  const temporary = `${filename}.${process.pid}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(settings), { mode: 0o600 });
+  await fs.rename(temporary, filename);
+  anywhereSettings = settings;
+  anywhereSettingsSaveFailed = false;
+}
+
+function anywhereSnapshot() {
+  const laptopPolicy = laptopDictationPolicy();
+  return {
+    ...anywhereSettings,
+    enabled: anywhereSettings.enabled && !anywhereOffRequested,
+    saveFailed: anywhereSettingsSaveFailed,
+    captureAllowed: laptopPolicy.enabled && laptopPolicy.capture,
+    capturePolicyReason: laptopPolicy.enabled ? 'MSG-POLICY-CAPTURE' : 'MSG-POLICY',
+    tray: tray !== null,
+    gnomeWayland:
+      process.platform === 'linux' &&
+      process.env.XDG_CURRENT_DESKTOP?.includes('GNOME') === true &&
+      process.env.XDG_SESSION_TYPE === 'wayland',
+    shortcutTaken: Boolean(
+      !anywhereOffRequested &&
+      anywhereSettings.shortcut &&
+      anywhereShortcut !== anywhereSettings.shortcut
+    ),
+  };
+}
+
+function clearAnywhereReview() {
+  if (anywhereReviewTimer) clearTimeout(anywhereReviewTimer);
+  anywhereReviewTimer = null;
+  anywhereReviewText = null;
+  anywhereReviewExpiresAt = null;
+  anywhereReviewRevision += 1;
+  if (anywhereReviewWindow && !anywhereReviewWindow.isDestroyed()) {
+    anywhereReviewWindow.webContents.send('dictation:anywhere:review', anywhereReviewPayload());
+  }
+}
+
+function anywhereReviewPayload() {
+  return {
+    message: anywhereReviewMessage,
+    text:
+      reviewTextBeforeExpiry(anywhereReviewText, anywhereReviewExpiresAt, Date.now()) ?? undefined,
+    expiresAt: anywhereReviewExpiresAt,
+    revision: anywhereReviewRevision,
+    confirmPrivate: anywhereReviewPrivateChoice !== null,
+  };
+}
+
+function closeCaptureAfterIdle() {
+  if (anywhereCaptureIdleTimer) clearTimeout(anywhereCaptureIdleTimer);
+  const win = anywhereCaptureWindow;
+  const generation = anywhereGeneration;
+  anywhereCaptureIdleTimer = setTimeout(() => {
+    if (
+      win &&
+      win === anywhereCaptureWindow &&
+      generation === anywhereGeneration &&
+      anywhereAtRest(anywhereState.phase) &&
+      !win.isDestroyed()
+    )
+      win.close();
+    anywhereCaptureIdleTimer = null;
+  }, 15_000);
+}
+
+function stopAnywherePowerBlocker() {
+  if (anywhereCaptureBlocker !== null) powerSaveBlocker.stop(anywhereCaptureBlocker);
+  anywhereCaptureBlocker = null;
+}
+
+function notifyAnywhere(
+  id: 'MSG-CLIPBOARD-COPIED' | 'MSG-CLIPBOARD-NOTHING' | 'MSG-CLIPBOARD-ECHO',
+  words = 0
+) {
+  const key = process.platform === 'darwin' ? '⌘V' : 'Ctrl+V';
+  const body =
+    id === 'MSG-CLIPBOARD-COPIED'
+      ? `Copied ${words} words. Paste with ${key}.`
+      : id === 'MSG-CLIPBOARD-NOTHING'
+        ? 'Nothing was heard, so the clipboard was not changed.'
+        : 'Only dictionary words came back, which usually means the recording was silent. Nothing was copied.';
+  new Notification({ title: 'Biorouter', body }).show();
+}
+
+function registerAnywhereShortcut() {
+  if (anywhereShortcut) globalShortcut.unregister(anywhereShortcut);
+  anywhereShortcut = null;
+  if (anywhereOffRequested || !anywhereSettings.enabled || !anywhereSettings.shortcut) return true;
+  if (
+    process.platform === 'linux' &&
+    process.env.XDG_CURRENT_DESKTOP?.includes('GNOME') &&
+    process.env.XDG_SESSION_TYPE === 'wayland'
+  )
+    return false;
+  let registered = false;
+  try {
+    registered = globalShortcut.register(
+      anywhereSettings.shortcut,
+      () => void startAnywhere('shortcut', false)
+    );
+  } catch {
+    return false;
+  }
+  if (registered) anywhereShortcut = anywhereSettings.shortcut;
+  return registered;
+}
+
+async function anywhereDaemon() {
+  const owner = BrowserWindow.getAllWindows().find(
+    (win) =>
+      windowDaemons.has(win.id) && win !== anywhereCaptureWindow && win !== anywhereReviewWindow
+  );
+  if (owner) {
+    const daemon = windowDaemons.get(owner.id);
+    const client = biorouterdClients.get(owner.id);
+    if (daemon && client) return { daemon, client, owner };
+  }
+  const settings = loadSettings();
+  const serverSecret = getServerSecret(settings);
+  const userActionKey = getUserActionKey(settings);
+  const rendererEntry = rendererEntryUrl();
+  const result = await getSharedBackend(startBiorouterd, {
+    app,
+    serverSecret,
+    userActionKey,
+    dir: app.getPath('home'),
+    env: {
+      BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT,
+      BIOROUTER_RENDERER_ORIGIN:
+        rendererEntry.protocol === 'file:' ? 'file://' : rendererEntry.origin,
+    },
+    externalBiorouterd: settings.externalBiorouterd,
+  });
+  const client = createClient(
+    createConfig({
+      baseUrl: result.baseUrl,
+      headers: { 'Content-Type': 'application/json', 'X-Secret-Key': serverSecret },
+    })
+  );
+  return {
+    daemon: { baseUrl: result.baseUrl, secretKey: serverSecret, userActionKey, result },
+    client,
+    owner: null,
+  };
+}
+
+type AnywhereBackendIdentity = { managed: boolean; url: string | null };
+
+function anywhereBackendIdentity(): AnywhereBackendIdentity | null {
+  const owner = BrowserWindow.getAllWindows().find(
+    (win) =>
+      windowDaemons.has(win.id) && win !== anywhereCaptureWindow && win !== anywhereReviewWindow
+  );
+  const attached = owner && windowDaemons.get(owner.id);
+  if (attached)
+    return { managed: attached.result.managed, url: effectiveBackendUrl(attached.baseUrl) };
+  const settings = loadSettings();
+  const raw = settings.externalBiorouterd?.enabled
+    ? settings.externalBiorouterd.url
+    : process.env.BIOROUTER_EXTERNAL_BACKEND
+      ? externalBackendUrlFromEnv(process.env)
+      : null;
+  if (raw) {
+    const url = effectiveBackendUrl(raw);
+    return url ? { managed: false, url } : null;
+  }
+  return settings.externalBiorouterd?.enabled ? null : { managed: true, url: null };
+}
+
+function sameAnywhereBackend(expected: AnywhereBackendIdentity): boolean {
+  const actual = anywhereBackendIdentity();
+  return actual !== null && actual.managed === expected.managed && actual.url === expected.url;
+}
+
+async function anywhereAvailability(
+  expected: AnywhereBackendIdentity
+): Promise<'ready' | 'policy' | 'no-model'> {
+  if (!laptopDictationCaptureAllowed()) return 'policy';
+  const bound = await anywhereDaemon();
+  if (
+    !bound ||
+    bound.daemon.result.managed !== expected.managed ||
+    (!expected.managed && effectiveBackendUrl(bound.daemon.baseUrl) !== expected.url)
+  )
+    return 'policy';
+  try {
+    const response = await fetch(`${bound.daemon.baseUrl}/dictation/status`, {
+      headers: {
+        'X-Secret-Key': bound.daemon.secretKey,
+        'X-User-Action': bound.daemon.userActionKey,
+      },
+    });
+    if (!response.ok) return 'policy';
+    const status = (await response.json()) as {
+      policy?: { enabled?: { allowed?: boolean }; capture?: { allowed?: boolean } };
+      active_model?: string | null;
+      models?: Array<{ id: string; installed: boolean }>;
+    };
+    if (!status.policy?.enabled?.allowed || !status.policy.capture?.allowed) return 'policy';
+    if (
+      !status.active_model ||
+      !status.models?.some((model) => model.id === status.active_model && model.installed)
+    )
+      return 'no-model';
+    return 'ready';
+  } catch {
+    return 'policy';
+  }
+}
+
+async function createAnywhereWindow(
+  hash: 'dictation-capture' | 'dictation-review'
+): Promise<BrowserWindow | null> {
+  const bound = await anywhereDaemon();
+  if (!bound) return null;
+  const { daemon, client, owner } = bound;
+  const hidden = hash === 'dictation-capture';
+  const win = new BrowserWindow({
+    width: hidden ? 1 : 480,
+    height: hidden ? 1 : 300,
+    show: !hidden,
+    focusable: !hidden,
+    skipTaskbar: hidden,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true,
+      backgroundThrottling: false,
+      session: owner?.webContents.session ?? session.defaultSession,
+      additionalArguments: [
+        JSON.stringify({
+          ...appConfig,
+          BIOROUTER_API_HOST: daemon.baseUrl,
+          BIOROUTER_LOCAL_BACKEND: daemon.result.managed,
+        }),
+      ],
+    },
+  });
+  // These two windows show Biorouter's own pages and nothing else, so the main frame that
+  // `isDictationCaptureSender` and `isDictationReviewSender` admit is always this app's renderer.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (event, target) => {
+    if (!isAppOrigin(target, rendererEntryUrl())) event.preventDefault();
+  });
+  if (hash === 'dictation-capture') anywhereCaptureWindow = win;
+  else anywhereReviewWindow = win;
+  windowDaemons.set(win.id, daemon);
+  biorouterdClients.set(win.id, client);
+  if (hidden)
+    win.webContents.on('render-process-gone', () => {
+      if (!win.isDestroyed()) win.close();
+    });
+  win.once('closed', () => {
+    windowDaemons.delete(win.id);
+    biorouterdClients.delete(win.id);
+    if (anywhereCaptureWindow === win) {
+      anywhereCaptureWindow = null;
+      anywhereCaptureReady = false;
+      if (anywhereCaptureIdleTimer) clearTimeout(anywhereCaptureIdleTimer);
+      anywhereCaptureIdleTimer = null;
+      if (
+        anywhereState.phase === 'arming' ||
+        anywhereState.phase === 'recording' ||
+        anywhereState.phase === 'transcribing'
+      )
+        cancelAnywhere();
+    }
+    if (anywhereReviewWindow === win) {
+      anywhereReviewWindow = null;
+      const resolve = anywhereReviewPrivateChoice;
+      anywhereReviewPrivateChoice = null;
+      resolve?.(null);
+    }
+  });
+  const url = rendererEntryUrl();
+  url.hash = `/${hash}`;
+  await win.loadURL(formatUrl(url));
+  return win;
+}
+
+async function showAnywhereReview(
+  message: string,
+  text: string | null = null,
+  confirmPrivate = false
+) {
+  clearAnywhereReview();
+  anywhereReviewText = text;
+  anywhereReviewExpiresAt = text ? Date.now() + REVIEW_TEXT_MS : null;
+  anywhereReviewMessage = message;
+  anywhereReviewRevision += 1;
+  if (!confirmPrivate) anywhereReviewPrivateChoice = null;
+  if (text) anywhereReviewTimer = setTimeout(clearAnywhereReview, REVIEW_TEXT_MS);
+  if (!anywhereReviewWindow || anywhereReviewWindow.isDestroyed())
+    anywhereReviewWindow = await createAnywhereWindow('dictation-review');
+  anywhereReviewWindow?.show();
+  anywhereReviewWindow?.focus();
+  anywhereReviewWindow?.webContents.send('dictation:anywhere:review', anywhereReviewPayload());
+}
+
+async function promptAnywherePrivateTerms(): Promise<boolean | null> {
+  const message =
+    "Your private dictionary terms may appear in this text, and Biorouter cannot keep them away from public models or from other institutions' models once you paste or post it. Include them?";
+  return await new Promise<boolean | null>((resolve) => {
+    anywhereReviewPrivateChoice = resolve;
+    void showAnywhereReview(message, null, true);
+  });
+}
+
+function deliverPendingAnywhereSettings(win: BrowserWindow) {
+  const request = anywhereSettingsPendingNavigation.get(win.id);
+  if (request === undefined) return;
+  if (
+    !deliverSettingsWhenReady(
+      request,
+      anywhereSettingsNavigationIntent,
+      anywhereSettingsReadyWindows.has(win.id),
+      windowMap.get(win.id) === win && !win.isDestroyed()
+    )
+  )
+    return;
+  anywhereSettingsPendingNavigation.delete(win.id);
+  win.webContents.send('set-view', 'settings', 'dictation');
+}
+
+async function openAnywhereSettings() {
+  const request = ++anywhereSettingsNavigationIntent;
+  let win = BrowserWindow.getAllWindows().find((candidate) => windowMap.has(candidate.id));
+  if (!win) {
+    anywhereSettingsOpening ??= createNewWindow(app).finally(() => {
+      anywhereSettingsOpening = null;
+    });
+    win = (await anywhereSettingsOpening.catch(() => null)) ?? undefined;
+  }
+  if (!win || win.isDestroyed() || request !== anywhereSettingsNavigationIntent) return;
+  win.show();
+  win.focus();
+  anywhereSettingsPendingNavigation.set(win.id, request);
+  deliverPendingAnywhereSettings(win);
+}
+
+ipcMain.on('dictation:anywhere:settings-ready', (event) => {
+  if (!isDictationSender(event)) return;
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  anywhereSettingsReadyWindows.add(win.id);
+  deliverPendingAnywhereSettings(win);
+});
+
+/** Hidden capture shares its app session with the owner. A consent key contains only a digest. */
+const anywhereRemoteAcknowledged = new Set<string>();
+
+async function anywhereViewerHasAcknowledged(
+  win: BrowserWindow,
+  keyValue: string
+): Promise<boolean> {
+  const storageKey = JSON.stringify('biorouter:dictation-viewer');
+  const value = JSON.stringify(keyValue);
+  const script = `(() => { try {
+    const viewer = JSON.parse(localStorage.getItem(${storageKey}) || '{}');
+    return Array.isArray(viewer.ackHosts) && viewer.ackHosts.includes(${value});
+  } catch { return false; } })()`;
+  try {
+    return (await win.webContents.executeJavaScript(script, true)) === true;
+  } catch {
+    return false;
+  }
+}
+
+async function acknowledgeAnywhereViewer(win: BrowserWindow, keyValue: string): Promise<void> {
+  const storageKey = JSON.stringify('biorouter:dictation-viewer');
+  const value = JSON.stringify(keyValue);
+  const script = `(() => { try {
+    const viewer = JSON.parse(localStorage.getItem(${storageKey}) || '{}');
+    const previous = Array.isArray(viewer.ackHosts)
+      ? viewer.ackHosts.filter((item) => typeof item === 'string' && item !== ${value} && !item.includes('?') && !item.includes('@')) : [];
+    localStorage.setItem(${storageKey}, JSON.stringify({ ...viewer, ackHosts: [...previous, ${value}].slice(-64) }));
+  } catch { /* A later recording asks again when storage is unavailable. */ } })()`;
+  try {
+    await win.webContents.executeJavaScript(script, true);
+  } catch {
+    // The confirmed recording may proceed; a later recording asks again.
+  }
+}
+
+async function confirmAnywhereRemote(
+  backend: AnywhereBackendIdentity,
+  stillCurrent: () => boolean
+): Promise<string | null> {
+  if (backend.managed) return '';
+  if (!backend.url) return null;
+  const address = new URL(backend.url);
+  const remoteHttp = remoteHttpBackendUrl(backend.url);
+  const kind = remoteHttp ? 'http' : 'disclosure';
+  const digest = crypto.createHash('sha256').update(backend.url).digest('hex');
+  const keyValue = `remote-${kind}:sha256:${digest}`;
+  if (anywhereRemoteAcknowledged.has(keyValue)) return keyValue;
+  const viewer = BrowserWindow.getAllWindows().find((candidate) => {
+    if (
+      candidate.isDestroyed() ||
+      (candidate !== anywhereCaptureWindow && !windowMap.has(candidate.id))
+    )
+      return false;
+    const bound = windowDaemons.get(candidate.id);
+    return (
+      bound?.result.managed === backend.managed &&
+      (backend.managed || effectiveBackendUrl(bound.baseUrl) === backend.url)
+    );
+  });
+  if (viewer && (await anywhereViewerHasAcknowledged(viewer, keyValue))) {
+    if (!stillCurrent() || !sameAnywhereBackend(backend) || !laptopDictationCaptureAllowed())
+      return null;
+    anywhereRemoteAcknowledged.add(keyValue);
+    return keyValue;
+  }
+  if (!stillCurrent() || !sameAnywhereBackend(backend) || !laptopDictationCaptureAllowed())
+    return null;
+  const options = {
+    type: 'warning' as const,
+    message: dictationMessage('MSG-DISCLOSE-REMOTE', { host: address.host }),
+    detail: remoteHttp ? dictationMessage('MSG-REMOTE-HTTP', { host: remoteHttp.host }) : undefined,
+    buttons: ['Continue', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+  };
+  const parent = BrowserWindow.getAllWindows().find(
+    (candidate) => windowMap.has(candidate.id) && candidate.isVisible() && !candidate.isDestroyed()
+  );
+  try {
+    const answer = parent
+      ? await dialog.showMessageBox(parent, options)
+      : await dialog.showMessageBox(options);
+    if (
+      answer.response !== 0 ||
+      !stillCurrent() ||
+      !sameAnywhereBackend(backend) ||
+      !laptopDictationCaptureAllowed()
+    )
+      return null;
+    anywhereRemoteAcknowledged.add(keyValue);
+    return keyValue;
+  } catch {
+    return null;
+  }
+}
+
+// Dictate into other apps governs the tray item and the global shortcut only. Dictate into
+// this app starts whether or not it is on (owner decision, 2026-11-10), and the tray's Stop
+// and copy still ends a preview dictation while the switch is off.
+async function startAnywhere(
+  source: AnywhereSource,
+  privateConfirmed: boolean,
+  preview?: { owner: BrowserWindow; viewId: string }
+) {
+  const switchOn = anywhereSettings.enabled && !anywhereOffRequested;
+  if (source === 'shortcut' && !switchOn) return false;
+  const pressedAtEpochMs = performance.timeOrigin + performance.now();
+  if (source === 'shortcut') privateConfirmed = false;
+  const settings = loadSettings();
+  if (
+    privateConfirmed &&
+    (settings.externalBiorouterd?.enabled || process.env.BIOROUTER_EXTERNAL_BACKEND) &&
+    !getUserActionKey(settings)
+  )
+    return false;
+  if (source === 'tray' && !tray) {
+    await showAnywhereReview(
+      "Biorouter's menu bar icon is off, so Dictate to clipboard is not in its menu. Choose a shortcut below, or turn on Show in menu bar in Settings > App."
+    );
+    return false;
+  }
+  if (anywhereState.phase === 'arming') {
+    cancelAnywhere();
+    return true;
+  }
+  if (anywhereState.phase === 'recording') {
+    anywhereState = nextAnywhereState(anywhereState, { type: 'stop' });
+    anywhereCaptureWindow?.webContents.send('dictation:anywhere:capture-command', { type: 'stop' });
+    updateTrayMenu(getUpdateAvailable());
+    return true;
+  }
+  if (!canStartAnywhere(anywhereState.phase, source, switchOn) || !laptopDictationCaptureAllowed())
+    return false;
+  const generation = ++anywhereGeneration;
+  const settingsRevision = anywhereSettingsRevision;
+  anywhereState = nextAnywhereState(anywhereState, { type: 'start', source, privateConfirmed });
+  anywherePendingStart = {
+    source,
+    privateConfirmed,
+    generation,
+    pressedAtEpochMs,
+    settingsRevision,
+  };
+  if (anywhereCaptureIdleTimer) clearTimeout(anywhereCaptureIdleTimer);
+  anywhereCaptureIdleTimer = null;
+  const current = () => {
+    const valid = sameAnywhereStart(
+      source,
+      generation,
+      anywhereGeneration,
+      anywhereState.phase,
+      anywherePendingStart?.generation ?? null,
+      settingsRevision,
+      anywhereSettingsRevision,
+      anywhereSettings.enabled && !anywhereOffRequested
+    );
+    if (!valid && generation === anywhereGeneration && anywhereState.phase === 'arming')
+      cancelAnywhere();
+    return valid;
+  };
+  const backend = anywhereBackendIdentity();
+  if (!backend) {
+    cancelAnywhere();
+    return false;
+  }
+  const consentKey = await confirmAnywhereRemote(backend, current);
+  if (
+    !current() ||
+    !sameAnywhereBackend(backend) ||
+    !laptopDictationCaptureAllowed() ||
+    consentKey === null
+  ) {
+    if (current()) cancelAnywhere();
+    return false;
+  }
+  const availability = await anywhereAvailability(backend);
+  if (!current() || !sameAnywhereBackend(backend) || !laptopDictationCaptureAllowed()) {
+    if (current()) cancelAnywhere();
+    return false;
+  }
+  if (availability !== 'ready') {
+    anywherePendingStart = null;
+    anywhereState = nextAnywhereState(anywhereState, {
+      type: 'refuse',
+      reason: availability === 'no-model' ? 'no-model' : 'policy',
+    });
+    if (availability === 'no-model')
+      void showAnywhereReview('Set up a speech model in Settings > Models > Speech models.');
+    return false;
+  }
+  if (preview) {
+    const focused = await managedAppHasFocusedField(preview.owner, preview.viewId);
+    if (!current()) return false;
+    if (!focused) {
+      anywherePendingStart = null;
+      anywhereState = nextAnywhereState(anywhereState, {
+        type: 'refuse',
+        reason: 'capture-failed',
+      });
+      return false;
+    }
+  }
+  anywherePreviewTarget = preview ?? null;
+  if (!anywhereCaptureWindow || anywhereCaptureWindow.isDestroyed()) {
+    anywhereCaptureReady = false;
+    anywhereCaptureOpening ??= createAnywhereWindow('dictation-capture').finally(() => {
+      anywhereCaptureOpening = null;
+    });
+    const opened = await anywhereCaptureOpening.catch(() => null);
+    if (!current()) {
+      if (opened && !opened.isDestroyed()) closeCaptureAfterIdle();
+      return false;
+    }
+    anywhereCaptureWindow = opened;
+  }
+  if (!current()) return false;
+  if (!anywhereCaptureWindow) {
+    anywhereState = nextAnywhereState(anywhereState, { type: 'refuse', reason: 'capture-failed' });
+    return false;
+  }
+  const captureWindow = anywhereCaptureWindow;
+  const captureDaemon = windowDaemons.get(captureWindow.id);
+  if (
+    !captureDaemon ||
+    captureDaemon.result.managed !== backend.managed ||
+    (!backend.managed && effectiveBackendUrl(captureDaemon.baseUrl) !== backend.url)
+  ) {
+    if (current()) cancelAnywhere();
+    return false;
+  }
+  if (consentKey) await acknowledgeAnywhereViewer(captureWindow, consentKey);
+  if (
+    !current() ||
+    !sameAnywhereBackend(backend) ||
+    captureWindow.isDestroyed() ||
+    !laptopDictationCaptureAllowed()
+  ) {
+    if (current()) cancelAnywhere();
+    return false;
+  }
+  anywhereCaptureBlocker = powerSaveBlocker.start('prevent-app-suspension');
+  sendAnywhereStartIfReady();
+  updateTrayMenu(getUpdateAvailable());
+  return true;
+}
+
+function cancelAnywhere() {
+  anywhereGeneration += 1;
+  anywhereCaptureWindow?.webContents.send('dictation:anywhere:capture-command', { type: 'cancel' });
+  anywhereState = nextAnywhereState(anywhereState, { type: 'cancel' });
+  anywherePreviewTarget = null;
+  anywherePendingStart = null;
+  anywhereStartSentGeneration = null;
+  stopAnywherePowerBlocker();
+  closeCaptureAfterIdle();
+  updateTrayMenu(getUpdateAvailable());
+}
+
+// The two other windows a dictation IPC handler answers, each the main frame of a window
+// `createAnywhereWindow` opened itself: the hidden capture window and the review card. Every
+// `dictation:*` handler's first statement is one of these checks or `isDictationSender`
+// (`components/dictation/dictationSourceGuards.test.ts`).
+function isDictationCaptureSender(
+  event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent
+): boolean {
+  return Boolean(
+    anywhereCaptureWindow &&
+    !anywhereCaptureWindow.isDestroyed() &&
+    event.sender === anywhereCaptureWindow.webContents &&
+    event.senderFrame === event.sender.mainFrame
+  );
+}
+
+function isDictationReviewSender(
+  event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent
+): boolean {
+  return Boolean(
+    anywhereReviewWindow &&
+    !anywhereReviewWindow.isDestroyed() &&
+    event.sender === anywhereReviewWindow.webContents &&
+    event.senderFrame === event.sender.mainFrame
+  );
+}
+
+function sendAnywhereStartIfReady() {
+  const pending = anywherePendingStart;
+  if (
+    !anywhereCaptureReady ||
+    !anywhereCaptureWindow ||
+    !pending ||
+    anywhereCaptureBlocker === null ||
+    pending.generation !== anywhereGeneration ||
+    !switchKeepsStart(
+      pending.source,
+      pending.settingsRevision,
+      anywhereSettingsRevision,
+      anywhereSettings.enabled && !anywhereOffRequested
+    ) ||
+    anywhereStartSentGeneration === pending.generation ||
+    (anywhereState.phase !== 'arming' && anywhereState.phase !== 'transcribing')
+  )
+    return;
+  anywhereStartSentGeneration = pending.generation;
+  const { source, privateConfirmed, generation, pressedAtEpochMs } = pending;
+  anywhereCaptureWindow.webContents.send('dictation:anywhere:capture-command', {
+    type: 'start',
+    source,
+    privateConfirmed,
+    generation,
+    pressedAtEpochMs,
+  });
+  if (anywhereState.phase === 'transcribing')
+    anywhereCaptureWindow.webContents.send('dictation:anywhere:capture-command', { type: 'stop' });
+}
+
+ipcMain.on('dictation:anywhere:capture-ready', (event) => {
+  if (!isDictationCaptureSender(event)) return;
+  anywhereCaptureReady = true;
+  sendAnywhereStartIfReady();
+});
+
+ipcMain.on('dictation:anywhere:capture-reply', (event, reply: unknown) => {
+  if (!isDictationCaptureSender(event)) return;
+  if (!reply || typeof reply !== 'object') return;
+  const result = reply as Record<string, unknown>;
+  if (result.generation !== anywhereGeneration) return;
+  if (result.type === 'started') {
+    anywhereState = nextAnywhereState(anywhereState, { type: 'capture-ready' });
+  } else if (result.type === 'finished') {
+    stopAnywherePowerBlocker();
+    anywherePendingStart = null;
+    const transcript = result.transcript;
+    if (
+      !transcript ||
+      typeof transcript !== 'object' ||
+      typeof (transcript as { text?: unknown }).text !== 'string'
+    )
+      return;
+    const typed = transcript as Transcript;
+    if (anywherePreviewTarget && (typed.no_speech || !typed.text.trim())) {
+      anywherePreviewTarget = null;
+      notifyAnywhere('MSG-CLIPBOARD-NOTHING');
+    } else if (anywherePreviewTarget) {
+      const target = anywherePreviewTarget;
+      anywherePreviewTarget = null;
+      void insertIntoManagedAppFocusedField(target.owner, target.viewId, typed.text).then(
+        (inserted) => {
+          if (!inserted)
+            void showAnywhereReview(
+              "Click into the app's text field, then use Dictate into this app.",
+              typed.text
+            );
+        }
+      );
+    } else {
+      const outcome = clipboardOutcome(
+        typed,
+        (text) => clipboard.writeText(text),
+        () => clipboard.readText()
+      );
+      if (outcome.kind === 'copied') notifyAnywhere('MSG-CLIPBOARD-COPIED', outcome.words);
+      if (outcome.kind === 'nothing') notifyAnywhere('MSG-CLIPBOARD-NOTHING');
+      if (outcome.kind === 'echo') notifyAnywhere('MSG-CLIPBOARD-ECHO');
+      if (outcome.kind === 'old-backend') {
+        const host =
+          (anywhereCaptureWindow && windowDaemons.get(anywhereCaptureWindow.id)?.baseUrl) ||
+          'this computer';
+        void showAnywhereReview(
+          `The Biorouter service on ${host} is a version without local dictation. Update it to ${app.getVersion()} or later, or turn off Use external server in Settings > App.`
+        );
+      }
+      if (outcome.kind === 'review')
+        void showAnywhereReview(
+          'The clipboard did not keep the text. Copy it from this card.',
+          outcome.text
+        );
+    }
+    anywhereState = nextAnywhereState(anywhereState, { type: 'finish' });
+    closeCaptureAfterIdle();
+  } else if (result.type === 'failed') {
+    stopAnywherePowerBlocker();
+    anywherePendingStart = null;
+    anywherePreviewTarget = null;
+    anywhereState = nextAnywhereState(anywhereState, { type: 'refuse', reason: 'capture-failed' });
+    void showAnywhereReview('Biorouter could not finish dictation. Try again.');
+    closeCaptureAfterIdle();
+  } else if (result.type === 'cancelled') {
+    stopAnywherePowerBlocker();
+    anywherePendingStart = null;
+    anywhereState = nextAnywhereState(anywhereState, { type: 'cancel' });
+    closeCaptureAfterIdle();
+  }
+  updateTrayMenu(getUpdateAvailable());
+});
+
+ipcMain.handle('dictation:anywhere:get', async (event) => {
+  if (!isDictationSender(event)) return null;
+  return anywhereSnapshot();
+});
+
+ipcMain.handle('dictation:anywhere:set', async (event, raw: unknown) => {
+  if (!isDictationSender(event)) return null;
+  const requestRevision = ++anywhereSettingsRevision;
+  const next = parseAnywhereSettings(raw);
+  if (!next.enabled) {
+    anywhereOffRequested = true;
+    // Off ends a tray or shortcut dictation at once; a preview dictation goes on.
+    if (switchGovernsSource(anywhereState.source)) cancelAnywhere();
+    registerAnywhereShortcut();
+    updateTrayMenu(getUpdateAvailable());
+  }
+  if (next.enabled && !laptopDictationCaptureAllowed()) return anywhereSnapshot();
+  const enableBackend = next.enabled ? anywhereBackendIdentity() : null;
+  if (next.enabled && (!enableBackend || (await anywhereAvailability(enableBackend)) !== 'ready'))
+    return anywhereSnapshot();
+  const apply = async () => {
+    if (!currentAnywhereSettingsRequest(requestRevision, anywhereSettingsRevision))
+      return anywhereSnapshot();
+    const previous = anywhereSettings;
+    const previousOffRequested = anywhereOffRequested;
+    anywhereSettings = next;
+    if (next.enabled) anywhereOffRequested = false;
+    const shortcutRegistered = registerAnywhereShortcut();
+    const gnomeWayland =
+      process.platform === 'linux' &&
+      process.env.XDG_CURRENT_DESKTOP?.includes('GNOME') === true &&
+      process.env.XDG_SESSION_TYPE === 'wayland';
+    if (
+      next.enabled &&
+      !usableAnywhereTrigger(tray !== null, next.shortcut, gnomeWayland, shortcutRegistered)
+    ) {
+      anywhereSettings = previous;
+      anywhereOffRequested = previousOffRequested;
+      registerAnywhereShortcut();
+      return {
+        ...anywhereSnapshot(),
+        shortcutTaken: Boolean(next.shortcut && !shortcutRegistered),
+      };
+    }
+    try {
+      await writeAnywhereSettings(next);
+    } catch {
+      anywhereSettingsSaveFailed = true;
+      const safe = afterAnywhereSettingsWriteFailure(
+        previous,
+        previousOffRequested,
+        anywhereSettings,
+        anywhereOffRequested,
+        requestRevision,
+        anywhereSettingsRevision,
+        next.enabled
+      );
+      anywhereSettings = safe.settings;
+      anywhereOffRequested = safe.offRequested;
+      registerAnywhereShortcut();
+      if (
+        !next.enabled &&
+        currentAnywhereSettingsRequest(requestRevision, anywhereSettingsRevision)
+      ) {
+        anywhereState = nextAnywhereState(anywhereState, { type: 'disable' });
+        updateTrayMenu(getUpdateAvailable());
+      }
+      return anywhereSnapshot();
+    }
+    if (!currentAnywhereSettingsRequest(requestRevision, anywhereSettingsRevision)) {
+      anywhereSettings = { ...anywhereSettings, enabled: false };
+      anywhereOffRequested = true;
+      registerAnywhereShortcut();
+      return anywhereSnapshot();
+    }
+    if (next.enabled && process.platform === 'darwin')
+      void systemPreferences.askForMediaAccess('microphone');
+    anywhereState = nextAnywhereState(anywhereState, { type: next.enabled ? 'enable' : 'disable' });
+    updateTrayMenu(getUpdateAvailable());
+    return { ...anywhereSnapshot(), shortcutTaken: !shortcutRegistered };
+  };
+  const pending = anywhereSettingsQueue.then(apply);
+  anywhereSettingsQueue = pending.then(
+    () => undefined,
+    () => undefined
+  );
+  return await pending;
+});
+
+ipcMain.handle('dictation:anywhere:preview-focused', async (event, raw: unknown) => {
+  if (!isDictationSender(event)) return false;
+  if (!raw || typeof raw !== 'object') return false;
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const viewId = (raw as { viewId?: unknown }).viewId;
+  return Boolean(
+    owner && typeof viewId === 'string' && (await managedAppHasFocusedField(owner, viewId))
+  );
+});
+
+ipcMain.handle('dictation:anywhere:preview-start', async (event, raw: unknown) => {
+  if (!isDictationSender(event)) return false;
+  if (!raw || typeof raw !== 'object') return false;
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const { viewId, privateConfirmed } = raw as { viewId?: unknown; privateConfirmed?: unknown };
+  if (!owner || typeof viewId !== 'string' || typeof privateConfirmed !== 'boolean') return false;
+  return await startAnywhere('preview', privateConfirmed, { owner, viewId });
+});
+
+ipcMain.handle('dictation:anywhere:review-get', (event) => {
+  if (!isDictationReviewSender(event)) return null;
+  return anywhereReviewPayload();
+});
+
+ipcMain.handle('dictation:anywhere:private-choice', (event, include: unknown) => {
+  if (!isDictationReviewSender(event)) return false;
+  if (!anywhereReviewPrivateChoice || typeof include !== 'boolean') return false;
+  const resolve = anywhereReviewPrivateChoice;
+  anywhereReviewPrivateChoice = null;
+  anywhereReviewWindow?.hide();
+  resolve(include);
+  return true;
+});
+
+ipcMain.handle('dictation:anywhere:review-copy', (event) => {
+  if (!isDictationReviewSender(event)) return false;
+  const text = reviewTextBeforeExpiry(anywhereReviewText, anywhereReviewExpiresAt, Date.now());
+  if (!text) {
+    if (anywhereReviewText) clearAnywhereReview();
+    return false;
+  }
+  clipboard.writeText(text);
+  return clipboard.readText() === text;
+});
+
 ipcMain.handle('dictation:mic-status', (event) => {
-  if (!isDictationSender(event)) return 'unknown';
+  if (!isDictationSender(event) && !isDictationCaptureSender(event)) return 'unknown';
   if (process.platform !== 'darwin' && process.platform !== 'win32') return 'unknown';
   try {
     return normalizeMicAccessStatus(
@@ -3555,7 +4519,7 @@ ipcMain.handle('dictation:mic-status', (event) => {
 // macOS asks only while the status is `not-determined`, so the prompt comes from
 // the person's first click on a microphone and names Biorouter.
 ipcMain.handle('dictation:mic-request', async (event) => {
-  if (!isDictationSender(event)) return false;
+  if (!isDictationSender(event) && !isDictationCaptureSender(event)) return false;
   if (process.platform !== 'darwin') return true;
   const status = systemPreferences.getMediaAccessStatus('microphone');
   if (status === 'granted') return true;
@@ -6489,6 +7453,17 @@ function ensureDeepLinkHandler() {
  * consulted. That was measured for `utils/embeddedBrowser.ts`'s partition and
  * is the same fact that left the app's own windows unguarded here.
  */
+function laptopDictationPolicy(): { enabled: boolean; capture: boolean } {
+  if (!loadSettings().externalBiorouterd?.enabled && !process.env.BIOROUTER_EXTERNAL_BACKEND)
+    return { enabled: true, capture: true };
+  return readLaptopDictationPolicy();
+}
+
+function laptopDictationCaptureAllowed(): boolean {
+  const policy = laptopDictationPolicy();
+  return policy.enabled && policy.capture;
+}
+
 function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
   ses.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) =>
     isAllowedRendererPermission(
@@ -6498,7 +7473,8 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
       [details.mediaType ?? 'unknown'],
       // The microphone goes to the main frame only (DD-65): no artifact or
       // preview frame may ever hold it.
-      details.isMainFrame
+      details.isMainFrame,
+      laptopDictationCaptureAllowed()
     )
   );
   ses.setPermissionRequestHandler((_webContents, permission, callback, details) => {
@@ -6509,7 +7485,8 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
         details.requestingUrl,
         appEntryUrl,
         mediaTypes,
-        details.isMainFrame
+        details.isMainFrame,
+        laptopDictationCaptureAllowed()
       )
     );
   });
@@ -6715,6 +7692,8 @@ async function appMain() {
 
   // A locked screen ends any dictation: every window stops and inserts what it heard.
   powerMonitor.on('lock-screen', () => {
+    if (anywhereState.phase === 'arming' && anywhereStartSentGeneration !== anywhereGeneration)
+      cancelAnywhere();
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('dictation:lock-screen');
     }
@@ -6736,6 +7715,26 @@ async function appMain() {
     console.error('Error registering focus window hotkey:', e);
   }
 
+  setDictationAnywhereTrayActions({
+    state: () => ({
+      enabled: anywhereSettings.enabled && laptopDictationCaptureAllowed(),
+      phase: anywhereState.phase,
+      privateAvailable: Boolean(getUserActionKey(loadSettings())),
+    }),
+    start: () => void startAnywhere('tray', false),
+    openSettings: () => void openAnywhereSettings(),
+    privateStart: () =>
+      void promptAnywherePrivateTerms().then((include) => {
+        if (include !== null) void startAnywhere('tray', include);
+      }),
+    stop: () => void startAnywhere('tray', false),
+    cancel: cancelAnywhere,
+  });
+  await readAnywhereSettings();
+  anywhereState = nextAnywhereState(anywhereState, {
+    type: anywhereSettings.enabled ? 'enable' : 'disable',
+  });
+  registerAnywhereShortcut();
   // Create tray if enabled in settings
   const settings = loadSettings();
   if (settings.showMenuBarIcon) {
@@ -7509,6 +8508,9 @@ async function getAllowList(): Promise<string[]> {
 }
 
 app.on('will-quit', async () => {
+  clearAnywhereReview();
+  stopAnywherePowerBlocker();
+  if (anywhereShortcut) globalShortcut.unregister(anywhereShortcut);
   for (const [windowId, blockerId] of windowPowerSaveBlockers.entries()) {
     try {
       powerSaveBlocker.stop(blockerId);

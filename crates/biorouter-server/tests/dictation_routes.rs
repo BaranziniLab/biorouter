@@ -62,6 +62,93 @@ fn dictate_with_the_offline_fixtures() {
     );
 }
 
+/// A child of this test binary can speak the worker frame protocol for the one
+/// nonempty response oracle. It runs only with the test-local marker and worker args.
+#[ctor::ctor]
+fn synthetic_result_worker() {
+    if std::env::var_os("BIOROUTER_PR28_SYNTH_WORKER").is_none()
+        || std::env::args_os().nth(1).as_deref()
+            != Some(std::ffi::OsStr::new(
+                biorouter_dictation::worker::WORKER_MARKER,
+            ))
+    {
+        return;
+    }
+    use biorouter_dictation::protocol::{
+        self, BiasReady, CpuFlags, FromWorker, Hello, Loaded, SegmentText, Segments, Timings,
+        ToWorker, TranscribeResult,
+    };
+    let mut input = std::io::stdin().lock();
+    let mut output = std::io::stdout().lock();
+    let send = |output: &mut std::io::StdoutLock<'_>, message: FromWorker| {
+        protocol::write_frame_blocking(output, &protocol::to_json(&message), &[])
+            .expect("synthetic worker frame");
+    };
+    send(
+        &mut output,
+        FromWorker::Hello(Hello {
+            protocol: protocol::PROTOCOL_VERSION,
+            whisper: biorouter_dictation::build_info::WHISPER_COMMIT.into(),
+            ggml: biorouter_dictation::build_info::GGML_VERSION.into(),
+            backends: vec!["cpu".into()],
+            cpu: CpuFlags::from(biorouter_dictation::cpu::detect()),
+            isa: biorouter_dictation::build_info::ISA.into(),
+            system_info: String::new(),
+        }),
+    );
+    while let Ok(frame) = protocol::read_frame_blocking(&mut input) {
+        let message: ToWorker = serde_json::from_slice(&frame.json).expect("worker request");
+        match message {
+            ToWorker::Load(_) => send(
+                &mut output,
+                FromWorker::Loaded(Loaded {
+                    load_ms: 0,
+                    warmup_ms: 0,
+                    backend: "cpu".into(),
+                    device: None,
+                    rss_bytes: None,
+                    n_vocab: 51_866,
+                    multilingual: true,
+                }),
+            ),
+            ToWorker::SetBias(bias) => send(
+                &mut output,
+                FromWorker::BiasReady(BiasReady {
+                    revision: bias.revision,
+                    scope: bias.scope,
+                    nodes: 0,
+                    build_ms: 0,
+                }),
+            ),
+            ToWorker::Transcribe(request) => send(
+                &mut output,
+                FromWorker::Result(TranscribeResult {
+                    id: request.id,
+                    text: "Stanfordine".into(),
+                    segments: vec![SegmentText {
+                        t0_ms: 0,
+                        t1_ms: 800,
+                        text: "Stanfordine".into(),
+                    }],
+                    prompt_terms_used: 0,
+                    timings: Timings::default(),
+                    language: None,
+                }),
+            ),
+            ToWorker::VadSegments(request) => send(
+                &mut output,
+                FromWorker::Segments(Segments {
+                    id: request.id,
+                    spans: Vec::new(),
+                }),
+            ),
+            ToWorker::Cancel { .. } => {}
+            ToWorker::Shutdown | ToWorker::Unknown => break,
+        }
+    }
+    std::process::exit(0);
+}
+
 /// Whether this build and this processor can run the engine; a build without one answers
 /// `409 notCompiled`, which `dictation_policy_routes.rs` covers.
 fn engine_runs() -> bool {
@@ -1444,6 +1531,92 @@ async fn private_terms_reach_crew_and_outside_targets_only_when_the_person_inclu
             );
         }
     }
+}
+
+/// P-6: the external stream's filtered set never classifies an excluded private
+/// term, even when a secret-only caller asks to include private terms.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn external_dictionary_only_marker_does_not_reveal_unproven_private_terms() {
+    if !engine_runs() {
+        return;
+    }
+    drop(EmptiedStore);
+    let _emptied = EmptiedStore;
+    let worker = std::env::current_exe().expect("test worker path");
+    let _worker_env = env_lock::lock_env([
+        (
+            biorouter::dictation::service::WORKER_ENV,
+            Some(worker.to_str().expect("worker path UTF-8")),
+        ),
+        ("BIOROUTER_PR28_SYNTH_WORKER", Some("1")),
+    ]);
+    let state = state().await;
+    let app = app(&state);
+    open_store()
+        .write(|file| {
+            file.add(
+                store::NewTerm::person("EPAS1", store::EntryTier::Public),
+                store::Reach::All,
+                store::schema::now(),
+            )
+        })
+        .expect("public row");
+    add_institution_row("Stanfordine", "stanford");
+    for include_private in [false, true] {
+        let mut requested = request("external");
+        if include_private {
+            requested["include_private_terms"] = json!(true);
+        }
+        let id = open(&app, Caller::SecretOnly, requested).await;
+        let started = Instant::now();
+        while state
+            .dictation
+            .dictionary_only_for_stream(&id, "Stanfordine")
+            .is_none()
+        {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "target was never decided"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            state
+                .dictation
+                .dictionary_only_for_stream(&id, "Stanfordine"),
+            Some(false)
+        );
+        assert_eq!(
+            state.dictation.dictionary_only_for_stream(&id, "EPAS1"),
+            Some(true)
+        );
+        let terms = state.dictation.eligible_terms(&id).expect("filtered set");
+        assert!(terms.iter().any(|term| term == "EPAS1"));
+        assert!(!terms.iter().any(|term| term == "Stanfordine"));
+        delete(&app, &id).await;
+    }
+    let plain = dictate(
+        &app,
+        Caller::SecretOnly,
+        request("external"),
+        near_silence(1.0),
+    )
+    .await;
+    let mut claimed = request("external");
+    claimed["include_private_terms"] = json!(true);
+    let with_claim = dictate(&app, Caller::SecretOnly, claimed, near_silence(1.0)).await;
+    assert_eq!(
+        plain["text"], "Stanfordine",
+        "the test worker made a nonempty final response"
+    );
+    assert_eq!(plain["bias_scope"], "public");
+    assert_eq!(plain["dictionary_only"], false);
+    assert_eq!(plain["no_speech"], false);
+    assert_eq!(untimed(&plain), untimed(&with_claim));
+    let answer = serde_json::to_string(&plain).expect("transcript JSON");
+    assert!(!answer.contains("eligible_entries"));
+    assert!(!answer.contains("private_terms"));
 }
 
 /// Adds a private row for `written` that names `institution`, as one written in a chat

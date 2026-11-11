@@ -305,6 +305,10 @@ pub struct DictationTranscript {
     pub bias_scope: DictationBiasScope,
     pub retried: Option<DictationTranscriptRetry>,
     pub no_speech: bool,
+    /// External target only: final corrected text consists entirely of complete terms
+    /// from this stream's filtered dictionary set. No entries or counts leave the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dictionary_only: Option<bool>,
     pub timings: DictationTranscriptTimings,
 }
 
@@ -568,6 +572,17 @@ impl DictationStreams {
                 .map(|entry| entry.written.clone())
                 .collect(),
         )
+    }
+
+    /// Test hook for a chosen final text against the exact filtered set bound to a stream.
+    /// No HTTP route exposes this result or its entries, and the daemon's own binary, which
+    /// compiles this module privately, never calls it.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub fn dictionary_only_for_stream(&self, id: &str, text: &str) -> Option<bool> {
+        let stream = self.get(id)?;
+        let dictionary = stream.dictionary.get()?;
+        Some(dictionary.eligible.dictionary_only(text))
     }
 
     /// Where stream `id`'s segmenter and decoder stand; `None` for no such stream. For
@@ -901,6 +916,7 @@ fn wipe_transcript(transcript: &mut DictationTranscript) {
     for segment in &mut transcript.segments {
         segment.text.zeroize();
     }
+    transcript.dictionary_only = None;
 }
 
 /// Grows `buf` for `more` samples without leaving a copy of the audio behind: the old
@@ -1438,6 +1454,8 @@ async fn decode(
         .map_or(0, |at| at.elapsed().as_millis() as u64);
     let transcript = DictationTranscript {
         no_speech: raw_text.is_empty(),
+        dictionary_only: (stream.target_kind == DictationTargetKind::External)
+            .then(|| dictionary.eligible.dictionary_only(&text)),
         text,
         raw_text,
         changes,
@@ -3186,6 +3204,7 @@ mod tests {
             bias_scope: DictationBiasScope::Private,
             retried: None,
             no_speech: false,
+            dictionary_only: Some(true),
             timings: DictationTranscriptTimings {
                 segments: 1,
                 wait_ms: 0,
@@ -3197,6 +3216,7 @@ mod tests {
         assert!(transcript.text.is_empty() && transcript.raw_text.is_empty());
         assert!(transcript.changes[0].from.is_empty() && transcript.changes[0].to.is_empty());
         assert!(transcript.segments[0].text.is_empty());
+        assert!(transcript.dictionary_only.is_none());
     }
 
     /// DD-93: a log line names a stream by a digest of its id, never the id that opens it.

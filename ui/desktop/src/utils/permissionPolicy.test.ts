@@ -360,3 +360,19 @@ describe('renderer clipboard permissions', () => {
     }
   });
 });
+
+describe('external backend laptop managed policy', () => {
+  it('refuses only media when laptop capture is disabled', () => {
+    const appUrl = new URL('file:///Applications/Biorouter.app/Contents/Resources/app/index.html');
+    const renderer = appUrl.href;
+    expect(isAllowedRendererPermission('media', renderer, appUrl, ['audio'], true, false)).toBe(
+      false
+    );
+    expect(
+      isAllowedRendererPermission('clipboard-sanitized-write', renderer, appUrl, [], true, false)
+    ).toBe(true);
+    expect(isAllowedRendererPermission('media', renderer, appUrl, ['audio'], true, true)).toBe(
+      true
+    );
+  });
+});

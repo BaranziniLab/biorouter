@@ -5,6 +5,7 @@ import { ManagedPolicyNote } from '../../privacy/ManagedPolicyNote';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
+import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { Progress } from '../../ui/progress';
 import { RowActions, RowContextMenu, type RowActionItem } from '../../ui/row-actions';
@@ -12,6 +13,7 @@ import { SettingRow, SettingSection, settingLabelId } from '../../ui/setting-row
 import { Skeleton } from '../../ui/skeleton';
 import { Spinner } from '../../ui/spinner';
 import { StatusDot } from '../../ui/status-dot';
+import { Switch } from '../../ui/switch';
 import { startCapture, type Capture } from '../../dictation/capture';
 import { DICTATION_ACTIONS, DICTATION_LABELS, dictationMessage } from '../../dictation/copy';
 import type { DictationStatus } from '../../dictation/dictationApi';
@@ -64,6 +66,7 @@ import {
 } from './speechModelStore';
 import './models.css';
 import './speechModels.css';
+import { DEFAULT_ANYWHERE_SHORTCUT } from '../../../utils/dictationAnywhere';
 
 /**
  * **Settings > Models > Speech models** (DD-66, PR-18): install, use, remove, update and cancel
@@ -112,6 +115,10 @@ function SpeechModelSectionBody() {
       help={dictationMessage('MSG-SETTINGS-HELP')}
       data-testid="speech-models-section"
     >
+      <AnywhereSettingsRows
+        available={Boolean(status?.policy.enabled.allowed && status.policy.capture.allowed)}
+        modelReady={Boolean(status && hasUsableModel(status))}
+      />
       {status ? (
         <SpeechModelRows status={status} />
       ) : load === 'absent' ? (
@@ -192,6 +199,12 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
       <Note tone="neutral" testId="speech-privacy-line" className="mb-2">
         {disclosure(status)}
       </Note>
+      {dictationDaemonPlace(status).kind === 'external-backend' &&
+        status.install.reason === dictationMessage('MSG-INSTALL-AGENT') && (
+          <Note tone="warning" role="status" testId="remote-no-key">
+            {dictationMessage('MSG-REMOTE-NO-KEY', { host: status.host })}
+          </Note>
+        )}
       <ManagedPolicyNote policy={status.policy} className="mb-2" />
       {(!hasUsableModel(status) || activation.needsSave) &&
       status.policy.dictionary.allowed !== false &&
@@ -971,5 +984,141 @@ function EditDictionaryRow({ status }: { status: DictationStatus }) {
         {DICTIONARY_LABELS.editYourDictionary}
       </Button>
     </SettingRow>
+  );
+}
+
+type AnywhereSnapshot = {
+  enabled: boolean;
+  shortcut: string | null;
+  disclosureShown: boolean;
+  tray: boolean;
+  gnomeWayland: boolean;
+  shortcutTaken?: boolean;
+  saveFailed?: boolean;
+  captureAllowed: boolean;
+  capturePolicyReason: 'MSG-POLICY' | 'MSG-POLICY-CAPTURE';
+};
+
+function AnywhereSettingsRows({
+  available,
+  modelReady,
+}: {
+  available: boolean;
+  modelReady: boolean;
+}) {
+  const [snapshot, setSnapshot] = useState<AnywhereSnapshot | null>(null);
+  const [shortcut, setShortcut] = useState('');
+  useEffect(() => {
+    // A page with no Electron bridge (a test, or a browser surface) has no such row.
+    void window.electron?.dictationAnywhereGet?.().then((value) => {
+      if (!value) return;
+      setSnapshot(value);
+      setShortcut(value.shortcut ?? '');
+    });
+  }, []);
+  if (!snapshot) return null;
+  const change = async (
+    enabled: boolean,
+    nextShortcut: string | null,
+    disclosureShown = snapshot.disclosureShown
+  ) => {
+    const next = await window.electron?.dictationAnywhereSet?.({
+      enabled,
+      shortcut: nextShortcut,
+      disclosureShown,
+    });
+    if (next) setSnapshot(next);
+  };
+  const enable = async () => {
+    if (!available || !modelReady || snapshot.captureAllowed === false) return;
+    if (!snapshot.disclosureShown) {
+      const result = await window.electron.showMessageBox({
+        type: 'info',
+        title: DICTATION_ACTIONS.dictateIntoOtherApps,
+        message: dictationMessage('MSG-CLIPBOARD-EXPLAIN'),
+        buttons: ['Turn on', 'Cancel'],
+        defaultId: 1,
+      });
+      if (result.response !== 0) return;
+    }
+    await change(
+      true,
+      snapshot.shortcut || (snapshot.tray ? null : DEFAULT_ANYWHERE_SHORTCUT),
+      true
+    );
+  };
+  return (
+    <>
+      {/* Applies now, so it is the row's right-hand switch (design.md 9.7). The first turn-on
+          still asks through the native message box; until it is answered yes, `checked` stays
+          false and the switch stays off. */}
+      <SettingRow
+        label={DICTATION_ACTIONS.dictateIntoOtherApps}
+        help={dictationMessage('MSG-CLIPBOARD-EXPLAIN')}
+        status={
+          snapshot.captureAllowed === false ? (
+            <span role="status" className="text-text-warning">
+              {dictationMessage(snapshot.capturePolicyReason)}
+            </span>
+          ) : undefined
+        }
+      >
+        <Switch
+          checked={snapshot.enabled}
+          disabled={
+            !available ||
+            !modelReady ||
+            snapshot.captureAllowed === false ||
+            (snapshot.gnomeWayland && !snapshot.tray)
+          }
+          onCheckedChange={(checked) =>
+            void (checked ? enable() : change(false, snapshot.shortcut))
+          }
+        />
+      </SettingRow>
+      {snapshot.enabled && (
+        <SettingRow
+          label="Dictation shortcut"
+          help="Turn the shortcut on to start and stop Dictate to clipboard from another app."
+        >
+          <Input
+            machine
+            aria-label="Dictation shortcut"
+            value={shortcut}
+            disabled={snapshot.gnomeWayland}
+            placeholder={DEFAULT_ANYWHERE_SHORTCUT}
+            onChange={(event) => setShortcut(event.target.value)}
+            onBlur={() => void change(true, shortcut || null)}
+          />
+        </SettingRow>
+      )}
+      {snapshot.saveFailed && (
+        <Note tone="warning" role="alert">
+          {snapshot.enabled
+            ? 'Could not save dictation settings. The previous setting remains active.'
+            : 'Could not save dictation settings. Dictation is off for this session; check this setting after restarting Biorouter.'}
+        </Note>
+      )}
+      {snapshot.shortcutTaken && (
+        <Note tone="warning" role="status">
+          {dictationMessage('MSG-SHORTCUT-TAKEN', {
+            shortcut: shortcut || DEFAULT_ANYWHERE_SHORTCUT,
+          })}
+        </Note>
+      )}
+      {!snapshot.tray && (
+        <Note tone="warning" role="status">
+          {dictationMessage('MSG-NO-TRAY')}
+        </Note>
+      )}
+      {snapshot.gnomeWayland && (
+        <Note tone="warning" role="status">
+          {dictationMessage('MSG-GNOME')}
+        </Note>
+      )}
+      {(window.electron.platform === 'win32' || window.electron.platform === 'linux') && (
+        <Note tone="info">{dictationMessage('MSG-WINDOW-OPEN')}</Note>
+      )}
+    </>
   );
 }

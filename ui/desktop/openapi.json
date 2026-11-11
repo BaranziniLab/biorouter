@@ -15021,6 +15021,11 @@
               "$ref": "#/components/schemas/DictationTranscriptChange"
             }
           },
+          "dictionary_only": {
+            "type": "boolean",
+            "description": "External target only: final corrected text consists entirely of complete terms\nfrom this stream's filtered dictionary set. No entries or counts leave the daemon.",
+            "nullable": true
+          },
           "elapsed_ms": {
             "type": "integer",
             "format": "int64",

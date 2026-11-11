@@ -565,7 +565,9 @@ export function AppInner() {
       }
     };
 
-    return window.electron.on('set-view', handleSetView);
+    const remove = window.electron.on('set-view', handleSetView);
+    window.electron.dictationAnywhereSettingsReady?.();
+    return remove;
   }, [navigate]);
 
   // Cmd+W (Ctrl+W off mac). Sent by the File menu's "Close Tab" item — see

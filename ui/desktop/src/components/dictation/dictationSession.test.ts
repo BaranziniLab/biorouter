@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { webcrypto } from 'node:crypto';
 import type { Anchor } from '../../utils/dictatedText';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import { BUNDLED_BIOROUTER_VERSION } from '../../utils/biorouterVersion';
 import type { Capture, CaptureOptions } from './capture';
 import type { DictationStatus, StreamRequest, Transcript } from './dictationApi';
 import type { DictationStatusSnapshot, PhaseDecision } from './dictationStore';
+import { resetDictationStoreForTests, readDictationViewer } from './dictationStore';
 import {
   anchorOutsideWord,
   attachDictationComposer,
@@ -289,6 +291,7 @@ beforeEach(() => {
 afterEach(() => {
   delete document.documentElement.dataset.biorouterSurface;
   resetDictationSessionForTests();
+  resetDictationStoreForTests();
   resetPrivateDraftsForTests();
   document.body.innerHTML = '';
   vi.restoreAllMocks();
@@ -1271,5 +1274,97 @@ describe('where the card says transcription happened', () => {
     expect(text).toContain('The Biorouter service on 127.0.0.1:4567 is');
     expect(text).toContain(`Update it to ${BUNDLED_BIOROUTER_VERSION} or later`);
     expect(text).not.toMatch(/<[^<>]+>/);
+  });
+});
+
+describe('S17 plain HTTP confirmation', () => {
+  beforeEach(() => vi.stubGlobal('crypto', webcrypto));
+  afterEach(() => vi.unstubAllGlobals());
+  const remote = (url = 'http://lab.example:8765') => {
+    window.localStorage.clear();
+    resetDictationStoreForTests();
+    Object.assign(window, {
+      appConfig: {
+        get: (key: string) =>
+          key === 'BIOROUTER_LOCAL_BACKEND'
+            ? false
+            : key === 'BIOROUTER_API_HOST'
+              ? url
+              : undefined,
+      },
+    });
+  };
+
+  it('does not open capture when the person cancels', async () => {
+    remote();
+    window.electron.showMessageBox = vi.fn(async () => ({ response: 1 }));
+    composer('tab:a');
+    await expect(
+      startDictation({ key: 'tab:a', target: { target_kind: 'chat' } })
+    ).resolves.toEqual({ kind: 'cancelled' });
+    expect(captures).toHaveLength(0);
+    expect(streams).toHaveLength(0);
+    expect(readDictationViewer().ackHosts).toEqual([]);
+  });
+
+  it('does not capture after cancel or detach while Continue is pending', async () => {
+    for (const invalidate of ['cancel', 'detach'] as const) {
+      remote();
+      let continuePrompt: (value: { response: number }) => void = () => {};
+      window.electron.showMessageBox = vi.fn(
+        () =>
+          new Promise<{ response: number }>((resolve) => {
+            continuePrompt = resolve;
+          })
+      );
+      const mounted = composer('tab:a');
+      const started = startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+      await vi.waitFor(() => expect(window.electron.showMessageBox).toHaveBeenCalledTimes(1));
+      if (invalidate === 'cancel') cancelDictation('tab:a');
+      else mounted.detach();
+      continuePrompt({ response: 0 });
+      await expect(started).resolves.toEqual({ kind: 'cancelled' });
+      expect(captures).toHaveLength(0);
+      expect(streams).toHaveLength(0);
+      expect(readDictationViewer().ackHosts).toEqual([]);
+    }
+  });
+
+  it('does not capture or persist consent if the backend query changes during the prompt', async () => {
+    let url = 'http://lab.example:8765/?tenant=alpha';
+    remote(url);
+    window.appConfig.get = (key: string) =>
+      key === 'BIOROUTER_LOCAL_BACKEND' ? false : key === 'BIOROUTER_API_HOST' ? url : undefined;
+    let continuePrompt: (value: { response: number }) => void = () => {};
+    window.electron.showMessageBox = vi.fn(
+      () =>
+        new Promise<{ response: number }>((resolve) => {
+          continuePrompt = resolve;
+        })
+    );
+    composer('tab:a');
+    const started = startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+    await vi.waitFor(() => expect(window.electron.showMessageBox).toHaveBeenCalledTimes(1));
+    url = 'http://lab.example:8765/?tenant=beta';
+    continuePrompt({ response: 0 });
+    await expect(started).resolves.toEqual({ kind: 'cancelled' });
+    expect(captures).toHaveLength(0);
+    expect(readDictationViewer().ackHosts).toEqual([]);
+    window.electron.showMessageBox = vi.fn(async () => ({ response: 0 }));
+    await startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+    expect(window.electron.showMessageBox).toHaveBeenCalledTimes(1);
+    expect(captures).toHaveLength(1);
+    expect(readDictationViewer().ackHosts).toHaveLength(1);
+  });
+
+  it('records one acknowledgement for this URL before capture', async () => {
+    remote();
+    const ask = vi.fn(async () => ({ response: 0 }));
+    window.electron.showMessageBox = ask;
+    composer('tab:a');
+    await startDictation({ key: 'tab:a', target: { target_kind: 'chat' } });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(captures).toHaveLength(1);
+    expect(readDictationViewer().ackHosts[0]).toMatch(/^remote-http:sha256:[0-9a-f]{64}$/);
   });
 });

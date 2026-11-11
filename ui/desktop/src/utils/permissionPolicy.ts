@@ -122,11 +122,13 @@ export function isAllowedRendererPermission(
   requestingUrl: string,
   appUrl: URL,
   mediaTypes: ReadonlyArray<string>,
-  isMainFrame: boolean
+  isMainFrame: boolean,
+  laptopCaptureAllowed = true
 ): boolean {
   if (permission === 'clipboard-sanitized-write') return isAppOrigin(requestingUrl, appUrl);
   return (
     permission === 'media' &&
+    laptopCaptureAllowed &&
     isMainFrame === true &&
     mediaTypes.length > 0 &&
     mediaTypes.every((type) => type === 'audio') &&

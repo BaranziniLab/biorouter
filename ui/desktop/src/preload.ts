@@ -346,6 +346,67 @@ type ElectronAPI = {
   dictationMicRequest?: () => Promise<boolean>;
   dictationOpenMicSettings?: () => Promise<boolean>;
   dictationShowModelsFolder?: (folder: string) => Promise<boolean>;
+  dictationAnywhereSettingsReady?: () => void;
+  dictationAnywhereGet?: () => Promise<{
+    enabled: boolean;
+    shortcut: string | null;
+    disclosureShown: boolean;
+    tray: boolean;
+    gnomeWayland: boolean;
+    saveFailed?: boolean;
+    captureAllowed: boolean;
+    capturePolicyReason: 'MSG-POLICY' | 'MSG-POLICY-CAPTURE';
+  }>;
+  dictationAnywhereSet?: (value: {
+    enabled: boolean;
+    shortcut: string | null;
+    disclosureShown: boolean;
+  }) => Promise<{
+    enabled: boolean;
+    shortcut: string | null;
+    disclosureShown: boolean;
+    tray: boolean;
+    gnomeWayland: boolean;
+    shortcutTaken: boolean;
+    saveFailed?: boolean;
+    captureAllowed: boolean;
+    capturePolicyReason: 'MSG-POLICY' | 'MSG-POLICY-CAPTURE';
+  }>;
+  dictationAnywhereStartPreview?: (viewId: string, privateConfirmed: boolean) => Promise<boolean>;
+  dictationAnywherePreviewFocused?: (viewId: string) => Promise<boolean>;
+  dictationAnywhereCaptureReady?: () => void;
+  dictationAnywhereCaptureReply?: (reply: unknown) => void;
+  onDictationAnywhereCapture?: (
+    callback: (
+      command:
+        | {
+            type: 'start';
+            source: 'tray' | 'shortcut' | 'preview';
+            privateConfirmed: boolean;
+            generation: number;
+            pressedAtEpochMs: number;
+          }
+        | { type: 'stop' | 'cancel' }
+    ) => void
+  ) => () => void;
+  onDictationAnywhereReview?: (
+    callback: (review: {
+      text?: string;
+      message?: string;
+      confirmPrivate?: boolean;
+      expiresAt: number | null;
+      revision: number;
+    }) => void
+  ) => () => void;
+  dictationAnywhereReviewCopy?: () => Promise<boolean>;
+  dictationAnywhereReviewGet?: () => Promise<{
+    text?: string;
+    message: string;
+    confirmPrivate: boolean;
+    expiresAt: number | null;
+    revision: number;
+  } | null>;
+  dictationAnywherePrivateChoice?: (include: boolean) => Promise<boolean>;
   setDictationBusy?: (busy: boolean) => void;
   onDictationLockScreen?: (callback: () => void) => () => void;
   /**
@@ -832,6 +893,32 @@ const electronAPI: ElectronAPI = {
   dictationOpenMicSettings: () => ipcRenderer.invoke('dictation:open-mic-settings'),
   dictationShowModelsFolder: (folder: string) =>
     ipcRenderer.invoke('dictation:show-models-folder', folder),
+  dictationAnywhereSettingsReady: () => ipcRenderer.send('dictation:anywhere:settings-ready'),
+  dictationAnywhereGet: () => ipcRenderer.invoke('dictation:anywhere:get'),
+  dictationAnywhereSet: (value) => ipcRenderer.invoke('dictation:anywhere:set', value),
+  dictationAnywhereStartPreview: (viewId, privateConfirmed) =>
+    ipcRenderer.invoke('dictation:anywhere:preview-start', { viewId, privateConfirmed }),
+  dictationAnywherePreviewFocused: (viewId) =>
+    ipcRenderer.invoke('dictation:anywhere:preview-focused', { viewId }),
+  dictationAnywhereCaptureReady: () => ipcRenderer.send('dictation:anywhere:capture-ready'),
+  dictationAnywhereCaptureReply: (reply) =>
+    ipcRenderer.send('dictation:anywhere:capture-reply', reply),
+  onDictationAnywhereCapture: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, command: Parameters<typeof callback>[0]) =>
+      callback(command);
+    ipcRenderer.on('dictation:anywhere:capture-command', listener);
+    return () => ipcRenderer.removeListener('dictation:anywhere:capture-command', listener);
+  },
+  onDictationAnywhereReview: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, review: Parameters<typeof callback>[0]) =>
+      callback(review);
+    ipcRenderer.on('dictation:anywhere:review', listener);
+    return () => ipcRenderer.removeListener('dictation:anywhere:review', listener);
+  },
+  dictationAnywhereReviewCopy: () => ipcRenderer.invoke('dictation:anywhere:review-copy'),
+  dictationAnywhereReviewGet: () => ipcRenderer.invoke('dictation:anywhere:review-get'),
+  dictationAnywherePrivateChoice: (include) =>
+    ipcRenderer.invoke('dictation:anywhere:private-choice', include),
   setDictationBusy: (busy: boolean) => ipcRenderer.send('dictation:busy', busy === true),
   onDictationLockScreen: (callback: () => void) => {
     const listener = () => callback();

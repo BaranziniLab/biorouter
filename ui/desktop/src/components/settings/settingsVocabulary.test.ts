@@ -358,10 +358,8 @@ describe('the settings vocabulary', () => {
    * (rule 9) are not on it because none of them is a row description.
    */
   it('puts no description paragraph in a row', () => {
-    const NOT_YET_CONVERTED = new Set([
-      // Unmounted (spec §3.13 leaves it); it renders for nobody.
-      'settings/app/ExternalBackendSection.tsx',
-    ]);
+    // Empty since PR-29 mounted `settings/app/ExternalBackendSection.tsx` on `SettingRow`.
+    const NOT_YET_CONVERTED = new Set<string>([]);
     const paragraphs: string[] = [];
     for (const { rel, text } of FILES) {
       if (NOT_YET_CONVERTED.has(rel)) continue;

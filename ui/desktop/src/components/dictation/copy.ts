@@ -198,6 +198,10 @@ export const DICTATION_ACTIONS = {
   include: 'Include',
   publicTermsOnly: 'Public terms only',
   includePrivateTerms: 'Include my private terms',
+  /** The live preview's toolbar button for a Biorouter app's focused field (S15). */
+  dictateIntoThisApp: 'Dictate into this app',
+  /** The Settings switch for the tray item and the global shortcut (S18). */
+  dictateIntoOtherApps: 'Dictate into other apps',
   setUp: 'Set up dictation',
   showButton: 'Show the microphone button',
   reduceNoise: 'Reduce background noise',

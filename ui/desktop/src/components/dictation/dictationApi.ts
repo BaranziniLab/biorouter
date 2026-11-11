@@ -112,6 +112,8 @@ export interface Transcript {
   bias_scope: 'public' | 'private';
   retried: null | { reason: string };
   no_speech: boolean;
+  /** Present only for external streams from a backend with the clipboard echo guard. */
+  dictionary_only?: boolean;
   timings?: TranscriptTimings;
 }
 

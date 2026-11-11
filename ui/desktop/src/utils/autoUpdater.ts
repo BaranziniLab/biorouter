@@ -975,6 +975,21 @@ export function openUpdateSettings() {
 }
 
 // Export function to update tray menu
+type AnywhereTrayActions = {
+  state: () => { enabled: boolean; phase: string; privateAvailable: boolean };
+  start: () => void;
+  privateStart: () => void;
+  openSettings: () => void;
+  stop: () => void;
+  cancel: () => void;
+};
+let anywhereTrayActions: AnywhereTrayActions | null = null;
+
+export function setDictationAnywhereTrayActions(actions: AnywhereTrayActions) {
+  anywhereTrayActions = actions;
+  updateTrayMenu(updateAvailable);
+}
+
 export function updateTrayMenu(hasUpdate: boolean) {
   if (!trayRef) return;
 
@@ -1000,6 +1015,30 @@ export function updateTrayMenu(hasUpdate: boolean) {
   if (hasUpdate) {
     menuItems.push({ label: 'Update Available…', click: openUpdateSettings });
     menuItems.push({ type: 'separator' });
+  }
+
+  if (anywhereTrayActions) {
+    const state = anywhereTrayActions.state();
+    if (state.phase === 'recording' || state.phase === 'arming') {
+      menuItems.push(
+        { label: 'Stop and copy', click: anywhereTrayActions.stop },
+        { label: 'Cancel', click: anywhereTrayActions.cancel },
+        { type: 'separator' }
+      );
+    } else {
+      menuItems.push(
+        {
+          label: 'Dictate to clipboard',
+          click: state.enabled ? anywhereTrayActions.start : anywhereTrayActions.openSettings,
+        },
+        {
+          label: 'Include my private terms',
+          enabled: state.enabled && state.privateAvailable,
+          click: anywhereTrayActions.privateStart,
+        },
+        { type: 'separator' }
+      );
+    }
   }
 
   menuItems.push(

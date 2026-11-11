@@ -26,6 +26,11 @@ import { useSyncExternalStore } from 'react';
 import { getApiUrl } from '../../config';
 import { BUNDLED_BIOROUTER_VERSION } from '../../utils/biorouterVersion';
 import { isBrowserSurface } from '../../utils/surface';
+import {
+  addRemoteHttpAcknowledgement,
+  remoteConsentKey,
+  remoteHttpBackendUrl,
+} from '../../utils/remoteDictationHttp';
 import type { MicAccessStatus } from '../../utils/micPermissionSettings';
 import { captureSupported, prewarmCapture } from './capture';
 import { dictationMessage, type DictationMessageId } from './copy';
@@ -201,6 +206,40 @@ export function noteDictationModelsChanged(): void {
 // ── per viewer conveniences ──────────────────────────────────────────────────
 
 export const DICTATION_VIEWER_KEY = 'biorouter:dictation-viewer';
+
+/** One confirmation belongs to the backend URL, including its path, not to every host. */
+export const normalizeRemoteHttpBackendUrl = remoteHttpBackendUrl;
+
+export function remoteHttpBackend(): { url: string; host: string } | null {
+  if (isBrowserSurface()) return null;
+  try {
+    if (window.appConfig?.get('BIOROUTER_LOCAL_BACKEND') === true) return null;
+    return normalizeRemoteHttpBackendUrl(String(window.appConfig?.get('BIOROUTER_API_HOST') ?? ''));
+  } catch {
+    return null;
+  }
+}
+
+const acknowledgedHttpThisView = new Set<string>();
+
+export async function remoteHttpNeedsAcknowledgement(backend: {
+  url: string;
+  host: string;
+}): Promise<{ key: string; host: string } | null> {
+  const key = await remoteConsentKey(backend.url);
+  if (!key) return null;
+  return !acknowledgedHttpThisView.has(key) && !readDictationViewer().ackHosts.includes(key)
+    ? { key, host: backend.host }
+    : null;
+}
+
+export function acknowledgeRemoteHttp(key: string): void {
+  if (!/^remote-http:sha256:[0-9a-f]{64}$/.test(key)) return;
+  acknowledgedHttpThisView.add(key);
+  writeDictationViewer({
+    ackHosts: addRemoteHttpAcknowledgement(readDictationViewer().ackHosts, key),
+  });
+}
 
 /**
  * Per viewer settings in `localStorage`, never state that must persist: the
@@ -432,6 +471,7 @@ export function resolveDictationPhase(
 /** For tests: start over, optionally with a fake API. */
 export function resetDictationStoreForTests(fake?: DictationApi): void {
   snapshot = INITIAL;
+  acknowledgedHttpThisView.clear();
   listeners.clear();
   inflight = null;
   if (pollTimer) clearTimeout(pollTimer);

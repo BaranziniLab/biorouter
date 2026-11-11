@@ -16,6 +16,7 @@ import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { useTransientFlag } from '../../../hooks/useTransientFlag';
 import { aboutCopy, appearanceCopy, generalCopy } from './copy';
 import FeedbackLinks from './FeedbackLinks';
+import ExternalBackendSection from './ExternalBackendSection';
 
 /** Whether costs are shown; on unless the person turned them off (and on when storage is closed). */
 function readShowPricing(): boolean {
@@ -28,7 +29,8 @@ function readShowPricing(): boolean {
 
 /**
  * Settings > App, after Configuration and Privacy (the operator's order, kept by `SettingsView`):
- * General, Appearance, Usage, About, Danger zone (spec §3.13).
+ * General, Appearance, Usage, About (spec §3.13), then Server (PR-29, `ExternalBackendSection`)
+ * and the Danger zone, which stays last.
  *
  * Every row is one `SettingRow`: a label (which is also the control's accessible name, so a
  * person driving the app by voice says what they read), an optional InfoTip, and ONE control
@@ -214,6 +216,8 @@ export default function AppSettingsSection() {
           <FeedbackLinks />
         </SettingRow>
       </SettingSection>
+
+      <ExternalBackendSection />
 
       <ResetPanel
         onReset={(categories) => {

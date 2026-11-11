@@ -150,25 +150,187 @@ describe('test switches never reach a packaged app', () => {
   });
 });
 
+/** `text` with each run of white space as one space and none just inside a parenthesis. */
+const flat = (text: string): string =>
+  text.replace(/\s+/g, ' ').replace(/\( /g, '(').replace(/ \)/g, ')').trim();
+
+/** Every `ipcMain` registration whose channel is a string, in any quoting. */
+const IPC_REGISTRATION =
+  /ipcMain\.(handle|handleOnce|on|once|addListener)\(\s*(['"`])((?:(?!\2)[^\\])*)\2/g;
+
+/**
+ * What a handler registered at `match` does before anything else: its callback's parameter list
+ * and its first statement, both flattened, or null when the callback is not an arrow with a body.
+ */
+function handlerOpening(text: string, match: RegExpMatchArray) {
+  const afterChannel = match.index! + match[0].length;
+  const arrow = text.indexOf('=> {', afterChannel);
+  if (arrow < 0) return null;
+  const end = text.indexOf(';', arrow);
+  return {
+    parameters: flat(text.slice(afterChannel, arrow)),
+    first: flat(text.slice(arrow + '=> {'.length, end < 0 ? undefined : end)),
+  };
+}
+
+/**
+ * The windows a renderer to main dictation channel may hear from, by the check that admits each:
+ * a window in `windowMap`, or one of the two windows `createAnywhereWindow` opens for Dictate to
+ * clipboard and Dictate into this app (S15, S18): the hidden capture window and the review card.
+ */
+const SENDER_CHECKS = {
+  app: '!isDictationSender(event)',
+  capture: '!isDictationCaptureSender(event)',
+  review: '!isDictationReviewSender(event)',
+} as const;
+
+const DICTATION_CHANNELS: Record<string, Array<keyof typeof SENDER_CHECKS>> = {
+  'dictation:anywhere:capture-ready': ['capture'],
+  'dictation:anywhere:capture-reply': ['capture'],
+  'dictation:anywhere:get': ['app'],
+  'dictation:anywhere:preview-focused': ['app'],
+  'dictation:anywhere:preview-start': ['app'],
+  'dictation:anywhere:private-choice': ['review'],
+  'dictation:anywhere:review-copy': ['review'],
+  'dictation:anywhere:review-get': ['review'],
+  'dictation:anywhere:set': ['app'],
+  'dictation:anywhere:settings-ready': ['app'],
+  'dictation:busy': ['app'],
+  // The hidden capture window asks for the microphone as a composer does.
+  'dictation:mic-request': ['app', 'capture'],
+  'dictation:mic-status': ['app', 'capture'],
+  'dictation:open-mic-settings': ['app'],
+  'dictation:show-models-folder': ['app'],
+};
+
+/** The exact first statement a handler for `channel` must open with. */
+function senderGuard(senders: Array<keyof typeof SENDER_CHECKS>): RegExp {
+  const condition = senders
+    .map((sender) => SENDER_CHECKS[sender].replace(/[()]/g, '\\$&'))
+    .join(' && ');
+  // The early return gives back a literal and nothing else, so it runs no code of its own.
+  return new RegExp(`^if \\(${condition}\\) return(?: (?:null|false|true|'[a-z-]*'))?$`);
+}
+
 describe('the main process answers dictation IPC only from a Biorouter window', () => {
   // `main.ts` cannot be imported under vitest, so its text is what there is to
   // pin, as `main.openPath.test.ts` does for its handlers.
   const main = read(join(src, 'main.ts'));
 
-  it('every renderer to main dictation channel returns early for any other sender', () => {
-    const registrations = [...main.matchAll(/ipcMain\.(?:handle|on)\('(dictation:[^']+)'/g)];
-    expect(registrations.map((match) => match[1]).sort()).toEqual([
-      'dictation:busy',
-      'dictation:mic-request',
-      'dictation:mic-status',
-      'dictation:open-mic-settings',
-      'dictation:show-models-folder',
-    ]);
+  /** The text of the top level function `name`, up to its closing brace. */
+  function functionText(name: string): string {
+    const start = main.search(new RegExp(`^(?:async )?function ${name}\\(`, 'm'));
+    expect(start, name).toBeGreaterThan(-1);
+    return main.slice(start, main.indexOf('\n}\n', start));
+  }
+
+  it('registers exactly the known renderer to main dictation channels, each spelled plainly', () => {
+    const registrations = [...main.matchAll(IPC_REGISTRATION)];
+    const dictation = registrations.filter((match) => /dictation/i.test(match[3]));
+    // One spelling, so the scan below cannot miss a channel written in other quotes.
+    for (const match of dictation) expect(match[2], match[3]).toBe("'");
+    expect(dictation.map((match) => match[3]).sort()).toEqual(
+      Object.keys(DICTATION_CHANNELS).sort()
+    );
+  });
+
+  it('every renderer to main dictation channel first returns early for any other sender', () => {
+    const registrations = [...main.matchAll(IPC_REGISTRATION)].filter((match) =>
+      match[3].startsWith('dictation:')
+    );
+    expect(registrations.length).toBe(Object.keys(DICTATION_CHANNELS).length);
     for (const match of registrations) {
-      const body = main.slice(match.index!, main.indexOf('\n});', match.index!));
-      const firstStatement = body.split('\n')[1]?.trim() ?? '';
-      expect(firstStatement, match[1]).toMatch(/^if \(!isDictationSender\(event\)\) return\b/);
+      const opening = handlerOpening(main, match);
+      expect(opening, match[3]).not.toBeNull();
+      // `event` is the callback's own first parameter, so the check reads this call's sender.
+      expect(opening!.parameters, match[3]).toMatch(/^, (?:async )?\(event(?:, [^)]*)?\)$/);
+      expect(opening!.first, match[3]).toMatch(senderGuard(DICTATION_CHANNELS[match[3]]));
     }
+  });
+
+  it('the scan above refuses an argument check before the sender check, or a softer return', () => {
+    const opening = (source: string) =>
+      handlerOpening(source, [...source.matchAll(IPC_REGISTRATION)][0])?.first ?? '';
+    const app = senderGuard(['app']);
+    expect(
+      opening(
+        "ipcMain.handle('dictation:x', (event) => {\n  if (!isDictationSender(event)) return false;"
+      )
+    ).toMatch(app);
+    expect(
+      opening(
+        "ipcMain.handle('dictation:x', (event) => {\n  if (\n    !isDictationSender(event)\n  )\n    return;"
+      )
+    ).toMatch(app);
+    for (const wrong of [
+      // r16's shape: an argument check joined to the sender check.
+      "ipcMain.handle('dictation:x', (event, raw) => {\n  if (!isDictationSender(event) || !raw) return false;",
+      // An inline window comparison in place of a named check.
+      "ipcMain.handle('dictation:x', (event) => {\n  if (!win || event.sender !== win.webContents) return false;",
+      // Anything before the check.
+      "ipcMain.handle('dictation:x', (event) => {\n  const owner = BrowserWindow.fromWebContents(event.sender);",
+      // A return that runs code.
+      "ipcMain.handle('dictation:x', (event) => {\n  if (!isDictationSender(event)) return start();",
+      // Either sender where both must be refused.
+      "ipcMain.handle('dictation:x', (event) => {\n  if (!isDictationSender(event) || !isDictationCaptureSender(event)) return false;",
+    ]) {
+      expect(opening(wrong), wrong).not.toMatch(app);
+    }
+    expect(
+      opening(
+        "ipcMain.handle('dictation:x', (event) => {\n  if (!isDictationSender(event) && !isDictationCaptureSender(event)) return 'unknown';"
+      )
+    ).toMatch(senderGuard(['app', 'capture']));
+  });
+
+  it('the capture and review checks admit only the main frame of the window each names', () => {
+    for (const [check, window] of [
+      ['isDictationCaptureSender', 'anywhereCaptureWindow'],
+      ['isDictationReviewSender', 'anywhereReviewWindow'],
+    ] as const) {
+      expect(flat(functionText(check)), check).toContain(
+        `return Boolean(${window} && !${window}.isDestroyed() && event.sender === ${window}.webContents && event.senderFrame === event.sender.mainFrame);`
+      );
+    }
+    // One check per window, so no second copy can drift from the tested one.
+    expect(main).not.toMatch(/function anywhereCaptureSender\(/);
+  });
+
+  it('those two windows are only ever ones createAnywhereWindow opened, on this app’s pages', () => {
+    const assignments = [
+      ...main.matchAll(/\b(anywhere(?:Capture|Review)Window) = (?!=)([^;]+);/g),
+    ].map((match) => flat(`${match[1]} = ${match[2]}`));
+    expect(new Set(assignments)).toEqual(
+      new Set([
+        'anywhereCaptureWindow = win',
+        'anywhereReviewWindow = win',
+        'anywhereCaptureWindow = null',
+        'anywhereReviewWindow = null',
+        'anywhereCaptureWindow = opened',
+        "anywhereReviewWindow = await createAnywhereWindow('dictation-review')",
+      ])
+    );
+    const create = flat(functionText('createAnywhereWindow'));
+    expect(create).toContain('const win = new BrowserWindow(');
+    expect(create).toContain(
+      "if (hash === 'dictation-capture') anywhereCaptureWindow = win; else anywhereReviewWindow = win;"
+    );
+    // Biorouter's own renderer, and no other page for the window's life.
+    expect(create).toContain(
+      'const url = rendererEntryUrl(); url.hash = `/${hash}`; await win.loadURL(formatUrl(url));'
+    );
+    expect(create).toContain("win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));");
+    expect(create).toContain(
+      "win.webContents.on('will-navigate', (event, target) => { if (!isAppOrigin(target, rendererEntryUrl())) event.preventDefault(); });"
+    );
+    // `opened` is the capture window that same function opened: the only two writes to
+    // `anywhereCaptureOpening` are this call and its own reset.
+    const everywhere = flat(main);
+    expect(everywhere).toContain('const opened = await anywhereCaptureOpening.catch(() => null);');
+    expect(everywhere).toContain(
+      "anywhereCaptureOpening ??= createAnywhereWindow('dictation-capture').finally(() => { anywhereCaptureOpening = null; });"
+    );
+    expect([...main.matchAll(/\banywhereCaptureOpening (?:\?\?)?= (?!=)/g)]).toHaveLength(2);
   });
 
   it('a sender is the main frame of a window Biorouter opened', () => {

@@ -75,6 +75,9 @@ import {
   ensureDictationStatus,
   getDictationStatusSnapshot,
   readDictationViewer,
+  remoteHttpBackend,
+  remoteHttpNeedsAcknowledgement,
+  acknowledgeRemoteHttp,
   refreshDictationStatus,
   remoteOldValues,
   resolveDictationPhase,
@@ -349,7 +352,10 @@ function installLockScreen(): void {
   if (lockScreenInstalled || typeof window === 'undefined') return;
   lockScreenInstalled = true;
   try {
-    window.electron?.onDictationLockScreen?.(() => active?.stop());
+    window.electron?.onDictationLockScreen?.(() => {
+      pendingRemoteStart = null;
+      active?.stop();
+    });
   } catch {
     // A browser surface has no screen lock signal.
   }
@@ -368,6 +374,7 @@ export function attachDictationComposer(composer: DictationComposer): () => void
   return () => {
     if (composers.get(composer.key) !== composer) return;
     composers.delete(composer.key);
+    if (pendingRemoteStart?.composer === composer) pendingRemoteStart = null;
     setTimeout(() => {
       if (composers.has(composer.key)) return;
       if (active && active.key === composer.key) active.stop();
@@ -1083,7 +1090,78 @@ function outcomeFor(decision: PhaseDecision): StartOutcome {
  * one can start: a press that leads to the setup popover or a reason leaves it
  * recording.
  */
+type PendingRemoteStart = {
+  key: string;
+  composer: DictationComposer;
+  backendUrl: string;
+  token: number;
+};
+let pendingRemoteStart: PendingRemoteStart | null = null;
+let nextRemoteStartToken = 0;
+
+function remoteStartCurrent(pending: PendingRemoteStart): boolean {
+  const current =
+    pendingRemoteStart === pending &&
+    pendingRemoteStart.token === pending.token &&
+    composers.get(pending.key) === pending.composer &&
+    remoteHttpBackend()?.url === pending.backendUrl;
+  if (!current && pendingRemoteStart === pending) pendingRemoteStart = null;
+  return current;
+}
+
 export function startDictation(options: StartDictationOptions): Promise<StartOutcome> {
+  if (pendingRemoteStart) {
+    pendingRemoteStart = null;
+    return Promise.resolve({ kind: 'cancelled' });
+  }
+  const backend = active ? null : remoteHttpBackend();
+  if (!backend) return startDictationBody(options);
+  const composer = composers.get(options.key);
+  if (!composer) return Promise.resolve({ kind: 'cancelled' });
+  const pending: PendingRemoteStart = {
+    key: options.key,
+    composer,
+    backendUrl: backend.url,
+    token: ++nextRemoteStartToken,
+  };
+  pendingRemoteStart = pending;
+  installLockScreen();
+  return (async (): Promise<StartOutcome> => {
+    let notice: Awaited<ReturnType<typeof remoteHttpNeedsAcknowledgement>>;
+    try {
+      notice = await remoteHttpNeedsAcknowledgement(backend);
+    } catch {
+      if (pendingRemoteStart === pending) pendingRemoteStart = null;
+      return { kind: 'cancelled' };
+    }
+    if (!remoteStartCurrent(pending)) return { kind: 'cancelled' };
+    if (notice) {
+      let answer: { response: number };
+      try {
+        answer = await window.electron.showMessageBox({
+          type: 'warning',
+          message: dictationMessage('MSG-REMOTE-HTTP', { host: notice.host }),
+          buttons: ['Continue', 'Cancel'],
+          defaultId: 1,
+        });
+      } catch {
+        if (pendingRemoteStart === pending) pendingRemoteStart = null;
+        return { kind: 'cancelled' };
+      }
+      if (!remoteStartCurrent(pending)) return { kind: 'cancelled' };
+      if (answer.response !== 0) {
+        pendingRemoteStart = null;
+        return { kind: 'cancelled' };
+      }
+      acknowledgeRemoteHttp(notice.key);
+    }
+    if (!remoteStartCurrent(pending)) return { kind: 'cancelled' };
+    pendingRemoteStart = null;
+    return startDictationBody(options);
+  })();
+}
+
+function startDictationBody(options: StartDictationOptions): Promise<StartOutcome> {
   if (active?.key !== options.key && needsSharedOriginNotice())
     return Promise.resolve({ kind: 'origin-notice' });
   installLockScreen();
@@ -1179,11 +1257,15 @@ export function startDictation(options: StartDictationOptions): Promise<StartOut
 
 /** Stop and insert (the recording pill, Enter while recording). */
 export function stopDictation(key?: string): void {
+  if (pendingRemoteStart && (key === undefined || pendingRemoteStart.key === key))
+    pendingRemoteStart = null;
   if (active && (key === undefined || active.key === key)) active.stop();
 }
 
 /** Escape while arming, recording or transcribing: nothing is inserted. */
 export function cancelDictation(key?: string): void {
+  if (pendingRemoteStart && (key === undefined || pendingRemoteStart.key === key))
+    pendingRemoteStart = null;
   if (active && (key === undefined || active.key === key)) active.cancel();
 }
 
@@ -1238,6 +1320,7 @@ export function dropKeptDictation(key?: string): void {
 
 export function resetDictationSessionForTests(overrides: Partial<Deps> = {}): void {
   sessionEra++;
+  pendingRemoteStart = null;
   active?.cancel();
   active = null;
   running.clear();

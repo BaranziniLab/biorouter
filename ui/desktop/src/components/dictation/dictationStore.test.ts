@@ -6,6 +6,8 @@ import { resetCapturePrewarmForTests } from './capture';
 import type { DictationApi, DictationResult, DictationStatus } from './dictationApi';
 import {
   DICTATION_VIEWER_KEY,
+  normalizeRemoteHttpBackendUrl,
+  acknowledgeRemoteHttp,
   dictationDaemonPlace,
   ensureDictationStatus,
   getDictationStatusSnapshot,
@@ -452,5 +454,20 @@ describe('per viewer settings', () => {
     resetDictationStoreForTests(api);
     await ensureDictationStatus();
     expect(readDictationViewer().policyOffHint).toBe(true);
+  });
+});
+
+describe('external HTTP acknowledgement', () => {
+  it('keeps one normalized URL per viewer in the existing store', () => {
+    // The URL selection is covered by the backend configuration test; this pins persistence.
+    acknowledgeRemoteHttp(`remote-http:sha256:${'a'.repeat(64)}`);
+    acknowledgeRemoteHttp(`remote-http:sha256:${'a'.repeat(64)}`);
+    expect(readDictationViewer().ackHosts).toEqual([`remote-http:sha256:${'a'.repeat(64)}`]);
+    expect(normalizeRemoteHttpBackendUrl('http://LAB.example:8765/')).toEqual({
+      url: 'http://lab.example:8765/',
+      host: 'lab.example:8765',
+    });
+    expect(normalizeRemoteHttpBackendUrl('https://lab.example')).toBeNull();
+    expect(normalizeRemoteHttpBackendUrl('http://127.0.0.1:8765')).toBeNull();
   });
 });

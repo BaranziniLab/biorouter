@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BROWSER_SURFACE_MARKER } from '../../../utils/surface';
 import type { CaptureOptions } from '../../dictation/capture';
-import { DICTATION_MESSAGES } from '../../dictation/copy';
+import { DICTATION_ACTIONS, DICTATION_MESSAGES } from '../../dictation/copy';
 import { resetSharedOriginNoticeForTests } from '../../dictation/sharedOriginGate';
 import type {
   DictationApi,
@@ -887,5 +887,141 @@ describe('the folder, language, microphone and speed rows', () => {
         label
       ).toHaveAccessibleDescription(DICTATION_MESSAGES[id]);
     }
+  });
+});
+
+describe('S17 keyed external backend', () => {
+  it('explains the missing User Action Key before offering Install', async () => {
+    desktop({ local: false });
+    serve(
+      status({
+        install: { allowed: false, reason: DICTATION_MESSAGES['MSG-INSTALL-AGENT'] },
+        host: 'lab.example',
+      })
+    );
+    await renderSection();
+    expect(screen.getByTestId('remote-no-key')).toHaveTextContent('lab.example');
+    expect(screen.queryByRole('button', { name: /^Install / })).toBeNull();
+  });
+});
+
+/**
+ * **Dictate into other apps** (S18, PR-28) applies now, so it is the row's right-hand switch
+ * (design.md 9.7), like **Use external server**. The first turn-on still asks through the
+ * native message box, and the switch stays off until that question is answered yes.
+ */
+describe('Dictate into other apps', () => {
+  type Anywhere = {
+    enabled: boolean;
+    shortcut: string | null;
+    disclosureShown: boolean;
+    tray: boolean;
+    gnomeWayland: boolean;
+    captureAllowed: boolean;
+    capturePolicyReason: 'MSG-POLICY' | 'MSG-POLICY-CAPTURE';
+  };
+  const anywhere = (overrides: Partial<Anywhere> = {}): Anywhere => ({
+    enabled: false,
+    shortcut: null,
+    disclosureShown: false,
+    tray: true,
+    gnomeWayland: false,
+    captureAllowed: true,
+    capturePolicyReason: 'MSG-POLICY',
+    ...overrides,
+  });
+
+  function bridge(initial: Anywhere, answer = 0) {
+    const set = vi.fn(
+      async (next: { enabled: boolean; shortcut: string | null; disclosureShown: boolean }) =>
+        anywhere({ ...initial, ...next })
+    );
+    const showMessageBox = vi.fn(async () => ({ response: answer }));
+    Object.assign((window as unknown as { electron: object }).electron, {
+      dictationAnywhereGet: vi.fn(async () => initial),
+      dictationAnywhereSet: set,
+      showMessageBox,
+    });
+    return { set, showMessageBox };
+  }
+
+  beforeEach(() => {
+    serve(status({ models: both(), active_model: TURBO }));
+  });
+
+  it('is a switch named by its row, not a checkbox', async () => {
+    bridge(anywhere());
+    await renderSection();
+    const control = await screen.findByRole('switch', {
+      name: DICTATION_ACTIONS.dictateIntoOtherApps,
+    });
+    expect(control).toHaveAttribute('aria-checked', 'false');
+    expect(control).toBeEnabled();
+    expect(
+      screen.queryByRole('checkbox', { name: DICTATION_ACTIONS.dictateIntoOtherApps })
+    ).toBeNull();
+  });
+
+  it('asks through the native message box the first time, then turns on', async () => {
+    const { set, showMessageBox } = bridge(anywhere());
+    const user = userEvent.setup();
+    await renderSection();
+    const control = await screen.findByRole('switch', {
+      name: DICTATION_ACTIONS.dictateIntoOtherApps,
+    });
+    await user.click(control);
+    expect(showMessageBox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: DICTATION_ACTIONS.dictateIntoOtherApps,
+        message: DICTATION_MESSAGES['MSG-CLIPBOARD-EXPLAIN'],
+      })
+    );
+    await waitFor(() =>
+      expect(set).toHaveBeenCalledWith({ enabled: true, shortcut: null, disclosureShown: true })
+    );
+    await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'true'));
+  });
+
+  it('stays off when the first question is cancelled', async () => {
+    const { set, showMessageBox } = bridge(anywhere(), 1);
+    const user = userEvent.setup();
+    await renderSection();
+    const control = await screen.findByRole('switch', {
+      name: DICTATION_ACTIONS.dictateIntoOtherApps,
+    });
+    await user.click(control);
+    await waitFor(() => expect(showMessageBox).toHaveBeenCalled());
+    expect(set).not.toHaveBeenCalled();
+    expect(control).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('turns on without asking again once the question was answered, and turns off', async () => {
+    const { set, showMessageBox } = bridge(anywhere({ disclosureShown: true }));
+    const user = userEvent.setup();
+    await renderSection();
+    const control = await screen.findByRole('switch', {
+      name: DICTATION_ACTIONS.dictateIntoOtherApps,
+    });
+    await user.click(control);
+    await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'true'));
+    expect(showMessageBox).not.toHaveBeenCalled();
+    await user.click(control);
+    await waitFor(() =>
+      expect(set).toHaveBeenLastCalledWith({
+        enabled: false,
+        shortcut: null,
+        disclosureShown: true,
+      })
+    );
+    await waitFor(() => expect(control).toHaveAttribute('aria-checked', 'false'));
+  });
+
+  it('is disabled while no speech model is ready', async () => {
+    serve(status());
+    bridge(anywhere());
+    await renderSection();
+    expect(
+      await screen.findByRole('switch', { name: DICTATION_ACTIONS.dictateIntoOtherApps })
+    ).toBeDisabled();
   });
 });

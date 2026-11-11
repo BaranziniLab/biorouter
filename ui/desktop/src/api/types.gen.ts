@@ -1800,6 +1800,11 @@ export type DictationTranscript = {
     bias_scope: DictationBiasScope;
     changes: Array<DictationTranscriptChange>;
     /**
+     * External target only: final corrected text consists entirely of complete terms
+     * from this stream's filtered dictionary set. No entries or counts leave the daemon.
+     */
+    dictionary_only?: boolean | null;
+    /**
      * From `finish` to the transcript being ready.
      */
     elapsed_ms: number;

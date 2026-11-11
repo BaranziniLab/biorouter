@@ -402,11 +402,11 @@ None. The owner decided on 2026-11-05 that no microphone or dictation feature is
 
 | Test | Asserts | PR |
 |---|---|---|
-| `dictationAnywhere.test.ts` state machine | shortcut taken (MSG-SHORTCUT-TAKEN), policy off, no model, an echo only result (MSG-CLIPBOARD-ECHO), nothing heard (MSG-CLIPBOARD-NOTHING, clipboard unchanged), a read back mismatch opens the review card with **Copy** | PR-28 |
+| `dictationAnywhere.test.ts` state machine | shortcut taken (MSG-SHORTCUT-TAKEN), policy off, no model, a dictionary-only result shows MSG-CLIPBOARD-ECHO and leaves the clipboard unchanged (including CD4+ and C++, while PhD two cannot match a digits-literal PHD2 term), a nonempty ordinary result after an echo retry copies, a missing dictionary-only flag fails closed, delayed shortcut enable loses to a later explicit off, a start waiting on availability never reaches capture after an off request even while the off write is queued, two rejected writes (older enable then off) keep the runtime off with the shortcut unregistered and show a save failure, GNOME Wayland with no tray cannot enable, capture-window loss cancels and releases the power blocker, cancelling during a pending finish aborts the detached stream, disabled tray Settings waits for the exact new renderer readiness and a newer intent wins, trigger-to-first-frame timing includes status and window startup, and `no_speech` or empty final text shows MSG-CLIPBOARD-NOTHING and leaves the clipboard unchanged, a read back mismatch opens the review card with **Copy**; with **Dictate into other apps** off a preview start goes ahead and a preview dictation keeps running when the switch is turned off, while the tray item and the shortcut stay refused (`dictationAnywhere.test.ts`, and `dictationAnywhereMain.test.ts` for main's wiring) | PR-28 |
 | notifications | carry counts only, never words (P-2) | PR-28 |
 | target | every request carries `target_kind: "external"`, so the daemon gives public scope unless the person chose **Include my private terms** (the tray item below **Dictate to clipboard**, or the preview button's context menu) and confirmed MSG-PRIVATE-TERMS for that recording; the global shortcut always records with public terms (P-5, O-8) | PR-28 |
 | who may start capture | no daemon route and no tool starts capture; only the tray, the person's shortcut or the preview button does (P-7) | PR-28 |
-| preview insert | **Dictate into this app** is absent when nothing in the preview is focused, and is removed from PR-28 entirely if M-15 fails | PR-28 |
+| preview insert | **Dictate into this app** is absent while nothing in the preview is focused and present while an editable field is, starts with **Dictate into other apps** off (`WebPagePreview.dictation.test.tsx`), and is removed from PR-28 entirely if M-15 fails | PR-28 |
 | `anywhere.json` | only Electron main writes `<config>/dictation/anywhere.json`, and no `/config/upsert` key turns the global shortcut on, because the file is outside `config.yaml` (DD-88) | PR-28 |
 | CLI | the clipboard helper rows under [CLI capture and front ends](#cli-capture-and-front-ends) | PR-25 |
 
@@ -825,8 +825,8 @@ Not offered, decided by the owner on 2026-11-05 (O-30): Biorouter builds no micr
 | # | Do this | Expect | Failure looks like | CI covers |
 |---|---|---|---|---|
 | S15.1 | Open a built app's page in a `serve` browser and call `getUserMedia` from its console in Chrome, Firefox and Safari. | Chrome refuses; record Firefox and Safari, the documented residual. | Chrome grants it. | `serve` job (Chromium) |
-| S15.2 | In the desktop preview, click into an app's text field, then press **Dictate into this app**. | The text lands in the field (M-15); if M-15 failed, the button is absent. | Text in the wrong place. | none |
-| S15.3 | Hover that button with no field focused. | MSG-APPS (if M-15 failed, the SDK reference carries MSG-APPS-NO-PREVIEW instead). | n/a | vitest |
+| S15.2 | In the desktop preview, with **Dictate into other apps** off, click into an app's text field, then press **Dictate into this app**; repeat with the switch on. | The text lands in the field both times (M-15); if M-15 failed, the button is absent. | Text in the wrong place; nothing happens while the switch is off. | `dictationAnywhere.test.ts` (the switch only) |
+| S15.3 | Click outside every text field in the app. | **Dictate into this app** leaves the toolbar until a field has focus again; MSG-APPS is in the SDK reference (MSG-APPS-NO-PREVIEW if M-15 failed). | A disabled button, or one that does nothing. | `WebPagePreview.dictation.test.tsx` |
 | S15.4 | Open an exported app in a browser; use **Dictate to clipboard** and paste. | The text pastes. | n/a | none |
 
 ### S16 Docker image

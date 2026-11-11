@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  Mic,
   RefreshCw,
   Share2,
   Trash2,
@@ -13,6 +14,15 @@ import { Button } from '../ui/button';
 import { PREVIEW_COPY } from './copy';
 import { PreviewIconButton } from './PreviewBar';
 import { previewOpenTarget } from '../../utils/openInBrowser';
+import { isBrowserSurface } from '../../utils/surface';
+import { crewPrivateTermsAllowed } from '../dictation/CrewDictationButton';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '../ui/context-menu';
+import { DICTATION_ACTIONS, dictationMessage } from '../dictation/copy';
 
 export type EmbeddedBrowserState = {
   url: string;
@@ -81,12 +91,38 @@ export default function WebPagePreview({
   const [unavailable, setUnavailable] = useState(false);
   const [sharedWithAgent, setSharedWithAgent] = useState(false);
   const [updateReady, setUpdateReady] = useState(false);
+  const [editableFocused, setEditableFocused] = useState(false);
+  const [privateAllowed, setPrivateAllowed] = useState(false);
   const refreshRef = useRef({ url, consumed: refreshRevision, generation: 0 });
   const latestRevision = useRef(refreshRevision);
   latestRevision.current = refreshRevision;
 
   const viewId = viewIdRef.current;
   const browser = window.electron?.embeddedBrowser;
+
+  // Dictate into this app is shown only while an editable field in the app has focus
+  // (owner decision, 2026-11-10). It does not depend on Dictate into other apps.
+  useEffect(() => {
+    if (
+      isBrowserSurface() ||
+      !state?.managedApp ||
+      !window.electron?.dictationAnywherePreviewFocused
+    ) {
+      setEditableFocused(false);
+      return;
+    }
+    let active = true;
+    const refresh = () =>
+      void window.electron.dictationAnywherePreviewFocused?.(viewId).then((focused) => {
+        if (active) setEditableFocused(focused);
+      });
+    refresh();
+    const timer = window.setInterval(refresh, 500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [state?.managedApp, viewId]);
 
   // Create once per URL identity, and tear down on unmount. The view is a child
   // of the *window*, not of this tree, so nothing else will clean it up.
@@ -312,6 +348,51 @@ export default function WebPagePreview({
               aria-hidden="true"
             />
           </PreviewIconButton>
+        )}
+        {!isBrowserSurface() && state?.managedApp && editableFocused && (
+          <ContextMenu
+            onOpenChange={(open) => {
+              setPrivateAllowed(false);
+              if (open) void crewPrivateTermsAllowed().then(setPrivateAllowed);
+            }}
+          >
+            <ContextMenuTrigger asChild>
+              <span>
+                <ToolbarButton
+                  label={DICTATION_ACTIONS.dictateIntoThisApp}
+                  disabled={isSuspended}
+                  onClick={() =>
+                    void window.electron.dictationAnywhereStartPreview?.(viewId, false)
+                  }
+                  icon={<Mic className="h-3.5 w-3.5" aria-hidden="true" />}
+                />
+              </span>
+            </ContextMenuTrigger>
+            {privateAllowed && (
+              <ContextMenuContent>
+                <ContextMenuItem
+                  onSelect={() =>
+                    void window.electron
+                      .showMessageBox({
+                        type: 'warning',
+                        title: DICTATION_ACTIONS.includePrivateTerms,
+                        message: dictationMessage('MSG-PRIVATE-TERMS'),
+                        buttons: [DICTATION_ACTIONS.include, DICTATION_ACTIONS.publicTermsOnly],
+                        defaultId: 1,
+                      })
+                      .then(({ response }) => {
+                        void window.electron.dictationAnywhereStartPreview?.(
+                          viewId,
+                          response === 0
+                        );
+                      })
+                  }
+                >
+                  {DICTATION_ACTIONS.includePrivateTerms}
+                </ContextMenuItem>
+              </ContextMenuContent>
+            )}
+          </ContextMenu>
         )}
         <ToolbarButton
           label={sharedWithAgent ? 'Stop sharing with agent' : 'Share with agent'}

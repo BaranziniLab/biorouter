@@ -392,6 +392,98 @@ impl EligibleEntries {
         self.revision
     }
 
+    /// Whether every complete word in final corrected text is one of this stream's
+    /// eligible written terms. This set already passed the tier, institution and proof
+    /// filters. A normalized key may span a term's own words or one extra token, as
+    /// the exact matcher does; it never crosses sentence punctuation.
+    pub fn dictionary_only(&self, text: &str) -> bool {
+        if self.entries.is_empty() || text.trim().is_empty() {
+            return false;
+        }
+        let mut found = false;
+        let mut start = 0;
+        let mut segments = Vec::new();
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        for (index, &(at, c)) in chars.iter().enumerate() {
+            // A dot between two letters or digits belongs to a token ("E.P.A.S."), not to
+            // the sentence.
+            let inside_token = c == '.'
+                && index
+                    .checked_sub(1)
+                    .and_then(|before| chars.get(before))
+                    .is_some_and(|&(_, before)| before.is_alphanumeric())
+                && chars
+                    .get(index + 1)
+                    .is_some_and(|&(_, after)| after.is_alphanumeric());
+            if matches!(c, ',' | '.' | ';' | ':' | '!' | '?') && !inside_token {
+                // `at` and `start` are character boundaries, so `get` always finds them.
+                segments.push(text.get(start..at).unwrap_or_default());
+                start = at + c.len_utf8();
+            }
+        }
+        segments.push(text.get(start..).unwrap_or_default());
+        for segment in segments {
+            let tokens: Vec<&str> = segment
+                .split(|c: char| c.is_whitespace() || matches!(c, '-' | '\u{2010}'..='\u{2015}'))
+                .map(|token| {
+                    token.trim_matches(|c: char| {
+                        matches!(
+                            c,
+                            '(' | ')'
+                                | '['
+                                | ']'
+                                | '{'
+                                | '}'
+                                | '"'
+                                | '\''
+                                | '\u{2018}'
+                                | '\u{2019}'
+                                | '\u{201C}'
+                                | '\u{201D}'
+                        )
+                    })
+                })
+                .filter(|token| !token.is_empty())
+                .collect();
+            if tokens.is_empty() {
+                continue;
+            }
+            found = true;
+            let mut covered = vec![false; tokens.len() + 1];
+            covered[0] = true;
+            for start in 0..tokens.len() {
+                if !covered[start] {
+                    continue;
+                }
+                for end in start + 1..=(start + 8).min(tokens.len()) {
+                    let window = &tokens[start..end];
+                    let key = key::window_key(window);
+                    if self.entries.iter().any(|entry| {
+                        let written = key::form_key(&entry.written);
+                        let limit = (key::form_tokens(&entry.written).len() + 1).min(8);
+                        if key.text != written.text
+                            || end - start > limit
+                            || (entry.digits_literal && key.from_number_words)
+                        {
+                            return false;
+                        }
+                        let span = window.join(" ");
+                        !(entry.collides
+                            || (window.len() > 1
+                                && window.iter().all(|word| words::is_english(word))))
+                            || span == entry.written
+                    }) {
+                        covered[end] = true;
+                    }
+                }
+            }
+            if !covered[tokens.len()] {
+                return false;
+            }
+        }
+        found
+    }
+
     /// The entries whose written form `text` holds as a whole word
     /// ([`RecognitionEntry::occurs_in`]), each once: what a dictation whose final text is
     /// `text` used, for its usage bumps.
@@ -606,6 +698,67 @@ mod tests {
             .map(|e| e.written.as_str())
             .collect();
         assert_eq!(used, ["EPAS1", "metformin"], "each entry once");
+    }
+
+    /// The set is written out as the other tests here write theirs, not built through the
+    /// constructor: `eligible_entries_are_built_only_by_bias_set` counts test calls too.
+    /// `entry` already derives each row's flags, and these rows have no twins to merge.
+    #[test]
+    fn dictionary_only_uses_complete_terms_from_the_filtered_set() {
+        let set = EligibleEntries {
+            entries: vec![
+                entry("EPAS1"),
+                entry("HIF-2α"),
+                entry("VHL"),
+                entry("PHD2"),
+                entry("CD4+"),
+                entry("C++"),
+                entry("E.P.A.S."),
+                entry("SPOKE"),
+            ]
+            .into(),
+            table: BonusTable::PublicRows,
+            scope: BiasScope::Public,
+            revision: 1,
+        };
+        assert!(
+            set.dictionary_only("EPAS1"),
+            "a canonical term needs no correction change"
+        );
+        assert!(set.dictionary_only("EPAS1, HIF-2α; VHL."));
+        assert!(set.dictionary_only("epas1, hif-2α"));
+        assert!(set.dictionary_only("PHD2, CD4+; C++"));
+        assert!(set.dictionary_only("E.P.A.S., CD4+"));
+        assert!(
+            !set.dictionary_only("PhD two"),
+            "number words cannot satisfy a digits_literal term"
+        );
+        assert!(
+            !set.dictionary_only("spoke"),
+            "ordinary lower-case speech is not a colliding term"
+        );
+        assert!(
+            !set.dictionary_only("EPAS10"),
+            "a partial word is not a term"
+        );
+        assert!(
+            !set.dictionary_only("EPAS1 and VHL"),
+            "filler speech defeats the classification"
+        );
+        assert!(
+            !set.dictionary_only("EPAS1, Stanfordine"),
+            "a withheld row is absent here"
+        );
+        assert!(!set.dictionary_only(""));
+        assert!(!EligibleEntries::empty().dictionary_only("EPAS1"));
+        let wordy = EligibleEntries {
+            entries: vec![entry("Good Morning")].into(),
+            table: BonusTable::PublicRows,
+            scope: BiasScope::Public,
+            revision: 2,
+        };
+        assert!(wordy.dictionary_only("Good Morning"));
+        assert!(!wordy.dictionary_only("good morning"));
     }
 
     #[test]
