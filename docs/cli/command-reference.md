@@ -139,7 +139,7 @@ model's. A model pulled through Ollama is removed with `ollama rm`. See the
 
 `models decision list` lists the decision models available now: the ones pulled into the local
 Ollama that declare the decision capability, and Baseten's when a Baseten API key is saved. Each
-line names the model as `provider/model` (the spelling `--model` takes everywhere), with
+line names the model as `provider/model` (a spelling `--model` takes everywhere; a bare name such as `tev1:0.8b` or `joey-1` works too), with
 Baseten's by their aliases (`baseten_decision/joey-1`, `elephant-1`, `mammoth-1`), its privacy
 tier and where it runs (`this computer`, `Baseten`, or `Ollama` or `Ollama cloud` for an Ollama
 model that is not on this computer; a `-cloud` or `:cloud` tag reads `Ollama cloud` even on a
@@ -799,7 +799,7 @@ the chat's next check, in a running turn too.
   control back to you, `steer` tells the model what the monitor found
 - **`--timing <TIMING>`**: `post-iteration` (the default) asks after every iteration of the agent
   loop, `turn-end` once as a turn ends
-- **`--model <PROVIDER/MODEL>`**: The decision model; without it the chat's default
+- **`--model <MODEL>`**: The decision model, by its name (`tev1:0.8b`, `joey-1`) or as `provider/model`; without it the chat's default
 - **`--option <OPTION>`**: The answer whose probability is compared: `yes` (the default) or `no`
   on a yes/no question, or one of the `--choice` options
 - **`--choice <NAME[=DESCRIPTION]>`**: Make the question a choice; repeat it once per option
@@ -908,7 +908,7 @@ app. See [Decision gates](../agent-loop/orchestration-phases.md#decision-gates).
 - **`--threshold <P>`**: The P(yes) every question must reach, from 0 to 1 (default 0.80). The
   0.50 floor the agent's gates have does not apply to yours
 - **`--attempts <N>`**: Failed evaluations allowed before the phase is blocked, 1 to 5 (default 3)
-- **`--model <PROVIDER/MODEL>`**: The decision model; without it the chat's default
+- **`--model <MODEL>`**: The decision model, by its name (`tev1:0.8b`, `joey-1`) or as `provider/model`; without it the chat's default
 - **`--allow-uncalibrated`**: Accept probabilities a model states in words
 
 **Options for every subcommand:**
@@ -1083,7 +1083,7 @@ Execute commands from an instruction file or stdin.
 - **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths
 - **`--max-tool-repetitions <NUMBER>`**: Maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops
 - **`--max-turns <NUMBER>`**: Maximum number of turns allowed without user input (`0` means Unlimited, the default)
-- **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan. It first runs the same checks `run` and an import run, so a workflow `run` would refuse is refused here too, with the same sentence after "This workflow would not start: ". See [What `--explain` prints](#what---explain-prints)
+- **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan. It first runs the same checks `run` and an import run, so a workflow `run` would refuse is refused here too, with the same sentence after "This workflow would not start: ". `run` prints that sentence as it is, without a "Template rendering failed:" prefix. See [What `--explain` prints](#what---explain-prints)
 - **`--render-workflow`**: Print the rendered workflow instead of running it
 - **`-q, --quiet`**: Quiet mode. Suppress non-response output, printing only the model response to stdout
 - **`--output-format <FORMAT>`**: Output format (`text`, `json`, or `stream-json`). Default is `text`. Use JSON structured output for automation and scripting: `json` for results after completion, `stream-json` for events as they occur
@@ -1097,7 +1097,7 @@ saying when it is checked, which model it asks and its question, when it fires, 
 what an error does, the phase plan, and one line per gate:
 
 ```text
-   - Monitor "Reached ten": after each iteration, asks joey-1 · Baseten "Has the agent already echoed 10 or a larger number?"; when P(yes) ≥ 0.70, it stops the turn (stops again while it holds); an error pauses the turn
+   - Monitor 'Reached ten': after each iteration, asks joey-1 · Baseten "Has the agent already echoed 10 or a larger number?"; when P(yes) ≥ 0.70, it stops the turn (stops again while it holds); an error pauses the turn
    - Phase plan "Count plan": 2 phases: count, check
    - Phase "check" gate: 1 question, each must reach P(yes) ≥ 0.80 before the phase completes, 2 attempts; asked of joey-1 · Baseten
 ```
@@ -1138,7 +1138,7 @@ On status 3, one line on stderr says what stopped the run and how to carry the c
 "Error:" before it, because nothing failed:
 
 ```text
-Monitor "Form reached" stopped this run (exit status 3). To carry on, send the chat a message: biorouter run --resume --session-id 20261110_5 --text "<message>", or open it with biorouter session --resume --session-id 20261110_5.
+Monitor 'Form reached' stopped this run (exit status 3). To carry on, send the chat a message: biorouter run --resume --session-id 20261110_5 --text "<message>", or open it with biorouter session --resume --session-id 20261110_5.
 This run ended with phase "verify" held by its gate, which did not pass (exit status 3). See the gates with biorouter session gates 20261110_5. To carry on, …
 ```
 
@@ -1187,12 +1187,12 @@ and the latency.
 **Options:**
 
 - **`--ask <QUESTION>`** (required): The question to ask about the text
-- **`--model <PROVIDER/MODEL>`**: The decision model, as `biorouter models decision list` names
-  it. Without it the model is the chat's default decision model (with `--session`), else
+- **`--model <MODEL>`**: The decision model, by its name (`tev1:0.8b`, `joey-1`) or as
+  `provider/model`, as `biorouter models decision list` shows them. Without it the model is the chat's default decision model (with `--session`), else
   `BIOROUTER_DECISION_MODEL` (or `BIOROUTER_DECISION_PROVIDER`), else the first model in the list
   that may read the text: local first, `tev1:0.8b` first among the Ollama models, never a copy
   Ollama cannot load. The model is chosen once, before anything is sent, and used for every
-  request of the run. `--model` takes `provider/model`. A `BIOROUTER_DECISION_MODEL` that names
+  request of the run. A bare name must belong to exactly one listed model; an unknown one is refused with `<name> is not a decision model this computer offers (it offers …)` and how to name one, and a name two models share is refused with each `provider/model` spelling. A `provider/model` that nothing lists is kept as written. A `BIOROUTER_DECISION_MODEL` that names
   no provider (and no `BIOROUTER_DECISION_PROVIDER` beside it) is not used, and a warning on
   stderr says so and how to write it
 - **`--choice <NAME[=DESCRIPTION]>`**: Makes the question a choice; repeat it once per option (2
@@ -1737,7 +1737,7 @@ The TUI and classic CLI additionally support `/help` (alias `/?`), `/exit` (alia
 `/rename <name>`, and `/diverge [name]`. The TUI also has `/decisions`, an overlay listing the
 chat's decision-model calls by source and by recent turn; ↑↓ selects a source, Enter shows its
 last calls and Esc goes back. In the TUI and the classic CLI a turn's decision calls show as one
-line per source (`◇ Monitor Form reached: 18 checks this turn · 18 failed · last P 0.31`), never
+line per source (`◇ Monitor 'Form reached': 18 checks this turn · 18 quiet · last P 0.31`), never
 one line per call, and the reply of a chat whose main model is a decision model shows as a small
 card with a bar per option. Such a chat has no running context, so neither prints a context
 meter for it, and `/compact` answers that there is no context to compact, without announcing a

@@ -115,7 +115,13 @@ connect it to the chat that started it (`DelegatedChat` in `crates/biorouter/src
   the card, never who may decide: a folder decision still needs a person's proof. A denial ends
   the subagent's call with "Folder authorization required for <folder>. … Access was not
   approved."; a card nobody answered ends it with "… The request expired before anyone answered
-  it, so access was not given."
+  it, so access was not given." The card names who asks. In the chat that delegated the work, the daemon puts the asker on the
+  copy it shows there (`preview.requestedBy`: the subagent's role, else its chat's name), so the card
+  reads "Subagent 'reviewer' asks to read ~/data" and never looks like the chat's own request. The
+  card's home copy in the subagent's own session carries no `requestedBy`, and the subagent's tab
+  names the same subagent itself; in a chat's own agent the card reads "Allow this chat to read
+  ~/data?". Every card shows the folder as the call asked for it, with `~` for home, keeps the exact
+  paths and the grant's terms under **Details**, and collapses to a transcript row once answered.
 - **A direct subagent uses its parent's session grants.** The folders you allowed with **Allow for
   this session** in a chat also cover the subagents that chat starts, when the subagent is at the
   same privacy tier. They are the parent's own grants, read on each request, so revoking one in
@@ -213,7 +219,7 @@ failed revocation remains visible. `bottom_menu/FolderAccessCard.test.tsx` and, 
 full path for a backend that is not this machine's, where a long path wraps, right-to-left names,
 what a selection copies) and the modifier click on each platform and in a browser;
 `bottom_menu/footerCards.contract.test.tsx` covers preview and kept cards;
-`ToolCallPreview.folderAccess.test.tsx` holds the approval card to the exact, monospaced path. Actual model-driven app verification is a separate release
+`ToolCallPreview.folderAccess.test.tsx` holds the card's Details to the exact path. Actual model-driven app verification is a separate release
 gate; unit-test results alone do not establish that it passed.
 
 The desktop-lifetime correction is tracked by [#455](https://github.com/BaranziniLab/biorouter/issues/455),
