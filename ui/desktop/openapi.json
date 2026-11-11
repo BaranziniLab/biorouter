@@ -10294,7 +10294,7 @@
             }
           },
           "422": {
-            "description": "The gate's decision model cannot answer it in this chat now: not available, cannot take yes/no questions, will not load, or refused by the chat's privacy tier, an institution or a Crew grant. Nothing was changed (body = plain text)"
+            "description": "The decision model the gate names cannot answer it in this chat now: not available, cannot take yes/no questions, will not load, or refused by the chat's privacy tier, an institution or a Crew grant. A gate that names no model is never refused: with no decision model the chat may use, the chat's own model judges it. Nothing was changed (body = plain text)"
           },
           "500": {
             "description": "Internal server error"
@@ -17245,6 +17245,36 @@
           }
         }
       },
+      "GateJudge": {
+        "type": "object",
+        "description": "The model that gave a gate's last verdict, as every surface names it.",
+        "required": [
+          "kind",
+          "model"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/GateJudgeKind"
+          },
+          "model": {
+            "type": "string",
+            "description": "The model as a person reads it: a decision model's display name, or\nthe chat model's own name. Never a provider id."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the chat's own model judged the gate, in one plain sentence\n(\"This chat has no decision model it may use, so gpt-5.5, the chat's\nmodel, judged the gate.\"). None when a decision model answered.",
+            "nullable": true
+          }
+        }
+      },
+      "GateJudgeKind": {
+        "type": "string",
+        "description": "Which kind of model gave a gate's verdict.",
+        "enum": [
+          "decision_model",
+          "chat_model"
+        ]
+      },
       "GateOwner": {
         "type": "string",
         "description": "Who set a phase's gate.",
@@ -21482,6 +21512,14 @@
             "description": "Why the last evaluation decided nothing, when it did not.",
             "nullable": true
           },
+          "lastJudge": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GateJudge"
+              }
+            ],
+            "nullable": true
+          },
           "lastMinP": {
             "type": "number",
             "format": "double",
@@ -21500,7 +21538,7 @@
           },
           "model": {
             "type": "string",
-            "description": "The decision model the gate names, as `provider/model`; none means\nthe chat's default decision model, else the configured one.",
+            "description": "The decision model the gate names, as `provider/model`; none means\nthe chat's default decision model, else the configured one, else the\nchat's own language model.",
             "nullable": true
           },
           "modelAdapter": {

@@ -2814,6 +2814,29 @@ export type FrontendToolRequest = {
 };
 
 /**
+ * The model that gave a gate's last verdict, as every surface names it.
+ */
+export type GateJudge = {
+    kind: GateJudgeKind;
+    /**
+     * The model as a person reads it: a decision model's display name, or
+     * the chat model's own name. Never a provider id.
+     */
+    model: string;
+    /**
+     * Why the chat's own model judged the gate, in one plain sentence
+     * ("This chat has no decision model it may use, so gpt-5.5, the chat's
+     * model, judged the gate."). None when a decision model answered.
+     */
+    reason?: string | null;
+};
+
+/**
+ * Which kind of model gave a gate's verdict.
+ */
+export type GateJudgeKind = 'decision_model' | 'chat_model';
+
+/**
  * Who set a phase's gate.
  */
 export type GateOwner = 'agent' | 'person' | 'workflow';
@@ -5081,6 +5104,7 @@ export type PhaseGateSnapshot = {
      * Why the last evaluation decided nothing, when it did not.
      */
     lastError?: string | null;
+    lastJudge?: GateJudge | null;
     /**
      * The lowest P(yes) across the gate's questions at the last evaluation.
      */
@@ -5092,7 +5116,8 @@ export type PhaseGateSnapshot = {
     maxAttempts: number;
     /**
      * The decision model the gate names, as `provider/model`; none means
-     * the chat's default decision model, else the configured one.
+     * the chat's default decision model, else the configured one, else the
+     * chat's own language model.
      */
     model?: string | null;
     modelAdapter?: DecisionAdapter | null;
@@ -15629,7 +15654,7 @@ export type PutPhaseGateErrors = {
      */
     409: PublicDecisionConfirmation;
     /**
-     * The gate's decision model cannot answer it in this chat now: not available, cannot take yes/no questions, will not load, or refused by the chat's privacy tier, an institution or a Crew grant. Nothing was changed (body = plain text)
+     * The decision model the gate names cannot answer it in this chat now: not available, cannot take yes/no questions, will not load, or refused by the chat's privacy tier, an institution or a Crew grant. A gate that names no model is never refused: with no decision model the chat may use, the chat's own model judges it. Nothing was changed (body = plain text)
      */
     422: unknown;
     /**

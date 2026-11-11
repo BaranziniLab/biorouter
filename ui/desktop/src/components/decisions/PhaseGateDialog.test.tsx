@@ -276,7 +276,35 @@ describe('what the dialog says about a gate', () => {
       '1 of 1 used · given again once'
     );
     expect(details).toHaveTextContent('Accepts uncalibrated probabilities');
-    expect(details).toHaveTextContent("ModelThis chat's decision model");
+    expect(details).toHaveTextContent(
+      "ModelThis chat's decision model, or its own model when it has none"
+    );
+    // A gate asked before verdicts named their judge says nothing about one.
+    expect(screen.queryByTestId('phase-gate-judge')).toBeNull();
+  });
+
+  it('says when the chat’s own model judged the gate, and why, by its name', () => {
+    const { phase, phases } = phaseOf({
+      ...GATE,
+      attempts: 1,
+      lastPassed: true,
+      lastMinP: 0.92,
+      lastJudge: {
+        kind: 'chat_model',
+        model: 'gpt-5.5',
+        reason:
+          "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate.",
+      },
+    });
+    draw({ phase, phases });
+    const details = openDetails();
+    expect(screen.getByTestId('phase-gate-judge')).toHaveTextContent(
+      /^gpt-5\.5, the chat's model$/
+    );
+    expect(screen.getByTestId('phase-gate-judge-reason')).toHaveTextContent(
+      "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate."
+    );
+    expect(details).toHaveTextContent('Judged by');
   });
 
   it('names a held phase it cannot find as "a later phase", never by its id', () => {
@@ -663,7 +691,9 @@ describe('the editor', () => {
     await pickFromMenu('phase-gate-edit');
     // Three attempts and the chat's model: More options starts closed, with its summary.
     expect(screen.queryByTestId('phase-gate-more-options')).toBeNull();
-    expect(screen.getByText("3 attempts · This chat's decision model")).toBeInTheDocument();
+    expect(
+      screen.getByText("3 attempts · This chat's decision model, or its own model when it has none")
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('phase-gate-save'));
     const refusal = await screen.findByTestId('phase-gate-refusal');
     expect(refusal).toHaveTextContent(/^Model: Phase "research"'s gate cannot be answered/);

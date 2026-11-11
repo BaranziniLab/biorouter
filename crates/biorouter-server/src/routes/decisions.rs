@@ -52,7 +52,10 @@
 //! models exist. A monitor that is switched off or left as it was is never
 //! asked, so a person can always switch off or remove a monitor whose model
 //! went away. A phase gate the person sets is checked the same way
-//! ([`DecisionService::check_model_use`]). After a settings save, the chat's
+//! ([`orchestration_plan::gate_judge_for`], which asks
+//! [`DecisionService::check_model_use`] and never refuses a gate that names no
+//! model, because the chat's own model judges it when no decision model may).
+//! After a settings save, the chat's
 //! monitors that also watch its subagents are copied onto the subagents it is
 //! running now ([`decision_settings::sync_inherited`]).
 //!
@@ -2097,11 +2100,13 @@ pub async fn put_decision_chat(
                                       `acceptPublicDecisionModels: true` (body = \
                                       PublicDecisionConfirmation, JSON). Nothing was changed",
                        body = PublicDecisionConfirmation),
-        (status = 422, description = "The gate's decision model cannot answer it in this chat \
-                                      now: not available, cannot take yes/no questions, will not \
-                                      load, or refused by the chat's privacy tier, an \
-                                      institution or a Crew grant. Nothing was changed (body = \
-                                      plain text)"),
+        (status = 422, description = "The decision model the gate names cannot answer it in \
+                                      this chat now: not available, cannot take yes/no \
+                                      questions, will not load, or refused by the chat's privacy \
+                                      tier, an institution or a Crew grant. A gate that names no \
+                                      model is never refused: with no decision model the chat \
+                                      may use, the chat's own model judges it. Nothing was \
+                                      changed (body = plain text)"),
         (status = 500, description = "Internal server error")
     ),
     security(("api_key" = []))
@@ -2156,21 +2161,22 @@ pub async fn put_phase_gate(
     checked.lowered_after_save = change
         .as_ref()
         .is_some_and(|change| change.lowered_after_save);
-    if let Err(error) = routes
-        .service
-        .check_model_use(
-            &checked,
-            gate.model.as_ref(),
-            &gate.questions,
-            ModelSource::Setting,
-        )
-        .await
+    // A gate that names no model is never refused here: with no decision
+    // model this chat may use, the chat's own model judges it.
+    if let Err(error) = orchestration_plan::gate_judge_for(
+        routes.service,
+        &checked,
+        gate.model.as_ref(),
+        &gate.questions,
+        ModelSource::Setting,
+    )
+    .await
     {
         return plain(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!(
-                "Phase \"{phase_id}\"'s gate cannot be answered in this chat: {}. Nothing was \
-                 changed.",
+                "Phase \"{phase_id}\"'s gate cannot be answered in this chat: {}. Remove the \
+                 model from the gate to let the chat's own model judge it. Nothing was changed.",
                 without_full_stop(&error.to_string())
             ),
         );

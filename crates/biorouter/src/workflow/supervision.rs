@@ -856,21 +856,25 @@ async fn check_plan_models(
                     )
                 })
                 .collect();
-            service
-                .check_model_use(
-                    session,
-                    gate.model.as_ref(),
-                    &questions,
-                    ModelSource::Setting,
-                )
-                .await
-                .map_err(|error| {
-                    SeedRefusal::refused(format!(
-                        "phase \"{}\"'s gate could not run. {}",
-                        phase.id,
-                        as_sentence(&error.to_string())
-                    ))
-                })?;
+            // A gate that names no model is never refused: with no decision
+            // model this chat may use, the chat's own model judges it, so a
+            // workflow with such gates runs for anyone with a language model.
+            crate::agents::orchestration_plan::gate_judge_for(
+                service,
+                session,
+                gate.model.as_ref(),
+                &questions,
+                ModelSource::Setting,
+            )
+            .await
+            .map_err(|error| {
+                SeedRefusal::refused(format!(
+                    "phase \"{}\"'s gate could not run. {} Remove the model from the gate to \
+                     let the chat's own model judge it.",
+                    phase.id,
+                    as_sentence(&error.to_string())
+                ))
+            })?;
         }
         let mut taken = BTreeSet::new();
         for spec in &phase.monitors {
@@ -2607,6 +2611,79 @@ decision_settings:
             refusal
                 .sentence
                 .starts_with("phase \"count\"'s monitor \"Off task\" could not run."),
+            "{}",
+            refusal.sentence
+        );
+        assert_eq!(written(&manager, &id).await, [None, None, None]);
+    }
+
+    /// A workflow's gate that names no model runs for a person with no
+    /// decision model at all: the chat's own model judges it, so the seed
+    /// stores the plan. A gate that names a model the person does not have
+    /// refuses the run, and says how to let the chat's model judge it.
+    #[tokio::test]
+    async fn a_gate_with_no_model_seeds_without_any_decision_model() {
+        struct NoModels;
+
+        #[async_trait]
+        impl DecisionModelSource for NoModels {
+            async fn list(&self) -> Vec<DecisionModelEntry> {
+                Vec::new()
+            }
+            async fn open(
+                &self,
+                wanted: &DecisionModelRef,
+            ) -> DecisionResult<Arc<dyn DecisionModel>> {
+                Err(DecisionError::NoModel(format!(
+                    "No decision model `{}` is listed.",
+                    wanted.label()
+                )))
+            }
+        }
+
+        const GATE_ONLY: &str = r#"
+title: Gated
+description: Gated work
+prompt: Do the work.
+orchestration_plan:
+  title: Work
+  phases:
+    - {id: build, title: Build}
+    - id: check
+      title: Check
+      gate:
+        questions: {done: Is the work done?}
+"#;
+        let dir = TempDir::new().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf());
+        let service = DecisionService::new(Arc::new(NoModels))
+            .with_use_gate(Arc::new(Allow))
+            .with_default_model(None);
+
+        let id = new_chat(&dir, &manager).await;
+        assert!(matches!(
+            seed(&manager, &service, &workflow(GATE_ONLY), target(&id)).await,
+            Ok(SeedOutcome::Seeded { .. })
+        ));
+        let [_, plan, _] = written(&manager, &id).await;
+        assert!(plan.is_some(), "the gated plan was stored");
+
+        let named = GATE_ONLY.replace(
+            "questions: {done: Is the work done?}",
+            "questions: {done: Is the work done?}\n        model: test_decision/cloud",
+        );
+        let id = new_chat(&dir, &manager).await;
+        let refusal = seed(&manager, &service, &workflow(&named), target(&id))
+            .await
+            .unwrap_err();
+        assert_eq!(refusal.kind, SeedRefusalKind::Refused);
+        assert!(
+            refusal
+                .sentence
+                .starts_with("phase \"check\"'s gate could not run.")
+                && refusal.sentence.ends_with(
+                    "Remove the model from the gate to let the chat's own model judge it."
+                ),
             "{}",
             refusal.sentence
         );

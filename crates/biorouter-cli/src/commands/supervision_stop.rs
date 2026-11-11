@@ -186,6 +186,7 @@ mod tests {
             owner: GateOwner::Workflow,
             questions: Default::default(),
             model: None,
+            last_judge: None,
             model_adapter: None,
             allow_uncalibrated: false,
             last_error: None,

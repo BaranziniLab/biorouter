@@ -150,7 +150,10 @@ impl SystemOneAdapter {
                     model: self.entry.model.clone(),
                     status: None,
                     error_type: None,
-                    message: format!("{} could not be reached: {}", self.name(), root_cause(&e)),
+                    message: super::unreachable_sentence(
+                        &format!("{} on {}", self.entry.display_name, self.flavor.label()),
+                        &e,
+                    ),
                 })?;
             if response.status().as_u16() != 429 || attempt >= RATE_LIMIT_RETRIES {
                 return Ok(response);
@@ -363,11 +366,6 @@ fn parse_base(host: &str) -> DecisionResult<Url> {
         )));
     }
     Ok(url)
-}
-
-fn root_cause(error: &anyhow::Error) -> String {
-    // A transport error's chain names the host and the failure, never a body.
-    error.root_cause().to_string()
 }
 
 fn retry_after(response: &reqwest::Response) -> Option<Duration> {
