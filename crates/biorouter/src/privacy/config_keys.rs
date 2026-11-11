@@ -199,6 +199,22 @@ pub const TIER_INPUT_FILES: &[(&str, &str)] = &[
         "providers/versa_bedrock.rs",
         include_str!("../providers/versa_bedrock.rs"),
     ),
+    // DR-33 (design §7.3): a chat's decision models now feed its tier. The fold
+    // resolves each name through `chat::declared_axes`, which reads the Ollama
+    // address through `catalog::ollama_base_url` — that is where the
+    // `OLLAMA_HOST` read lives, so the catalog is scanned too. The configured
+    // decision default (`BIOROUTER_DECISION_PROVIDER` / `_MODEL`) is read in
+    // none of these: it is resolved inside the chat's classification and never
+    // lowers it (design §1.2).
+    ("privacy/decision_axes.rs", include_str!("decision_axes.rs")),
+    (
+        "providers/decision/chat.rs",
+        include_str!("../providers/decision/chat.rs"),
+    ),
+    (
+        "providers/decision/catalog.rs",
+        include_str!("../providers/decision/catalog.rs"),
+    ),
 ];
 
 /// Writing **or deleting** this key over HTTP requires the user-action proof.
@@ -361,6 +377,38 @@ mod tests {
             "BIOROUTER_MODEL must be a capability key exactly while a `tier()` reads the model \
              name ({readers:?})"
         );
+    }
+
+    /// DR-33 (design §1.2, §7.3): a chat's decision models now feed its tier,
+    /// and the files that resolve them are scanned. The machine-wide decision
+    /// default is NOT among their reads: it is resolved inside a chat's
+    /// classification and never lowers it, so it is not a capability key and
+    /// must not become a tier input by the back door.
+    #[test]
+    fn the_configured_decision_default_is_not_a_tier_input() {
+        let paths: Vec<&str> = tier_input_sources().map(|(path, _)| path).collect();
+        for file in [
+            "privacy/decision_axes.rs",
+            "providers/decision/chat.rs",
+            "providers/decision/catalog.rs",
+        ] {
+            assert!(
+                paths.contains(&file),
+                "{file} feeds a tier and is not scanned"
+            );
+        }
+        let scanned = scan_get_param_keys();
+        for key in ["BIOROUTER_DECISION_PROVIDER", "BIOROUTER_DECISION_MODEL"] {
+            assert!(
+                !scanned.iter().any(|read| read == key),
+                "{key} is read by a tier-input file; a configured decision default must \
+                 follow a chat's tier, never set it"
+            );
+            assert!(!is_capability_key(key));
+        }
+        // The one key the decision files do read is already a capability key.
+        assert!(scanned.iter().any(|read| read == "OLLAMA_HOST"));
+        assert!(is_capability_key("OLLAMA_HOST"));
     }
 
     #[test]

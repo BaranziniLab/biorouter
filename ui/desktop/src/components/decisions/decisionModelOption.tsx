@@ -6,7 +6,7 @@ import {
   type DecisionModelRef,
   type DecisionTier,
 } from '../../utils/sessionDecisions';
-import { decisionModelPlace } from './decisionWords';
+import { TIER_EFFECT_COPY, decisionModelPlace } from './decisionWords';
 
 /**
  * One row of a decision model picker (the Monitors editor and the phase gate
@@ -21,6 +21,9 @@ import { decisionModelPlace } from './decisionWords';
  * - a model this chat may not use is disabled and says why: the R4 line for a public
  *   model in a private chat, whatever the daemon said, else the daemon's own reason
  *   with backticks removed (R5);
+ * - a public model whose choice would make this chat public (DR-33: the daemon's
+ *   `chatEffect`, never worked out here) is enabled, and its secondary text ends
+ *   "Makes this chat public", so the consequence is on the row before it is picked;
  * - the selected value (`context: 'value'`) is the name alone, except the default row's,
  *   which says what the default resolves to when that is known: "Default model (tev1:0.8b)".
  *   In the menu the model sits in the secondary text; once picked, the name is all that
@@ -70,6 +73,8 @@ export interface DecisionModelOption {
   model: DecisionModelRef | null;
   /** Why this chat may not use it; a row with a reason is disabled. */
   reason: string | null;
+  /** Choosing it makes the chat public (the daemon's `chatEffect`), asked for at Save. */
+  makesPublic?: boolean;
 }
 
 /** The picker's key for a model: `provider/model`, `''` for the default. */
@@ -97,7 +102,28 @@ export function decisionModelReason(
     return DECISION_MODEL_OPTION_COPY.publicRefused;
   }
   const reason = entry.unavailableReason ? plainReason(entry.unavailableReason) : '';
+  // The daemon's row for a public chat that becomes private at its next message says
+  // the R4 line and then what to do; the row keeps the line, the field's tip the rest.
+  if (reason.startsWith(DECISION_MODEL_OPTION_COPY.publicRefused)) {
+    return DECISION_MODEL_OPTION_COPY.publicRefused;
+  }
   return reason || null;
+}
+
+/**
+ * Whether any listed public model is refused for the R4 reason: the picker's field
+ * then carries {@link TIER_EFFECT_COPY.publicRefusedInfo} as its tip, which a
+ * disabled row cannot hold itself.
+ */
+export function anyPublicModelRefused(
+  models: readonly Pick<DecisionModelEntry, 'tier' | 'unavailableReason'>[],
+  chatTier: DecisionTier | null
+): boolean {
+  return models.some(
+    (entry) =>
+      entry.tier === 'public' &&
+      decisionModelReason(entry, chatTier) === DECISION_MODEL_OPTION_COPY.publicRefused
+  );
 }
 
 function spoken(name: string, isPrivate: boolean, secondary: string | null): string {
@@ -152,7 +178,11 @@ export function decisionModelOptions({
       tier: entry.tier,
       browser,
     });
-    const where = [place, riskyWindow(entry.contextTokens)].filter(Boolean).join(' · ') || null;
+    const makesPublic = !reason && entry.chatEffect === 'makesPublic';
+    const where =
+      [place, riskyWindow(entry.contextTokens), makesPublic ? TIER_EFFECT_COPY.makesPublic : null]
+        .filter(Boolean)
+        .join(' · ') || null;
     const secondary = reason ?? where;
     const isPrivate = !reason && entry.tier === 'private';
     rows.push({
@@ -163,6 +193,7 @@ export function decisionModelOptions({
       isPrivate,
       model,
       reason,
+      ...(makesPublic ? { makesPublic } : {}),
     });
   }
   return rows;

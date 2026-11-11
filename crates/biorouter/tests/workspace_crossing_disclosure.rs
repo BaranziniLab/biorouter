@@ -349,3 +349,120 @@ async fn a_first_crossing_is_refused_at_the_uninspected_script_boundary() {
         "a pair the user already approved must not be refused for ever after"
     );
 }
+
+/// **A child born under this chat's public ceiling asks on every payload**
+/// (DR-33, design §3.4). A chat that was public by a decision model spawned
+/// it; the chat has since become private. Every write into that child is a
+/// private-to-public crossing, and one approval must not let a now-private chat
+/// stream its content into a child it started while it was public.
+#[tokio::test]
+#[serial_test::serial(workspace_crossing)]
+async fn a_child_under_the_callers_public_ceiling_asks_on_every_payload() {
+    use biorouter::agents::workspace_inspector::uninspected_crossing_refusal;
+    use biorouter::privacy::decision_axes::PrivacyCeiling;
+    use biorouter::privacy::CallCapability;
+    use biorouter::security::UninspectedBoundary;
+
+    let root = store_root();
+    let sm = SessionManager::instance();
+    let caller = sm
+        .create_session(
+            root.path().to_path_buf(),
+            "once public lead".into(),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+    let mut child = sm
+        .create_session(
+            root.path().to_path_buf(),
+            "ceilinged child".into(),
+            SessionType::SubAgent,
+        )
+        .await
+        .unwrap();
+    PrivacyCeiling::public_from(caller.id.as_str(), None)
+        .stamp(&mut child.extension_data)
+        .unwrap();
+    sm.update(&child.id)
+        .parent_session_id(Some(caller.id.clone()))
+        .extension_data(child.extension_data.clone())
+        .apply()
+        .await
+        .unwrap();
+
+    let provider: biorouter::agents::types::SharedProvider =
+        Arc::new(tokio::sync::Mutex::new(Some(Arc::new(InstitutionalModel))));
+    let inspector = WorkspaceCrossingInspector::new(provider.clone());
+    let caller_session = sm.get_session(&caller.id, false).await.unwrap();
+    let inspect = |id: &'static str| {
+        let inspector = &inspector;
+        let session = caller_session.clone();
+        let target = child.id.clone();
+        async move {
+            inspector
+                .inspect(
+                    &[send_prompt_request(id, &target, "the cohort")],
+                    &[],
+                    BioRouterMode::Auto,
+                    &session,
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    let first = inspect("ceiling-1").await;
+    let prompt = match first.as_slice() {
+        [result] => match &result.action {
+            InspectionAction::RequireApproval(Some(prompt)) => prompt.clone(),
+            other => panic!("expected a disclosure, got {other:?}"),
+        },
+        other => panic!("expected one disclosure, got {other:?}"),
+    };
+    assert!(prompt.contains("asks again for every message"), "{prompt}");
+    assert!(!prompt.contains("stops asking"), "{prompt}");
+
+    // The write lands and the pair is recorded, and it asks again anyway.
+    biorouter::privacy::crossing::record(&caller.id, &child.id);
+    assert_eq!(
+        inspect("ceiling-2").await.len(),
+        1,
+        "a remembered approval silenced a write into a child under the caller's ceiling"
+    );
+
+    // The script boundary refuses it every time too.
+    let private_caller = CallCapability::sample(&provider).await;
+    let args = serde_json::json!({ "session_id": child.id, "mode": "turn", "text": "x" });
+    assert!(uninspected_crossing_refusal(
+        private_caller,
+        &caller.id,
+        "workspace_send_prompt",
+        Some(args.as_object().unwrap()),
+        UninspectedBoundary::ExecuteCodeScript,
+    )
+    .await
+    .is_some());
+
+    // Another chat's child is the ordinary once-per-pair rule.
+    let stranger = sm
+        .create_session(
+            root.path().to_path_buf(),
+            "stranger".into(),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+    biorouter::privacy::crossing::record(&stranger.id, &child.id);
+    let stranger_session = sm.get_session(&stranger.id, false).await.unwrap();
+    let results = inspector
+        .inspect(
+            &[send_prompt_request("ceiling-3", &child.id, "x")],
+            &[],
+            BioRouterMode::Auto,
+            &stranger_session,
+        )
+        .await
+        .unwrap();
+    assert!(results.is_empty(), "{results:?}");
+}

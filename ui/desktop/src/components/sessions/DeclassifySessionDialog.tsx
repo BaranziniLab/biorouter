@@ -12,6 +12,37 @@ import { DangerousConfirmDialog } from '../ui/DangerousConfirmDialog';
 import { Button } from '../ui/button';
 import { Note } from '../ui/note';
 import { ModalShell } from '../ModalShell';
+import { fetchDecisionCatalog, fetchDecisionSettings } from '../../utils/sessionDecisions';
+import { TIER_EFFECT_COPY, declassifyDecisionLines } from '../decisions/decisionWords';
+import { TierEffectLine } from '../decisions/TierEffectLine';
+
+/**
+ * DR-33 (design §3.11): what declassifying this chat does to its decision models,
+ * read when the dialog opens (its decision settings and the catalog's tiers), so the
+ * person sees which monitors go off before agreeing. Empty while unread, on a read
+ * that fails (the daemon still turns them off), and for a chat with none.
+ */
+export function useDeclassifyDecisionLines(sessionId: string, open: boolean): string[] {
+  const [lines, setLines] = useState<string[]>([]);
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    void Promise.all([
+      fetchDecisionSettings(sessionId, controller.signal),
+      fetchDecisionCatalog(controller.signal),
+    ])
+      .then(([settings, catalog]) => {
+        if (!controller.signal.aborted) {
+          setLines(declassifyDecisionLines(settings.data, catalog.models));
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setLines([]);
+      });
+    return () => controller.abort();
+  }, [sessionId, open]);
+  return lines;
+}
 
 /**
  * Issue #56 §12.4's graded confirmation, mirrored from
@@ -313,6 +344,7 @@ export function DeclassifySessionDialog({
   // subtitle), so the dialog points at it by id. Declared with the other hooks, above the
   // early return below.
   const undoTextId = useId();
+  const decisionLines = useDeclassifyDecisionLines(session.id, open);
 
   // The callbacks are read through a ref so that `send` — and therefore the undo
   // timer's effect — has an identity that does not change when the parent
@@ -498,6 +530,20 @@ export function DeclassifySessionDialog({
         </p>
         <p className="mt-0.5 font-mono text-supporting text-text-muted">{session.id}</p>
       </Note>
+      {/* DR-33: the public decision models the declassification turns off, named
+          before the person agrees, and what a public one may do afterwards. */}
+      {decisionLines.length > 0 ? (
+        <div className="flex flex-col gap-1" data-testid="declassify-decision-models">
+          {decisionLines.map((line, index) => (
+            <TierEffectLine
+              key={line}
+              line={line}
+              info={index === decisionLines.length - 1 ? TIER_EFFECT_COPY.declassifyInfo : null}
+              infoLabel={TIER_EFFECT_COPY.declassifyInfoLabel}
+            />
+          ))}
+        </div>
+      ) : null}
     </DangerousConfirmDialog>
   );
 }

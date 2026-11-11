@@ -82,6 +82,12 @@ export interface PrivacyBadgeProps {
    * ships unpassed on nine surfaces and fails nowhere.
    */
   enforcementOff?: boolean;
+  /**
+   * The pill's InfoTip, when the caller knows why the chat has this tier: today a
+   * chat a decision model made public (DR-33, `privacyBasisTip`). The pill is then
+   * the tip's trigger. Ignored by the dense form, which has its own sentence.
+   */
+  help?: string;
   className?: string;
 }
 
@@ -190,6 +196,7 @@ export function PrivacyBadge({
   tier,
   dense = false,
   enforcementOff,
+  help,
   className,
 }: PrivacyBadgeProps) {
   // Before the early return below, because a hook must be called
@@ -257,7 +264,7 @@ export function PrivacyBadge({
         help={
           off
             ? 'Private, but privacy tiers are turned off, so nothing enforces this'
-            : 'Private. Biorouter only lets a private model open this chat.'
+            : 'Private. Biorouter only lets private models, decision models included, read this chat.'
         }
         asChild
       >
@@ -266,7 +273,7 @@ export function PrivacyBadge({
     );
   }
 
-  return (
+  const pill = (
     <Badge
       data-testid="privacy-badge"
       data-privacy={tier}
@@ -286,5 +293,11 @@ export function PrivacyBadge({
       {spec.label}
       {off ? <span className="text-text-muted">&nbsp;(enforcement off)</span> : null}
     </Badge>
+  );
+  if (!help || off || insideAControl) return pill;
+  return (
+    <InfoTip label={spec.label} help={help} asChild>
+      {pill}
+    </InfoTip>
   );
 }

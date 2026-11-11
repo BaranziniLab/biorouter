@@ -90,8 +90,11 @@ async fn refused_workflow_start(
     // A model is named as the terminal names it everywhere, by its alias
     // and where it runs, never by a Baseten slug, and the advice names the
     // command a person runs rather than the agent's tool.
+    let refused = seed_refusal_text(error).or_else(|| unconfirmed_lowering_text(error))?;
     let text = crate::commands::decide::terminal_advice(
-        &crate::commands::decide::person_model_names_in_sentence(&seed_refusal_text(error)?),
+        &crate::commands::decide::person_model_names_in_sentence(
+            &crate::commands::decision_tier::cli_words(&refused),
+        ),
     );
     if !resumed {
         if let Err(e) = session_manager.delete_session(session_id).await {
@@ -102,6 +105,73 @@ async fn refused_workflow_start(
         }
     }
     Some(text)
+}
+
+/// DR-33: a workflow whose decision models would make the chat public, and
+/// the person declined or could not be asked (no terminal): "The workflow was
+/// not started: <why>". `None` for any other error.
+fn unconfirmed_lowering_text(error: &anyhow::Error) -> Option<String> {
+    use crate::commands::decision_tier::{DECLINED, NO_TERMINAL};
+    let text = error.to_string();
+    (text == DECLINED || text == NO_TERMINAL).then(|| {
+        format!(
+            "{}: {text}",
+            biorouter::workflow::runtime::WORKFLOW_NOT_STARTED
+        )
+    })
+}
+
+/// Install `workflow` into the chat `agent` runs (`install_prepared`), and
+/// when its decision models would make the chat public (DR-33, design §3.7,
+/// `biorouter run --workflow`), ask the person with the seed's own question
+/// and install it again with their typed acceptance. A refused seed writes
+/// nothing, so the second install starts from the same chat.
+pub async fn install_workflow_confirming(
+    agent: &Agent,
+    session_id: &str,
+    workflow: &Workflow,
+    prompt: Option<String>,
+    enforced: bool,
+    confirm: &mut dyn crate::commands::decision_tier::ConfirmPublic,
+) -> anyhow::Result<biorouter::workflow::supervision::SeedOutcome> {
+    use crate::commands::decision_tier::{cli_words, with_public_confirmation, SaveAttempt};
+    use biorouter::workflow::runtime::{install_prepared, InstallPrivacy};
+    use biorouter::workflow::supervision::{SeedConsent, SeedRefusal, SeedRefusalKind};
+    with_public_confirmation(confirm, session_id, |accepted| {
+        let prompt = prompt.clone();
+        async move {
+            let consent = if accepted {
+                SeedConsent::Confirmed { door: "cli" }
+            } else {
+                SeedConsent::Unconfirmed
+            };
+            match install_prepared(
+                agent,
+                session_id,
+                workflow,
+                true,
+                prompt,
+                InstallPrivacy::new(enforced, consent),
+            )
+            .await
+            {
+                Ok(outcome) => Ok(SaveAttempt::Saved(outcome)),
+                Err(error) => match error.downcast_ref::<SeedRefusal>() {
+                    Some(refusal)
+                        if refusal.kind == SeedRefusalKind::NeedsPublicDecisionConfirmation =>
+                    {
+                        let question = refusal
+                            .question
+                            .clone()
+                            .unwrap_or_else(|| refusal.sentence.clone());
+                        Ok(SaveAttempt::NeedsConfirmation(cli_words(&question)))
+                    }
+                    _ => Err(error),
+                },
+            }
+        }
+    })
+    .await
 }
 
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
@@ -197,6 +267,142 @@ pub struct SessionBuilderConfig {
     pub quiet: bool,
     /// Output format (text, json)
     pub output_format: String,
+    /// `--decision-model` and `--monitors`: the chat's decision models, set
+    /// before its first message (DR-33, design §4).
+    pub decisions: StartDecisions,
+}
+
+/// `--decision-model` and `--monitors` on `biorouter session` and `biorouter
+/// run` (DR-33, design §4): the chat's default decision model and its
+/// monitors, stored before its first message through the same checked save
+/// every other door uses. A public one (joey-1 on Baseten) on a chat bound to
+/// a private model (Versa) makes the chat public, which is asked about first
+/// and stored only with a confirmation typed at the terminal.
+#[derive(Debug, Clone, Default)]
+pub struct StartDecisions {
+    /// The default decision model, by its name (`joey-1`, `tev1:0.8b`) or as
+    /// `provider/model`.
+    pub model: Option<String>,
+    /// A YAML or JSON file in the shape of a workflow's `decision_settings`.
+    pub monitors: Option<std::path::PathBuf>,
+}
+
+impl StartDecisions {
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none() && self.monitors.is_none()
+    }
+}
+
+/// What a run is refused with when a workflow that declares its own decision
+/// models is started with `--decision-model` or `--monitors` too (design §4,
+/// the same refusal `/agent/start` gives).
+pub const WORKFLOW_SETS_ITS_OWN_DECISIONS: &str =
+    "This workflow sets its own decision models; change them after the chat starts.";
+
+/// The settings a `--monitors` file holds: bare, or under `decision_settings`
+/// (`decisionSettings`) as a workflow file writes them. YAML or JSON (JSON is
+/// YAML).
+pub fn parse_monitors_file(
+    text: &str,
+) -> anyhow::Result<biorouter::decision::settings::DecisionSettings> {
+    let value: serde_yaml::Value = serde_yaml::from_str(text)
+        .map_err(|error| anyhow::anyhow!("The monitors file could not be read: {error}"))?;
+    let inner = match &value {
+        serde_yaml::Value::Mapping(map) => ["decision_settings", "decisionSettings"]
+            .iter()
+            .find_map(|key| map.get(serde_yaml::Value::String((*key).to_string())))
+            .cloned()
+            .unwrap_or(value),
+        _ => value,
+    };
+    let settings: biorouter::decision::settings::DecisionSettings = serde_yaml::from_value(inner)
+        .map_err(|error| {
+        anyhow::anyhow!("The monitors file is not decision settings: {error}")
+    })?;
+    biorouter::decision::settings::validate(&settings).map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(settings)
+}
+
+/// The settings a start stores: what the chat holds, with the file's monitors
+/// added (and its default, unless `--decision-model` names one), then
+/// `--decision-model`'s default.
+pub fn start_settings(
+    stored: biorouter::decision::settings::DecisionSettings,
+    file: Option<biorouter::decision::settings::DecisionSettings>,
+    model: Option<biorouter::decision::DecisionModelRef>,
+) -> biorouter::decision::settings::DecisionSettings {
+    let mut settings = stored;
+    if let Some(file) = file {
+        settings.monitors.extend(file.monitors);
+        if file.default_model.is_some() {
+            settings.default_model = file.default_model;
+        }
+    }
+    if model.is_some() {
+        settings.default_model = model;
+    }
+    settings
+}
+
+/// Store `start`'s decision models for `session_id`, the chat `agent` runs,
+/// through the terminal's checked save (`decision_tier::save_settings_at_terminal`)
+/// with the tier of the model `agent` is bound to. A save that makes the chat
+/// public is asked about with `confirm` first; once stored, the agent's slot
+/// takes the lowering at once (`Agent::lower_decision_axes`), so the banner
+/// and the first turn agree. Returns the effect line to print, if any.
+pub async fn apply_start_decisions(
+    service: &biorouter::decision::DecisionService,
+    agent: &Agent,
+    session_id: &str,
+    start: &StartDecisions,
+    confirm: &mut dyn crate::commands::decision_tier::ConfirmPublic,
+) -> anyhow::Result<Option<String>> {
+    let manager = Arc::clone(&agent.config.session_manager);
+    let file = match &start.monitors {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|error| {
+                anyhow::anyhow!(
+                    "Could not read the monitors file {}: {error}",
+                    path.display()
+                )
+            })?;
+            Some(parse_monitors_file(&text)?)
+        }
+        None => None,
+    };
+    let model = match crate::commands::decide::spell_model_option(start.model.clone()).await? {
+        Some(label) => Some(
+            biorouter::decision::DecisionModelRef::parse(&label).ok_or_else(|| {
+                anyhow::anyhow!("`{label}` is not a decision model; write it provider/model.")
+            })?,
+        ),
+        None => None,
+    };
+    let stored = biorouter::decision::settings::load(&manager, session_id).await?;
+    let settings = start_settings(stored, file, model);
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    let row = manager.get_session(session_id, false).await?;
+    // As `decision::save::row_bound_model_tier` reads it, but from the
+    // model this process bound (the agent's own, never its folded slot).
+    let bound = if enforced && !row.privacy_tier.is_private() {
+        Some(agent.bound_model_tier().await)
+    } else {
+        None
+    };
+    let session =
+        biorouter::decision::DecisionSession::load(Arc::clone(&manager), session_id, enforced)
+            .await?
+            .with_bound_model_tier(bound)
+            .with_row_tier_context(&row);
+    let saved = crate::commands::decision_tier::save_settings_at_terminal(
+        service, &manager, &session, settings, confirm,
+    )
+    .await?;
+    if saved.lowered() {
+        let row = manager.get_session(session_id, false).await?;
+        agent.lower_decision_axes(&row).await;
+    }
+    Ok(crate::commands::decision_tier::effect_line(&saved))
 }
 
 /// Manual implementation of Default to ensure proper initialization of output_format
@@ -221,6 +427,7 @@ impl Default for SessionBuilderConfig {
             interactive: false,
             quiet: false,
             output_format: "text".to_string(),
+            decisions: StartDecisions::default(),
         }
     }
 }
@@ -1317,13 +1524,14 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         // declares into this chat first, once, before its first message. One
         // it cannot apply is a run that does not start: the person reads why,
         // and the chat this run made for it is removed.
-        match biorouter::workflow::runtime::install_prepared(
+        let mut confirm = crate::commands::decision_tier::TerminalConfirm::here();
+        match install_workflow_confirming(
             &session.agent,
             &session_id,
             workflow,
-            true,
             prepared,
             biorouter::privacy::privacy_tiers_enabled(),
+            &mut confirm,
         )
         .await
         {
@@ -1361,6 +1569,56 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         }
     }
 
+    // DR-33 (design §4): `--decision-model` and `--monitors`, stored before
+    // the chat's first message. A workflow that names its own decision models
+    // is not merged with them; refused, the chat this run made is removed.
+    if !session_config.decisions.is_empty() {
+        let refusal = if workflow.is_some_and(|w| w.decision_settings.is_some()) {
+            Some(WORKFLOW_SETS_ITS_OWN_DECISIONS.to_string())
+        } else {
+            let mut confirm = crate::commands::decision_tier::TerminalConfirm::here();
+            match apply_start_decisions(
+                biorouter::decision::global(),
+                &session.agent,
+                &session_id,
+                &session_config.decisions,
+                &mut confirm,
+            )
+            .await
+            {
+                Ok(line) => {
+                    if let Some(line) = line {
+                        eprintln!("{}", style(line).yellow());
+                    }
+                    None
+                }
+                Err(error) => Some(crate::commands::decide::terminal_advice(
+                    &crate::commands::decide::person_model_names_in_sentence(
+                        &crate::commands::decision_tier::cli_words(&error.to_string()),
+                    ),
+                )),
+            }
+        };
+        if let Some(text) = refusal {
+            if !session_config.resume {
+                if let Err(e) = session
+                    .agent
+                    .config
+                    .session_manager
+                    .delete_session(&session_id)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id,
+                        "could not remove the chat whose decision models were refused: {e:#}"
+                    );
+                }
+            }
+            output::render_error(&text);
+            process::exit(1);
+        }
+    }
+
     // Only override system prompt if a system override exists
     let system_prompt_file: Option<String> =
         config.get_param("BIOROUTER_SYSTEM_PROMPT_FILE_PATH").ok();
@@ -1375,11 +1633,21 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         // start-time check sampled: the bind above ratchets nothing, but a
         // `--no-session` run had no row to read then and has one now, and a
         // resumed chat can have been raised by another process in between.
-        let privacy = session_manager
-            .get_session(&session_id, false)
-            .await
+        let row = session_manager.get_session(&session_id, false).await.ok();
+        let privacy = row
+            .as_ref()
             .map(|s| s.privacy_tier)
             .unwrap_or(session_classification);
+        // DR-33: the second privacy line, when decision models made this
+        // private model's chat public.
+        let decision_reason = match row.as_ref() {
+            Some(row) => output::decision_privacy_reason(
+                row,
+                session.agent.bound_model_tier().await,
+                biorouter::privacy::privacy_tiers_enabled(),
+            ),
+            None => None,
+        };
         output::display_session_info(
             session_config.resume,
             &provider_name,
@@ -1387,6 +1655,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             &Some(session_id),
             Some(&provider_for_display),
             privacy,
+            decision_reason,
         );
     }
     session
@@ -1447,6 +1716,379 @@ async fn keyring_advice(provider_name: &str, detail: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod start_decisions {
+        use super::super::*;
+        use crate::commands::decision_tier::{Scripted, DECLINED, NO_TERMINAL};
+        use biorouter::conversation::message::Message;
+        use biorouter::decision::settings::DecisionSettings;
+        use biorouter::decision::{DecisionModelRef, DecisionService};
+        use biorouter::model::ModelConfig;
+        use biorouter::privacy::decision_axes::{PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION};
+        use biorouter::privacy::{ModelAffiliation, ProviderTier};
+        use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+        use biorouter::providers::errors::ProviderError;
+        use rmcp::model::Tool;
+
+        /// A private language model, as Versa is: only its two privacy axes
+        /// are ever asked.
+        struct PrivateModel;
+
+        #[async_trait::async_trait]
+        impl Provider for PrivateModel {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "private-test"
+            }
+            fn tier(&self) -> ProviderTier {
+                ProviderTier::Private
+            }
+            fn affiliation(&self) -> Option<ModelAffiliation> {
+                Some(ModelAffiliation::Local)
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new_or_fail("test-model")
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                unreachable!("nothing is sent: only the save runs")
+            }
+        }
+
+        /// Baseten's joey-1, listed and never asked anything.
+        struct Joey;
+
+        #[async_trait::async_trait]
+        impl biorouter::decision::DecisionModel for Joey {
+            fn model_ref(&self) -> DecisionModelRef {
+                DecisionModelRef::new("baseten_decision", "joey-1")
+                    .with_adapter(biorouter::decision::types::DecisionAdapter::SystemOne)
+            }
+            fn display_name(&self) -> String {
+                "joey-1".into()
+            }
+            fn tier(&self) -> ProviderTier {
+                ProviderTier::Public
+            }
+            fn affiliation(&self) -> Option<ModelAffiliation> {
+                None
+            }
+            fn caps(&self) -> biorouter::decision::DecisionCaps {
+                biorouter::decision::DecisionCaps {
+                    kinds: vec![biorouter::decision::types::DecisionKindTag::Binary],
+                    max_questions: 64,
+                    context_tokens: 4_096,
+                    max_concurrency: 1,
+                    max_request_bytes: None,
+                    local: false,
+                }
+            }
+            async fn decide(
+                &self,
+                _: &biorouter::decision::types::DecisionRequest,
+            ) -> biorouter::decision::DecisionResult<biorouter::decision::types::ModelVerdicts>
+            {
+                panic!("a save check sends nothing");
+            }
+        }
+
+        struct OnlyJoey;
+
+        #[async_trait::async_trait]
+        impl biorouter::decision::DecisionModelSource for OnlyJoey {
+            async fn list(&self) -> Vec<biorouter::decision::DecisionModelEntry> {
+                vec![biorouter::decision::DecisionModelEntry {
+                    provider: "baseten_decision".into(),
+                    model: "joey-1".into(),
+                    display_name: "joey-1".into(),
+                    context_tokens: 4_096,
+                    kinds: vec![biorouter::decision::types::DecisionKindTag::Binary],
+                    tier: ProviderTier::Public,
+                    affiliation: None,
+                    adapter: biorouter::decision::types::DecisionAdapter::SystemOne,
+                    local: false,
+                    load_refusal: None,
+                }]
+            }
+            async fn open(
+                &self,
+                wanted: &DecisionModelRef,
+            ) -> biorouter::decision::DecisionResult<Arc<dyn biorouter::decision::DecisionModel>>
+            {
+                if wanted.model == "joey-1" {
+                    Ok(Arc::new(Joey))
+                } else {
+                    Err(biorouter::decision::DecisionError::NoModel(format!(
+                        "No decision model `{}` is listed.",
+                        wanted.label()
+                    )))
+                }
+            }
+        }
+
+        struct Allow;
+
+        #[async_trait::async_trait]
+        impl biorouter::decision::DecisionUseGate for Allow {
+            async fn check(
+                &self,
+                _: &biorouter::decision::DecisionSession,
+                _: &dyn biorouter::decision::DecisionModel,
+            ) -> biorouter::decision::DecisionResult<()> {
+                Ok(())
+            }
+        }
+
+        fn service() -> DecisionService {
+            DecisionService::new(Arc::new(OnlyJoey))
+                .with_use_gate(Arc::new(Allow))
+                .with_default_model(None)
+        }
+
+        /// An agent over its own store, bound to [`PrivateModel`] on a new,
+        /// empty chat.
+        async fn private_chat(dir: &std::path::Path) -> (Agent, String) {
+            let manager = Arc::new(SessionManager::new(dir.to_path_buf()));
+            let agent = Agent::with_config(AgentConfig::new(
+                Arc::clone(&manager),
+                PermissionManager::instance(),
+                None,
+                BioRouterMode::Auto,
+            ));
+            let chat = manager
+                .create_session(dir.to_path_buf(), "start".to_string(), SessionType::User)
+                .await
+                .unwrap();
+            agent
+                .update_provider(Arc::new(PrivateModel), &chat.id)
+                .await
+                .unwrap();
+            (agent, chat.id)
+        }
+
+        fn joey_default() -> StartDecisions {
+            StartDecisions {
+                // Spelled already, so no catalog is asked to resolve a name.
+                model: None,
+                monitors: None,
+            }
+        }
+
+        /// A `--monitors` file naming joey-1 as the default, written to `dir`.
+        fn joey_file(dir: &std::path::Path) -> StartDecisions {
+            let path = dir.join("monitors.yaml");
+            std::fs::write(
+                &path,
+                "decision_settings:\n  defaultModel:\n    provider: baseten_decision\n    \
+                 model: joey-1\n  monitors: []\n",
+            )
+            .unwrap();
+            StartDecisions {
+                monitors: Some(path),
+                ..joey_default()
+            }
+        }
+
+        async fn stored(agent: &Agent, id: &str) -> (DecisionSettings, bool) {
+            let manager = &agent.config.session_manager;
+            let settings = biorouter::decision::settings::load(manager, id)
+                .await
+                .unwrap();
+            let basis = manager
+                .get_session(id, false)
+                .await
+                .unwrap()
+                .extension_data
+                .get_extension_state(PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION)
+                .is_some();
+            (settings, basis)
+        }
+
+        /// DR-33 (design §4, S4/S22): `biorouter session --decision-model
+        /// baseten_decision/joey-1` on a private model's new chat makes it
+        /// public. With no terminal, or declined, nothing is stored and the
+        /// agent's slot keeps its model's tier; confirmed, the default and
+        /// the person's basis are stored together, the slot is lowered at
+        /// once, and the banner says why.
+        #[tokio::test]
+        async fn a_public_default_before_the_first_message_is_confirmed_at_the_terminal() {
+            let dir = tempfile::tempdir().unwrap();
+            let (agent, id) = private_chat(dir.path()).await;
+            let service = service();
+            let start = joey_file(dir.path());
+
+            for (mut answer, refusal) in [
+                (Scripted::no_terminal(), NO_TERMINAL),
+                (Scripted::no(), DECLINED),
+            ] {
+                let error = apply_start_decisions(&service, &agent, &id, &start, &mut answer)
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.to_string(), refusal);
+                assert_eq!(
+                    answer.asked,
+                    vec!["This chat will be public: joey-1 runs on Baseten.".to_string()]
+                );
+                assert_eq!(
+                    stored(&agent, &id).await,
+                    (DecisionSettings::default(), false)
+                );
+                assert!(agent.decision_lowered_by().await.is_none());
+            }
+
+            let line = apply_start_decisions(&service, &agent, &id, &start, &mut Scripted::yes())
+                .await
+                .unwrap();
+            assert_eq!(
+                line.as_deref(),
+                Some("This chat will be public: joey-1 runs on Baseten.")
+            );
+            let (settings, basis) = stored(&agent, &id).await;
+            assert_eq!(
+                settings.default_model,
+                Some(DecisionModelRef::new("baseten_decision", "joey-1"))
+            );
+            assert!(basis, "the person's acceptance is recorded with the save");
+            assert!(
+                agent.decision_lowered_by().await.is_some(),
+                "the slot takes the lowering at once"
+            );
+            assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+            let row = agent
+                .config
+                .session_manager
+                .get_session(&id, false)
+                .await
+                .unwrap();
+            assert_eq!(
+                output::decision_privacy_reason(&row, agent.bound_model_tier().await, true)
+                    .as_deref(),
+                Some("public because the default decision model is joey-1 · Baseten")
+            );
+        }
+
+        /// A chat that has started cannot be made public this way: refused
+        /// before anything is asked.
+        #[tokio::test]
+        async fn a_started_chat_is_refused_a_public_default_without_a_question() {
+            let dir = tempfile::tempdir().unwrap();
+            let (agent, id) = private_chat(dir.path()).await;
+            agent
+                .config
+                .session_manager
+                .add_message(&id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+            let mut asked = Scripted::yes();
+            let error =
+                apply_start_decisions(&service(), &agent, &id, &joey_file(dir.path()), &mut asked)
+                    .await
+                    .unwrap_err();
+            assert!(
+                error.to_string().contains("already has messages"),
+                "{error}"
+            );
+            assert!(asked.asked.is_empty());
+            assert_eq!(
+                stored(&agent, &id).await,
+                (DecisionSettings::default(), false)
+            );
+        }
+
+        /// DR-33 (design §3.7, S5): `biorouter run --workflow` with a
+        /// workflow whose default decision model is joey-1, on a private
+        /// model's new chat, is a lowering. Without a terminal it is not
+        /// started and nothing is seeded; confirmed, it is seeded with the
+        /// person's basis and the slot is lowered.
+        #[tokio::test]
+        async fn a_workflow_that_makes_the_chat_public_starts_only_once_confirmed() {
+            let dir = tempfile::tempdir().unwrap();
+            let (agent, id) = private_chat(dir.path()).await;
+            agent.set_decision_service(Arc::new(service()));
+            let workflow = Workflow::from_content(
+                "version: 1.0.0\ntitle: Lowering\ndescription: probe\nprompt: test\n\
+                 decision_settings:\n  defaultModel:\n    provider: baseten_decision\n    \
+                 model: joey-1\n",
+            )
+            .expect("a valid workflow");
+
+            let mut nobody = Scripted::no_terminal();
+            let error =
+                install_workflow_confirming(&agent, &id, &workflow, None, true, &mut nobody)
+                    .await
+                    .unwrap_err();
+            assert_eq!(error.to_string(), NO_TERMINAL);
+            assert_eq!(nobody.asked.len(), 1, "the seed's question was asked");
+            assert!(nobody.asked[0].contains("joey-1"), "{:?}", nobody.asked);
+            assert_eq!(
+                unconfirmed_lowering_text(&error).as_deref(),
+                Some(format!("The workflow was not started: {NO_TERMINAL}").as_str())
+            );
+            assert_eq!(
+                stored(&agent, &id).await,
+                (DecisionSettings::default(), false)
+            );
+
+            install_workflow_confirming(&agent, &id, &workflow, None, true, &mut Scripted::yes())
+                .await
+                .unwrap();
+            let (settings, basis) = stored(&agent, &id).await;
+            assert_eq!(
+                settings.default_model,
+                Some(DecisionModelRef::new("baseten_decision", "joey-1"))
+            );
+            assert!(basis);
+            assert!(agent.decision_lowered_by().await.is_some());
+        }
+
+        #[test]
+        fn a_monitors_file_is_read_bare_or_as_a_workflow_writes_it() {
+            let bare = parse_monitors_file(
+                "{\"defaultModel\": {\"provider\": \"ollama_decision\", \"model\": \"tev1:0.8b\"}}",
+            )
+            .unwrap();
+            assert_eq!(
+                bare.default_model,
+                Some(DecisionModelRef::new("ollama_decision", "tev1:0.8b"))
+            );
+            let wrapped = parse_monitors_file(
+                "decisionSettings:\n  defaultModel:\n    provider: ollama_decision\n    model: \
+                 tev1:0.8b\n",
+            )
+            .unwrap();
+            assert_eq!(wrapped, bare);
+            assert!(parse_monitors_file("monitorz: []")
+                .unwrap_err()
+                .to_string()
+                .contains("not decision settings"));
+        }
+
+        #[test]
+        fn a_start_adds_the_files_monitors_and_the_flag_wins_the_default() {
+            let tev = DecisionModelRef::new("ollama_decision", "tev1:0.8b");
+            let joey = DecisionModelRef::new("baseten_decision", "joey-1");
+            let file = DecisionSettings {
+                default_model: Some(tev.clone()),
+                monitors: Vec::new(),
+            };
+            assert_eq!(
+                start_settings(DecisionSettings::default(), Some(file.clone()), None).default_model,
+                Some(tev)
+            );
+            assert_eq!(
+                start_settings(DecisionSettings::default(), Some(file), Some(joey.clone()))
+                    .default_model,
+                Some(joey)
+            );
+        }
+    }
 
     /// A workflow declaring a phase plan, which the seed refuses outside the
     /// Autonomous approval mode before it asks any decision model.
@@ -2593,6 +3235,7 @@ mod tests {
             interactive: true,
             quiet: false,
             output_format: "text".to_string(),
+            decisions: StartDecisions::default(),
         };
 
         assert_eq!(config.extensions.len(), 1);

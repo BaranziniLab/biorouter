@@ -525,6 +525,17 @@ pub fn scheduled_run_refusal(
     }
 }
 
+/// DR-33 (design §1.8, §3.7): whether a scheduled run may make its chat public
+/// through its workflow's decision models. Only a schedule that records the
+/// person's acceptance may (`ScheduledJob::accepted_public_decision_models`,
+/// written by a proven arming door with the flag, never from a chat). That
+/// record is not built yet: it is a new field on [`ScheduledJob`], whose struct
+/// literals live in the CLI and the server too, so it lands with them. Until
+/// then every schedule reads as not having accepted it, and a lowering run is
+/// refused before anything is sent ([`execute_job`]). That is the safe side:
+/// availability, never a disclosure.
+const SCHEDULE_RECORDS_NO_PUBLIC_DECISION_ACCEPTANCE: bool = false;
+
 /// May the scheduler delete `job.source` when the job is removed?
 ///
 /// Deleting a schedule used to delete the workflow it was created from. The
@@ -2960,13 +2971,25 @@ async fn execute_job(
         // chat first, with the master switch this run already sampled. A seed
         // that cannot apply them refuses here, so the run never starts and its
         // error reads "The workflow was not started: <sentence>".
+        //
+        // DR-33 (design §1.8, §3.7): a run whose workflow's decision models
+        // would make its chat public lowers it only when the schedule records
+        // the person's acceptance. No schedule records one yet (see
+        // `SCHEDULE_RECORDS_NO_PUBLIC_DECISION_ACCEPTANCE`), so such a run is
+        // refused with the scheduled sentence and nothing is sent. A run whose
+        // chat starts private (a private creator) is refused with its own.
         crate::workflow::runtime::install_prepared(
             &agent,
             &session.id,
             &workflow,
             true,
             prepared_workflow_prompt,
-            tiers_enforced,
+            crate::workflow::runtime::InstallPrivacy::new(
+                tiers_enforced,
+                crate::workflow::supervision::SeedConsent::Schedule {
+                    accepted: SCHEDULE_RECORDS_NO_PUBLIC_DECISION_ACCEPTANCE,
+                },
+            ),
         )
         .await?;
         Ok::<(), anyhow::Error>(())

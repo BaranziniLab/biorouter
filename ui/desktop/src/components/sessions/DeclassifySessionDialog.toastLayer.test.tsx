@@ -35,6 +35,17 @@ const mocks = vi.hoisted(() => ({
   rowListeners: new Set<(facts: { sessionId: string; privacy_tier: string }) => void>(),
 }));
 
+// DR-33: the declassify dialog reads the chat's decision models when it opens.
+vi.mock('../../utils/sessionDecisions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/sessionDecisions')>()),
+  fetchDecisionSettings: async () => ({ data: null, missing: false }),
+  fetchDecisionCatalog: async () => ({
+    models: [],
+    sessionUnavailableReason: null,
+    missing: false,
+  }),
+}));
+
 vi.mock('../../api', () => ({
   declassifySession: mocks.declassifySession,
 }));

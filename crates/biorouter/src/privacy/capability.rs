@@ -42,6 +42,12 @@ pub struct CallCapability {
     tier: ProviderTier,
     enforced: bool,
     affiliation: Option<ModelAffiliation>,
+    /// DR-33: the tier was lowered by one of the chat's decision models, read
+    /// in the same lock as the tier (`decision_lowered_by().is_some()`), so a
+    /// refusal can pick its sentence without a second read of the slot. It
+    /// decides nothing: the gates read [`Self::tier`]. Set only by
+    /// [`Self::sample`].
+    lowered_by_decision: bool,
 }
 
 impl CallCapability {
@@ -56,16 +62,17 @@ impl CallCapability {
         // `None` — legitimately the state before the first bind — resolves to
         // Public, the safe direction for every gate that reads this. Its
         // affiliation is `None` too, which is what a public model's is.
-        let (tier, affiliation) = provider
+        let (tier, affiliation, lowered_by_decision) = provider
             .lock()
             .await
             .as_ref()
-            .map(|p| (p.tier(), p.affiliation()))
-            .unwrap_or((ProviderTier::Public, None));
+            .map(|p| (p.tier(), p.affiliation(), p.decision_lowered_by().is_some()))
+            .unwrap_or((ProviderTier::Public, None, false));
         Self {
             tier,
             affiliation,
             enforced: crate::privacy::privacy_tiers_enabled(),
+            lowered_by_decision,
         }
     }
 
@@ -81,6 +88,7 @@ impl CallCapability {
             // gates keep this capability away from every private extension
             // regardless.
             affiliation: None,
+            lowered_by_decision: false,
         }
     }
 
@@ -125,6 +133,7 @@ impl CallCapability {
             tier,
             enforced,
             affiliation,
+            lowered_by_decision: false,
         }
     }
 
@@ -139,6 +148,19 @@ impl CallCapability {
             tier,
             enforced,
             affiliation,
+            lowered_by_decision: false,
+        }
+    }
+
+    /// A Public capability whose tier a decision model lowered, for the tests of
+    /// the sentences that name it.
+    #[cfg(test)]
+    pub(crate) const fn for_test_lowered_by_decision(enforced: bool) -> Self {
+        Self {
+            tier: ProviderTier::Public,
+            enforced,
+            affiliation: None,
+            lowered_by_decision: true,
         }
     }
 
@@ -156,6 +178,15 @@ impl CallCapability {
 
     pub const fn enforced(&self) -> bool {
         self.enforced
+    }
+
+    /// DR-33: whether this call's tier is Public because of a decision model
+    /// the chat names rather than because of its language model. A refusal
+    /// branches on it to say so instead of telling a Versa chat to "switch to a
+    /// private model" (design §3.9). The words are read off the bound
+    /// provider's `decision_lowered_by()` on the refusal path only.
+    pub const fn lowered_by_decision(&self) -> bool {
+        self.lowered_by_decision
     }
 
     /// Whose agreements cover the model this call was admitted on — DR-26's

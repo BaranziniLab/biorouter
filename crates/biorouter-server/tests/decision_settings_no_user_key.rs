@@ -332,3 +332,92 @@ async fn a_keyless_write_never_reaches_a_subagents_chat() {
 
     let _ = state.session_manager().delete_session(&subagent).await;
 }
+
+/// SD-16: on a daemon that holds no user-action key, a save that would make a
+/// chat on a private model public by naming a public decision model is
+/// refused (403, with its sentence, never empty) unless the operator allowed
+/// it at launch; with that pin the person's confirmation is still asked
+/// (409). Both are decided before any decision model is asked, so nothing
+/// here reaches Baseten. Nothing is saved either way.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_keyless_daemon_makes_a_chat_public_by_a_decision_model_only_when_its_operator_allowed_it(
+) {
+    assert_the_daemon_is_keyless();
+    let state = AppState::new().await.unwrap();
+    let manager = state.session_manager();
+    let chat = seed(&state, SessionClassification::Public).await;
+    // Bound to Versa on its row, before its first message: still Public.
+    manager
+        .update(&chat)
+        .provider_name("versa_azure")
+        .model_config(ModelConfig::new("gpt-5.5").unwrap())
+        .apply()
+        .await
+        .unwrap();
+    let uri = format!("/sessions/{chat}/decision-settings");
+    let joey = json!({
+        "monitors": [{
+            "id": "done",
+            "name": "Done",
+            "question": { "instructions": "Is the task done?", "kind": { "binary": {} } },
+            "model": { "provider": "baseten_decision", "model": "joey-1" },
+            "threshold": 0.85
+        }],
+        "acceptPublicDecisionModels": true
+    });
+    let stored = || async {
+        manager
+            .get_extension_state(
+                &chat,
+                biorouter::privacy::decision_axes::PUBLIC_BASIS_STATE,
+                biorouter::privacy::decision_axes::PUBLIC_BASIS_VERSION,
+            )
+            .await
+            .unwrap()
+    };
+
+    biorouter_server::launch::record_launch_state(false);
+    let (status, body) = send(&state, "PUT", &uri, Some(joey.clone()), None).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (
+            StatusCode::FORBIDDEN,
+            biorouter_server::routes::decisions::PUBLIC_DECISION_MODELS_NOT_ALLOWED
+        )
+    );
+    assert_eq!(stored().await, None);
+    // The picker says so before the person reaches for the model (SD-8).
+    let (status, body) = send(
+        &state,
+        "GET",
+        "/decisions/models?boundProvider=versa_azure&boundModel=gpt-5.5",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listing: Value = serde_json::from_str(&body).unwrap();
+    for row in listing["models"].as_array().unwrap() {
+        if row["chatEffect"] == "makesPublic" {
+            assert_eq!(
+                row["unavailableReason"],
+                biorouter_server::routes::decisions::PUBLIC_DECISION_MODELS_NOT_ALLOWED_ROW,
+                "{row}"
+            );
+        }
+    }
+
+    // The operator's launch pin opens the door; the person still confirms.
+    biorouter_server::launch::record_launch_state_with(false, true);
+    let mut unconfirmed = joey.clone();
+    unconfirmed["acceptPublicDecisionModels"] = json!(false);
+    let (status, body) = send(&state, "PUT", &uri, Some(unconfirmed), None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let question: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(question["code"], "needsPublicDecisionConfirmation");
+    assert_eq!(stored().await, None);
+
+    biorouter_server::launch::record_launch_state(false);
+    let _ = manager.delete_session(&chat).await;
+}

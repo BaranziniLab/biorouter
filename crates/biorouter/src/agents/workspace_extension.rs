@@ -4091,7 +4091,25 @@ impl WorkspaceClient {
             // Reached only when `bind_allowed` already passed, so the only way
             // this can be false is the raise; the branch above owns the other
             // sentence.
-            if !crate::privacy::tool_bind_allowed(provider.tier(), classification) {
+            //
+            // DR-33 (design §3.1): DR-16 is about the PROVIDER axis, so the
+            // baseline for a raise is the target's bound language model as
+            // well as its classification. A chat classified Public while bound
+            // to a private model (one its person made public by a decision
+            // model, or an empty one) moving to another private model is a
+            // Private-to-Private move: its reach is what its names and its
+            // model already give it, so it is not a raise. Read off its live
+            // agent's unwrapped model (peeked, never created), else its row.
+            let provider_axis_unchanged = provider.tier().is_private()
+                && Self::target_bound_model_tier(
+                    self.context.session_manager.as_ref(),
+                    &args.session_id,
+                )
+                .await
+                    == Some(crate::privacy::ProviderTier::Private);
+            if !provider_axis_unchanged
+                && !crate::privacy::tool_bind_allowed(provider.tier(), classification)
+            {
                 return Err(format!(
                     "failed to switch provider: {}",
                     crate::privacy::refusal::PrivacyRefusal::ToolTierRaise {
@@ -6349,7 +6367,7 @@ impl WorkspaceClient {
         let dry_run = transition(stored.clone())?;
         let checked = AddedSupervision::of(stored.as_ref(), &dry_run, fresh);
         let notes = self
-            .check_added_supervision(caller, cap.enforced(), &checked)
+            .check_added_supervision(caller, cap.enforced(), &checked, &dry_run)
             .await?;
 
         let (revising, replaced, monitor_note) = plan::mutate_plan(sm, caller, |current| {
@@ -6447,6 +6465,14 @@ impl WorkspaceClient {
     /// with the chat as it is stored and the master switch as this call
     /// sampled it. Nothing of the chat is sent.
     ///
+    /// First, what the plan (`after`) does to the chat's privacy tier
+    /// (DR-33, design §1.8, §3.6, §3.14): an agent may add a public gate or
+    /// phase monitor only to a chat its decision models already make public
+    /// (`staysPublic`); a plan that would make the chat public, or private at
+    /// its next message, is refused, because only the person can do that.
+    /// The bound model's tier is the language model's (`bound_model_tier`),
+    /// never the slot's.
+    ///
     /// A gate whose model the chat may not use, or that no model could
     /// answer, refuses the plan. A gate whose check failed for a reason that
     /// could pass (a timeout, a server fault) is accepted with a note: it is
@@ -6458,9 +6484,17 @@ impl WorkspaceClient {
         caller: &str,
         enforced: bool,
         added: &AddedSupervision,
+        after: &crate::agents::orchestration_plan::OrchestrationPlan,
     ) -> Result<Vec<String>, String> {
         use crate::decision::{DecisionSession, ModelSource};
 
+        let (bound, lowered_after_save) = self
+            .agent_tier_check(
+                caller,
+                enforced,
+                crate::decision::save::AfterSave::Plan(Some(after)),
+            )
+            .await?;
         if added.gates.is_empty() && added.monitors.is_empty() {
             return Ok(Vec::new());
         }
@@ -6471,7 +6505,9 @@ impl WorkspaceClient {
                     "This chat could not be read, so the gates and monitors this plan adds could \
                      not be checked ({e}). Nothing was changed."
                 )
-            })?;
+            })?
+            .with_bound_model_tier(bound)
+            .with_lowered_after_save(lowered_after_save);
         let service = self.decision_service;
         let mut notes = Vec::new();
         for (phase_id, gate) in &added.gates {
@@ -6854,7 +6890,7 @@ impl WorkspaceClient {
                 added
             }
             "remove" => {
-                self.remove_monitors(caller, target, args.ids.unwrap_or_default())
+                self.remove_monitors(caller, target, cap.enforced(), args.ids.unwrap_or_default())
                     .await?
             }
             other => {
@@ -6954,6 +6990,22 @@ impl WorkspaceClient {
             criteria.push(criterion);
         }
 
+        // DR-33: what the change does to the subagent's tier. An agent may
+        // add a public monitor only where the subagent is public already (a
+        // public parent's child carries its ceiling, design §3.4).
+        let after = crate::decision::settings::agent_edit_preview(
+            stored.clone(),
+            caller,
+            crate::decision::settings::AgentEdit::Upsert(criteria.clone()),
+        )
+        .map_err(|e| with_nothing_changed(&e))?;
+        let (bound, lowered_after_save) = self
+            .agent_tier_check(
+                target,
+                enforced,
+                crate::decision::save::AfterSave::Settings(&after),
+            )
+            .await?;
         let session = crate::decision::DecisionSession::load(sm.clone(), target, enforced)
             .await
             .map_err(|e| {
@@ -6961,7 +7013,9 @@ impl WorkspaceClient {
                     "Subagent {target} could not be read, so its monitors could not be checked \
                      ({e}). Nothing was changed."
                 )
-            })?;
+            })?
+            .with_bound_model_tier(bound)
+            .with_lowered_after_save(lowered_after_save);
         for criterion in &criteria {
             self.check_monitor_model(&session, criterion)
                 .await
@@ -7042,6 +7096,7 @@ impl WorkspaceClient {
         &self,
         caller: &str,
         target: &str,
+        enforced: bool,
         ids: Vec<String>,
     ) -> Result<String, String> {
         use crate::decision::settings::{self, AgentEdit};
@@ -7058,6 +7113,18 @@ impl WorkspaceClient {
                     .to_string(),
             );
         }
+        // DR-33: removing the subagent's last public decision model would make
+        // it private at its next message, which only the person may do.
+        let stored = settings::load(&self.context.session_manager, target)
+            .await
+            .map_err(|e| with_nothing_changed(&e.to_string()))?;
+        let after = settings::agent_edit_preview(stored, caller, AgentEdit::Remove(ids.clone()))?;
+        self.agent_tier_check(
+            target,
+            enforced,
+            crate::decision::save::AfterSave::Settings(&after),
+        )
+        .await?;
         settings::apply_agent_edit(
             &self.context.session_manager,
             target,
@@ -7077,6 +7144,81 @@ impl WorkspaceClient {
             named.join(", "),
             if ids.len() == 1 { "it" } else { "them" }
         ))
+    }
+
+    /// The tier of the language model `row`'s chat is bound to (DR-33, design
+    /// §2.1): its live agent's `bound_model_tier` when this daemon holds one
+    /// with a model bound (peeked, never created), else the tier its row
+    /// declares (`decision::save::row_bound_model_tier`). Never the slot's
+    /// folded tier.
+    async fn bound_model_tier_of(
+        row: &crate::session::Session,
+        enforced: bool,
+    ) -> Option<crate::privacy::ProviderTier> {
+        if let Ok(manager) = crate::execution::manager::AgentManager::instance().await {
+            if let Some(agent) = manager.peek_agent(&row.id).await {
+                if agent.bound_model_provider().await.is_some() {
+                    return Some(agent.bound_model_tier().await);
+                }
+            }
+        }
+        crate::decision::save::row_bound_model_tier(row, enforced).await
+    }
+
+    /// [`Self::bound_model_tier_of`] for the chat `session_id`, read with
+    /// the master switch on (this is asked only under enforcement). `None`
+    /// when its row cannot be read.
+    async fn target_bound_model_tier(
+        session_manager: &crate::session::SessionManager,
+        session_id: &str,
+    ) -> Option<crate::privacy::ProviderTier> {
+        let row = session_manager.get_session(session_id, false).await.ok()?;
+        Self::bound_model_tier_of(&row, true).await
+    }
+
+    /// DR-33 at an agent's door (design §1.8, §3.14): what saving `after` over
+    /// `target`'s row does to its privacy tier. `Err` is the agent's refusal,
+    /// ending "Nothing was changed.", when the save would make the chat
+    /// public, make it private at its next message, or name a public model it
+    /// cannot use. `Ok` carries the bound model's tier and whether the chat is
+    /// public after the save by its decision models, for the usability checks.
+    /// An agent never writes the person's acceptance (`public_basis.v1`).
+    async fn agent_tier_check(
+        &self,
+        target: &str,
+        enforced: bool,
+        after: crate::decision::save::AfterSave<'_>,
+    ) -> Result<(Option<crate::privacy::ProviderTier>, bool), String> {
+        let row = self
+            .context
+            .session_manager
+            .get_session(target, false)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Chat {target} could not be read, so what this change does to its privacy \
+                     could not be checked ({e}). Nothing was changed."
+                )
+            })?;
+        let bound = Self::bound_model_tier_of(&row, enforced).await;
+        let session = crate::decision::DecisionSession::new(target, row.privacy_tier, enforced)
+            .with_bound_model_tier(bound);
+        match crate::decision::save::tier_change(
+            &session,
+            &row,
+            after,
+            &crate::decision::save::SaveDoor::agent("agent"),
+        ) {
+            Ok(change) => Ok((bound, change.lowered_after_save)),
+            Err(error) => {
+                let text = error.to_string();
+                let reason = text
+                    .strip_prefix("Nothing was saved: ")
+                    .or_else(|| text.strip_prefix("Nothing was saved. "))
+                    .unwrap_or(&text);
+                Err(with_nothing_changed(reason))
+            }
+        }
     }
 
     async fn panel_moim(&self, session_id: &str) -> Option<String> {
@@ -18489,6 +18631,82 @@ pub(crate) mod tests {
                 "a declaration asks no question"
             );
         }
+    }
+
+    /// DR-33 (design §1.8, §3.6, §3.14): an agent cannot make its chat
+    /// public by declaring a gate on a public decision model. On an empty chat
+    /// bound to a private model the plan is refused with the agent's sentence
+    /// and nothing is stored; on a chat the person already made public by a
+    /// decision model, the same gate is accepted (`staysPublic`).
+    #[tokio::test]
+    async fn an_agent_cannot_make_its_chat_public_with_a_gate_but_may_add_one_to_a_public_chat() {
+        use crate::agents::decisions_extension::test_support::{entry, model};
+        use crate::privacy::decision_axes::{BasisAuthor, PublicBasis};
+        use crate::session::session_manager::{BasisWrite, BasisWriteOutcome};
+        let mut joey_entry = entry(
+            "joey-1",
+            crate::privacy::ProviderTier::Public,
+            false,
+            crate::decision::DecisionAdapter::SystemOne,
+        );
+        joey_entry.provider = "baseten_decision".into();
+        let joey = model(joey_entry, 0.9);
+        let calls = joey.calls.clone();
+        let (c, parent) = gated_client(vec![joey]).await;
+        let sm = c.context.session_manager.clone();
+        sm.update(&parent)
+            .provider_name("versa_azure")
+            .model_config(crate::model::ModelConfig::new_or_fail("gpt-5.5"))
+            .apply()
+            .await
+            .unwrap();
+
+        let mut args = gated_plan_args();
+        args["phases"][1]["gate"]["model"] = json!("baseten_decision/joey-1");
+        let refused = orchestrate(&c, &parent, args.clone()).await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(crate::decision::save::AGENT_MAY_NOT_MOVE_THE_TIER),
+            "{text}"
+        );
+        assert!(text.ends_with("Nothing was changed."), "{text}");
+        assert!(
+            crate::agents::orchestration_plan::load_plan(&sm, &parent)
+                .await
+                .unwrap()
+                .is_none(),
+            "a refused plan stored nothing"
+        );
+
+        // The person makes the chat public by a decision model first.
+        let written = sm
+            .write_public_basis(
+                &parent,
+                BasisWrite::Set(PublicBasis::new(
+                    &parent,
+                    BasisAuthor::Person,
+                    "test",
+                    vec![],
+                )),
+                |data| {
+                    data.set_extension_state(
+                        crate::decision::settings::DECISION_SETTINGS_STATE,
+                        crate::decision::settings::DECISION_SETTINGS_VERSION,
+                        json!({
+                            "defaultModel": {"provider": "baseten_decision", "model": "joey-1"},
+                            "monitors": []
+                        }),
+                    );
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(written, BasisWriteOutcome::Written(()));
+        let accepted = orchestrate(&c, &parent, args).await;
+        assert_eq!(accepted.is_error, Some(false), "{}", result_text(&accepted));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     /// A model source whose every model times out when opened: a check that

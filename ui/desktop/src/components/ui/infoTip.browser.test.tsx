@@ -518,7 +518,8 @@ describe('InfoTip: hover peeks, click pins, in Chromium', () => {
       expect(facts.padlock).toMatchObject({
         tabindex: '0',
         title: null,
-        description: 'Private. Biorouter only lets a private model open this chat.',
+        description:
+          'Private. Biorouter only lets private models, decision models included, read this chat.',
       });
       expect(facts.affiliation.tabindex).toBe('0');
       expect(facts.affiliation.title).toBeNull();
@@ -544,7 +545,7 @@ describe('InfoTip: hover peeks, click pins, in Chromium', () => {
       await tab.waitForTimeout(350);
       expect(await tipOpen(tab)).toBe(true);
       expect(await tab.locator('[data-slot="info-tip-content"]').textContent()).toBe(
-        'Private. Biorouter only lets a private model open this chat.'
+        'Private. Biorouter only lets private models, decision models included, read this chat.'
       );
     } finally {
       await tab.close();

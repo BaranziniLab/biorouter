@@ -728,6 +728,133 @@ impl ResourceItem {
 /// server has no business learning. `cap` is the value `dispatch_tool_call` was
 /// CALLED with, never a fresh read of the provider mutex, so this bit and Gate
 /// C's decision cannot disagree.
+/// Raise a chat that has just been given private content to Private, with the
+/// reason that names where it came from (issue #56 O5, DR-33 design §2.6).
+///
+/// The one writer every permit of private content into a chat goes through:
+/// Gate C's private dispatch (`mcp:<extension>`), a chat-recall LOAD or search
+/// that returned a Private chat (`read:<id>`), `workspace_read_conversation` of
+/// a Private chat (`read:<id>`) and a knowledge read of a private base
+/// (`kb:<id>`). Monotone, by the storage layer's `CASE WHEN`: on a row that is
+/// already private it changes nothing.
+///
+/// ⚠ **Why the reads ratchet at all.** While capability Private implied
+/// classification Private after Gate B, a private read changed nothing. A
+/// chat's decision models now fold into the capability its slot holds, and
+/// that value can lag the row (design §2.3): a chat lowered through the store
+/// while its agent still holds a Private slot may be admitted to private
+/// content on a row classified Public. Ratcheting the reader here is what makes
+/// such a stale admission a reach loss (its public decision names go inert, and
+/// Gate H refuses them) instead of a disclosure to a hosted decision model.
+pub(crate) async fn raise_reader_privacy(
+    session_manager: &crate::session::SessionManager,
+    reader_session_id: &str,
+    reason: &str,
+) -> Result<()> {
+    session_manager
+        .update(reader_session_id)
+        .raise_privacy(crate::privacy::SessionClassification::Private, reason)
+        .apply()
+        .await
+}
+
+/// A tool call whose RESULT may carry private content, and how to tell (DR-33,
+/// design §2.6). Decided at admission, from the client, the tool and the
+/// sampled capability; asked of the result inside the dispatch future, before
+/// the result is returned.
+///
+/// Only a private-capability, enforced call is ever probed: with the master
+/// switch off as sampled nothing ratchets (AR-7), and a public capability is
+/// never admitted to private content, so a refused read cannot ratchet anyone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateContentRead {
+    /// A built-in server, which may mark its result
+    /// (`biorouter_mcp::knowledge::tier::private_content_bases`). Built-ins only,
+    /// for the reason they alone are told the capability: an installed server's
+    /// mark would let any third party reclassify the chats that call it.
+    BuiltinMark,
+    /// `workspace_read_conversation` of the named conversation.
+    ConversationRead(String),
+}
+
+impl PrivateContentRead {
+    fn for_call(
+        client_name: &str,
+        tool_name: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        cap: crate::privacy::CallCapability,
+    ) -> Option<Self> {
+        if !cap.enforced() || !cap.tier().is_private() {
+            return None;
+        }
+        if client_name == "workspace" && tool_name == "workspace_read_conversation" {
+            let target = arguments?.get("session_id")?.as_str()?.trim();
+            return (!target.is_empty()).then(|| Self::ConversationRead(target.to_string()));
+        }
+        biorouter_mcp::BUILTIN_EXTENSIONS
+            .contains_key(client_name)
+            .then_some(Self::BuiltinMark)
+    }
+
+    /// The reason to record, when `result` carried private content. A read the
+    /// handler refused carries nothing.
+    async fn reason(
+        &self,
+        session_manager: &crate::session::SessionManager,
+        result: &rmcp::model::CallToolResult,
+    ) -> Option<String> {
+        match self {
+            Self::BuiltinMark => biorouter_mcp::knowledge::tier::private_content_bases(
+                result.meta.as_ref(),
+            )
+            .map(|bases| {
+                let first = bases.first().map(String::as_str).unwrap_or("unknown");
+                format!("kb:{first}")
+            }),
+            Self::ConversationRead(target) => {
+                if result.is_error == Some(true) {
+                    return None;
+                }
+                // Metadata only. A row that cannot be read after the handler
+                // read it is doubt, and doubt ratchets: the result is already in
+                // hand.
+                match session_manager.get_session(target, false).await {
+                    Ok(row) if !row.privacy_tier.is_private() => None,
+                    _ => Some(format!("read:{target}")),
+                }
+            }
+        }
+    }
+
+    async fn ratchet_reader(
+        &self,
+        session_manager: &crate::session::SessionManager,
+        reader_session_id: &str,
+        result: &rmcp::model::CallToolResult,
+    ) -> Result<(), ErrorData> {
+        let Some(reason) = self.reason(session_manager, result).await else {
+            return Ok(());
+        };
+        raise_reader_privacy(session_manager, reader_session_id, &reason)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    session_id = %reader_session_id,
+                    %reason,
+                    %error,
+                    "could not record that this chat read private content; withholding the result"
+                );
+                ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    "This result holds private content, and recording that this chat read it \
+                     failed, so it was not returned. Try again; if it keeps failing, tell the \
+                     person.",
+                    None,
+                )
+            })
+    }
+}
+
 fn dispatch_meta(
     session_id: &str,
     cap: crate::privacy::CallCapability,
@@ -3031,12 +3158,7 @@ impl ExtensionManager {
     /// lower a row — and the `mcp:` prefix is what §12.4 grades the
     /// declassification confirmation on, so it must be spelled exactly.
     async fn raise_session_privacy(&self, session_id: &str, reason: &str) -> Result<()> {
-        self.context
-            .session_manager
-            .update(session_id)
-            .raise_privacy(crate::privacy::SessionClassification::Private, reason)
-            .apply()
-            .await
+        raise_reader_privacy(&self.context.session_manager, session_id, reason).await
     }
 
     /// Gate C's predicate for the entry points that reach an MCP server WITHOUT
@@ -3706,6 +3828,10 @@ impl ExtensionManager {
             computer_permit.as_ref(),
             file_admission.as_ref(),
         );
+        // DR-33, design §2.6. Decided here, at admission, off the same sample.
+        let private_content =
+            PrivateContentRead::for_call(&client_name, &tool_name, arguments.as_ref(), cap);
+        let reader_store = Arc::clone(&self.context.session_manager);
 
         let fut = async move {
             let _file_authority = file_admission;
@@ -3740,6 +3866,12 @@ impl ExtensionManager {
                 &prefixed_name,
                 arguments.as_ref(),
             );
+            // Before the result is returned: a read of private content this
+            // process cannot record is one it must not hand over.
+            if let Some(read) = private_content {
+                read.ratchet_reader(&reader_store, &session_id, &result)
+                    .await?;
+            }
             Ok(result)
         };
 
@@ -3794,9 +3926,29 @@ impl ExtensionManager {
         // rather than an absent gate. It is the SAME predicate in every gate;
         // do not introduce a second, narrower flag for this one.
         if cap.enforced() {
-            if let Some(err) =
-                crate::privacy::refusal::privacy_refusal(client_name, ext_class.tier, cap.tier())
-            {
+            // DR-33 (design §3.9): the rule is `privacy_refusal`'s, decided on
+            // the one sample; only the sentence changes when a decision model
+            // made this chat public, because "switch to a private model" is
+            // circular for a chat that already runs on one. The words are read
+            // off the slot on the refusal path only, where they decide nothing.
+            // A lowered sample is Public, so a private extension is exactly the
+            // refusal path.
+            let lowered_by = if cap.lowered_by_decision() && ext_class.tier.is_private() {
+                self.provider
+                    .lock()
+                    .await
+                    .as_ref()
+                    .and_then(|p| p.decision_lowered_by().cloned())
+            } else {
+                None
+            };
+            if let Some(err) = crate::privacy::refusal::privacy_refusal_explained(
+                client_name,
+                ext_class.tier,
+                cap.tier(),
+                cap.lowered_by_decision(),
+                lowered_by.as_ref(),
+            ) {
                 return Err(err.into());
             }
         }
@@ -10644,6 +10796,11 @@ mod tests {
                 .contains(&expected_warning("cdwagent", "stanford")),
             "the grant named the OMOP connector, not every UCSF connector"
         );
+    }
+
+    /// DR-33: the read ratchets and Gate C's decision-model sentence.
+    mod private_read_tests {
+        include!("extension_manager_private_read_tests.rs");
     }
 }
 

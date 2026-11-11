@@ -2279,6 +2279,16 @@ pub(crate) fn is_job_wait_tool(name: &str) -> bool {
 /// to be invented from global config — [`Agent::rebind_from_row`] does invent
 /// one, but inventing it here would report drift against a value the row never
 /// stated. Both answer `false`.
+/// How [`Agent::install_bound_provider`] is asked to write the slot (DR-33).
+pub(crate) enum BoundInstall {
+    /// Bind this provider (unwrapped first), with the row's axes.
+    Bind(Arc<dyn Provider>),
+    /// Gate B: re-fold the row's axes around the provider already bound.
+    Refresh,
+    /// After an admitted lowering: re-fold, but never raise.
+    LowerOnly,
+}
+
 fn row_names_another_binding(row: &Session, bound: &dyn Provider) -> bool {
     let Some(row_provider) = row.provider_name.as_deref() else {
         return false;
@@ -4837,6 +4847,12 @@ pub struct Agent {
     pub(super) normalizer: crate::conversation::SharedNormalizer,
     /// Issue #56 Gate B'. See [`CachedClassification`].
     pub(super) cached_classification: CachedClassification,
+    /// DR-33: whether the slot folds the bound chat's decision models into its
+    /// tier ([`Self::install_bound_provider`]). `false` only on the one Agent
+    /// `biorouter web` shares across every chat ([`Self::new_shared`]): a slot
+    /// shared by chats of different tiers would carry whichever chat's axes Gate
+    /// B installed last, and a concurrent turn of another chat would sample them.
+    pub(super) folds_decision_axes: AtomicBool,
     /// What the reply loop is awaiting right now. See [`crate::agents::loop_phase`].
     pub(super) loop_phase: crate::agents::loop_phase::LoopPhaseCell,
     /// Whether this reply already warned about, or stopped at, a usage limit.
@@ -6001,6 +6017,29 @@ impl Agent {
         ))
     }
 
+    /// DR-33 (design §2.7): the Agent `biorouter web` runs every chat on. It
+    /// never folds decision models into its slot, so every chat's capability
+    /// there is its provider's, exactly as before DR-33. A chat lowered
+    /// elsewhere and opened here ratchets by its provider at its next turn.
+    pub fn new_shared() -> Self {
+        let agent = Self::new();
+        agent.folds_decision_axes.store(false, Ordering::SeqCst);
+        agent
+    }
+
+    /// [`Self::new_shared`] with a caller's configuration.
+    pub fn with_config_shared(config: AgentConfig) -> Self {
+        let agent = Self::with_config(config);
+        agent.folds_decision_axes.store(false, Ordering::SeqCst);
+        agent
+    }
+
+    /// Whether this Agent folds a chat's decision models into its slot (false
+    /// only for [`Self::new_shared`]).
+    pub fn folds_decision_axes(&self) -> bool {
+        self.folds_decision_axes.load(Ordering::SeqCst)
+    }
+
     pub fn with_config(config: AgentConfig) -> Self {
         // Create channels with buffer size 32 (adjust if needed)
         let (tool_tx, tool_rx) = mpsc::channel(32);
@@ -6083,6 +6122,7 @@ impl Agent {
             efforts: Default::default(),
             normalizer: Default::default(),
             cached_classification: Default::default(),
+            folds_decision_axes: AtomicBool::new(true),
             loop_phase: Default::default(),
             usage_limit_reply: Default::default(),
             live_acks: Default::default(),
@@ -9007,10 +9047,208 @@ impl Agent {
         if privacy_enforced && !crate::privacy::bind_allowed(provider.tier(), row.privacy_tier) {
             return Ok(false);
         }
-        let mut current_provider = self.provider.lock().await;
-        self.extension_manager.computer_use.revoke();
-        *current_provider = Some(provider);
+        self.install_bound_provider(Some(row), BoundInstall::Bind(provider))
+            .await;
         Ok(true)
+    }
+
+    /// DR-33: THE one production writer of the provider slot (design §2.2,
+    /// `the_provider_slot_has_one_production_writer`).
+    ///
+    /// Every install unwraps an incoming decision-bound wrapper first, so a
+    /// wrapper never crosses chats: a spawned child given its parent's provider
+    /// gets the parent's INNER provider and its own axes. The axes come from
+    /// `row` (`privacy::decision_axes::from_row`), and from nothing else; with no
+    /// row, or on [`Self::new_shared`]'s agent, the inner provider is installed
+    /// unwrapped.
+    ///
+    /// The three ways it is asked:
+    ///
+    /// * [`BoundInstall::Bind`] — a bind (`update_provider`, Gate B's repair
+    ///   rebind). Always installs.
+    /// * [`BoundInstall::Refresh`] — Gate B, from the row it already holds:
+    ///   re-installs around the SAME inner provider when the axes changed. Raises
+    ///   and lowerings both take effect here, in the same step as the ratchet.
+    /// * [`BoundInstall::LowerOnly`] — after an admitted lowering save
+    ///   ([`Self::lower_decision_axes`]): installs only when the result is not
+    ///   more private than what is installed. Never raises.
+    ///
+    /// Returns whether the slot changed.
+    pub(crate) async fn install_bound_provider(
+        &self,
+        row: Option<&Session>,
+        install: BoundInstall,
+    ) -> bool {
+        use crate::providers::decision_bound::{
+            install_is_current, unwrap_decision_bound, DecisionBoundProvider,
+        };
+        let lower_only = matches!(install, BoundInstall::LowerOnly);
+        let mut slot = self.provider.lock().await;
+        // Lower-only re-reads the row UNDER the slot lock, so a lowering cannot
+        // install axes folded from a row Gate B has since ratcheted: Gate B's
+        // post-ratchet refresh takes this same lock after the raise commits, so
+        // either that refresh runs after this install (and raises it back), or
+        // this read sees the Private row and installs nothing.
+        let fresh;
+        let row = match (lower_only, row) {
+            (true, Some(row)) => match self.config.session_manager.get_session(&row.id, false).await
+            {
+                Ok(read) if !read.privacy_tier.is_private() => {
+                    fresh = read;
+                    Some(&fresh)
+                }
+                _ => return false,
+            },
+            (true, None) => return false,
+            (false, row) => row,
+        };
+        let axes = match row {
+            Some(row) if self.folds_decision_axes() => crate::privacy::decision_axes::from_row(row),
+            _ => crate::privacy::decision_axes::DecisionAxes::identity(),
+        };
+        let (inner, changes) = match install {
+            BoundInstall::Bind(provider) => (unwrap_decision_bound(provider), true),
+            BoundInstall::Refresh | BoundInstall::LowerOnly => {
+                let Some(current) = slot.as_ref() else {
+                    return false;
+                };
+                let inner = unwrap_decision_bound(Arc::clone(current));
+                if install_is_current(current, &inner, &axes) {
+                    return false;
+                }
+                let (next_tier, _) = axes.apply(inner.tier(), inner.affiliation());
+                // Lower-only: a result more private than what is installed waits
+                // for the next Gate B, which raises in the same step as the
+                // ratchet (design §2.4).
+                let raises = current.tier() == ProviderTier::Public && next_tier.is_private();
+                (inner, !(lower_only && raises))
+            }
+        };
+        if !changes {
+            return false;
+        }
+        let installed = DecisionBoundProvider::bind(inner, axes);
+        let installed_public = !installed.tier().is_private();
+        self.extension_manager.computer_use.revoke();
+        *slot = Some(installed);
+        // (Server package, DR-33.) A lowering's own observation, made while the
+        // slot is still held so Gate B's cache store (after its post-ratchet
+        // refresh, which waits for this lock) always lands after it: the axes
+        // fold only on a row read as Public (the inert rule), so a Public slot
+        // over a private model is an observation that the row is Public.
+        // Without it Gate B' in `provider()` compared the lowered tier with the
+        // fail-closed default and refused every non-turn completion until the
+        // first turn re-read the row.
+        if lower_only && installed_public && crate::privacy::privacy_tiers_enabled() {
+            if let Some(row) = row {
+                self.cached_classification
+                    .store(&row.id, SessionClassification::Public);
+            }
+        }
+        true
+    }
+
+    /// DR-33, design §2.2 item 3: after a door admitted and wrote a lowering
+    /// (`public_basis.v1`), take it into this agent's slot at once. Lower-only:
+    /// it installs the row's axes only when that does not make the slot more
+    /// private, so a reach that shrinks takes effect immediately and a raise
+    /// waits for Gate B. Returns whether the slot changed.
+    ///
+    /// `row` names the chat; what is installed is folded from the row as it is
+    /// stored when the slot lock is taken, never from `row` itself, which may
+    /// predate a ratchet (see [`Self::install_bound_provider`]).
+    pub async fn lower_decision_axes(&self, row: &Session) -> bool {
+        self.install_bound_provider(Some(row), BoundInstall::LowerOnly)
+            .await
+    }
+
+    /// DR-33 (design §2.5): with the master switch off, a turn is about to run
+    /// at unenforced capability, so the chat's `public_basis.v1` stops being
+    /// true. Clear it through the one writer (a `Clear` needs no eligibility:
+    /// it is a raise), and return the row without it so this turn folds what
+    /// is now stored. A row with no basis is returned as it is, with no write.
+    ///
+    /// Called by Gate B only while the switch is off; the caller read the
+    /// switch, so this does not read it again.
+    ///
+    /// A failed clear is logged and the row returned unchanged: the turn is
+    /// not refused for it (the switch is off, nothing is refused), and the next
+    /// unenforced turn tries again.
+    pub(crate) async fn retire_public_basis_for_unenforced_turn(
+        &self,
+        session_manager: &SessionManager,
+        row: Session,
+    ) -> Session {
+        use crate::privacy::decision_axes::RowRecords;
+        use crate::session::session_manager::{BasisWrite, BasisWriteOutcome};
+        if RowRecords::parse(&row.extension_data).basis().is_none() {
+            return row;
+        }
+        match session_manager
+            .write_public_basis(&row.id, BasisWrite::Clear, |_| Ok(()))
+            .await
+        {
+            Ok(BasisWriteOutcome::Written(())) => {
+                info!(
+                    session_id = %row.id,
+                    "privacy tiers are off for this turn, so the chat's public basis was cleared; \
+                     its public decision models lower nothing once tiers are back on"
+                );
+                // What is stored now, so this turn folds the row without it.
+                match session_manager.get_session(&row.id, false).await {
+                    Ok(fresh) => fresh,
+                    Err(_) => row,
+                }
+            }
+            Ok(_) => row,
+            Err(e) => {
+                warn!(
+                    session_id = %row.id,
+                    "could not clear the public basis before an unenforced turn ({e})"
+                );
+                row
+            }
+        }
+    }
+
+    /// The tier of the language model this chat is bound to, unwrapped
+    /// through any decision-bound wrapper (design §2.1). Every reader that asks
+    /// "what model is this chat bound to" — the save checks, DR-16's raise
+    /// comparators, Gate A's incoming side, spawn's R4 — reads this. Only the
+    /// readers that ask "what may this chat reach" read the slot's `tier()`.
+    /// No provider bound reads as Public, the fail-safe side.
+    pub async fn bound_model_tier(&self) -> ProviderTier {
+        self.bound_model_provider()
+            .await
+            .map(|provider| provider.tier())
+            .unwrap_or(ProviderTier::Public)
+    }
+
+    /// The affiliation of the bound language model, unwrapped as
+    /// [`Self::bound_model_tier`] is. Read off the same instance.
+    pub async fn bound_model_affiliation(
+        &self,
+    ) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+        self.bound_model_provider()
+            .await
+            .and_then(|provider| provider.affiliation())
+    }
+
+    /// The bound language model itself, unwrapped. `None` before the first
+    /// bind.
+    pub async fn bound_model_provider(&self) -> Option<Arc<dyn Provider>> {
+        self.bound_provider_unchecked()
+            .await
+            .map(crate::providers::decision_bound::unwrap_decision_bound)
+    }
+
+    /// The decision model that made this chat less private than its language
+    /// model, when one did: the words a refusal on an HTTP route uses (design
+    /// §3.9). Text only.
+    pub async fn decision_lowered_by(&self) -> Option<crate::privacy::decision_axes::LoweredBy> {
+        self.bound_provider_unchecked()
+            .await
+            .and_then(|provider| provider.decision_lowered_by().cloned())
     }
 
     /// The binding this turn is about to run on, plus the classification the
@@ -11176,6 +11414,21 @@ impl Agent {
         // permanent, because `privacy_tier` is monotone and re-enabling never
         // revisits a row.
         let privacy_enforced = crate::privacy::privacy_tiers_enabled();
+        // DR-33 (design §2.5): a public basis never outlives an unenforced turn.
+        // The basis says "everything since the lowering was produced at Public
+        // capability", and a turn with the switch off can reach anything, so
+        // that stops being true the moment such a turn runs. Clear it before
+        // the turn (a raise, the safe direction): when tiers come back on the
+        // names are inert and this gate ratchets the chat by its provider, as
+        // it did before DR-33. Without it a Versa chat lowered earlier read as
+        // public after an off window in which it gathered private content.
+        let privacy_row = match privacy_row {
+            Some(row) if !privacy_enforced => Some(
+                self.retire_public_basis_for_unenforced_turn(session_manager.as_ref(), row)
+                    .await,
+            ),
+            other => other,
+        };
         if let Some(row) = privacy_row.as_ref() {
             // M4. The row is the standing record of what this chat runs on, and
             // until now only the PRIVACY arm below could make a turn honour it —
@@ -11248,6 +11501,14 @@ impl Agent {
                     }
                 }
             }
+            // DR-33 (design §2.2 item 2): the chat's decision models, from the
+            // row this gate already holds, before the barrier and the ratchet
+            // read the tier. A change of axes re-installs the wrapper around the
+            // SAME inner provider, so the barrier, the floor below and the loop's
+            // own sample all read one value. Raises happen only here and at the
+            // bind, in the same step as the ratchet (§2.4).
+            self.install_bound_provider(Some(row), BoundInstall::Refresh)
+                .await;
             let bound = self.bound_provider_unchecked().await;
             // No provider bound at all reads as Public — the fail-SAFE side.
             // Public is the less privileged tier, so an agent with nothing
@@ -11317,6 +11578,16 @@ impl Agent {
                             .await?;
                         classification = f;
                         classification_reason = Some(reason);
+                        // DR-33: a lowering save may have installed Public axes
+                        // between the refresh above and this ratchet (it read
+                        // the row before the raise committed). Re-fold from the
+                        // ratcheted row, which on a Private row is the identity,
+                        // so the slot can never be less private than the row
+                        // for the rest of this turn. A no-op when nothing raced.
+                        let mut ratcheted = row.clone();
+                        ratcheted.privacy_tier = f;
+                        self.install_bound_provider(Some(&ratcheted), BoundInstall::Refresh)
+                            .await;
                     }
                 }
             }
@@ -13014,6 +13285,10 @@ impl Agent {
     ) {
         use crate::decision::monitor;
         for event in events {
+            // DR-33 §3.15 (decision package): a public monitor on a chat that
+            // is private now is stored switched off, not failed every turn.
+            monitor::persist_privacy_switch_off(&self.config.session_manager, session_id, event)
+                .await;
             if let Some(text) = monitor::event_notice(event) {
                 let notice = self.durable_notice(session_id, text).await;
                 verdict.events.push(AgentEvent::Message(notice));
@@ -16489,6 +16764,12 @@ impl Agent {
             .check_provider_binding(session_id, provider.as_ref())
             .await?;
         self.extension_manager.computer_use.revoke();
+        // DR-33 (design §3.1, Gate A): the incoming instance is UNWRAPPED before
+        // its tier is read, so a parent's decision-bound wrapper handed to a
+        // child never decides the child's bind. On a Private row names are inert
+        // (effective equals inner) and on a Public row every bind is admitted, so
+        // the outcome of the statement below is the same as before DR-33.
+        let provider = crate::providers::decision_bound::unwrap_decision_bound(provider);
         let provider_name = provider.get_name().to_string();
         let model_config = crate::providers::persisted_model_config(provider.as_ref())?;
         let tier = provider.tier();
@@ -16594,10 +16875,29 @@ impl Agent {
 
         #[cfg(test)]
         seams::after_bind_before_swap().await;
-        {
-            let mut current_provider = self.provider.lock().await;
-            self.extension_manager.computer_use.revoke();
-            *current_provider = Some(provider);
+        // DR-33: the axes come from the row as it stands after the bind. A row
+        // that is gone (or a read that failed) installs the provider unwrapped,
+        // which is the fail-safe side only in the sense that matters: identity
+        // axes never lower anything.
+        let row = self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .ok();
+        self.install_bound_provider(row.as_ref(), BoundInstall::Bind(provider))
+            .await;
+        // The successful-public-bind observation above, for a private model the
+        // chat's decision models lowered: the axes fold only on a row read as
+        // Public (the inert rule), so an installed Public tier over a private
+        // model is itself an observation that the row is Public.
+        if tier.is_private() && crate::privacy::privacy_tiers_enabled() {
+            if let Some(installed) = self.bound_provider_unchecked().await {
+                if !installed.tier().is_private() {
+                    self.cached_classification
+                        .store(session_id, SessionClassification::Public);
+                }
+            }
         }
 
         // Issue #56 Task 48, DR-26's third axis at the BIND surface. Binding a
@@ -30115,5 +30415,392 @@ mod mid_turn_compaction_tests {
             .messages()
             .iter()
             .any(|m| m.as_concat_text() == "There are 12 rows."));
+    }
+}
+
+
+/// DR-33: the slot folds a chat's decision models into its tier, at the bind,
+/// at Gate B and after an admitted lowering, and nowhere else (design §2.2).
+#[cfg(test)]
+mod decision_axes_agent_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::decision::settings::{DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION};
+    use crate::model::ModelConfig;
+    use crate::privacy::decision_axes::{BasisAuthor, NameSource, PublicBasis};
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::session::session_manager::{BasisWrite, BasisWriteOutcome};
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicUsize;
+    use tempfile::TempDir;
+
+    struct Counting {
+        name: &'static str,
+        tier: ProviderTier,
+        completions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for Counting {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            self.name
+        }
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+        fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+            self.tier
+                .is_private()
+                .then_some(crate::privacy::affiliation::ModelAffiliation::Local)
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.completions.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("gpt-5.5".to_string(), Usage::default()),
+            ))
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("gpt-5.5")
+        }
+    }
+
+    fn versa() -> (Arc<dyn Provider>, Arc<AtomicUsize>) {
+        let completions = Arc::new(AtomicUsize::new(0));
+        (
+            Arc::new(Counting {
+                name: "versa_azure",
+                tier: ProviderTier::Private,
+                completions: Arc::clone(&completions),
+            }),
+            completions,
+        )
+    }
+
+    async fn agent(shared: bool) -> (TempDir, Arc<Agent>, String) {
+        let dir = TempDir::new().unwrap();
+        let config = AgentConfig::new(
+            Arc::new(SessionManager::new(dir.path().to_path_buf())),
+            Arc::new(PermissionManager::new(dir.path().to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        );
+        let agent = Arc::new(if shared {
+            Agent::with_config_shared(config)
+        } else {
+            Agent::with_config(config)
+        });
+        let id = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "mixed".to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        (dir, agent, id)
+    }
+
+    /// The person's accepted lowering, through the one writer.
+    async fn lower(sm: &SessionManager, id: &str) {
+        let basis = PublicBasis::new(id, BasisAuthor::Person, "test", vec![]);
+        let outcome = sm
+            .write_public_basis(id, BasisWrite::Set(basis), |data| {
+                data.set_extension_state(
+                    DECISION_SETTINGS_STATE,
+                    DECISION_SETTINGS_VERSION,
+                    serde_json::json!({
+                        "defaultModel": { "provider": "baseten_decision", "model": "joey-1" },
+                        "monitors": [],
+                    }),
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(outcome, BasisWriteOutcome::Written(()));
+    }
+
+    /// The removal: no public name, and the basis cleared in the same write.
+    async fn remove(sm: &SessionManager, id: &str) {
+        sm.write_public_basis(id, BasisWrite::Clear, |data| {
+            data.set_extension_state(
+                DECISION_SETTINGS_STATE,
+                DECISION_SETTINGS_VERSION,
+                serde_json::json!({ "monitors": [] }),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    fn cfg(id: &str) -> SessionConfig {
+        SessionConfig {
+            id: id.to_string(),
+            schedule_id: None,
+            max_turns: Some(2),
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn turn(agent: &Agent, id: &str) {
+        let mut stream = agent
+            .reply(Message::user().with_text("hi"), cfg(id), None)
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+    }
+
+    async fn slot_tier(agent: &Agent) -> ProviderTier {
+        agent.bound_provider_unchecked().await.unwrap().tier()
+    }
+
+    async fn classification(agent: &Agent, id: &str) -> SessionClassification {
+        agent
+            .config
+            .session_manager
+            .get_session(id, false)
+            .await
+            .unwrap()
+            .privacy_tier
+    }
+
+    /// The headline cell of design §1.6: Versa plus an accepted Baseten
+    /// decision model is a public chat, from the bind on.
+    #[tokio::test]
+    async fn a_lowered_versa_chat_binds_public_and_its_first_turn_does_not_ratchet() {
+        let (_dir, agent, id) = agent(false).await;
+        lower(&agent.config.session_manager, &id).await;
+        let (provider, completions) = versa();
+        agent.update_provider(provider, &id).await.unwrap();
+
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Public);
+        assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+        let cause = agent
+            .decision_lowered_by()
+            .await
+            .expect("the cause is named");
+        assert_eq!(
+            (cause.source, cause.model.as_str()),
+            (NameSource::Default, "joey-1")
+        );
+        // Gate B' right after the bind: the cache learned the row is Public, or
+        // every non-turn completion of a lowered chat would be refused.
+        assert!(
+            agent.provider().await.is_ok(),
+            "Gate B' refused a lowered chat's provider right after its bind"
+        );
+        // The row records the real provider, never the wrapper.
+        let row = agent
+            .config
+            .session_manager
+            .get_session(&id, false)
+            .await
+            .unwrap();
+        assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
+
+        turn(&agent, &id).await;
+        assert_eq!(completions.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Public
+        );
+    }
+
+    /// Design §2.2 item 2: a lowering written AFTER the bind (by a door with no
+    /// agent to refresh, such as the offline CLI) is folded at Gate B, before
+    /// the ratchet reads the tier.
+    #[tokio::test]
+    async fn gate_b_folds_a_lowering_written_after_the_bind() {
+        let (_dir, agent, id) = agent(false).await;
+        agent.update_provider(versa().0, &id).await.unwrap();
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+        lower(&agent.config.session_manager, &id).await;
+        turn(&agent, &id).await;
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Public,
+            "Gate B ratcheted on the stale Private slot"
+        );
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Public);
+    }
+
+    /// A public name with no basis is inert: the chat ratchets by its model.
+    #[tokio::test]
+    async fn a_public_name_without_a_basis_lowers_nothing() {
+        let (_dir, agent, id) = agent(false).await;
+        agent
+            .config
+            .session_manager
+            .update_extension_state(
+                &id,
+                DECISION_SETTINGS_STATE,
+                DECISION_SETTINGS_VERSION,
+                |_| {
+                    Ok(serde_json::json!({
+                        "defaultModel": { "provider": "baseten_decision", "model": "joey-1" },
+                        "monitors": [],
+                    }))
+                },
+            )
+            .await
+            .unwrap();
+        agent.update_provider(versa().0, &id).await.unwrap();
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+        turn(&agent, &id).await;
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Private
+        );
+    }
+
+    /// Design §2.2 item 3 and §2.4: an admitted lowering takes effect at once,
+    /// a removal never does until Gate B, which raises in the same step as the
+    /// ratchet.
+    #[tokio::test]
+    async fn lowering_takes_effect_at_once_and_a_raise_waits_for_gate_b() {
+        let (_dir, agent, id) = agent(false).await;
+        let sm = Arc::clone(&agent.config.session_manager);
+        agent.update_provider(versa().0, &id).await.unwrap();
+        lower(&sm, &id).await;
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert!(
+            agent.lower_decision_axes(&row).await,
+            "the lowering was not installed"
+        );
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Public);
+
+        remove(&sm, &id).await;
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert!(
+            !agent.lower_decision_axes(&row).await,
+            "a lower-only refresh raised the slot"
+        );
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Public);
+
+        turn(&agent, &id).await;
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Private
+        );
+    }
+
+    /// A lowering that read the row before Gate B's ratchet committed must not
+    /// install Public axes over the ratcheted row (review, 2026-11-11): the
+    /// lower-only install re-reads the row under the slot lock, so a stale
+    /// Public row leaves the slot Private and the cache untouched.
+    #[tokio::test]
+    async fn a_lowering_read_before_a_ratchet_installs_nothing_after_it() {
+        let (_dir, agent, id) = agent(false).await;
+        let sm = Arc::clone(&agent.config.session_manager);
+        agent.update_provider(versa().0, &id).await.unwrap();
+        lower(&sm, &id).await;
+        // What the save door read: Public, with its basis.
+        let stale = sm.get_session(&id, false).await.unwrap();
+        assert!(!stale.privacy_tier.is_private());
+        // Gate B's ratchet lands before the door installs.
+        sm.update(&id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        assert!(
+            !agent.lower_decision_axes(&stale).await,
+            "a lowering folded from a pre-ratchet row was installed"
+        );
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+    }
+
+    /// Gate A's incoming side (design §3.1): a parent's wrapper handed to
+    /// another chat never brings the parent's axes.
+    #[tokio::test]
+    async fn a_wrapper_bound_to_another_chat_is_unwrapped_first() {
+        let (_dir, parent, parent_id) = agent(false).await;
+        lower(&parent.config.session_manager, &parent_id).await;
+        let (inner, _) = versa();
+        parent
+            .update_provider(Arc::clone(&inner), &parent_id)
+            .await
+            .unwrap();
+        let wrapper = parent.bound_provider_unchecked().await.unwrap();
+        assert_eq!(wrapper.tier(), ProviderTier::Public);
+
+        let (_dir2, child, child_id) = agent(false).await;
+        child.update_provider(wrapper, &child_id).await.unwrap();
+        let installed = child.bound_provider_unchecked().await.unwrap();
+        assert!(
+            Arc::ptr_eq(&installed, &inner),
+            "the parent's wrapper crossed chats"
+        );
+        assert_eq!(installed.tier(), ProviderTier::Private);
+        assert!(child.decision_lowered_by().await.is_none());
+    }
+
+    /// Design §2.7: `biorouter web`'s shared agent never folds.
+    #[tokio::test]
+    async fn the_shared_agent_never_folds() {
+        let (_dir, agent, id) = agent(true).await;
+        assert!(!agent.folds_decision_axes());
+        lower(&agent.config.session_manager, &id).await;
+        agent.update_provider(versa().0, &id).await.unwrap();
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+        turn(&agent, &id).await;
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Private,
+            "a shared agent lowered a chat by its decision models"
+        );
+    }
+
+    /// Design §7.2: `install_bound_provider` is the one production write of the
+    /// slot, so no path can install a wrapper (or skip the unwrap) on its own.
+    #[test]
+    fn the_provider_slot_has_one_production_writer() {
+        let src = include_str!("agent.rs");
+        let locks = src.matches(&format!("{}.provider.lock()", "self")).count();
+        assert_eq!(
+            locks, 2,
+            "the slot lock is taken in exactly two places: the reader \
+             `bound_provider_unchecked` and the writer `install_bound_provider`"
+        );
+        assert_eq!(
+            src.matches(&format!("*{} = Some(", "slot")).count(),
+            1,
+            "the slot is assigned once, in `install_bound_provider`"
+        );
+        assert_eq!(
+            src.matches(&format!("*{}_provider = ", "current")).count(),
+            0
+        );
+        let writer = src
+            .find("    pub(crate) async fn install_bound_provider(")
+            .expect("the writer exists");
+        let assignment = src.find(&format!("*{} = Some(", "slot")).unwrap();
+        let next_fn = writer
+            + 10
+            + src
+                .get(writer + 10..)
+                .and_then(|rest| rest.find("\n    pub"))
+                .expect("a function follows the writer");
+        assert!(
+            assignment > writer && assignment < next_fn,
+            "the slot assignment is outside `install_bound_provider`"
+        );
     }
 }

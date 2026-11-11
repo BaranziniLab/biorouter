@@ -335,6 +335,19 @@ what did not" section first**; the rest of that document is the design, not the 
   time, stored in `sessions.privacy_tier`, a **permanent ratchet**). They do not interconvert —
   `privacy::floor` is the only crossing and a repo-grep test asserts its caller count. Invariant:
   `capability(S) >= classification(S)`.
+- **A chat's decision models count toward its capability (DR-33).** `capability = least(bound
+  provider, standing decision names, a spawn's ceiling)`, public names counted only while the chat
+  is classified Public **and** holds the `public_basis.v1` a person's confirmed save wrote on an
+  empty or declassified chat (`privacy/decision_axes.rs`; `SessionManager::write_public_basis` is
+  its one writer). It reaches every gate through the `DecisionBoundProvider` that
+  `Agent::install_bound_provider`, the slot's one production writer, puts in the session's slot
+  (`providers/decision_bound.rs`). Readers that ask "what model is this chat bound to" (save
+  checks, DR-16, Gate A's incoming side, spawn's R4) use `Agent::bound_model_tier()`, never the
+  slot's `tier()`. Gate H is unchanged and is what keeps a stale value leak free; never relax it,
+  and never compute the fold outside the sites `DECISION_AXES_SITES` counts. No agent door may move
+  a tier this way, and a keyless daemon refuses it without `serve --allow-public-decision-models`
+  (SD-16). ⚠ A basis never outlives a turn run with the master switch off: Gate B clears it first
+  (`retire_public_basis_for_unenforced_turn`), so re-enabling ratchets such a chat by its model.
 - **Eight gates.** A — bind (`Agent::update_provider`). B — turn (top of `Agent::reply`;
   repair-first, and where the ratchet fires). C — dispatch
   (`ExtensionManager::dispatch_tool_call`, the one choke point every tool call passes through, plus
@@ -436,9 +449,10 @@ what did not" section first**; the rest of that document is the design, not the 
   `visibility::refuse_unless_readable` and the write gate composes it with `may_write`. Grep the
   symbol rather than trusting a summary, including this one.
 - **Tests:** `cargo test -p biorouter --lib privacy::` and
-  `cargo test -p biorouter-mcp --lib knowledge::tier`, plus five integration binaries that are
+  `cargo test -p biorouter-mcp --lib knowledge::tier`, plus six integration binaries that are
   **spread across three crates** — `-p biorouter`: `--test privacy_toggle`,
-  `--test privacy_capability`, `--test privacy_disclosure_toggle`; `-p biorouter-server`:
+  `--test privacy_capability`, `--test privacy_disclosure_toggle`,
+  `--test privacy_public_basis_switch`; `-p biorouter-server`:
   `--test privacy_toggle_config`; `-p biorouter-mcp`: `--test privacy_toggle_export`. Naming any of
   the last two under `-p biorouter` fails with "no test target named …", because the master switch
   is exercised where each surface lives rather than from one crate. Several enforcement points are

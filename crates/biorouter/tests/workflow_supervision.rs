@@ -47,10 +47,10 @@ use biorouter::providers::errors::ProviderError;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::SessionManager;
 use biorouter::workflow::runtime::{
-    install_prepared, supervision_notice, SUPERVISION_APPLIED_AT_START,
+    install_prepared, supervision_notice, InstallPrivacy, SUPERVISION_APPLIED_AT_START,
 };
 use biorouter::workflow::supervision::{
-    SeedOutcome, SeedRefusal, SeedRefusalKind, WORKFLOW_SUPERVISION_STATE,
+    SeedConsent, SeedOutcome, SeedRefusal, SeedRefusalKind, WORKFLOW_SUPERVISION_STATE,
     WORKFLOW_SUPERVISION_VERSION,
 };
 use biorouter::workflow::Workflow;
@@ -590,31 +590,74 @@ async fn a_chat_with_messages_is_not_seeded_and_the_outcome_says_so() {
     );
 }
 
+/// DR-33 (design §3.7): a workflow that names a public decision model for a
+/// new chat bound to a private model makes the chat public, so its seed is a
+/// lowering. Without the person's acceptance it is refused (409, with the
+/// question to ask) and nothing is written; accepted, it is seeded, the
+/// person's basis is stored with it, and the agent's slot is lowered at once.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_public_decision_model_for_a_chat_bound_to_a_private_model_refuses_and_writes_nothing() {
+async fn a_public_decision_model_for_a_chat_bound_to_a_private_model_is_seeded_only_once_accepted()
+{
     let decisions = Decisions::new(0.1);
     let declared = workflow(&decision_settings(
         "baseten_decision/joey-1",
         &reached_ten(None),
     ));
 
-    // The chat is Public at birth, but its model is private, so its first
-    // turn makes it Private: the hosted decision model may not read it.
     let private = chat(BioRouterMode::Auto, ProviderTier::Private, &decisions).await;
     let error = install(&private, &declared)
         .await
-        .expect_err("a public decision model for a chat bound to a private model");
+        .expect_err("a lowering without the person's acceptance");
     let refused = refusal(&error);
-    assert_eq!(refused.kind, SeedRefusalKind::Refused);
-    assert_eq!(refused.status(), 422);
+    assert_eq!(
+        refused.kind,
+        SeedRefusalKind::NeedsPublicDecisionConfirmation
+    );
+    assert_eq!(refused.status(), 409);
+    assert_eq!(
+        refused.question.as_deref(),
+        Some("This workflow uses joey-1 · Baseten, so this chat will be public. Start it?")
+    );
     assert!(
         format!("{error:#}").starts_with("The workflow was not started: "),
         "{error:#}"
     );
     assert_nothing_written(&private).await;
+    assert!(private.agent.decision_lowered_by().await.is_none());
 
-    // The same workflow on a chat bound to a public model is seeded: the
-    // refusal above is the bound model's.
+    let outcome = install_prepared(
+        &private.agent,
+        &private.session_id,
+        &declared,
+        true,
+        None,
+        InstallPrivacy::new(true, SeedConsent::Confirmed { door: "cli" }),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, SeedOutcome::Seeded { .. }), "{outcome:?}");
+    let row = private
+        .sessions
+        .get_session(&private.session_id, false)
+        .await
+        .unwrap();
+    assert!(
+        row.extension_data
+            .get_extension_state("public_basis", "v1")
+            .is_some(),
+        "the person's acceptance is stored with the seed"
+    );
+    assert!(
+        private.agent.decision_lowered_by().await.is_some(),
+        "the slot is lowered at once"
+    );
+    assert_eq!(
+        private.agent.bound_model_tier().await,
+        ProviderTier::Private
+    );
+
+    // The same workflow on a chat bound to a public model is seeded with no
+    // question: such a chat is public whatever it names.
     let public = chat(BioRouterMode::Auto, ProviderTier::Public, &decisions).await;
     assert!(matches!(
         install(&public, &declared).await.unwrap(),

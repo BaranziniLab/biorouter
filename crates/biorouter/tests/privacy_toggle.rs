@@ -1098,3 +1098,73 @@ fn kb_root_under(path_root: &std::path::Path) -> std::path::PathBuf {
     std::fs::create_dir_all(&root).expect("create knowledge root");
     root
 }
+
+/// DR-33 (design §2.5): a public basis never outlives an unenforced turn.
+///
+/// A private-model chat lowered by a Baseten default runs at Public capability
+/// and does not ratchet. Then the switch goes off and a turn runs, at a
+/// capability that can reach anything. When the switch comes back on, the
+/// basis must be gone, the public name inert, and the next turn must ratchet
+/// the chat by its provider, exactly as a pre-DR-33 chat that ran with the
+/// switch off does. Without the clear in Gate B the stale basis kept the chat
+/// public (names counted, no ratchet) after the off window.
+#[tokio::test]
+async fn a_public_basis_does_not_survive_a_turn_run_with_the_switch_off() {
+    use biorouter::privacy::decision_axes::{self, BasisAuthor, PublicBasis};
+    use biorouter::session::session_manager::{BasisWrite, BasisWriteOutcome};
+
+    let on = set_privacy_tiers(true).await;
+    let (_dir, agent, s) = agent_on(private_provider()).await;
+    let sm = agent.config.session_manager.clone();
+    let basis = PublicBasis::new(&s.id, BasisAuthor::Person, "test", vec![]);
+    let written = sm
+        .write_public_basis(&s.id, BasisWrite::Set(basis), |data| {
+            data.set_extension_state(
+                "decision_settings",
+                "v1",
+                serde_json::json!({
+                    "defaultModel": { "provider": "baseten_decision", "model": "joey-1" },
+                    "monitors": [],
+                }),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(written, BasisWriteOutcome::Written(()));
+
+    // Lowered: a turn with the switch on stays public.
+    let _ = turn_text(&agent, &s).await;
+    let row = sm.get_session(&s.id, false).await.unwrap();
+    assert_eq!(
+        row.privacy_tier,
+        SessionClassification::Public,
+        "the fixture must lower the chat, or this test asserts nothing"
+    );
+    assert!(!decision_axes::from_row(&row).is_identity());
+    drop(on);
+
+    // An unenforced turn.
+    let off = set_privacy_tiers(false).await;
+    let _ = turn_text(&agent, &s).await;
+    let row = sm.get_session(&s.id, false).await.unwrap();
+    assert!(
+        decision_axes::from_row(&row).is_identity(),
+        "the basis outlived a turn run with the switch off"
+    );
+    assert_eq!(
+        decision_axes::eligibility(&row),
+        decision_axes::Eligibility::NotEligible,
+        "a chat with content produced while tiers were off must not read as already lowered"
+    );
+    drop(off);
+
+    // Back on: the next turn ratchets by the provider.
+    let _on = set_privacy_tiers(true).await;
+    let _ = turn_text(&agent, &s).await;
+    assert_eq!(
+        sm.get_session(&s.id, false).await.unwrap().privacy_tier,
+        SessionClassification::Private,
+        "after an off window the chat must ratchet by its private model"
+    );
+}

@@ -212,7 +212,13 @@ fn get_provider_and_model() -> (String, String) {
 async fn create_agent(provider_name: &str, model: &str) -> Result<(Agent, ProviderTier)> {
     let model_config = biorouter::model::ModelConfig::new(model)?;
 
-    let agent = Agent::new();
+    // DR-33 (design §2.7): one Agent, one provider slot, every chat. A slot
+    // that folded a chat's decision models would carry whichever chat's axes
+    // its last turn installed, and a concurrent turn of another chat would
+    // sample them. So this server's agent never folds: every chat's capability
+    // is its provider's, as before decision models counted toward a tier.
+    // `biorouter_web_never_folds` pins this.
+    let agent = Agent::new_shared();
 
     let session_manager = agent.config.session_manager.clone();
     let init_session = session_manager
@@ -1548,7 +1554,8 @@ mod tests {
             );
             let store = tempfile::tempdir().unwrap();
             let manager = Arc::new(SessionManager::new(store.path().to_path_buf()));
-            let agent = Agent::with_config(AgentConfig::new(
+            // As `create_agent` builds it: shared, so it never folds.
+            let agent = Agent::with_config_shared(AgentConfig::new(
                 Arc::clone(&manager),
                 PermissionManager::instance(),
                 None,
@@ -1820,5 +1827,43 @@ mod tests {
         let elsewhere = server.chat_from_elsewhere().await;
         server.make_private(&elsewhere).await;
         assert_eq!(server.send(&elsewhere).await, refused());
+    }
+
+    /// DR-33 (design §2.7): `biorouter web` runs every chat on one Agent, so
+    /// that Agent must never fold a chat's decision models into its one
+    /// provider slot, or a turn of one chat would sample another chat's
+    /// axes. Every Agent this file builds outside its tests is the shared
+    /// one, and the one the tests build mirrors it.
+    #[tokio::test]
+    async fn biorouter_web_never_folds() {
+        let source = include_str!("web.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("web.rs has a production part");
+        let code: String = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for folding in ["Agent::new(", "Agent::with_config(", "Agent::default("] {
+            assert!(
+                !code.contains(folding),
+                "commands/web.rs builds a folding agent with `{folding}`; use \
+                 Agent::new_shared() (design §2.7)"
+            );
+        }
+        assert!(
+            code.contains("Agent::new_shared(") || code.contains("Agent::with_config_shared("),
+            "commands/web.rs no longer builds its shared agent where this scan can see it"
+        );
+        let store = tempfile::tempdir().unwrap();
+        let agent = Agent::with_config_shared(AgentConfig::new(
+            Arc::new(SessionManager::new(store.path().to_path_buf())),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        assert!(!agent.folds_decision_axes());
     }
 }

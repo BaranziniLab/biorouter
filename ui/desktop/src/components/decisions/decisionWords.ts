@@ -21,6 +21,7 @@ import {
   type DecisionOutcome,
   type DecisionRecord,
   type DecisionTier,
+  type DecisionTierEffect,
   type PhaseGateState,
   type Question,
   type Threshold,
@@ -116,6 +117,221 @@ export function decisionModelDisplay(
   if (!ref || !alias) return null;
   const place = decisionModelPlace(ref.provider, { tier, browser });
   return place ? `${alias} · ${place}` : alias;
+}
+
+// ---------------------------------------------------------------------------
+// What a decision model does to the chat's tier (DR-33)
+// ---------------------------------------------------------------------------
+
+/** "A, B and C" (and a lone "A"). */
+export function joinWithAnd(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts.join('');
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+/** A public model a line names, with what the catalog says about where it runs. */
+export type PublicModelMention = Pick<DecisionModelRef, 'provider' | 'model'> & {
+  tier?: DecisionTier | null;
+  local?: boolean | null;
+};
+
+/**
+ * `joey-1 runs on Baseten`, `joey-1 and kim-2 run on Baseten`, `joey-1 runs on
+ * Baseten and tev1:0.8b runs on Ollama`: each place once, its models before it,
+ * aliases only (R3). Repeats are named once.
+ */
+export function publicModelsSentence(
+  models: readonly PublicModelMention[],
+  browser?: boolean
+): string {
+  const byPlace = new Map<string, string[]>();
+  for (const model of models) {
+    const alias = decisionModelLabel(model);
+    if (!alias) continue;
+    const place =
+      decisionModelPlace(model.provider, {
+        tier: model.tier ?? 'public',
+        local: model.local ?? null,
+        browser,
+      }) ?? '';
+    const names = byPlace.get(place) ?? [];
+    if (!names.includes(alias)) names.push(alias);
+    byPlace.set(place, names);
+  }
+  return joinWithAnd(
+    [...byPlace.entries()].map(([place, names]) => {
+      const verb = names.length > 1 ? 'run' : 'runs';
+      return place ? `${joinWithAnd(names)} ${verb} on ${place}` : joinWithAnd(names);
+    })
+  );
+}
+
+/** `joey-1 · Baseten and tev1:0.8b · Ollama` (R3), each model once. */
+export function publicModelsList(models: readonly PublicModelMention[], browser?: boolean): string {
+  const names: string[] = [];
+  for (const model of models) {
+    const name = decisionModelDisplay(model, model.tier ?? 'public', browser);
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return joinWithAnd(names);
+}
+
+/**
+ * The words for a chat's tier as its decision models set it (design §5): one short
+ * line up front for the consequence, the detail in an InfoTip. Shared by the
+ * Monitors dialog, the gate dialog, both composers' Send, a workflow's start, the
+ * chat's privacy pill and the model chip, so no two say it differently.
+ */
+export const TIER_EFFECT_COPY = {
+  /** A picker row's secondary text, for a model whose choice makes the chat public. */
+  makesPublic: 'Makes this chat public',
+  willBePublic: (sentence: string) => `This chat will be public: ${sentence}.`,
+  staysPublic: (sentence: string) => `This chat stays public: ${sentence}.`,
+  /** The tip beside "This chat will be public". `chatModel` is the chat's own model, when known. */
+  publicInfo: (chatModel: string | null) =>
+    `A chat is as private as its least private model, so ${
+      chatModel ?? 'its language model'
+    } keeps answering but the chat can't use private extensions, knowledge bases or chats. Choose a model on this computer to keep it private.`,
+  publicInfoLabel: 'Why this chat will be public',
+  becomesPrivate: 'This chat becomes private at your next message.',
+  becomesPrivateInfo:
+    "Public models can't be used in it after that unless you make it public from History.",
+  /** The tip of a public row this chat can no longer use. */
+  publicRefusedInfo:
+    'Start a new chat and choose this model before the first message, or make this chat public from History.',
+  /** The question a Send, a Save or a start asks when the daemon asks for the person's answer. */
+  confirmTitle: 'Make this chat public?',
+  confirmSend: 'Send',
+  confirmSave: 'Make it public',
+  confirmCancel: 'Cancel',
+  workflowTitle: 'Start this workflow?',
+  workflowQuestion: (models: string) =>
+    `This workflow uses ${models}, so this chat will be public.`,
+  workflowConfirm: 'Start it',
+  /** The model chip's extra line on a chat its decision models made public. */
+  chipLine: 'This chat is public because of its decision models.',
+  /** The model switch, on a chat its decision models keep public. */
+  switchStaysPublic: (models: string) =>
+    `This chat stays public: its decision models include ${models}.`,
+  /** The model switch, on a subagent its public parent's ceiling keeps public. */
+  switchStaysPublicParent: "This chat stays public: it is part of a public chat's work.",
+  /** The declassify dialog: the public monitors the declassification turns off (design §3.11). */
+  declassifyMonitorsOff: (names: readonly string[], models: string) =>
+    `${names.length > 1 ? 'Monitors' : 'Monitor'} ${joinWithAnd(
+      names.map((name) => `"${name}"`)
+    )} ${names.length > 1 ? 'use' : 'uses'} ${models} and will be turned off.`,
+  declassifyDefaultCleared: (model: string) =>
+    `The default decision model ${model} will be cleared.`,
+  declassifyInfo: 'After this, a public decision model you choose can read the whole chat.',
+  declassifyInfoLabel: 'Decision models after this',
+  /** The model switch, on a chat whose public decision models will stop. */
+  switchPublicModelsStop: (models: string) => `Its public decision models (${models}) will stop.`,
+} as const;
+
+/**
+ * What a write's answer said about the chat's tier, worth a line: the daemon's own
+ * line, and the tip that goes with it. `null` for an answer with nothing to say.
+ */
+export function tierEffectNote(
+  effect: DecisionTierEffect | null,
+  line: string | null,
+  chatModelName: string | null = null
+): { line: string; info: string | null } | null {
+  switch (effect) {
+    case 'becomesPublic':
+    case 'staysPublic':
+      return line ? { line, info: TIER_EFFECT_COPY.publicInfo(chatModelName) } : null;
+    case 'becomesPrivateAtNextMessage':
+      return {
+        line: line ?? TIER_EFFECT_COPY.becomesPrivate,
+        info: TIER_EFFECT_COPY.becomesPrivateInfo,
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * What declassifying a chat does to its decision settings (design §3.11), in the
+ * dialog's words: each enabled monitor on a public model is turned off, and a public
+ * default is cleared. `null` when the chat names no public decision model. The tiers
+ * are the catalog's; a model the catalog does not list is not named, because its
+ * tier is not known here (the daemon turns it off if it is public).
+ */
+export function declassifyDecisionLines(
+  settings: {
+    defaultModel: Pick<DecisionModelRef, 'provider' | 'model'> | null;
+    monitors: readonly {
+      name: string;
+      enabled: boolean;
+      model: Pick<DecisionModelRef, 'provider' | 'model'> | null;
+    }[];
+  } | null,
+  models: readonly { provider: string; model: string; tier: DecisionTier | null }[]
+): string[] {
+  if (!settings) return [];
+  const isPublic = (ref: Pick<DecisionModelRef, 'provider' | 'model'> | null) =>
+    !!ref &&
+    models.some(
+      (entry) =>
+        entry.provider === ref.provider && entry.model === ref.model && entry.tier === 'public'
+    );
+  const off = settings.monitors.filter((monitor) => monitor.enabled && isPublic(monitor.model));
+  const lines: string[] = [];
+  if (off.length > 0) {
+    lines.push(
+      TIER_EFFECT_COPY.declassifyMonitorsOff(
+        off.map((monitor) => monitor.name),
+        publicModelsList(off.map((monitor) => monitor.model!))
+      )
+    );
+  }
+  if (isPublic(settings.defaultModel)) {
+    lines.push(
+      TIER_EFFECT_COPY.declassifyDefaultCleared(publicModelsList([settings.defaultModel!]))
+    );
+  }
+  return lines;
+}
+
+/** `PrivacyBasis` (`GET /sessions/{id}`): why a chat on a private model is public. */
+export interface PrivacyBasisWords {
+  source: 'default' | 'monitor' | 'gate' | 'phaseMonitor' | 'parent';
+  /** The monitor's name, the phase's title, or the parent chat's id. */
+  label: string;
+  /** The model's own name (`joey-1`); empty for a parent that recorded none. */
+  model: string;
+  /** Where it runs, in words (`Baseten`). */
+  place: string;
+}
+
+/** `monitor "Done" uses joey-1 · Baseten`, or `null` for a parent's ceiling. */
+function basisReason(basis: PrivacyBasisWords): string | null {
+  const model = [basis.model, basis.place].filter(Boolean).join(' · ');
+  switch (basis.source) {
+    case 'monitor':
+      return `monitor "${basis.label}" uses ${model}`;
+    case 'default':
+      return `its default decision model is ${model}`;
+    case 'gate':
+      return `the gate on phase "${basis.label}" uses ${model}`;
+    case 'phaseMonitor':
+      return `a monitor on phase "${basis.label}" uses ${model}`;
+    case 'parent':
+      return null;
+  }
+}
+
+/**
+ * The privacy pill's InfoTip on a chat a decision model made public: "Public:
+ * monitor "Done" uses joey-1 · Baseten. A chat is as private as its least private
+ * model, so it can't use private extensions, knowledge bases or chats." For a
+ * subagent of a public chat: "Public: it is part of a public chat's work."
+ */
+export function privacyBasisTip(basis: PrivacyBasisWords): string {
+  const reason = basisReason(basis);
+  if (!reason) return "Public: it is part of a public chat's work.";
+  return `Public: ${reason}. A chat is as private as its least private model, so it can't use private extensions, knowledge bases or chats.`;
 }
 
 // ---------------------------------------------------------------------------

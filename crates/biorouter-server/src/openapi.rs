@@ -796,6 +796,11 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::reply::ContinuationLeaseErrorResponse,
         super::routes::session::ImportSessionRequest,
         super::routes::session::SessionListResponse,
+        super::routes::session::SessionDetail,
+        super::routes::session::PrivacyBasis,
+        super::routes::session::PrivacyBasisKind,
+        super::routes::session::PrivacyBasisSource,
+        biorouter::privacy::decision_axes::HostLabel,
         super::routes::session::SidebarSessionListResponse,
         biorouter::session::SessionSummary,
         // #56: `Session::privacy_tier` and `SessionSummary::privacy_tier`.
@@ -843,6 +848,13 @@ impl utoipa::Modify for ApiKeySecurity {
         // decision, one chat's decision log and its decision settings. utoipa
         // 4 collects no nested schema, so every type a field names is here.
         super::routes::decisions::DecisionModelInfo,
+        super::routes::decisions::DecisionSettingsWrite,
+        super::routes::decisions::DecisionSettingsSaved,
+        super::routes::decisions::PhaseGateWrite,
+        super::routes::decisions::PublicDecisionConfirmation,
+        super::routes::agent::StartedSession,
+        biorouter::decision::ChatEffect,
+        biorouter::privacy::decision_axes::TierEffect,
         super::routes::decisions::DecisionModelsResponse,
         super::routes::decisions::DecideRequest,
         super::routes::decisions::DecideResponse,

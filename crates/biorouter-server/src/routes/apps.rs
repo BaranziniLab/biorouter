@@ -2414,7 +2414,12 @@ mod app_provider_bind {
     /// fail-safe direction is the one where an error refuses a raise rather than
     /// granting one.
     async fn established_capability(agent: &Agent, session_id: &str) -> Option<ProviderTier> {
-        if let Ok(bound) = agent.provider().await {
+        // DR-33 (design §3.1): the bound MODEL's tier, unwrapped through the
+        // decision-bound wrapper. DR-21 asks whether a bind raises the
+        // provider axis; a chat the slot reads Public only because a decision
+        // model lowered it is still a chat on a private model, and reading the
+        // wrapper would make a private-to-private rebind look like a raise.
+        if let Some(bound) = agent.bound_model_provider().await {
             return Some(bound.tier());
         }
         let session = match agent
@@ -14070,6 +14075,62 @@ mod tests {
                 .await
                 .unwrap()
                 .id
+        }
+
+        /// DR-33 (design §3.1): DR-21 asks whether a bind raises the PROVIDER
+        /// axis. A chat on a private model that the person made public with a
+        /// Baseten decision model reads Public in its slot, and comparing that
+        /// with the incoming private model called a private-to-private rebind a
+        /// raise. The comparison is between the two plain models.
+        #[tokio::test]
+        async fn a_chat_made_public_by_a_decision_model_may_rebind_to_another_private_model() {
+            use biorouter::decision::settings::{
+                DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION,
+            };
+            use biorouter::privacy::decision_axes::{BasisAuthor, PublicBasis};
+            use biorouter::session::session_manager::{BasisWrite, BasisWriteOutcome};
+            if !biorouter::privacy::privacy_tiers_enabled() {
+                return;
+            }
+            let dir = tempfile::TempDir::new().unwrap();
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_over(&session_manager, dir.path(), "dr33-lowered").await;
+            let basis = PublicBasis::new(&session, BasisAuthor::Person, "test", vec![]);
+            let written = session_manager
+                .write_public_basis(&session, BasisWrite::Set(basis), |data| {
+                    data.set_extension_state(
+                        DECISION_SETTINGS_STATE,
+                        DECISION_SETTINGS_VERSION,
+                        serde_json::json!({
+                            "defaultModel": {"provider": "baseten_decision", "model": "joey-1"},
+                            "monitors": [],
+                        }),
+                    );
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            assert_eq!(written, BasisWriteOutcome::Written(()));
+            agent
+                .update_provider(tiered("versa_azure", ProviderTier::Private), &session)
+                .await
+                .unwrap();
+            // The premise: the slot is public, the model is not.
+            assert_eq!(agent.provider().await.unwrap().tier(), ProviderTier::Public);
+            assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+
+            let provider = app_provider_bind::adopt_for_test(tiered("ollama", ProviderTier::Private));
+            app_provider_bind::bind_app_provider(&agent, &session, provider)
+                .await
+                .map_err(|refusal| refusal.to_string())
+                .expect("a private-to-private rebind is not a raise");
+            assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+            assert_eq!(
+                agent.provider().await.unwrap().tier(),
+                ProviderTier::Public,
+                "the rebind keeps the person's lowering"
+            );
         }
 
         /// Site 1. `configure_main_provider` reads `cfg.model` out of the

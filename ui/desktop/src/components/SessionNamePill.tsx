@@ -34,6 +34,11 @@ interface Props {
    */
   privacyTier?: SessionClassification;
   /**
+   * DR-33: the pill's InfoTip, when a decision model is why this chat is public
+   * (`privacyBasisTip`, from the daemon's `privacyBasis`). Absent, the pill has none.
+   */
+  privacyHelp?: string;
+  /**
    * DR-26's third axis for the model this chat is bound to — *under whose
    * agreements?* (issue #56).
    *
@@ -61,6 +66,7 @@ export const SessionNamePill: React.FC<Props> = ({
   onDiverge,
   canDiverge = false,
   privacyTier,
+  privacyHelp,
   affiliation,
   className,
 }) => {
@@ -125,7 +131,9 @@ export const SessionNamePill: React.FC<Props> = ({
           <span className="inline-flex h-8 max-w-full min-w-0 items-center pl-1 text-label text-text-default">
             <span className="truncate no-drag">{name}</span>
           </span>
-          {privacyTier && <PrivacyBadge tier={privacyTier} className="no-drag" />}
+          {privacyTier && (
+            <PrivacyBadge tier={privacyTier} help={privacyHelp} className="no-drag" />
+          )}
           {/* The two axes, side by side and in the same visual language —
               DR-26's "how sensitive?" and "under whose agreements?". The
               affiliation badge renders nothing at all for a public model, so a
