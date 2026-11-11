@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CEILING_NOTE,
   ContextWindowGauge,
   ContextWindowIndicator,
   contextWindowModelKey,
@@ -168,7 +169,8 @@ describe('the context card’s body', () => {
     'says automatic compaction is off for a saved %s, and the marker turns it on',
     async (saved) => {
       const user = userEvent.setup();
-      mocks.read.mockResolvedValue(saved);
+      // Only the threshold is saved; every other key reads as unset.
+      mocks.read.mockImplementation(async (key: string) => (key === THRESHOLD_KEY ? saved : null));
       render(gauge());
       expect(await screen.findByText(CONTEXT_CARD_COPY.autoCompactOff)).toHaveClass(
         'br-footer-card__note'
@@ -194,7 +196,8 @@ describe('the context card’s body', () => {
   ])(
     'says a saved %s as %i percent, with the marker at the nearest it reaches, %i',
     async (saved, said, marker) => {
-      mocks.read.mockResolvedValue(saved);
+      // Only the threshold is saved; every other key reads as unset.
+      mocks.read.mockImplementation(async (key: string) => (key === THRESHOLD_KEY ? saved : null));
       render(gauge());
       expect(await screen.findByText(CONTEXT_CARD_COPY.autoCompactNote(said))).toBeInTheDocument();
       const slider = screen.getByRole('slider', { name: CONTEXT_CARD_COPY.thresholdLabel });
@@ -979,5 +982,79 @@ describe('contextWindowModelKey', () => {
     ).toBe('anthropic/claude-opus-4-5');
     expect(contextWindowModelKey(undefined, 'versa_azure', 'gpt-5.5')).toBe('versa_azure/gpt-5.5');
     expect(contextWindowModelKey(undefined, null, undefined)).toBe('/');
+  });
+});
+
+/**
+ * The token ceiling (`BIOROUTER_AUTO_COMPACT_MAX_TOKENS`, 200,000 unless set): the daemon compacts
+ * at the LOWER of the marker's share and the ceiling, so on a window over 250k tokens the card has
+ * to say the ceiling and draw it where it falls, or it promises 80% of a 1.05M window (840k) for a
+ * chat that compacts at 200k.
+ */
+describe('the context card shows where the token ceiling makes Biorouter compact', () => {
+  const CEILING_KEY = 'BIOROUTER_AUTO_COMPACT_MAX_TOKENS';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.upsert.mockResolvedValue(undefined);
+  });
+
+  const readWith = (values: Record<string, unknown>) =>
+    mocks.read.mockImplementation(async (key: string) => values[key] ?? null);
+
+  const gauge = (props: Partial<React.ComponentProps<typeof ContextWindowGauge>> = {}) => (
+    <ContextWindowGauge
+      totalTokens={150_000}
+      tokenLimit={1_050_000}
+      isTokenLimitLoaded
+      onCompact={vi.fn()}
+      {...props}
+    />
+  );
+
+  it('names the default ceiling on a large window and draws it at its share', async () => {
+    readWith({});
+    render(gauge());
+    expect(await screen.findByText(CEILING_NOTE('200k', 19))).toHaveClass('br-footer-card__note');
+    const tick = screen.getByTestId('context-gauge-ceiling');
+    expect(tick).toHaveAttribute('aria-label', 'Compacts at 200k tokens');
+    expect(parseFloat(tick.style.left)).toBeCloseTo(19.05, 1);
+    // The marker is still the threshold's own control.
+    const slider = screen.getByRole('slider', { name: CONTEXT_CARD_COPY.thresholdLabel });
+    expect(slider).toHaveAttribute('aria-valuenow', '80');
+  });
+
+  it('turns the bar red past the ceiling, not only past the marker', async () => {
+    readWith({});
+    render(gauge({ totalTokens: 210_000 }));
+    await screen.findByTestId('context-gauge-ceiling');
+    const bar = screen.getByRole('progressbar', { name: CONTEXT_CARD_COPY.barLabel });
+    expect(bar.outerHTML).toMatch(/danger/);
+  });
+
+  it('says the marker’s share when the ceiling is above it, or set to 0', async () => {
+    readWith({ [CEILING_KEY]: 0 });
+    const { unmount } = render(gauge());
+    expect(await screen.findByText(CONTEXT_CARD_COPY.autoCompactNote(80))).toBeInTheDocument();
+    expect(screen.queryByTestId('context-gauge-ceiling')).toBeNull();
+    unmount();
+
+    readWith({});
+    render(gauge({ tokenLimit: 128_000, totalTokens: 20_000 }));
+    expect(await screen.findByText(CONTEXT_CARD_COPY.autoCompactNote(80))).toBeInTheDocument();
+    expect(screen.queryByTestId('context-gauge-ceiling')).toBeNull();
+  });
+
+  it('follows a ceiling set in config', async () => {
+    readWith({ [CEILING_KEY]: 400_000 });
+    render(gauge());
+    expect(await screen.findByText(CEILING_NOTE('400k', 38))).toBeInTheDocument();
+  });
+
+  it('says compaction is off when the threshold turns it off, whatever the ceiling', async () => {
+    readWith({ [THRESHOLD_KEY]: 0 });
+    render(gauge());
+    expect(await screen.findByText(CONTEXT_CARD_COPY.autoCompactOff)).toBeInTheDocument();
+    expect(screen.queryByTestId('context-gauge-ceiling')).toBeNull();
   });
 });

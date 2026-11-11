@@ -1,7 +1,9 @@
 //! Usage of provider calls a chat makes outside its turns: the stall check, a
 //! prompt hook's judge, the permission judge, the chat's title, a knowledge
-//! macro's sub-agent and MCP sampling. Each is billed by the provider, so each
-//! is written to the usage ledger as a side call ([`super::SideUsageEntry`]):
+//! macro's sub-agent, MCP sampling, generating a workflow from the chat, and a
+//! compaction that was billed but did not land.
+//! Each is billed by the provider, so each is written to the usage ledger as a
+//! side call ([`super::SideUsageEntry`]):
 //! counted in the chat's tokens and dollars and in the Usage panel, never as a
 //! turn, never moving the context gauge or `updated_at` (R-30).
 //!
@@ -33,6 +35,11 @@ pub enum SideCall {
     SessionName,
     KnowledgeMacro,
     McpSampling,
+    /// Generating a workflow from a chat (`Agent::create_workflow_for_session`).
+    WorkflowCreation,
+    /// A compaction whose summary was billed but did not land: it failed, or
+    /// the history moved under it (`context_mgmt::record_unapplied_compaction_usage`).
+    Compaction,
 }
 
 impl SideCall {
@@ -44,6 +51,8 @@ impl SideCall {
             SideCall::SessionName => "session_name",
             SideCall::KnowledgeMacro => "knowledge_macro",
             SideCall::McpSampling => "mcp_sampling",
+            SideCall::WorkflowCreation => "workflow_creation",
+            SideCall::Compaction => "compaction",
         }
     }
 }
