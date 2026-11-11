@@ -28,12 +28,28 @@ use tokio_util::sync::CancellationToken;
 /// script's call channel. A NUL cannot appear in a catalogue tool name.
 pub(super) const SLEEP_REQUEST: &str = "\u{0}biorouter.sleep";
 pub(super) const WAIT_REQUEST: &str = "\u{0}biorouter.wait_for";
+/// The same, for `watch_job()` (`super::watch`).
+pub(super) const WATCH_REQUEST: &str = "\u{0}biorouter.watch_job";
+
+/// Whether a request down the script's call channel is one of the host
+/// functions above rather than a tool call.
+pub(super) fn is_host_request(name: &str) -> bool {
+    [SLEEP_REQUEST, WAIT_REQUEST, WATCH_REQUEST].contains(&name)
+}
 
 /// `wait_for`'s timeout when none is given, in seconds.
 pub(super) const DEFAULT_TIMEOUT_SECS: u64 = 240;
-/// The longest one `wait_for` call waits: below the 300 s per-call timeout an
-/// MCP extension gets, with a margin.
-pub(super) const MAX_TIMEOUT_SECS: u64 = 280;
+/// The longest one `wait_for` call waits.
+///
+/// The 300 s per-call timeout (`DEFAULT_EXTENSION_TIMEOUT`) is enforced by
+/// `mcp_client::await_response`, on the transport of an MCP extension. Code
+/// Execution is an in-process platform extension and its `call_tool` is
+/// awaited with no timeout (`ExtensionManager::dispatch_tool_call` adds none),
+/// so a `wait_for` can block longer than that; each CHECK it makes is an
+/// ordinary short call to the status tool and stays under the transport
+/// limit. Ten minutes keeps a person's Stop and steer the only waits that
+/// matter: a longer wait belongs to `watch_job`, which ends the turn.
+pub(super) const MAX_TIMEOUT_SECS: u64 = 600;
 /// Seconds between checks when none is given.
 pub(super) const DEFAULT_MIN_INTERVAL_SECS: u64 = 30;
 /// The shortest interval allowed between checks.
@@ -56,7 +72,9 @@ pub(super) fn wait_unit() -> Duration {
 }
 
 /// A number of seconds, given as a number or a numeric string.
-fn de_seconds<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+pub(super) fn de_seconds<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
     let value = Option::<Value>::deserialize(deserializer)?;
     match value {
         None | Some(Value::Null) => Ok(None),
@@ -98,8 +116,9 @@ pub(super) struct WaitForParams {
     /// {"pointer": "/status", "values": ["completed", "failed"]}.
     #[serde(default)]
     pub until: Option<WaitUntilParam>,
-    /// Seconds to wait in all before returning (default 240, at most 280).
-    /// On timeout the job is still running: call wait_for again.
+    /// Seconds to wait in all before returning (default 240, at most 600).
+    /// On timeout the job is still running: call wait_for again, or
+    /// watch_job to be woken when it finishes.
     #[serde(default, deserialize_with = "de_seconds")]
     #[schemars(with = "Option<f64>")]
     pub timeout_seconds: Option<f64>,
@@ -319,6 +338,105 @@ fn seconds_up(duration: Duration, unit: Duration) -> u64 {
     u64::try_from(duration.as_nanos().div_ceil(unit)).unwrap_or(u64::MAX)
 }
 
+/// Whether check number `checks` (counted from 1), which returned `value`,
+/// ends a wait on `until`. `first` is the comparable form of the first
+/// result, kept for `"changed"`; the first check fills it in.
+pub(super) fn end_of(
+    until: &Until,
+    value: &str,
+    activity: JobActivity,
+    checks: u32,
+    first: &mut Option<String>,
+) -> Option<WaitEnd> {
+    match until {
+        Until::Inactive => match activity {
+            JobActivity::Active => None,
+            JobActivity::Finished => Some(WaitEnd::Finished),
+            JobActivity::Unknown if checks == 1 => Some(WaitEnd::NotAJob),
+            JobActivity::Unknown => Some(WaitEnd::Finished),
+        },
+        Until::Changed => {
+            let now = comparable(value);
+            match first {
+                None => {
+                    *first = Some(now);
+                    None
+                }
+                Some(first) if *first != now => Some(WaitEnd::Changed),
+                Some(_) => None,
+            }
+        }
+        Until::Pointer { pointer, values } => serde_json::from_str::<Value>(value.trim())
+            .ok()
+            .and_then(|json| json.pointer(pointer).cloned())
+            .filter(|found| pointer_matches(found, values))
+            .map(WaitEnd::Matched),
+    }
+}
+
+/// A short form of a status result for a message the model reads later: the
+/// JSON without its timing fields, or, when that is still too long, only its
+/// top-level scalar fields; text is cut. At most `max_chars` characters, plus
+/// a sentence naming the cut.
+pub(super) fn compact_state(last: &str, max_chars: usize) -> String {
+    fn cut(text: &str, max_chars: usize) -> Option<String> {
+        if text.chars().count() <= max_chars {
+            return None;
+        }
+        Some(text.chars().take(max_chars).collect())
+    }
+    let trimmed = last.trim();
+    let Ok(json) = serde_json::from_str::<Value>(trimmed) else {
+        return match cut(trimmed, max_chars) {
+            None => trimmed.to_string(),
+            Some(head) => format!(
+                "{head}... (cut; {} characters in all)",
+                trimmed.chars().count()
+            ),
+        };
+    };
+    let quiet = without_timing(&json);
+    let full = quiet.to_string();
+    if full.chars().count() <= max_chars {
+        return full;
+    }
+    if let Value::Object(object) = &quiet {
+        let mut dropped_nested = false;
+        let scalars: serde_json::Map<String, Value> = object
+            .iter()
+            .filter_map(|(key, value)| match value {
+                Value::String(text) => Some((
+                    key.clone(),
+                    Value::String(
+                        cut(text, 200).map_or_else(|| text.clone(), |head| format!("{head}...")),
+                    ),
+                )),
+                Value::Number(_) | Value::Bool(_) | Value::Null => {
+                    Some((key.clone(), value.clone()))
+                }
+                _ => {
+                    dropped_nested = true;
+                    None
+                }
+            })
+            .collect();
+        let short = Value::Object(scalars).to_string();
+        if short.chars().count() <= max_chars {
+            let what = if dropped_nested {
+                "nested fields left out"
+            } else {
+                "long values cut"
+            };
+            return format!("{short} ({what})");
+        }
+    }
+    format!(
+        "{}... (cut; {} characters in all)",
+        cut(&full, max_chars).unwrap_or_default(),
+        full.chars().count()
+    )
+}
+
 /// Call `checker` until `plan` says stop, the timeout passes, or Stop.
 pub(super) async fn run_wait(
     plan: &WaitPlan,
@@ -352,31 +470,7 @@ pub(super) async fn run_wait(
             Err(error) => return report(WaitEnd::Failed(error), checks, last),
         };
         last = Some(value.clone());
-        let end = match &plan.until {
-            Until::Inactive => match reading.activity {
-                JobActivity::Active => None,
-                JobActivity::Finished => Some(WaitEnd::Finished),
-                JobActivity::Unknown if checks == 1 => Some(WaitEnd::NotAJob),
-                JobActivity::Unknown => Some(WaitEnd::Finished),
-            },
-            Until::Changed => {
-                let now = comparable(&value);
-                match &first {
-                    None => {
-                        first = Some(now);
-                        None
-                    }
-                    Some(first) if *first != now => Some(WaitEnd::Changed),
-                    Some(_) => None,
-                }
-            }
-            Until::Pointer { pointer, values } => serde_json::from_str::<Value>(value.trim())
-                .ok()
-                .and_then(|json| json.pointer(pointer).cloned())
-                .filter(|found| pointer_matches(found, values))
-                .map(WaitEnd::Matched),
-        };
-        if let Some(end) = end {
+        if let Some(end) = end_of(&plan.until, &value, reading.activity, checks, &mut first) {
             return report(end, checks, last);
         }
         let now = tokio::time::Instant::now();
@@ -396,7 +490,7 @@ pub(super) async fn run_wait(
     }
 }
 
-fn duration_words(seconds: u64) -> String {
+pub(super) fn duration_words(seconds: u64) -> String {
     if seconds < 60 {
         format!("{seconds} s")
     } else {
@@ -404,7 +498,7 @@ fn duration_words(seconds: u64) -> String {
     }
 }
 
-fn shown_result(last: &str) -> String {
+pub(super) fn shown_result(last: &str) -> String {
     if last.len() <= MAX_LAST_RESULT_BYTES {
         return last.to_string();
     }
@@ -416,7 +510,7 @@ fn shown_result(last: &str) -> String {
     )
 }
 
-fn checks_words(checks: u32) -> String {
+pub(super) fn checks_words(checks: u32) -> String {
     if checks == 1 {
         "1 check".to_string()
     } else {
@@ -450,8 +544,9 @@ pub(super) fn report_text(plan: &WaitPlan, report: &WaitReport) -> Result<String
         ),
         WaitEnd::TimedOut => format!(
             "wait_for timed out after {} ({}): the job is still running. Call \
-             code_execution__wait_for again with the same arguments to keep waiting: that \
-             costs one model turn per wait instead of one per check.",
+             code_execution__wait_for again with the same arguments to keep waiting (one \
+             model turn per wait instead of one per check), or code_execution__watch_job \
+             and end your turn to be woken when it finishes (no model turn until then).",
             duration_words(report.elapsed_secs),
             checks_words(report.checks)
         ),
@@ -786,6 +881,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(changed.until, Until::Changed);
+    }
+
+    #[test]
+    fn compact_state_drops_timing_then_nesting_then_cuts() {
+        let short = json!({"status": "running", "elapsed_seconds": 40, "job_id": "a"}).to_string();
+        // Compared as JSON: key order follows serde_json's build features.
+        let compact: Value = serde_json::from_str(&compact_state(&short, 200)).unwrap();
+        assert_eq!(compact, json!({"job_id": "a", "status": "running"}));
+        let nested =
+            json!({"status": "done", "rows": 3, "sample": {"a": "x".repeat(400)}}).to_string();
+        let compact = compact_state(&nested, 100);
+        assert!(compact.contains(r#""status":"done""#), "{compact}");
+        assert!(compact.ends_with("(nested fields left out)"), "{compact}");
+        let text = "line ".repeat(100);
+        let compact = compact_state(&text, 50);
+        assert!(compact.starts_with("line line"), "{compact}");
+        assert!(compact.contains("characters in all"), "{compact}");
+        assert!(compact.chars().count() < 100, "{compact}");
     }
 
     #[test]
