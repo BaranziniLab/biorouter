@@ -20,6 +20,8 @@ pub use code_execution_extension::cancel_job_watches_for_session;
 // Decision models: the `decide` and `decision_models` tools (a default-on
 // platform extension the delegation gate does not count).
 pub mod decisions_extension;
+// The default worker model: what a subagent runs on when its spawn names none.
+pub mod default_worker;
 // BR-48: a deterministic done-ness gate for interactive chat — reuses the
 // workflow `SuccessCheck` machinery to keep a turn working until its checks
 // pass. Config-gated, default OFF.
