@@ -574,16 +574,19 @@ export function useExtensionPicker(
 /**
  * What an empty list says (A-6): a typed query that matches nothing, a list that
  * has not answered yet, a read that failed, or a chat that really has none. Only
- * the last may say "No extensions available": before the answer, or after a
- * failure, that sentence was false while fourteen extensions loaded.
+ * the last may say there are none: before the answer, or after a
+ * failure, that sentence was false while fourteen extensions loaded. And even
+ * then it says none were ADDED, and that built-in capabilities stay on: they run
+ * in every chat, so "none available" read as nothing running at all.
  */
 export function extensionsEmptyText(
-  picker: Pick<ExtensionPicker, 'query' | 'answered' | 'failed'>
+  picker: Pick<ExtensionPicker, 'query' | 'answered' | 'failed'> &
+    Partial<Pick<ExtensionPicker, 'isHubView'>>
 ): string {
   if (picker.query) return EXTENSIONS_COPY.noMatch;
   if (!picker.answered) return EXTENSIONS_COPY.loading;
   if (picker.failed) return EXTENSIONS_COPY.loadFailed;
-  return EXTENSIONS_COPY.empty;
+  return picker.isHubView ? EXTENSIONS_COPY.emptyNextChat : EXTENSIONS_COPY.empty;
 }
 
 /** The extensions list inside the Tools popover. */

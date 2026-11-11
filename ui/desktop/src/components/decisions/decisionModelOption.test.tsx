@@ -195,4 +195,36 @@ describe('formatDecisionModelOption', () => {
     expect(container.textContent).toBe('tev1:0.8b');
     expect(container.querySelector('svg')).toBeNull();
   });
+
+  it('names what the default resolves to as the selected value, when it is known', () => {
+    const [named] = decisionModelOptions({
+      models: [local],
+      chatTier: null,
+      defaultModel: { provider: 'ollama_decision', model: 'tev1:0.8b' },
+      browser: false,
+    });
+    const { container } = render(<>{formatDecisionModelOption(named, { context: 'value' })}</>);
+    expect(container.textContent).toBe('Default model (tev1:0.8b)');
+    // In the menu the row keeps its name, with the model in the secondary text.
+    expect(named.name).toBe('Default model');
+    expect(named.secondary).toBe('tev1:0.8b');
+  });
+
+  it('names a hosted default by its alias, never its slug', () => {
+    const [named] = decisionModelOptions({
+      models: [],
+      chatTier: null,
+      defaultModel: { provider: 'baseten_decision', model: 'decision-models/joey-1' },
+      browser: false,
+    });
+    expect(named.selectedName).toMatch(/^Default model \(joey-1/);
+    expect(named.selectedName).not.toMatch(/decision-models\//);
+  });
+
+  it('keeps "Default model" as the selected value when the default is not known', () => {
+    const [unnamed] = decisionModelOptions({ models: [local], chatTier: null, browser: false });
+    expect(unnamed.selectedName).toBeUndefined();
+    const { container } = render(<>{formatDecisionModelOption(unnamed, { context: 'value' })}</>);
+    expect(container.textContent).toBe('Default model');
+  });
 });
