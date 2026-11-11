@@ -14120,7 +14120,8 @@ mod tests {
             assert_eq!(agent.provider().await.unwrap().tier(), ProviderTier::Public);
             assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
 
-            let provider = app_provider_bind::adopt_for_test(tiered("ollama", ProviderTier::Private));
+            let provider =
+                app_provider_bind::adopt_for_test(tiered("ollama", ProviderTier::Private));
             app_provider_bind::bind_app_provider(&agent, &session, provider)
                 .await
                 .map_err(|refusal| refusal.to_string())

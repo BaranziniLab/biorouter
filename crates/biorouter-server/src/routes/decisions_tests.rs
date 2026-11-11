@@ -2367,10 +2367,12 @@ async fn a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds(
     let asks = |status: StatusCode, body: &str| {
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         let question = json_of(body);
-        assert_eq!(question["code"], "needsPublicDecisionConfirmation", "{body}");
         assert_eq!(
-            question["message"],
-            "This chat will be public: joey-1 runs on Baseten.",
+            question["code"], "needsPublicDecisionConfirmation",
+            "{body}"
+        );
+        assert_eq!(
+            question["message"], "This chat will be public: joey-1 runs on Baseten.",
             "{body}"
         );
     };
@@ -2404,7 +2406,11 @@ async fn a_chat_this_daemon_does_not_hold_is_checked_on_the_model_its_row_binds(
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(json_of(&body)["code"], "needsPublicDecisionConfirmation", "{body}");
+    assert_eq!(
+        json_of(&body)["code"],
+        "needsPublicDecisionConfirmation",
+        "{body}"
+    );
     assert_eq!(stored_plan(&state, &bound.id).await, plan, "nothing stored");
 
     // A private decision model is what such a chat may save.
@@ -3672,8 +3678,14 @@ fn every_door_that_writes_decision_settings_runs_the_save_check() {
     // off a monitor the privacy refusal stranded on a now-private chat (design
     // §3.15). Each file must still say what it turns off.
     const OFF_ONLY: [(&str, &str); 2] = [
-        ("crates/biorouter/src/privacy/decision_axes.rs", "monitor.enabled = false"),
-        ("crates/biorouter/src/decision/monitor.rs", "monitor.enabled = false"),
+        (
+            "crates/biorouter/src/privacy/decision_axes.rs",
+            "monitor.enabled = false",
+        ),
+        (
+            "crates/biorouter/src/decision/monitor.rs",
+            "monitor.enabled = false",
+        ),
     ];
     // Called as `<…settings>::<name>(`: `settings::save(`,
     // `decision_settings::save(`, `crate::decision::settings::update(`.
@@ -3962,11 +3974,21 @@ async fn a_versa_chat_is_made_public_by_a_baseten_monitor_only_when_the_person_c
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     let question = json_of(&body);
     assert_eq!(question["code"], "needsPublicDecisionConfirmation");
-    assert_eq!(question["message"], "This chat will be public: joey-1 runs on Baseten.");
+    assert_eq!(
+        question["message"],
+        "This chat will be public: joey-1 runs on Baseten."
+    );
     assert_eq!(question["models"], json!(["baseten_decision/joey-1"]));
-    assert_eq!(stored_settings(&state, &chat.id).await, before, "nothing saved");
+    assert_eq!(
+        stored_settings(&state, &chat.id).await,
+        before,
+        "nothing saved"
+    );
     assert_eq!(stored_basis(&state, &chat.id).await, None);
-    assert_eq!(agent.provider().await.unwrap().tier(), ProviderTier::Private);
+    assert_eq!(
+        agent.provider().await.unwrap().tier(),
+        ProviderTier::Private
+    );
 
     let mut confirmed = joey_monitor_settings();
     confirmed["acceptPublicDecisionModels"] = json!(true);
@@ -3978,9 +4000,14 @@ async fn a_versa_chat_is_made_public_by_a_baseten_monitor_only_when_the_person_c
         saved["tierEffectLine"],
         "This chat will be public: joey-1 runs on Baseten."
     );
-    assert_eq!(saved["monitors"][0]["id"], "m1", "the settings are the body");
+    assert_eq!(
+        saved["monitors"][0]["id"], "m1",
+        "the settings are the body"
+    );
     assert!(saved.get("acceptPublicDecisionModels").is_none());
-    let basis = stored_basis(&state, &chat.id).await.expect("the basis is written");
+    let basis = stored_basis(&state, &chat.id)
+        .await
+        .expect("the basis is written");
     assert_eq!(basis["sessionId"], json!(chat.id));
     assert_eq!(basis["by"], "person");
     assert_eq!(basis["door"], "decision-settings");
@@ -4054,7 +4081,10 @@ async fn a_started_or_private_chat_is_never_made_public_by_a_decision_model() {
         .unwrap();
     let mut confirmed = joey_monitor_settings();
     confirmed["acceptPublicDecisionModels"] = json!(true);
-    for chat in [&started, &seed(&state, SessionClassification::Private).await] {
+    for chat in [
+        &started,
+        &seed(&state, SessionClassification::Private).await,
+    ] {
         let before = stored_settings(&state, &chat.id).await;
         let (status, body) = send(
             fake.app(&state),
@@ -4168,7 +4198,10 @@ async fn a_baseten_gate_makes_a_versa_chat_public_only_when_the_person_confirms(
         stored["revision"].as_u64() > plan.as_ref().and_then(|p| p["revision"].as_u64()),
         "the plan's revision moves as every plan write moves it"
     );
-    assert_eq!(stored_basis(&state, &chat.id).await.unwrap()["door"], "phase-gate");
+    assert_eq!(
+        stored_basis(&state, &chat.id).await.unwrap()["door"],
+        "phase-gate"
+    );
     assert_eq!(agent.provider().await.unwrap().tier(), ProviderTier::Public);
 
     // Removing that gate: private at the next message, basis cleared.

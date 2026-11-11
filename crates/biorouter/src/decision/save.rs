@@ -1519,12 +1519,15 @@ mod tests {
             monitors(vec![monitor_on("done", JOEY)]),
         ] {
             let session = load_for_save(manager.clone(), &child, true).await.unwrap();
-            let saved = save_checked_by(&service, &manager, &session, settings.clone(), &confirmed())
-                .await
-                .expect("a person's save on a ceilinged child lands");
+            let saved =
+                save_checked_by(&service, &manager, &session, settings.clone(), &confirmed())
+                    .await
+                    .expect("a person's save on a ceilinged child lands");
             assert_eq!(saved.tier_effect, TierEffect::StaysPublic);
             assert_eq!(settings::load(&manager, &child).await.unwrap(), settings);
-            assert!(!has_basis(&manager.get_session(&child, false).await.unwrap()));
+            assert!(!has_basis(
+                &manager.get_session(&child, false).await.unwrap()
+            ));
         }
         let session = load_for_save(manager.clone(), &child, true).await.unwrap();
         let saved = save_checked_by(

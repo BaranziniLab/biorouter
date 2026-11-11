@@ -1526,19 +1526,26 @@ mod one_core_guards {
         );
 
         let routes = read("biorouter-server/src/routes/agent.rs");
-        let start = body_of(&routes, "\nasync fn start_agent(");
+        // Since DR-33 the handler answers a public-decision question in its
+        // own shape and leaves the start itself to `start_new_chat`, so the
+        // steps are read there, and the handler must still delegate to it.
+        assert!(
+            body_of(&routes, "\nasync fn start_agent(").contains("start_new_chat("),
+            "`start_agent` starts the chat through `start_new_chat`"
+        );
+        let start = body_of(&routes, "\nasync fn start_new_chat(");
         let proof = start
             .find("decision_write_refusal")
-            .expect("`start_agent` asks for the person's proof for a supervised workflow");
+            .expect("`start_new_chat` asks for the person's proof for a supervised workflow");
         let created = start
             .find(".create_session(")
-            .expect("`start_agent` creates the chat");
+            .expect("`start_new_chat` creates the chat");
         let seed = start
             .find("supervision::seed(")
-            .expect("`start_agent` seeds the workflow's supervision");
+            .expect("`start_new_chat` seeds the workflow's supervision");
         assert!(
             proof < created,
-            "`start_agent` refuses an unproven supervised start before it makes a chat"
+            "`start_new_chat` refuses an unproven supervised start before it makes a chat"
         );
         assert!(created < seed);
 

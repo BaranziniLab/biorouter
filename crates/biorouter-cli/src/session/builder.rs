@@ -135,7 +135,7 @@ pub async fn install_workflow_confirming(
     confirm: &mut dyn crate::commands::decision_tier::ConfirmPublic,
 ) -> anyhow::Result<biorouter::workflow::supervision::SeedOutcome> {
     use crate::commands::decision_tier::{cli_words, with_public_confirmation, SaveAttempt};
-    use biorouter::workflow::runtime::{install_prepared, InstallPrivacy};
+    use biorouter::workflow::runtime::InstallPrivacy;
     use biorouter::workflow::supervision::{SeedConsent, SeedRefusal, SeedRefusalKind};
     with_public_confirmation(confirm, session_id, |accepted| {
         let prompt = prompt.clone();
@@ -145,7 +145,9 @@ pub async fn install_workflow_confirming(
             } else {
                 SeedConsent::Unconfirmed
             };
-            match install_prepared(
+            // Spelled in full: `one_core_guards` finds the CLI's install by
+            // this path, so an import would hide the door it checks.
+            match biorouter::workflow::runtime::install_prepared(
                 agent,
                 session_id,
                 workflow,

@@ -9091,7 +9091,11 @@ impl Agent {
         // this read sees the Private row and installs nothing.
         let fresh;
         let row = match (lower_only, row) {
-            (true, Some(row)) => match self.config.session_manager.get_session(&row.id, false).await
+            (true, Some(row)) => match self
+                .config
+                .session_manager
+                .get_session(&row.id, false)
+                .await
             {
                 Ok(read) if !read.privacy_tier.is_private() => {
                     fresh = read;

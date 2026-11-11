@@ -1829,12 +1829,13 @@ fn save_checks_and_raise_comparators_read_the_bound_model_tier() {
                     .find(signature)
                     .unwrap_or_else(|| panic!("{rel} no longer defines `{signature}`"));
                 let open = start
-                    + text[start..]
-                        .find('{')
+                    + text
+                        .get(start..)
+                        .and_then(|rest| rest.find('{'))
                         .unwrap_or_else(|| panic!("`{signature}` has no body"));
                 let mut depth = 0usize;
                 let mut end = text.len();
-                for (at, ch) in text[open..].char_indices() {
+                for (at, ch) in text.get(open..).unwrap_or_default().char_indices() {
                     match ch {
                         '{' => depth += 1,
                         '}' => {
@@ -1847,7 +1848,9 @@ fn save_checks_and_raise_comparators_read_the_bound_model_tier() {
                         _ => {}
                     }
                 }
-                text[start..end].to_string()
+                text.get(start..end)
+                    .unwrap_or_else(|| panic!("`{signature}` is not on character boundaries"))
+                    .to_string()
             }
         };
         let squeezed: String = body.chars().filter(|c| !c.is_whitespace()).collect();
@@ -1859,7 +1862,9 @@ fn save_checks_and_raise_comparators_read_the_bound_model_tier() {
         // because its dot precedes `bound_model_`.
         let hits = squeezed.matches(".provider()").count();
         if hits > 0 {
-            offenders.push(format!("{rel} {function:?}: {hits} read(s) of `.provider()`"));
+            offenders.push(format!(
+                "{rel} {function:?}: {hits} read(s) of `.provider()`"
+            ));
         }
     }
     assert!(
