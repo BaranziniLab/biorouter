@@ -13916,21 +13916,30 @@ mod tests {
         /// precondition (PR-23's app admission test does), and that is not a
         /// production arming path.
         ///
-        /// The file is rustfmt formatted, so a gated item that opens a block ends
-        /// at the first line that is exactly its own indentation followed by `}`.
-        /// Braces inside strings (a test here sends `b"{"`) do not move that line.
-        /// If a gated item ever ended elsewhere, its remaining lines would count
-        /// as production or what follows would be dropped; a census that expects
-        /// exactly one production site fails either way, so a mistake here cannot
-        /// turn into a pass.
+        /// The file is rustfmt formatted, so a gated item whose first line ends
+        /// in `{` ends at the first later line that is exactly its own
+        /// indentation followed by `}`, `};` or `},` (a module or function, a
+        /// multi-line `use` list, an enum variant). Braces inside strings (a test
+        /// here sends `b"{"`) do not move that line. A gated item whose first
+        /// line does not end in `{` is taken to be that one line. If the input
+        /// ends while a gated item is still open, this panics instead of
+        /// returning the text cut short: a census over a truncated file counts
+        /// nothing after the cut, and one that expects no sites would pass
+        /// whatever the file held. `production_only_drops_each_gated_shape`
+        /// below pins each shape.
         pub(super) fn production_only(src: &str) -> String {
             let mut kept = Vec::new();
-            let mut closing: Option<String> = None;
+            // The gated item being skipped: its indentation, line number and first line.
+            let mut open: Option<(String, usize, &str)> = None;
             let mut gated = false;
-            for line in src.lines() {
-                if let Some(end) = closing.as_deref() {
-                    if line == end {
-                        closing = None;
+            for (index, line) in src.lines().enumerate() {
+                if let Some((indent, _, _)) = open.as_ref() {
+                    let closes = line
+                        .strip_prefix(indent.as_str())
+                        .and_then(|rest| rest.strip_prefix('}'))
+                        .is_some_and(|after| matches!(after, "" | ";" | ","));
+                    if closes {
+                        open = None;
                     }
                     continue;
                 }
@@ -13947,13 +13956,113 @@ mod tests {
                     if trimmed.ends_with('{') {
                         let indent: String =
                             line.chars().take_while(|ch| ch.is_whitespace()).collect();
-                        closing = Some(format!("{indent}}}"));
+                        open = Some((indent, index + 1, line));
                     }
                     continue;
                 }
                 kept.push(line);
             }
+            if let Some((_, number, opener)) = open {
+                panic!(
+                    "production_only: the #[cfg(test)] item opened on line {number} (`{}`) is \
+                     still open at the end of the input; no later line is its indentation \
+                     followed by `}}`, `}};` or `}},`, so the rest of the file would have been \
+                     dropped and a census over it could pass without reading it",
+                    opener.trim()
+                );
+            }
             kept.join("\n")
+        }
+
+        /// `production_only` on each gated shape it has to handle. The expected
+        /// text is compared whole, so a gated line that leaks into production
+        /// and a production line that is swallowed both fail.
+        #[test]
+        fn production_only_drops_each_gated_shape() {
+            let src = [
+                "use kept::one;",
+                "#[cfg(test)]",
+                "mod gated_module {",
+                "    fn inner() {",
+                "        dropped_module();",
+                "    }",
+                "}",
+                "fn kept_two() {}",
+                "#[cfg(test)]",
+                "fn gated_function() {",
+                "    dropped_function();",
+                "}",
+                "#[cfg(test)]",
+                "use gated::{",
+                "    dropped_use_one,",
+                "    dropped_use_two,",
+                "};",
+                "fn kept_three() {}",
+                "#[cfg(test)]",
+                "fn first_in_a_row() {",
+                "    dropped_first();",
+                "}",
+                "#[cfg(test)]",
+                "fn second_in_a_row() {",
+                "    dropped_second();",
+                "}",
+                "fn kept_four() {}",
+                "#[cfg(test)]",
+                "#[allow(dead_code)]",
+                "#[rustfmt::skip]",
+                "fn gated_with_attributes() {",
+                "    dropped_attributes();",
+                "}",
+                "#[cfg(test)]",
+                "use gated::single;",
+                "mod outer {",
+                "    #[cfg(test)]",
+                "    use nested::{",
+                "        dropped_nested,",
+                "    };",
+                "    fn kept_five() {}",
+                "}",
+                "enum Kept {",
+                "    #[cfg(test)]",
+                "    GatedVariant {",
+                "        dropped_variant: u8,",
+                "    },",
+                "    KeptVariant,",
+                "}",
+                "fn kept_six() {}",
+            ]
+            .join("\n");
+            let expected = [
+                "use kept::one;",
+                "fn kept_two() {}",
+                "fn kept_three() {}",
+                "fn kept_four() {}",
+                "mod outer {",
+                "    fn kept_five() {}",
+                "}",
+                "enum Kept {",
+                "    KeptVariant,",
+                "}",
+                "fn kept_six() {}",
+            ]
+            .join("\n");
+            assert_eq!(production_only(&src), expected);
+        }
+
+        /// A gated item that never closes is a panic, not a file cut short.
+        #[test]
+        #[should_panic(expected = "opened on line 3 (`mod never_closed {`) is still open")]
+        fn production_only_refuses_an_unterminated_gated_item() {
+            let src = [
+                "fn kept() {}",
+                "#[cfg(test)]",
+                "mod never_closed {",
+                "    fn inner() {",
+                "        body();",
+                "    }",
+            ]
+            .join("\n");
+            production_only(&src);
         }
 
         /// Every frame the bridge has emitted since `attach`.

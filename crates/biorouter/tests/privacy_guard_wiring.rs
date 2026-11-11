@@ -2436,8 +2436,9 @@ fn opened_fn(line: &str) -> Option<String> {
 /// standing without either check, which every behavioural test of the two existing doors
 /// still passes.
 ///
-/// PR-25, which adds the terminal's consent prompt, may move the terminal call into
-/// `crates/biorouter-cli/src/dictation/consent.rs`; its row here moves with it.
+/// PR-25, which added the terminal's consent prompt, kept the terminal call in
+/// `target::cli_bias`: `crates/biorouter-cli/src/dictation/consent.rs` mints
+/// `CaptureConsent` and calls `cli_bias`, and never `from_checked` itself.
 #[test]
 fn private_standing_is_built_in_two_files() {
     const BIAS: &str = "crates/biorouter/src/dictation/bias.rs";
