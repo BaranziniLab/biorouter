@@ -59,7 +59,7 @@ export function HostManagedModelNote({
   short?: boolean;
   /**
    * `note` is the boxed neutral {@link Note} — the default, and the shape
-   * `SwitchModelModal` and `LeadWorkerSettings` already had. `inset` is the
+   * `SwitchModelModal` already had. `inset` is the
    * flush, hairline-separated block `ModelsBottomBar` needs *inside* the
    * dropdown's item list, where a rounded card sitting on a card would be
    * wrong.

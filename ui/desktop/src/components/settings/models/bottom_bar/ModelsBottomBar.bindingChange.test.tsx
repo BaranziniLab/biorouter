@@ -47,7 +47,6 @@ vi.mock('../../../ModelAndProviderContext', () => ({
   }),
 }));
 vi.mock('../subcomponents/SwitchModelModal', () => ({ SwitchModelModal: () => null }));
-vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
 const dropdownRef = { current: null } as unknown as React.RefObject<HTMLDivElement>;
 

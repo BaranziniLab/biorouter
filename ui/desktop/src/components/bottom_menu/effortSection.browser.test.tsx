@@ -117,7 +117,7 @@ function App() {
           <EffortSection scope={SCOPE} effort={effort} controlRef={control} />
           <DropdownMenuSeparator />
           <DropdownMenuItem id="change">Change model…</DropdownMenuItem>
-          <DropdownMenuItem id="lead">Lead and worker…</DropdownMenuItem>
+          <DropdownMenuItem id="next">Another action…</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -310,7 +310,7 @@ describe('the model menu’s labelled effort segments in a real layout engine', 
       expect(await effort(tab)).toBe('deep');
       await tab.keyboard.press('ArrowDown');
       await tab.keyboard.press('ArrowDown');
-      await expect.poll(focused).toBe('lead');
+      await expect.poll(focused).toBe('next');
       expect(await effort(tab)).toBe('deep');
     } finally {
       await tab.close();

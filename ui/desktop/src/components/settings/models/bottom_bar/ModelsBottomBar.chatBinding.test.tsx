@@ -72,7 +72,6 @@ vi.mock('../subcomponents/SwitchModelModal', () => ({
     return <div data-testid="switch-model-modal" />;
   },
 }));
-vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
 const dropdownRef = { current: null } as unknown as React.RefObject<HTMLDivElement>;
 
@@ -98,7 +97,6 @@ beforeEach(() => {
   mocks.getPrivacyDisclosure.mockResolvedValue({
     data: { title_template: '{provider}', long: 'LONG', short: 'SHORT', acknowledged: true },
   });
-  // No lead/worker pair configured, so nothing else competes for the chip.
   mocks.read.mockImplementation(async (key: string) =>
     key === 'BIOROUTER_MODEL' ? SELECTION.model : ''
   );

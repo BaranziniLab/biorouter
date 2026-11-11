@@ -26,7 +26,7 @@
  * and every control after the first `Select` in the dialog becomes unreachable.
  *
  * This is not specific to the schedule dialog: any dialog holding a `Select`
- * (the model picker, the provider modals, lead/worker settings) has it, which is
+ * (the model picker, the provider modals) has it, which is
  * why the repair lives on the dialog primitive rather than in `CronPicker`.
  *
  * ## The repair

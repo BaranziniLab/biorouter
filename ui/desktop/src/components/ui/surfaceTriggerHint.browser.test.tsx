@@ -99,7 +99,6 @@ const STUBS: Record<string, string> = {
   `,
   dialogs: `
     export function SwitchModelModal() { return null; }
-    export function LeadWorkerSettings() { return null; }
   `,
 };
 
@@ -110,7 +109,7 @@ const stubDaemon: Plugin = {
       [/^\.\/BottomMenu(Extension|Skill|Knowledge)Selection$/, 'tools'],
       [/(^|\/)ConfigContext$/, 'config'],
       [/(^|\/)ModelAndProviderContext$/, 'model'],
-      [/^\.\.\/subcomponents\/(SwitchModelModal|LeadWorkerSettings)$/, 'dialogs'],
+      [/^\.\.\/subcomponents\/SwitchModelModal$/, 'dialogs'],
     ];
     builder.onResolve({ filter: /.*/ }, (args) => {
       const hit = route.find(([filter]) => filter.test(args.path));

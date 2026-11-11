@@ -419,7 +419,7 @@ describe('ConfigContext catalogue subscription (#112)', () => {
  * context is announced to every window — each of which re-reads the pair. The
  * writers this catches are the ones that never pass through
  * `ModelAndProviderContext.changeModel`: onboarding's local and coding-agent
- * cards, Lead/Worker settings and Settings' reset, which until now left even
+ * cards and Settings' reset, which until now left even
  * their own window's chip naming the previous model.
  */
 describe('ConfigContext announces writes of the app-wide model selection (F3)', () => {
