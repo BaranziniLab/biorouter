@@ -117,6 +117,10 @@ chat in the sidebar (coordinator ruling 16).
 The renderer recognises the stored notices by their prefixes, which are mirrored in
 `ui/desktop/src/components/conversation/usageLimitNotice.ts`; a Rust test reads that file.
 
+In the desktop app a chat's own limit is set from the cost under its composer (the cost
+card's Limit section), and the monthly and default limits in Settings > App > Usage; see
+[Shared controls](../desktop-ui/shared-controls.md#the-cost-cards-limit-section).
+
 ## Where the code is
 
 - `crates/biorouter/src/agents/usage_limit.rs`: the stored override, the resolver, the
@@ -141,3 +145,5 @@ Tests: `cargo test -p biorouter --lib -- usage_limit config::usage`,
 - [Steering a running turn](steering-a-running-turn.md): what happens to a message typed
   while a turn is ending.
 - [Subagents](subagents.md): what a subagent spends and how it is started.
+- [Shared controls](../desktop-ui/shared-controls.md): the cost card's Limit section and the
+  composer notice.

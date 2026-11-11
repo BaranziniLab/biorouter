@@ -10630,7 +10630,7 @@ pub(crate) mod tests {
     /// §4.1's "never truncating silently", proven on the REAL production path.
     ///
     /// A `max_chars` raised to its 200k ceiling produces a body of roughly 50k
-    /// tokens — well over BR-6's ~25k-token inline budget. In production this
+    /// tokens — well over BR-6's ~10k-token inline budget. In production this
     /// tool is an ordinary extension tool, so its result leaves
     /// `dispatch_tool_call` and goes straight into
     /// [`large_response_handler::process_tool_response`], which offloads the
@@ -10659,7 +10659,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         // Token-dense filler (distinct short numbers), so "over 200k chars" is
-        // reliably also "over 25k tokens" rather than depending on how well the
+        // reliably also "over 10k tokens" rather than depending on how well the
         // BPE merges repeated prose.
         let chunk: String = (0..900).map(|n| format!("{n} ")).collect();
         for i in 0..80 {

@@ -326,7 +326,7 @@ retained in full by the existing large-result machinery rather than truncated si
 Which mechanism carries them depends on size, and it is **not** the session blob in the
 band a raised `max_chars` actually reaches:
 
-- Above BR-6's `DEFAULT_LARGE_RESPONSE_TOKENS` (~25k tokens; the 200k-char `max_chars`
+- Above BR-6's `DEFAULT_LARGE_RESPONSE_TOKENS` (~10k tokens; the 200k-char `max_chars`
   ceiling is roughly 50k tokens of prose) the result is an ordinary extension-tool result,
   so `Agent::dispatch_tool_call` hands it to `large_response_handler::process_tool_response`,
   which writes the whole body to a handle under `<working_dir>/.biorouter/tool-output/` and

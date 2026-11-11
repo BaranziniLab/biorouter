@@ -1071,7 +1071,10 @@ impl CliSession {
         println!("{}", console::style("Generating Workflow").green());
 
         output::show_thinking();
-        let workflow = self.agent.create_workflow(self.messages.clone()).await;
+        let workflow = self
+            .agent
+            .create_workflow_for_session(self.messages.clone(), Some(&self.session_id))
+            .await;
         output::hide_thinking();
 
         let mut workflow = match workflow {

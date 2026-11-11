@@ -26,7 +26,7 @@ A per-run setting takes precedence over the global setting. When no per-run sett
 
 Unlimited does not disable loop recovery. Repeated failures and repeated actions without changing results can prompt the agent to change its approach. A persistent loop stops with an explanation rather than running forever. Repeated successful reads, new pages of results, and waiting on work that is still running must not be mistaken for a failed loop.
 
-Stop remains available throughout the task. Explicit time, token and cost budgets still apply when configured. Context compaction still lets the task continue as its history grows; Unlimited does not enlarge the model's context window or guarantee that every task will finish.
+Stop remains available throughout the task. Explicit time, token and cost budgets still apply when configured. Usage limits for a chat, for every chat by default, and for the month stop a chat before its next model request; see [Usage limits](usage-limits.md). Context compaction still lets the task continue as its history grows; Unlimited does not enlarge the model's context window or guarantee that every task will finish.
 
 Subagents, Crew task workers and built apps keep their separately configured limits.
 
@@ -71,3 +71,4 @@ The system prompt asks the agent to treat query results as data to process in co
 - [Context engineering](context-engineering.md)
 - [Compaction preservation marker](compaction-preservation-marker.md)
 - [Environment variables](../configuration/environment-variables.md)
+- [Usage limits](usage-limits.md): per-chat, default and monthly limits in tokens or dollars.

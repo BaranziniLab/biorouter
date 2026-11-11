@@ -182,7 +182,7 @@ A single text block whose first line is `Session {id} ({name}, {SessionType})`, 
 
 ### The `max_chars` cap is pagination, not the size mechanism
 
-When the projection exceeds `max_chars` it is cut and the reply appends `… [clipped at N chars — narrow with `last` or `from_msg_uid`, or raise `max_chars` (up to 200000)…]`. Retaining an oversized payload in full is handled *outside* this tool, on the ordinary tool-result path: above roughly 25k tokens BR-6's `large_response_handler` writes the whole body to a handle under `<working_dir>/.biorouter/tool-output/` and returns a preview naming it; below that, BR-7 externalizes a tool response over 64 KB into the session blob table. The tool's own cap sits on top of both.
+When the projection exceeds `max_chars` it is cut and the reply appends `… [clipped at N chars — narrow with `last` or `from_msg_uid`, or raise `max_chars` (up to 200000)…]`. Retaining an oversized payload in full is handled *outside* this tool, on the ordinary tool-result path: above roughly 10k tokens BR-6's `large_response_handler` writes the whole body to a handle under `<working_dir>/.biorouter/tool-output/` and returns a preview naming it; below that, BR-7 externalizes a tool response over 64 KB into the session blob table. The tool's own cap sits on top of both.
 
 ### When to reach for it
 

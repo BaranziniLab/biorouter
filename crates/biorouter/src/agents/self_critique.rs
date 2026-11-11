@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::conversation::Conversation;
-use crate::hooks::prompt_runner::run_prompt_hook;
+use crate::hooks::prompt_runner::run_prompt_hook_in_session;
 use crate::hooks::{HookDecision, HookEvent, DEFAULT_PROMPT_TIMEOUT_SECS};
 
 use super::Agent;
@@ -89,7 +89,7 @@ impl SelfCritiqueConfig {
     }
 }
 
-/// The judge rule handed to [`run_prompt_hook`]. The shared judge harness wraps
+/// The judge rule handed to [`run_prompt_hook_in_session`]. The shared judge harness wraps
 /// this so `{"ok": true}` means "the answer is sound, let it stand" and
 /// `{"ok": false, "reason": "…"}` means "revise, here is the concrete problem".
 ///
@@ -154,8 +154,26 @@ impl Agent {
     ///
     /// Reuses the goal-judge primitive: the transcript-tail rendering from
     /// [`crate::agents::goal`] and the LLM-as-judge runner
-    /// [`run_prompt_hook`], exactly as the `/goal` Stop-hook evaluator does.
+    /// [`run_prompt_hook_in_session`], exactly as the `/goal` Stop-hook
+    /// evaluator does.
+    ///
+    /// The chat comes from the task's session scope. Prefer
+    /// [`Self::run_self_critique_in_session`] where the chat's id is in hand.
     pub(crate) async fn run_self_critique(&self, conversation: &Conversation) -> Option<String> {
+        let session_id = crate::session_context::current_session_id();
+        self.run_self_critique_in_session(session_id.as_deref(), conversation)
+            .await
+    }
+
+    /// [`Self::run_self_critique`] charging the judge's model call to
+    /// `session_id` as a side call. The critique payload carries no session id,
+    /// so without this the plain runner could not attribute the spend, and the
+    /// cost card and the usage limits would miss it.
+    pub(crate) async fn run_self_critique_in_session(
+        &self,
+        session_id: Option<&str>,
+        conversation: &Conversation,
+    ) -> Option<String> {
         let tail = crate::agents::goal::transcript_tail(conversation)?;
 
         let provider = match self.provider().await {
@@ -167,8 +185,9 @@ impl Agent {
         };
 
         let payload_json = serde_json::json!({ "transcript_tail": tail }).to_string();
-        let outcome = run_prompt_hook(
+        let outcome = run_prompt_hook_in_session(
             Arc::clone(&provider),
+            session_id,
             HookEvent::Stop,
             &critique_rule(),
             &payload_json,
