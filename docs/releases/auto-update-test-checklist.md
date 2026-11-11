@@ -75,7 +75,8 @@ notarization creds + real hardware).
 > _Snapshot taken at the time of that release; the names above are what was
 > actually observed then. `DashboardProvider` and `App.test.tsx` no longer exist
 > (dashboard mode was removed on 2026-07-18 — see the
-> [dashboard mode removal record](../history/dashboard-mode/README.md)) — left
+> [dashboard mode removal record](../history/dashboard-mode/README.md)), and
+> `LeadWorkerSettings` went with lead/worker mode on 2026-11-11 — left
 > unedited because rewriting a recorded measurement would falsify it. Re-measure
 > rather than read these as current._
 

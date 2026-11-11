@@ -330,7 +330,8 @@ model hosted outside the user's institution. Design + status:
 what did not" section first**; the rest of that document is the design, not the running system.
 
 - **Two lattices, one crossing.** `ProviderTier` is CAPABILITY (what a session may *do*; a pure
-  function of the provider bound right now, reduced with `least` over lead/worker, never stored).
+  function of the provider bound right now, reduced with `least` over a restored lead/worker pair,
+  never stored).
   `SessionClassification` is CLASSIFICATION (how sensitive the contents are; reduced with `max` over
   time, stored in `sessions.privacy_tier`, a **permanent ratchet**). They do not interconvert —
   `privacy::floor` is the only crossing and a repo-grep test asserts its caller count. Invariant:
@@ -1881,6 +1882,16 @@ and the capability itself by [`docs/extensions/built-in/workspace.md`](docs/exte
   terminal reaches the same capabilities the GUI tabs expose.
 - **Subagent delegation:** `agents/subagent_tool.rs`,
   `agents/subagent_execution_tool/`, `agents/subagent_handle.rs`.
+- **Which model a subagent runs on** (owner, 2026-11-11): a provider or model the spawn names, else
+  the default worker model (`BIOROUTER_WORKER_PROVIDER` / `BIOROUTER_WORKER_MODEL`, both or
+  neither; `agents/default_worker.rs`, Settings > Models > Default worker model), else the chat's
+  model. Every child, the default's included, passes the one `subagent_tool::judge_child`
+  (R4, DR-19, DR-31), and a default those rules refuse runs the child on the chat's model with a
+  note to the parent; it never fails a spawn. It replaced lead/worker mode: `providers::create`
+  builds no composite from `BIOROUTER_LEAD_*` any more, `config::retired_lead_worker` carries a
+  saved setup across at the start of `biorouterd` and the CLI (lead becomes the chat model, worker
+  becomes the default worker), and only a chat SAVED as a pair still restores as
+  `LeadWorkerProvider`.
 - **GUI tab/pane layer:** `ui/desktop/src/components/chatGroups/`.
 
 **The delegation gate** (`Agent::subagents_enabled`, `agents/agent.rs`) has

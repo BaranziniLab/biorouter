@@ -62,13 +62,19 @@ the non-interactive route instead: choose the model with
 `biorouter models set --provider <provider> --model <model>` and pass the
 provider's API key in its environment variable (for example `OPENAI_API_KEY`).
 
-The provider list, and the lead and worker lists of lead/worker mode, leave out the two
+The provider list, and the provider list of the default worker model, leave out the two
 decision-model providers (`ollama_decision`, `baseten_decision`), as the desktop's provider
 catalog does. A decision model answers typed questions and writes no reply, so the setup's test
-request could never succeed, and a decision model as the lead would make every new chat a
-decision chat. When the default model is itself a decision model, the lead/worker setup says
-that lead/worker mode does not apply and changes nothing, because the worker is the default
-model. To make a decision model a chat's model, use
+request could never succeed, and a decision model cannot carry out a subagent's task.
+
+`biorouter configure`, then Configure Settings, then **Default Worker Model**, chooses the model
+subagents run on when the agent names none, or **Same as the chat's model** to clear it. It writes
+`BIOROUTER_WORKER_PROVIDER` and `BIOROUTER_WORKER_MODEL` in one config write; see
+[Model control](../agent-loop/subagents.md#model-control). It replaced the Lead/Worker Model
+setting, and the command line tool carries an old lead/worker setup across the first time it
+starts on this version.
+
+To make a decision model a chat's model, use
 `biorouter models set --provider ollama_decision --model tev1:0.8b`, or `--provider` and
 `--model` for one session or run; see [Decision models](../agent-loop/decision-models.md#a-decision-model-as-the-chats-own-model).
 Their keys are their chat siblings' (`OLLAMA_HOST`, `BASETEN_API_KEY`), which configuring Ollama

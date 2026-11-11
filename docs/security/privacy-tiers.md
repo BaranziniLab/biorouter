@@ -401,6 +401,17 @@ this section is the ledger.
 
   The service builds on Albert Lee's prototype in PR #469, which first re-checked privacy before
   every Baseten System One call.
+- **The default worker model replaced lead/worker mode (owner, 2026-11-11).** A subagent the agent
+  starts without naming a provider or model runs on the default worker model
+  (`BIOROUTER_WORKER_PROVIDER` / `BIOROUTER_WORKER_MODEL`, `agents/default_worker.rs`) when one is
+  set, else on the chat's model. It is judged by the spawn's own rules (R4, DR-19, DR-31, in
+  `subagent_tool::judge_child`, the one judge every spawn passes), so it never changes a chat's
+  tier: when those rules refuse it for a chat, the subagent runs on the chat's model and the parent
+  is told why, and the spawn is never refused because of the default. Neither key is a capability
+  key. `providers::create` no longer builds a lead/worker composite from `BIOROUTER_LEAD_MODEL`;
+  `config::retired_lead_worker` carries a saved setup onto the default provider and the default
+  worker model once at start, which is why `BIOROUTER_LEAD_MODEL` and `BIOROUTER_LEAD_PROVIDER` stay
+  capability keys. A chat saved as a lead/worker pair still restores as one, with its `least` tier.
 
 ### Did not ship
 
@@ -722,7 +733,7 @@ Each verified by reading the code, each fixed as a by-product of this design:
 | R2 | Capability = **least** privileged model in play. Classification = **most** sensitive thing touched. The two are independent. |
 | R3 | Classification is a permanent ratchet. |
 | R4 | A private session may spawn public children; a public session may never gain private reach. |
-| R5 | Children inherit the parent's model and lead/worker mode unless the user says otherwise. |
+| R5 | Children inherit the parent's model and lead/worker mode unless the user says otherwise. (Since 2026-11-11: unless the spawn names a model, a child runs on the default worker model when one is set and the spawn rules allow it, else on the parent's model. Lead/worker mode is retired; a restored lead/worker parent's child still forks the pair.) |
 | R6 | ~~Lineage decides write access: sessions the caller spawned get full control, everything else is read-only.~~ **RETIRED.** Superseded by the product owner's ruling that an agent may inject a prompt into *any* conversation — child or unrelated — provided it does not cross the private/public boundary. WRITE ⇔ VIS; the tier is the only boundary (§7). |
 | R7 | A global opt-out exists, off by default. It is a **master** switch: with it off there is no gate and no ratchet anywhere (§10.6). ⚠ It does **not** switch off R15's disclosure — with enforcement off the exposure is larger, not smaller. |
 | R8 | A public model must never reach a private session. |
@@ -1098,9 +1109,11 @@ already resolved.
 `BEDROCK_KNOWN_MODELS` and `VERSA_BEDROCK_KNOWN_MODELS`. Any model-name badge is wrong by
 construction.
 
-**Composites.** `providers::create` intercepts *before* the registry lookup when
-`BIOROUTER_LEAD_MODEL` is set (`factory.rs:139-149`), so `create("ollama", …)` can hand back a
-composite whose lead is `anthropic`. Tier must always be read off the **constructed instance**.
+**Composites.** `providers::create` intercepted *before* the registry lookup when
+`BIOROUTER_LEAD_MODEL` was set (`factory.rs:139-149`), so `create("ollama", …)` could hand back a
+composite whose lead is `anthropic`. Lead/worker mode is retired (2026-11-11) and the intercept is
+gone, but a chat saved as a pair still restores as a composite, and one provider name still
+constructs instances of different tiers. Tier must always be read off the **constructed instance**.
 
 **Decision models a chat names (DR-33).** A decision model is not a `Provider`, but the ones a
 chat names are models it runs on, so they count toward its capability. A name's tier is declared
@@ -1468,8 +1481,9 @@ if settings.provider.is_some() || settings.model.is_some() || settings.temperatu
 }
 ```
 
-**Validated on the constructed instance, not the requested name.** `providers::create` can return
-something other than what was asked for (the `BIOROUTER_LEAD_MODEL` intercept), and when only
+**Validated on the constructed instance, not the requested name.** `providers::create` could return
+something other than what was asked for (the `BIOROUTER_LEAD_MODEL` intercept, retired 2026-11-11),
+one name constructs instances of different tiers (`ollama` follows `OLLAMA_HOST`), and when only
 `settings.model` is given, today's code keeps the parent's `provider_name` and swaps the model
 string — and `versa_azure`, `versa_bedrock`, `ollama`, `llamacpp` and every declarative provider
 are `allows_unlisted_models`, so an arbitrary model string is accepted. Both are harmless because

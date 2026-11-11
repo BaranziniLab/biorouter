@@ -48,7 +48,7 @@ backend-driven and required no z.ai-specific code.
 | Provider configuration modal | `ZAI_API_KEY` (secret) + optional `ZAI_HOST` fields, rendered from backend `config_keys` | Backend-driven |
 | Onboarding | Listed under "Auto-detect from API key" | Auto-detect in `crates/biorouter/src/providers/auto_detect.rs`; text in `ui/desktop/src/components/onboarding/CommercialSetupCard.tsx` |
 | Main model selector (bottom menu / `SwitchModelModal`) | Once configured, `glm-*` models appear in the picker | Backend-driven |
-| Leader/Worker mode | GLM models selectable for both lead and worker | `LeadWorkerSettings.tsx`, backend-driven |
+| Default worker model | GLM models selectable as the default worker model for subagents | `DefaultWorkerModelRow.tsx`, backend-driven |
 | Knowledge base ingestion/digestion | GLM models selectable for ingest | `IngestModelPicker.tsx`, backend-driven |
 | CLI (`biorouter configure`) | Appears in the one provider list, which has no group headings, after the local and Versa providers in display-name order; usable via `biorouter run --provider zai --model glm-5.3` | `configure_provider_dialog()` reads the registry |
 | TUI | Stores the selected provider/model string; no separate list | — |

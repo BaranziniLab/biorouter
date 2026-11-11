@@ -492,8 +492,10 @@ private knowledge base is refused. The desktop application is told apart by the 
 header it sends. A `serve` daemon holds no such proof (SD-7), so it recognises its **own
 interface** another way. A request that carries the served document's session cookie, on a daemon
 started with a browser token, is given the tier implied by the provider the operator configured
-(SD-1). That tier is read once at launch: the declared tier of the configured provider, reduced with
-`least` over a configured lead provider, which is the reduction a bound lead/worker pair gets.
+(SD-1). That tier is read once at launch: the declared tier of the configured provider. (It was
+reduced with `least` over a configured lead provider until lead/worker mode was retired on
+2026-11-11; the daemon now carries a lead/worker setup onto `BIOROUTER_PROVIDER` before it reads
+this, and a subagent's default worker model never changes a chat's tier.)
 
 - On a **private** provider (institution-hosted, or local), the History list and the Knowledge
   view show private chats and knowledge bases, as they did before the fix.
@@ -830,7 +832,9 @@ raising a chat that exists, and a chat that did not exist a moment ago has nothi
 
 **What is pinned, and why that list.** `privacy::CAPABILITY_CONFIG_KEYS` verbatim —
 `BIOROUTER_PROVIDER`, `BIOROUTER_LEAD_MODEL`, `BIOROUTER_LEAD_PROVIDER`, `OLLAMA_HOST`,
-`LLAMACPP_EXTERNAL_HOST` and, since 2026-10-10, `BIOROUTER_MODEL`. Reusing the list `/config/upsert` already guards
+`LLAMACPP_EXTERNAL_HOST` and, since 2026-10-10, `BIOROUTER_MODEL`. The two retired lead keys stay
+on the list because `config::retired_lead_worker` writes them into the default provider and model
+at the next start, which runs before this pin is taken. Reusing the list `/config/upsert` already guards
 is deliberate: `privacy::config_keys`'s scan of the tier-input files is what keeps it honest, so a
 key that starts deciding capability is pinned here without anyone remembering to, and a second
 hand-written list would be a third answer to a question that already has two agreeing ones.

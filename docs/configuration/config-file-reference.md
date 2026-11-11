@@ -30,8 +30,8 @@ Set these at the root level of `config.yaml`.
 | `BIOROUTER_MODE` | [Tool execution behaviour](../security/permission-modes.md) | `"auto"`, `"approve"`, `"chat"`, `"smart_approve"` | `"auto"` | No |
 | `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | A whole number: `0` means Unlimited; a positive number sets a limit. Invalid values are ignored with a warning | 0 (Unlimited) | No |
 | `BIOROUTER_MAX_TOOL_CALLS` | Maximum number of tool calls allowed without user input | A whole number: `0` means Unlimited; a positive number sets a limit. Invalid values are ignored | 0 (Unlimited) | No |
-| `BIOROUTER_LEAD_PROVIDER` | Provider for the lead model in [lead/worker mode](environment-variables.md#leadworker-model-configuration) | Same as `BIOROUTER_PROVIDER` options | Falls back to `BIOROUTER_PROVIDER` | No |
-| `BIOROUTER_LEAD_MODEL` | Lead model for lead/worker mode | Model name | None | No |
+| `BIOROUTER_WORKER_PROVIDER` | Provider of the [default worker model](environment-variables.md#default-worker-model), the model subagents run on when the agent names none | Same as `BIOROUTER_PROVIDER` options | None (subagents use the chat's model) | No |
+| `BIOROUTER_WORKER_MODEL` | Name of the default worker model; applies only with `BIOROUTER_WORKER_PROVIDER` | Model name | None (subagents use the chat's model) | No |
 | `BIOROUTER_PLANNER_PROVIDER` | Provider for planning mode | Same as `BIOROUTER_PROVIDER` options | Falls back to `BIOROUTER_PROVIDER` | No |
 | `BIOROUTER_PLANNER_MODEL` | Model for planning mode | Model name | Falls back to `BIOROUTER_MODEL` | No |
 | `BIOROUTER_TOOLSHIM` | Enable tool interpretation | true/false | false | No |

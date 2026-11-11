@@ -129,7 +129,7 @@ reflected in both.
 Biorouter supports running multiple agents in parallel:
 
 - **Sub-agents** — A workflow can spawn sub-agents to handle parallel tasks, each with its own LLM provider and extension set.
-- **Lead/Worker orchestration** — A lead model delegates sub-tasks to worker models, enabling multi-model pipelines.
+- **A default worker model** — Subagents run on an optional default worker model, often a lighter one than the chat's, unless the agent names another model. With none set they run on the chat's model.
 - **Subworkflows** — Workflows can call other workflows as sub-tasks, running them sequentially or in parallel.
 
 ## Security posture

@@ -208,7 +208,7 @@ To set the default mode, use `biorouter configure`:
    │  ○ Tool Permission
    │  ○ Tool Output
    │  ○ Max Turns
-   │  ○ Lead/Worker Model
+   │  ○ Default Worker Model
    │  ○ Secret Storage
    │  ○ Toggle Experiment
    │  ○ Workflow GitHub repository
