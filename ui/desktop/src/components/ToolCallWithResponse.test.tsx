@@ -2464,6 +2464,12 @@ describe('dictionary result actions', () => {
       />
     );
     const actions = screen.getByTestId('dictionary-tool-actions');
+    // The terms and Review in Dictionary take a line of their own under the label, so the label
+    // keeps its words (laid out in dictionaryToolRow.browser.test.tsx), outside the trigger.
+    expect(actions.closest('.br-transcript-row-trailing')).not.toBeNull();
+    expect(actions.closest('.br-transcript-row-line')).toHaveAttribute('data-trailing', 'below');
+    expect(actions.closest('.br-transcript-row-head')).toBeNull();
+    expect(within(actions).getByRole('button', { name: 'Review in Dictionary' })).toBeVisible();
     const pairs = [...actions.querySelectorAll<HTMLElement>('[data-dictionary-term]')];
     expect(pairs.map((pair) => pair.textContent)).toEqual(['EPAS1KeepUndo', 'HIF2AKeepUndo']);
     expect(within(pairs[1]).getByRole('button', { name: 'Keep HIF2A' })).toBeInTheDocument();

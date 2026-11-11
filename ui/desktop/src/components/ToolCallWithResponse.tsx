@@ -1790,6 +1790,9 @@ function ToolCallView({
       open={isOpen}
       onOpenChange={setOpenChoice}
       triggerClassName="br-tool-disclosure"
+      // The terms, each with its own Keep and Undo, and Review in Dictionary take their own line
+      // under the label: beside it they squeezed the label to "Added te…" in the 760px column.
+      trailingPlacement={dictionaryAddRows.length > 0 ? 'below' : 'inline'}
       trailing={
         dictionaryAddRows.length > 0 ? (
           <span
