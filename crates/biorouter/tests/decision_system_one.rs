@@ -1184,8 +1184,9 @@ async fn an_unreachable_server_is_named_and_may_be_retried() {
     let err = adapter.decide(&one_question(NOTE)).await.unwrap_err();
     let (status, _, message) = backend(&err);
     assert_eq!(status, None);
-    assert!(
-        message.starts_with("Baseten decision model `joey-1` could not be reached"),
+    // Plain words, never the transport library's text (it goes to the log).
+    assert_eq!(
+        message, "joey-1 on Baseten could not be reached because nothing answered at its address",
         "{message}"
     );
     assert!(!message.contains("synthetic-test-key"), "{message}");

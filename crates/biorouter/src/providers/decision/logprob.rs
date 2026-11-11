@@ -164,11 +164,7 @@ impl LogprobAdapter {
                     model: self.entry.model.clone(),
                     status: None,
                     error_type: None,
-                    message: format!(
-                        "`{}` could not be reached: {}",
-                        self.entry.display_name,
-                        e.root_cause()
-                    ),
+                    message: super::unreachable_sentence(&self.entry.display_name, &e),
                 })?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {

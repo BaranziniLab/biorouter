@@ -859,6 +859,7 @@ const ORCHESTRATE_DESCRIPTION: &str = concat!(
     "Otherwise it stays in progress and the reply lists the questions that ",
     "fell short, so you can fix the work and complete again; once its attempts are used up ",
     "the phase is blocked. A gate that cannot be evaluated never passes. ",
+    "Without a decision model, this chat's own model judges a gate that names no model. ",
     "A gate binds you: you cannot change, remove or skip it, and later phases wait until it ",
     "passes or the person passes or skips it. Your gates need a threshold of at least 0.5. ",
     "Subagents run in the background; the user sees the plan and its subagents in the chat's ",
@@ -1808,6 +1809,10 @@ pub struct WorkspaceClient {
     pub(crate) context: PlatformExtensionContext,
     /// Answers a phase gate's questions. The process's service in production.
     decision_service: &'static crate::decision::DecisionService,
+    /// The chat model a gate falls back to, in place of the caller's agent's
+    /// (tests: a fake provider).
+    #[cfg(test)]
+    chat_model_override: Option<std::sync::Arc<dyn crate::providers::base::Provider>>,
 }
 
 impl WorkspaceClient {
@@ -1838,6 +1843,8 @@ impl WorkspaceClient {
             info,
             context,
             decision_service: crate::decision::global(),
+            #[cfg(test)]
+            chat_model_override: None,
         })
     }
 
@@ -1848,6 +1855,16 @@ impl WorkspaceClient {
         service: &'static crate::decision::DecisionService,
     ) -> Self {
         self.decision_service = service;
+        self
+    }
+
+    /// Use `model` as the chat's own model a gate falls back to (tests).
+    #[cfg(test)]
+    pub(crate) fn with_chat_model(
+        mut self,
+        model: std::sync::Arc<dyn crate::providers::base::Provider>,
+    ) -> Self {
+        self.chat_model_override = Some(model);
         self
     }
 
@@ -6540,16 +6557,34 @@ impl WorkspaceClient {
         let service = self.decision_service;
         let mut notes = Vec::new();
         for (phase_id, gate) in &added.gates {
-            match service
-                .check_model_use(
-                    &session,
-                    gate.model.as_ref(),
-                    &gate.questions,
-                    ModelSource::Named,
-                )
-                .await
+            match crate::agents::orchestration_plan::gate_judge_for(
+                service,
+                &session,
+                gate.model.as_ref(),
+                &gate.questions,
+                ModelSource::Named,
+            )
+            .await
             {
-                Ok(()) => {}
+                Ok(crate::agents::orchestration_plan::GateJudgeCheck::DecisionModel) => {}
+                // A gate that names no model works in every chat: with no
+                // decision model this chat may use, its own model judges it.
+                Ok(crate::agents::orchestration_plan::GateJudgeCheck::ChatModel { why })
+                    if why.is_transient() =>
+                {
+                    notes.push(format!(
+                        "Phase \"{phase_id}\"'s gate model could not be checked just now ({}); \
+                         the gate is asked when the phase completes, and this chat's own model \
+                         judges it if no decision model can then.",
+                        as_clause(&why.to_string())
+                    ))
+                }
+                Ok(crate::agents::orchestration_plan::GateJudgeCheck::ChatModel { .. }) => notes
+                    .push(format!(
+                        "Phase \"{phase_id}\"'s gate is judged by this chat's own model when the \
+                         phase completes, because this chat has no decision model it may use \
+                         now."
+                    )),
                 Err(error) if error.is_transient() => notes.push(format!(
                     "Phase \"{phase_id}\"'s gate model could not be checked just now ({}); the \
                      gate is asked when the phase completes.",
@@ -6558,8 +6593,8 @@ impl WorkspaceClient {
                 Err(error) => {
                     return Err(format!(
                         "Phase \"{phase_id}\"'s gate cannot be answered in this chat: {}. Declare \
-                         it without that model, or ask the person to set a decision model this \
-                         chat may use. Nothing was changed.",
+                         it without that model to let this chat's own model judge it, or ask the \
+                         person to set a decision model this chat may use. Nothing was changed.",
                         as_clause(&error.to_string())
                     ))
                 }
@@ -6714,9 +6749,13 @@ impl WorkspaceClient {
     /// 3. The decision model reads the state the dry run would close the phase
     ///    with (its hand-off as written or composed), through the decision
     ///    service, as this chat at its own tier, with the master switch as
-    ///    this call sampled it.
+    ///    this call sampled it. A gate that names no model is judged by this
+    ///    chat's own bound model instead when the chat has no decision model
+    ///    it may use, or that model cannot be reached
+    ///    ([`crate::agents::orchestration_plan::judge_gate`]).
     /// 4. The verdict is written in one transaction that re-checks the gate
-    ///    and, on a pass, the barrier and the racing-spawn marks.
+    ///    and, on a pass, the barrier and the racing-spawn marks, with who
+    ///    gave it.
     async fn complete_gated(&self, job: GatedCompletion<'_>) -> Result<String, String> {
         use crate::agents::orchestration_plan as plan;
 
@@ -6751,7 +6790,7 @@ impl WorkspaceClient {
             .unwrap_or_else(|| phase.clone());
         let state = plan::gate_state_text(&closing, &states);
 
-        let verdict =
+        let (verdict, judge) =
             match crate::decision::DecisionSession::load(sm.clone(), caller, enforced).await {
                 Ok(session) => {
                     let session = session
@@ -6761,14 +6800,19 @@ impl WorkspaceClient {
                         )
                         .with_origin_label(Some(phase.title.clone()))
                         .with_turn(crate::decision::turns::current_turn(caller));
-                    plan::evaluate_gate(self.decision_service, &session, &gate, state).await
+                    let chat_model = self.chat_model_of(caller).await;
+                    plan::judge_gate(self.decision_service, &session, &gate, state, chat_model)
+                        .await
                 }
-                Err(e) => plan::GateVerdict::Error(format!("this chat could not be read ({e})")),
+                Err(e) => (
+                    plan::GateVerdict::Error(format!("this chat could not be read ({e})")),
+                    None,
+                ),
             };
 
         let phase_id = phase.id.as_str();
         plan::mutate_plan(sm, caller, |current| {
-            let (next, note, closed) = plan::apply_gate_verdict(
+            let (mut next, mut note, closed) = plan::apply_gate_verdict(
                 current,
                 phase_id,
                 &gate,
@@ -6784,10 +6828,40 @@ impl WorkspaceClient {
                     plan::phase_spawn_mark(caller, phase_id),
                 )?;
             }
+            if let Some(judge) = &judge {
+                plan::record_gate_judge(&mut next, phase_id, judge);
+                if let Some(reason) = &judge.reason {
+                    note = format!("{note} {reason}");
+                }
+            }
             Ok((next, note))
         })
         .await
         .map_err(|e| e.to_string())
+    }
+
+    /// The language model the chat `session_id` is bound to, unwrapped
+    /// through any decision-bound wrapper (`Agent::bound_model_provider`):
+    /// what judges a phase gate that names no model when the chat has no
+    /// decision model it may use. It is the model that reads this tool's
+    /// result anyway, at the chat's own tier, so asking it crosses nothing.
+    /// `None` when no agent of that chat is loaded or it has no model.
+    async fn chat_model_of(
+        &self,
+        session_id: &str,
+    ) -> Option<std::sync::Arc<dyn crate::providers::base::Provider>> {
+        #[cfg(test)]
+        if let Some(model) = &self.chat_model_override {
+            return Some(model.clone());
+        }
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .ok()?;
+        manager
+            .peek_agent(session_id)
+            .await?
+            .bound_model_provider()
+            .await
     }
 
     /// The plan with per-phase counts from this chat's subagent roster.
@@ -15591,6 +15665,7 @@ pub(crate) mod tests {
                     .then(|| "Which source should I use?".into()),
                 artifacts: Vec::new(),
                 tokens: None,
+                model: None,
                 human_intervened: false,
                 stopped_by_monitor: None,
                 decisions: None,
@@ -18888,6 +18963,131 @@ pub(crate) mod tests {
             declared.structured_content.unwrap()["phases"][1]["gate"].is_object(),
             "the gate was stored"
         );
+    }
+
+    /// The app needs only a language model. With no decision model at all, a
+    /// gate that names none is accepted with a note, and completing its phase
+    /// asks the chat's own model, whose verdict holds or passes the gate
+    /// exactly as a decision model's would. The reply and the gate's record
+    /// name the chat's model and why.
+    #[tokio::test]
+    async fn with_no_decision_model_a_gate_is_accepted_and_the_chats_own_model_judges_it() {
+        use crate::agents::orchestration_plan::gate_chat_stub::ChatStub;
+        let (c, parent) = gated_client(Vec::new()).await;
+        let short = ChatStub::answering(r#"{"tests_pass": {"answer": "no", "p_yes": 0.2}}"#);
+        let c = c.with_chat_model(short.provider());
+        let declared = orchestrate(&c, &parent, gated_plan_args()).await;
+        let text = result_text(&declared);
+        assert_eq!(declared.is_error, Some(false), "{text}");
+        assert!(
+            text.contains(
+                "Phase \"build\"'s gate is judged by this chat's own model when the phase \
+                 completes, because this chat has no decision model it may use now."
+            ),
+            "{text}"
+        );
+        assert_eq!(short.calls(), 0, "a declaration asks nothing");
+
+        let complete = json!({ "action": "complete", "phase": "build" });
+        let held = orchestrate(&c, &parent, complete.clone()).await;
+        let text = result_text(&held);
+        assert_eq!(held.is_error, Some(false), "{text}");
+        assert!(text.contains("NOT completed"), "{text}");
+        assert!(text.contains("tests_pass: P(yes) 0.20"), "{text}");
+        assert!(
+            text.contains(
+                "This chat has no decision model it may use, so stub-chat-model, the chat's \
+                 model, judged the gate."
+            ),
+            "{text}"
+        );
+        assert_eq!(short.calls(), 1, "one completion");
+        let prompt = short.last_prompt();
+        assert!(prompt.contains("A parser with passing tests"), "{prompt}");
+        assert!(
+            prompt.contains("- tests_pass: Do the results show every new test passing?"),
+            "{prompt}"
+        );
+        let snapshot = held.structured_content.unwrap();
+        let gate = &snapshot["phases"][1]["gate"];
+        assert_eq!(gate["attempts"], 1);
+        assert_eq!(gate["lastPassed"], false);
+        assert_eq!(gate["lastJudge"]["kind"], "chat_model");
+        assert_eq!(gate["lastJudge"]["model"], "stub-chat-model");
+
+        let done = ChatStub::answering(r#"{"tests_pass": {"answer": "yes", "p_yes": 0.93}}"#);
+        let c = c.with_chat_model(done.provider());
+        let passed = orchestrate(&c, &parent, complete).await;
+        let text = result_text(&passed);
+        assert!(text.contains("gate passed on attempt 2 of 2"), "{text}");
+        let snapshot = passed.structured_content.unwrap();
+        assert_eq!(snapshot["phases"][1]["status"], "completed");
+        assert_eq!(snapshot["phases"][1]["gate"]["lastPassed"], true);
+        assert_eq!(
+            snapshot["phases"][1]["gate"]["lastJudge"]["kind"],
+            "chat_model"
+        );
+        assert_eq!(done.calls(), 1);
+    }
+
+    /// A gate that names no model, whose decision model cannot be reached,
+    /// is judged by the chat's own model rather than erroring and waiting for
+    /// the person; the record says why. A gate that NAMES that model keeps
+    /// the error and never asks the chat's model.
+    #[tokio::test]
+    async fn an_unreachable_decision_model_hands_a_gate_with_no_model_to_the_chats_model() {
+        let mut broken = local_model(0.99);
+        broken.fail_all = true;
+        let (c, parent) = gated_client(vec![broken]).await;
+        let chat = crate::agents::orchestration_plan::gate_chat_stub::ChatStub::answering(
+            r#"{"tests_pass": {"answer": "yes", "p_yes": 0.9}}"#,
+        );
+        let c = c.with_chat_model(chat.provider());
+        let declared = orchestrate(&c, &parent, gated_plan_args()).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let passed = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&passed);
+        assert!(text.contains("gate passed on attempt 1 of 2"), "{text}");
+        assert!(
+            text.contains(
+                "tev1 failed on its server (HTTP 500), so stub-chat-model, the chat's model, \
+                 judged the gate."
+            ),
+            "{text}"
+        );
+        assert_eq!(chat.calls(), 1);
+
+        // Named: the error stands, no attempt is used, the chat model is not
+        // asked.
+        let (c, parent) = gated_client(vec![{
+            let mut broken = local_model(0.99);
+            broken.fail_all = true;
+            broken
+        }])
+        .await;
+        let chat = crate::agents::orchestration_plan::gate_chat_stub::ChatStub::answering(
+            r#"{"tests_pass": {"answer": "yes", "p_yes": 0.9}}"#,
+        );
+        let c = c.with_chat_model(chat.provider());
+        let mut args = gated_plan_args();
+        args["phases"][1]["gate"]["model"] = json!("test_decision/tev1");
+        let declared = orchestrate(&c, &parent, args).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let errored = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&errored);
+        assert!(text.contains("could not be evaluated"), "{text}");
+        assert!(text.contains("no attempt was used"), "{text}");
+        assert_eq!(chat.calls(), 0, "a named model's gate never falls back");
     }
 
     /// A phase an earlier gate holds is refused with the hold, and no gate is

@@ -600,8 +600,11 @@ button overrides a gate.
   phase the plan no longer names reads "a later phase", never its id); and a closed **Details**
   with the threshold ("Every question must reach P(yes) 0.90"), the last check when it is not
   already up front, the attempts, the model (`tev1:0.8b · this computer`, or "This chat's
-  decision model"), "Accepts uncalibrated probabilities" when set, and who set it (The agent,
-  You, The workflow).
+  decision model, or its own model when it has none"), who gave the last verdict (Judged by:
+  "gpt-5.5, the chat's model" or "joey-1, a decision model", and for the chat's model the
+  sentence saying why, such as "This chat has no decision model it may use, so gpt-5.5, the
+  chat's model, judged the gate."), "Accepts uncalibrated probabilities" when set, and who set
+  it (The agent, You, The workflow).
 - **The footer** holds Skip this phase and Pass this phase, each with a tooltip ("Lets the agent
   move on without this phase. It is marked skipped." and "Counts the phase as passed, as if its
   gate had passed."). Pass is the primary button only when the person is needed (blocked and

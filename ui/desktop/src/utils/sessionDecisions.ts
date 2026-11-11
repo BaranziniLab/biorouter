@@ -386,6 +386,38 @@ export const NEEDS_PUBLIC_DECISION_CONFIRMATION = 'needsPublicDecisionConfirmati
 
 /** `GateOwner` in `orchestration_plan.rs`: who set a phase gate. */
 export const GATE_OWNERS = ['agent', 'person', 'workflow'] as const;
+
+/** Which kind of model gave a gate's verdict (`GateJudgeKind` in `orchestration_plan.rs`). */
+export const GATE_JUDGE_KINDS = ['decision_model', 'chat_model'] as const;
+export type GateJudgeKind = (typeof GATE_JUDGE_KINDS)[number];
+
+/**
+ * The model that gave a gate's last verdict. A gate that names no model is
+ * judged by the chat's own model when the chat has no decision model it may
+ * use, or the one it resolved to could not be reached; `reason` then says so
+ * in one plain sentence.
+ */
+export interface GateJudge {
+  kind: GateJudgeKind;
+  /** The model as a person reads it (`joey-1`, `gpt-5.5`), never a provider id. */
+  model: string;
+  reason: string | null;
+}
+
+/** `gpt-5.5, the chat's model` or `joey-1, a decision model`. */
+export function gateJudgeWords(judge: GateJudge): string {
+  return judge.kind === 'chat_model'
+    ? `${judge.model}, the chat's model`
+    : `${judge.model}, a decision model`;
+}
+
+function parseGateJudge(value: unknown): GateJudge | null {
+  const body = record(value);
+  const model = text(body?.model);
+  const kind = optionalOneOf(GATE_JUDGE_KINDS, body?.kind);
+  if (!body || !model || !kind) return null;
+  return { kind, model, reason: text(body.reason) };
+}
 export type GateOwner = (typeof GATE_OWNERS)[number];
 
 /** `PersonGateAction`: the pass or skip a person gave a gate. */
@@ -411,8 +443,13 @@ export interface PhaseGateSnapshot {
   owner: GateOwner;
   /** The questions, by name, in the order the gate asks them. */
   questions: { name: string; question: string }[];
-  /** The decision model the gate names, as `provider/model`; `null` uses the chat's. */
+  /**
+   * The decision model the gate names, as `provider/model`; `null` uses the chat's
+   * decision model, or the chat's own model when it has none.
+   */
   model: string | null;
+  /** Who gave the last verdict; `null` before one, or from an older daemon. */
+  lastJudge: GateJudge | null;
   /**
    * The adapter the gate asks `model` through, when it names one; `null` is the
    * model's own. The editor sends it back with the model, because a gate write
@@ -1226,6 +1263,7 @@ export function parsePhaseGateSnapshot(value: unknown): PhaseGateSnapshot | null
     owner: oneOf(GATE_OWNERS, body.owner, 'agent'),
     questions,
     model,
+    lastJudge: parseGateJudge(body.lastJudge),
     // An adapter belongs to a named model; alone it names nothing.
     modelAdapter: model ? optionalOneOf(DECISION_ADAPTERS, body.modelAdapter) : null,
     allowUncalibrated: body.allowUncalibrated === true,

@@ -19,6 +19,7 @@ import {
   fetchDecisionCatalog,
   fetchDecisionSettings,
   formatProbability,
+  gateJudgeWords,
   phaseGateState,
   type DecisionHistoryFilter,
   type DecisionModelEntry,
@@ -116,10 +117,11 @@ export const PHASE_GATE_COPY = {
     lastCheck: 'Last check',
     attempts: 'Attempts',
     model: 'Model',
+    judgedBy: 'Judged by',
     probabilities: 'Probabilities',
     setBy: 'Set by',
   },
-  chatDefault: "This chat's decision model",
+  chatDefault: "This chat's decision model, or its own model when it has none",
   uncalibrated: 'Accepts uncalibrated probabilities',
   /** R2-7: the banner's one line; why it waits is in the tip beside it. */
   waitingForYou: 'Waiting for you.',
@@ -127,7 +129,7 @@ export const PHASE_GATE_COPY = {
   needsPerson:
     'Only you can move this phase on now: pass it, skip it, give its gate its attempts again, or change or remove the gate.',
   blockedByErrors:
-    'The gate could not be evaluated several times in a row. The agent can ask it again once a decision model this chat may use is reachable, or you can decide here.',
+    'The gate could not be evaluated several times in a row. The agent can ask it again once the model that judges it can be reached, or you can decide here.',
   markedBlocked:
     'The agent marked this phase blocked, so the gate was not asked. The agent can ask it by completing the phase, or you can decide here.',
   standingPass:
@@ -159,7 +161,7 @@ export const PHASE_GATE_COPY = {
     replaces: 'Saving makes this gate yours and starts its attempts over.',
     questions: 'Questions',
     questionsHelp:
-      "A decision model answers each question from the phase's hand-off and its subagents' results. The phase completes only when every answer reaches the threshold.",
+      "A decision model answers each question from the phase's hand-off and its subagents' results, or the chat's own model when the chat has none. The phase completes only when every answer reaches the threshold.",
     question: (n: number) => `Question ${n}`,
     addQuestion: 'Add a question',
     removeQuestion: (n: number) => `Remove question ${n}`,
@@ -169,7 +171,7 @@ export const PHASE_GATE_COPY = {
     /** R2: the helper names its outcome, in words. */
     thresholdRule: (t: string) => `Passes when every question's P(yes) is at or above ${t}.`,
     thresholdLow:
-      'Below 0.50 the gate passes answers the decision model leans against. That is your call to make.',
+      'Below 0.50 the gate passes answers the model leans against. That is your call to make.',
     moreOptions: 'More options',
     moreSummary: (attempts: number, model: string) =>
       `${attempts} ${attempts === 1 ? 'attempt' : 'attempts'} · ${model}`,
@@ -709,6 +711,16 @@ function GateFacts({
           <Fact label={copy.facts.model}>
             <span data-testid="phase-gate-model-line">{gateModelText(model, gate.model)}</span>
           </Fact>
+          {gate.lastJudge ? (
+            <Fact label={copy.facts.judgedBy}>
+              <span data-testid="phase-gate-judge">{gateJudgeWords(gate.lastJudge)}</span>
+              {gate.lastJudge.reason ? (
+                <span className="block" data-testid="phase-gate-judge-reason">
+                  {gate.lastJudge.reason}
+                </span>
+              ) : null}
+            </Fact>
+          ) : null}
           {gate.allowUncalibrated ? (
             <Fact label={copy.facts.probabilities}>{copy.uncalibrated}</Fact>
           ) : null}

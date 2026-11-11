@@ -46,3 +46,87 @@ pub use install::{
 pub use logprob::LogprobAdapter;
 pub use system_one::SystemOneAdapter;
 pub use verbalized::VerbalizedAdapter;
+
+/// A request that never reached the model, as a person reads it: "joey-1 on
+/// Baseten could not be reached because its server's certificate did not
+/// match". No full stop, so it reads inside the sentences that quote it (a
+/// monitor's notice, a gate's last error). `name` is the model as a person
+/// knows it. The transport error itself names the host and the failure in a
+/// library's words (a TLS error quotes the certificate's names), so it goes to
+/// the log only, never into the sentence a surface shows.
+pub(crate) fn unreachable_sentence(name: &str, error: &anyhow::Error) -> String {
+    tracing::warn!(
+        model = name,
+        error = %error.root_cause(),
+        "decision model could not be reached"
+    );
+    format!(
+        "{name} could not be reached because {}",
+        unreachable_reason(error)
+    )
+}
+
+/// What kept a request from reaching its server, in a few plain words.
+fn unreachable_reason(error: &anyhow::Error) -> &'static str {
+    let timed_out = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+    });
+    let text = error
+        .chain()
+        .map(|cause| cause.to_string().to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.contains("not valid for name") || text.contains("notvalidforname") {
+        "its server's certificate did not match"
+    } else if text.contains("certificate") {
+        "its server's certificate could not be verified"
+    } else if timed_out || text.contains("timed out") {
+        "it did not answer in time"
+    } else if text.contains("connection refused") {
+        "nothing answered at its address"
+    } else if text.contains("dns error")
+        || text.contains("failed to lookup address")
+        || text.contains("nodename nor servname")
+        || text.contains("name or service not known")
+    {
+        "its address could not be found"
+    } else {
+        "the connection failed"
+    }
+}
+
+#[cfg(test)]
+mod unreachable_tests {
+    use super::*;
+
+    /// The sentence names the model and why in plain words, and never carries
+    /// the library's text or a backtick.
+    #[test]
+    fn a_transport_failure_reads_as_a_plain_sentence() {
+        let tls = anyhow::anyhow!(
+            "invalid peer certificate: certificate not valid for name \"x.example\"; \
+             certificate is only valid for DnsName(\"y.example\")"
+        )
+        .context("error sending request");
+        let sentence = unreachable_sentence("joey-1 on Baseten", &tls);
+        assert_eq!(
+            sentence,
+            "joey-1 on Baseten could not be reached because its server's certificate did not \
+             match"
+        );
+        let refused = anyhow::anyhow!("tcp connect error: Connection refused (os error 61)");
+        assert_eq!(
+            unreachable_sentence("tev1:0.8b on Ollama", &refused),
+            "tev1:0.8b on Ollama could not be reached because nothing answered at its address"
+        );
+        for sentence in [
+            unreachable_sentence("joey-1 on Baseten", &tls),
+            unreachable_sentence("m", &anyhow::anyhow!("something else broke")),
+        ] {
+            assert!(!sentence.contains('`'), "{sentence}");
+            assert!(!sentence.contains("DnsName"), "{sentence}");
+        }
+    }
+}

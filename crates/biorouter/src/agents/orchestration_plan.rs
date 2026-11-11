@@ -51,8 +51,21 @@
 //! keeps the phase in progress and hands the failing questions back to the
 //! model ([`apply_gate_verdict`]); after `max_attempts` failures the phase is
 //! blocked. An error never passes and does not use an attempt, and two errors
-//! in a row block the phase. Each evaluation is one row of the decision log
-//! (origin `gate`, origin id the phase id), never a transcript row.
+//! in a row block the phase. Each evaluation by a decision model is one row of
+//! the decision log (origin `gate`, origin id the phase id), never a
+//! transcript row.
+//!
+//! ## A gate needs only a language model
+//!
+//! A gate that names no model is judged by the decision model the chat would
+//! use, and when the chat has none it may use, or that one cannot be reached,
+//! by the chat's own language model ([`judge_gate`]): one short completion
+//! that answers each question yes or no with a P(yes), read strictly, and
+//! then treated exactly as a decision model's verdict. Such a gate is never
+//! refused when it is declared ([`gate_judge_for`]). The gate's record keeps
+//! who gave its last verdict and why ([`GateJudge`]). A gate that names a
+//! decision model asks only that model, and is refused where the chat may not
+//! use it.
 //!
 //! ## A gate binds the agent
 //!
@@ -91,7 +104,7 @@ use crate::decision::settings::{MonitorSpec, MAX_AGENT_MONITORS};
 use crate::decision::types::validate_questions;
 use crate::decision::{
     DecisionAdapter, DecisionContext, DecisionKind, DecisionModelRef, DecisionRequest,
-    DecisionService, DecisionSession, Question, Threshold,
+    DecisionService, DecisionSession, ModelSource, Question, Threshold,
 };
 use crate::privacy::SessionClassification;
 use crate::session::SessionManager;
@@ -256,9 +269,11 @@ pub struct PhaseCounts {
     pub quiet: u32,
 }
 
-/// A decision-model gate on a phase (decision models, wave 2): before the phase
-/// can complete, a decision model reads its hand-off and its children's result
-/// lines and every question must reach P(yes) >= `threshold`. A failed gate keeps
+/// A decision gate on a phase (decision models, wave 2): before the phase can
+/// complete, a decision model (or, for a gate that names none in a chat with
+/// no decision model it may use, the chat's own model) reads its hand-off and
+/// its children's result lines and every question must reach P(yes) >=
+/// `threshold`. A failed gate keeps
 /// the phase in progress and hands the failing questions back to the model; after
 /// `max_attempts` failures the phase is blocked. Errors never pass.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -354,6 +369,43 @@ pub enum PersonGateChoice {
     Retry,
 }
 
+/// Which kind of model gave a gate's verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GateJudgeKind {
+    /// A decision model, through the decision service.
+    DecisionModel,
+    /// The chat's own language model. Only a gate that names no model is
+    /// judged this way, when the chat has no decision model it may use or the
+    /// one it resolved to could not be reached.
+    ChatModel,
+}
+
+/// The model that gave a gate's last verdict, as every surface names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GateJudge {
+    pub kind: GateJudgeKind,
+    /// The model as a person reads it: a decision model's display name, or
+    /// the chat model's own name. Never a provider id.
+    pub model: String,
+    /// Why the chat's own model judged the gate, in one plain sentence
+    /// ("This chat has no decision model it may use, so gpt-5.5, the chat's
+    /// model, judged the gate."). None when a decision model answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl GateJudge {
+    /// "gpt-5.5, the chat's model" or "joey-1, a decision model".
+    pub fn words(&self) -> String {
+        match self.kind {
+            GateJudgeKind::ChatModel => format!("{}, the chat's model", self.model),
+            GateJudgeKind::DecisionModel => format!("{}, a decision model", self.model),
+        }
+    }
+}
+
 /// A phase gate as surfaces draw it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -378,9 +430,14 @@ pub struct PhaseGateSnapshot {
     #[schema(value_type = HashMap<String, String>)]
     pub questions: IndexMap<String, String>,
     /// The decision model the gate names, as `provider/model`; none means
-    /// the chat's default decision model, else the configured one.
+    /// the chat's default decision model, else the configured one, else the
+    /// chat's own language model.
     #[serde(default)]
     pub model: Option<String>,
+    /// The model that gave the last verdict (passed or not), when there was
+    /// one: a decision model, or the chat's own model and why.
+    #[serde(default)]
+    pub last_judge: Option<GateJudge>,
     /// The adapter the gate asks `model` through, when it names one; none
     /// means the model's own. An editor that writes the gate back sends it
     /// with the model, because the write replaces the whole gate.
@@ -521,6 +578,10 @@ pub(crate) struct GateState {
     pub(crate) last_min_p: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) last_error: Option<String>,
+    /// The model that gave the last verdict, kept with `last_passed`. An
+    /// error leaves it as it was, as it leaves the verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_judge: Option<GateJudge>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) last_at: Option<DateTime<Utc>>,
     /// A person's pass or skip that stands until the agent completes the
@@ -788,7 +849,8 @@ pub struct PhaseGateInput {
     /// Optional decision model as provider/model, or by its name when that
     /// names one model decision_models lists (`tev1:0.8b`). Left out, this
     /// chat's default decision model, else the configured default, else the
-    /// first model this chat may use.
+    /// first model this chat may use; with no decision model, this chat's own
+    /// model judges the gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
@@ -811,7 +873,7 @@ pub struct PhaseGateSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_attempts: Option<u32>,
     /// The decision model; none means the chat's default decision model,
-    /// else the configured one.
+    /// else the configured one, else the chat's own language model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<std::collections::BTreeMap<String, String>>")]
     pub model: Option<DecisionModelRef>,
@@ -2349,9 +2411,8 @@ fn blocked_gate_guidance(gate: &PhaseGateSnapshot, held_by: Option<&str>) -> Str
             .unwrap_or_default();
         format!(
             "\n   blocked because its gate could not be evaluated {GATE_ERRORS_TO_BLOCK} times in \
-             a row: complete the phase again to ask it once a decision model this chat may use \
-             is reachable{and_hold}, or the person can retry, change, remove, pass or skip its \
-             gate"
+             a row: complete the phase again to ask it once the model that judges it can be \
+             reached{and_hold}, or the person can retry, change, remove, pass or skip its gate"
         )
     } else {
         let once_hold = held_by
@@ -3095,6 +3156,7 @@ fn gate_snapshot(plan: &OrchestrationPlan, index: usize) -> Option<PhaseGateSnap
             .map(|(name, question)| (name.clone(), question.instructions.clone()))
             .collect(),
         model: gate.model.as_ref().map(DecisionModelRef::label),
+        last_judge: state.last_judge.clone(),
         model_adapter: gate.model.as_ref().and_then(|model| model.adapter),
         allow_uncalibrated: gate.allow_uncalibrated,
         last_error: state.last_error.clone(),
@@ -3255,16 +3317,10 @@ pub(crate) enum GateVerdict {
     Error(String),
 }
 
-/// Ask the gate's questions of `state` through `service`, as the chat
-/// `session` describes (origin `gate`, the phase id and title, the turn).
-pub(crate) async fn evaluate_gate(
-    service: &DecisionService,
-    session: &DecisionSession,
-    gate: &PhaseGate,
-    state: String,
-) -> GateVerdict {
-    let questions: IndexMap<String, Question> = gate
-        .questions
+/// A gate's questions as the decision service asks them, each carrying the
+/// gate's threshold.
+fn gate_questions(gate: &PhaseGate) -> IndexMap<String, Question> {
+    gate.questions
         .iter()
         .map(|(name, question)| {
             (
@@ -3275,7 +3331,84 @@ pub(crate) async fn evaluate_gate(
                 },
             )
         })
-        .collect();
+        .collect()
+}
+
+/// How a gate on `model` asking `questions` would be judged in the chat
+/// `session`, by every check a decision makes before it sends
+/// ([`DecisionService::check_model_use`]; nothing of the chat is sent). Every
+/// door that stores a gate asks this: the agent's plan, the person's route
+/// and CLI, and a workflow's seed.
+///
+/// A gate that names a model is judged by it, or refused (`Err`, the check's
+/// own error), because the person or workflow asked for that model. A gate
+/// that names none is never refused: the decision model the chat would use
+/// judges it, and when the chat has none it may use, its own language model
+/// does ([`GateJudgeCheck::ChatModel`], [`judge_gate`]). The app needs only a
+/// language model for a gate to work.
+pub async fn gate_judge_for(
+    service: &DecisionService,
+    session: &DecisionSession,
+    model: Option<&DecisionModelRef>,
+    questions: &IndexMap<String, Question>,
+    source: ModelSource,
+) -> crate::decision::DecisionResult<GateJudgeCheck> {
+    match service
+        .check_model_use(session, model, questions, source)
+        .await
+    {
+        Ok(()) => Ok(GateJudgeCheck::DecisionModel),
+        Err(why) if model.is_none() => Ok(GateJudgeCheck::ChatModel { why }),
+        Err(error) => Err(error),
+    }
+}
+
+/// Who would judge a gate as it is declared ([`gate_judge_for`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum GateJudgeCheck {
+    /// A decision model this chat may use answers it.
+    DecisionModel,
+    /// No decision model can answer it now (`why`), so the chat's own model
+    /// judges it when the phase completes, unless one can by then. A
+    /// transient `why` (a timeout, a server that is busy or failing) may
+    /// clear by then.
+    ChatModel { why: crate::decision::DecisionError },
+}
+
+/// What asking a gate's decision model came to.
+enum DecisionAsk {
+    /// The model answered: a verdict, or an answer the gate refuses
+    /// (uncalibrated probabilities), with the model's name as a person reads
+    /// it.
+    Answered { verdict: GateVerdict, model: String },
+    /// Nothing was decided.
+    Failed(crate::decision::DecisionError),
+}
+
+/// Ask the gate's questions of `state` through `service`, as the chat
+/// `session` describes (origin `gate`, the phase id and title, the turn).
+/// Only a decision model is asked: the decision path of [`judge_gate`], which
+/// is what production calls and what falls back to the chat's own model.
+#[cfg(test)]
+pub(crate) async fn evaluate_gate(
+    service: &DecisionService,
+    session: &DecisionSession,
+    gate: &PhaseGate,
+    state: String,
+) -> GateVerdict {
+    match ask_decision_model(service, session, gate, state).await {
+        DecisionAsk::Answered { verdict, .. } => verdict,
+        DecisionAsk::Failed(error) => GateVerdict::Error(error.to_string()),
+    }
+}
+
+async fn ask_decision_model(
+    service: &DecisionService,
+    session: &DecisionSession,
+    gate: &PhaseGate,
+    state: String,
+) -> DecisionAsk {
+    let questions = gate_questions(gate);
     let state = fit_gate_state(service, session, gate.model.as_ref(), &questions, state).await;
     let request = DecisionRequest {
         questions,
@@ -3286,16 +3419,21 @@ pub(crate) async fn evaluate_gate(
         .await
     {
         Ok(decisions) => decisions,
-        Err(error) => return GateVerdict::Error(error.to_string()),
+        Err(error) => return DecisionAsk::Failed(error),
+    };
+    let model = match decisions.first() {
+        Some(decision) => decision_model_name(service, &decision.model).await,
+        None => "the decision model".to_string(),
     };
     if !gate.allow_uncalibrated {
         if let Some(uncalibrated) = decisions.iter().find(|d| !d.calibrated) {
-            return GateVerdict::Error(format!(
+            let verdict = GateVerdict::Error(format!(
                 "{} returned uncalibrated probabilities, which a gate refuses. Use a decision \
                  model with its own probabilities, or set allowUncalibrated on the gate to \
                  accept them.",
                 uncalibrated.model.label()
             ));
+            return DecisionAsk::Answered { verdict, model };
         }
     }
     let answers: Vec<GateAnswer> = gate
@@ -3314,10 +3452,329 @@ pub(crate) async fn evaluate_gate(
             }
         })
         .collect();
-    if answers.iter().all(|answer| answer.passed) {
+    let verdict = if answers.iter().all(|answer| answer.passed) {
         GateVerdict::Passed(answers)
     } else {
         GateVerdict::Failed(answers)
+    };
+    DecisionAsk::Answered { verdict, model }
+}
+
+/// A decision model as a person reads it: its display name from the listing
+/// (`joey-1`), else its model id, never `provider/model`.
+async fn decision_model_name(service: &DecisionService, model: &DecisionModelRef) -> String {
+    service
+        .models()
+        .await
+        .into_iter()
+        .find(|entry| entry.answers_to(model))
+        .map_or_else(|| model.model.clone(), |entry| entry.display_name)
+}
+
+/// The decision model a gate that names none would ask in `session`, as a
+/// person reads it: `joey-1 on Baseten`, `tev1:0.8b on Ollama`.
+async fn resolved_decision_model_words(
+    service: &DecisionService,
+    session: &DecisionSession,
+) -> Option<String> {
+    let entry = service.model_entry_for(Some(session), None).await?;
+    let place = match entry.provider.as_str() {
+        crate::providers::decision::BASETEN_DECISION_PROVIDER => Some("Baseten"),
+        crate::providers::decision::OLLAMA_DECISION_PROVIDER => Some("Ollama"),
+        _ => None,
+    };
+    Some(match place {
+        Some(place) => format!("{} on {place}", entry.display_name),
+        None => entry.display_name,
+    })
+}
+
+/// Why a decision model could not be reached, as a clause, when `error` is
+/// that kind of failure: the request never reached it (a connection, TLS or
+/// address failure), it did not answer in time, or its server failed (HTTP
+/// 5xx). `None` for everything else: a refusal, a malformed or unreadable
+/// answer, a size or a kind the model cannot take, and a rate limit, all of
+/// which stay errors. `name` is the model as a person reads it.
+fn unreachable_clause(error: &crate::decision::DecisionError, name: &str) -> Option<String> {
+    use crate::decision::DecisionError;
+    match error {
+        DecisionError::Timeout { seconds, .. } => {
+            Some(format!("{name} did not answer within {seconds} s"))
+        }
+        DecisionError::Backend {
+            status: None,
+            message,
+            ..
+        } => Some(
+            message
+                .trim()
+                .trim_end_matches('.')
+                .replace('`', "")
+                .to_string(),
+        ),
+        DecisionError::Backend {
+            status: Some(status),
+            ..
+        } if (500..600).contains(status) => {
+            Some(format!("{name} failed on its server (HTTP {status})"))
+        }
+        _ => None,
+    }
+}
+
+/// How long the chat's own model may take to judge a gate. A local model
+/// may need a while to read the state; a stuck call must still end.
+const CHAT_GATE_TIMEOUT: Duration = Duration::from_secs(300);
+
+const CHAT_GATE_SYSTEM_PROMPT: &str = "You check whether one phase of a delegated task is \
+     done. You read the phase's goal, its hand-off and its subagents' results, and you answer \
+     each question yes or no from that text alone. When the text does not show that the answer \
+     is yes, the answer is no. For each question give the probability, from 0 to 1, that the \
+     answer is yes. Reply with one JSON object and nothing else: no prose and no code fence.";
+
+/// Judge a gate as the chat `session` describes, through a decision model
+/// when one may answer it, else through the chat's own language model.
+///
+/// A gate that names a model asks only that model, through the decision
+/// service, and its errors stay errors. A gate that names none asks the decision model the
+/// chat would use; the chat's own model `chat_model` judges it instead when
+/// the chat has no decision model it may use, or when that model could not be
+/// reached ([`unreachable_clause`]). The chat model is the one the chat is
+/// bound to, at the chat's own tier, so nothing crosses a privacy boundary:
+/// it reads the same screened state a decision model would, which the chat's
+/// model may read anyway.
+///
+/// Returns the verdict and who gave it, when a verdict (passed or not) was
+/// reached. An error is never a pass, whoever was asked.
+pub(crate) async fn judge_gate(
+    service: &DecisionService,
+    session: &DecisionSession,
+    gate: &PhaseGate,
+    state: String,
+    chat_model: Option<std::sync::Arc<dyn crate::providers::base::Provider>>,
+) -> (GateVerdict, Option<GateJudge>) {
+    if gate.model.is_none() {
+        let questions = gate_questions(gate);
+        let source = ModelSource::of(Some(session), None);
+        if let Err(error) = service
+            .check_model_use(session, None, &questions, source)
+            .await
+        {
+            return judge_with_chat_model(
+                chat_model.as_deref(),
+                gate,
+                &state,
+                "This chat has no decision model it may use",
+                &error.to_string(),
+            )
+            .await;
+        }
+    }
+    let fallback_state = gate.model.is_none().then(|| state.clone());
+    match ask_decision_model(service, session, gate, state).await {
+        DecisionAsk::Answered { verdict, model } => {
+            let judge = (!matches!(verdict, GateVerdict::Error(_))).then_some(GateJudge {
+                kind: GateJudgeKind::DecisionModel,
+                model,
+                reason: None,
+            });
+            (verdict, judge)
+        }
+        DecisionAsk::Failed(error) => {
+            if let Some(state) = fallback_state {
+                let name = resolved_decision_model_words(service, session)
+                    .await
+                    .unwrap_or_else(|| "The decision model".to_string());
+                if let Some(why) = unreachable_clause(&error, &name) {
+                    return judge_with_chat_model(
+                        chat_model.as_deref(),
+                        gate,
+                        &state,
+                        &why,
+                        &error.to_string(),
+                    )
+                    .await;
+                }
+            }
+            (GateVerdict::Error(error.to_string()), None)
+        }
+    }
+}
+
+/// The chat's own model judging a gate because `why` (a clause: "This chat
+/// has no decision model it may use", "joey-1 on Baseten could not be reached
+/// (...)"). `decision_error` is what the decision model's attempt said, kept
+/// as the error when there is no chat model to ask.
+async fn judge_with_chat_model(
+    chat_model: Option<&dyn crate::providers::base::Provider>,
+    gate: &PhaseGate,
+    state: &str,
+    why: &str,
+    decision_error: &str,
+) -> (GateVerdict, Option<GateJudge>) {
+    let Some(provider) = chat_model else {
+        return (
+            GateVerdict::Error(format!(
+                "{}. The chat's own model was not available to judge the gate instead",
+                decision_error.trim().trim_end_matches('.')
+            )),
+            None,
+        );
+    };
+    let name = provider.get_model_config().model_name;
+    let judged_by = format!("{name}, the chat's model");
+    let message =
+        crate::conversation::message::Message::user().with_text(chat_gate_prompt(gate, state));
+    let reply = tokio::time::timeout(
+        CHAT_GATE_TIMEOUT,
+        provider.complete(CHAT_GATE_SYSTEM_PROMPT, &[message], &[]),
+    )
+    .await;
+    let text = match reply {
+        Ok(Ok((message, _usage))) => message.as_concat_text(),
+        Ok(Err(error)) => {
+            return (
+                GateVerdict::Error(format!(
+                    "{why}, and {judged_by}, could not judge the gate either: {}",
+                    crate::agents::stall::ellipsize(&error.to_string(), 200)
+                )),
+                None,
+            )
+        }
+        Err(_) => {
+            return (
+                GateVerdict::Error(format!(
+                    "{why}, and {judged_by}, did not judge the gate within {} s",
+                    CHAT_GATE_TIMEOUT.as_secs()
+                )),
+                None,
+            )
+        }
+    };
+    let probabilities = match parse_chat_gate_reply(&text, gate) {
+        Ok(probabilities) => probabilities,
+        Err(detail) => {
+            return (
+                GateVerdict::Error(format!(
+                    "{why}, and {judged_by}, gave an answer that could not be read ({detail})"
+                )),
+                None,
+            )
+        }
+    };
+    let threshold = Threshold::Yes(gate.threshold);
+    let answers: Vec<GateAnswer> = gate
+        .questions
+        .iter()
+        .map(|(question, asked)| {
+            let p_yes = probabilities.get(question).copied().unwrap_or_default();
+            let distribution = IndexMap::from([
+                (crate::decision::types::YES.to_string(), p_yes),
+                (crate::decision::types::NO.to_string(), 1.0 - p_yes),
+            ]);
+            GateAnswer {
+                question: question.clone(),
+                instructions: asked.instructions.clone(),
+                p_yes,
+                passed: threshold.passes(&distribution),
+            }
+        })
+        .collect();
+    let verdict = if answers.iter().all(|answer| answer.passed) {
+        GateVerdict::Passed(answers)
+    } else {
+        GateVerdict::Failed(answers)
+    };
+    let judge = GateJudge {
+        kind: GateJudgeKind::ChatModel,
+        model: name,
+        reason: Some(format!("{why}, so {judged_by}, judged the gate.")),
+    };
+    (verdict, Some(judge))
+}
+
+/// The one message the chat's model reads: the gate's state, its questions
+/// and the exact reply shape.
+fn chat_gate_prompt(gate: &PhaseGate, state: &str) -> String {
+    let questions: String = gate
+        .questions
+        .iter()
+        .map(|(name, question)| format!("\n- {name}: {}", question.instructions.trim()))
+        .collect();
+    let example = gate
+        .questions
+        .keys()
+        .next()
+        .map(|name| serde_json::json!({ name: { "answer": "yes", "p_yes": 0.9 } }).to_string())
+        .unwrap_or_default();
+    format!(
+        "{state}\n\nQuestions:{questions}\n\nReply with only a JSON object that has one entry \
+         for each question name above, each {{\"answer\": \"yes\" or \"no\", \"p_yes\": the \
+         probability from 0 to 1 that the answer is yes}}. For example: {example}"
+    )
+}
+
+/// The chat model's reply read strictly: one JSON object (a code fence
+/// around it is tolerated, prose is not), one entry per gate question and no
+/// other, each an `answer` of yes or no with a `p_yes` from 0 to 1 that agrees
+/// with it. `Err` says what was wrong, in a clause; it never quotes the reply.
+fn parse_chat_gate_reply(text: &str, gate: &PhaseGate) -> Result<IndexMap<String, f64>, String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ChatGateAnswer {
+        answer: String,
+        p_yes: f64,
+    }
+    let mut body = text.trim();
+    if let Some(fenced) = body.strip_prefix("```") {
+        let after_tag = fenced.split_once('\n').map_or("", |(_, rest)| rest);
+        body = after_tag.trim_end().trim_end_matches("```").trim();
+    }
+    let parsed: IndexMap<String, ChatGateAnswer> = serde_json::from_str(body)
+        .map_err(|_| "it was not one JSON object of answers".to_string())?;
+    if let Some(extra) = parsed
+        .keys()
+        .find(|name| !gate.questions.contains_key(*name))
+    {
+        return Err(format!(
+            "it answered a question the gate does not ask, {}",
+            truncate_chars(extra, 64)
+        ));
+    }
+    let mut probabilities = IndexMap::new();
+    for name in gate.questions.keys() {
+        let answer = parsed
+            .get(name)
+            .ok_or_else(|| format!("it did not answer {name}"))?;
+        let p_yes = answer.p_yes;
+        if !p_yes.is_finite() || !(0.0..=1.0).contains(&p_yes) {
+            return Err(format!("its P(yes) for {name} was not between 0 and 1"));
+        }
+        let slack = crate::decision::types::THRESHOLD_EPSILON;
+        match answer.answer.trim().to_ascii_lowercase().as_str() {
+            "yes" if p_yes + slack >= 0.5 => {}
+            "no" if p_yes <= 0.5 + slack => {}
+            "yes" | "no" => {
+                return Err(format!(
+                    "its answer to {name} disagreed with its P(yes) of {p_yes:.2}"
+                ))
+            }
+            _ => return Err(format!("its answer to {name} was not yes or no")),
+        }
+        probabilities.insert(name.clone(), p_yes);
+    }
+    Ok(probabilities)
+}
+
+/// Keep who gave a verdict with it: `judge` on the gate of `phase_id`, after
+/// [`apply_gate_verdict`] wrote the verdict it gave. Nothing for an error,
+/// which leaves the last verdict and its judge as they were.
+pub(crate) fn record_gate_judge(plan: &mut OrchestrationPlan, phase_id: &str, judge: &GateJudge) {
+    if let Some(state) = plan
+        .phase_mut(phase_id)
+        .and_then(|phase| phase.gate_state.as_mut())
+    {
+        state.last_judge = Some(judge.clone());
     }
 }
 
@@ -3490,8 +3947,8 @@ fn record_gate_error(phase: &mut PlanPhase, message: &str, now: DateTime<Utc>) -
         return format!(
             "Phase \"{phase_id}\" is blocked: its gate could not be evaluated \
              {GATE_ERRORS_TO_BLOCK} times in a row ({message}). Nothing was decided. Tell the \
-             person what the gate asked and that it could not be answered. Once a decision \
-             model this chat may use is reachable, you can complete the phase again to ask it; \
+             person what the gate asked and that it could not be answered. Once the model \
+             that judges it can be reached, you can complete the phase again to ask it; \
              otherwise only the person can go on: they can give the gate its attempts again, \
              change or remove it, or pass or skip the phase, in the app or with `biorouter \
              session gates`."
@@ -6642,7 +7099,7 @@ mod tests {
         assert!(
             line.contains(
                 "blocked because its gate could not be evaluated 2 times in a row: complete the \
-                 phase again to ask it once a decision model this chat may use is reachable, or \
+                 phase again to ask it once the model that judges it can be reached, or \
                  the person can retry, change, remove, pass or skip its gate"
             ),
             "{line}"
@@ -8035,6 +8492,494 @@ mod tests {
             };
             assert!(message.contains("private"), "{message}");
             assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing may be sent");
+        }
+
+        // -------------------------------------------------------------------
+        // The chat's own model judges a gate that names no model when no
+        // decision model may.
+        // -------------------------------------------------------------------
+
+        use super::super::gate_chat_stub::ChatStub;
+
+        fn answer(p: f64) -> String {
+            let word = if p >= 0.5 { "yes" } else { "no" };
+            serde_json::json!({ "a": { "answer": word, "p_yes": p } }).to_string()
+        }
+
+        /// With no decision model at all, the chat's own model reads the same
+        /// gate text and its verdict passes or holds the gate by the threshold.
+        /// The gate's record says who judged it and why.
+        #[tokio::test]
+        async fn with_no_decision_model_the_chats_own_model_judges_the_gate() {
+            let svc = service(Vec::new());
+            let gate = gate_with(&[("a", "Is a done?")], false);
+            let chat = ChatStub::answering(&answer(0.92));
+            let (verdict, judge) = judge_gate(
+                svc,
+                &session(false, true),
+                &gate,
+                "Hand-off: a is done".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            let GateVerdict::Passed(answers) = verdict else {
+                panic!("{verdict:?}")
+            };
+            assert!((answers[0].p_yes - 0.92).abs() < 1e-9);
+            assert_eq!(chat.calls(), 1, "one short completion");
+            let prompt = chat.last_prompt();
+            assert!(prompt.contains("Hand-off: a is done"), "{prompt}");
+            assert!(prompt.contains("- a: Is a done?"), "{prompt}");
+            let judge = judge.expect("a verdict names who gave it");
+            assert_eq!(judge.kind, GateJudgeKind::ChatModel);
+            assert_eq!(judge.model, "stub-chat-model");
+            assert_eq!(judge.words(), "stub-chat-model, the chat's model");
+            assert_eq!(
+                judge.reason.as_deref(),
+                Some(
+                    "This chat has no decision model it may use, so stub-chat-model, the \
+                     chat's model, judged the gate."
+                )
+            );
+
+            // Below the threshold (0.8): the gate holds, as a decision
+            // model's verdict would.
+            let chat = ChatStub::answering(&answer(0.3));
+            let (verdict, judge) = judge_gate(
+                svc,
+                &session(false, true),
+                &gate,
+                "state".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            let GateVerdict::Failed(answers) = verdict else {
+                panic!("{verdict:?}")
+            };
+            assert!(!answers[0].passed);
+            assert!(judge.is_some());
+
+            // Exactly at the threshold passes (the noul rule).
+            let chat = ChatStub::answering(&answer(0.8));
+            let (verdict, _) = judge_gate(
+                svc,
+                &session(false, true),
+                &gate,
+                "state".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            assert!(matches!(verdict, GateVerdict::Passed(_)), "{verdict:?}");
+        }
+
+        /// A private chat whose only decision model is public: the decision
+        /// model is never asked, and the chat's own (private) model judges.
+        #[tokio::test]
+        async fn a_private_chat_with_only_a_public_decision_model_uses_its_own_model() {
+            let cloud = model(
+                entry(
+                    "cloud",
+                    ProviderTier::Public,
+                    false,
+                    DecisionAdapter::SystemOne,
+                ),
+                0.99,
+            );
+            let calls = cloud.calls.clone();
+            let svc = service(vec![cloud]);
+            let gate = gate_with(&[("a", "Is a done?")], false);
+            let chat = ChatStub::answering(&answer(0.9));
+            let (verdict, judge) = judge_gate(
+                svc,
+                &session(true, true),
+                &gate,
+                "PHI".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            assert!(matches!(verdict, GateVerdict::Passed(_)), "{verdict:?}");
+            assert_eq!(judge.unwrap().kind, GateJudgeKind::ChatModel);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "nothing reaches the public model"
+            );
+            assert_eq!(chat.calls(), 1);
+        }
+
+        /// A usable decision model still judges a gate that names none, and
+        /// the chat's model is not asked.
+        #[tokio::test]
+        async fn a_usable_decision_model_judges_and_the_chat_model_is_not_asked() {
+            let local = model(
+                entry(
+                    "tev1",
+                    ProviderTier::Private,
+                    true,
+                    DecisionAdapter::SystemOne,
+                ),
+                0.95,
+            );
+            let svc = service(vec![local]);
+            let gate = gate_with(&[("a", "Is a done?")], false);
+            let chat = ChatStub::answering(&answer(0.1));
+            let (verdict, judge) = judge_gate(
+                svc,
+                &session(true, true),
+                &gate,
+                "state".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            assert!(matches!(verdict, GateVerdict::Passed(_)), "{verdict:?}");
+            let judge = judge.unwrap();
+            assert_eq!(judge.kind, GateJudgeKind::DecisionModel);
+            assert_eq!(judge.model, "tev1");
+            assert_eq!(judge.reason, None);
+            assert_eq!(chat.calls(), 0);
+        }
+
+        /// A decision model that cannot be reached (its server failed, here)
+        /// hands a gate that names no model to the chat's own model, and the
+        /// record says why in one plain sentence. A gate that NAMES the model
+        /// keeps the error and never asks the chat's model.
+        #[tokio::test]
+        async fn an_unreachable_decision_model_falls_back_only_for_a_gate_that_names_none() {
+            let mut broken = model(
+                entry(
+                    "joey-1",
+                    ProviderTier::Private,
+                    true,
+                    DecisionAdapter::SystemOne,
+                ),
+                0.99,
+            );
+            broken.fail_all = true;
+            let calls = broken.calls.clone();
+            let svc = service(vec![broken]);
+            let gate = gate_with(&[("a", "Is a done?")], false);
+            let chat = ChatStub::answering(&answer(0.9));
+            let (verdict, judge) = judge_gate(
+                svc,
+                &session(false, true),
+                &gate,
+                "state".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            assert!(matches!(verdict, GateVerdict::Passed(_)), "{verdict:?}");
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "the decision model was tried"
+            );
+            assert_eq!(chat.calls(), 1);
+            let judge = judge.unwrap();
+            assert_eq!(judge.kind, GateJudgeKind::ChatModel);
+            assert_eq!(
+                judge.reason.as_deref(),
+                Some(
+                    "joey-1 failed on its server (HTTP 500), so stub-chat-model, the chat's \
+                     model, judged the gate."
+                )
+            );
+
+            // A transport failure reads as the adapter's own plain sentence.
+            let unreachable = crate::decision::DecisionError::Backend {
+                model: "decision-models/joey".into(),
+                status: None,
+                error_type: None,
+                message: "joey-1 on Baseten could not be reached because its server's \
+                          certificate did not match"
+                    .into(),
+            };
+            assert_eq!(
+                unreachable_clause(&unreachable, "joey-1 on Baseten").as_deref(),
+                Some(
+                    "joey-1 on Baseten could not be reached because its server's certificate \
+                     did not match"
+                )
+            );
+            // A refusal, a malformed answer and a rate limit are not
+            // "unreachable": they stay errors.
+            for kept in [
+                crate::decision::DecisionError::Refused("no".into()),
+                crate::decision::DecisionError::malformed("joey-1", "no answer"),
+                crate::decision::DecisionError::Backend {
+                    model: "m".into(),
+                    status: Some(429),
+                    error_type: None,
+                    message: "rate limited".into(),
+                },
+            ] {
+                assert_eq!(unreachable_clause(&kept, "joey-1"), None, "{kept:?}");
+            }
+
+            let named = PhaseGate {
+                model: Some(DecisionModelRef::new("test_decision", "joey-1")),
+                ..gate
+            };
+            let chat = ChatStub::answering(&answer(0.9));
+            let (verdict, judge) = judge_gate(
+                svc,
+                &session(false, true),
+                &named,
+                "state".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            assert!(matches!(verdict, GateVerdict::Error(_)), "{verdict:?}");
+            assert!(judge.is_none());
+            assert_eq!(chat.calls(), 0, "a named model's gate never falls back");
+        }
+
+        /// The chat model's answer is read strictly: anything but one JSON
+        /// object answering every question, yes or no with a P(yes) that agrees
+        /// with it, holds the gate as an error (never a pass, no attempt used).
+        #[tokio::test]
+        async fn a_malformed_or_failed_chat_model_answer_never_passes() {
+            let svc = service(Vec::new());
+            let gate = gate_with(&[("a", "Is a done?")], false);
+            let cases = [
+                ("Yes, a is done.", "not one JSON object"),
+                (r#"{"b": {"answer": "yes", "p_yes": 0.9}}"#, "does not ask"),
+                (r#"{}"#, "did not answer a"),
+                (r#"{"a": {"answer": "yes", "p_yes": 0.2}}"#, "disagreed"),
+                (
+                    r#"{"a": {"answer": "maybe", "p_yes": 0.9}}"#,
+                    "not yes or no",
+                ),
+                (
+                    r#"{"a": {"answer": "yes", "p_yes": 1.5}}"#,
+                    "between 0 and 1",
+                ),
+                (
+                    r#"{"a": {"answer": "yes", "p_yes": "0.9"}}"#,
+                    "not one JSON object",
+                ),
+                (
+                    r#"{"a": {"answer": "yes", "p_yes": 0.9, "why": "x"}}"#,
+                    "not one JSON object",
+                ),
+            ];
+            for (reply, needle) in cases {
+                let chat = ChatStub::answering(reply);
+                let (verdict, judge) = judge_gate(
+                    svc,
+                    &session(false, true),
+                    &gate,
+                    "state".into(),
+                    Some(chat.provider()),
+                )
+                .await;
+                let GateVerdict::Error(message) = verdict else {
+                    panic!("{reply}: {verdict:?}")
+                };
+                assert!(message.contains(needle), "{reply}: {message}");
+                assert!(
+                    message.contains("stub-chat-model, the chat's model"),
+                    "{message}"
+                );
+                assert!(judge.is_none(), "an error names no judge");
+            }
+
+            // A code fence around the object is the one leniency.
+            let chat = ChatStub::answering(&format!("```json\n{}\n```", answer(0.9)));
+            let (verdict, _) = judge_gate(
+                svc,
+                &session(false, true),
+                &gate,
+                "state".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            assert!(matches!(verdict, GateVerdict::Passed(_)), "{verdict:?}");
+
+            // The chat model fails to answer: an error.
+            let chat = ChatStub::failing();
+            let (verdict, judge) = judge_gate(
+                svc,
+                &session(false, true),
+                &gate,
+                "state".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            let GateVerdict::Error(message) = verdict else {
+                panic!("{verdict:?}")
+            };
+            assert!(
+                message.contains("could not judge the gate either"),
+                "{message}"
+            );
+            assert!(judge.is_none());
+
+            // No chat model to ask: the decision side's error stands.
+            let (verdict, judge) =
+                judge_gate(svc, &session(false, true), &gate, "state".into(), None).await;
+            let GateVerdict::Error(message) = verdict else {
+                panic!("{verdict:?}")
+            };
+            assert!(message.contains("was not available"), "{message}");
+            assert!(judge.is_none());
+
+            // Written through the plan, an error uses no attempt and the
+            // gate stays open.
+            let plan = gated_plan();
+            let stored = stored_gate(&plan);
+            let (plan, note, closed) = apply_gate_verdict(
+                Some(plan),
+                "build",
+                &stored,
+                &GateVerdict::Error(message),
+                None,
+                &[],
+                now(),
+            )
+            .unwrap();
+            assert!(!closed);
+            assert!(note.contains("no attempt was used"), "{note}");
+            let gate = snapshot_of(&plan, &[]).phases[1].gate.clone().unwrap();
+            assert_eq!(gate.attempts, 0);
+            assert_eq!(gate.last_passed, None);
+        }
+
+        /// A verdict's judge is kept on the gate and shown in its snapshot.
+        #[test]
+        fn the_judge_of_a_verdict_is_kept_with_it() {
+            let plan = gated_plan();
+            let stored = stored_gate(&plan);
+            let pass =
+                GateVerdict::Passed(answers(&[("tests_pass", 0.9), ("scope_met", 0.9)], 0.8));
+            let (mut plan, _, closed) =
+                apply_gate_verdict(Some(plan), "build", &stored, &pass, None, &[], now()).unwrap();
+            assert!(closed);
+            let judge = GateJudge {
+                kind: GateJudgeKind::ChatModel,
+                model: "gpt-5.5".into(),
+                reason: Some(
+                    "This chat has no decision model it may use, so gpt-5.5, the \
+                              chat's model, judged the gate."
+                        .into(),
+                ),
+            };
+            record_gate_judge(&mut plan, "build", &judge);
+            let gate = snapshot_of(&plan, &[]).phases[1].gate.clone().unwrap();
+            assert_eq!(gate.last_judge, Some(judge));
+            assert_eq!(gate.last_passed, Some(true));
+        }
+    }
+}
+
+/// A chat model for gate tests: answers every completion with fixed text (or
+/// fails), and keeps the last prompt it read.
+#[cfg(test)]
+pub(crate) mod gate_chat_stub {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use rmcp::model::Tool;
+
+    use crate::conversation::message::Message;
+    use crate::model::ModelConfig;
+    use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+
+    pub(crate) struct ChatStub {
+        reply: Option<String>,
+        calls: Arc<AtomicUsize>,
+        last_prompt: Arc<Mutex<String>>,
+    }
+
+    #[derive(Clone)]
+    pub(crate) struct ChatStubHandle {
+        calls: Arc<AtomicUsize>,
+        last_prompt: Arc<Mutex<String>>,
+        provider: Arc<dyn Provider>,
+    }
+
+    impl ChatStub {
+        pub(crate) fn answering(reply: &str) -> ChatStubHandle {
+            Self::build(Some(reply.to_string()))
+        }
+
+        pub(crate) fn failing() -> ChatStubHandle {
+            Self::build(None)
+        }
+
+        fn build(reply: Option<String>) -> ChatStubHandle {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let last_prompt = Arc::new(Mutex::new(String::new()));
+            let provider = Arc::new(ChatStub {
+                reply,
+                calls: calls.clone(),
+                last_prompt: last_prompt.clone(),
+            });
+            ChatStubHandle {
+                calls,
+                last_prompt,
+                provider,
+            }
+        }
+    }
+
+    impl ChatStubHandle {
+        pub(crate) fn provider(&self) -> Arc<dyn Provider> {
+            self.provider.clone()
+        }
+
+        pub(crate) fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        pub(crate) fn last_prompt(&self) -> String {
+            self.last_prompt.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for ChatStub {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "stub-chat",
+                "Stub chat",
+                "",
+                "stub-chat-model",
+                vec!["stub-chat-model"],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "stub-chat"
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.last_prompt.lock().unwrap() = messages
+                .iter()
+                .map(Message::as_concat_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            match &self.reply {
+                Some(text) => Ok((
+                    Message::assistant().with_text(text),
+                    ProviderUsage::new("stub-chat-model".to_string(), Usage::default()),
+                )),
+                None => Err(ProviderError::ExecutionError("the stub failed".to_string())),
+            }
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("stub-chat-model")
         }
     }
 }

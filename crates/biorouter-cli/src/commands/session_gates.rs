@@ -2,7 +2,9 @@
 //! the person's controls over the decision gates of one chat's phase plan.
 //!
 //! A gate asks a decision model yes/no questions about a phase's hand-off
-//! before the phase may complete, and holds every phase listed after it until
+//! before the phase may complete (a gate with no model, in a chat with no
+//! decision model it may use, is judged by the chat's own model), and holds
+//! every phase listed after it until
 //! it passes. Whoever set it (the agent, the person or the workflow the chat
 //! was started from), a stored gate binds the agent: it cannot change, remove
 //! or skip one. Only the person can, in the app or here.
@@ -18,7 +20,9 @@
 //! * **With none** the plan is read and written in this process, under the
 //!   tier rule the route applies (`check_local_reach`), with the model check
 //!   the route makes before it stores a gate
-//!   (`DecisionService::check_model_use`, which sends nothing of the chat) and
+//!   (`orchestration_plan::gate_judge_for`, which sends nothing of the chat
+//!   and never refuses a gate with no model, because the chat's own model
+//!   judges it when no decision model may) and
 //!   the same person transitions the route calls
 //!   (`orchestration_plan::person_set_gate`, `person_remove_gate`,
 //!   `person_gate_decision`).
@@ -36,7 +40,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
 use biorouter::agents::orchestration_plan::{
-    self as orchestration_plan, GateOwner, OrchestrationSnapshot, PersonGateAction,
+    self as orchestration_plan, GateJudgeKind, GateOwner, OrchestrationSnapshot, PersonGateAction,
     PersonGateChoice, PersonGateOutcome, PhaseGateSnapshot, PhaseGateSpec, PhaseSnapshot,
     PhaseStatus, MAX_GATE_QUESTIONS, MAX_PHASE_ID_CHARS,
 };
@@ -97,7 +101,8 @@ pub struct SetGate {
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=5))]
     pub attempts: Option<u32>,
     /// The decision model, by its name (tev1:0.8b, joey-1) or as
-    /// provider/model. Without it the chat's default decision model is used.
+    /// provider/model. Without it the chat's default decision model is used,
+    /// or the chat's own model when the chat has no decision model.
     #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
     /// Accept probabilities a model states in words (uncalibrated) rather
@@ -358,12 +363,21 @@ pub fn gate_line(gate: &PhaseGateSnapshot) -> String {
 fn gate_lines(session_id: &str, phase: &PhaseSnapshot, gate: &PhaseGateSnapshot) -> Vec<String> {
     let mut out = vec![format!("     gate: {}", gate_line(gate))];
     let mut details = Vec::new();
-    match &gate.model {
-        Some(model) => details.push(format!(
+    let chat_judged = gate
+        .last_judge
+        .as_ref()
+        .filter(|judge| judge.kind == GateJudgeKind::ChatModel);
+    match (&gate.model, chat_judged) {
+        (Some(model), _) => details.push(format!(
             "asked of {}",
             super::decide::person_model_names(&terminal_text(model))
         )),
-        None => details.push("asked of the chat's default decision model".to_string()),
+        (None, Some(judge)) => details.push(format!("judged by {}", terminal_text(&judge.words()))),
+        (None, None) => details.push(
+            "asked of the chat's default decision model, or of the chat's own model when it \
+             has none"
+                .to_string(),
+        ),
     }
     if gate.allow_uncalibrated {
         details.push("accepts uncalibrated answers".to_string());
@@ -382,6 +396,9 @@ fn gate_lines(session_id: &str, phase: &PhaseSnapshot, gate: &PhaseGateSnapshot)
             clip(name, 64),
             clip(question, 100)
         ));
+    }
+    if let Some(reason) = chat_judged.and_then(|judge| judge.reason.as_deref()) {
+        out.push(format!("     {}", clip(&terminal_text(reason), 160)));
     }
     if let Some(error) = gate.last_error.as_deref() {
         out.push(format!(
@@ -911,18 +928,20 @@ async fn set_gate_locally(
     session.lowered_after_save = change
         .as_ref()
         .is_some_and(|change: &biorouter::decision::save::TierChange| change.lowered_after_save);
-    if let Err(error) = service
-        .check_model_use(
-            &session,
-            gate.model.as_ref(),
-            &gate.questions,
-            ModelSource::Setting,
-        )
-        .await
+    // A gate with no --model is never refused: with no decision model this
+    // chat may use, the chat's own model judges it.
+    if let Err(error) = orchestration_plan::gate_judge_for(
+        service,
+        &session,
+        gate.model.as_ref(),
+        &gate.questions,
+        ModelSource::Setting,
+    )
+    .await
     {
         bail!(
-            "The gate on phase \"{phase}\" cannot be answered in this chat. {}. Nothing \
-             was changed.",
+            "The gate on phase \"{phase}\" cannot be answered in this chat. {}. Leave out \
+             --model to let the chat's own model judge it. Nothing was changed.",
             without_full_stop(&super::decide::terminal_advice(&error.to_string()))
         );
     }
@@ -1389,6 +1408,7 @@ mod tests {
             .into_iter()
             .collect(),
             model: None,
+            last_judge: None,
             model_adapter: None,
             allow_uncalibrated: false,
             last_error: None,
@@ -1415,6 +1435,46 @@ mod tests {
             gate: None,
             held_by: None,
         }
+    }
+
+    /// A gate the chat's own model judged says so by the model's name, with
+    /// why, never as "the chat's default decision model".
+    #[test]
+    fn a_gate_the_chats_own_model_judged_says_so() {
+        use biorouter::agents::orchestration_plan::{GateJudge, GateJudgeKind};
+        let mut research = snapshot_phase("research", PhaseStatus::Completed);
+        let mut gate = snapshot_gate(GateOwner::Workflow);
+        gate.attempts = 1;
+        gate.last_passed = Some(true);
+        gate.last_judge = Some(GateJudge {
+            kind: GateJudgeKind::ChatModel,
+            model: "gpt-5.5".into(),
+            reason: Some(
+                "This chat has no decision model it may use, so gpt-5.5, the chat's model, \
+                 judged the gate."
+                    .into(),
+            ),
+        });
+        research.gate = Some(gate);
+        let plan = OrchestrationSnapshot {
+            title: "Moon".into(),
+            goal: None,
+            revision: 1,
+            phases: vec![research],
+        };
+        let text = render_gates("s1", Some(&plan)).join("\n");
+        assert!(
+            text.contains("judged by gpt-5.5, the chat's model"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "This chat has no decision model it may use, so gpt-5.5, the chat's model, \
+                 judged the gate."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("default decision model"), "{text}");
     }
 
     #[test]

@@ -834,10 +834,13 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::agents::orchestration_plan::PhaseKind,
         biorouter::agents::orchestration_plan::PhaseStatus,
         // A phase's decision gate, as `PhaseSnapshot::gate` names it, and
-        // the enums its `owner` and `personDecision` fields name.
+        // the enums its `owner` and `personDecision` fields name, and who
+        // gave its last verdict (`lastJudge`).
         biorouter::agents::orchestration_plan::PhaseGateSnapshot,
         biorouter::agents::orchestration_plan::GateOwner,
         biorouter::agents::orchestration_plan::PersonGateAction,
+        biorouter::agents::orchestration_plan::GateJudge,
+        biorouter::agents::orchestration_plan::GateJudgeKind,
         // `/sessions/{session_id}/phase-gates/{phase_id}`: the gate the
         // person sets, their decision about it, and what the write did.
         biorouter::agents::orchestration_plan::PhaseGateSpec,
@@ -1375,6 +1378,8 @@ mod decision_supervision_contract_tests {
             ("MonitorCriterion", "MonitorOwner"),
             ("PhaseGateSnapshot", "GateOwner"),
             ("PhaseGateSnapshot", "PersonGateAction"),
+            ("PhaseGateSnapshot", "GateJudge"),
+            ("PhaseGateSnapshot", "GateJudgeKind"),
             ("Workflow", "WorkflowPlan"),
             ("Workflow", "WorkflowPhase"),
             ("Workflow", "WorkflowGate"),
@@ -1430,6 +1435,7 @@ mod decision_supervision_contract_tests {
                     "retriesGranted",
                     "needsPerson",
                     "holds",
+                    "lastJudge",
                 ][..],
             ),
             ("PhaseSnapshot", &["heldBy"][..]),

@@ -44,6 +44,7 @@ import {
   MONITOR_TIMINGS,
   OLLAMA_PLACES,
   fetchDecisionInstall,
+  gateJudgeWords,
   monitorFiresAt,
   monitorToWire,
   parseDecisionInstallStatus,
@@ -570,6 +571,7 @@ describe('parsing', () => {
       owner: 'agent',
       questions: [],
       model: null,
+      lastJudge: null,
       modelAdapter: null,
       allowUncalibrated: false,
       lastError: null,
@@ -641,6 +643,28 @@ describe('parsing', () => {
       needsPerson: false,
       holds: [],
     });
+    // Who gave the last verdict: the chat's own model, and why; an unknown kind is none.
+    const judged = parsePhaseGateSnapshot({
+      threshold: 0.8,
+      lastPassed: true,
+      lastJudge: {
+        kind: 'chat_model',
+        model: 'gpt-5.5',
+        reason:
+          "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate.",
+      },
+    })!;
+    expect(judged.lastJudge).toEqual({
+      kind: 'chat_model',
+      model: 'gpt-5.5',
+      reason:
+        "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate.",
+    });
+    expect(gateJudgeWords(judged.lastJudge!)).toBe("gpt-5.5, the chat's model");
+    expect(
+      parsePhaseGateSnapshot({ threshold: 0.8, lastJudge: { kind: 'oracle', model: 'x' } })!
+        .lastJudge
+    ).toBeNull();
     // The questions say the count when only they are sent.
     expect(
       parsePhaseGateSnapshot({ threshold: 0.8, questions: { a: 'A?', b: 'B?', c: 'C?' } })!
