@@ -138,8 +138,8 @@ npm run lint:check  # typecheck + eslint (zero warnings) + theme codegen + contr
 ```
 
 `npm run test:run` is **required to merge**. The required `Unit tests (vitest)`
-check is a gate over three vitest shards plus the `Static checks` and
-`Registry generator` jobs, and it runs on every pull request whether or not you
+check is a gate over the vitest shards plus the `Static checks` job (which
+also runs the registry generator checks), and it runs on every pull request whether or not you
 touched `ui/desktop`. `npm run lint:check` covers most of the CI `Static checks`
 job; that job additionally runs the packaged-dependency isolation tests
 (`node --test scripts/verify-packaged-dependencies.test.cjs scripts/npm-command.test.cjs scripts/prepare-native-dependencies.test.cjs`)

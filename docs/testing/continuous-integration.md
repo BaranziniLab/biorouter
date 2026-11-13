@@ -3,9 +3,8 @@
 > **What this is.** The map of the GitHub Actions checks on this repository: which jobs run on a
 > pull request, after a merge to `main`, nightly and on a release, how long each takes, and why
 > the pull request set is smaller than the `main` set.
-> **Status:** Current (layout of 2026-11-13). Times marked *measured* come from real runs; times
-> marked *estimated* are derived from the step timings of the old layout and are replaced by
-> measurements as runs accumulate.
+> **Status:** Current (layout of 2026-11-13). Times are measured on the pull request run that
+> introduced the layout (#498, head f536dcb7e) unless marked otherwise.
 > **Audience:** developers and agents who push pull requests, and maintainers who change
 > `.github/workflows/`.
 
@@ -39,25 +38,28 @@ organisation's plan runs 20 jobs at once, 5 of them on macOS.
 
 ### On every pull request
 
-| Check | What it runs | Time (min) |
+| Check | What it runs | Run time (min) |
 |---|---|---|
-| `guards` | cross-drift, retired-name, version, Copilot naming, vendored source guards | 0.5 *measured* |
-| `cross-check (x86_64-pc-windows-gnu)` | `cargo check --workspace --all-targets` and the hostname-call clippy gate, in the release's docker image | ~14 *estimated* |
-| `No inheritable sockets (x86_64-pc-windows-gnu)` | the socket gate on the target where the bug lives | ~9 *estimated* |
-| `lib tests (ubuntu)` | `cargo test --workspace --lib` | ~15 *estimated* |
-| `integration (ubuntu, 1/3)` | bin targets, Ollama readiness, sandbox integration, a third of `tests/*.rs` offline | ~13 *estimated* |
-| `integration (ubuntu, 2/3)` | a third of `tests/*.rs` offline | ~12 *estimated* |
-| `integration (ubuntu, 3/3)` | a third of `tests/*.rs` offline, the generated API contract, the `serve` browser contract | ~14 *estimated* |
-| `test (ubuntu-latest)` | gate: every job above passed | seconds |
-| `test (macos-latest)` | subset: Seatbelt sandbox, unit and integration | ~5 *estimated* |
-| `test (windows-latest)` | subset: directory probes, sandbox unit, integration and `bounded_fs`, the console-window test | ~11 *estimated* |
-| `vitest (N/3)` | a third of the vitest files each (`--shard=N/3`) | ~9 *estimated* |
-| `Static checks`, `Registry generator`, `BAAM shelf (browser)`, `Preview panel (Electron)`, `Console windows (Windows)` | unchanged | 2 to 3 *measured* |
-| `Unit tests (vitest)` | gate: the three vitest shards, `Static checks` and `Registry generator` passed | seconds |
-| `no-ai-coauthor` | unchanged | 0.4 *measured* |
+| `guards` | cross-drift, retired-name, version, Copilot naming, vendored source guards | 0.5 |
+| `cross-check (x86_64-pc-windows-gnu)` | `cargo check --workspace --all-targets` (8.9) and the hostname-call clippy gate (4.1), in the release's docker image | 13.2 |
+| `No inheritable sockets (x86_64-pc-windows-gnu)` | the socket gate on the target where the bug lives | 8.1 |
+| `lib tests (ubuntu)` | `cargo test --workspace --lib` (9.1) | 10.5 |
+| `integration (ubuntu, 1/3)` | bin targets (5.5), Ollama readiness, sandbox integration, a third of `tests/*.rs` offline (5.5) | 12.9 |
+| `integration (ubuntu, 2/3)` | a third of `tests/*.rs` offline | 9.8 |
+| `integration (ubuntu, 3/3)` | a third of `tests/*.rs` offline (7.6), the generated API contract, the `serve` browser contract | 10.0 |
+| `test (ubuntu-latest)` | gate: every job above passed | 0.1 |
+| `test (macos-latest)` | subset: Seatbelt sandbox, unit and integration | 1.6 |
+| `test (windows-latest)` | subset: directory probes, sandbox unit, integration and `bounded_fs`, the console-window test (4.3) | 7.3 |
+| `vitest (N/3)` | a third of the vitest files each (`--shard=N/3`) | 10.0 to 11.3 |
+| `Static checks` | typecheck, eslint, theme, contrast, token gates, plus the registry generator and documentation checks (one job since 2026-11-13; they were measured at 2.4 and 2.9 apart) | about 4 *estimated* |
+| `BAAM shelf (browser)`, `Preview panel (Electron)`, `Console windows (Windows)` | unchanged | 1.4 to 2.5 |
+| `Unit tests (vitest)` | gate: the three vitest shards and `Static checks` passed | 0.1 |
+| `no-ai-coauthor` | unchanged | 0.4 |
 
-The slowest job sets the wall time: about 15 minutes plus the queue, against 77 minutes median
-before. Path-filtered workflows (`Apps smoke`, `Rebuilt session storage acceptance`, `Biorouter
+The slowest job sets the floor: about 13.5 minutes for Rust and 13 for Frontend when every job
+starts at once, against 77 minutes median before. The run that measured these took 29 minutes
+wall for Rust anyway, because its jobs waited 9 to 17 minutes for a runner (see "Runner slots"
+below). Path-filtered workflows (`Apps smoke`, `Rebuilt session storage acceptance`, `Biorouter
 Copilot native payloads`) still run when their paths change and finish inside that.
 
 **Why the ubuntu work splits this way.** Each job pays its own setup (about 2 minutes) and its
@@ -91,7 +93,8 @@ interface, test-fix and cost pull requests to the subsets.
 
 ### Every push to `main`, nightly, and on dispatch
 
-Everything above, plus:
+Everything above, with the integration binaries in ONE job (`integration (ubuntu, 1/1)`, every
+step of the three shards) and vitest in one job (`vitest (all files)`), plus:
 
 | Job or step | Why it is not on a pull request |
 |---|---|
@@ -102,8 +105,9 @@ Everything above, plus:
 | host `cargo clippy --workspace --all-targets` (in `lib tests (ubuntu)`) | informational: it fails only on a compile error, which the cross check and the test builds already catch |
 | `cross-build-nightly` (nightly and dispatch) | unchanged: the full release build of both cross targets, the glibc floor, the runtime-library contract |
 
-`main` runs therefore take about as long as before (the macOS full suite is still the longest
-job), and a Windows or macOS failure that the subset could not see turns `main` red after the
+Sharding is for a pull request, where someone waits; on `main` three shards would only hold
+three runner slots. `main` runs therefore take about as long as before (the macOS full suite is
+still the longest job), and a Windows or macOS failure that the subset could not see turns `main` red after the
 merge rather than the pull request. The integration lane of a merge campaign, or whoever merged,
 reads `main`'s run after each merge.
 
@@ -125,9 +129,9 @@ Branch protection on `main` requires five check names: `test (ubuntu-latest)`,
 reports leaves the pull request waiting forever.
 
 Two of the five are now gate jobs rather than test jobs. `test (ubuntu-latest)` fails unless
-`guards`, both cross jobs, `lib tests (ubuntu)` and all three integration shards passed;
-`Unit tests (vitest)` fails unless the three vitest shards, `Static checks` and `Registry
-generator` passed. Before, only the test jobs themselves were required, so a pull request with a
+`guards`, both cross jobs, `lib tests (ubuntu)` and every integration job passed;
+`Unit tests (vitest)` fails unless every vitest job and `Static checks` (which carries the
+registry generator checks) passed. Before, only the test jobs themselves were required, so a pull request with a
 red retired-name guard, a red cross check or a type error could merge as soon as auto-merge saw
 the five required names green. A gate uses `if: ${{ !cancelled() }}`, not `always()`, so a
 cancelled run does not leave it queued holding a concurrency group, and it counts a job that a
@@ -135,6 +139,26 @@ cancelled run does not leave it queued holding a concurrency group, and it count
 
 `BAAM shelf (browser)`, `Preview panel (Electron)` and `Console windows (Windows)` stay outside
 the gate, as informational checks.
+
+## Runner slots
+
+The organisation's plan runs at most 20 jobs at once across all its workflows, 5 of them on macOS,
+and a job that finds no free slot waits in the queue. The first run of this layout (#498's own,
+2026-11-13 23:18 to 23:48 UTC) found the repository at exactly 20 running jobs in every
+two-minute sample for its first 20 minutes, most of them belonging to `main`-branch runs still on
+the old layout; its ubuntu jobs waited 9 to 17 minutes to start. So past a point, splitting a run
+into more jobs makes it slower, not faster, and the cheapest minutes to win are slots:
+
+- `main` and nightly run the integration binaries and vitest as one job each rather than shards.
+- The registry generator checks run inside `Static checks` rather than in a job of their own.
+- `no-ai-coauthor` runs on pull requests and on pushes to `main`, not also on every push to a
+  pull request's branch, where it answered the same question twice.
+
+A pull request's run holds 18 jobs (10 Rust, 8 Frontend) and a `main` run 15 (9 and 6), the
+latter's macOS and Windows full suites holding their slots for about an hour and half an hour. The bigger
+lever during a burst of merges is that every push to `main` starts its own full run and none is
+cancelled by the next (a deliberate choice, explained at the top of `rust.yml`, so that every
+`main` commit carries a status); that is for the maintainers to weigh.
 
 ## Caches
 
@@ -150,6 +174,7 @@ branch-scoped copy can only be read by its own branch and evicts the shared ones
 - The `serve` (2.0 GB) and `openapi-contract` (1.3 GB) entries are no longer written; GitHub
   drops them after a week unread, which leaves room under the ceiling.
 - The cross-check jobs carry no cache. Theirs never survived to be read.
+- `main`'s single integration job reads the shared ubuntu key without writing it, like the shards.
 
 ## Where things went
 
@@ -162,6 +187,7 @@ windows-gnu, and `no-ai-coauthor` as before.
 |---|---|
 | `serve` job | the serve steps of `integration (ubuntu, 3/3)`, using the executables that job's build made; its `serve_lifecycle` step was a duplicate of the same binary in the offline integration step and is gone |
 | `Generated API contract` job (frontend.yml) | a step of `integration (ubuntu, 3/3)`, which runs `target/debug/generate_schema` instead of building it again |
+| `Registry generator` job (frontend.yml) | steps of `Static checks`, run from the repository root |
 | `cargo test -p biorouter --test ollama_*` | `cargo test --workspace --test ollama_*`, the same tests without the 124-crate rebuild |
 | hostname clippy gate on MSVC, every pull request | windows-gnu on every pull request, MSVC on `main` and nightly |
 | the cross-check cache step | removed (0 restores in 12 runs) |
