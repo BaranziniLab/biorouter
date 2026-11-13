@@ -54,7 +54,7 @@ export default {
       // each set it to its own `text-default` — but a tooltip is a SURFACE, so
       // all three now paint it and place their own `text-inverse` on top.
       'background-inverse': '#1f1e1c',
-      // RED IS RARE (design.md 9.13): the danger tone is drawn in ink, not red.
+      // RED IS RARE (design.md 9.14): the danger tone is drawn in ink, not red.
       // Its fill is the secondary ink, its text the primary ink; the words and
       // the glyph say "failed" or "deletes". Only `border-danger`, the edge of
       // an invalid field, keeps the family's red.

@@ -70,7 +70,7 @@ export const CANVAS_INK_FALLBACK = '#1f242c';
  *
  * The obvious candidate — a single light hex — is one FAMILY's value. Each
  * family's `--text-danger` is its own primary ink since 2026-11-12 (red is rare,
- * design.md 9.13; it was a per-family red before), and the dark values are a
+ * design.md 9.14; it was a per-family red before), and the dark values are a
  * different set again. The theme-system architecture is explicit that inks stay
  * per family, so a shared constant here would paint one family's ink inside the other two —
  * on §5.7's negative-edge stroke and §5.8's strike-through, which are exactly

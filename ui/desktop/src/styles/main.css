@@ -347,7 +347,7 @@
      `color-mix` fork between list rows and settings rows for one gesture. */
   /* Light-mode steps are re-weighed from the 2026-10 ladder (5 / 10 / 14 / 19,
      and 24 for the emphasized border below): the primary ink went near-black on
-     2026-11-12 (design.md 9.14), and the same percentage of a darker ink would
+     2026-11-12 (design.md 9.15), and the same percentage of a darker ink would
      have deepened every hover and selection with it. Each step is the share of
      the new ink whose composite over white lands where the old one did, so only
      the TEXT got darker. Hover sits a hair above that match (4.8, not 4.5): it is
@@ -784,7 +784,7 @@
      the derived artifacts. */
   --background-inverse: #1f1e1c;
   /* Status FILLS — a solid background. The ink placed on top is --text-on-*.
-     RED IS RARE (design.md 9.13): the danger fill is the secondary ink, not red,
+     RED IS RARE (design.md 9.14): the danger fill is the secondary ink, not red,
      so a failed status, a destructive button and a risk chip read as calm ink and
      their words and glyph say what happened. Mirrored in each theme file. */
   --background-danger: #4f4a45;
@@ -801,7 +801,7 @@
   --border-strong: var(--color-neutral-300);
   --border-input: #c9c9c3;
   --border-default: var(--border-subtle);
-  /* The one red left in the chrome (design.md 9.13): the edge of a field whose
+  /* The one red left in the chrome (design.md 9.14): the edge of a field whose
      value is invalid, or of a drop zone that refused a file. Nothing else. */
   --border-danger: var(--color-red-600);
   --border-success: var(--color-green-600);
@@ -840,7 +840,7 @@
      `--background-muted`) — re-measure rather than carry them forward.
      Mirrored in `themes/parchment.theme.mjs`; change the two together.
 
-     Danger is not a hue here (design.md 9.13, red is rare): its ink IS the
+     Danger is not a hue here (design.md 9.14, red is rare): its ink IS the
      primary ink, and its wash is a light neutral step (8%, below), so an error
      note, a failed state or a "Delete" item reads as plain ink with its glyph. */
   --text-danger: #16120d;
@@ -1045,7 +1045,7 @@
   --background-fill-strong: #2c2c29;
   /* @ws WS-TOKENS end: fill tokens (dark) */
   --background-inverse: #ededea;
-  /* Red is rare (design.md 9.13): the dark danger fill is the secondary ink. */
+  /* Red is rare (design.md 9.14): the dark danger fill is the secondary ink. */
   --background-danger: #bdb7aa;
   --background-success: var(--color-green-100);
   --background-info: var(--color-blue-100);
@@ -1064,7 +1064,7 @@
   --control-track-off: #33332f;
   /* @ws WS-TOKENS end: control edges (dark) */
   --border-default: var(--border-subtle);
-  /* The invalid-field edge, the one red left in the chrome (design.md 9.13). */
+  /* The invalid-field edge, the one red left in the chrome (design.md 9.14). */
   --border-danger: var(--color-red-100);
   --border-success: var(--color-green-100);
   --border-warning: var(--color-yellow-100);
@@ -6803,7 +6803,7 @@ input[type='radio']:checked ~ .br-radio-dot {
    own apps; `auto` lets macOS draw text the way Finder and the references do, a
    tiny bit heavier and never bold. Windows and Linux ignore the property and are
    unchanged. Arial draws only 400 and 700, so this, not a weight step, is the
-   lever (design.md 9.14).
+   lever (design.md 9.15).
 
    Dark mode keeps `antialiased`: stem darkening fattens light-on-dark text far
    more than dark-on-light, and with it on the dark UI read semi-bold beside the

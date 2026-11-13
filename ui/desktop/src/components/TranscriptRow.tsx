@@ -28,7 +28,7 @@ export interface TranscriptRowProps {
   running?: boolean;
   /**
    * `danger` marks a call that failed, or a row that failed to render. It is
-   * drawn calm, not red (design.md 9.13, red is rare): the line keeps the muted
+   * drawn calm, not red (design.md 9.14, red is rare): the line keeps the muted
    * ink and the leading glyph becomes the failure glyph ({@link FAILED_GLYPH}),
    * so the words and that one shape say "failed". Only the row's own line; rows
    * nested in its body keep their own tone.
@@ -59,7 +59,7 @@ export interface TranscriptRowProps {
 /**
  * The glyph every failed line wears in place of its tool's own: a circled ✕, in
  * the primary ink while the line itself stays muted. With the "Failed to …" verb
- * it identifies a failure at a glance without colour (design.md 9.13).
+ * it identifies a failure at a glance without colour (design.md 9.14).
  */
 export const FAILED_GLYPH = CircleX;
 

@@ -48,7 +48,7 @@ export default {
       // A tooltip is a surface, so it is shared rather than set to this
       // family's own `text-default` navy.
       'background-inverse': '#1f1e1c',
-      // Red is rare (design.md 9.13): danger is drawn in ink, the fill being
+      // Red is rare (design.md 9.14): danger is drawn in ink, the fill being
       // the secondary ink and the text the primary ink. See Parchment.
       'background-danger': '#43526b',
       'background-success': '#007242',
@@ -237,7 +237,7 @@ export default {
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
-      // Red is rare (design.md 9.13): danger is drawn in ink, the fill being
+      // Red is rare (design.md 9.14): danger is drawn in ink, the fill being
       // the secondary ink and the text the primary ink. See Parchment.
       'background-danger': '#c0c5cb',
       'background-success': '#5fbf74',

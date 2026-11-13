@@ -29,7 +29,7 @@ const COLLAPSED_LINES = 12;
 
 /**
  * The grade is carried by its WORD, not by a hue (owner, 2026-11-12; design.md
- * 9.13, red is rare). A permission prompt already asks for attention, so its
+ * 9.14, red is rare). A permission prompt already asks for attention, so its
  * chip must not sound an alarm: every grade is a neutral chip, and the riskiest
  * is the same chip in the primary ink (`strong`), read first without a colour.
  * Never `danger` here, never green for "safe", and not the accent either: a

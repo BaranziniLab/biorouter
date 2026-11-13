@@ -282,7 +282,7 @@ This is the same convention GitHub's contribution graph uses. Absolute values li
 
 #### Text colours
 
-> **Inks superseded 2026-11-12 ([9.14](#914--solid-ink)).** The primary ink is near-black (`#16120d` light,
+> **Inks superseded 2026-11-12 ([9.15](#915--solid-ink)).** The primary ink is near-black (`#16120d` light,
 > `#f6f4ee` dark) and the secondary steps are one small step stronger. The tables below are the record of
 > how the earlier values were chosen.
 
@@ -1095,7 +1095,7 @@ All three: 8px gap to a 14/21 label; the **label is part of the hit target**; mi
 | Navigation row | 32px, 12px horizontal inset, `--radius-md`, 8px gap, 16px icon + 14/20 label; no inter-row gap |
 | Recent session row | 32px, 12px horizontal inset, plain 14/20 title text; no leading icon; single-line ellipsis at the fixed sidebar width; running indicator only when live; full title and metadata remain available on hover/focus |
 | Compact titlebar controls | Three 32px controls in an explicit non-drag layer above the chat header; the session title starts 8px after their measured endpoint and moves beyond the 240px sidebar when it overlays the canvas |
-| Rest | transparent, `--text-default` icon + label (`--sidebar-foreground`, `--sidebar-icon`; was `--text-muted` until 2026-11-12, [9.14](#914--solid-ink)) |
+| Rest | transparent, `--text-default` icon + label (`--sidebar-foreground`, `--sidebar-icon`; was `--text-muted` until 2026-11-12, [9.15](#915--solid-ink)) |
 | Hover | `--sidebar-hover` |
 | Active | `--sidebar-active`, `--text-default`, **plus a 2px accent bar on the leading edge** |
 | Section label | 11px caps `+0.08em` `--text-subtle`, 8px inset |
@@ -1942,7 +1942,7 @@ stay at `--row-height` 40px, because A-03's 36px is not part of this pass.
     Never borrow a `crew-*` class outside `crew/`.
 12. **Simplicity never costs accessibility.** Everything hidden stays reachable by keyboard and by screen
     reader, and the contrast gates pass, including the 3:1 control assertions in 9.5.
-13. **Red is rare** (owner, 2026-11-12; 9.13). Red never marks a failure, a risk, a permission or a
+13. **Red is rare** (owner, 2026-11-12; 9.14). Red never marks a failure, a risk, a permission or a
     destructive action. Words and a glyph do that, in ink. The one red left in the chrome is the edge of an
     invalid field.
 
@@ -2317,7 +2317,7 @@ hard to find. The rule applies to all of Biorouter, not only those surfaces.
 |---|---|---|
 | D-44 | **Simplicity first** | **A general principle, P9.** Up front only the most important information and the primary action; secondary operations in a dropdown, a `⋯` menu or a quiet button; complexity hidden by default behind a disclosure or an InfoTip, every option still reachable. It sits beside D-43 (hover peeks, click pins) and the owner's standing rule of one format across sibling surfaces. **First applied** to the Monitors dialog (each change applies as made; a row is a name, a switch and one line, with a peek and a `⋯`; the rest under More options), the decision history (Source and Outcome up front, the rest under Filters and Details), the `decide` card and turn marker (counts, not ids or thresholds), the phase gate dialog (one primary action only when the person is needed), the decision chat's composer and card, the Chat summary (Details, collapsed sections, one line per monitor) and the subagent roster (a row is a role, a status and one line; the rest in a peek). Records: `docs/desktop-ui/decision-models.md`, `docs/desktop-ui/chat-summary-rail.md`. |
 
-### 9.13 · Red is rare
+### 9.14 · Red is rare
 
 The owner, 2026-11-12: failed tool calls were "glaring red", permission prompts showed big red badges such
 as "Destructive", and red is not the way Biorouter should mark a critical or risky operation. Tool calls fail
@@ -2356,7 +2356,7 @@ token borrowed for its hue.
 - **Gauges.** A context or usage bar past its limit fills with the danger tone, the secondary ink: full, not
   alarmed. The label says what happens next.
 
-### 9.14 · Solid ink
+### 9.15 · Solid ink
 
 The owner, 2026-11-12: text in the sidebar and in the summary rail read "a little grayed out", with a stroke
 on the thin side. Wanted: dark, solid, smooth text (black in light mode), strokes "a tiny, tiny bit thicker",

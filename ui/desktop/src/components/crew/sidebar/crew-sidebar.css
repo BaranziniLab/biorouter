@@ -325,7 +325,7 @@
   font-size: var(--text-body);
   line-height: var(--text-body--line-height);
   /* The primary ink at rest, as in the app sidebar and with this row's own icon
-     (`--sidebar-icon`; owner, 2026-11-12, design.md 9.14: the muted ink read
+     (`--sidebar-icon`; owner, 2026-11-12, design.md 9.15: the muted ink read
      grey). Unread still stands out by its 600 weight; archived and quiet rows
      keep the subtle ink. */
   color: var(--sidebar-foreground);

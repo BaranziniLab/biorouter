@@ -57,7 +57,7 @@ describe('a legacy developer capture row draws the Copilot glyph', () => {
   }
 
   // A failed line draws the failure glyph in place of its tool's own (design.md
-  // 9.13, red is rare: the shape and the words say "failed", not a red ink), and
+  // 9.14, red is rare: the shape and the words say "failed", not a red ink), and
   // still names its tool family on the slot, so a probe reads both facts.
   it('a failed capture keeps its family and draws the failure glyph', () => {
     const { container } = row('developer__screen_capture', {}, true);

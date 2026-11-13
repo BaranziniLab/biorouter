@@ -213,7 +213,7 @@ describe('the control edge, the off track and the fills are shared neutrals', ()
  * Limit did: teal and orange on Home, New chat, Crew and every Components row,
  * which put the accent outside the zest list. The accent belongs to the active
  * rail and the lock badge. The resting ink is the PRIMARY one since 2026-11-12
- * (owner: sidebar text read grey on the muted ink; design.md 9.14): a nav row's
+ * (owner: sidebar text read grey on the muted ink; design.md 9.15): a nav row's
  * label, a chat row's glyph and Crew's rows all rest on `--sidebar-foreground`,
  * so the icon is that same ink and the 16px icon column is still one ink with
  * its labels.

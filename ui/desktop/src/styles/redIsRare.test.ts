@@ -7,7 +7,7 @@ import parchment from '../../themes/parchment.theme.mjs';
 import rocheLimit from '../../themes/roche-limit.theme.mjs';
 
 /**
- * Red is rare (design.md 9.13; owner, 2026-11-12). Red never marks a failure, a
+ * Red is rare (design.md 9.14; owner, 2026-11-12). Red never marks a failure, a
  * risk, a permission or a destructive action in Biorouter: words and a glyph do,
  * in ink. The rule is built into the tokens so that UI written later follows it
  * by default, and this file is what keeps it there.

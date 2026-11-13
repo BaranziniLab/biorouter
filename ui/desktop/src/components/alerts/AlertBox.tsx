@@ -29,7 +29,7 @@ const ALERT_STATUS: Record<AlertType, NotificationStatus> = {
 // distinct indicator widget, not a status notification. The simple message mode
 // below renders through the shared NotificationSurface.
 const alertStyles: Record<AlertType, string> = {
-  // The danger fill is the secondary ink (design.md 9.13, red is rare), light
+  // The danger fill is the secondary ink (design.md 9.14, red is rare), light
   // grey in dark mode, so the ink on it is `--text-on-status`, never white.
   [AlertType.Error]: 'bg-background-danger text-text-on-status',
   [AlertType.Warning]: 'bg-background-warning text-neutral-900',

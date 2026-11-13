@@ -1184,7 +1184,7 @@ Key invariants, each learned from a real bug:
   (`--sidebar-foreground`, `--sidebar-icon`), because the muted ink they wore
   after the redesign read grey (owner). It still differs per family because the
   ink does.
-- **Solid ink, and red is rare** ([design.md](design.md) 9.13, 9.14; owner,
+- **Solid ink, and red is rare** ([design.md](design.md) 9.14, 9.15; owner,
   2026-11-12). The primary ink is near-black in light mode and near-white in
   dark, and `muted`/`subtle` are one small step stronger with less tint. The
   danger tone is drawn in INK, not red, at the token layer: `--text-danger` is

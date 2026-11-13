@@ -49,7 +49,7 @@ export default {
       'background-medium': '#ecece9',
       'background-strong': '#dcdcd8',
       'background-inverse': '#1f1e1c',
-      // Red is rare (design.md 9.13): danger is drawn in ink, the fill being
+      // Red is rare (design.md 9.14): danger is drawn in ink, the fill being
       // the secondary ink and the text the primary ink. See Parchment.
       'background-danger': '#4a4945',
       'background-success': '#0f7150',
@@ -223,7 +223,7 @@ export default {
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
-      // Red is rare (design.md 9.13): danger is drawn in ink, the fill being
+      // Red is rare (design.md 9.14): danger is drawn in ink, the fill being
       // the secondary ink and the text the primary ink. See Parchment.
       'background-danger': '#b6b4ae',
       'background-success': '#3dd68c',

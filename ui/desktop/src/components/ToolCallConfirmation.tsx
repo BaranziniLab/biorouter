@@ -340,7 +340,7 @@ export default function ToolConfirmation({
   // a box). Only the triangle wears the warning hue; the sentence is the
   // primary ink, because a paragraph in amber reads as an alarm and reads worse
   // (owner, 2026-11-12: permission prompts ask for attention without alarm;
-  // design.md 9.13).
+  // design.md 9.14).
   const findingLine = securityFinding ? (
     <div
       data-testid="tool-security-finding"
