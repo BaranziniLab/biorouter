@@ -381,8 +381,12 @@ describe('MembersTab', () => {
     });
     renderCrew(Members);
     const tab = await shown();
-    expect(within(tab).getByText(membersCopy.count(3))).toBeInTheDocument();
+    // Three rows, two members now: a former member is listed, marked so, but not counted, as the
+    // header's stack and `biorouter crew` count the channel. An unknown member still counts.
+    expect(within(tab).getByText(membersCopy.count(2))).toBeInTheDocument();
+    expect(within(tab).queryByText(membersCopy.count(3))).toBeNull();
     const list = rows(tab);
+    expect(list).toHaveLength(3);
     expect(list).toContain('Carol Diaz (@carol) · former member');
     expect(list).toContain('Unknown member');
     expect(tab.textContent).not.toMatch(UUID);

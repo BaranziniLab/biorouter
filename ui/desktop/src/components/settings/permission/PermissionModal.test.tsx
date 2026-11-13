@@ -48,6 +48,45 @@ describe('PermissionModal', () => {
     });
   });
 
+  it('offers no choice for Crew’s person tools, which ask on every action (AO-12)', async () => {
+    getTools.mockResolvedValue({
+      data: [
+        {
+          name: 'crew__change',
+          description: 'Acts as you.',
+          parameters: [],
+          permission: 'ask_before',
+        },
+        {
+          name: 'crew__connections',
+          description: 'Lists the channels this chat may use.',
+          parameters: [],
+          permission: 'ask_before',
+        },
+        {
+          name: 'crew__read',
+          description: 'Reads as you.',
+          parameters: [],
+          permission: 'ask_before',
+        },
+        {
+          name: 'crew__request',
+          description: 'Asks the workspace.',
+          parameters: [],
+          permission: 'ask_before',
+        },
+      ],
+    });
+
+    render(<PermissionModal extensionName="crew" extensionLabel="Crew" onClose={vi.fn()} />);
+
+    expect(await screen.findByText('Connections')).toBeInTheDocument();
+    expect(screen.getByText('Request')).toBeInTheDocument();
+    // "Always allow" is never honored for these, so they are not offered it.
+    expect(screen.queryByText('Change')).not.toBeInTheDocument();
+    expect(screen.queryByText('Read')).not.toBeInTheDocument();
+  });
+
   it('shows a completed empty state instead of an endless loading indicator', async () => {
     getTools.mockResolvedValue({ data: [] });
 

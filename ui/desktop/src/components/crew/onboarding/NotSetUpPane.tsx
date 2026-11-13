@@ -60,9 +60,12 @@ export function NotSetUpPane() {
   const workspaceName = context.workspaceName ?? connection?.name ?? '';
   /** The level Join's request asked the job to set; null for a job the button started. */
   const [requestedAccess, setRequestedAccess] = useState<SetupAgentAccess | null>(null);
-  const setUp = (agentAccess: SetupAgentAccess | null = null) => {
+  /** The workspace Join found this account hosts, for the host's sentence; null otherwise. */
+  const [hostWorkspace, setHostWorkspace] = useState<string | null>(null);
+  const setUp = (agentAccess: SetupAgentAccess | null = null, hosts: string | null = null) => {
     if (!connectionId || job.busy) return;
     setRequestedAccess(agentAccess);
+    setHostWorkspace(agentAccess === 'full' ? hosts : null);
     void job.start({
       target: { kind: 'connection', connection_id: connectionId },
       intent: 'member',
@@ -80,7 +83,7 @@ export function NotSetUpPane() {
     const request = takeMemberSetupRequest(connectionId);
     if (!request) return;
     autoStarted.current = true;
-    setUp(request.agentAccess);
+    setUp(request.agentAccess, request.hostWorkspace ?? null);
     // `setUp` is recreated every render; the request is taken once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId]);
@@ -112,12 +115,20 @@ export function NotSetUpPane() {
               {notSetUpCopy.setUpHint(server, username)}
             </p>
             {requestedAccess === 'full' && job.phase !== 'idle' ? (
-              // The one warning As me on the server has (OW-6), while the job Join asked for sets it.
+              // The one warning As me on the server has (OW-6), while the job Join asked for sets it,
+              // with the host's sentence when Join found this account hosts the workspace (W2).
               <Note tone="warning" role="status" unclamped testId="crew-onboard-full-warning">
                 {joinCopy.fullWarning(username, server)}
+                {hostWorkspace ? ` ${joinCopy.fullWarningHost(hostWorkspace)}` : null}
               </Note>
             ) : null}
-            <SetupProgress job={job} intent="member" server={server} testId="crew-member-setup" />
+            <SetupProgress
+              job={job}
+              intent="member"
+              server={server}
+              testId="crew-member-setup"
+              connections={crew.connections}
+            />
           </div>
         )}
         <Disclosure label={notSetUpCopy.askHost}>

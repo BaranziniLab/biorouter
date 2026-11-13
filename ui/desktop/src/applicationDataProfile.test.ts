@@ -165,7 +165,9 @@ describe('explicit application data profile', () => {
   });
 
   it.skipIf(process.platform === 'win32')('rejects a permissive existing session directory', () => {
-    fs.mkdirSync(path.join(fixture, 'session'), { mode: 0o755 });
+    const sessionDirectory = path.join(fixture, 'session');
+    fs.mkdirSync(sessionDirectory, { mode: 0o700 });
+    fs.chmodSync(sessionDirectory, 0o755);
     expect(() => applyUserDataDirectory(mocks.app, [`--user-data-dir=${fixture}`])).toThrow(
       'mode 0700'
     );

@@ -25,6 +25,7 @@ import DaemonRestartNotice from './DaemonRestartNotice';
 import { Badge } from '../ui/badge';
 import { attentionBadgeText } from '../crew/attention/crewAttention';
 import { useCrewAttention } from '../crew/attention/useCrewAttention';
+import { crewSelectRouteState } from '../crew/state/useCrewConnections';
 import RecentChats from './RecentChats';
 import useSidebarSessions, { sessionsInTurn } from './useSidebarSessions';
 import { sidebarCopy } from './copy';
@@ -245,11 +246,14 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
 
   // Crew's unread messages across every connected workspace, and a notification when one
   // arrives while this window is not showing Crew in front (M2). A clicked notification opens
-  // Crew, as the Crew item does, with that channel remembered.
+  // Crew on that workspace and channel (WI-16), with the request a chat's "Open in Crew" makes:
+  // it selects them, whichever Crew showed, and connects nothing. Crew already open is told too.
   const crewUnread = useCrewAttention({
     onCrewRoute: currentPath === '/crew',
-    onOpenChannel: () => {
-      if (currentPath !== '/crew') handleNavigation('/crew');
+    onOpenChannel: (connectionId, channelId) => {
+      const state = crewSelectRouteState({ connectionId, channelId });
+      if (state) navigateToRoute(navigate, '/crew', state);
+      else if (currentPath !== '/crew') handleNavigation('/crew');
     },
   });
 

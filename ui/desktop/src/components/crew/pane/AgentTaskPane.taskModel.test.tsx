@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  bob,
   connection,
   currentCrew,
   general,
@@ -12,6 +13,7 @@ import {
   renderCrew,
   stateFrame,
 } from '../channel/crewTestHarness';
+import { FULL_ACCESS_IS_YOU, fullAccessHost } from '../onboarding/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { agentCopy } from './copy';
 import { DetailsPane } from './DetailsPane';
@@ -348,5 +350,56 @@ describe('what the agent may do on the server (OW-6)', () => {
     expect(advanced).toHaveAccessibleDescription(line);
     await user.click(advanced);
     expect(screen.getByText(line, { selector: 'p' })).toBeInTheDocument();
+  });
+
+  const full = {
+    ...connection,
+    remote_root: '~/crew-work/lab',
+    remote_execution: true,
+    remote_access: 'full',
+    server_label: 'leo',
+  };
+
+  it('says before Start what full access means, and what it adds for the host (W1, W2)', async () => {
+    // Alice hosts lab (the fixture's host UID is hers).
+    installDaemon([full]);
+    const user = userEvent.setup();
+    renderCrew(Layout);
+    await connected();
+    await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+    await screen.findByLabelText(agentCopy.task);
+    const warning = screen.getByTestId('crew-agent-full-access');
+    // In the footer, with Advanced closed: the consent is read before Start.
+    expect(warning).toHaveTextContent(`${FULL_ACCESS_IS_YOU} ${fullAccessHost('lab')}`);
+    expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    );
+    expect(startButton().getAttribute('aria-describedby')?.split(' ')).toContain(warning.id);
+  });
+
+  it('says only what running as the account means to a member who does not host it (W1)', async () => {
+    installDaemon([full]);
+    installObserver({ snapshot: makeSnapshot({ actor: bob }) });
+    const user = userEvent.setup();
+    renderCrew(Layout);
+    await connected();
+    await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+    await screen.findByLabelText(agentCopy.task);
+    const warning = screen.getByTestId('crew-agent-full-access');
+    expect(warning.textContent).toBe(FULL_ACCESS_IS_YOU);
+  });
+
+  it('says nothing of the kind for a confined folder', async () => {
+    installDaemon([
+      { ...connection, remote_root: '/home/alice/crew-work', remote_execution: true },
+    ]);
+    const user = userEvent.setup();
+    renderCrew(Layout);
+    await connected();
+    await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+    await screen.findByLabelText(agentCopy.task);
+    expect(screen.queryByTestId('crew-agent-full-access')).toBeNull();
+    expect(screen.queryByText(FULL_ACCESS_IS_YOU, { exact: false })).toBeNull();
   });
 });

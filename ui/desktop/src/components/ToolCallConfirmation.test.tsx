@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ToolConfirmation from './ToolCallConfirmation';
+import { CREW_READ_CONSENT_EVENT } from './toolCallCopy';
 import type { ActionRequired, ToolPreview, ToolRisk } from '../api';
 
 const mocks = vi.hoisted(() => ({
@@ -62,6 +63,75 @@ function renderCard(overrides: Parameters<typeof actionRequired>[0] = {}) {
 beforeEach(() => {
   mocks.confirmToolAction.mockReset().mockResolvedValue({ data: { status: 'delivered' } });
   mocks.userActionHeaders.mockReset().mockResolvedValue({ 'X-User-Action': 'proof-of-user' });
+});
+
+describe('Crew’s person-tool cards (AO-12)', () => {
+  const consent = {
+    toolName: 'crew__read',
+    prompt:
+      'Let this chat read acct-lab as you\nIt can then read what you see in acct-lab on leo.ucsf.edu: messages, files, names and the context document, until you take this back. It changes nothing; every change still asks you.',
+    arguments: {
+      action: 'read as you',
+      workspace: 'acct-lab',
+      server: 'leo.ucsf.edu',
+      connection: 'acct-lab',
+    },
+    risk: 'low' as ToolRisk,
+  };
+
+  it('asks for a read consent that lasts, and says so once given, never "once"', async () => {
+    const announced = vi.fn();
+    const listen = (event: Event) => announced((event as CustomEvent).detail);
+    window.addEventListener(CREW_READ_CONSENT_EVENT, listen);
+    renderCard(consent);
+    expect(screen.queryByRole('button', { name: 'Allow once' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Always allow' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    // The daemon is told the same decision; only the words change.
+    await waitFor(() =>
+      expect(mocks.confirmToolAction).toHaveBeenCalledWith(
+        expect.objectContaining({ body: expect.objectContaining({ action: 'allow_once' }) })
+      )
+    );
+    expect(
+      await screen.findByText('This chat may read acct-lab as you until you take it back')
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/allowed once/)).not.toBeInTheDocument();
+    // No per-tool permission applies to it, so there is nothing to Change.
+    expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
+    // The chat's Crew bar is told, so it shows the consent with Revoke.
+    expect(announced).toHaveBeenCalledWith({ sessionId: 's1' });
+    window.removeEventListener(CREW_READ_CONSENT_EVENT, listen);
+  });
+
+  it('shows the summary and the lines under it as separate lines', () => {
+    renderCard(consent);
+    const finding = screen.getByTestId('tool-security-finding');
+    expect(finding.querySelector('.whitespace-pre-line')).toHaveTextContent(
+      /Let this chat read acct-lab as you\s+It can then read/
+    );
+  });
+
+  it('keeps "Allow once" for a change, and offers no Change once it is answered', async () => {
+    renderCard({
+      toolName: 'crew__change',
+      prompt: 'Post this in #general in acct-lab as you\nIt is marked Private.',
+      arguments: { action: 'send', channel: 'general', text: 'hello' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
+    expect(await screen.findByText('Change is allowed once')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change' })).not.toBeInTheDocument();
+  });
+
+  it('leaves every other tool’s card as it was', async () => {
+    renderCard({ toolName: 'developer__shell', prompt: 'Line one\nLine two' });
+    expect(
+      screen.getByTestId('tool-security-finding').querySelector('.whitespace-pre-line')
+    ).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
+    expect(await screen.findByText('Shell is allowed once')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
+  });
 });
 
 describe('ToolCallConfirmation (BR-63)', () => {

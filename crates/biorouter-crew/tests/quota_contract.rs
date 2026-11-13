@@ -1862,3 +1862,32 @@ fn the_hosts_snapshot_says_how_full_the_workspace_is_and_a_members_does_not() {
         snapshot.get("usage")
     );
 }
+
+#[test]
+fn accepted_mutations_store_increasing_commit_sequence_metadata() {
+    let mut ws = Workspace::new("dedupe-sequence-metadata");
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    ok(signed_raw(
+        &mut ws.broker,
+        &mut mallory,
+        "profile.update",
+        json!({"nickname": "First", "idempotency_key": "sequence-first"}),
+    ));
+    let first_key = dedupe_key(&mallory.principal_id, "sequence-first");
+    let first_sequence = ws.broker.state_json()["dedupe"][&first_key]["sequence"]
+        .as_u64()
+        .expect("first accepted mutation records its commit sequence");
+
+    ok(signed_raw(
+        &mut ws.broker,
+        &mut mallory,
+        "profile.update",
+        json!({"nickname": "Second", "idempotency_key": "sequence-second"}),
+    ));
+    let second_key = dedupe_key(&mallory.principal_id, "sequence-second");
+    let second_sequence = ws.broker.state_json()["dedupe"][&second_key]["sequence"]
+        .as_u64()
+        .expect("second accepted mutation records its commit sequence");
+
+    assert!(second_sequence > first_sequence);
+}

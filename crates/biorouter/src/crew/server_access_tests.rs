@@ -515,6 +515,7 @@ async fn full_access_on_a_connection_that_is_down_says_to_connect() {
         institution_id: None,
         policy_epoch: None,
         storage: None,
+        version: None,
     };
     manager.remember_broker(&c.id, broker(&["presence_v1"]));
     let old_server = manager.full_access_offered(&c.id).await.unwrap_err();
@@ -755,6 +756,7 @@ fn a_run_reads_more_channels_only_where_the_server_takes_them() {
         institution_id: None,
         policy_epoch: None,
         storage: None,
+        version: None,
     };
     manager.remember_broker("narrow", broker(&["presence_v1"]));
     manager.remember_broker("wide", broker(&["presence_v1", WIDE_RUNS_CAPABILITY]));

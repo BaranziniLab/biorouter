@@ -55,6 +55,7 @@ Workflows follow this schema structure:
 | `title` | String | Yes | A short title describing the workflow |
 | [`activities`](#activities) | Array | No | List of example prompts that can include parameter substitutions. Activities appear as clickable bubbles in Biorouter Desktop. |
 | [`extensions`](#extensions) | Array | No | List of extension configurations |
+| [`capabilities`](#capabilities-turned-on-for-every-chat) | String | No | `explicit` keeps a workflow's chats to its `extensions` list. Without it, the capabilities turned on for every chat stay on beside the list |
 | [`parameters`](#parameters) | Array | No | List of parameter definitions for dynamic workflows |
 | [`knowledge_bases`](#knowledge-bases) | Object | No | The knowledge bases this workflow works with, and which one it writes to |
 | [`response`](#response) | Object | No | Structured output schema for automation workflows |
@@ -277,6 +278,30 @@ extensions:
   ]
 }
 ```
+
+#### Capabilities turned on for every chat
+
+A workflow's `extensions` list adds to the capabilities you turned on in **Settings** > **Chat** > **Capabilities**. It does not replace them. A workflow that lists only its own tools still gets Crew, Workspace Control and the other capabilities that are on for every chat on this computer. This holds wherever the workflow runs: a desktop workflow chat, `biorouter run --workflow` and a scheduled run.
+
+- An installed extension, one that runs as its own program or over HTTP, is never added. Only the capabilities are.
+- A capability you turned off stays off.
+- When the list names a capability itself, its entry is used as written, so an `available_tools` list that narrows it is kept.
+- A workflow with no `extensions` key runs with what its caller chose, as before.
+
+To keep a workflow's chats to exactly its list, set `capabilities: explicit`:
+
+```yaml
+extensions:
+  - type: stdio
+    name: github-mcp
+    cmd: github-mcp-server
+    args: []
+capabilities: explicit
+```
+
+`explicit` is the only value, and any other spelling fails to load the workflow. It has no effect on a workflow without an `extensions` key. A workflow that declares [knowledge bases](#knowledge-bases) still gets Knowledge. Its chats are told which capabilities are on for other chats but off here, by name, such as "Crew, Workspace Control", so the model can say so when you ask for one and point you to a new chat or the workflow's `extensions`.
+
+A chat that another chat opens with Workspace Control and its own list of extensions keeps the capabilities that are on for every chat in the same way.
 
 #### Extension secrets
 

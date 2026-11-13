@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { trustHostKeyCopy } from '../hostKeys/trustHostKey.copy';
 import type { LastConnectFailure } from '../state/types';
 import { hostCopy, trustCopy } from './copy';
 import { resetJoinContextForTests, updateJoinContext } from './joinContext';
@@ -12,6 +13,12 @@ vi.mock('../../InAppTerminalDock', () => ({
     dock.props.push(props);
     return <div data-testid="in-app-terminal-dock" />;
   },
+}));
+const keys = vi.hoisted(() => ({ read: vi.fn(), trust: vi.fn() }));
+vi.mock('../../../api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  crewHostKeysRead: keys.read,
+  crewHostKeysTrust: keys.trust,
 }));
 
 const OFFERED = 'SHA256:' + 'A'.repeat(43);
@@ -39,6 +46,18 @@ function expectNoAcceptOrRemoval() {
 beforeEach(() => {
   dock.props.length = 0;
   resetJoinContextForTests();
+  keys.read.mockReset().mockResolvedValue({
+    error: { code: 'crew_ssh_unreachable', error: 'This computer couldn’t read a host key.' },
+  });
+  keys.trust.mockReset().mockResolvedValue({
+    data: {
+      host: 'hpc.ucsf.edu',
+      port: 22,
+      fingerprint: OFFERED,
+      already_trusted: false,
+      known_hosts_file: '/home/bob/.ssh/known_hosts',
+    },
+  });
 });
 
 describe('TrustPane', () => {
@@ -196,6 +215,95 @@ describe('TrustPane', () => {
     expect(copied).toContain(OFFERED);
     expect(copied).toContain(KNOWN);
     expectNoAcceptOrRemoval();
+  });
+
+  // D2: OpenSSH prints no fingerprint for an unknown key under strict checking, so the pane asks
+  // the daemon to read one, labels it as this computer's reading, and offers Trust this key.
+  it('reads the fingerprint this computer sees, trusts it with the person’s proof, then connects', async () => {
+    const crew = renderPane({
+      kind: 'host_key_unknown',
+      message: 'Host key verification failed.',
+      code: 'crew_ssh_host_key_unknown',
+      detail:
+        'No ED25519 host key is known for hpc.ucsf.edu and you have requested strict checking.',
+      host: 'hpc.ucsf.edu',
+    } as LastConnectFailure);
+    keys.read.mockResolvedValueOnce({
+      data: { host: 'hpc.ucsf.edu', port: 22, fingerprint: OFFERED, key_type: 'ssh-ed25519' },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: `Copy ${trustCopy.offeredLabel}` })
+      ).toBeInTheDocument()
+    );
+    expect(keys.read).toHaveBeenCalledWith({
+      headers: expect.any(Object),
+      body: { host: 'hpc.ucsf.edu', port: 22, login: 'bob@hpc.ucsf.edu' },
+    });
+    expect(screen.getByText(trustCopy.offered)).toBeInTheDocument();
+    expect(trustCopy.offered).toBe('Fingerprint this computer read from the server');
+    expect(screen.getByText(trustHostKeyCopy.warning)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: trustHostKeyCopy.trust }));
+    await waitFor(() => expect(crew.connect).toHaveBeenCalledWith({ userInitiated: true }));
+    expect(keys.trust).toHaveBeenCalledWith({
+      headers: expect.any(Object),
+      body: { host: 'hpc.ucsf.edu', port: 22, login: 'bob@hpc.ucsf.edu', fingerprint: OFFERED },
+    });
+  });
+
+  it('says why no fingerprint could be read, and offers nothing to trust', async () => {
+    renderPane({
+      kind: 'host_key_unknown',
+      message: 'Host key verification failed.',
+      code: 'crew_ssh_host_key_unknown',
+      host: '[hpc.ucsf.edu]:2222',
+    } as LastConnectFailure);
+    await waitFor(() =>
+      expect(screen.getByText('This computer couldn’t read a host key.')).toBeInTheDocument()
+    );
+    expect(keys.read.mock.calls[0][0].body).toEqual({
+      host: 'hpc.ucsf.edu',
+      port: 2222,
+      login: 'bob@hpc.ucsf.edu',
+    });
+    expect(screen.queryByRole('button', { name: trustHostKeyCopy.trust })).toBeNull();
+    expectNoAcceptOrRemoval();
+  });
+
+  it('never reads or trusts a key behind a saved jump host', () => {
+    const crew = makeCrew({
+      connectionId: 'conn-1',
+      connection: fakeConnection({ status: 'disconnected', proxy_jump: 'gate.ucsf.edu' }),
+      lastConnectFailure: {
+        kind: 'host_key_unknown',
+        message: 'Host key verification failed.',
+        code: 'crew_ssh_host_key_unknown',
+        detail: `Offered host key fingerprint: ${OFFERED}`,
+        host: 'hpc.ucsf.edu',
+      } as LastConnectFailure,
+      screen: 'trust',
+    });
+    renderWithCrew(<TrustPane />, crew);
+    expect(
+      screen.getByRole('button', { name: `Copy ${trustCopy.offeredLabel}` })
+    ).toBeInTheDocument();
+    expect(keys.read).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: trustHostKeyCopy.trust })).toBeNull();
+    expectNoAcceptOrRemoval();
+  });
+
+  it('never offers to trust a changed key', () => {
+    renderPane({
+      kind: 'host_key_changed',
+      message: 'REMOTE HOST IDENTIFICATION HAS CHANGED',
+      code: 'crew_ssh_host_key_changed',
+      detail: `New host key fingerprint (offered by the server): ${OFFERED}`,
+      host: 'hpc.ucsf.edu',
+    } as LastConnectFailure);
+    expect(screen.queryByRole('button', { name: trustHostKeyCopy.trust })).toBeNull();
+    expect(screen.queryByText(trustHostKeyCopy.warning)).toBeNull();
+    expect(keys.read).not.toHaveBeenCalled();
+    expect(keys.trust).not.toHaveBeenCalled();
   });
 
   it('shows a different workspace key with Copy details and Connection settings', () => {

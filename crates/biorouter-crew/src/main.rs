@@ -1,7 +1,15 @@
 use anyhow::{bail, Result};
 
 #[cfg(unix)]
-const USAGE: &str = "usage: biorouter-crew serve|start|status|stop (--state-dir PATH | --name NAME) [--name NAME] [--bootstrap-key HEX]; delete (--state-dir PATH | --name NAME) --workspace-id UUID; bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID; probe|doctor [--output-format json]";
+const USAGE: &str = "usage: biorouter-crew serve|start|status|stop (--state-dir PATH | --name NAME) [--name NAME] [--bootstrap-key HEX] [--create]; start|restart --workspace-id UUID; workspaces [--output-format json]; delete (--state-dir PATH | --name NAME) --workspace-id UUID; bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID; probe|doctor [--output-format json]";
+
+/// The account's home directory, which must be an absolute path.
+#[cfg(unix)]
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|home| home.is_absolute())
+}
 
 /// Where a named workspace keeps its state when `--state-dir` is not given:
 /// `$HOME/.local/share/biorouter-crew/<name>`. The name is validated first, so it is a plain
@@ -9,12 +17,9 @@ const USAGE: &str = "usage: biorouter-crew serve|start|status|stop (--state-dir 
 #[cfg(unix)]
 fn default_state_dir(name: &str) -> Result<std::path::PathBuf> {
     biorouter_crew::validate_workspace_name(name).map_err(|error| anyhow::anyhow!(error.wire()))?;
-    let home = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|home| home.is_absolute())
-        .ok_or_else(|| {
-            anyhow::anyhow!("--state-dir required: HOME is not set to an absolute path")
-        })?;
+    let home = home_dir().ok_or_else(|| {
+        anyhow::anyhow!("--state-dir required: HOME is not set to an absolute path")
+    })?;
     Ok(home
         .join(".local")
         .join("share")
@@ -35,30 +40,78 @@ fn json_output(args: &[String]) -> Result<bool> {
     }
 }
 
+/// `biorouter-crew workspaces [--output-format json]` (AO-6): JSON is the only format, as for
+/// probe, printed on one line because setup reads it whole.
+#[cfg(unix)]
+fn workspaces(args: &[String]) -> Result<()> {
+    json_output(args)?;
+    let home = home_dir().ok_or_else(|| anyhow::anyhow!("HOME is not set to an absolute path"))?;
+    let answer = biorouter_crew::Broker::list_workspaces(&home);
+    println!("{}", serde_json::to_string(&answer)?);
+    Ok(())
+}
+
+/// `biorouter-crew start|restart --workspace-id UUID` (AO-7): the state directory is found
+/// from the journals in ~/.local/share/biorouter-crew, and no journal is ever created.
+#[cfg(unix)]
+fn by_id(command: &str, args: &[String]) -> Result<()> {
+    let workspace_id = args
+        .windows(2)
+        .find(|pair| pair[0] == "--workspace-id")
+        .map(|pair| pair[1].as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!("--workspace-id required: the ID of the workspace to {command}")
+        })?;
+    let addressed_otherwise = ["--state-dir", "--name", "--bootstrap-key", "--create"];
+    if args
+        .iter()
+        .any(|arg| addressed_otherwise.contains(&arg.as_str()))
+    {
+        bail!("--workspace-id names the workspace by itself; leave out --state-dir, --name, --bootstrap-key and --create");
+    }
+    let home = home_dir().ok_or_else(|| anyhow::anyhow!("HOME is not set to an absolute path"))?;
+    let answer = if command == "start" {
+        biorouter_crew::Broker::start_by_id(&home, workspace_id)?
+    } else {
+        biorouter_crew::Broker::restart_by_id(&home, workspace_id)?
+    };
+    println!("{answer}");
+    Ok(())
+}
+
+#[cfg(unix)]
+const HELP: &str = "Usage: biorouter-crew start --name NAME --bootstrap-key HEX [--create] [--state-dir PATH]\n       biorouter-crew serve|start|status|stop --state-dir PATH [--name NAME] [--bootstrap-key HEX] [--create]\n       biorouter-crew start|restart --workspace-id UUID\n       biorouter-crew workspaces [--output-format json]\n       biorouter-crew delete (--state-dir PATH | --name NAME) --workspace-id UUID\n       biorouter-crew bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID\n       biorouter-crew probe|doctor [--output-format json]\n       biorouter-crew --version [--output-format json]\n--name names the workspace (lowercase letters, numbers and hyphens); without --state-dir its state lives in ~/.local/share/biorouter-crew/NAME. start prints the workspace's invitation line (brcrew1:...) to paste into Crew. serve and start create a new workspace only in a state directory that holds none, and only with --bootstrap-key or --create. start --workspace-id starts a stopped workspace of this account by its ID; restart --workspace-id stops its running broker and starts the installed program in its place. workspaces lists, as JSON, the workspaces this account hosts on this server and the ones of other accounts it belongs to, is invited to or was removed from. delete erases a stopped workspace's state directory, only the files Crew created; --workspace-id must be the ID of the workspace it holds. probe prints fixed facts about this server and account as JSON; doctor adds what blocks hosting here and what limits agents.\nBroker and bridge operations require Linux.";
+
+/// `biorouter-crew --version [--output-format json]`.
+#[cfg(unix)]
+fn version(args: &[String]) -> Result<()> {
+    if json_output(args)? {
+        // A cheap compatibility check for setup: the broker's capabilities (what `hello`
+        // advertises) and the bridge's own.
+        println!(
+            "{}",
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocol": biorouter_crew::PROTOCOL_VERSION,
+                "capabilities": biorouter_crew::Broker::capabilities(),
+                "bridge_capabilities": biorouter_crew::probe::BRIDGE_CAPABILITIES,
+            })
+        );
+    } else {
+        println!("biorouter-crew {}", env!("CARGO_PKG_VERSION"));
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("help");
     if matches!(command, "--version" | "-V") {
-        if json_output(&args)? {
-            // A cheap compatibility check for setup: the broker's capabilities (what `hello`
-            // advertises) and the bridge's own.
-            println!(
-                "{}",
-                serde_json::json!({
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "protocol": biorouter_crew::PROTOCOL_VERSION,
-                    "capabilities": biorouter_crew::Broker::capabilities(),
-                    "bridge_capabilities": biorouter_crew::probe::BRIDGE_CAPABILITIES,
-                })
-            );
-        } else {
-            println!("biorouter-crew {}", env!("CARGO_PKG_VERSION"));
-        }
-        return Ok(());
+        return version(&args);
     }
     if matches!(command, "help" | "--help" | "-h") {
-        println!("Usage: biorouter-crew start --name NAME --bootstrap-key HEX [--state-dir PATH]\n       biorouter-crew serve|start|status|stop --state-dir PATH [--name NAME] [--bootstrap-key HEX]\n       biorouter-crew delete (--state-dir PATH | --name NAME) --workspace-id UUID\n       biorouter-crew bridge --stdio --socket PATH --owner-uid UID --workspace-id UUID\n       biorouter-crew probe|doctor [--output-format json]\n       biorouter-crew --version [--output-format json]\n--name names the workspace (lowercase letters, numbers and hyphens); without --state-dir its state lives in ~/.local/share/biorouter-crew/NAME. start prints the workspace's invitation line (brcrew1:...) to paste into Crew. delete erases a stopped workspace's state directory, only the files Crew created; --workspace-id must be the ID of the workspace it holds. probe prints fixed facts about this server and account as JSON; doctor adds what blocks hosting here and what limits agents.\nBroker and bridge operations require Linux.");
+        println!("{HELP}");
         return Ok(());
     }
 
@@ -67,6 +120,7 @@ fn main() -> Result<()> {
             .find(|pair| pair[0] == name)
             .map(|pair| pair[1].as_str())
     };
+    let flag = |name: &str| args.iter().any(|arg| arg == name);
     if command == "__crew-exec" {
         biorouter_crew::remote::exec_helper()?;
     } else if command == "__crew-run" {
@@ -83,6 +137,10 @@ fn main() -> Result<()> {
             biorouter_crew::probe::doctor()
         };
         println!("{}", serde_json::to_string_pretty(&facts)?);
+    } else if command == "workspaces" {
+        workspaces(&args)?;
+    } else if command == "restart" || (command == "start" && flag("--workspace-id")) {
+        by_id(command, &args)?;
     } else if command == "bridge" {
         biorouter_crew::bridge(
             std::path::Path::new(
@@ -97,6 +155,10 @@ fn main() -> Result<()> {
         let name = option("--name");
         if args.iter().any(|arg| arg == "--name") && name.is_none() {
             bail!("--name requires a workspace name");
+        }
+        let create = flag("--create");
+        if create && !matches!(command, "serve" | "start") {
+            bail!("--create applies to serve and start only");
         }
         let root = match (option("--state-dir"), name) {
             (Some(root), _) => std::path::PathBuf::from(root),
@@ -124,10 +186,14 @@ fn main() -> Result<()> {
             })?;
             println!("{}", biorouter_crew::delete_workspace(&root, workspace_id)?);
         } else if command == "serve" {
-            biorouter_crew::serve(&root, key, name)?;
+            biorouter_crew::serve(&root, key, name, create)?;
+        } else if command == "start" {
+            println!(
+                "{}",
+                biorouter_crew::Broker::start_state_dir(&root, key, name, create)?
+            );
         } else {
-            let name = if command == "start" { name } else { None };
-            println!("{}", biorouter_crew::lifecycle(command, &root, key, name)?);
+            println!("{}", biorouter_crew::lifecycle(command, &root, key, None)?);
         }
     } else {
         bail!("{USAGE}");

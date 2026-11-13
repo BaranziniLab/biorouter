@@ -285,7 +285,10 @@ describe('ChatStreamRegistry', () => {
     // every other session-addressing route, so the renderer losing this header
     // would make every private chat unusable — which is the failure this pins.
     expect(reply).toHaveBeenCalledWith(
-      expect.objectContaining({ headers: { 'X-User-Action': 'test-key' } })
+      expect.objectContaining({
+        // With WI-17's ask to hear when each card ends, which every stream request makes.
+        headers: { 'X-User-Action': 'test-key', 'X-Card-Endings': '1' },
+      })
     );
     expect(controller.getSnapshot().session?.name).toBe('Apple Watch News');
     window.removeEventListener('message-stream-finished', onFinished);

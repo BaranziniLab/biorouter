@@ -93,7 +93,13 @@ fn crew_contract_violations(spec: &Value) -> Vec<String> {
             }
             for (status, response) in responses {
                 let content = response["content"].as_object();
-                if status.starts_with('2') {
+                if status == "204" {
+                    // No Content: the status is the whole answer, and a body would be one a
+                    // client reads that the wire never carries.
+                    if content.is_some_and(|content| !content.is_empty()) {
+                        violations.push(format!("{at}: its 204 names a body"));
+                    }
+                } else if status.starts_with('2') {
                     match content {
                         Some(content) if !content.is_empty() => {
                             for (media, body) in content {
@@ -180,6 +186,16 @@ fn the_contract_check_finds_what_the_old_crew_spec_did_wrong() {
                     }}},
                     "403": {"description": "", "content": {"application/json": {"schema": {}}}}
                 }
+            }},
+            "/crew/connections/{id}/devices/acknowledge": {"post": {
+                "operationId": "crew_connection_acknowledge_devices",
+                "parameters": [{"name": "id", "in": "path"}],
+                "responses": {
+                    "204": {"content": {"application/json": {"schema": {}}}},
+                    "403": {"description": "No proof", "content": {"application/json": {
+                        "schema": {"$ref": "#/components/schemas/CrewError"}
+                    }}}
+                }
             }}
         },
         "components": {"schemas": {}}
@@ -196,6 +212,7 @@ fn the_contract_check_finds_what_the_old_crew_spec_did_wrong() {
         "403 is not a CrewError",
         "403 does not say why",
         "#/components/schemas/Gone names no schema",
+        "its 204 names a body",
     ] {
         assert!(found.contains(expected), "missed {expected:?} in:\n{found}");
     }
@@ -273,10 +290,14 @@ fn crew_codes(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Quoted `crew_*` words in the Crew sources that are not `/crew` codes.
-const NOT_CREW_CODES: [(&str, &str); 7] = [
-    ("crew__", "the prefix of the Crew tools' names"),
-    ("crew__request", "a Crew tool's name"),
+/// The prefix of the Crew tools' names (`crew__request`, `crew__read`, `crew__change`, ...).
+/// A code is `crew_` and one word, never two underscores, so no quoted word with this prefix is
+/// a code.
+const CREW_TOOL_PREFIX: &str = "crew__";
+
+/// Quoted `crew_*` words in the Crew sources that are not `/crew` codes, beside the tools'
+/// names ([`CREW_TOOL_PREFIX`]).
+const NOT_CREW_CODES: [(&str, &str); 5] = [
     (
         "crew_run_stopped",
         "the code a task's own chat reads when the task stops",
@@ -334,6 +355,7 @@ fn every_code_a_crew_source_answers_is_a_declared_crew_error_code() {
         let text = std::fs::read_to_string(source).expect("a Crew source");
         codes.extend(crew_codes(&text));
     }
+    codes.retain(|word| !word.starts_with(CREW_TOOL_PREFIX));
     for (word, _) in NOT_CREW_CODES {
         codes.remove(word);
     }
@@ -423,6 +445,56 @@ fn every_field_a_crew_refusal_carries_is_one_crew_error_declares() {
         json!(["code", "error"]),
         "every refusal carries exactly these two"
     );
+}
+
+/// The words a description quotes in backticks.
+fn quoted(text: &str) -> BTreeSet<&str> {
+    text.split('`').skip(1).step_by(2).collect()
+}
+
+/// AO-9: `crew_account_unsupported` chooses its words by `is_host`, with `server_login` for the
+/// host and `host_username` for anyone else. `host` is another refusal's field (an SSH
+/// failure's hop), so a client written from a description that named it found nothing and
+/// could not tell the host's words from a member's.
+#[test]
+fn the_account_unsupported_refusal_is_described_by_the_fields_it_carries() {
+    let spec = spec();
+    let mut described = 0;
+    for (path, operations) in spec["paths"].as_object().expect("paths") {
+        for method in METHODS {
+            let Some(responses) = operations[method]["responses"].as_object() else {
+                continue;
+            };
+            // A refusal's own answer: a setup job's status reports the code inside its
+            // `error`, beside the job's fields.
+            for (status, response) in responses.iter().filter(|(s, _)| s.starts_with('4')) {
+                let text = response["description"].as_str().unwrap_or_default();
+                let Some((_, after)) = text.split_once("`crew_account_unsupported`") else {
+                    continue;
+                };
+                // What the description says of this refusal: up to the parenthesis that
+                // names its fields.
+                let said = after.split_once(')').map_or(after, |(said, _)| said);
+                let fields = quoted(said);
+                // A description that only names the code says nothing of its fields.
+                if fields.is_empty() {
+                    continue;
+                }
+                described += 1;
+                let at = format!("{} {path} {status}", method.to_uppercase());
+                for field in ["is_host", "server_login", "host_username"] {
+                    assert!(
+                        fields.contains(field),
+                        "{at} does not name `{field}`: {said}"
+                    );
+                }
+                assert!(!fields.contains("host"), "{at} names `host`: {said}");
+            }
+        }
+    }
+    // A check that reads nothing would agree with one that finds nothing: join, rejoin and
+    // account each describe it.
+    assert!(described >= 3, "only {described} descriptions were read");
 }
 
 #[test]

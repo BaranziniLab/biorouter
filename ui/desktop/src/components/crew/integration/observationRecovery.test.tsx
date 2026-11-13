@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { rejoinCopy } from '../account/copy';
 import { connectionBarCopy } from '../channel/copy';
 import { emptyCopy } from '../onboarding/copy';
 import { crewObservationCopy, crewStatusCopy } from '../state/copy';
@@ -273,6 +274,27 @@ describe('before a person is let in (T-06, T-14)', () => {
       expect(document.body).not.toHaveTextContent(/Room observation/);
       // The error stays in the controller, where the probe read its code.
       expect(currentCrew().refreshErrorCode).toBe(code);
+    }
+  );
+});
+
+describe('a computer the workspace no longer knows, seen from the live view (AO-9)', () => {
+  it.each(['crew_device_key_missing', 'crew_device_not_recognized'])(
+    'offers Add this computer again when the observation ends with %s',
+    async (code) => {
+      renderCrew();
+      await channelReady();
+      keepEnding(code);
+      const before = mocked.observeCrew.mock.calls.length;
+      act(() => daemon.emit(ended(code)));
+      // The daemon answered for this computer: it is not taken for a dropped connection, so the
+      // code reaches the bar at once and the bar offers the way back.
+      const note = await within(bar()).findByTestId('crew-rejoin');
+      expect(within(note).getByRole('button', { name: rejoinCopy.action })).toBeInTheDocument();
+      expect(currentCrew().refreshErrorCode).toBe(code);
+      // Nothing observed again first, as a dropped connection would be.
+      expect(mocked.observeCrew.mock.calls.length).toBe(before);
+      expect(document.body).not.toHaveTextContent(/Room observation/);
     }
   );
 });

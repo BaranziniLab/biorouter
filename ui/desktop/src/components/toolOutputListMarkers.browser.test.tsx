@@ -162,7 +162,10 @@ async function bundle(variant: Variant): Promise<{ script: string; css: string }
     format: 'iife',
     jsx: 'automatic',
     platform: 'browser',
-    define: { 'process.env.NODE_ENV': '"production"' },
+    define: {
+      'process.env.NODE_ENV': '"production"',
+      'import.meta.env.MODE': '"production"',
+    },
     loader: {
       '.css': 'css',
       '.svg': 'dataurl',
@@ -344,6 +347,7 @@ describe('list markers in a tool output well (merge-verify #391, screen 20)', ()
       viewport: { width: 1000, height: 2400 },
       deviceScaleFactor: SCALE,
     });
+    const renderingFailed = new Promise<Error>((resolve) => tab.once('pageerror', resolve));
     try {
       const { script, css } = pages[variant];
       await tab.setContent(
@@ -352,7 +356,12 @@ describe('list markers in a tool output well (merge-verify #391, screen 20)', ()
           `<script>window.__outputs=${JSON.stringify(Object.entries(OUTPUTS))}</script>` +
           `<script>${script}</script></body></html>`
       );
-      await tab.waitForSelector('button.br-transcript-row-head');
+      await Promise.race([
+        tab.waitForSelector('button.br-transcript-row-head'),
+        renderingFailed.then((error) => {
+          throw error;
+        }),
+      ]);
       for (const head of await tab.$$('button.br-transcript-row-head')) await head.click();
       await tab.waitForTimeout(500);
       for (const more of await tab.$$('button.br-tool-more')) await more.click();

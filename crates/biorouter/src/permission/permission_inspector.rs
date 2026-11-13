@@ -382,6 +382,25 @@ impl PermissionInspector {
             );
         }
 
+        // AO-12: Crew's two person tools ask the person themselves. Every `crew__change`
+        // parks its own proof-backed card, and a `crew__read` that returns workspace content
+        // parks the read consent, so a second, generic card here would make one change ask
+        // twice. A user's own `NeverAllow` still stands.
+        if crate::crew::tool_host::PersonTool::from_name(tool_name).is_some() {
+            if self.permission_manager.get_user_permission(tool_name)
+                == Some(PermissionLevel::NeverAllow)
+            {
+                return Verdict::Decided(
+                    InspectionAction::Deny,
+                    "User permission denies this tool".into(),
+                );
+            }
+            return Verdict::Decided(
+                InspectionAction::Allow,
+                "Crew asks the person for each change itself, with its own approval".into(),
+            );
+        }
+
         match mode {
             // Chat never reaches here (filtered in `inspect`); Auto allows all.
             BioRouterMode::Chat | BioRouterMode::Auto => Verdict::Decided(
@@ -564,5 +583,90 @@ impl ToolInspector for PermissionInspector {
     ) -> Result<Vec<InspectionResult>> {
         self.inspect_graded(tool_requests, biorouter_mode, session, &self.risks)
             .await
+    }
+}
+
+#[cfg(test)]
+mod person_tool_tests {
+    use super::*;
+
+    fn inspector(dir: &Path) -> PermissionInspector {
+        PermissionInspector::new(
+            Arc::new(ToolRiskRegistry::new()),
+            Arc::new(PermissionManager::new(dir.join("config"))),
+            Arc::new(ManagedPolicy::empty()),
+            Arc::new(tokio::sync::Mutex::new(None)),
+        )
+    }
+
+    fn request(name: &str) -> ToolRequest {
+        ToolRequest {
+            id: "call_1".into(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: name.to_owned().into(),
+                arguments: Some(rmcp::object!({"action": "setup"})),
+            }),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    fn verdict(
+        inspector: &PermissionInspector,
+        name: &str,
+        mode: BioRouterMode,
+    ) -> InspectionAction {
+        match inspector.deterministic_verdict(
+            name,
+            &request(name),
+            mode,
+            Path::new("/"),
+            &ToolRiskRegistry::new(),
+        ) {
+            Verdict::Decided(action, _) => action,
+            Verdict::AskJudge => panic!("{name} went to the judge"),
+        }
+    }
+
+    /// AO-12: a `crew__change` parks its own proof-backed card, so the generic inspector asks
+    /// nothing more in any mode that runs tools, and a change shows exactly one card. A tool
+    /// that is not a person tool is still asked about as before.
+    #[test]
+    fn the_person_tools_are_not_asked_about_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let inspector = inspector(dir.path());
+        for mode in [
+            BioRouterMode::Approve,
+            BioRouterMode::SmartApprove,
+            BioRouterMode::Auto,
+        ] {
+            for tool in ["crew__change", "crew__read"] {
+                assert_eq!(
+                    verdict(&inspector, tool, mode),
+                    InspectionAction::Allow,
+                    "{tool} in {mode:?}"
+                );
+            }
+        }
+        assert!(matches!(
+            verdict(&inspector, "crew__request", BioRouterMode::Approve),
+            InspectionAction::RequireApproval(_)
+        ));
+    }
+
+    /// The person's own "never allow" still stands for a person tool.
+    #[test]
+    fn a_user_s_never_allow_still_denies_a_person_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let inspector = inspector(dir.path());
+        inspector
+            .permission_manager
+            .update_user_permission("crew__change", PermissionLevel::NeverAllow);
+        assert_eq!(
+            verdict(&inspector, "crew__change", BioRouterMode::Approve),
+            InspectionAction::Deny
+        );
     }
 }

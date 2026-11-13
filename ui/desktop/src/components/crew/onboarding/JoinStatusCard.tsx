@@ -21,6 +21,7 @@ import {
   sanitizeDisplayText,
   type CrewPerson,
 } from '../identity';
+import { serverLabel } from '../sidebar/sidebarView';
 import { useCrew } from '../state/CrewControllerContext';
 import { failureMessage } from '../state/observationFailure';
 import { connectionVerifiedThisSession } from '../state/useCrewConnections';
@@ -316,9 +317,16 @@ export function JoinStatusCard() {
   }, [connectionId, pollNonce, finishJoined, setJoinStatus, recoverConnection]);
 
   // The host approved this computer's code: ask the daemon to finish the join, once per approval.
+  // A workspace that belongs to accounts answers `ready` instead (AO-9): the account may join with
+  // no code. That joins at once only when the person asked for this workspace here (Join, Open a
+  // workspace on a server), else when they press Join; it never joins by itself.
   const status = state.kind === 'status' ? state.status : null;
+  const [joinPressed, setJoinPressed] = useState(false);
+  const readyToClaim = status?.status === 'ready' && (context.joining === true || joinPressed);
   useEffect(() => {
-    if (status?.status !== 'approved' || !connectionId) return;
+    if ((status?.status !== 'approved' && !readyToClaim) || !status || !connectionId) return;
+    // The join was asked for: the card stays on "Joining…" once the join context lets go of it.
+    if (status.status === 'ready') setJoinPressed(true);
     if (joined.current) return;
     const approval = approvalOf(connectionId, status);
     if (readJoinClaim(connectionId).claimedFor === approval) return;
@@ -380,7 +388,7 @@ export function JoinStatusCard() {
         });
       }
     );
-  }, [status, connectionId, finishJoined, mounted, recoverConnection]);
+  }, [status, readyToClaim, connectionId, finishJoined, mounted, recoverConnection]);
 
   // A poll that names the inviter names them for the rail and "Having trouble joining?" too, at
   // once rather than when the join finishes (Q3-46).
@@ -449,6 +457,8 @@ export function JoinStatusCard() {
   // This computer was a member and the workspace no longer admits it: removed, not "not yet"
   // invited (Q3-50). Seen verified this session, or the daemon recorded the membership's end.
   const removed = connectionVerifiedThisSession(connectionId) || membershipEnded(connection);
+  // The workspace's verified `hello` says it belongs to accounts (AO-4, AO-9).
+  const accountWorkspace = connection?.account_identity === true;
 
   let card;
   if (context.hostSetup) {
@@ -541,6 +551,50 @@ export function JoinStatusCard() {
         )}
       </SetupCard>
     );
+  } else if (status?.status === 'ready') {
+    // The account may join with no code (AO-9). No code is shown against such a workspace.
+    card = readyToClaim ? (
+      <SetupCard key="ready-joining" icon={Users} title={joinStateCopy.readyJoining(workspace)}>
+        {claim.error ? (
+          <Note
+            tone="danger"
+            role="alert"
+            action={
+              <Button type="button" size="sm" variant="outline" onClick={retryClaim}>
+                {joinStateCopy.retry}
+              </Button>
+            }
+          >
+            {claim.error}
+          </Note>
+        ) : (
+          <Spinner />
+        )}
+      </SetupCard>
+    ) : (
+      <SetupCard key="ready" icon={Users} title={joinStateCopy.readyTitle(workspace)}>
+        <p className="text-body text-text-default">
+          {joinStateCopy.readyBody(
+            username || null,
+            serverLabel(connection) || joinStateCopy.theServer
+          )}
+        </p>
+        <div className="crew-onboard-actions">
+          <Button type="button" onClick={() => setJoinPressed(true)}>
+            {joinStateCopy.readyAction(workspace)}
+          </Button>
+        </div>
+      </SetupCard>
+    );
+  } else if (status?.status === 'removed') {
+    // The workspace removed this account (AO-2): only a new invitation brings it back.
+    card = (
+      <SetupCard key="removed-account" icon={Users} title={joinStateCopy.removedTitle(workspace)}>
+        <p className="text-body text-text-default" data-testid="crew-join-removed">
+          {joinStateCopy.removedAccount(workspace)}
+        </p>
+      </SetupCard>
+    );
   } else if (status?.status === 'expired') {
     card = <SetupCard key="expired" icon={Clock} title={joinStateCopy.expired(person)} />;
   } else if (removed) {
@@ -557,17 +611,19 @@ export function JoinStatusCard() {
         <p className="text-body text-text-default">
           {joinStateCopy.notInvitedBody(person, username || null)}
         </p>
-        <p className="text-supporting text-text-muted" data-testid="crew-join-not-invited-before">
-          {joinStateCopy.notInvitedBefore(workspace, person, username || null)}
-        </p>
+        {/* On a workspace that belongs to accounts, a member's new computer reads `ready`, never
+            not invited, so Add another device is not the way back for anyone here (AO-9). */}
+        {accountWorkspace ? null : (
+          <p className="text-supporting text-text-muted" data-testid="crew-join-not-invited-before">
+            {joinStateCopy.notInvitedBefore(workspace, person, username || null)}
+          </p>
+        )}
         <CopyField
           multiline
           label={joinStateCopy.notInvitedMessageLabel}
-          value={joinStateCopy.notInvitedMessage(
-            inviter ? first : null,
-            username || null,
-            workspace
-          )}
+          value={(accountWorkspace
+            ? joinStateCopy.notInvitedAccountMessage
+            : joinStateCopy.notInvitedMessage)(inviter ? first : null, username || null, workspace)}
         />
         {otherWays}
       </SetupCard>

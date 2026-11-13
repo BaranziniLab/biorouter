@@ -157,6 +157,13 @@ export function buildPeopleDirectory(
       ? entry.id === hostPrincipalId
       : hostUid !== null && !entry.former && entry.uid === hostUid;
 
+  // The usernames active members hold now: a former principal under one of them is the same
+  // account, let in again (AO-1), and is not called a former member.
+  const activeUsernames = new Set<string>();
+  entries.forEach((entry) => {
+    if (!entry.former) activeUsernames.add(entry.username);
+  });
+
   const byId = new Map<string, CrewPerson>();
   entries.forEach((entry) => {
     const displayName = displayNames.get(entry.id) ?? entry.username;
@@ -171,6 +178,7 @@ export function buildPeopleDirectory(
         serverName: null,
         avatar: avatar || null,
         isFormer: entry.former,
+        ...(entry.former && activeUsernames.has(entry.username) ? { rejoined: true } : {}),
         isHost: isHostEntry(entry),
         isYou: actor !== null && entry.id === actor.id,
         collides:

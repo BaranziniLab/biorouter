@@ -1,12 +1,25 @@
 # Joining a workspace
 
-> **What this is.** How to join your lab's Crew workspace, and what to do when a step stops you.
-> **Status:** Current. Checked against the Crew code on 2026-10-16.
-> **Audience:** Lab members who received a Crew invitation. You need no SSH experience.
+> **What this is.** How to join your lab's Crew workspace, open it on another computer, add a computer again, and what to do when a step stops you.
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
+> **Audience:** Lab members who received a Crew invitation, or who use a workspace from more than one computer. You need no SSH experience.
 
-To join, verify the lab server once, paste the invitation from your host (the person who created the workspace), choose what your agent may do on the server, choose Join, and send your host the code Crew shows. If Crew's server program is not in your server account yet, Biorouter installs it there when you choose Join. When your host, or in an open workspace any member, enters your code, the workspace opens.
+To join, verify the lab server once, paste the invitation from your host (the person who created the workspace), choose what your agent may do on the server, and choose Join. If Crew's server program is not in your server account yet, Biorouter installs it there when you choose Join. On a server with a current Crew, the workspace opens at once. On a server with an older Crew, Crew shows a code: send it to your host, and the workspace opens when your host, or in an open workspace any member, enters it.
 
 Examples use the host Alice Chen (@alice), the workspace `chen-lab` on `lab.example.edu`, and your username `bob`. Braces, such as {team}, mark a name Crew fills in.
+
+## You are your server account
+
+Crew knows you by your account on the lab server. Every computer that signs in to `lab.example.edu` as `bob` is @bob, in every workspace on that server. The account that hosts a workspace is its host, from any computer that signs in as it.
+
+This is how the server's Crew works once it is current. It means:
+
+- You need no code to join. The invitation names your account, and signing in as that account is the proof.
+- A new computer of yours opens your workspaces without an invitation. See [Open a workspace on a server](#open-a-workspace-on-a-server).
+- A computer that lost its key gets a new one with **Add this computer again**. See [Add this computer again](#add-this-computer-again).
+- Anyone who can sign in to the server as your account can use Crew as you. Keep your SSH keys and password to yourself, and see [Your computers](privacy-and-security.md#your-computers) to check which computers use Crew as you.
+
+A server whose Crew is older still joins by code, and the steps for it are marked "older Crew" below. Your host updates the server with `biorouter crew setup` ([Keep Crew current on the server](hosting-a-workspace.md#keep-crew-current-on-the-server)).
 
 ## Before you start
 
@@ -21,10 +34,10 @@ Examples use the host Alice Chen (@alice), the workspace `chen-lab` on `lab.exam
 
 ### Verify the server on this computer
 
-Crew connects only to a server whose key is in your known hosts file, `~/.ssh/known_hosts`, and never adds one for you. Do this once per server on each computer.
+Crew connects only to a server whose key is in your known hosts file, `~/.ssh/known_hosts`. It adds one only when you choose **Trust this key** for a key you checked, and never a changed one. Do this once per server on each computer, in Crew ([Trust the key in Crew](#trust-the-key-in-crew)) or in a terminal, as below.
 
 1. Get the server fingerprint. It starts with `SHA256:`. Your host may have sent it with the invitation. If not, ask IT. If IT gave you a jump host (a server you pass through first), ask IT for its fingerprint too. A server fingerprint is neither the workspace fingerprint nor your code.
-2. Open a terminal. On a Mac, press Command and Space, type Terminal, and press Return. Crew's "Can’t verify" screen also offers **How do I verify it?**, then **Open a terminal here**.
+2. Open a terminal. On a Mac, press Command and Space, type Terminal, and press Return. Crew's "Can’t verify" screen also offers **How do I verify it?**, then **Open a terminal here**, and so does the card a chat shows for the same problem.
 3. If IT gave you a jump host, verify it on its own first. Type `ssh -o StrictHostKeyChecking=ask gateway.ucsf.edu` with the jump host's name, and follow steps 5 to 8 for it. IT's settings for a jump host make SSH check it strictly, so without this step SSH never asks about it and stops with "No ED25519 host key is known for gateway.ucsf.edu and you have requested strict checking." If IT added the jump host's key for you, skip this step.
 4. Type `ssh bob@lab.example.edu` with your username and server, and press Enter.
    - For a port other than 22, add `-p` and the port: `ssh -p 2222 bob@lab.example.edu`.
@@ -41,11 +54,24 @@ Crew connects only to a server whose key is in your known hosts file, `~/.ssh/kn
 6. Compare the `SHA256:` value with the one you got for that host, character by character. If a value differs, type `no` and tell IT.
 7. If it matches, type `yes` and press Enter. SSH prints "Permanently added … to the list of known hosts." If SSH then asks about the next host, repeat step 6.
 8. Sign in with your password or code. The terminal does not show a password. Then type `exit`. For a jump host checked in step 3, type `exit` and go on to step 4.
-9. In Crew, choose **Try again**, or join as below.
+9. In Crew, choose **Try again**, or join as below. A chat that waits on its card goes on by itself.
 
 Typing `yes` is the step Crew's help calls adding "the full key". Crew may then ask for your password again.
 
 If Crew's "Can’t verify" screen names your jump host rather than the server, the jump host is the one to verify: do step 3 for it.
+
+#### Trust the key in Crew
+
+When Crew cannot verify a server, its "Can’t verify {server} yet" screen shows "Fingerprint this computer read from the server". So do the setup steps of the Join, Host and **Open a workspace on a server** dialogs, and the card a chat shows. When no fingerprint came with the failure, Crew reads one from the server first, with "Reading the server’s fingerprint…".
+
+1. Get the server fingerprint from IT, as step 1 above says.
+2. Compare it with the one Crew shows, character by character. If a value differs, stop and tell IT.
+3. If it matches, choose **Trust this key**. Beside it Crew says "Only trust it if IT or the server’s admin gave you this fingerprint."
+4. Crew reads the key from the server again and adds it to your known hosts file only when its fingerprint is the one shown. It then says "Trusted. The key is in your known hosts file." The "Can’t verify" screen connects again by itself. In a dialog, choose **Try again**. A chat goes on by itself.
+
+Crew refuses to add a key, and says why, when this computer already knows a key for that server ("This computer already knows a host key for lab.example.edu, so Crew won't add another. If the server's key changed, don't connect until your IT team confirms it."), when the server now gives another key than the one shown ("The key lab.example.edu gives now doesn't match the fingerprint you were shown, so nothing was added. Check the fingerprint with your IT team again."), or when your SSH settings reach the server through a jump host or under another name ("Your SSH settings reach lab.example.edu through another computer or under another name, so Crew can't read its key from here. Add the key in a terminal of your own."). For a connection saved with a jump host, the "Can’t verify" screen reads no fingerprint, so verify the server in a terminal, as above. Whatever Crew shows, trust a key only when its fingerprint matches the one IT gave you. A changed key never gets **Trust this key**.
+
+A known hosts file your SSH settings name as `/dev/null` or `none` means no file, so Crew reads it as holding no key. **Trust this key** saves the key to your first `UserKnownHostsFile`. When that one is `/dev/null` or `none`, Crew has nowhere to save the key and says "Your SSH settings for lab.example.edu keep no known hosts file, so Crew can't save its key. Name one with UserKnownHostsFile, or add the key in a terminal of your own."
 
 ### Install Crew in your server account
 
@@ -73,7 +99,13 @@ The invitation is a message with a line that starts `brcrew1:`. It holds no secr
 8. Leave **Advanced** alone unless your host or IT said otherwise.
 9. Choose **Join chen-lab**. Under it, Crew says "If Crew isn’t set up for your account on lab.example.edu yet, Biorouter installs it there for you." If the server asks for a password, see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server).
 
-The card with your code appears. Crew finishes the join later without asking again. If a message appears instead, see [When joining does not work](#when-joining-does-not-work). To join from a terminal instead, see [Join a workspace](command-line.md#join-a-workspace). To join from a terminal on the server that runs the workspace, see [Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server).
+On a server with a current Crew, Crew joins as your account, and the workspace opens ([When you are in](#when-you-are-in)). On an older Crew, the card with your code appears ([Send your code to your host](#send-your-code-to-your-host-older-crew)), and Crew finishes the join later without asking again. If a message appears instead, see [When joining does not work](#when-joining-does-not-work). To join from a terminal instead, see [Join a workspace](command-line.md#join-a-workspace). To join from a terminal on the server that runs the workspace, see [Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server).
+
+To join from a chat instead, paste the whole invitation into an ordinary Biorouter chat and ask it to join. Its card names the workspace, the host, the workspace key fingerprint and the privacy, as the summary above does. Choose **Allow once**, then **Sign in** on the next card if the server asks for a password or a code. What you type there goes only to the server, never to the chat ([Set up Crew from a chat](agents-and-chat-access.md#set-up-crew-from-a-chat)).
+
+The chat can take what **Advanced** and **Your agent on lab.example.edu** take here. Say it in the same request, such as "Join this workspace on port 2222 through gateway.ucsf.edu, with agent access full": a server login or a short name from your SSH settings, a port, a key file, a jump host or none, a work folder's full path on the server, and **Off**, **In a folder** or **As me on the server**. The card shows each choice, with the full-access warning for **As me on the server**, and Crew saves the connection with that route before it connects. For a workspace this computer already has, the chat refuses these choices and asks you to change the saved connection's settings instead.
+
+Crew joins by itself only when you started the join, with Join or **Open**. When this computer has a workspace saved that it has not joined yet, and you did not just start it, the card reads "You can join chen-lab" and "You sign in to lab.example.edu as bob, so this computer can join without a code." Choose **Join chen-lab**. The card then reads "Joining chen-lab…".
 
 ### Check the invitation fingerprint
 
@@ -99,7 +131,7 @@ To change it:
 | **In a folder** | "It reads and writes one folder, and can run commands there in a sandbox." Type the folder's full path, such as `/home/bob/project`, in **Remote work folder**, and turn on **Let my agent run commands in this folder** to let it run commands there. A server whose Linux kernel cannot confine commands to a folder (older than 6.2) gives a folder files only, and commands there need **As me on the server**. |
 | **As me on the server** | Full access: "It runs commands as bob, with your files, programs and network." A work folder is optional: leave it empty, and Biorouter creates one in `~/crew-work`, named for the workspace. |
 
-**As me on the server** comes with one warning, which you read before you choose Join: "Your agent will run commands as bob on lab.example.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust." See [What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server).
+**As me on the server** comes with one warning, which you read before you choose Join: "Your agent will run commands as bob on lab.example.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark." When the invitation's host is the account you join as, for example when you host the workspace and join it from another computer, the warning adds "You host chen-lab from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of chen-lab." See [What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server).
 
 Joining gives your connection exactly the level you chose. **Off** stays off once the connection has connected: setting Crew up never turns access on by itself. One case is different: a connection saved but never connected from this computer (the desktop's setup failed, for example) that you then join with `biorouter crew join` gets the same level `biorouter crew setup` gives a new connection, **As me on the server**, and the terminal says so before anything runs. Change the level later in **Connection settings…**.
 
@@ -118,7 +150,9 @@ When you leave **Server login**, **Port** and **Jump hosts** empty, Crew saves t
 | **Connection name** | Your name for this workspace on this computer. |
 | **Enter workspace details manually** | Use only if your host asks. It takes **Your server login** and four values your host copies from the `status` line the start commands printed: **Socket path**, **Workspace ID**, **Host user ID** and **Workspace key**. |
 
-## Send your code to your host
+## Send your code to your host (older Crew)
+
+This section and the next apply only on a server with an older Crew. A current Crew shows no code.
 
 The card reads "Send Alice this code:", then the code and **Copy**.
 
@@ -127,7 +161,7 @@ The card reads "Send Alice this code:", then the code and **Copy**.
 
 Your host can type it with or without dashes, in any case, and can type O as 0. Codes never contain I, L, O or U. Your code stays the same when you reconnect or close Biorouter.
 
-## Wait for your host
+## Wait for your host (older Crew)
 
 Your host may take minutes or hours. In an open workspace, any member can let you in with your code. Meanwhile the status under the workspace name reads "Not joined yet". Crew checks by itself.
 
@@ -135,7 +169,7 @@ In the workspace menu, **Reconnect** tries again. **Disconnect** stops waiting u
 
 You can close Biorouter. When you reopen it, open Crew, and choose **Connect to chen-lab** if Crew shows it. The card shows the same code, or Crew finishes joining if your host let you in meanwhile. See [When you reopen Biorouter](connections-and-troubleshooting.md#when-you-reopen-biorouter).
 
-## When your host lets you in
+## When you are in
 
 The card reads "Joining chen-lab…", and the workspace opens. In an open workspace you are in every team and every channel that is not archived, so your channels are there at once. In a managed workspace, your host adds you to a team.
 
@@ -148,9 +182,67 @@ The card reads "Joining chen-lab…", and the workspace opens. In an open worksp
 
 People see your username until you set a name. If your server account has a full name, a note offers it: "Use “Bob Lee” as your name in chen-lab?" Otherwise choose **Edit profile…** in the You menu at the bottom of the Crew sidebar.
 
+## Open a workspace on a server
+
+Use this on a new computer, or after you removed a workspace from this one, to open a workspace your server account already belongs to, is invited to, or hosts. You need no invitation and no code. It needs a current Crew on the server.
+
+1. [Verify the server on this computer](#verify-the-server-on-this-computer), if you have not on this computer.
+2. Open Crew and choose **Open a workspace on a server**. If you already have a workspace, choose its name at the top of the Crew sidebar, then **Add a workspace** and **Open a workspace on a server…**.
+3. Type your server login in **Your server login**, such as `bob@lab.example.edu`. Use **Advanced** only for a port, key file or jump host from IT.
+4. Choose **Look for workspaces**. If the server asks for a password or a code, the Sign in window opens. Type it there.
+5. Under "Workspaces on lab.example.edu", with the server's name as you typed it, Crew lists the workspaces there for your account. Each names its host, such as "chen-lab, hosted by @alice", or "chen-lab, hosted by you", then your role when you do not host it ("You’re a member", "You’re invited" or "You were removed"), its state, such as "Running" or "Stopped", its Crew version, and "Connected on this computer" or "Saved on this computer" when this computer already has it. Choose the button beside the one you want.
+
+| Button | When it shows | What it does |
+|---|---|---|
+| **Open** | You are a member of the workspace, invited to it, or its host, and it is running. | Saves the workspace on this computer, connects and joins as your account. The workspace opens. |
+| **Start** | You host the workspace, and it is stopped, for example after the server restarted. | Starts that workspace on the server, and restarts no other, then says "Started chen-lab on Crew {version}.". Then choose **Open**. |
+| **Update Crew** | You host the workspace, it is running, and it runs an older Crew than this Biorouter has. | Updates Crew in your account and restarts that workspace on it, and no other, then says "Restarted chen-lab on Crew {version}.". When other people are connected, Crew asks first: "2 other people are connected. Their running agent commands will stop." A server with a Crew from before account ownership cannot say who is connected, so Crew asks then too: "Other people may be connected. Their running agent commands will stop." Choose **Update and restart**, or **Not now**. |
+
+Until you update it, a running workspace you host that runs an older Crew says so under its row, with the Crew it runs and the one it would restart on, such as "Runs Crew 1.94.1, not 1.94.2." The row also says what **Update Crew** does: "Update Crew restarts it." When other people are or may be connected to it, who is connected follows, such as "2 other people are connected. Their running agent commands will stop." You see this after **Look for workspaces**, after **Update Crew** or **Install Crew** in a note about the Crew in your account (below), because neither restarts a workspace, and on every other row after **Update Crew** or **Start** on one row.
+
+After **Update Crew** or **Start** on a row, that workspace, if it is left on its older Crew, says why under its row, such as "It wasn’t restarted, because 2 other people are connected. Choose Update Crew to restart it anyway." The other rows that run an older Crew keep saying what **Update Crew** does, because nothing tried to restart them. A workspace that runs a newer Crew than the one installed in your account, or keeps its data outside `~/.local/share/biorouter-crew`, is not offered **Update Crew** again, because an update cannot restart it: it reads "It runs Crew {version}, newer than the Crew installed in your account, so it was left running." or "It keeps its state outside ~/.local/share/biorouter-crew, so Crew can’t restart it. Restart it on lab.example.edu yourself." A restart that fails says so under the row, with Crew's reason.
+
+The workspaces are listed by the Crew in your own account on the server. When that Crew cannot list them, the steps end at "Looking for workspaces", marked as failed, with no "Ready", and the dialog says why:
+
+- "Crew {version} in your account on lab.example.edu is too old to list workspaces. Choose Update Crew to update it.", with **Update Crew**.
+- "Crew isn’t installed in your account on lab.example.edu, so Biorouter can’t look for workspaces there. Choose Install Crew to install it.", with **Install Crew**.
+
+Either button installs this Biorouter's Crew in your account and restarts no workspace. The same step then lists the workspaces, so you do not need to choose **Look for workspaces** again. A Biorouter that carries no Crew of its own shows only the reason, after "Crew couldn’t list the workspaces on the server:", with no button. When the listing fails or takes too long, the dialog shows Crew's reason the same way.
+
+When a step ends, and the button you pressed lost the keyboard focus while it ran, Crew puts the focus on that workspace's first button, or on the first workspace found.
+
+A workspace you were removed from has no button, and reads "You were removed from chen-lab. Ask a member to invite you again." When the list is empty, Crew says "There are no workspaces for you on lab.example.edu. To join someone else’s, ask them to invite you."
+
+Crew trusts a workspace found this way because the server vouches for it: it runs in a folder only its host's account controls, as a program running as that account. Check that the host Crew names is the one you expect. When two hosts on the server have a workspace with the same name, Crew says "Two people host a workspace named chen-lab here. Check the host before you open one.", and names each host in the list.
+
+From a terminal, `biorouter crew open chen-lab --server bob@lab.example.edu` does the same ([Open a workspace from a terminal](command-line.md#open-a-workspace-from-a-terminal)).
+
+## Add this computer again
+
+A computer can lose its key for a workspace, for example after you reinstalled the computer or cleared its keychain, or after you removed it in **Keys and security…** ([Your computers](privacy-and-security.md#your-computers)). The connection bar then says one of these, whether Crew finds out when it connects or while a channel is open:
+
+- "This computer no longer has its key for {workspace}. Choose Add this computer again to make a new one."
+- "{workspace} no longer recognizes this computer. Choose Add this computer again while you are still a member."
+- "You removed this computer from {workspace}. Choose Add this computer again to use it here."
+
+To fix it:
+
+1. Choose **Add this computer again** in the connection bar. It reads "Adding this computer…" while it works.
+2. If the server asks for a password or a code, sign in.
+
+Crew makes a new key for this computer and adds it to the workspace as your account. The bar then says "This computer is back in {workspace}. Chats that had Crew access through it need access again." The saved connection stays, with its settings. Grant a chat its access again with `/crew`. **Reconnect** is a different action: it only dials the server again with the key this computer has.
+
+A workspace keeps up to 32 computers for each person. When a new one would be the 33rd, the workspace removes your oldest computer, and the bar adds "To make room, the workspace removed your oldest computer, {fingerprint}."
+
+From a terminal, run `biorouter crew rejoin` ([Add this computer again from a terminal](command-line.md#add-this-computer-again-from-a-terminal)). It needs a current Crew on the server.
+
 ## Add this computer to your existing account
 
-1. Ask your host to invite you with **Add another device for @bob** turned on.
+On a server with a current Crew, use [Open a workspace on a server](#open-a-workspace-on-a-server). Your new computer joins as your account, and you keep your teams and channels. Your host cannot invite you again while you are a member: their Invite dialog says "@bob is already in chen-lab. A new computer of theirs gets in when they open chen-lab on it, signed in to the server as @bob."
+
+On a server with an older Crew:
+
+1. Ask your host to invite you with **Add another computer for @bob** turned on.
 2. On the new computer, join with that invitation, as in [Join from the Biorouter app](#join-from-the-biorouter-app).
 3. Send your host the new code.
 
@@ -189,7 +281,7 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | Main area | What to do |
 |---|---|
 | "chen-lab is offline" with "Couldn’t reach lab.example.edu" | Check your network and VPN. Crew keeps trying. |
-| "Can’t verify lab.example.edu yet" | [Verify the server](#verify-the-server-on-this-computer), then choose **Try again**. Crew has no button to accept a server. |
+| "Can’t verify lab.example.edu yet" | Compare the fingerprint with the one from IT and choose **Trust this key** ([Trust the key in Crew](#trust-the-key-in-crew)), or [verify the server](#verify-the-server-on-this-computer) in a terminal, then choose **Try again**. Crew never trusts a key you have not checked. |
 | "lab.example.edu’s identity changed" | Do not connect. Send IT the text from **Copy details for IT**, then follow [A changed server identity](connections-and-troubleshooting.md#a-changed-server-identity). |
 | "This isn’t the workspace you joined" | Send your host the text from **Copy details**, and wait. |
 | "Crew isn’t set up for your account on lab.example.edu" | Choose **Set up Crew for my account**. See [Install Crew in your server account](#install-crew-in-your-server-account). |
@@ -197,13 +289,16 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | "Crew isn’t running on lab.example.edu" with "The workspace server isn’t running. Once Alice Chen starts Crew, this computer connects by itself within a few minutes, or you can connect now." | The workspace stopped on the server, for example after it restarted. Ask your host to start Crew if they have not. Crew connects by itself within about a minute of the start, or choose **Connect to chen-lab** to try at once. |
 | "It didn’t connect" | Choose **Connect to chen-lab** again. If it repeats, ask your host. The server name may reach a different machine each time. |
 | "You already use this server for {other workspace}…" | One computer uses a server for one institution only. Ask your host. |
+| "This computer no longer has its key for chen-lab…" or "chen-lab no longer recognizes this computer…" | Choose **Add this computer again**. See [Add this computer again](#add-this-computer-again). |
 
 ### Problems while you wait
 
 | Message | What to do |
 |---|---|
+| "You’re no longer in chen-lab", with "You were removed from chen-lab. Ask a member to invite you again." | Your account was removed from the workspace. Ask a member for a new invitation, then join with it. |
+| "chen-lab's server runs an older Crew. Ask @alice to update it." | Opening a workspace by account and **Add this computer again** need a current Crew on the server. Ask your host to update it. A host reads "chen-lab's server runs an older Crew. Update it with biorouter crew setup --server alice@lab.example.edu." and runs that command ([Keep Crew current on the server](hosting-a-workspace.md#keep-crew-current-on-the-server)). |
 | "The code Alice entered doesn’t match this computer…" | Send the same code again. |
-| "You’re not in chen-lab yet" | Send your host the "message to your host" text. If `bob` is wrong, fix **Your server login** in **Connection settings…** and connect again. The card also says "If you were in chen-lab before, ask Alice Chen (@alice) to use Add another device for @bob." Do that if you were a member before, for example if you removed chen-lab from this computer. |
+| "You’re not in chen-lab yet" | Send your host the "message to your host" text, which on a server with a current Crew reads "Hi Alice, please invite @bob to chen-lab in Crew." If `bob` is wrong, fix **Your server login** in **Connection settings…** and connect again. On a server with an older Crew, the card also says "If you were in chen-lab before, ask Alice Chen (@alice) to use Add another computer for @bob." Do that if you were a member before, for example if you removed chen-lab from this computer. |
 | "This invitation expired…" | Ask your host to invite you again. The card returns with the same code. |
 | "Crew isn’t connected to chen-lab…" | Choose **Reconnect**. |
 | "Crew couldn’t check your invitation…" | Wait. If it continues, quit and reopen Biorouter. |
@@ -218,15 +313,15 @@ A red note with **Try again** appears under "Joining chen-lab…".
 | "Your host hasn't let this computer in yet…" | Send your code again. |
 | "You're not invited…", "This invitation expired…" or "Your account on the server changed…" | Ask for a new invitation. An invitation from a member also stops working once that member is removed or the workspace stops being open, so ask the host for one. |
 | "This workspace's server doesn't support joining by invitation yet…" | [Join with a token](#join-with-a-token-on-an-older-server). |
-| "Another member of this workspace already has your username…", "This computer's key is already in this workspace." or "The workspace didn't let this computer join." | Tell your host. |
+| "Another member of this workspace already has your username…", "This computer's key is already in this workspace." or "The workspace didn't let this computer join." | Tell your host. The host reads a sentence of their own instead ([Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role)). |
 
-"You’re no longer in chen-lab" after you joined means your host removed this computer or your account. Ask your host.
+"You’re no longer in chen-lab" after you joined means your host removed your account. Ask your host. On a server with a current Crew, a workspace that only stopped recognizing this computer, while your account is still a member, offers **Add this computer again** instead ([Add this computer again](#add-this-computer-again)).
 
 ## Less common situations
 
 ### Join with a token on an older server
 
-An older Crew server cannot take a code, so Crew shows "Join with an invitation token".
+A Crew server from before codes cannot take a code, so Crew shows "Join with an invitation token".
 
 1. Copy the join request and send it to your host. Its device key is public.
 2. Paste the token your host sends into **Token from an older invitation**. It works once, within an hour.
@@ -237,7 +332,8 @@ If your host asks for a join request, or sends a token, while your code card sho
 ## Related documentation
 
 - [Getting started](getting-started.md): the background service and jump hosts.
-- [Hosting a workspace](hosting-a-workspace.md): your host's side.
+- [Hosting a workspace](hosting-a-workspace.md): your host's side, and keeping Crew current on the server.
+- [Account ownership](design/account-ownership.md): the design behind joining as your server account, for developers.
 - [Teams, channels and people](teams-channels-and-people.md): your name and teams.
 - [Privacy and security](privacy-and-security.md): Private, Public and fingerprints.
 - [Connections and troubleshooting](connections-and-troubleshooting.md): connection problems.

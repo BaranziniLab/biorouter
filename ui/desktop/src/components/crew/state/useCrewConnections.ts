@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type Dispatch,
   type MutableRefObject,
@@ -10,6 +11,7 @@ import { crewHttp, type CrewConnection, type CrewWorkspaceDeleted } from '../cre
 import { classifyConnectFailure } from './connectFailure';
 import { forgetConnectionFailedTasks } from './crewRunStart';
 import { forgetConnectionDrafts, forgetLastChannel, resetBetweenTests } from './draftStash';
+import { changedConnections, useCrewChanged, type CrewChangesDelta } from './useCrewChanges';
 import { forgetViewMemory } from './viewMemory';
 import type {
   ActionKey,
@@ -82,6 +84,12 @@ export const CONNECTIONS_RELOAD_DEBOUNCE_MS = 250;
  * back into view (focus, or the page becoming visible): a connection saved or connected from the
  * terminal (`biorouter crew …`) shares the daemon but not this page, and used to stay invisible
  * until a reload (T-51). A failed background read keeps the list it has.
+ *
+ * It is read again, too, when Crew's change feed says something changed (WI-15): a chat's
+ * `crew__change`, a setup job, another window or the terminal. A connection the change names that
+ * this window had not listed is selected, so a workspace a chat set up shows where it went. A
+ * connection that leaves the list, however it was removed, has what this window remembers about it
+ * forgotten (`forgetConnectionMemory`).
  */
 export function useCrewConnections(generation: MutableRefObject<number>): CrewConnections {
   const [connections, setConnections] = useState<CrewConnection[]>([]);
@@ -89,6 +97,8 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
   const [connectionsState, setConnectionsState] = useState<'loading' | 'loaded' | 'failed'>(
     'loading'
   );
+  // The IDs of the last list applied; `null` before the first.
+  const listed = useRef<string[] | null>(null);
 
   const loadConnections = useCallback(
     async (signal?: AbortSignal, current?: number) => {
@@ -100,6 +110,10 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
       );
       if (signal?.aborted || (current !== undefined && generation.current !== current))
         return undefined;
+      const ids = result.connections.map((item) => item.id);
+      for (const gone of listed.current ?? [])
+        if (!ids.includes(gone)) forgetConnectionMemory(gone);
+      listed.current = ids;
       setConnections(result.connections);
       setConnectionsState('loaded');
       setConnectionId((old) =>
@@ -127,6 +141,19 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
       document.removeEventListener('visibilitychange', reload);
     };
   }, [loadConnections]);
+  useCrewChanged((delta: CrewChangesDelta) => {
+    const before = listed.current;
+    void loadConnections()
+      .then((list) => {
+        if (!list || before === null) return;
+        const added = changedConnections(delta).filter(
+          (id) => !before.includes(id) && list.some((item) => item.id === id)
+        );
+        const newest = added[added.length - 1];
+        if (newest) setConnectionId(newest);
+      })
+      .catch(() => undefined);
+  });
   const markConnectionsFailed = useCallback(
     () => setConnectionsState((state) => (state === 'loaded' ? state : 'failed')),
     []
@@ -398,12 +425,136 @@ export function consumeArrivalConnect(intentId: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Open Crew where a chat's change went (chat parity WI-16)
+// ---------------------------------------------------------------------------------------------
+//
+// SECURITY-SENSITIVE (human review). A chat's "Open in Crew" (a `crew__change` row whose answer
+// names where the change went) and a clicked Crew notification navigate here with `crewSelect`:
+// a connection, and the channel, message or task in it. It only SELECTS. It never connects, and
+// it acts as nobody: a connection that is offline opens offline, and connecting it stays the
+// person's own click. The IDs come from the daemon (a tool's answer, a notification the main
+// process built), never from text a model wrote; they are checked for shape again here, and Crew
+// shows only what its own reads of the daemon find, so an ID Crew does not list selects nothing.
+// Each intent is honoured once (`consumeCrewSelect`), and its highlight is drawn once
+// (`takeCrewSelectHighlight`), so Back to the entry, or a remount, does neither again.
+
+/** The route-state key of a "show this in Crew" request. */
+export const CREW_SELECT_ROUTE_KEY = 'crewSelect';
+
+/** Where a "show this in Crew" request goes: a connection, and in it a channel and its row. */
+export interface CrewSelectTarget {
+  connectionId: string;
+  channelId?: string;
+  /** A message to bring into view and wash once. Only with `channelId`. */
+  messageId?: string;
+  /** One of this computer's tasks to bring into view and wash once. Only with `channelId`. */
+  runId?: string;
+}
+
+export interface CrewSelectIntent extends CrewSelectTarget {
+  intentId: string;
+}
+
+/** An ID as the daemon's change feed accepts one (`changes::id_like`): 1 to 128 of these. */
+const ROUTE_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** Whether `value` has the shape of a daemon ID: a connection's, a channel's, a message's, a task's. */
+export function isCrewRouteId(value: unknown): value is string {
+  return typeof value === 'string' && ROUTE_ID.test(value);
+}
+
+function newSelectIntentId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** `target` with every field that is not an ID dropped, or `null` without a connection. */
+function checkedTarget(target: Partial<CrewSelectTarget>): CrewSelectTarget | null {
+  if (!isCrewRouteId(target.connectionId)) return null;
+  const checked: CrewSelectTarget = { connectionId: target.connectionId };
+  if (!isCrewRouteId(target.channelId)) return checked;
+  checked.channelId = target.channelId;
+  if (isCrewRouteId(target.messageId)) checked.messageId = target.messageId;
+  if (isCrewRouteId(target.runId)) checked.runId = target.runId;
+  return checked;
+}
+
+/**
+ * Route state for `/crew` that selects `target` on arrival, or `null` when `target` names no
+ * connection by an ID. A fresh intent id rides with it.
+ */
+export function crewSelectRouteState(
+  target: Partial<CrewSelectTarget>
+): Record<string, CrewSelectIntent> | null {
+  const checked = checkedTarget(target);
+  if (!checked) return null;
+  return { [CREW_SELECT_ROUTE_KEY]: { intentId: newSelectIntentId(), ...checked } };
+}
+
+/** The "show this in Crew" request in route `state`, checked, or `null`. */
+export function crewSelectIntent(state: unknown): CrewSelectIntent | null {
+  if (!state || typeof state !== 'object') return null;
+  const value = (state as Record<string, unknown>)[CREW_SELECT_ROUTE_KEY];
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const intentId = record.intentId;
+  if (typeof intentId !== 'string' || !intentId || intentId.length > MAX_INTENT_ID_LENGTH)
+    return null;
+  const target = checkedTarget({
+    connectionId: record.connectionId as string | undefined,
+    channelId: record.channelId as string | undefined,
+    messageId: record.messageId as string | undefined,
+    runId: record.runId as string | undefined,
+  });
+  return target ? { intentId, ...target } : null;
+}
+
+const consumedSelects = new Set<string>();
+/** Intents whose move to their connection was already asked for: it is asked once. */
+const movedSelects = new Set<string>();
+const takenSelectHighlights = new Set<string>();
+
+/** Whether the request with `intentId` was already honoured, or given up. */
+export function crewSelectConsumed(intentId: string): boolean {
+  return consumedSelects.has(intentId);
+}
+
+/** Spend the request with `intentId`: it selects nothing again. */
+export function consumeCrewSelect(intentId: string): void {
+  if (intentId) consumedSelects.add(intentId);
+}
+
+/**
+ * Record that the request with `intentId` moved Crew to its connection. Answers whether it had
+ * already: after that one move, a view on another connection is the person's own choice.
+ */
+export function noteCrewSelectMoved(intentId: string): boolean {
+  if (movedSelects.has(intentId)) return true;
+  movedSelects.add(intentId);
+  return false;
+}
+
+/**
+ * Take the request's one highlight. Answers false when it was already drawn, so a timeline that
+ * mounts again (another channel and back) never washes the row a second time.
+ */
+export function takeCrewSelectHighlight(intentId: string): boolean {
+  if (!intentId || takenSelectHighlights.has(intentId)) return false;
+  takenSelectHighlights.add(intentId);
+  return true;
+}
+
 /** Forget what this module remembers. Tests share one module instance per file. */
 export function resetConnectionMemoryForTests(): void {
   quietReobserves.clear();
   verifiedConnections.clear();
   disconnectedHere.clear();
   consumedArrivalConnects.clear();
+  consumedSelects.clear();
+  movedSelects.clear();
+  takenSelectHighlights.clear();
   try {
     window.sessionStorage.removeItem(ARRIVAL_CONNECT_STORAGE_KEY);
   } catch {

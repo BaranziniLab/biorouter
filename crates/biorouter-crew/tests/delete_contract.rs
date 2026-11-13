@@ -596,6 +596,20 @@ fn deleting_the_workspace_leaves_a_tombstone_that_refuses_everything_but_hello()
             "auth.join",
             json!({"public_key": key_hex(&bob.key), "join_id": "x"}),
         ),
+        // Amended for account ownership (AO-2, AO-3): the account path's two pre-authentication
+        // methods are refused behind the same gate.
+        (
+            host_uid(),
+            "auth.account",
+            json!({"public_key": key_hex(&ws.host.key)}),
+        ),
+        (
+            BOB,
+            "auth.account",
+            json!({"public_key": key_hex(&bob.key)}),
+        ),
+        (host_uid(), "account.status", json!({})),
+        (BOB, "account.status", json!({})),
         (BOB, "workspace.snapshot", json!({})),
     ];
     for (uid, method, params) in attempts {

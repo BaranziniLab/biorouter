@@ -252,6 +252,17 @@ describe('InvitePeopleDialog', () => {
     expect(next.textContent).not.toMatch(/expired/);
   });
 
+  it('says how an account gets in when only the saved connection says the server takes accounts', async () => {
+    // No capabilities from a state frame, but the verified hello said account_identity_v1: no
+    // code is sent there, so "sends you a code" would be stale (live L1).
+    renderInvite(undefined, { connections: [{ ...connection, account_identity: true }] });
+    await invite('bob');
+    expect(
+      await screen.findByText(inviteCopy.nextStepAccount('Bob'), { exact: false })
+    ).toBeInTheDocument();
+    expect(screen.queryByText(inviteCopy.nextStep('Bob'), { exact: false })).toBeNull();
+  });
+
   it('says an invitation that has already run out is expired, not a time in the past', async () => {
     renderInvite(undefined, { expiresAt: Math.floor(Date.now() / 1000) - 60 });
     await invite('bob');
@@ -346,7 +357,7 @@ describe('InvitePeopleDialog', () => {
     ).toBeInTheDocument();
     // F3: the broker's "Choose Add device" is kept, and the switch it names is turned on.
     expect(inviteCopy.refusal.alreadyMember('bob', 'lab')).toBe(
-      '@bob is already in lab. To add this computer of theirs, Add another device for @bob is now on: choose Invite again.'
+      '@bob is already in lab. To add this computer of theirs, Add another computer for @bob is now on: choose Invite again.'
     );
     const addDevice = screen.getByRole('switch', { name: inviteCopy.addDevice('bob') });
     await waitFor(() => expect(addDevice).toBeChecked());

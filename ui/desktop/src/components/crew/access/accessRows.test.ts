@@ -92,7 +92,7 @@ describe('status', () => {
     expect(accessStatusOf(grant({ expired: true }), NOW).status).toBe('revoked');
   });
 
-  it('reads a local stop this window saw unconfirmed as Stopped on this device', () => {
+  it('reads a local stop this window saw unconfirmed as Stopped on this computer', () => {
     expect(accessStatusOf(grant({ expired: true }), NOW, true)).toEqual({
       status: 'unconfirmed',
       label: accessCopy.status.unconfirmed,

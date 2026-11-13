@@ -8,6 +8,13 @@ import {
   type TaskModelChoice,
   type TaskModelSource,
 } from '../state/crewTaskModel';
+import { changeOfKind, useCrewChanged } from '../state/useCrewChanges';
+
+/**
+ * The `crew__change` actions that write `CREW_TASK_MODEL`. The daemon writes the configuration
+ * itself, so no window announces it; Crew's change feed does (WI-15).
+ */
+const TASK_MODEL_CHANGES = ['defaults_set', 'defaults_clear'] as const;
 
 /** A provider and one of its models, as the run request names them. */
 export type ModelChoice = TaskModelChoice;
@@ -71,7 +78,8 @@ const EMPTY: ConfiguredModels = {
  *
  * Read again whenever a window announces a write of the app's model selection or of
  * `CREW_TASK_MODEL` (`ConfigContext` announces both), so a change made in Settings reaches a pane
- * or a composer that is already open.
+ * or a composer that is already open; and when Crew's change feed reports a chat setting or
+ * clearing the Crew task model (`defaults_set`, `defaults_clear`), which no window announces.
  */
 export function useConfiguredModels(
   options: { optional?: boolean; enabled?: boolean } = {}
@@ -93,6 +101,12 @@ export function useConfiguredModels(
     if (!wanted) return;
     return subscribeAppModelSelectionChanges(() => setVersion((current) => current + 1));
   }, [wanted]);
+  useCrewChanged(
+    (delta) => {
+      if (changeOfKind(delta, TASK_MODEL_CHANGES)) setVersion((current) => current + 1);
+    },
+    { enabled: wanted }
+  );
 
   useEffect(() => {
     if (!wanted || !getProviders || !read) return;

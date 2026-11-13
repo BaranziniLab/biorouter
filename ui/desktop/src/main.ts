@@ -129,6 +129,7 @@ import {
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { writeFileWithinRoots } from './utils/writeFileWithinRoots';
+import { NativeSaveFileGrants } from './utils/nativeSaveFileGrants';
 import { attachedDaemonKey } from './utils/attachedDaemonKey';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
 import log, { logStartupFailure } from './utils/logger';
@@ -4425,10 +4426,46 @@ ipcMain.handle('check-file-paths', async (event, requests: unknown) => {
   );
 });
 
+const nativeSaveFileGrants = new NativeSaveFileGrants<Electron.WebContents>();
+const nativeSaveOwners = new WeakSet<Electron.WebContents>();
+
+function nativeSaveOwner(event: Electron.IpcMainInvokeEvent): BrowserWindow | undefined {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const frame = event.senderFrame;
+  if (
+    !owner ||
+    owner.isDestroyed() ||
+    windowMap.get(owner.id) !== owner ||
+    owner.webContents !== event.sender ||
+    !frame ||
+    frame !== event.sender.mainFrame ||
+    !isAppOrigin(frame.url, rendererEntryUrl())
+  ) {
+    return undefined;
+  }
+  return owner;
+}
+
+function trackNativeSaveOwner(contents: Electron.WebContents): void {
+  if (nativeSaveOwners.has(contents)) return;
+  nativeSaveOwners.add(contents);
+  contents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) nativeSaveFileGrants.revoke(contents);
+  });
+  contents.on('render-process-gone', () => nativeSaveFileGrants.revoke(contents));
+  contents.once('destroyed', () => nativeSaveFileGrants.revoke(contents));
+}
+
 ipcMain.handle('write-file', async (event, filePath: unknown, content: unknown) => {
   try {
     if (typeof filePath !== 'string') return false;
     const expandedPath = expandBiorouterPath(filePath);
+    if (
+      nativeSaveOwner(event) &&
+      (await nativeSaveFileGrants.write(event.sender, expandedPath, content))
+    ) {
+      return true;
+    }
     await writeFileWithinRoots(expandedPath, content, allowedFileRoots(workingDirForSender(event)));
     return true;
   } catch (error) {
@@ -4525,8 +4562,30 @@ ipcMain.handle('show-message-box', async (_event, options) => {
   return dialog.showMessageBox(options);
 });
 
-ipcMain.handle('show-save-dialog', async (_event, options) => {
-  return dialog.showSaveDialog(options);
+ipcMain.handle('show-save-dialog', async (event, options) => {
+  const owner = nativeSaveOwner(event);
+  if (!owner) return { canceled: true };
+  trackNativeSaveOwner(event.sender);
+  const token = nativeSaveFileGrants.begin(event.sender);
+  try {
+    const parent = panelParent(owner);
+    const result = parent
+      ? await dialog.showSaveDialog(parent, options)
+      : await dialog.showSaveDialog(options);
+    if (nativeSaveOwner(event) !== owner) {
+      nativeSaveFileGrants.revoke(event.sender);
+      return { canceled: true };
+    }
+    const selected = await nativeSaveFileGrants.select(
+      event.sender,
+      token,
+      result.canceled ? undefined : result.filePath
+    );
+    return selected ? result : { canceled: true };
+  } catch (error) {
+    nativeSaveFileGrants.revoke(event.sender);
+    throw error;
+  }
 });
 
 ipcMain.handle(

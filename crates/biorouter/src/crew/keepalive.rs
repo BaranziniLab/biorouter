@@ -217,6 +217,10 @@ pub const MEMBERSHIP_ENDED: &str = "crew_membership_ended";
 /// uses to tell a member from a stranger.
 const MEMBERSHIP_PROBE: &str = "profile.suggest";
 
+/// The membership read of a re-dial on a connection whose account devices this computer
+/// watches (AO-10): the snapshot, whose `actor.devices` is how new devices are seen.
+const DEVICES_PROBE: &str = "workspace.snapshot";
+
 /// The broker's `{code, message}` for a refusal it answered, from the transport's error.
 pub(super) fn broker_refusal(error: &anyhow::Error) -> Option<(String, String)> {
     let text = error.to_string();
@@ -721,18 +725,25 @@ impl CrewManager {
     /// the connection for good, for a device it accepted before ([`Self::end_membership`]).
     /// The `auth.*` requests (and the join door's) are answered before authentication, so
     /// only their success speaks: this device was just enrolled.
+    ///
+    /// `join_door` is the join's and the account join's (AO-9): both send `auth.*` requests
+    /// answered before authentication. `may_end` is `false` when the workspace said the account
+    /// is still its host or a member, or could not say ([`Self::recognize_device`]): only an
+    /// account the workspace calls removed, or a stranger, ends the membership there.
     pub(super) async fn heed_membership(
         &self,
         join_door: bool,
         id: &str,
         method: &str,
         answer: &Result<serde_json::Value>,
+        may_end: bool,
         transport: &Arc<Mutex<transport::Transport>>,
     ) {
         match answer {
             Ok(_) => self.note_member(id),
             Err(error)
-                if !join_door
+                if may_end
+                    && !join_door
                     && !method.starts_with("auth.")
                     && membership_refused(error)
                     && self.was_member(id) =>
@@ -742,6 +753,53 @@ impl CrewManager {
                 }
             }
             Err(_) => {}
+        }
+    }
+
+    /// AO-9: on a server whose `hello` advertises `account_identity_v1`, a person-signed request
+    /// refused as `unauthorized: unknown device` is followed by an unsigned `account.status`.
+    /// While the workspace still calls the account its host or a member, the refusal becomes
+    /// `crew_device_not_recognized`, which Add this computer again repairs, and the membership
+    /// does not end. Only `removed` or `none` may end it ([`Self::heed_membership`]); an answer
+    /// that cannot be read ends nothing. Answers the result to go on with and whether the
+    /// membership may end. Without the capability, and for every other refusal, nothing changes.
+    pub(super) async fn recognize_device(
+        &self,
+        door: super::SignedDoor,
+        id: &str,
+        method: &str,
+        result: Result<serde_json::Value>,
+    ) -> (Result<serde_json::Value>, bool) {
+        let error = match result {
+            Err(error)
+                if matches!(
+                    door,
+                    super::SignedDoor::Generic | super::SignedDoor::WorkspaceDelete
+                ) && !method.starts_with("auth.")
+                    && device_unknown(&error)
+                    && self.offers_account_identity(id) =>
+            {
+                error
+            }
+            other => return (other, true),
+        };
+        match self.account_status_of(id).await {
+            Ok(status) if status.role.is_member() => {
+                let workspace = self.workspace_label(id).await;
+                tracing::info!(
+                    connection = id,
+                    "The Crew workspace no longer knows this device, and still lists this account"
+                );
+                (
+                    Err(error.context(super::CrewRefusal::device_not_recognized(&workspace))),
+                    false,
+                )
+            }
+            Ok(_) => (Err(error), true),
+            Err(status_error) => {
+                tracing::debug!(connection = id, error = %status_error, "Couldn't ask the Crew workspace whether this account is still a member");
+                (Err(error), false)
+            }
         }
     }
 
@@ -846,12 +904,22 @@ impl CrewManager {
     /// revoked while this computer slept or was offline is noticed now rather than at the next
     /// request someone makes. Only for a device the workspace accepted in this process; the
     /// read's refusal, if any, is handled where every signed request's is.
+    ///
+    /// For a connection whose account devices this computer watches, the read is the snapshot
+    /// itself ([`DEVICES_PROBE`]): it is refused for a device the workspace no longer knows
+    /// exactly as [`MEMBERSHIP_PROBE`] is, and it reports a device added while the bridge was
+    /// down (AO-10), still with one request per re-dial.
     pub(super) async fn probe_membership(&self, id: &str) {
         if !self.was_member(id) {
             return;
         }
+        let probe = if self.watches_devices(id).await {
+            DEVICES_PROBE
+        } else {
+            MEMBERSHIP_PROBE
+        };
         if let Err(error) = self
-            .signed_request(id, MEMBERSHIP_PROBE, serde_json::json!({}), None)
+            .signed_request(id, probe, serde_json::json!({}), None)
             .await
         {
             tracing::debug!(connection = id, error = %error, "Crew membership check after a re-dial failed");
@@ -920,6 +988,15 @@ async fn redial_schedule(manager: Weak<CrewManager>, id: String, token: u64, now
     if let Some(manager) = manager.upgrade() {
         manager.disarm_idle_redial_if(&id, token);
     }
+}
+
+/// Whether the workspace refused a person-signed request because it does not know the device
+/// that signed it (`unauthorized: unknown device`), the one refusal AO-9 asks `account.status`
+/// about.
+pub(super) fn device_unknown(error: &anyhow::Error) -> bool {
+    broker_refusal(error).is_some_and(|(code, message)| {
+        code == "unauthorized" && message == "unauthorized: unknown device"
+    })
 }
 
 /// Whether `error` says the workspace's server was not running: SSH and the bridge worked, and

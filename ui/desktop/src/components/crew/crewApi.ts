@@ -105,9 +105,24 @@ export interface Principal {
 export interface CrewDevice {
   fingerprint: string;
   added_at?: number;
-  /** `bootstrap`, `token` or `invitation_code`; empty for a device added before S1a. */
+  /**
+   * `bootstrap`, `token`, `invitation_code` or `account` (a computer that signed in to the server
+   * as the account, account ownership AO-2); empty for a device added before S1a.
+   */
   added_via?: string;
+  /**
+   * Whether this is the key that signed the snapshot request: this computer (AO-5). Absent from a
+   * broker before account ownership. Display only.
+   */
+  this_device?: boolean;
 }
+
+/**
+ * The workspace's server makes a workspace belong to server accounts (account ownership AO-4):
+ * a computer that signs in as the account joins, opens or rejoins with no code. Decides only what
+ * the interface offers; the workspace decides every join.
+ */
+export const ACCOUNT_IDENTITY_CAPABILITY = 'account_identity_v1';
 export interface CrewActor extends Principal {
   devices?: CrewDevice[];
 }
@@ -462,6 +477,8 @@ async function crewHeaders(hasJsonBody: boolean): Promise<Headers> {
 interface CrewOperations {
   GET:
     | PendingSetupGet
+    | Api.CrewSetupJobsData
+    | Api.CrewConnectionAccountData
     | Api.CrewListConnectionsData
     | Api.CrewProfileGrantsData
     | Api.CrewConnectionInvitationData
@@ -494,6 +511,8 @@ interface CrewOperations {
     | Api.CrewTransferStartData
     | Api.CrewTransferPauseData
     | Api.CrewTransferResumeData
+    | Api.CrewConnectionRejoinData
+    | Api.CrewConnectionAcknowledgeDevicesData
     | PendingCrewRoute<'/crew/connections/{id}/workspace/delete'>
     | PendingCrewRoute<'/crew/connections/{id}/context/draft'>;
   PATCH: Api.CrewUpdateConnectionData;
@@ -501,6 +520,7 @@ interface CrewOperations {
     | Api.CrewRemoveConnectionData
     | Api.CrewHostStartCancelData
     | Api.CrewTransferForgetData
+    | Api.CrewProfileRevokeReadData
     | PendingSetupDelete;
 }
 

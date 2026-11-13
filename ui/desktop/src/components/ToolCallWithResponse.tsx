@@ -26,6 +26,14 @@ import {
   NotificationEvent,
 } from '../types/message';
 import { toolIdentifierToTitleCase } from '../utils';
+import { isBrowserSurface } from '../utils/surface';
+import { useNavigate } from 'react-router-dom';
+import { Button } from './ui/button';
+import {
+  crewSelectRouteState,
+  isCrewRouteId,
+  type CrewSelectTarget,
+} from './crew/state/useCrewConnections';
 import { LoadingStatus } from './ui/Dot';
 import { Progress as ProgressBarPrimitive } from './ui/progress';
 import { AlertTriangle } from './icons/app-icons';
@@ -1184,6 +1192,9 @@ const summarizeCrewCall = (
   toolResult: unknown
 ): string => {
   if (toolName === 'connections') return 'Checking this chat’s Crew access';
+  if (toolName === 'read' || toolName === 'change') {
+    return summarizePersonCall(toolName, args, resultRecord(toolResult));
+  }
   if (toolName !== 'request') return 'Using Crew';
   const params = recordOf(args.params) ?? {};
   const result = resultRecord(toolResult);
@@ -1248,6 +1259,247 @@ const summarizeCrewCall = (
       return 'Using Crew';
   }
 };
+
+/**
+ * What a person-tool row names (WI-16): what the call typed, as a row shows a name (hidden
+ * characters out, one line, bounded) and never an ID; a name the daemon's answer carries (a
+ * channel's stored name) comes first.
+ */
+interface CrewRowNames {
+  /** `#methods`, or `#methods in analysis-lab` for a channel typed with its team. */
+  channel: string | null;
+  team: string | null;
+  member: string | null;
+  /** The name a create or a rename gives, the answer's first. */
+  name: string | null;
+  params: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+}
+
+/** A name as a row shows it, or null for nothing, an ID or a machine string. */
+const crewTypedName = (value: unknown): string | null => {
+  const name = crewLabel(value);
+  return name && !MACHINE_VALUE.test(name) ? name : null;
+};
+
+/** `#methods`, or `#methods in analysis-lab` for `analysis-lab/methods`. */
+const crewTypedChannel = (value: unknown): string | null => {
+  const name = crewTypedName(value);
+  if (!name) return null;
+  const slash = name.indexOf('/');
+  const channel = `#${(slash >= 0 ? name.slice(slash + 1) : name).replace(/^#+/, '')}`;
+  return slash > 0 ? `${channel} in ${name.slice(0, slash)}` : channel;
+};
+
+/** "Posting in #general": each `crew__change` action as what it does, by the names it typed. */
+const CREW_CHANGE_ROWS: Readonly<Record<string, (names: CrewRowNames) => string>> = {
+  send: ({ channel }) => (channel ? `Posting in ${channel}` : 'Posting a message'),
+  files_share: ({ channel, params }) => {
+    const file = serverFile(params.path);
+    if (file && channel) return `Sharing ${file} in ${channel}`;
+    return file ? `Sharing ${file}` : 'Sharing a file';
+  },
+  files_reference: ({ channel, params }) => {
+    const file = serverFile(params.path);
+    if (file && channel) return `Posting ${file} from the server in ${channel}`;
+    return 'Posting a file from the server';
+  },
+  files_download: ({ params, result }) => {
+    const file = crewLabel(result?.name) ?? crewTypedName(params.file);
+    return file ? `Downloading ${basename(file)}` : 'Downloading a shared file';
+  },
+  tasks_ask: ({ channel }) => (channel ? `Starting a task in ${channel}` : 'Starting a task'),
+  tasks_cancel: () => 'Stopping a task',
+  channels_create: ({ team, name }) => {
+    const channel = crewTypedChannel(name);
+    if (!channel) return 'Creating a channel';
+    return team ? `Creating ${channel} in ${team}` : `Creating ${channel}`;
+  },
+  channels_rename: ({ channel, name }) => {
+    const renamed = crewTypedChannel(name);
+    if (channel && renamed) return `Renaming ${channel} to ${renamed}`;
+    return channel ? `Renaming ${channel}` : 'Renaming a channel';
+  },
+  channels_archive: ({ channel }) => `Marking ${channel ?? 'a channel'} archived`,
+  channels_join: ({ channel }) => `Adding you to ${channel ?? 'a channel'}`,
+  channels_delete: ({ channel }) => `Deleting ${channel ?? 'a channel'}`,
+  channels_read: ({ channel }) => `Marking ${channel ?? 'a channel'} read`,
+  teams_create: ({ name }) => (name ? `Creating the team ${name}` : 'Creating a team'),
+  teams_rename: ({ team, name }) => {
+    if (team && name) return `Renaming the team ${team} to ${name}`;
+    return team ? `Renaming the team ${team}` : 'Renaming a team';
+  },
+  teams_join: ({ team }) => (team ? `Adding you to the team ${team}` : 'Adding you to a team'),
+  teams_delete: ({ team }) => (team ? `Deleting the team ${team}` : 'Deleting a team'),
+  members_add: ({ member, team, params }) => {
+    const channels = Array.isArray(params.channels) ? params.channels : [];
+    const where = team
+      ? `the team ${team}`
+      : channels.length === 1
+        ? crewTypedChannel(channels[0])
+        : channels.length > 1
+          ? `${channels.length} channels`
+          : null;
+    if (member && where) return `Adding ${member} to ${where}`;
+    return member ? `Adding ${member}` : 'Adding a member';
+  },
+  invites_send: ({ member, channel, team }) => {
+    const where = channel ?? (team ? `the team ${team}` : null);
+    if (!member) return 'Sending an invitation';
+    return where
+      ? `Sending ${member} an invitation to ${where}`
+      : `Sending ${member} an invitation`;
+  },
+  invites_accept: ({ params }) => {
+    const typed = crewTypedName(params.invitation);
+    const what = typed?.startsWith('#') || typed?.includes('/') ? crewTypedChannel(typed) : typed;
+    return what ? `Using your invitation to ${what}` : 'Using your invitation';
+  },
+  ownership_offer: ({ channel, params }) => {
+    const successor = crewTypedName(params.successor);
+    if (successor && channel) return `Sending ${successor} an offer to own ${channel}`;
+    return 'Sending an offer of ownership';
+  },
+  ownership_accept: ({ channel }) =>
+    channel ? `Setting you as the owner of ${channel}` : 'Setting you as a channel’s owner',
+  remove_member: ({ member, channel }) => {
+    if (member && channel) return `Removing ${member} from ${channel}`;
+    return member ? `Removing ${member}` : 'Removing a member';
+  },
+};
+
+/** "Reading #general": each `crew__read` action a row is often seen for, by what it typed. */
+const CREW_READ_ROWS: Readonly<Record<string, (names: CrewRowNames) => string>> = {
+  history: ({ channel }) => `Reading ${channel ?? 'channel messages'}`,
+  search: ({ channel, params }) => {
+    const query = summarizeSearchQuery(textOf(params.query));
+    const where = channel ?? 'Crew';
+    return query ? `Searching ${where} for ${query}` : `Searching ${where}`;
+  },
+  status: () => 'Checking Crew',
+  describe: () => 'Checking a Crew action',
+  channels_list: () => 'Listing channels',
+  teams_list: () => 'Listing teams',
+  members: () => 'Listing members',
+  files_list: ({ channel }) => (channel ? `Listing files in ${channel}` : 'Listing shared files'),
+  tasks_list: () => 'Listing tasks',
+  tasks_watch: () => 'Watching a task',
+  context_show: () => 'Reading the workspace context',
+};
+
+/** A `crew__read` or `crew__change` call as the action it is (WI-16). No ID is ever shown. */
+const summarizePersonCall = (
+  toolName: 'read' | 'change',
+  args: Record<string, unknown>,
+  result: Record<string, unknown> | null
+): string => {
+  const action = textOf(args.action);
+  const rows = toolName === 'change' ? CREW_CHANGE_ROWS : CREW_READ_ROWS;
+  const row = action && Object.prototype.hasOwnProperty.call(rows, action) ? rows[action] : null;
+  if (!row) return toolName === 'change' ? 'Using Crew' : 'Reading Crew';
+  const params = recordOf(args.params) ?? {};
+  return row({
+    channel: crewTypedChannel(params.channel),
+    team: crewTypedName(params.team),
+    member: crewTypedName(params.member),
+    name: crewTypedName(result?.name) ?? crewTypedName(params.name),
+    params,
+    result,
+  });
+};
+
+/** Changes whose answer names a connection that is gone once they ran. */
+const CREW_CHANGES_THAT_REMOVE_A_CONNECTION = new Set(['connections_remove', 'workspace_delete']);
+
+/** The connection a change's answer names: its own, or a saved connection's or setup job's. */
+const answeredConnection = (result: Record<string, unknown>): string | null => {
+  for (const value of [
+    result.connection_id,
+    recordOf(result.connection)?.id,
+    recordOf(result.outcome)?.connection_id,
+  ]) {
+    if (isCrewRouteId(value)) return value;
+  }
+  return null;
+};
+
+/**
+ * Where a finished `crew__change` row's "Open in Crew" goes (WI-16): built from the IDs the
+ * daemon's answer carries and nothing else, never from what the call typed, and only IDs of the
+ * daemon's shape (`isCrewRouteId`). The channel the change went to, and in it the message it
+ * posted or the task it started; a deletion opens the workspace, not what it removed. `null`
+ * when the answer names no connection, or one the change removed.
+ */
+export function crewChangeTarget(
+  action: unknown,
+  result: Record<string, unknown> | null
+): CrewSelectTarget | null {
+  if (!result || typeof action !== 'string') return null;
+  if (CREW_CHANGES_THAT_REMOVE_A_CONNECTION.has(action)) return null;
+  const connectionId = answeredConnection(result);
+  if (!connectionId) return null;
+  if (result.deleted === true) return { connectionId };
+  const channelId = isCrewRouteId(result.channel_id)
+    ? result.channel_id
+    : action === 'teams_create' && isCrewRouteId(result.general_channel_id)
+      ? result.general_channel_id
+      : null;
+  if (!channelId) return { connectionId };
+  const target: CrewSelectTarget = { connectionId, channelId };
+  if (isCrewRouteId(result.message_id)) target.messageId = result.message_id;
+  if (isCrewRouteId(result.run_id)) target.runId = result.run_id;
+  return target;
+}
+
+/** The task's own chat a `tasks_ask` answer names, for "Open task chat", or `null`. */
+export function crewTaskChat(
+  action: unknown,
+  result: Record<string, unknown> | null
+): string | null {
+  if (action !== 'tasks_ask' || !result) return null;
+  return isCrewRouteId(result.session_id) ? result.session_id : null;
+}
+
+const CREW_ROW_COPY = {
+  openInCrew: 'Open in Crew',
+  openTaskChat: 'Open task chat',
+} as const;
+
+/**
+ * "Open in Crew" and "Open task chat" beside a finished `crew__change` row (WI-16), as the
+ * timeline's task row opens its chat. Each is a person's click: "Open in Crew" selects where the
+ * change went (`crewSelectRouteState`, minted on the click) and connects nothing.
+ */
+function CrewChangeLinks({
+  target,
+  taskChat,
+}: {
+  target: CrewSelectTarget | null;
+  taskChat: string | null;
+}) {
+  const navigate = useNavigate();
+  const openInCrew = () => {
+    const state = target ? crewSelectRouteState(target) : null;
+    if (state) navigate('/crew', { state });
+  };
+  const openTaskChat = () => {
+    if (taskChat) navigate(`/pair?resumeSessionId=${encodeURIComponent(taskChat)}`);
+  };
+  return (
+    <span className="flex shrink-0 items-center gap-1" data-testid="crew-change-links">
+      {target && (
+        <Button type="button" variant="ghost" size="xs" onClick={openInCrew}>
+          {CREW_ROW_COPY.openInCrew}
+        </Button>
+      )}
+      {taskChat && (
+        <Button type="button" variant="ghost" size="xs" onClick={openTaskChat}>
+          {CREW_ROW_COPY.openTaskChat}
+        </Button>
+      )}
+    </span>
+  );
+}
 
 const summarizeBrowserTabs = (args: Record<string, unknown>): string => {
   const action = namedArgument(args, ['action']);
@@ -1730,6 +1982,17 @@ function ToolCallView({
 
   const toolCallStatus = getToolCallStatus(loadingStatus);
   const toolSummary = summarizeToolCall(toolCall, toolResponse?.toolResult);
+  // Where a Crew change went, from the daemon's answer (WI-16): only in the person's own chat on
+  // the desktop, where Crew is and the click is theirs. A saved or shared transcript has no chat.
+  const crewLinks = (() => {
+    if (toolCall.name !== 'crew__change' || loadingStatus !== 'success' || !sessionId) return null;
+    if (isBrowserSurface()) return null;
+    const answer = resultRecord(toolResponse?.toolResult);
+    const action = toolCall.arguments?.action;
+    const target = crewChangeTarget(action, answer);
+    const taskChat = crewTaskChat(action, answer);
+    return target || taskChat ? <CrewChangeLinks target={target} taskChat={taskChat} /> : null;
+  })();
   // The verb carries the state ("Running ls", "Ran ls", "Failed to run ls",
   // "Stopped running ls"), so the row needs no suffix. The one exception is a
   // real progress message from a tool that is still working: issue #72's shell
@@ -1946,8 +2209,13 @@ function ToolCallView({
       onOpenChange={setOpenChoice}
       triggerClassName="br-tool-disclosure"
       trailing={
-        providerExecution === 'child' ? (
-          <InfoTip label={TOOL_ROW_COPY.notGatedName} help={TOOL_ROW_COPY.notGatedHelp} />
+        providerExecution === 'child' || crewLinks ? (
+          <>
+            {providerExecution === 'child' && (
+              <InfoTip label={TOOL_ROW_COPY.notGatedName} help={TOOL_ROW_COPY.notGatedHelp} />
+            )}
+            {crewLinks}
+          </>
         ) : undefined
       }
     >

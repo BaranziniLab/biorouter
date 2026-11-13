@@ -146,6 +146,12 @@ export const sidebarCopy = {
      * word of the name on their server account, else `@username` — never "they" (Q4-36).
      */
     nextStep: (who: string) => `Let in… when ${who} sends a code`,
+    /**
+     * On a server whose workspaces belong to accounts (account ownership, "Desktop"): the joiner
+     * gets in by opening the workspace while signed in to the server as themselves. Let in… stays
+     * beside it for a joiner whose older Biorouter still shows a code.
+     */
+    nextStepAccount: (username: string) => `Waiting for @${username} to open the workspace`,
     letIn: 'Let in…',
     letInLabel: (username: string) => `Let @${username} in`,
     /**
@@ -333,6 +339,8 @@ export const sidebarCopy = {
     switchWorkspace: 'Switch workspace',
     add: 'Add a workspace',
     addJoin: 'Join a workspace…',
+    /** Account ownership: a workspace the account hosts or belongs to, found by signing in. */
+    addOpen: 'Open a workspace on a server…',
     addHost: 'Host a new workspace…',
   },
 

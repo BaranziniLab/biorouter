@@ -292,6 +292,11 @@ pub fn render_message(message: &Message, debug: bool) {
                             .join(", ")
                     )
                 }
+                // The step's kind only: this line reaches a terminal that may be piped or
+                // logged, and the card is the person's to take in its own window.
+                ActionRequiredData::CrewStep { step, .. } => {
+                    println!("action_required(crew_step): {}", step.kind())
+                }
             },
             MessageContent::Text(text) => print_markdown(&text.text, theme),
             MessageContent::ToolRequest(req) => render_tool_request(req, theme, debug),

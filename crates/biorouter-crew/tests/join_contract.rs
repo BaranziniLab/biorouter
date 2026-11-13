@@ -86,6 +86,46 @@ fn a_journal_with_a_join_added_and_removed_replays_without_the_feature() {
     ws.host_team("Methods");
 }
 
+/// A broker built without `join-by-name` stands for one that predates account ownership
+/// (AO-4): it neither advertises `account_identity_v1` nor accepts `auth.account`,
+/// `account.status` or `device.revoke`, so a daemon that finds the capability missing falls
+/// back to the device-code join, and nothing it sends there is written.
+#[cfg(not(feature = "join-by-name"))]
+#[test]
+fn a_broker_without_the_feature_neither_advertises_nor_accepts_the_account_path() {
+    let capabilities = biorouter_crew::Broker::capabilities();
+    assert!(!capabilities.contains(&"account_identity_v1"));
+    assert!(!capabilities.contains(&"join_by_name_v1"));
+    let mut ws = Workspace::new("account-without-feature");
+    let journal = ws.journal_bytes();
+    let mut laptop = Member::new(host_uid(), key(50));
+    let params = json!({"public_key": key_hex(&laptop.key)});
+    let (code, message) = refused(signed_raw(
+        &mut ws.broker,
+        &mut laptop,
+        "auth.account",
+        params,
+    ));
+    assert_eq!(
+        (code.as_str(), message.as_str()),
+        ("unauthorized", "unauthorized: unknown device")
+    );
+    let (_, message) = refused(ws.broker.handle(
+        71_001,
+        &mut biorouter_crew::Connection::new(),
+        request("status", "account.status", json!({})),
+    ));
+    assert_eq!(message, "unauthorized: signed device required");
+    let params = json!({"fingerprint": fingerprint(&ws.host.key)});
+    let (_, message) = refused(ws.host_call("device.revoke", params));
+    assert_eq!(
+        message,
+        "unsupported: operation is not supported by this broker"
+    );
+    assert_eq!(ws.journal_bytes(), journal);
+    ws.host_snapshot();
+}
+
 #[cfg(feature = "join-by-name")]
 mod join {
     use super::*;
@@ -675,6 +715,10 @@ mod join {
         let (code, message) = refused(bob.claim(&mut ws.broker, &join_id));
         assert_eq!(code, "code_mismatch");
         assert!(!message.contains(&bob.code()) && !message.contains(&other.code()));
+        assert_eq!(
+            message,
+            "code_mismatch: The host hasn't let this computer in. Send the host the code shown on your screen."
+        );
         assert_eq!(ws.journal_bytes(), journal, "a mismatch writes nothing");
         assert!(!is_device(&mut ws, BOB, &bob.member.key));
 
@@ -825,7 +869,11 @@ mod join {
         let mut bob_laptop = ws.enroll(BOB, "bob", 40);
         let (code, message) = refused(invite(&mut ws, "bob"));
         assert_eq!(code, "already_member");
-        assert!(message.contains("Add device"), "{message}");
+        // C1: it names the desktop's control, Add another computer.
+        assert_eq!(
+            message,
+            "already_member: @bob is already a member. To add another computer for them, choose Add another computer."
+        );
         let invited = ok(ws.host_call(
             "enrollment.invite",
             json!({"username": "bob", "add_device": true}),
@@ -845,11 +893,15 @@ mod join {
         ws.snapshot(&mut bob_laptop);
         // Adding a device to someone who is not a member is refused.
         ws.directory.set(CAROL, "carol", None);
-        let (code, _) = refused(ws.host_call(
+        let (code, message) = refused(ws.host_call(
             "enrollment.invite",
             json!({"username": "carol", "add_device": true}),
         ));
         assert_eq!(code, "invalid_params");
+        assert_eq!(
+            message,
+            "invalid_params: @carol is not a member yet. Turn off Add another computer, then invite them."
+        );
     }
 
     #[test]

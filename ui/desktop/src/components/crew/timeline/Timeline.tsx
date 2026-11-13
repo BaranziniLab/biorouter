@@ -9,6 +9,7 @@ import {
   type KeyboardEvent,
   type MutableRefObject,
 } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Button } from '../../ui/button';
 import { ScrollArea, type ScrollAreaHandle } from '../../ui/scroll-area';
 import { cn } from '../../../utils';
@@ -16,6 +17,7 @@ import type { Channel, CrewMessage, CrewMessagePeople, ObservedRun, Snapshot } f
 import { channelSlug, usePeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewFrameLabels } from '../state/types';
+import { crewSelectIntent, takeCrewSelectHighlight } from '../state/useCrewConnections';
 import { ChannelIntro } from './ChannelIntro';
 import { timelineCopy } from './copy';
 import { DayDivider } from './DayDivider';
@@ -176,6 +178,26 @@ function prefersReducedMotion(): boolean {
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches
   );
+}
+
+/** The one-shot wash a row a person was just sent to takes (`crew-app.css`). */
+const HIGHLIGHT_CLASS = 'crew-highlight';
+
+/**
+ * Wash a message row once, as a task row is washed: add the class, and take it off when the wash
+ * ends (`animationend` fires under reduced motion too, the rest there being a hold). Set on the
+ * element the row registered (`registerRow`), because the message rows draw no highlight of their
+ * own; their `className` is a constant, so React never rewrites it while the wash runs. A row that
+ * mounts again meanwhile (its group regrouped) simply ends its wash early.
+ */
+function washMessageRow(row: HTMLElement): void {
+  row.classList.add(HIGHLIGHT_CLASS);
+  const end = (event: Event) => {
+    if (event.target !== row) return;
+    row.classList.remove(HIGHLIGHT_CLASS);
+    row.removeEventListener('animationend', end);
+  };
+  row.addEventListener('animationend', end);
 }
 
 /**
@@ -778,6 +800,31 @@ function ChannelTimeline({
     setHighlighted((current) => (current === runId ? null : current));
     highlightDone.current?.();
   }, []);
+
+  // ── A chat's "Open in Crew" (WI-16) ─────────────────────────────────────
+  // The request in route state (`crewSelect`) may name a message, or one of this computer's
+  // tasks, in this channel. Once the opening has arrived and the row is drawn, it is brought into
+  // view and washed once (`takeCrewSelectHighlight`): a task row through `highlighted`, as the
+  // layout's highlight is, and a message row through its registered element (`washMessageRow`).
+  // A read-only view, or a timeline of another connection or channel, draws nothing.
+  const location = useLocation();
+  const routed = crewSelectIntent(location.state);
+  const routedHere =
+    !readOnly && routed?.connectionId === crew.connectionId && routed?.channelId === channel.id
+      ? routed
+      : null;
+  const routedIntent = routedHere?.intentId ?? null;
+  const routedRun = routedHere?.runId ?? null;
+  const routedMessage = routedHere?.messageId ?? null;
+  useEffect(() => {
+    if (!routedIntent || !opened) return;
+    const runRow = routedRun ? taskRows.current.get(routedRun) : undefined;
+    const row = runRow ?? (routedMessage ? rowsByMessage.current.get(routedMessage) : undefined);
+    if (!row || !takeCrewSelectHighlight(routedIntent)) return;
+    row.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    if (runRow && routedRun) setHighlighted(routedRun);
+    else washMessageRow(row);
+  }, [routedIntent, routedRun, routedMessage, opened, days]);
 
   // ── Where the post on its way is drawn ─────────────────────────────────
   // As the message will be once it lands, so nothing moves then (Q4-19): under today's band when

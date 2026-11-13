@@ -512,7 +512,14 @@ impl BridgeGrant {
         child_call_id: Option<String>,
     ) -> Result<CallToolResult, String> {
         let name = call.name.to_string();
-        let result = self.call(call).await?;
+        // D3: a person tool's host keys each change on the call's id, and the child's own id
+        // is the one it sends again when it retries, so a retried change is made once.
+        let result = crate::agents::crew_extension::with_bridged_call_id(
+            &name,
+            child_call_id.as_deref(),
+            self.call(call),
+        )
+        .await?;
         let (guarded, summary) =
             guard_tool_result(Ok(result), Some(name.as_str()), self.tool_output_guardrail);
         if let Some(summary) = &summary {
@@ -1538,6 +1545,69 @@ mod tests {
             "the full result, annotations and all, is kept for the transcript"
         );
         assert_eq!(take_recorded_result(lease.url(), "toolu_7"), None);
+    }
+
+    /// A dispatcher that keeps the tool-call id each dispatched call ran under.
+    #[derive(Default)]
+    struct CallIdSpy(std::sync::Mutex<Vec<(String, Option<String>)>>);
+
+    #[async_trait::async_trait]
+    impl BridgeToolDispatch for CallIdSpy {
+        async fn dispatch(
+            &self,
+            _session_id: &str,
+            call: CallToolRequestParams,
+            _capability: CallCapability,
+            _cancel: CancellationToken,
+        ) -> Result<CallToolResult, String> {
+            let id = crate::crew::tool_host::current_tool_call_id();
+            self.0.lock().unwrap().push((call.name.to_string(), id));
+            Ok(CallToolResult::success(vec![]))
+        }
+    }
+
+    /// D3: a bridged person-tool call reaches the host under the child's own id for the call,
+    /// so a retried change carries the same idempotency key and is made once. Any other tool,
+    /// or a call the child named no id for, runs under none.
+    #[tokio::test]
+    async fn a_bridged_person_tool_call_runs_under_the_child_s_own_call_id() {
+        publish_base_url("http://127.0.0.1:65535");
+        let spy = Arc::new(CallIdSpy::default());
+        let mut grant = dummy_grant();
+        grant.tools = ["crew__change", "developer__shell"]
+            .into_iter()
+            .map(|name| Tool::new(name, "test tool", serde_json::Map::new()))
+            .collect();
+        grant.dispatcher = spy.clone();
+        grant.inspections = Arc::new(inspections_with(&grant.hooks, false));
+        let lease = issue(grant).expect("a base URL is published");
+        let grant = lookup(lease.url().rsplit('/').next().unwrap()).unwrap();
+        let call = |name: &'static str| CallToolRequestParams {
+            name: name.into(),
+            arguments: Some(serde_json::Map::new()),
+            meta: None,
+            task: None,
+        };
+        for (name, id) in [
+            ("crew__change", Some("toolu_01AbC")),
+            ("crew__change", Some("toolu_01AbC")),
+            ("crew__change", None),
+            ("developer__shell", Some("toolu_02")),
+        ] {
+            grant
+                .call_for_child(call(name), id.map(str::to_owned))
+                .await
+                .expect("approved in Auto mode");
+        }
+        assert_eq!(
+            *spy.0.lock().unwrap(),
+            [
+                ("crew__change".to_owned(), Some("toolu_01AbC".to_owned())),
+                ("crew__change".to_owned(), Some("toolu_01AbC".to_owned())),
+                ("crew__change".to_owned(), None),
+                ("developer__shell".to_owned(), None),
+            ]
+        );
     }
 
     /// **A2: the transcript says the same thing whichever provider ran the call.**

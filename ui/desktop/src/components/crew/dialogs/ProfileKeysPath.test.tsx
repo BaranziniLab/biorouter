@@ -103,7 +103,7 @@ describe('KeysDialog', () => {
     const fingerprint = groupedFingerprint((await workspaceKeyFingerprint(connection.public_key))!);
     expect(await screen.findByText(fingerprint)).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Copy this device’s fingerprint' })
+      screen.getByRole('button', { name: 'Copy this computer’s fingerprint' })
     ).toBeInTheDocument();
     // The 64-hex key is a machine string: nowhere on screen (QA T-33).
     expect(document.body.textContent).not.toContain(connection.public_key);
