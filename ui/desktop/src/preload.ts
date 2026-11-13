@@ -386,7 +386,7 @@ type ElectronAPI = {
             generation: number;
             pressedAtEpochMs: number;
           }
-        | { type: 'stop' | 'cancel' }
+        | { type: 'stop' | 'cancel' | 'retry' | 'drop' }
     ) => void
   ) => () => void;
   onDictationAnywhereReview?: (
@@ -394,6 +394,8 @@ type ElectronAPI = {
       text?: string;
       message?: string;
       confirmPrivate?: boolean;
+      /** **Retry** shows: a failed recording is held for it (`dictationAnywhereReviewRetry`). */
+      retry?: boolean;
       expiresAt: number | null;
       revision: number;
     }) => void
@@ -403,9 +405,12 @@ type ElectronAPI = {
     text?: string;
     message: string;
     confirmPrivate: boolean;
+    retry?: boolean;
     expiresAt: number | null;
     revision: number;
   } | null>;
+  /** The review card's **Retry**: transcribe the held recording again; `false` when none is held. */
+  dictationAnywhereReviewRetry?: () => Promise<boolean>;
   dictationAnywherePrivateChoice?: (include: boolean) => Promise<boolean>;
   setDictationBusy?: (busy: boolean) => void;
   onDictationLockScreen?: (callback: () => void) => () => void;
@@ -917,6 +922,7 @@ const electronAPI: ElectronAPI = {
   },
   dictationAnywhereReviewCopy: () => ipcRenderer.invoke('dictation:anywhere:review-copy'),
   dictationAnywhereReviewGet: () => ipcRenderer.invoke('dictation:anywhere:review-get'),
+  dictationAnywhereReviewRetry: () => ipcRenderer.invoke('dictation:anywhere:review-retry'),
   dictationAnywherePrivateChoice: (include) =>
     ipcRenderer.invoke('dictation:anywhere:private-choice', include),
   setDictationBusy: (busy: boolean) => ipcRenderer.send('dictation:busy', busy === true),

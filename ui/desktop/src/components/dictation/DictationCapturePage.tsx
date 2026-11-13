@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { startCapture, type Capture } from './capture';
-import { createDictationStream, type DictationStream } from './transport';
+import { createDictationStream, DictationStreamError, type DictationStream } from './transport';
 import {
   ensureDictationStatus,
   getDictationStatusSnapshot,
@@ -11,6 +11,8 @@ import {
   sameCaptureOperation,
   elapsedFromPress,
   abortFinishingStream,
+  keepsFailedRecording,
+  HELD_FOR_RETRY_MS,
   type AnywhereSource,
 } from '../../utils/dictationAnywhere';
 
@@ -23,7 +25,11 @@ type CaptureCommand =
       pressedAtEpochMs: number;
     }
   | { type: 'stop' }
-  | { type: 'cancel' };
+  | { type: 'cancel' }
+  /** **Retry** on the review card: transcribe the held recording again. */
+  | { type: 'retry' }
+  /** The hold ended in main (time out, the card closed, a new dictation, Off): drop the audio. */
+  | { type: 'drop' };
 
 type CaptureReply =
   | { type: 'started'; firstFrameMs?: number }
@@ -32,7 +38,8 @@ type CaptureReply =
       transcript: Awaited<ReturnType<DictationStream['finish']>>;
       stopToTextMs: number;
     }
-  | { type: 'failed'; reason: string }
+  /** `held`: the recording is kept for **Retry** (`keepsFailedRecording`). */
+  | { type: 'failed'; reason: string; held?: boolean }
   | { type: 'cancelled' };
 
 export default function DictationCapturePage() {
@@ -48,9 +55,43 @@ export default function DictationCapturePage() {
     let starting = false;
     let stopRequested = false;
     let mainGeneration = 0;
+    let startedFrom: AnywhereSource | null = null;
+    // A failed recording kept for **Retry**, as the composer keeps one (`keepForRetry` in
+    // `dictationSession.ts`): its stream, which holds the audio already sent, and the timer that
+    // drops it. Main owns the hold and says `drop` when it ends; this page drops the audio at the
+    // same deadline on its own as well, so the audio never outlives it, whatever main does.
+    let held: { stream: DictationStream; timer: ReturnType<typeof setTimeout> } | null = null;
     const reply = (value: CaptureReply, token = generation) => {
       if (token === generation)
         window.electron.dictationAnywhereCaptureReply?.({ ...value, generation: mainGeneration });
+    };
+
+    /** Drop a held recording: `DELETE` the stream and zero its audio. */
+    const drop = () => {
+      if (!held) return;
+      clearTimeout(held.timer);
+      void held.stream.cancel();
+      held = null;
+    };
+
+    /**
+     * A finish or a retry failed. A tray or shortcut dictation whose failure the stream can send
+     * again keeps its recording for **Retry**; anything else drops it at once.
+     */
+    const fail = (token: number, failed: DictationStream, error: unknown) => {
+      const current = sameCaptureOperation(token, generation, cancelled);
+      const retryable = error instanceof DictationStreamError && error.retryable;
+      if (current && keepsFailedRecording(startedFrom, retryable)) {
+        drop();
+        const timer = setTimeout(() => {
+          if (held?.stream === failed) drop();
+        }, HELD_FOR_RETRY_MS);
+        held = { stream: failed, timer };
+        reply({ type: 'failed', reason: 'engine-failed', held: true });
+        return;
+      }
+      void failed.cancel();
+      if (current) reply({ type: 'failed', reason: 'engine-failed' });
     };
 
     const start = async (
@@ -60,8 +101,11 @@ export default function DictationCapturePage() {
       pressedAtEpochMs: number
     ) => {
       if (capture || stream || starting) return;
+      // A new dictation ends any hold; main sends `drop` first as well.
+      drop();
       const token = ++generation;
       mainGeneration = commandGeneration;
+      startedFrom = source;
       starting = true;
       cancelled = false;
       stopRequested = false;
@@ -136,12 +180,38 @@ export default function DictationCapturePage() {
         if (!sameCaptureOperation(token, generation, cancelled)) return;
         currentStream.release();
         reply({ type: 'finished', transcript, stopToTextMs: performance.now() - stoppedAt });
-      } catch {
-        void currentStream.cancel();
-        if (sameCaptureOperation(token, generation, cancelled))
-          reply({ type: 'failed', reason: 'engine-failed' });
+      } catch (error) {
+        fail(token, currentStream, error);
       } finally {
         if (finishingStream === currentStream) finishingStream = null;
+        if (token === generation) setPhase('idle');
+      }
+    };
+
+    /** **Retry**: the held audio into a new stream, then the transcript, as a first finish. */
+    const retry = async () => {
+      if (capture || stream || starting || finishingStream) return;
+      const kept = held;
+      if (!kept) {
+        // The hold ended here first: there is nothing to send again.
+        reply({ type: 'failed', reason: 'engine-failed' });
+        return;
+      }
+      clearTimeout(kept.timer);
+      held = null;
+      const token = generation;
+      finishingStream = kept.stream;
+      setPhase('transcribing');
+      const retriedAt = performance.now();
+      try {
+        const transcript = await kept.stream.retry();
+        if (!sameCaptureOperation(token, generation, cancelled)) return;
+        kept.stream.release();
+        reply({ type: 'finished', transcript, stopToTextMs: performance.now() - retriedAt });
+      } catch (error) {
+        fail(token, kept.stream, error);
+      } finally {
+        if (finishingStream === kept.stream) finishingStream = null;
         if (token === generation) setPhase('idle');
       }
     };
@@ -151,6 +221,7 @@ export default function DictationCapturePage() {
       cancelled = true;
       starting = false;
       stopRequested = false;
+      drop();
       capture?.cancel();
       void stream?.cancel();
       abortFinishingStream(finishingStream);
@@ -172,6 +243,8 @@ export default function DictationCapturePage() {
         );
       if (command.type === 'stop') void stop();
       if (command.type === 'cancel') cancel();
+      if (command.type === 'retry') void retry();
+      if (command.type === 'drop') drop();
     });
     const removeLock = window.electron.onDictationLockScreen?.(() => void stop());
     window.electron.dictationAnywhereCaptureReady?.();
@@ -180,6 +253,7 @@ export default function DictationCapturePage() {
       removeLock?.();
       generation += 1;
       cancelled = true;
+      drop();
       capture?.cancel();
       void stream?.cancel();
       abortFinishingStream(finishingStream);

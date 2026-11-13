@@ -431,6 +431,41 @@ describe('phases and names', () => {
     expect(mic()).toBeDisabled();
     expect(mic()).toHaveAccessibleName(DICTATION_MESSAGES['MSG-POLICY']);
   });
+
+  // Checklist row S17.4: an external backend's status carries the backend host's policy, so this
+  // computer's own comes from Electron main, and the microphone says it before a press.
+  it("stays disabled with this computer's policy sentence when only the laptop's policy turns capture off", async () => {
+    const reason = DICTATION_MESSAGES['MSG-POLICY-CAPTURE'];
+    Object.assign(window, {
+      electron: {
+        platform: 'darwin',
+        dictationAnywhereGet: vi.fn(async () => ({
+          enabled: false,
+          shortcut: null,
+          disclosureShown: false,
+          tray: true,
+          gnomeWayland: false,
+          captureAllowed: false,
+          capturePolicyReason: 'MSG-POLICY-CAPTURE',
+        })),
+      },
+    });
+    render(<Host />);
+    fireEvent.focus(screen.getByTestId('field'));
+    await settle();
+    expect(mic()).toHaveAttribute('data-dictation-phase', 'unavailable');
+    expect(mic()).toBeDisabled();
+    expect(mic()).toHaveAccessibleName(reason);
+    fireEvent.keyDown(screen.getByTestId('field'), {
+      code: 'KeyD',
+      key: 'D',
+      metaKey: true,
+      shiftKey: true,
+    });
+    await settle();
+    expect(captures).toHaveLength(0);
+    expect(getDictationSnapshot().notice?.text).toBe(reason);
+  });
 });
 
 describe('gestures', () => {

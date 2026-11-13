@@ -2,6 +2,12 @@ import type { StreamRequest, Transcript } from '../components/dictation/dictatio
 
 export const DEFAULT_ANYWHERE_SHORTCUT = 'CommandOrControl+Alt+Shift+D';
 export const REVIEW_TEXT_MS = 5 * 60 * 1000;
+/**
+ * How long a failed clipboard dictation keeps its recording for **Retry**: the composer's
+ * `KEEP_FAILED_MS` (`components/dictation/dictationSession.ts`), which this module cannot import
+ * because Electron main imports it. `dictationAnywhere.test.ts` holds the two equal.
+ */
+export const HELD_FOR_RETRY_MS = 5 * 60 * 1000;
 
 export type AnywhereSource = 'tray' | 'shortcut' | 'preview';
 export type AnywherePhase = 'off' | 'idle' | 'arming' | 'recording' | 'transcribing' | 'review';
@@ -85,6 +91,17 @@ export function canStartAnywhere(
   return anywhereAtRest(phase);
 }
 
+/**
+ * Whether a failed dictation keeps its recording for **Retry** (owner decision, 2026-11-13): a
+ * tray or shortcut dictation, whose text goes to the clipboard, after a failure the stream can
+ * send again (`DictationStreamError.retryable`, as the composer keeps one). A preview dictation
+ * is not kept, because the field it was for may hold other text by then. A refusal before
+ * capture and a microphone that never started have no recording to keep.
+ */
+export function keepsFailedRecording(source: AnywhereSource | null, retryable: boolean): boolean {
+  return switchGovernsSource(source) && retryable;
+}
+
 function atRest(state: AnywhereState, reason: AnywhereReason | null = null): AnywhereState {
   return {
     ...INITIAL_ANYWHERE_STATE,
@@ -100,6 +117,8 @@ export type AnywhereEvent =
   | { type: 'start'; source: AnywhereSource; privateConfirmed: boolean }
   | { type: 'capture-ready' }
   | { type: 'stop' }
+  /** **Retry** on the review card: the held recording is transcribed again. */
+  | { type: 'retry'; source: AnywhereSource }
   | { type: 'cancel' }
   | { type: 'refuse'; reason: AnywhereReason }
   | { type: 'review'; text: string; now: number }
@@ -133,6 +152,16 @@ export function nextAnywhereState(state: AnywhereState, event: AnywhereEvent): A
       return state.phase === 'arming' || state.phase === 'recording'
         ? { ...state, phase: 'transcribing', includePrivateTerms: false }
         : state;
+    case 'retry':
+      // A held recording is transcribed again exactly when a new start from its source could
+      // begin: nothing else is in progress, and the switch is on for a tray or shortcut one.
+      if (!canStartAnywhere(state.phase, event.source, state.switchOn)) return state;
+      return {
+        ...INITIAL_ANYWHERE_STATE,
+        phase: 'transcribing',
+        switchOn: state.switchOn,
+        source: event.source,
+      };
     case 'cancel':
       return atRest(state);
     case 'refuse':

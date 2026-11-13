@@ -19,8 +19,11 @@
  * a request that will not settle. After the deadline the store reads as
  * `failed`, the phase as `idle`, and the stream's own create answers instead.
  *
- * The interface learns managed policy only from `status.policy`, never from
- * `GET /config`; the daemon checks policy on every request regardless.
+ * The interface learns managed policy from `status.policy`, never from
+ * `GET /config`; the daemon checks policy on every request regardless. With an
+ * external backend (S17) that is the backend host's policy, so each read also
+ * asks Electron main for this computer's own policy (`laptopPolicy`), which main
+ * rereads from the managed file for every answer.
  */
 import { useSyncExternalStore } from 'react';
 import { getApiUrl } from '../../config';
@@ -45,6 +48,20 @@ export interface DictationStatusSnapshot {
   status: DictationStatus | null;
   /** The operating system's microphone access for this app; `unknown` off the desktop. */
   micStatus: MicAccessStatus;
+  /**
+   * This computer's own managed policy for live capture, as Electron main reads it
+   * (`utils/managedDictationPolicy.ts`, `anywhereSnapshot` in `main.ts`). Main reads the file
+   * only for an external backend (S17), whose `status.policy` is the backend host's; for the
+   * app's own daemon both say the same. Absent off the desktop, in a window main does not
+   * answer, and before the first read.
+   */
+  laptopPolicy?: LaptopCapturePolicy | null;
+}
+
+export interface LaptopCapturePolicy {
+  captureAllowed: boolean;
+  /** MSG-POLICY when dictation is off, MSG-POLICY-CAPTURE when only live capture is. */
+  reasonId: 'MSG-POLICY' | 'MSG-POLICY-CAPTURE';
 }
 
 export const INSTALL_POLL_MS = 1_500;
@@ -102,6 +119,27 @@ async function readMicStatus(): Promise<MicAccessStatus> {
   }
 }
 
+/**
+ * This computer's policy for live capture, through the preload entry Settings reads for the
+ * **Dictate into other apps** row. Main answers only a Biorouter window's main frame, so the hidden
+ * capture window and the review card read `null`; main checks the policy itself before a hidden
+ * capture. `null` leaves the phase to the daemon, and the permission handler still refuses.
+ */
+async function readLaptopPolicy(): Promise<LaptopCapturePolicy | null> {
+  if (isBrowserSurface()) return null;
+  try {
+    const answer = await window.electron?.dictationAnywhereGet?.();
+    if (!answer || typeof answer.captureAllowed !== 'boolean') return null;
+    return {
+      captureAllowed: answer.captureAllowed,
+      reasonId:
+        answer.capturePolicyReason === 'MSG-POLICY-CAPTURE' ? 'MSG-POLICY-CAPTURE' : 'MSG-POLICY',
+    };
+  } catch {
+    return null;
+  }
+}
+
 function schedulePoll(status: DictationStatus | null): void {
   if (pollTimer) {
     clearTimeout(pollTimer);
@@ -146,23 +184,23 @@ export function refreshDictationStatus(): Promise<DictationStatus | null> {
   if (snapshot.load === 'unloaded' || snapshot.load === 'failed') publish({ load: 'loading' });
   inflight = (async () => {
     try {
-      const [result, micStatus] = await withDeadline(
-        (signal) => Promise.all([api.status(signal), readMicStatus()]),
+      const [result, micStatus, laptopPolicy] = await withDeadline(
+        (signal) => Promise.all([api.status(signal), readMicStatus(), readLaptopPolicy()]),
         STATUS_TIMEOUT_MS
       );
       if (result.ok) {
-        publish({ load: 'loaded', status: result.data, micStatus });
+        publish({ load: 'loaded', status: result.data, micStatus, laptopPolicy });
         rememberPolicyHint(result.data);
         installFocusRefresh();
         schedulePoll(result.data);
         return result.data;
       }
       if (result.status === 404 || result.status === 405) {
-        publish({ load: 'absent', status: null, micStatus });
+        publish({ load: 'absent', status: null, micStatus, laptopPolicy });
         installFocusRefresh();
         return null;
       }
-      publish({ load: snapshot.status ? 'loaded' : 'failed', micStatus });
+      publish({ load: snapshot.status ? 'loaded' : 'failed', micStatus, laptopPolicy });
       return snapshot.status;
     } catch {
       publish({ load: snapshot.status ? 'loaded' : 'failed' });
@@ -437,28 +475,35 @@ export function resolveDictationPhase(
     const host = env.host ?? pageHost();
     return unavailable('MSG-INSECURE', host ? { host } : {});
   }
-  if (current.load === 'absent') return unavailable('MSG-REMOTE-OLD', remoteOldValues(env));
+  // `null` when the daemon answered 404 or 405, so the daemon's policy rows apply only to a status.
   const status = current.status;
-  if (!status) return { phase: 'idle' };
   // Managed policy that turns dictation or live capture off keeps the microphone in its place,
   // disabled, with the policy's own sentence as its reason (owner decision, 2026-11-13): a control
   // that can never work here says why before it is touched, rather than vanishing. The sentence
   // is the daemon's `reason` for the refused door, as the Settings policy note reads it
   // (`privacy/ManagedPolicyNote.tsx`), and the catalog's only when the daemon gave none.
-  if (!status.policy.enabled.allowed) {
+  if (status && !status.policy.enabled.allowed) {
     return {
       phase: 'unavailable',
       reasonId: 'MSG-POLICY',
       reason: status.policy.enabled.reason || dictationMessage('MSG-POLICY'),
     };
   }
-  if (!status.policy.capture.allowed) {
+  if (status && !status.policy.capture.allowed) {
     return {
       phase: 'unavailable',
       reasonId: 'MSG-POLICY-CAPTURE',
       reason: status.policy.capture.reason || dictationMessage('MSG-POLICY-CAPTURE'),
     };
   }
+  // This computer's own policy (S17): the backend host's `status.policy` above does not carry it,
+  // and Electron's permission handler refuses the microphone under it, so the button says so
+  // before a press. Before MSG-REMOTE-OLD, because updating that server would not help here.
+  if (current.laptopPolicy && !current.laptopPolicy.captureAllowed) {
+    return unavailable(current.laptopPolicy.reasonId);
+  }
+  if (current.load === 'absent') return unavailable('MSG-REMOTE-OLD', remoteOldValues(env));
+  if (!status) return { phase: 'idle' };
   if (!status.engine.compiled) return unavailable('MSG-NO-ENGINE');
   if (status.engine.state === 'unsupported_cpu') {
     const missing = status.engine.missing_cpu_features.join(', ');

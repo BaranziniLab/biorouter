@@ -129,6 +129,8 @@ export const DICTATION_MESSAGES = {
   'MSG-CLIPBOARD-NOTHING': 'Nothing was heard, so the clipboard was not changed.',
   'MSG-CLIPBOARD-ECHO':
     'Only dictionary words came back, which usually means the recording was silent. Nothing was copied.',
+  'MSG-CLIPBOARD-COPY-FAILED':
+    'The clipboard did not keep the text. Select it above and press <key>.',
   'MSG-REMOTE-HTTP':
     'Dictation sends your voice to <host> without encryption, as your typed messages already are. Use an https address for this server to protect it. Continue?',
   'MSG-REMOTE-NO-KEY':

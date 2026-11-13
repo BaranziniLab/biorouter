@@ -21,6 +21,7 @@ import {
   abortFinishingStream,
   deliverSettingsWhenReady,
   afterAnywhereSettingsWriteFailure,
+  keepsFailedRecording,
   type AnywhereSettings,
 } from './dictationAnywhere';
 
@@ -447,5 +448,50 @@ describe('the Dictate into other apps switch', () => {
         expect(canStartAnywhere(phase, source, true)).toBe(false);
       }
     }
+  });
+});
+
+// Owner decision, 2026-11-13: a failed clipboard dictation offers Retry while its recording is held.
+describe('a recording held for Retry', () => {
+  it('is kept only for a tray or shortcut dictation the stream can send again', () => {
+    expect(keepsFailedRecording('tray', true)).toBe(true);
+    expect(keepsFailedRecording('shortcut', true)).toBe(true);
+    // The field a preview dictation was for may hold other text five minutes later.
+    expect(keepsFailedRecording('preview', true)).toBe(false);
+    expect(keepsFailedRecording(null, true)).toBe(false);
+    for (const source of ['tray', 'shortcut', 'preview'] as const) {
+      expect(keepsFailedRecording(source, false)).toBe(false);
+    }
+  });
+
+  it('is transcribed again from rest, as a new start from its source could begin', () => {
+    const on = nextAnywhereState(INITIAL_ANYWHERE_STATE, { type: 'enable' });
+    const failed = nextAnywhereState(
+      nextAnywhereState(
+        nextAnywhereState(on, { type: 'start', source: 'tray', privateConfirmed: true }),
+        { type: 'stop' }
+      ),
+      { type: 'refuse', reason: 'capture-failed' }
+    );
+    expect(failed).toMatchObject({ phase: 'idle', source: null });
+    const retrying = nextAnywhereState(failed, { type: 'retry', source: 'tray' });
+    expect(retrying).toMatchObject({
+      phase: 'transcribing',
+      source: 'tray',
+      switchOn: true,
+      includePrivateTerms: false,
+    });
+    // The switch's Off still ends it, and it comes to rest as a first finish does.
+    expect(nextAnywhereState(retrying, { type: 'disable' })).toEqual(INITIAL_ANYWHERE_STATE);
+    expect(nextAnywhereState(retrying, { type: 'finish' }).phase).toBe('idle');
+    // Nothing is retried while another dictation runs, or with the switch off.
+    const recording = nextAnywhereState(
+      nextAnywhereState(on, { type: 'start', source: 'shortcut', privateConfirmed: false }),
+      { type: 'capture-ready' }
+    );
+    expect(nextAnywhereState(recording, { type: 'retry', source: 'tray' })).toBe(recording);
+    expect(nextAnywhereState(INITIAL_ANYWHERE_STATE, { type: 'retry', source: 'shortcut' })).toBe(
+      INITIAL_ANYWHERE_STATE
+    );
   });
 });
