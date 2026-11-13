@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { toastError } from '../../../toasts';
 import { isBrowserSurface } from '../../../utils/surface';
 import { AlertTriangle } from '../../icons/app-icons';
 import { ManagedPolicyNote } from '../../privacy/ManagedPolicyNote';
@@ -37,6 +38,11 @@ import {
 import { DICTIONARY_LABELS, dictionaryMessage } from '../../dictionary/copy';
 import { openDictionaryPage } from '../../dictionary/navigation';
 import { useDictionaryActivationChoice } from '../../dictionary/activationChoice';
+import {
+  learnFromChatsGate,
+  setLearnFromChats,
+  useDictionarySettings,
+} from '../../dictionary/useDictionary';
 import { SettingSelect } from '../SettingSelect';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
@@ -261,6 +267,7 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
       <MicrophoneRow status={status} />
       <SpeedRow status={status} />
       <EditDictionaryRow status={status} />
+      <SuggestWordsRow status={status} />
 
       {/* Not `destructive`: a slow model is a choice, not a deletion. */}
       <ConfirmationModal
@@ -983,6 +990,40 @@ function EditDictionaryRow({ status }: { status: DictationStatus }) {
       >
         {DICTIONARY_LABELS.editYourDictionary}
       </Button>
+    </SettingRow>
+  );
+}
+
+/**
+ * **Suggest words from my messages** (owner, 2026-11-13): the Dictionary page's chat extractor
+ * switch, `learn_from_chats`, read from and written through the page's own store, so the two
+ * views show one value. Turning it on is a raise (`authority.raise_settings`), refused before the
+ * click with its reason; turning it off always works. Absent where managed policy turns the
+ * dictionary off, as the Dictionary row is, and until the daemon has answered.
+ */
+function SuggestWordsRow({ status }: { status: DictationStatus }) {
+  const allowed = status.policy.dictionary.allowed;
+  const settings = useDictionarySettings(allowed);
+  if (!allowed || !settings) return null;
+  const gate = learnFromChatsGate(settings);
+  return (
+    <SettingRow
+      label={DICTIONARY_LABELS.agentSettings.learnFromChats}
+      help={copy.learnFromChatsHelp}
+      status={gate.reason ?? undefined}
+      data-testid="speech-learn-from-chats"
+    >
+      <Switch
+        checked={settings.learn_from_chats}
+        disabled={gate.disabled}
+        onCheckedChange={(checked) => {
+          if (checked && settings.authority?.raise_settings.allowed !== true) return;
+          void setLearnFromChats(checked).then((result) => {
+            if (!result.ok)
+              toastError({ title: DICTIONARY_LABELS.title, msg: result.error.message });
+          });
+        }}
+      />
     </SettingRow>
   );
 }

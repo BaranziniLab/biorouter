@@ -1,6 +1,7 @@
 import { memo, useId } from 'react';
 import type { DictionaryEntryView } from '../../api';
-import { Check, Dictionary, Pencil, withPrivateBadge } from '../icons/app-icons';
+import { Dictionary, Pencil, withPrivateBadge } from '../icons/app-icons';
+import { Button } from '../ui/button';
 import { IconAction, RowActions, RowContextMenu, type RowActionItem } from '../ui/row-actions';
 import { DICTIONARY_LABELS } from './copy';
 import { groupOf, lineTwo, usesMeta, type SettledKind } from './rows';
@@ -41,11 +42,18 @@ export interface DictionaryRowProps extends DictionaryRowActions {
  * the `⋯` menu on hover or focus. The same menu opens on right click,
  * Shift+F10 and the ContextMenu key.
  *
- * | Row | Primary | Menu |
- * |---|---|---|
- * | Active | Edit | Edit…, Copy term, Open the chat it came from, Make public… or Make private…, Delete… |
- * | Suggested | Accept | Edit…, Copy term, Open the chat it came from, Dismiss |
- * | Added by the agent, unreviewed | Keep | Edit…, Copy term, Open the chat it came from, Remove |
+ * A row that waits for the person (a suggestion, or the agent's row not yet
+ * kept) shows its two answers as small text buttons that are always visible,
+ * so every pending row reads the same way and nothing hides behind a hover:
+ *
+ * | Row | Always visible | Primary on hover | Menu |
+ * |---|---|---|---|
+ * | Active | | Edit | Edit…, Copy term, Open the chat it came from, Make public… or Make private…, Delete… |
+ * | Suggested | Keep, Dismiss | | Edit…, Copy term, Open the chat it came from |
+ * | Added by the agent, unreviewed | Keep, Remove | | Edit…, Copy term, Open the chat it came from |
+ *
+ * The buttons are 28px, inside the row's two text lines, so a pending row keeps
+ * the pitch every other row has (`rowWindow.ts` measures one pitch for all).
  *
  * Memoized: the page passes callbacks that keep their identity, so a drawn row
  * renders again only when its entry or its state changes.
@@ -77,46 +85,40 @@ function DictionaryRow({
   ];
 
   let primary: React.ReactNode = null;
+  let answers: React.ReactNode = null;
   let menu: RowActionItem[];
-  if (kind === 'suggested') {
-    primary = readOnly ? null : (
-      <IconAction
-        icon={Check}
-        label={name(DICTIONARY_LABELS.accept)}
-        tooltip={DICTIONARY_LABELS.accept}
-        onSelect={() => actions.onAccept(entry)}
-        testId="dictionary-row-accept"
-      />
+  if (kind === 'suggested' || kind === 'agent') {
+    const suggestion = kind === 'suggested';
+    // Keep is a write; Dismiss and Remove answer as a delete does (managed policy may refuse
+    // writes and still allow both), so each follows its own authority.
+    answers = (
+      <div className="flex shrink-0 items-center gap-1" data-dictionary-answers="">
+        {readOnly ? null : (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            aria-label={name(DICTIONARY_LABELS.keep)}
+            onClick={() => (suggestion ? actions.onAccept(entry) : actions.onKeep(entry))}
+            data-testid={suggestion ? 'dictionary-row-accept' : 'dictionary-row-keep'}
+          >
+            {DICTIONARY_LABELS.keep}
+          </Button>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          aria-label={name(suggestion ? DICTIONARY_LABELS.dismiss : DICTIONARY_LABELS.remove)}
+          disabled={!deleteAllowed}
+          onClick={() => (suggestion ? actions.onDismiss(entry) : actions.onRemove(entry))}
+          data-testid={suggestion ? 'dictionary-row-dismiss' : 'dictionary-row-remove'}
+        >
+          {suggestion ? DICTIONARY_LABELS.dismiss : DICTIONARY_LABELS.remove}
+        </Button>
+      </div>
     );
-    menu = [
-      ...common,
-      { kind: 'separator' },
-      {
-        label: DICTIONARY_LABELS.dismiss,
-        onSelect: () => actions.onDismiss(entry),
-        disabled: !deleteAllowed,
-        testId: 'dictionary-row-dismiss',
-      },
-    ];
-  } else if (kind === 'agent') {
-    primary = readOnly ? null : (
-      <IconAction
-        icon={Check}
-        label={name(DICTIONARY_LABELS.keep)}
-        tooltip={DICTIONARY_LABELS.keep}
-        onSelect={() => actions.onKeep(entry)}
-        testId="dictionary-row-keep"
-      />
-    );
-    menu = [
-      ...common,
-      { kind: 'separator' },
-      {
-        label: DICTIONARY_LABELS.remove,
-        onSelect: () => actions.onRemove(entry),
-        disabled: !deleteAllowed,
-      },
-    ];
+    menu = common;
   } else {
     primary = readOnly ? null : (
       <IconAction
@@ -199,12 +201,15 @@ function DictionaryRow({
             {meta}
           </span>
         ) : (
-          <RowActions
-            primary={primary}
-            menu={menu}
-            meta={meta ?? undefined}
-            menuLabel={DICTIONARY_LABELS.moreActions(term)}
-          />
+          <>
+            {answers}
+            <RowActions
+              primary={primary}
+              menu={menu}
+              meta={meta ?? undefined}
+              menuLabel={DICTIONARY_LABELS.moreActions(term)}
+            />
+          </>
         )}
       </div>
     </RowContextMenu>

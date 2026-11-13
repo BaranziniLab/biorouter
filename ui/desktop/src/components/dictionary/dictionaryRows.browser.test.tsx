@@ -45,6 +45,13 @@ const actions = {
 function List() {
   const [rows, setRows] = React.useState([row('Charlie'), row('Delta'), row('Echo')]);
   window.__setRows = (names) => setRows(names.map((name) => row(name)));
+  // An active row beside the two kinds that wait for the person.
+  window.__setWaiting = () =>
+    setRows([
+      row('Charlie'),
+      row('Maybe', { status: 'suggested', source: 'auto', uses: undefined }),
+      row('AgentNew', { source: 'agent', reviewed: false }),
+    ]);
   // Synchronous, so the caller can time the render, its commit and the list's measuring.
   window.__setMany = (count) =>
     flushSync(() =>
@@ -279,6 +286,44 @@ describe('the Dictionary list in a real layout', { timeout: 90_000 }, () => {
       const lastTop = await rowTop(tab, 'dct_GENE4999');
       expect(lastTop).not.toBeNull();
       expect(lastTop! + start.pitch).toBeCloseTo(start.listTop + start.listHeight, 0);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('keeps a waiting row the height of any other, with its answers shown at rest', async () => {
+    if (!browser) return;
+    const tab = await open();
+    try {
+      await tab.mouse.move(880, 20);
+      await tab.evaluate(() => (window as unknown as { __setWaiting: () => void }).__setWaiting());
+      await tab.waitForSelector('[data-dictionary-row="dct_Maybe"] [data-dictionary-answers]');
+      const active = await box(tab, 'dct_Charlie');
+      for (const id of ['dct_Maybe', 'dct_AgentNew']) {
+        const waiting = await box(tab, id);
+        expect(waiting.height, id).toBeCloseTo(active.height, 1);
+      }
+      // The pointer is away from the list: Keep and Dismiss show, the ⋯ cluster does not.
+      const shown = await tab.evaluate(() => {
+        const row = document.querySelector<HTMLElement>('[data-dictionary-row="dct_Maybe"]')!;
+        const keep = row.querySelector<HTMLElement>('[data-testid="dictionary-row-accept"]')!;
+        const dismiss = row.querySelector<HTMLElement>('[data-testid="dictionary-row-dismiss"]')!;
+        const cluster = row.querySelector<HTMLElement>('.br-row-actions')!;
+        const rowBox = row.getBoundingClientRect();
+        const keepBox = keep.getBoundingClientRect();
+        return {
+          keep: getComputedStyle(keep).opacity,
+          dismiss: getComputedStyle(dismiss).opacity,
+          cluster: getComputedStyle(cluster).opacity,
+          inside: keepBox.top >= rowBox.top && keepBox.bottom <= rowBox.bottom,
+          keepHeight: keepBox.height,
+        };
+      });
+      expect(shown.keep).toBe('1');
+      expect(shown.dismiss).toBe('1');
+      expect(shown.cluster).toBe('0');
+      expect(shown.inside).toBe(true);
+      expect(shown.keepHeight).toBeLessThanOrEqual(28);
     } finally {
       await tab.close();
     }

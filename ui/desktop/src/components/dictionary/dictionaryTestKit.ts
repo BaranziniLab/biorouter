@@ -3,7 +3,7 @@
  * Dictionary page's tests. A caller with private standing gets the usage
  * figures, and a row never used has `uses: 0` and no `last_used_at` at all.
  */
-import type { DictionaryEntryView, DictionarySettings } from '../../api';
+import type { DictionaryEntryView, DictionaryScan, DictionarySettings } from '../../api';
 
 let next = 0;
 
@@ -48,8 +48,19 @@ export function settings(overrides: Partial<DictionarySettings> = {}): Dictionar
       tier_change: allowed,
       raise_settings: allowed,
     },
+    suggestions: {
+      recent_kept: 0,
+      recent_decisions: 0,
+      required_chats: 2,
+      offer_turning_off: false,
+    },
     ...overrides,
   };
+}
+
+/** A scan as `GET`/`POST /dictionary/suggestions/scan` answers it. */
+export function scan(overrides: Partial<DictionaryScan> = {}): DictionaryScan {
+  return { state: 'idle', chats_read: 0, chats_total: 0, words_found: 0, ...overrides };
 }
 
 /** A generated client answer: `{data, response}` for a 2xx, `{error, response}` otherwise. */

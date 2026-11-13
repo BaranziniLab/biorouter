@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { DictionaryEntryView } from '../../api';
 import { toastError, toastSuccess } from '../../toasts';
@@ -44,9 +44,11 @@ import {
   deleteTerm,
   dismissTerms,
   keepTerms,
+  learnFromChatsGate,
   useDictionary,
   type Outcome,
 } from './useDictionary';
+import { scanLine, startScan, stopScan, useSuggestionScan } from './useSuggestionScan';
 import './dictionary.css';
 
 type Confirm =
@@ -92,8 +94,10 @@ async function copyTerm(entry: DictionaryEntryView): Promise<void> {
  * only, with **Export…** and deleting still allowed. The settings area at the
  * page's foot holds the controls that work end to end (DD-94): **Agent's terms**
  * and **Suggest dictionary words from my chats** for the `dictionary` capability
- * (PR-23), and **Also find terms in my messages automatically** for the chat
- * extractor (PR-24), whose InfoTip says why it starts off (M-21 has not run).
+ * (PR-23), and **Suggest words from my messages** for the chat extractor (PR-24,
+ * owner 2026-11-13), with **Find words in my recent chats** under it while it is
+ * on. When the person's own Keep and Dismiss counts show most suggestions were
+ * dismissed, one note at the top of the list offers to turn suggestions off.
  */
 export default function DictionaryView() {
   const dictionary = useDictionary();
@@ -110,6 +114,8 @@ export default function DictionaryView() {
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const learnHelpId = useInfoTipId();
+  const learnReasonId = useId();
+  const [answeringOffer, setAnsweringOffer] = useState(false);
 
   // The page mounting is a sign dictation may be used: the status store loads and the
   // device list warms ("The status store" in `docs/dictation/surfaces.md`).
@@ -130,6 +136,16 @@ export default function DictionaryView() {
   const canDelete = !dictionary.absent && deleteAllowed;
   const tierChangeAllowed = canWrite && (authority?.tier_change.allowed ?? !isBrowserSurface());
   const tierChangeReason = authority?.tier_change.reason ?? null;
+  const learnGate = learnFromChatsGate(dictionary.settings);
+  // Find words in my recent chats: while suggestions are on, for a caller that may write.
+  const canScan =
+    canWrite && dictionary.settings?.learn_from_chats === true && authority?.write.allowed === true;
+  const offerTurningOff =
+    !dictionary.absent &&
+    !policyOff &&
+    !!authority &&
+    dictionary.settings?.learn_from_chats === true &&
+    dictionary.settings.suggestions?.offer_turning_off === true;
   // What can be acted on is what the daemon holds now; what the page counts is what it shows,
   // which the hover hold keeps as it was while the pointer rests on the list.
   const total = dictionary.entries.length;
@@ -227,6 +243,19 @@ export default function DictionaryView() {
     } finally {
       setBusy(false);
       setConfirm(null);
+    }
+  };
+
+  /** The offer's two answers, through the settings write; a refusal says why. */
+  const answerOffer = async (turnOff: boolean) => {
+    setAnsweringOffer(true);
+    try {
+      const outcome = await (turnOff
+        ? dictionary.setLearnFromChats(false)
+        : dictionary.keepSuggesting());
+      if (!outcome.ok) toastError({ title: DICTIONARY_LABELS.title, msg: outcome.error.message });
+    } finally {
+      setAnsweringOffer(false);
     }
   };
 
@@ -346,6 +375,38 @@ export default function DictionaryView() {
                 </Note>
               ) : null}
 
+              {offerTurningOff ? (
+                <Note tone="neutral" role="status" className="mb-4" testId="dictionary-back-off">
+                  <p>
+                    {dictionaryMessage('MSG-SUGGESTIONS-BACK-OFF', {
+                      n: String(dictionary.settings?.suggestions.required_chats ?? 2),
+                    })}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={answeringOffer}
+                      onClick={() => void answerOffer(true)}
+                      data-testid="dictionary-back-off-turn-off"
+                    >
+                      {DICTIONARY_LABELS.backOff.turnOff}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={answeringOffer}
+                      onClick={() => void answerOffer(false)}
+                      data-testid="dictionary-back-off-keep"
+                    >
+                      {DICTIONARY_LABELS.backOff.keepSuggesting}
+                    </Button>
+                  </div>
+                </Note>
+              ) : null}
+
               {firstLoad ? (
                 <div className="biorouter-list-shell br-rows-flat" aria-hidden>
                   <TermRowSkeleton />
@@ -392,125 +453,146 @@ export default function DictionaryView() {
         {dictionary.settings && !dictionary.absent && !policyOff ? (
           <ReadableContent size="chat" className="px-6">
             <div
-              className="flex flex-wrap items-center gap-4 border-t px-3 py-3"
+              className="flex flex-col gap-3 border-t px-3 py-3"
               data-testid="dictionary-agent-settings"
             >
-              <div className="flex flex-wrap items-center gap-2 text-label">
-                <span id="dictionary-agent-writes-label">
-                  {DICTIONARY_LABELS.agentSettings.title}
-                </span>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild disabled={!authority}>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="gap-2"
-                      aria-labelledby="dictionary-agent-writes-label dictionary-agent-writes-value"
-                      data-testid="dictionary-agent-writes"
-                      disabled={!authority}
-                    >
-                      <span id="dictionary-agent-writes-value">
-                        {dictionary.settings.agent_writes === 'suggest'
-                          ? DICTIONARY_LABELS.agentSettings.suggest
-                          : dictionary.settings.agent_writes === 'on_request'
-                            ? DICTIONARY_LABELS.agentSettings.onRequest
-                            : DICTIONARY_LABELS.agentSettings.add}
-                      </span>
-                      <ChevronDown aria-hidden="true" className="size-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    <DropdownMenuRadioGroup
-                      value={dictionary.settings.agent_writes}
-                      onValueChange={(value) => {
-                        if (!authority) return;
-                        const mode = value as 'suggest' | 'on_request' | 'add';
-                        if (
-                          ['suggest', 'on_request', 'add'].indexOf(mode) >
-                            ['suggest', 'on_request', 'add'].indexOf(
-                              dictionary.settings!.agent_writes
-                            ) &&
-                          !canRaiseAgentSettings
-                        )
-                          return;
-                        void dictionary.setAgentWrites(mode).then((result) => {
-                          if (!result.ok)
-                            toastError({
-                              title: DICTIONARY_LABELS.agentSettings.title,
-                              msg: result.error.message,
-                            });
-                        });
-                      }}
-                    >
-                      <DropdownMenuRadioItem value="suggest">
-                        {DICTIONARY_LABELS.agentSettings.suggest}
-                      </DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem
-                        value="on_request"
-                        disabled={
-                          !canRaiseAgentSettings && dictionary.settings.agent_writes === 'suggest'
-                        }
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex flex-wrap items-center gap-2 text-label">
+                  <span id="dictionary-agent-writes-label">
+                    {DICTIONARY_LABELS.agentSettings.title}
+                  </span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild disabled={!authority}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="gap-2"
+                        aria-labelledby="dictionary-agent-writes-label dictionary-agent-writes-value"
+                        data-testid="dictionary-agent-writes"
+                        disabled={!authority}
                       >
-                        {DICTIONARY_LABELS.agentSettings.onRequest}
-                      </DropdownMenuRadioItem>
-                      <DropdownMenuRadioItem
-                        value="add"
-                        disabled={
-                          !canRaiseAgentSettings && dictionary.settings.agent_writes !== 'add'
-                        }
+                        <span id="dictionary-agent-writes-value">
+                          {dictionary.settings.agent_writes === 'suggest'
+                            ? DICTIONARY_LABELS.agentSettings.suggest
+                            : dictionary.settings.agent_writes === 'on_request'
+                              ? DICTIONARY_LABELS.agentSettings.onRequest
+                              : DICTIONARY_LABELS.agentSettings.add}
+                        </span>
+                        <ChevronDown aria-hidden="true" className="size-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <DropdownMenuRadioGroup
+                        value={dictionary.settings.agent_writes}
+                        onValueChange={(value) => {
+                          if (!authority) return;
+                          const mode = value as 'suggest' | 'on_request' | 'add';
+                          if (
+                            ['suggest', 'on_request', 'add'].indexOf(mode) >
+                              ['suggest', 'on_request', 'add'].indexOf(
+                                dictionary.settings!.agent_writes
+                              ) &&
+                            !canRaiseAgentSettings
+                          )
+                            return;
+                          void dictionary.setAgentWrites(mode).then((result) => {
+                            if (!result.ok)
+                              toastError({
+                                title: DICTIONARY_LABELS.agentSettings.title,
+                                msg: result.error.message,
+                              });
+                          });
+                        }}
                       >
-                        {DICTIONARY_LABELS.agentSettings.add}
-                      </DropdownMenuRadioItem>
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-              <label className="flex items-center gap-2 text-label">
-                <Checkbox
-                  checked={dictionary.settings.suggest_from_chats}
-                  disabled={
-                    !authority ||
-                    (!dictionary.settings.suggest_from_chats && !canRaiseAgentSettings)
-                  }
-                  onChange={(event) => {
-                    if (!authority || (event.target.checked && !canRaiseAgentSettings)) return;
-                    void dictionary.setSuggestFromChats(event.target.checked).then((result) => {
-                      if (!result.ok)
-                        toastError({ title: DICTIONARY_LABELS.title, msg: result.error.message });
-                    });
-                  }}
-                />
-                {DICTATION_ACTIONS.suggestFromChats}
-              </label>
-              {/* The chat extractor's switch (PR-24). Turning it on is a raise, as for the
-                  capability above; turning it off always works. The InfoTip sits beside the
-                  label, never inside it, and carries the reason it starts off. */}
-              <div className="flex items-center text-label">
-                <label className="flex items-center gap-2">
+                        <DropdownMenuRadioItem value="suggest">
+                          {DICTIONARY_LABELS.agentSettings.suggest}
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem
+                          value="on_request"
+                          disabled={
+                            !canRaiseAgentSettings && dictionary.settings.agent_writes === 'suggest'
+                          }
+                        >
+                          {DICTIONARY_LABELS.agentSettings.onRequest}
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem
+                          value="add"
+                          disabled={
+                            !canRaiseAgentSettings && dictionary.settings.agent_writes !== 'add'
+                          }
+                        >
+                          {DICTIONARY_LABELS.agentSettings.add}
+                        </DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <label className="flex items-center gap-2 text-label">
                   <Checkbox
-                    checked={dictionary.settings.learn_from_chats}
+                    checked={dictionary.settings.suggest_from_chats}
                     disabled={
                       !authority ||
-                      (!dictionary.settings.learn_from_chats && !canRaiseAgentSettings)
+                      (!dictionary.settings.suggest_from_chats && !canRaiseAgentSettings)
                     }
-                    aria-describedby={learnHelpId}
-                    data-testid="dictionary-learn-from-chats"
                     onChange={(event) => {
                       if (!authority || (event.target.checked && !canRaiseAgentSettings)) return;
-                      void dictionary.setLearnFromChats(event.target.checked).then((result) => {
+                      void dictionary.setSuggestFromChats(event.target.checked).then((result) => {
                         if (!result.ok)
                           toastError({ title: DICTIONARY_LABELS.title, msg: result.error.message });
                       });
                     }}
                   />
-                  {DICTIONARY_LABELS.agentSettings.learnFromChats}
+                  {DICTATION_ACTIONS.suggestFromChats}
                 </label>
-                <InfoTip
-                  id={learnHelpId}
-                  label={DICTIONARY_LABELS.agentSettings.learnFromChats}
-                  help={dictionaryMessage('MSG-LEARN-FROM-CHATS-HELP')}
-                />
+              </div>
+              {/* The chat extractor's switch (PR-24), on its own line with what belongs to it
+                  under its label: the reason it cannot be turned on here, and Find words in my
+                  recent chats while it is on. Turning it on is a raise, as for the capability
+                  above; turning it off always works. The InfoTip sits beside the label, never
+                  inside it. */}
+              <div
+                className="flex flex-col items-start gap-2"
+                data-testid="dictionary-learn-from-chats-group"
+              >
+                <div className="flex items-center text-label">
+                  <label className="flex items-center gap-2">
+                    <Checkbox
+                      checked={dictionary.settings.learn_from_chats}
+                      disabled={learnGate.disabled}
+                      aria-describedby={
+                        learnGate.reason ? `${learnHelpId} ${learnReasonId}` : learnHelpId
+                      }
+                      data-testid="dictionary-learn-from-chats"
+                      onChange={(event) => {
+                        if (!authority || (event.target.checked && !canRaiseAgentSettings)) return;
+                        void dictionary.setLearnFromChats(event.target.checked).then((result) => {
+                          if (!result.ok)
+                            toastError({
+                              title: DICTIONARY_LABELS.title,
+                              msg: result.error.message,
+                            });
+                        });
+                      }}
+                    />
+                    {DICTIONARY_LABELS.agentSettings.learnFromChats}
+                  </label>
+                  <InfoTip
+                    id={learnHelpId}
+                    label={DICTIONARY_LABELS.agentSettings.learnFromChats}
+                    help={dictionaryMessage('MSG-LEARN-FROM-CHATS-HELP')}
+                  />
+                </div>
+                {learnGate.reason ? (
+                  <p
+                    id={learnReasonId}
+                    className="pl-6 text-supporting text-text-muted"
+                    data-testid="dictionary-learn-from-chats-reason"
+                  >
+                    {learnGate.reason}
+                  </p>
+                ) : null}
+                {canScan ? <SuggestionScan /> : null}
               </div>
             </div>
           </ReadableContent>
@@ -651,6 +733,59 @@ async function saveExportFile(json: string): Promise<void> {
       msg: dictionaryMessage('MSG-EXPORT-WRITE-FAILED', { folder }),
     });
   }
+}
+
+/**
+ * **Find words in my recent chats**, under **Suggest words from my messages** at the label's
+ * text inset: a small button, which a running scan replaces with its progress and **Stop**, and
+ * after it how the scan ended, or the daemon's refusal. The line is one polite live region that
+ * stays mounted, so each change is read out.
+ */
+function SuggestionScan() {
+  const state = useSuggestionScan(true);
+  const running = state.scan?.state === 'running';
+  const line = scanLine(state);
+  const status = (
+    <p
+      key="status"
+      aria-live="polite"
+      className="text-supporting text-text-muted"
+      data-testid="dictionary-scan-status"
+    >
+      {line}
+    </p>
+  );
+  const action = running ? (
+    <Button
+      key="action"
+      type="button"
+      size="sm"
+      variant="ghost"
+      disabled={state.stopping}
+      onClick={() => void stopScan()}
+      data-testid="dictionary-scan-stop"
+    >
+      {DICTIONARY_LABELS.scan.stop}
+    </Button>
+  ) : (
+    <Button
+      key="action"
+      type="button"
+      size="sm"
+      variant="secondary"
+      disabled={state.starting}
+      aria-busy={state.starting || undefined}
+      onClick={() => void startScan()}
+      data-testid="dictionary-scan-start"
+    >
+      {DICTIONARY_LABELS.scan.find}
+    </Button>
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-6" data-testid="dictionary-scan">
+      {running ? [status, action] : [action, status]}
+    </div>
+  );
 }
 
 function TermRowSkeleton() {

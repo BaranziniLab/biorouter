@@ -9,6 +9,7 @@ import { answer, entry, listing, settings } from './dictionaryTestKit';
 const api = vi.hoisted(() => ({
   listDictionaryEntries: vi.fn(),
   getDictionarySettings: vi.fn(),
+  changeDictionarySettings: vi.fn(),
   addDictionaryEntry: vi.fn(),
   editDictionaryEntry: vi.fn(),
   changeDictionaryEntryTier: vi.fn(),
@@ -34,6 +35,11 @@ import {
   addTerm,
   installLiveRefresh,
   applyImport,
+  keepSuggesting,
+  learnFromChatsGate,
+  refreshDictionarySettings,
+  setLearnFromChats,
+  useDictionarySettings,
   deleteTerm,
   deleteTerms,
   derivedEtag,
@@ -77,6 +83,7 @@ beforeEach(() => {
   ]) {
     write.mockResolvedValue(answer(200, { entry: entry(), created: true, accepted: 1 }));
   }
+  api.changeDictionarySettings.mockResolvedValue(answer(200, settings()));
   api.deleteDictionaryEntry.mockResolvedValue(answer(204, null));
   api.deleteDictionaryEntries.mockResolvedValue(answer(200, { deleted: 2 }));
   api.exportDictionary.mockResolvedValue({ data: '{}', response: new Response('{}') });
@@ -110,6 +117,7 @@ describe('every dictionary call carries userActionHeaders()', () => {
     await acceptTerms([row.id]);
     await dismissTerms([row.id]);
     await keepTerms([row.id]);
+    await keepSuggesting();
     await planImport({ format: 'lines', content: 'UCSF' });
     await applyImport({ format: 'lines', content: 'UCSF' });
     await exportTerms(true);
@@ -388,6 +396,94 @@ describe('the sidebar’s count', () => {
     rerender({ on: true });
     await waitFor(() => expect(result.current).toBe(1));
     expect(api.listDictionaryEntries).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('suggestions from chats', () => {
+  it('answers Keep suggesting through the settings write, then reads the settings again', async () => {
+    const offered = settings({
+      learn_from_chats: true,
+      suggestions: {
+        recent_kept: 2,
+        recent_decisions: 20,
+        required_chats: 3,
+        offer_turning_off: false,
+      },
+    });
+    api.changeDictionarySettings.mockResolvedValue(answer(200, offered));
+    api.getDictionarySettings.mockResolvedValue(answer(200, offered));
+    const outcome = await keepSuggesting();
+    expect(outcome.ok).toBe(true);
+    expect(api.changeDictionarySettings).toHaveBeenCalledWith(
+      expect.objectContaining({ body: { keep_suggesting: true }, headers: PROOF })
+    );
+    expect(api.getDictionarySettings).toHaveBeenCalled();
+    expect(getDictionarySnapshot().settings?.suggestions.required_chats).toBe(3);
+  });
+
+  it('lets the switch turn off always, and on only with raise authority, filling the host’s option', () => {
+    const refused = (reason: string | null) =>
+      settings({
+        authority: { ...settings().authority, raise_settings: { allowed: false, reason } },
+      });
+    expect(learnFromChatsGate(null)).toEqual({ disabled: true, reason: null });
+    expect(learnFromChatsGate(settings())).toEqual({ disabled: false, reason: null });
+    expect(learnFromChatsGate({ ...refused('x'), learn_from_chats: true })).toEqual({
+      disabled: false,
+      reason: null,
+    });
+    expect(learnFromChatsGate(refused(null))).toEqual({ disabled: true, reason: null });
+    expect(
+      learnFromChatsGate(
+        refused(
+          'Do this on the server: `biorouter dictionary settings <option>` (as the service user).'
+        )
+      )
+    ).toEqual({
+      disabled: true,
+      reason:
+        'Do this on the server: `biorouter dictionary settings --learn-from-chats on` (as the service user).',
+    });
+    expect(learnFromChatsGate({ ...settings(), authority: null as unknown as never })).toEqual({
+      disabled: true,
+      reason: null,
+    });
+  });
+
+  it('reads the settings alone into the page’s store, and drops a read a newer one overtook', async () => {
+    const slow = new Deferred<ReturnType<typeof answer>>();
+    api.getDictionarySettings
+      .mockImplementationOnce(() => slow.promise)
+      .mockResolvedValueOnce(answer(200, settings({ learn_from_chats: true })));
+    const older = refreshDictionarySettings();
+    await refreshDictionarySettings();
+    expect(getDictionarySnapshot().settings?.learn_from_chats).toBe(true);
+    slow.resolve(answer(200, settings({ learn_from_chats: false })));
+    await older;
+    expect(getDictionarySnapshot().settings?.learn_from_chats).toBe(true);
+    expect(api.listDictionaryEntries).not.toHaveBeenCalled();
+  });
+
+  it('gives Settings and the page one value: a write from either moves both', async () => {
+    api.getDictionarySettings.mockResolvedValue(answer(200, settings()));
+    const { result } = renderHook(() => useDictionarySettings(true));
+    await waitFor(() => expect(result.current?.learn_from_chats).toBe(false));
+    api.changeDictionarySettings.mockResolvedValue(
+      answer(200, settings({ learn_from_chats: true }))
+    );
+    api.getDictionarySettings.mockResolvedValue(answer(200, settings({ learn_from_chats: true })));
+    await act(async () => {
+      await setLearnFromChats(true);
+    });
+    expect(result.current?.learn_from_chats).toBe(true);
+    expect(getDictionarySnapshot().settings?.learn_from_chats).toBe(true);
+  });
+
+  it('reads no settings while not enabled', async () => {
+    const { result } = renderHook(() => useDictionarySettings(false));
+    await act(async () => undefined);
+    expect(api.getDictionarySettings).not.toHaveBeenCalled();
+    expect(result.current).toBeNull();
   });
 });
 

@@ -57,9 +57,17 @@ export const DICTIONARY_MESSAGES = {
   'MSG-MATCH-HELP':
     'Also fix near misses corrects close misspellings, and Exact spelling only corrects only what you listed. Help recognition only never changes the text after transcription.',
   'MSG-REVIEW-HELP':
-    'An accepted term starts shaping dictation. A dismissed one is not suggested again.',
+    'A kept word starts shaping dictation. A dismissed one is not suggested again.',
   'MSG-LEARN-FROM-CHATS-HELP':
-    'Biorouter looks for terms in your messages, on this computer, and suggests them for you to accept. It starts off because how well it picks terms is not checked yet.',
+    'Biorouter looks for terms such as EPAS1 or UCSF in the messages you type in chats on public models, on this computer, and suggests a word once it shows up in two chats. You keep or dismiss each one, and a dismissed word is not suggested again.',
+  'MSG-SCAN-PROGRESS': 'Reading chat <read> of <total>, <words> found so far',
+  'MSG-SCAN-FINISHED': 'Read <chats>. <words> to review.',
+  'MSG-SCAN-FINISHED-NONE': 'Read <chats>. No new words found.',
+  'MSG-SCAN-STOPPED': 'Stopped after <read> of <chats>. <words> to review.',
+  'MSG-SCAN-STOPPED-NONE': 'Stopped after <read> of <chats>. No new words found.',
+  'MSG-SCAN-FAILED': 'Biorouter could not finish reading your chats.',
+  'MSG-SUGGESTIONS-BACK-OFF':
+    'You dismissed most of the words Biorouter suggested, so it now suggests a word only after it shows up in <n> chats.',
   'MSG-PRIVATIZE-CONFIRM':
     'Dictation then uses this term only when you dictate into private chats.',
   'MSG-EXPORT-SAVED': 'Saved <file> to <folder>.',
@@ -151,8 +159,24 @@ export const DICTIONARY_LABELS = {
     suggest: 'Wait for my review',
     onRequest: 'Add when I ask, suggest otherwise',
     add: 'Add without asking',
-    /** `learn_from_chats`, the chat extractor's switch (PR-24, DD-57). */
-    learnFromChats: 'Also find terms in my messages automatically',
+    /** `learn_from_chats`, the chat extractor's switch (PR-24, DD-57); also its row in Settings. */
+    learnFromChats: 'Suggest words from my messages',
+  },
+  /** **Find words in my recent chats** (owner, 2026-11-13), under the chat extractor's switch. */
+  scan: {
+    find: 'Find words in my recent chats',
+    stop: 'Stop',
+    /** MSG-SCAN-PROGRESS's `<words>`: "1 word", "12 words". */
+    words: (n: number) => (n === 1 ? '1 word' : `${n.toLocaleString('en-US')} words`),
+    /** MSG-SCAN-FINISHED's and MSG-SCAN-STOPPED's `<words>`: "1 new word", "12 new words". */
+    newWords: (n: number) => (n === 1 ? '1 new word' : `${n.toLocaleString('en-US')} new words`),
+    /** MSG-SCAN-FINISHED's and MSG-SCAN-STOPPED's `<chats>`: "1 chat", "40 chats". */
+    chats: (n: number) => (n === 1 ? '1 chat' : `${n.toLocaleString('en-US')} chats`),
+  },
+  /** The offer to turn suggestions off once most were dismissed (MSG-SUGGESTIONS-BACK-OFF). */
+  backOff: {
+    turnOff: 'Turn off suggestions',
+    keepSuggesting: 'Keep suggesting',
   },
   sources: {
     user: 'Added by you',
@@ -173,14 +197,13 @@ export const DICTIONARY_LABELS = {
   makePublic: 'Make public…',
   makePrivate: 'Make private…',
   delete: 'Delete…',
-  accept: 'Accept',
   dismiss: 'Dismiss',
   keep: 'Keep',
   remove: 'Remove',
   moreActions: (term: string) => `More actions for ${term}`,
   rowAction: (action: string, term: string) => `${action} ${term}`,
   settled: {
-    accepted: 'Accepted',
+    accepted: 'Kept',
     dismissed: 'Dismissed',
     deleted: 'Deleted',
     kept: 'Kept',
@@ -219,7 +242,7 @@ export const DICTIONARY_LABELS = {
   review: {
     title: 'Review suggestions',
     selectAll: 'Select all',
-    acceptSelected: 'Accept selected',
+    keepSelected: 'Keep selected',
     dismissSelected: 'Dismiss selected',
   },
   exportDialog: {

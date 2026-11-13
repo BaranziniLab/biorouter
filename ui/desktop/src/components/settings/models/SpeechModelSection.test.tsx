@@ -17,6 +17,9 @@ import {
   resetDictationStoreForTests,
 } from '../../dictation/dictationStore';
 import { managedPolicySentences } from '../../privacy/ManagedPolicyNote';
+import { DICTIONARY_LABELS } from '../../dictionary/copy';
+import { answer, listing, settings } from '../../dictionary/dictionaryTestKit';
+import { resetDictionaryStoreForTests } from '../../dictionary/useDictionary';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { speechModelsCopy as copy } from './copy';
 
@@ -36,6 +39,20 @@ const activation = vi.hoisted(() => ({
 }));
 vi.mock('../../dictionary/activationChoice', () => ({
   useDictionaryActivationChoice: () => activation,
+}));
+/**
+ * The Dictionary routes the **Suggest words from my messages** row reads and writes, and the
+ * host's provider a `serve` browser states with them (`userActionHeaders()`).
+ */
+const dictionaryApi = vi.hoisted(() => ({
+  getDictionarySettings: vi.fn(),
+  changeDictionarySettings: vi.fn(),
+  listDictionaryEntries: vi.fn(),
+  readConfig: vi.fn(),
+}));
+vi.mock('../../../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../api')>()),
+  ...dictionaryApi,
 }));
 import SpeechModelSection, { MIC_TEST_MS, meterPercent } from './SpeechModelSection';
 import {
@@ -236,6 +253,11 @@ beforeEach(() => {
   desktop();
   serve(status());
   models();
+  resetDictionaryStoreForTests();
+  dictionaryApi.getDictionarySettings.mockReset().mockResolvedValue(answer(200, settings()));
+  dictionaryApi.changeDictionarySettings.mockReset().mockResolvedValue(answer(200, settings()));
+  dictionaryApi.listDictionaryEntries.mockReset().mockResolvedValue(listing([]));
+  dictionaryApi.readConfig.mockReset().mockResolvedValue({ data: null });
 });
 
 afterEach(() => {
@@ -887,6 +909,110 @@ describe('the folder, language, microphone and speed rows', () => {
         label
       ).toHaveAccessibleDescription(DICTATION_MESSAGES[id]);
     }
+  });
+});
+
+describe('Suggest words from my messages', () => {
+  const learnSwitch = () =>
+    screen.findByRole('switch', { name: DICTIONARY_LABELS.agentSettings.learnFromChats });
+
+  it('sits right after the Dictionary row, off, with its one-line help', async () => {
+    await renderSection();
+    const toggle = await learnSwitch();
+    expect(DICTIONARY_LABELS.agentSettings.learnFromChats).toBe('Suggest words from my messages');
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeEnabled();
+    expect(screen.getByTestId('speech-dictionary').nextElementSibling).toBe(
+      screen.getByTestId('speech-learn-from-chats')
+    );
+    expect(
+      screen.getByRole('button', { name: 'About Suggest words from my messages' })
+    ).toHaveAccessibleDescription(
+      'Find terms you type in chats on public models and suggest them for your dictionary.'
+    );
+  });
+
+  it('turns on through the Dictionary page’s own settings write, so both views agree', async () => {
+    const user = userEvent.setup();
+    await renderSection();
+    const toggle = await learnSwitch();
+    dictionaryApi.changeDictionarySettings.mockResolvedValue(
+      answer(200, settings({ learn_from_chats: true }))
+    );
+    dictionaryApi.getDictionarySettings.mockResolvedValue(
+      answer(200, settings({ learn_from_chats: true }))
+    );
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(dictionaryApi.changeDictionarySettings).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { learn_from_chats: true } })
+      )
+    );
+    await waitFor(() => expect(toggle).toBeChecked());
+  });
+
+  it('cannot be turned on without raise authority, and says why before the click', async () => {
+    const user = userEvent.setup();
+    dictionaryApi.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          authority: {
+            ...settings().authority,
+            raise_settings: {
+              allowed: false,
+              reason:
+                'Do this on the server: `biorouter dictionary settings <option>` (as the service user).',
+            },
+          },
+        })
+      )
+    );
+    await renderSection();
+    const toggle = await learnSwitch();
+    await waitFor(() => expect(toggle).toBeDisabled());
+    expect(screen.getByTestId('speech-learn-from-chats')).toHaveTextContent(
+      'Do this on the server: `biorouter dictionary settings --learn-from-chats on` (as the service user).'
+    );
+    await user.click(toggle);
+    expect(dictionaryApi.changeDictionarySettings).not.toHaveBeenCalled();
+  });
+
+  it('turns off without raise authority', async () => {
+    const user = userEvent.setup();
+    dictionaryApi.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          learn_from_chats: true,
+          authority: {
+            ...settings().authority,
+            raise_settings: { allowed: false, reason: 'Use the host command.' },
+          },
+        })
+      )
+    );
+    await renderSection();
+    const toggle = await learnSwitch();
+    await waitFor(() => expect(toggle).toBeChecked());
+    expect(toggle).toBeEnabled();
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(dictionaryApi.changeDictionarySettings).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { learn_from_chats: false } })
+      )
+    );
+  });
+
+  it('is absent, and reads nothing, where managed policy turns the dictionary off', async () => {
+    serve(
+      status({
+        policy: { ...status().policy, managed: true, dictionary: { allowed: false, reason: null } },
+      })
+    );
+    await renderSection();
+    expect(screen.queryByTestId('speech-learn-from-chats')).toBeNull();
+    expect(dictionaryApi.getDictionarySettings).not.toHaveBeenCalled();
   });
 });
 

@@ -10,7 +10,7 @@ import { acceptTerms, deleteTerms, dismissTerms, keepTerms, type Outcome } from 
 
 /**
  * The ids a choice acts on, split by what each row is: a suggestion is
- * accepted or dismissed (`/dictionary/suggestions/*`); an agent's row not yet
+ * kept (`/dictionary/suggestions/accept`) or dismissed; an agent's row not yet
  * kept is kept (`/dictionary/entries/keep`) or removed, which writes the
  * person's tombstone (`/dictionary/entries/delete`).
  */
@@ -30,11 +30,11 @@ export function splitReview(rows: readonly DictionaryEntryView[]): {
 /**
  * **Review all…** ("Dialogs" in `docs/dictation/dictionary.md`): a checklist of
  * the suggestions and the agent's rows not yet kept, with **Select all** above
- * it and **Accept selected** and **Dismiss selected**. No row is ticked at
+ * it and **Keep selected** and **Dismiss selected**. No row is ticked at
  * open, so neither button does anything until the person chooses rows: a
  * dismissed suggestion is never suggested again, and a removed agent row writes
- * the person's tombstone, so one press must never act on rows nobody chose. An
- * accept that would pass the active cap fails as a whole (the daemon writes
+ * the person's tombstone, so one press must never act on rows nobody chose. A
+ * keep that would pass the active cap fails as a whole (the daemon writes
  * nothing), and its sentence shows here.
  */
 export default function ReviewSuggestionsDialog({
@@ -111,7 +111,7 @@ export default function ReviewSuggestionsDialog({
             aria-busy={busy || undefined}
             data-testid="dictionary-review-accept"
           >
-            {DICTIONARY_LABELS.review.acceptSelected}
+            {DICTIONARY_LABELS.review.keepSelected}
           </Button>
         </>
       }
