@@ -224,7 +224,7 @@
 
 /* A refresh that failed ("To do could not refresh.", and the Plan's and the
    Decisions' lines, which share this class) is a sentence in the default ink
-   beside its Retry, never a status hue (design.md 9.13: red is rare, and a
+   beside its Retry, never a status hue (design.md 9.14: red is rare, and a
    sentence is never set in a status colour). */
 .br-summary__error {
   display: flex;
