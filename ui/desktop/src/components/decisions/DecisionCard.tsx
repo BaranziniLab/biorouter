@@ -235,7 +235,7 @@ export function DecisionCardView({ record, sessionId, onOpenArtifact }: Decision
         />
       ))}
       {failed && (
-        // Red is rare (design.md 9.13): a call with no answer is the failure glyph and
+        // Red is rare (design.md 9.14): a call with no answer is the failure glyph and
         // words in the primary ink. The words tell a refusal from a model that failed.
         <p className="br-decision-card__error" data-testid="decision-error">
           <AlertCircle aria-hidden data-testid="decision-error-glyph" />

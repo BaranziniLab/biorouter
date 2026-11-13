@@ -166,7 +166,7 @@ describe('the decide tool row', () => {
     // The distinct errors, with how many chunks each hit, not which ones.
     const errors = screen.getByTestId('decide-tool-errors');
     expect(errors).toHaveTextContent('2 chunksThe decision model did not answer in 10 s');
-    // Red is rare (design.md 9.13): each error is the failure glyph and words, in ink.
+    // Red is rare (design.md 9.14): each error is the failure glyph and words, in ink.
     expect(within(errors).getAllByTestId('decide-tool-error-glyph')).toHaveLength(1);
     expect(errors.outerHTML).not.toMatch(/danger|warning/);
     // No chunk text, no chunk id, no per-chunk line anywhere in the row.

@@ -469,7 +469,7 @@ describe('DecisionHistory', () => {
     const detail = await screen.findByTestId('decision-detail');
     const error = within(detail).getByTestId('decision-detail-error');
     expect(error).toHaveTextContent('Error: The decision model did not answer in 10 s');
-    // Red is rare (design.md 9.13): ink, words and the failure glyph.
+    // Red is rare (design.md 9.14): ink, words and the failure glyph.
     const host = document.createElement('div');
     host.innerHTML = renderToStaticMarkup(<AlertCircle />);
     expect(error.querySelector('svg')?.innerHTML).toBe(host.querySelector('svg')?.innerHTML);

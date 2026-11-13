@@ -127,7 +127,7 @@ export const PHASE_GATE_COPY = {
   /**
    * R2-7: the one chip that says the phase needs the person; why it waits is in the
    * tip beside it. A neutral chip, not a tinted banner: something that needs the
-   * person asks by its words, never by a status hue (red is rare, design.md 9.13).
+   * person asks by its words, never by a status hue (red is rare, design.md 9.14).
    */
   waitingForYou: 'Waiting for you',
   waitingWhy: 'Why it waits',
@@ -1259,7 +1259,7 @@ export function PhaseGateDialog({
       ) : null}
       {refusal ? (
         // The Monitors dialog's refusal line: the failure glyph and the daemon's words in
-        // the primary ink, never a red box (red is rare, design.md 9.13).
+        // the primary ink, never a red box (red is rare, design.md 9.14).
         <p className="br-monitors__error" role="alert" data-testid="phase-gate-refusal">
           <AlertCircle aria-hidden="true" />
           {fieldWord ? `${fieldWord}: ${refusal}` : refusal}

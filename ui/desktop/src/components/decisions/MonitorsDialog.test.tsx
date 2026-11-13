@@ -613,7 +613,7 @@ describe('each change applies when it is made', () => {
     fireEvent.click(toggle);
     const error = await screen.findByTestId('monitor-row-error');
     expect(error).toHaveTextContent('Nothing was saved: Form reached could not run.');
-    // Red is rare (design.md 9.13): the failure glyph and the words, in the primary ink.
+    // Red is rare (design.md 9.14): the failure glyph and the words, in the primary ink.
     const host = document.createElement('div');
     host.innerHTML = renderToStaticMarkup(<AlertCircle />);
     expect(error.querySelector('svg')?.innerHTML).toBe(host.querySelector('svg')?.innerHTML);

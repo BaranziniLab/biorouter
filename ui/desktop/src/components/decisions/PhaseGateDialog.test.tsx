@@ -345,7 +345,7 @@ describe('what the dialog says about a gate', () => {
     expect(within(note).getByTestId('phase-gate-waiting-chip')).toHaveTextContent(
       PHASE_GATE_COPY.waitingForYou
     );
-    // Red is rare (design.md 9.13): a neutral chip asks, never a tinted warning banner.
+    // Red is rare (design.md 9.14): a neutral chip asks, never a tinted warning banner.
     expect(note.outerHTML).not.toMatch(/warning|danger/);
     expect(within(note).getByRole('button', { name: /Why it waits/ })).toHaveAccessibleDescription(
       PHASE_GATE_COPY.needsPerson
@@ -528,7 +528,7 @@ describe('the person’s decisions', () => {
       'Only the person at the keyboard may pass, skip or retry a phase gate.'
     );
     expect(refusal).toHaveAttribute('role', 'alert');
-    // Ink, words and the failure glyph: no danger tone or wash (design.md 9.13).
+    // Ink, words and the failure glyph: no danger tone or wash (design.md 9.14).
     expect(refusal).toHaveClass('br-monitors__error');
     expect(refusal.outerHTML).not.toMatch(/danger|wash/);
     expect(refusal.querySelector('svg')?.innerHTML).toBe(failureGlyph());
