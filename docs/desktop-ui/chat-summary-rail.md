@@ -8,8 +8,8 @@
 > **Status:** Current. Built in the Codex simplicity redesign (WS-SUMMARY, October 2026); the
 > content was made calmer after the live QA of 2026-11-10 (collapsed sections, the subagent
 > peek), then divided into labelled sections with the agent grid on 2026-11-11, and made
-> sections without boxes (headings and hairlines, no phase cards) on 2026-11-12, with no red,
-> solid text and a flag for a phase gate later that day.
+> sections without boxes (headings and hairlines, no phase cards) on 2026-11-12, with no red
+> and a flag for a phase gate later that day.
 > **Audience:** developers working on the chat pane's layout, the summary, the artifact preview
 > or the yield ladder.
 
@@ -206,7 +206,7 @@ body's own scroll position (a CSS scroll timeline), so it needs no listener and 
 and a focused body drops it so its focus edge is drawn whole. Two type sizes only, 13px for rows
 and 12px for labels.
 
-**Red is rare, and text reads solid** (owner direction, 2026-11-12; `design.md` 9.14 and 9.15).
+**Red is rare** (owner direction, 2026-11-12; `design.md` 9.14).
 Nothing in the summary is drawn in a danger or warning ink. A failed subagent, a gate that did
 not pass and a decision check that errored are found by their shape and their word ("Failed",
 "Not passed", "Error"); a run or a gate that needs the person by its half fill or its accent and
@@ -214,8 +214,7 @@ its word ("Needs an answer", "Needs you"); a failed refresh is a sentence in the
 beside its Retry. A name, a phase title and a value are in the default ink at every status, and
 secondary text (a second line, a count, a key, a section label) is `--text-muted` itself, never
 the subtler step, a mix or an opacity fade. Every ink is a token, so a change to the app's inks
-(the ui-readability lane strengthens `--text-muted` at the token layer) reaches the summary with
-no edit here. `styles/summaryRail.test.ts` holds both rules at the source.
+reaches the summary with no edit here. `styles/summaryRail.test.ts` holds both rules at the source.
 
 The body is divided into sections a person can scan (owner request, 2026-11-11, modelled on
 Claude Code's Background tasks panel): **To do**, **Plan** (or **Agents** when the chat has
