@@ -436,6 +436,23 @@ describe('with a phase plan', () => {
     expect(screen.getByTestId('subagent-cell-r3')).toBeInTheDocument();
   });
 
+  it('draws a group of one as its row alone, and its square only while folded and unfinished', () => {
+    draw(data(rows, plan));
+    // Open: the lone running agent is its row, with no square above it.
+    const other = document.querySelector<HTMLElement>('[data-group="other"]')!;
+    expect(within(other).getByTestId('subagent-row-loose')).toBeInTheDocument();
+    expect(within(other).queryByTestId('subagent-cell-loose')).toBeNull();
+    expect(other.querySelector('.br-agent-grid')).toBeNull();
+    // A finished phase of one, opened, is its row alone too.
+    fireEvent.click(screen.getByRole('button', { name: /^Plan the search/ }));
+    expect(screen.getByTestId('subagent-row-p1')).toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-cell-p1')).toBeNull();
+    // Folded, the square is the only sign of where the running agent stands.
+    fireEvent.click(within(other).getByRole('button', { name: /^Other agents/ }));
+    expect(within(other).queryByTestId('subagent-row-loose')).toBeNull();
+    expect(within(other).getByTestId('subagent-cell-loose')).toBeInTheDocument();
+  });
+
   it('lists a subagent in no phase under Other agents, inside the Plan section', () => {
     draw(data(rows, plan));
     const other = document.querySelector<HTMLElement>('[data-group="other"]')!;

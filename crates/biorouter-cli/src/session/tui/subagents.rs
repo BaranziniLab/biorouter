@@ -1371,9 +1371,11 @@ fn list_lines(
         if let Some(head) = group_head_line(model, &group, width) {
             out.push((LineKind::Head, head));
         }
-        if !two_line && model.plan.is_some() && !group.rows.is_empty() {
+        if !two_line && model.plan.is_some() && group.rows.len() > 1 {
             // The marks keep spawn order, so a mark never moves while the
-            // phase runs; the rows under them are in head order.
+            // phase runs; the rows under them are in head order. A phase of
+            // one is its row alone, which leads with the same mark, as the
+            // desktop's group of one draws no grid (`groupDrawsGrid`).
             let mut spawned = group.rows.clone();
             spawned.sort_unstable();
             let rows: Vec<&PaneRow> = spawned.iter().map(|&i| &model.rows[i]).collect();
@@ -3174,6 +3176,61 @@ mod tests {
         for row in &first_rows {
             assert!(row.contains("⊠"), "a failure leads:\n{all}");
         }
+    }
+
+    /// Live check (2026-11-12): a phase of one in a larger plan drew one mark on
+    /// a line of its own above the one row that already leads with it. A phase
+    /// of one is now its row alone, as the desktop's group of one draws no grid;
+    /// a phase of two or more keeps its line of marks.
+    #[test]
+    fn a_phase_of_one_is_its_row_alone() {
+        use SubagentRunStatus as S;
+        let model = review_model(
+            "Gather and extend",
+            &[
+                ReviewPhase {
+                    id: "gather",
+                    title: "Gather the facts",
+                    kind: PhaseKind::Research,
+                    status: PhaseStatus::Completed,
+                    n: 5,
+                    statuses: &[S::Completed],
+                    judge_every: 0,
+                    quiet_at: None,
+                    gate: None,
+                    held_by: None,
+                },
+                ReviewPhase {
+                    id: "extra",
+                    title: "One more question",
+                    kind: PhaseKind::Research,
+                    status: PhaseStatus::InProgress,
+                    n: 1,
+                    statuses: &[S::Running],
+                    judge_every: 0,
+                    quiet_at: None,
+                    gate: None,
+                    held_by: None,
+                },
+            ],
+        );
+        let frame = side_frame(model, 50, 30);
+        let all = frame.join("\n");
+        let after = |title: &str| {
+            let at = frame.iter().position(|l| l.contains(title)).expect(&all);
+            frame[at + 1].trim_start_matches('│').trim().to_string()
+        };
+        // Five: a line of marks under the heading, then the rows.
+        let gather = after("Gather the facts");
+        assert!(gather.starts_with('■') && !gather.contains(" · "), "{all}");
+        // One: the row straight under the heading, led by its own mark.
+        let extra = after("One more question");
+        assert!(extra.starts_with('▣') && extra.contains(" · "), "{all}");
+        assert_eq!(
+            all.matches('▣').count(),
+            1,
+            "one mark for one agent:\n{all}"
+        );
     }
 
     /// Arrowing past a group's five rows draws the row the selection reached,

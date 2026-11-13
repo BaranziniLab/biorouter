@@ -51,6 +51,7 @@ import {
   agentRowMarkPx,
   gateMarkKind,
   groupDrawsGrid,
+  groupDrawsGridFolded,
   splitHead,
   type AgentGridSize,
   type AgentGroup,
@@ -264,7 +265,7 @@ interface GroupView {
   /** The title: the phase's, "Other agents", or none for `all`. */
   title: string | null;
   open: boolean;
-  /** Draws its grid of squares above its rows. */
+  /** Draws its grid of squares above its rows: a group of two or more in a larger chat. */
   grid: boolean;
   /** The rows drawn: every one, or the head and, once shown, the rest. */
   shown: SubagentRow[];
@@ -276,8 +277,8 @@ interface GroupView {
   /**
    * Folded, it still draws its grid: some agent in it is not finished (running,
    * waiting, failed, not started), so the grid is the group's live summary, as
-   * the reference's "Check 2/3" is. A folded group whose every agent finished is
-   * its line alone.
+   * the reference's "Check 2/3" is, a group of one included. A folded group whose
+   * every agent finished is its line alone (`groupDrawsGridFolded`).
    */
   gridWhileFolded: boolean;
 }
@@ -346,8 +347,7 @@ function buildView(
       hidden = split.rest.length;
     }
     const moreKey = grid && hidden > 0 ? `more:${key}` : null;
-    const gridWhileFolded =
-      !open && grid && group.rows.some((row) => agentMarkKind(row) !== 'done');
+    const gridWhileFolded = !open && groupDrawsGridFolded(group.rows, size);
     const view: GroupView = {
       group,
       key,
