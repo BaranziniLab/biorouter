@@ -161,7 +161,9 @@ describe('Home: decision monitors before the first message', () => {
   it('the + menu offers them, and they open in draft mode', async () => {
     render(<Hub setView={vi.fn()} />);
     await userEvent.click(screen.getByRole('button', { name: 'Add to message' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Decision monitors…' }));
+    await userEvent.click(
+      await screen.findByRole('menuitem', { name: 'Decision models and monitors…' })
+    );
     expect(await screen.findByTestId('monitors-draft-note')).toBeInTheDocument();
   });
 

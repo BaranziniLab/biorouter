@@ -1,10 +1,11 @@
 /**
  * The first monitor's way in. The summary's Decisions section is drawn only once
  * a chat has a decision call or a monitor, so the composer's `+` menu carries a
- * "Decision monitors…" row that opens the chat's Monitors dialog. Before the chat
- * exists it opens the dialog in draft mode (DR-33, design §4): monitors set then
- * start with the chat, which is how a chat on a private model gets a public
- * decision model. It was absent there until the mixed-tier ruling.
+ * "Decision models and monitors…" row that opens the chat's Monitors dialog, which
+ * also holds the chat's decision model (W2-7). Before the chat exists it opens the
+ * dialog in draft mode (DR-33, design §4): monitors set then start with the chat,
+ * which is how a chat on a private model gets a public decision model. It was
+ * absent there until the mixed-tier ruling.
  */
 import React from 'react';
 import { readFileSync } from 'node:fs';
@@ -112,6 +113,8 @@ describe("the composer's + menu: decision monitors", () => {
     renderComposer('chat-1', onOpen);
     const user = await openPlusMenu();
     const row = screen.getByRole('menuitem', { name: COMPOSER_COPY.plus.decisionMonitors });
+    // The row names both things the dialog holds: the chat's decision model and its monitors.
+    expect(row).toHaveAccessibleName('Decision models and monitors…');
     await user.click(row);
     expect(onOpen).toHaveBeenCalledTimes(1);
     // Choosing it closes the menu.

@@ -290,6 +290,28 @@ describe('the Monitors dialog in a real layout engine', () => {
     }
   });
 
+  it('says a row’s whole line, timing included, without cutting it (W3-8)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const line = await tab.evaluate(() => {
+        const node = document.querySelector(
+          '[data-monitor-id="a"] [data-testid="monitor-line"]'
+        ) as HTMLElement;
+        return {
+          text: node.textContent,
+          scrollWidth: node.scrollWidth,
+          clientWidth: node.clientWidth,
+        };
+      });
+      expect(line.text).toBe('Stop the turn · when P(yes) is at or above 0.85 · after each step');
+      // The line is cut with an ellipsis when it is too long; this one is not.
+      expect(line.scrollWidth).toBeLessThanOrEqual(line.clientWidth);
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('switches Fires when to Below by pointer and by keyboard (R1-1)', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
