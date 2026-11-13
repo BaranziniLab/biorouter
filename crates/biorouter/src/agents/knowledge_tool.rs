@@ -37,7 +37,15 @@ impl Agent {
     ) -> ToolResult<Vec<Content>> {
         let chat_provider = self.provider().await.ok();
         let pinned_provider = std::sync::Arc::new(tokio::sync::Mutex::new(chat_provider.clone()));
-        let chat_capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
+        // Issue #56: capped to the running turn. This branch returns before the
+        // loop's own sample, and the capability decides which knowledge base
+        // ids `resolve_target_kb` may name to the model. After a mid-turn
+        // switch to a private model the turn still answers on the public one,
+        // so it is told no private base's id until the next message.
+        let chat_capability = self.capped_to_turn(
+            &session.id,
+            crate::privacy::CallCapability::sample(&pinned_provider).await,
+        );
         handle_ingest_conversation_with_provider(
             arguments,
             session,

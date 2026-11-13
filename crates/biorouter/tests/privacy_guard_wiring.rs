@@ -1497,8 +1497,9 @@ const REGISTRY: &[Guard] = &[
         defined_in: "crates/biorouter/src/privacy/refusal.rs",
         decides: "DR-33 (design §3.9): `privacy_refusal`'s rule, unchanged, with the sentence \
                   naming the decision model when the sampled capability says one made the chat \
-                  public. It decides nothing of its own; it exists so no gate re-spells the \
-                  rule to pick its words",
+                  public, or (issue #56) saying the chat's new private model takes effect from \
+                  the next message when the person switched it while the turn ran. It decides \
+                  nothing of its own; it exists so no gate re-spells the rule to pick its words",
         status: Status::Wired,
         sites: &[
             Site {
@@ -1660,7 +1661,9 @@ const REGISTRY: &[Guard] = &[
             kind: SiteKind::Guard,
             what: "`Agent::capped_to_turn`, which every call on a running turn is admitted \
                    through (`sample_turn_call`: the loop's tool calls, the schedule branch, the \
-                   prefetch, Gate E's roster and the spawn check), and `TurnCeilings::lower`, \
+                   prefetch, Gate E's roster and the spawn check; and, called directly, the two \
+                   knowledge-ingest branches in `knowledge_tool.rs` and \
+                   `knowledge_source_tool.rs`), and `TurnCeilings::lower`, \
                    which narrows a turn's ceiling to the slot as the loop pinned its provider. \
                    Losing either caller leaves every behavioural gate test green on a turn \
                    that never switches model, which is all of them but one",

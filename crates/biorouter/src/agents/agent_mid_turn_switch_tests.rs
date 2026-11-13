@@ -27,6 +27,10 @@ const PRIVATE_EXTENSION: &str = "ucsfomopagent";
 const PRIVATE_TOOL: &str = "ucsfomopagent__data_sources";
 /// The words every tier refusal of a private extension carries.
 const REFUSED: &str = "is a private extension";
+/// The words only the refusal after a mid-turn switch to a private model carries.
+const NEXT_MESSAGE: &str = "takes effect from the next message";
+/// The words the usual refusal asks the person to act on.
+const ASK_TO_SWITCH: &str = "switch this chat to a private model";
 
 /// What a scripted model does to the chat on its first call, before it answers.
 enum Switch {
@@ -309,6 +313,11 @@ async fn a_switch_to_a_private_model_waits_for_the_next_turn() {
         "the public model was handed the private extension's result instead of a \
          refusal: {shown}"
     );
+    assert!(
+        shown.contains(NEXT_MESSAGE) && !shown.contains(ASK_TO_SWITCH),
+        "the person just switched this chat to a private model, and the refusal asked \
+         for that switch again instead of saying it starts with the next message: {shown}"
+    );
     assert_eq!(
         fx.agent
             .config
@@ -368,6 +377,10 @@ async fn a_switch_to_a_less_private_model_applies_at_once() {
     assert!(
         shown.contains(REFUSED),
         "the private tool ran after the slot moved to a public model: {shown}"
+    );
+    assert!(
+        shown.contains(ASK_TO_SWITCH) && !shown.contains(NEXT_MESSAGE),
+        "a chat now on a public model keeps the usual refusal: {shown}"
     );
 }
 
@@ -470,6 +483,12 @@ async fn the_ceiling_holds_for_the_turn_and_no_longer() {
         .await
         .expect_err("a turn that started public reached the private tool");
     assert!(refusal.contains(REFUSED), "{refusal}");
+    assert_eq!(
+        refusal,
+        crate::privacy::refusal::private_from_next_turn_sentence(PRIVATE_EXTENSION),
+        "the refusal after a switch to a private model must say it starts with the next \
+         message"
+    );
     assert!(!fx
         .agent
         .list_tools(&fx.session_id, None)
@@ -663,4 +682,104 @@ async fn a_spawn_waits_for_a_switch_to_another_institution() {
         public,
         CallCapability::for_test(ProviderTier::Private, false)
     ));
+}
+
+/// The refusal Gate C gives on a chat that was already public when its turn
+/// started and is still public: the usual sentence, unchanged. Only a slot that
+/// moved to a private model while the turn ran is told about the next message.
+#[tokio::test]
+async fn a_chat_that_stays_public_keeps_the_usual_refusal() {
+    let public = Scripted::new("mid_turn_public", ProviderTier::Public, vec![]);
+    let fx = fixture(public).await;
+    let started_public = fx.agent.call_capability(&fx.session_id).await;
+    let _held = fx.agent.turn_ceilings.open(&fx.session_id, started_public);
+    let refusal = dispatch_private_tool(&fx)
+        .await
+        .expect_err("a public chat reached the private tool");
+    assert!(
+        refusal.contains(ASK_TO_SWITCH) && !refusal.contains(NEXT_MESSAGE),
+        "{refusal}"
+    );
+}
+
+/// The two knowledge-ingest tools whose `resolve_target_kb` result is shown
+/// to the model, each asked with no target base so they answer with the
+/// candidate list. Returns (conversation ingest, source ingest).
+async fn knowledge_candidates(fx: &Fixture) -> (String, String) {
+    let session = fx
+        .agent
+        .config
+        .session_manager
+        .get_session(&fx.session_id, false)
+        .await
+        .unwrap();
+    let conversation = fx
+        .agent
+        .handle_ingest_conversation(serde_json::json!({}), &session, None)
+        .await
+        .expect_err("no target base, so the conversation ingest lists the candidates")
+        .message
+        .to_string();
+    let source = fx
+        .agent
+        .handle_ingest_source(
+            serde_json::json!({ "text": "meeting notes" }),
+            &session,
+            None,
+        )
+        .await
+        .expect_err("no target base, so the source ingest lists the candidates")
+        .message
+        .to_string();
+    (conversation, source)
+}
+
+/// Issue #56: the two knowledge-ingest branches of `dispatch_tool_call` return
+/// before the loop's own sample, and their capability decides which knowledge
+/// base ids `resolve_target_kb` names to the model. A public turn whose chat
+/// was switched to a private model while it ran still answers on the public
+/// model, so it is named no private base. Once the turn is over, the private
+/// model is named both.
+#[tokio::test]
+async fn knowledge_ingest_names_no_private_base_after_a_mid_turn_switch() {
+    // `KnowledgeService::new_default()` resolves the knowledge root from
+    // `Paths`, so this runs alone, under a root no other test reads.
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let public = Scripted::new("mid_turn_public", ProviderTier::Public, vec![]);
+    let private = Scripted::new("mid_turn_private", ProviderTier::Private, vec![]);
+    let fx = fixture(public).await;
+    let svc = biorouter_mcp::knowledge::service::KnowledgeService::new_default().unwrap();
+    svc.create_base("open-notes", "Open notes", None).unwrap();
+    svc.create_base("clinic-notes", "Clinic notes", None)
+        .unwrap();
+    crate::knowledge::tier::raise_unlocked(svc.root(), "clinic-notes", true).unwrap();
+    // An explicit "no primary", so a KB-less ingest lists its candidates.
+    svc.set_primary_for_session(&fx.session_id, None).unwrap();
+
+    let started_public = fx.agent.call_capability(&fx.session_id).await;
+    let held = fx.agent.turn_ceilings.open(&fx.session_id, started_public);
+    fx.agent
+        .update_provider(private, &fx.session_id)
+        .await
+        .unwrap();
+    let (conversation, source) = knowledge_candidates(&fx).await;
+    for named in [&conversation, &source] {
+        assert!(named.contains("open-notes"), "{named}");
+        assert!(
+            !named.contains("clinic-notes"),
+            "a turn that started public was named a private knowledge base after a switch \
+             to a private model: {named}"
+        );
+    }
+
+    drop(held);
+    let (conversation, source) = knowledge_candidates(&fx).await;
+    for named in [&conversation, &source] {
+        assert!(
+            named.contains("open-notes") && named.contains("clinic-notes"),
+            "with no turn running, the private model is named its own bases: {named}"
+        );
+    }
 }
