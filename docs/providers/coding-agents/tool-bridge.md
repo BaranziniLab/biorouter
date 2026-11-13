@@ -137,8 +137,8 @@ get none. Four things keep the bridge in step with it:
   permission inspector leaves both person tools to that card, so a change shows one card, and
   `crew__change` is offered only where `user_proof_available()` is true.
 
-A read takes the bridge's sampled `CallCapability`, sampled from the chat's provider slot (its
-DR-33 tier, not the provider rebuilt for one iteration of the reply loop), which is Public for both
+A read takes the bridge's sampled `CallCapability`: the lesser of the chat's provider slot (its
+DR-33 tier) and the provider rebuilt for one iteration of the reply loop, which is Public for both
 coding agents. So a person tool returns only what a public model may read: a Public workspace
 through a Public connection, and its public-safe content. A bridged read of a Private workspace is
 withheld, as for any public model. A worker tool is judged the same way: Crew's dispatch check
