@@ -1819,8 +1819,9 @@ fn context_spans(app: &App) -> Vec<Span<'static>> {
     let pct = (((app.status.used_tokens as f64 / limit as f64) * 100.0).round() as usize).min(100);
     let width = 12usize;
     let filled = (pct * width / 100).min(width);
-    // On-brand until the window is nearly full, then warn (no green).
-    let color = if pct < 85 { ACCENT } else { Color::Red };
+    // On-brand until the window is nearly full, then warn (no green, and no red:
+    // a full window means compaction, not danger; design.md 9.14).
+    let color = if pct < 85 { ACCENT } else { Color::Yellow };
     vec![
         Span::styled("context ", dim),
         Span::styled("▕", dim),
