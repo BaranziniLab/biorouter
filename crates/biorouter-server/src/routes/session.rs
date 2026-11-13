@@ -22,8 +22,8 @@ use biorouter::privacy::declassify::{
 use biorouter::privacy::{ProviderTier, SessionClassification};
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
-    ActivityWindow, CrewContextRefusal, ModelUsageRow, SessionInsights, SidebarCursor,
-    TruncateOutcome,
+    ActivityWindow, CrewContextRefusal, ModelUsageRow, PublicBecause, SessionInsights,
+    SidebarCursor, SidebarRow, TruncateOutcome,
 };
 use biorouter::session::{EnabledExtensionsState, Session, SessionSummary, SessionType};
 use biorouter::workflow::Workflow;
@@ -606,6 +606,7 @@ async fn list_sidebar_sessions(
     let next_cursor = has_more
         .then(|| rows.last().map(|row| encode_sidebar_cursor(&row.cursor)))
         .flatten();
+    attach_public_because(&state, &mut rows).await;
 
     Ok(Json(SidebarSessionListResponse {
         sessions: rows.into_iter().map(|row| row.summary).collect(),
@@ -618,7 +619,8 @@ async fn list_sidebar_sessions(
 /// design §5): the decision model it names, as the daemon computed it, so no
 /// renderer recomputes the fold. Present only on the single-session read, and
 /// only when a decision model (or a public parent's ceiling) is what made the
-/// chat public; a listing row shows its lock and nothing more.
+/// chat public. A sidebar row carries the short form, [`PublicBecause`], from
+/// the same reading (owner decision 3), and only for a decision model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PrivacyBasis {
@@ -702,6 +704,23 @@ pub struct SessionDetail {
 /// (`decision::save::row_bound_model_tier`, what the save checks read). Text only:
 /// no gate reads it. With the master switch off nothing is said.
 async fn privacy_basis(state: &AppState, session: &Session) -> Option<PrivacyBasis> {
+    let bound = bound_model_tier_for_basis(state, session).await?;
+    basis_for(session, bound)
+}
+
+/// The sidebar row's [`PublicBecause`] for `session`: [`privacy_basis`]'s
+/// reading, the same fold against the same bound model, cut to the decision
+/// model and where it runs. `None` wherever `privacy_basis` is, and also for a
+/// public parent's ceiling, which is not a decision model of this chat.
+async fn public_because(state: &AppState, session: &Session) -> Option<PublicBecause> {
+    let bound = bound_model_tier_for_basis(state, session).await?;
+    public_because_for(session, bound)
+}
+
+/// The tier of the language model `session` is bound to, which a decision model
+/// must have lowered for either reason to be named. `None` (say nothing) with
+/// the master switch off, on a Private chat, and for a row that names no model.
+async fn bound_model_tier_for_basis(state: &AppState, session: &Session) -> Option<ProviderTier> {
     if !biorouter::privacy::privacy_tiers_enabled() || session.privacy_tier.is_private() {
         return None;
     }
@@ -711,20 +730,99 @@ async fn privacy_basis(state: &AppState, session: &Session) -> Option<PrivacyBas
     };
     // Off the row, the declaration the save checks use for a chat this
     // daemon does not hold, so the two never disagree about the bound model.
-    let bound = match held {
-        Some(tier) => tier,
-        None => biorouter::decision::save::row_bound_model_tier(session, true).await?,
-    };
-    basis_for(session, bound)
+    match held {
+        Some(tier) => Some(tier),
+        None => biorouter::decision::save::row_bound_model_tier(session, true).await,
+    }
+}
+
+/// The row's fold, as the cause it names, only when it lowers a chat bound to
+/// `bound_model_tier`. The one place this file computes the fold
+/// (`DECISION_AXES_SITES` counts it): [`basis_for`] and
+/// [`public_because_for`] both read it, so the chat header and the sidebar
+/// cannot name different causes.
+fn lowered_by(
+    session: &Session,
+    bound_model_tier: ProviderTier,
+) -> Option<biorouter::privacy::decision_axes::LoweredBy> {
+    let axes = biorouter::privacy::decision_axes::from_row(session);
+    let cause = axes.lowered_by()?;
+    axes.lowers(bound_model_tier).then(|| cause.clone())
 }
 
 /// [`privacy_basis`] once the bound model's tier is known: the row's fold,
 /// named only when it lowers that model.
 fn basis_for(session: &Session, bound_model_tier: ProviderTier) -> Option<PrivacyBasis> {
-    let axes = biorouter::privacy::decision_axes::from_row(session);
-    let cause = axes.lowered_by()?;
-    axes.lowers(bound_model_tier)
-        .then(|| PrivacyBasis::from(cause))
+    lowered_by(session, bound_model_tier)
+        .as_ref()
+        .map(PrivacyBasis::from)
+}
+
+/// [`public_because`] once the bound model's tier is known. A public parent's
+/// ceiling is left out (owner decision 3 names a decision model; a ceiling may
+/// record none, and then its host is a placeholder), and so is a cause with no
+/// model name. Everything it names is a public decision model of a public chat:
+/// the fold counts only names that declare Public, and is inert on a Private
+/// chat.
+fn public_because_for(session: &Session, bound_model_tier: ProviderTier) -> Option<PublicBecause> {
+    use biorouter::privacy::decision_axes::NameSource;
+    let cause = lowered_by(session, bound_model_tier)?;
+    if matches!(cause.source, NameSource::Parent) || cause.model.trim().is_empty() {
+        return None;
+    }
+    Some(PublicBecause {
+        model: cause.model_name(),
+        place: cause.host.place(),
+        others: u32::try_from(cause.others).unwrap_or(u32::MAX),
+    })
+}
+
+/// How many flagged rows [`attach_public_because`] reads at once. The session
+/// store's pool holds four connections and a running turn writes through the
+/// same pool, so the sidebar takes at most half of it.
+const PUBLIC_BECAUSE_READS_AT_ONCE: usize = 2;
+
+/// Owner decision 3 (DR-33): a sidebar row whose chat a decision model made
+/// public carries the short reason for its hover note, and no other row does.
+///
+/// Only rows the page already holds are considered, so the listing's own
+/// filter (`keyset_listing_scope`, `lists_session`) decides who sees what and
+/// nothing here widens it. Only PUBLIC rows the page flagged as holding a
+/// `public_basis.v1` record are read in full (metadata only, one read each,
+/// [`PUBLIC_BECAUSE_READS_AT_ONCE`] at a time), so a page without lowered
+/// chats costs nothing more, and a whole-list page holding many costs a
+/// fraction of one read per row. Each answer goes back to the row it was read
+/// for by its position on the page. A chat that turned private between the
+/// page and the read says nothing, because [`bound_model_tier_for_basis`]
+/// refuses a Private row, and a row whose read fails says nothing either.
+async fn attach_public_because(state: &AppState, rows: &mut [SidebarRow]) {
+    use futures::StreamExt;
+    if !biorouter::privacy::privacy_tiers_enabled() {
+        return;
+    }
+    let flagged: Vec<(usize, String)> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.holds_public_basis && !row.summary.privacy_tier.is_private())
+        .map(|(index, row)| (index, row.summary.id.clone()))
+        .collect();
+    if flagged.is_empty() {
+        return;
+    }
+    let read: Vec<(usize, Option<PublicBecause>)> = futures::stream::iter(flagged)
+        .map(|(index, id)| async move {
+            let because = match state.session_manager().get_session(&id, false).await {
+                Ok(session) => public_because(state, &session).await,
+                Err(_) => None,
+            };
+            (index, because)
+        })
+        .buffer_unordered(PUBLIC_BECAUSE_READS_AT_ONCE)
+        .collect()
+        .await;
+    for (index, because) in read {
+        rows[index].summary.public_because = because;
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -4678,32 +4776,33 @@ mod privacy_basis_tests {
         BasisAuthor, HostLabel, PublicBasis, PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION,
     };
 
-    /// A Public user chat whose monitor "Done" runs joey-1 on Baseten, with
-    /// the person's basis when `basis` names it.
-    fn chat(basis_for_id: Option<&str>) -> Session {
-        let mut row = Session {
-            id: "dr33-basis".to_string(),
-            session_type: SessionType::User,
-            ..Session::default()
-        };
-        row.extension_data.set_extension_state(
+    /// A monitor named `name` that runs `model` on Baseten.
+    fn monitor(name: &str, model: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": name.to_lowercase(),
+            "name": name,
+            "question": {"instructions": "Is the task done?", "kind": {"binary": {}}},
+            "model": {"provider": "baseten_decision", "model": model},
+            "threshold": 0.8,
+            "option": null,
+            "rearmBelow": null
+        })
+    }
+
+    /// Decision settings holding `monitors`, and the person's basis when
+    /// `basis_for_id` names a chat.
+    fn decision_data(
+        monitors: Vec<serde_json::Value>,
+        basis_for_id: Option<&str>,
+    ) -> biorouter::session::extension_data::ExtensionData {
+        let mut data = biorouter::session::extension_data::ExtensionData::new();
+        data.set_extension_state(
             DECISION_SETTINGS_STATE,
             DECISION_SETTINGS_VERSION,
-            serde_json::json!({
-                "defaultModel": null,
-                "monitors": [{
-                    "id": "done",
-                    "name": "Done",
-                    "question": {"instructions": "Is the task done?", "kind": {"binary": {}}},
-                    "model": {"provider": "baseten_decision", "model": "joey-1"},
-                    "threshold": 0.8,
-                    "option": null,
-                    "rearmBelow": null
-                }]
-            }),
+            serde_json::json!({"defaultModel": null, "monitors": monitors}),
         );
         if let Some(id) = basis_for_id {
-            row.extension_data.set_extension_state(
+            data.set_extension_state(
                 PUBLIC_BASIS_STATE,
                 PUBLIC_BASIS_VERSION,
                 serde_json::to_value(PublicBasis::new(
@@ -4715,7 +4814,18 @@ mod privacy_basis_tests {
                 .unwrap(),
             );
         }
-        row
+        data
+    }
+
+    /// A Public user chat whose monitor "Done" runs joey-1 on Baseten, with
+    /// the person's basis when `basis` names it.
+    fn chat(basis_for_id: Option<&str>) -> Session {
+        Session {
+            id: "dr33-basis".to_string(),
+            session_type: SessionType::User,
+            extension_data: decision_data(vec![monitor("Done", "joey-1")], basis_for_id),
+            ..Session::default()
+        }
     }
 
     #[test]
@@ -4777,5 +4887,278 @@ mod privacy_basis_tests {
         })
         .unwrap();
         assert!(bare.get("privacyBasis").is_none());
+    }
+
+    // ---- Owner decision 3: the sidebar row's hover note ----
+
+    #[test]
+    fn a_sidebar_row_names_the_decision_model_and_where_it_runs() {
+        let because = public_because_for(&chat(Some("dr33-basis")), ProviderTier::Private)
+            .expect("a Versa chat lowered by its Baseten monitor names it");
+        assert_eq!(
+            because,
+            PublicBecause {
+                model: "joey-1".to_string(),
+                place: "Baseten".to_string(),
+                others: 0,
+            }
+        );
+        // The wire carries the model and the place, and no count of others
+        // when there are none.
+        assert_eq!(
+            serde_json::to_value(&because).unwrap(),
+            serde_json::json!({"model": "joey-1", "place": "Baseten"})
+        );
+        // The same cause the chat header names, so the two cannot disagree.
+        let basis = basis_for(&chat(Some("dr33-basis")), ProviderTier::Private).unwrap();
+        assert_eq!(
+            (basis.model.as_str(), basis.place.as_str()),
+            (because.model.as_str(), because.place.as_str())
+        );
+    }
+
+    #[test]
+    fn a_sidebar_row_counts_the_other_public_decision_models() {
+        let mut row = chat(None);
+        row.extension_data = decision_data(
+            vec![monitor("Done", "joey-1"), monitor("Stuck", "joey-1")],
+            Some("dr33-basis"),
+        );
+        let because = public_because_for(&row, ProviderTier::Private).unwrap();
+        assert_eq!(because.others, 1);
+        assert_eq!(serde_json::to_value(&because).unwrap()["others"], 1);
+    }
+
+    #[test]
+    fn a_sidebar_row_says_nothing_where_no_decision_model_made_the_chat_public() {
+        // The chat's own model is public: it is public whatever it names.
+        assert_eq!(
+            public_because_for(&chat(Some("dr33-basis")), ProviderTier::Public),
+            None
+        );
+        // No person's basis: the public name is inert.
+        assert_eq!(public_because_for(&chat(None), ProviderTier::Private), None);
+        // A basis written for another chat is not this chat's.
+        assert_eq!(
+            public_because_for(&chat(Some("other")), ProviderTier::Private),
+            None
+        );
+        // A Private chat: nothing, whatever it stores.
+        let mut private = chat(Some("dr33-basis"));
+        private.privacy_tier = SessionClassification::Private;
+        assert_eq!(public_because_for(&private, ProviderTier::Private), None);
+    }
+
+    /// A subagent made public by its public parent's ceiling is public, but no
+    /// decision model of its own did it: the chat header explains that, the
+    /// sidebar row says nothing (owner decision 3).
+    #[test]
+    fn a_public_parents_ceiling_is_not_a_decision_model_of_the_row() {
+        use biorouter::privacy::decision_axes::{
+            LoweredBy, NameSource, PrivacyCeiling, PRIVACY_CEILING_STATE, PRIVACY_CEILING_VERSION,
+        };
+        for recorded in [
+            None,
+            Some(LoweredBy {
+                source: NameSource::Monitor,
+                label: "Done".to_string(),
+                model: "joey-1".to_string(),
+                host: HostLabel::Baseten,
+                others: 0,
+            }),
+        ] {
+            let mut child = Session {
+                id: "dr33-child".to_string(),
+                session_type: SessionType::SubAgent,
+                parent_session_id: Some("dr33-parent".to_string()),
+                ..Session::default()
+            };
+            child.extension_data.set_extension_state(
+                PRIVACY_CEILING_STATE,
+                PRIVACY_CEILING_VERSION,
+                serde_json::to_value(PrivacyCeiling::public_from("dr33-parent", recorded.clone()))
+                    .unwrap(),
+            );
+            assert!(
+                basis_for(&child, ProviderTier::Private).is_some(),
+                "the header still explains a ceiling ({recorded:?})"
+            );
+            assert_eq!(
+                public_because_for(&child, ProviderTier::Private),
+                None,
+                "a ceiling is not this row's decision model ({recorded:?})"
+            );
+        }
+    }
+
+    // ---- The route, against the shared (sandboxed) session store ----
+
+    async fn get_sidebar_as_the_person(
+        state: Arc<AppState>,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use axum::body::{to_bytes, Body};
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let req = Request::builder()
+            .method("GET")
+            .uri("/sessions/sidebar?limit=50")
+            .header("X-User-Action", super::diverge_tests::TEST_USER_ACTION_KEY)
+            .body(Body::empty())
+            .unwrap();
+        let res = routes(state).oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// One listed chat bound to `provider`, holding a Baseten monitor and the
+    /// person's basis for itself, raised to Private when `private`.
+    async fn seed_chat(
+        manager: &biorouter::session::session_manager::SessionManager,
+        provider: &str,
+        private: bool,
+    ) -> String {
+        seed_chat_naming(manager, provider, private, "joey-1").await
+    }
+
+    /// [`seed_chat`] with its monitor running `decision_model` on Baseten.
+    async fn seed_chat_naming(
+        manager: &biorouter::session::session_manager::SessionManager,
+        provider: &str,
+        private: bool,
+        decision_model: &str,
+    ) -> String {
+        use biorouter::model::ModelConfig;
+        let session = manager
+            .create_session(
+                std::path::PathBuf::from("/tmp/sidebar_public_because"),
+                format!("sidebar-public-because {provider} {private}"),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        manager
+            .add_message(&session.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        let mut update = manager
+            .update(&session.id)
+            .provider_name(provider)
+            .model_config(ModelConfig::new("gpt-4o").unwrap())
+            .extension_data(decision_data(
+                vec![monitor("Done", decision_model)],
+                Some(&session.id),
+            ));
+        if private {
+            update = update.raise_privacy(SessionClassification::Private, "test: a private chat");
+        }
+        update.apply().await.unwrap();
+        session.id
+    }
+
+    /// End to end: `GET /sessions/sidebar` carries `public_because` on the one
+    /// row a decision model made public, and on no other, including a private
+    /// chat holding the very same records and a chat whose own model is public.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn the_sidebar_route_names_only_the_chat_a_decision_model_made_public() {
+        super::diverge_tests::install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+        let lowered = seed_chat(manager, "versa_azure", false).await;
+        let public_model = seed_chat(manager, "openai", false).await;
+        let private = seed_chat(manager, "versa_azure", true).await;
+
+        let (status, body) = get_sidebar_as_the_person(state.clone()).await;
+        let rows = body["sessions"].as_array().cloned().unwrap_or_default();
+        let row = |id: &str| {
+            rows.iter()
+                .find(|row| row["id"] == id)
+                .cloned()
+                .unwrap_or_else(|| panic!("{id} is not on the page: {body}"))
+        };
+        let (lowered_row, public_row, private_row) =
+            (row(&lowered), row(&public_model), row(&private));
+
+        for id in [&lowered, &public_model, &private] {
+            let _ = manager.delete_session(id).await;
+        }
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(
+            lowered_row["public_because"],
+            serde_json::json!({"model": "joey-1", "place": "Baseten"}),
+            "{lowered_row}"
+        );
+        assert!(
+            public_row.get("public_because").is_none(),
+            "a chat on a public model is public whatever it names: {public_row}"
+        );
+        assert_eq!(private_row["privacy_tier"], "private");
+        assert!(
+            private_row.get("public_because").is_none(),
+            "a private chat never carries a public note: {private_row}"
+        );
+        for row in &rows {
+            assert!(
+                row.get("holds_public_basis").is_none(),
+                "the prefilter never leaves the daemon: {row}"
+            );
+        }
+    }
+
+    /// The flagged rows are read several at a time, and each answer must land
+    /// on the row it was read for: a page of lowered chats, each naming its own
+    /// decision model, interleaved with chats that name none, comes back with
+    /// every note on its own row and none on the others.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn every_flagged_row_gets_its_own_note_when_read_together() {
+        super::diverge_tests::install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+        let mut lowered = Vec::new();
+        let mut plain = Vec::new();
+        for i in 0..(PUBLIC_BECAUSE_READS_AT_ONCE * 3 + 1) {
+            let model = format!("joey-{i}");
+            lowered.push((
+                seed_chat_naming(manager, "versa_azure", false, &model).await,
+                model,
+            ));
+            plain.push(seed_chat(manager, "openai", false).await);
+        }
+
+        let (status, body) = get_sidebar_as_the_person(state.clone()).await;
+        let rows = body["sessions"].as_array().cloned().unwrap_or_default();
+        let row = |id: &str| {
+            rows.iter()
+                .find(|row| row["id"] == id)
+                .cloned()
+                .unwrap_or_else(|| panic!("{id} is not on the page: {body}"))
+        };
+        let lowered_rows: Vec<(serde_json::Value, String)> = lowered
+            .iter()
+            .map(|(id, model)| (row(id), model.clone()))
+            .collect();
+        let plain_rows: Vec<serde_json::Value> = plain.iter().map(|id| row(id)).collect();
+
+        for id in lowered.iter().map(|(id, _)| id).chain(plain.iter()) {
+            let _ = manager.delete_session(id).await;
+        }
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        for (row, model) in &lowered_rows {
+            assert_eq!(
+                row["public_because"],
+                serde_json::json!({"model": model, "place": "Baseten"}),
+                "{row}"
+            );
+        }
+        for row in &plain_rows {
+            assert!(row.get("public_because").is_none(), "{row}");
+        }
     }
 }

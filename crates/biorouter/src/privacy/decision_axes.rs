@@ -1098,6 +1098,17 @@ fn join_and(items: &[String]) -> String {
     }
 }
 
+/// The bytes the basis record's key is written as inside a stored
+/// `extension_data` column (a flat JSON object keyed `"<name>.<version>"`),
+/// quotes included. Read only: the summary listing searches for it to tell
+/// which public rows are worth reading in full, and
+/// `SessionManager::write_public_basis` stays the key's one writer. It lives
+/// here, beside the key, so the session store names the key only inside that
+/// writer (`public_basis_has_one_writer`).
+pub fn public_basis_json_key() -> String {
+    format!("\"{PUBLIC_BASIS_STATE}.{PUBLIC_BASIS_VERSION}\"")
+}
+
 /// What [`turn_off_public_names`] would do to `data`, without changing it.
 pub fn public_names_off_preview(data: &ExtensionData) -> PublicNamesOff {
     let mut copy = data.clone();

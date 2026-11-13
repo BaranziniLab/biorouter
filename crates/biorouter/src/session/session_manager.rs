@@ -865,6 +865,32 @@ pub struct SessionSummary {
     /// private chat without an N+1 `get_session` per row.
     #[serde(default = "SessionClassification::public")]
     pub privacy_tier: SessionClassification,
+    /// DR-33: set only on a public chat whose own model is private and which a
+    /// public decision model made public, for the sidebar row's hover note
+    /// ("Public: its decision model joey-1 runs on Baseten"). Absent on every
+    /// other chat, and on every listing but `GET /sessions/sidebar`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(inline)]
+    pub public_because: Option<PublicBecause>,
+}
+
+/// The public decision model that made a chat public (DR-33), as a sidebar row
+/// names it. The daemon fills it from the same reading `GET /sessions/{id}`'s
+/// `privacyBasis` comes from, so no renderer recomputes the fold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PublicBecause {
+    /// The model as a person reads it (`joey-1`).
+    pub model: String,
+    /// Where it runs, in words (`Baseten`, `Ollama's cloud`).
+    pub place: String,
+    /// How many other public decision models the chat also names. Zero, and
+    /// then absent, when this is the only one.
+    #[serde(default, skip_serializing_if = "is_zero_count")]
+    pub others: u32,
+}
+
+fn is_zero_count(count: &u32) -> bool {
+    *count == 0
 }
 
 /// Where a sidebar page resumes: the sort key of the last row that page emitted.
@@ -896,6 +922,13 @@ pub struct SidebarCursor {
 pub struct SidebarRow {
     pub summary: SessionSummary,
     pub cursor: SidebarCursor,
+    /// Whether the row is classified Public and its stored `extension_data`
+    /// mentions a `public_basis.v1` record (DR-33). Only a prefilter: it says
+    /// which rows are worth reading in full to ask whether a decision model
+    /// made them public, and never decides that itself. A false positive costs
+    /// one read; a row without the record cannot have been lowered by a
+    /// person's save, so nothing is missed. Never serialized.
+    pub holds_public_basis: bool,
 }
 
 /// One row of a page of the FULL listing (`GET /sessions?limit=`, which History
@@ -4180,6 +4213,8 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
             // yields None rather than erroring.
             diverged_from: row.try_get("diverged_from").ok().flatten(),
             privacy_tier: read_privacy_tier(row),
+            // Filled by `GET /sessions/sidebar` alone, after the page is read.
+            public_because: None,
         })
     }
 }
@@ -4197,6 +4232,14 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SidebarRow {
                 updated_at: row.try_get("cursor_updated_at")?,
                 id: summary.id.clone(),
             },
+            // Tolerant like the summary's optional columns: a projection
+            // without it reads as "nothing to look at", which only ever omits
+            // a hover note.
+            holds_public_basis: row
+                .try_get::<Option<i64>, _>("holds_public_basis")
+                .ok()
+                .flatten()
+                .is_some_and(|flag| flag != 0),
             summary,
         })
     }
@@ -8644,6 +8687,24 @@ impl SessionStorage {
             .map_err(Into::into)
     }
 
+    /// The bytes a stored `public_basis.v1` record's key is written as inside
+    /// `extension_data` (a flat JSON object keyed `"<name>.<version>"`), quotes
+    /// included, for the summary listing's `holds_public_basis` prefilter.
+    ///
+    /// A substring test, not `json_extract`: `json_extract` raises an error on a
+    /// malformed column and would fail the whole page over one bad row, and the
+    /// prefilter may over-match (a quoted mention elsewhere costs one extra read)
+    /// but cannot under-match, because serde writes the key exactly so. The name
+    /// and version are plain ASCII with no quote, so splicing them into a SQL
+    /// literal is safe; `public_basis_key_is_a_safe_sql_literal` pins that.
+    ///
+    /// The needle comes from `decision_axes`, beside the key's definition, so
+    /// this file names the key only inside its one writer
+    /// (`public_basis_has_one_writer`).
+    fn public_basis_key() -> String {
+        crate::privacy::decision_axes::public_basis_json_key()
+    }
+
     /// The SQL behind both summary listings: one projection, one set of filters,
     /// and only the paging differs (`page` is the `LIMIT`/`OFFSET` tail, or the
     /// keyset predicate plus `LIMIT`).
@@ -8691,6 +8752,7 @@ impl SessionStorage {
         } else {
             "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)"
         };
+        let basis_key = Self::public_basis_key();
         format!(
             r#"
             SELECT s.id,
@@ -8704,7 +8766,9 @@ impl SessionStorage {
                    s.session_type,
                    s.diverged_from,
                    s.privacy_tier,
-                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
+                   (s.privacy_tier = 'public'
+                    AND instr(COALESCE(s.extension_data, ''), '{basis_key}') > 0) AS holds_public_basis
             FROM sessions s
             WHERE +s.session_type IN {type_filter}
             {non_empty}
@@ -15620,6 +15684,79 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The prefilter's needle is spliced into SQL as a literal, so it must
+    /// carry no single quote, and it must be the exact bytes serde writes the
+    /// record's key as.
+    #[test]
+    fn public_basis_key_is_a_safe_sql_literal() {
+        let key = SessionStorage::public_basis_key();
+        assert_eq!(key, "\"public_basis.v1\"");
+        assert!(!key.contains('\''), "a quote would break the SQL literal");
+        let mut data = ExtensionData::new();
+        data.set_extension_state(
+            crate::privacy::decision_axes::PUBLIC_BASIS_STATE,
+            crate::privacy::decision_axes::PUBLIC_BASIS_VERSION,
+            serde_json::json!({"sessionId": "x"}),
+        );
+        assert!(serde_json::to_string(&data).unwrap().contains(&key));
+    }
+
+    /// DR-33, owner decision 3: the sidebar page says which PUBLIC rows hold a
+    /// `public_basis.v1` record, so the route reads only those in full to ask
+    /// whether a decision model made them public. A private row is never
+    /// flagged, whatever it stores, and the summary itself never carries the
+    /// flag or a note: the route fills `public_because`, nothing here does.
+    #[tokio::test]
+    async fn the_summary_page_flags_only_public_rows_holding_a_basis() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let with_basis = || {
+            let mut data = ExtensionData::new();
+            data.set_extension_state(
+                crate::privacy::decision_axes::PUBLIC_BASIS_STATE,
+                crate::privacy::decision_axes::PUBLIC_BASIS_VERSION,
+                serde_json::json!({"sessionId": "whatever"}),
+            );
+            data
+        };
+
+        let lowered = seed_session_with_messages(&sm, 1).await;
+        sm.update(&lowered.id)
+            .extension_data(with_basis())
+            .apply()
+            .await
+            .unwrap();
+        let plain = seed_session_with_messages(&sm, 1).await;
+        let private = seed_session_with_messages(&sm, 1).await;
+        sm.update(&private.id)
+            .extension_data(with_basis())
+            .raise_privacy(SessionClassification::Private, "test: a private chat")
+            .apply()
+            .await
+            .unwrap();
+
+        let rows = sm
+            .list_session_summaries_page_excluding(50, None, false, false, false, &[])
+            .await
+            .unwrap();
+        let flag = |id: &str| {
+            rows.iter()
+                .find(|row| row.summary.id == id)
+                .unwrap_or_else(|| panic!("{id} is not on the page"))
+                .holds_public_basis
+        };
+        assert!(flag(&lowered.id), "a public row with a basis is flagged");
+        assert!(!flag(&plain.id), "a public row without one is not");
+        assert!(!flag(&private.id), "a private row is never flagged");
+
+        for row in &rows {
+            assert_eq!(row.summary.public_because, None);
+            let wire = serde_json::to_value(&row.summary).unwrap();
+            assert!(wire.get("public_because").is_none(), "{wire}");
+            assert!(wire.get("holds_public_basis").is_none(), "{wire}");
         }
     }
 

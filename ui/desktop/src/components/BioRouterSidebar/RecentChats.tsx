@@ -167,6 +167,31 @@ export function chatHoverDetail(
     .join(' · ');
 }
 
+/**
+ * The hover card's last line on a chat a public decision model made public
+ * (DR-33, owner decision 3): "Public: its decision model joey-1 runs on
+ * Baseten." The daemon fills `public_because` only for such a chat; the row
+ * draws no glyph for it. Never on a chat this list holds as private, so a row
+ * whose tier changed in place since its page was read cannot say both.
+ *
+ * The note is as fresh as the row's last page read. A decision-settings save
+ * asks for one (`refreshSidebarChats`), and a window that did not make the
+ * save reads its head when it comes to the front. Until then a stale note can
+ * only name a model that was public when it was read, on a chat that is still
+ * public: a raise drops the note with the tier it belonged to
+ * (`withPrivacyTier`). A subagent that is public only because its parent is
+ * gets no note, by design: no decision model of its own made it public, and
+ * the chat's header explains the parent's ceiling.
+ */
+export function chatPublicNote(session: SessionSummary): string | null {
+  const because = session.public_because;
+  if (!because || session.privacy_tier === 'private') return null;
+  const model = because.model.trim();
+  const place = because.place.trim();
+  if (!model || !place) return null;
+  return sidebarCopy.chats.publicBecause(model, place, because.others ?? 0);
+}
+
 const chatKey = (sessionId: string) => `chat:${sessionId}`;
 const folderKey = (group: SidebarChatGroup) => `folder:${group.key}`;
 const moreKey = (group: SidebarChatGroup) => `more:${group.key}`;
@@ -432,6 +457,7 @@ const RecentChatRow = memo(function RecentChatRow({
   onCancelRename,
 }: RecentChatRowProps) {
   const title = shownTitle(session);
+  const publicNote = chatPublicNote(session);
   const accessibleLabel = isRunning
     ? sidebarCopy.chats.openRunningChat(title)
     : sidebarCopy.chats.openChat(title);
@@ -603,6 +629,9 @@ const RecentChatRow = memo(function RecentChatRow({
             <div data-testid={`recent-chat-summary-${session.id}`}>
               {titleIsCut ? <p className="line-clamp-2">{title}</p> : null}
               <p>{chatHoverDetail(session, homeDir)}</p>
+              {publicNote ? (
+                <p data-testid={`recent-chat-public-note-${session.id}`}>{publicNote}</p>
+              ) : null}
             </div>
           </TooltipContent>
         ) : null}
