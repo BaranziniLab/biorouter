@@ -163,6 +163,7 @@ export const composerCopy = {
    */
   agentStartsWith: (model: string) => `Enter starts your agent with ${model}`,
   /** True only because the daemon revokes the task's posting grant once it finishes (T-25). */
+  agentScopeLabel: 'what your agent reads',
   agentReads: (channel: string) =>
     `It reads #${channel} and posts its result there, for this task only.`,
   /** The same, in an open workspace where a task reads every channel the person is in. */

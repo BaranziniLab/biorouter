@@ -3,6 +3,7 @@ import { Clock, Inbox, KeyRound, Server, Users } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { SecretInput } from '../../ui/secret-input';
 import {
@@ -514,14 +515,23 @@ export function JoinStatusCard() {
         >
           <Clock aria-hidden className="crew-onboard-wait-icon" />
           <span>{joinStateCopy.waiting(first)}</span>
+          {/* That nothing here needs the app open is reassurance, so it sits behind the wait's
+              info icon (owner, 2026-11-13). Once `expires_at` has passed it is gone: "{host} can
+              still let you in" would contradict the expiry. */}
+          {expiry?.expired ? null : (
+            <InfoTip
+              label={joinStateCopy.closeNoteLabel}
+              help={joinStateCopy.closeNote(first, workspace)}
+              data-testid="crew-join-close-note"
+            />
+          )}
         </p>
-        {/* Once `expires_at` has passed (before the next poll says `expired`), only that: "You
-            can close Biorouter: {host} can still let you in" would contradict it. */}
-        <p className="text-supporting text-text-muted" data-testid="crew-join-wait-note">
-          {expiry?.expired
-            ? joinStateCopy.expiredNow
-            : `${expiry ? `${joinStateCopy.expires(expiry.when)} ` : ''}${joinStateCopy.closeNote(first, workspace)}`}
-        </p>
+        {/* The expiry is a fact of the invitation, so it stays a caption. */}
+        {expiry ? (
+          <p className="text-supporting text-text-muted" data-testid="crew-join-wait-note">
+            {expiry.expired ? joinStateCopy.expiredNow : joinStateCopy.expires(expiry.when)}
+          </p>
+        ) : null}
         {otherWays}
       </SetupCard>
     );
@@ -608,23 +618,36 @@ export function JoinStatusCard() {
   } else {
     card = (
       <SetupCard key="not-invited" icon={Users} title={joinStateCopy.notInvitedTitle(workspace)}>
+        {/* The ask in view; the case of a former member behind its info icon, and the message
+            ready to send behind its own disclosure (owner, 2026-11-13). */}
         <p className="text-body text-text-default">
-          {joinStateCopy.notInvitedBody(person, username || null)}
+          <span>{joinStateCopy.notInvitedBody(person, username || null)}</span>
+          {/* On a workspace that belongs to accounts, a member's new computer reads `ready`, never
+              not invited, so Add another computer is not the way back for anyone here (AO-9). */}
+          {accountWorkspace ? null : (
+            <>
+              {' '}
+              <InfoTip
+                label={joinStateCopy.notInvitedBeforeLabel}
+                help={joinStateCopy.notInvitedBefore(workspace, person, username || null)}
+                data-testid="crew-join-not-invited-before"
+              />
+            </>
+          )}
         </p>
-        {/* On a workspace that belongs to accounts, a member's new computer reads `ready`, never
-            not invited, so Add another device is not the way back for anyone here (AO-9). */}
-        {accountWorkspace ? null : (
-          <p className="text-supporting text-text-muted" data-testid="crew-join-not-invited-before">
-            {joinStateCopy.notInvitedBefore(workspace, person, username || null)}
-          </p>
-        )}
-        <CopyField
-          multiline
-          label={joinStateCopy.notInvitedMessageLabel}
-          value={(accountWorkspace
-            ? joinStateCopy.notInvitedAccountMessage
-            : joinStateCopy.notInvitedMessage)(inviter ? first : null, username || null, workspace)}
-        />
+        <Disclosure label={joinStateCopy.notInvitedMessageToggle}>
+          <CopyField
+            multiline
+            label={joinStateCopy.notInvitedMessageLabel}
+            value={(accountWorkspace
+              ? joinStateCopy.notInvitedAccountMessage
+              : joinStateCopy.notInvitedMessage)(
+              inviter ? first : null,
+              username || null,
+              workspace
+            )}
+          />
+        </Disclosure>
         {otherWays}
       </SetupCard>
     );

@@ -125,7 +125,10 @@ describe('@agent in the composer (OW-10)', () => {
     await waitFor(() =>
       expect(consent()).toHaveTextContent('Enter starts your agent with gpt-5.5 · Versa')
     );
-    expect(consent()).toHaveTextContent(
+    // What the task reads is the consent line's info tip (owner, 2026-11-13).
+    expect(
+      within(consent()!).getByRole('button', { name: 'About what your agent reads' })
+    ).toHaveAccessibleDescription(
       'It reads #general and posts its result there, for this task only.'
     );
     // The model's tier mark, as Ask my agent shows it.
@@ -543,7 +546,9 @@ describe('@agent in the composer (OW-10)', () => {
     await waitFor(() => expect(currentCrew().capabilities).toContain('wide_runs_v1'));
     await typeTask(composer, '@agent summarize the week');
     await waitFor(() =>
-      expect(consent()).toHaveTextContent(
+      expect(
+        within(consent()!).getByRole('button', { name: 'About what your agent reads' })
+      ).toHaveAccessibleDescription(
         'It reads 2 channels and posts its result in #general, for this task only.'
       )
     );
@@ -583,7 +588,9 @@ describe('@agent in the composer (OW-10)', () => {
     await waitFor(() => expect(currentCrew().capabilities).toContain('wide_runs_v1'));
     await typeTask(composer, '@agent summarize the week');
     await waitFor(() =>
-      expect(consent()).toHaveTextContent(
+      expect(
+        within(consent()!).getByRole('button', { name: 'About what your agent reads' })
+      ).toHaveAccessibleDescription(
         'It reads 100 channels and posts its result in #general, for this task only.'
       )
     );

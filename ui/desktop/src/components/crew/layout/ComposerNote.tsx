@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Info, Landmark, X } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { ChatConnectNote } from '../access';
@@ -151,7 +152,8 @@ function HostInstitutionNote({
     >
       <p className="text-label">{layoutCopy.institution.title(workspace, institution)}</p>
       <p className="text-text-muted">
-        {layoutCopy.institution.body}{' '}
+        {layoutCopy.institution.undone}{' '}
+        <InfoTip label={layoutCopy.institution.effectLabel} help={layoutCopy.institution.effect} />{' '}
         <Button
           type="button"
           variant="link"

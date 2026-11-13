@@ -5,6 +5,7 @@ import { AlertTriangle, Info, LoaderCircle } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import type { CrewMessage, ObservedRun } from '../crewApi';
@@ -311,6 +312,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const picker = useRef<HTMLButtonElement>(null);
   const taskId = useId();
   const taskHintId = useId();
+  const taskPostedId = useId();
   const modelLabelId = useId();
   const modelErrorId = useId();
   const mismatchId = useId();
@@ -577,9 +579,15 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
         )}
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor={taskId} className="text-label text-text-default">
-            {agentCopy.task}
-          </label>
+          {/* That the task itself is posted in the channel is the label's info tip, and still the
+              field's description (T-24); the destination above names the channel in view (owner,
+              2026-11-13). */}
+          <span className="inline-flex items-center gap-1">
+            <label htmlFor={taskId} className="text-label text-text-default">
+              {agentCopy.task}
+            </label>
+            <InfoTip label={agentCopy.task} help={agentCopy.taskPosted(here)} id={taskPostedId} />
+          </span>
           {/* Focus turns the border to the accent edge, as the chat composer's card does; the
               rule is authored in pane.css (`.crew-agent-task`), never a Tailwind variant (T-16). */}
           <textarea
@@ -589,17 +597,19 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             rows={TASK_MIN_ROWS}
             value={task}
             placeholder={agentCopy.taskPlaceholder}
-            aria-describedby={taskHintId}
+            aria-describedby={longTask ? `${taskPostedId} ${taskHintId}` : taskPostedId}
             // File names and sample IDs are not words: the spell checker underlined
             // `gina-assay.csv` and `15b` in every task (Q3-34).
             spellCheck={false}
             onChange={(event) => setTask(event.target.value)}
             className="crew-agent-task w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 text-body text-text-default transition-[color,background-color,border-color,box-shadow] placeholder:text-text-muted hover:inset-ring-2 hover:inset-ring-border-emphasized/30"
           />
-          <p id={taskHintId} className="text-supporting text-text-muted">
-            {agentCopy.taskPosted(here)}
-            {longTask && ` ${agentCopy.taskLong}`}
-          </p>
+          {/* Pasted data is a warning, so it shows once the task reads as pasted data. */}
+          {longTask ? (
+            <p id={taskHintId} className="text-supporting text-text-muted">
+              {agentCopy.taskLong}
+            </p>
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-1.5">

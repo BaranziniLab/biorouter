@@ -123,13 +123,13 @@ To change it:
 
 ### Your agent on the server
 
-**Your agent on lab.example.edu** answers "What can your agent do on lab.example.edu?" with three levels. You choose it for your own account, and nobody else can change it. Public models never get any of them.
+**Your agent on lab.example.edu** answers "What can your agent do on lab.example.edu?" with three levels, and the info icon beside the question says what **In a folder** and **As me on the server** allow. You choose it for your own account, and nobody else can change it. Public models never get any of them.
 
 | Level | What your agent may do |
 |---|---|
-| **Off** | "Your agent doesn’t use this server." |
-| **In a folder** | "It reads and writes one folder, and can run commands there in a sandbox." Type the folder's full path, such as `/home/bob/project`, in **Remote work folder**, and turn on **Let my agent run commands in this folder** to let it run commands there. A server whose Linux kernel cannot confine commands to a folder (older than 6.2) gives a folder files only, and commands there need **As me on the server**. |
-| **As me on the server** | Full access: "It runs commands as bob, with your files, programs and network." A work folder is optional: leave it empty, and Biorouter creates one in `~/crew-work`, named for the workspace. |
+| **Off** | Your agent doesn’t use this server. |
+| **In a folder** | Your agent reads and writes one folder, and can run commands there in a sandbox. Type the folder's full path, such as `/home/bob/project`, in **Remote work folder**, and turn on **Let my agent run commands in this folder** to let it run commands there. A server whose Linux kernel cannot confine commands to a folder (older than 6.2) gives a folder files only, and commands there need **As me on the server**. |
+| **As me on the server** | Full access: your agent runs commands as bob, with your files, programs and network. A work folder is optional: leave it empty, and Biorouter creates one in `~/crew-work`, named for the workspace. |
 
 **As me on the server** comes with one warning, which you read before you choose Join: "Your agent will run commands as bob on lab.example.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark." When the invitation's host is the account you join as, for example when you host the workspace and join it from another computer, the warning adds "You host chen-lab from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of chen-lab." See [What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server).
 

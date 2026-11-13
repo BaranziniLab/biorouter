@@ -206,6 +206,10 @@ describe('removing a connection by account_identity (AO-9, AO-11)', () => {
     const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removeConnection.title('lab'),
     });
+    // The consequence is the message; the way back folds under Details (design.md 9.16).
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.accountDescription);
+    expect(dialog).not.toHaveTextContent(/You can open lab again/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Details' }));
     expect(dialog).toHaveTextContent(
       'You can open lab again from any computer that signs in to hpc.example.edu as @alice.'
     );
@@ -232,6 +236,7 @@ describe('removing a connection by account_identity (AO-9, AO-11)', () => {
     const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removeConnection.title('lab'),
     });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Details' }));
     expect(dialog).toHaveTextContent(
       confirmCopy.removeConnection.onlyHostUpdateFirst('alice@hpc.example.edu')
     );

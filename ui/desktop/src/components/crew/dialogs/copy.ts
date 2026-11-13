@@ -91,14 +91,16 @@ export const connectionSettingsCopy = {
    */
   access: (server: string) => `What can your agent do on ${server || 'the server'}?`,
   accessOff: 'Off',
-  accessOffDetail: (server: string) =>
-    `It can’t use files or run commands on ${server || 'the server'}.`,
   accessFolder: 'In a folder',
-  accessFolderDetail: 'It reads and writes files in one folder, and runs confined commands there.',
   accessFull: 'As me on the server',
-  /** `user` is the server account, `@crew_alice`, or null. */
-  accessFullDetail: (user: string | null) =>
-    `It runs commands as ${user ?? 'you'}, with your files, network and programs.`,
+  /**
+   * What the working levels mean, behind the question's info icon (owner, 2026-11-13): the radio
+   * labels say the level, and Off needs no gloss. `user` is the server account, `@crew_alice`, or
+   * null.
+   */
+  accessHelpLabel: 'the access levels',
+  accessHelp: (user: string | null) =>
+    `In a folder, your agent reads and writes files in one folder and runs confined commands there. As me on the server, it runs commands as ${user ?? 'you'}, with your files, network and programs.`,
   /** Why As me on the server can't be chosen: the broker or this account's bridge predates it. */
   accessFullUnavailable: (server: string) => `Update Crew on ${server || 'the server'} first.`,
   /**
@@ -166,6 +168,7 @@ export const workspaceSettingsCopy = {
   storage: 'Storage',
   storageUsed: (percent: number) => `${percent}% full`,
   storageFull: 'Full',
+  storageHelpLabel: 'a full workspace',
   rename: 'Rename…',
   /** The tab list's accessible name (QA T-39). */
   tabsLabel: 'Workspace settings sections',
@@ -235,10 +238,12 @@ export const workspaceSettingsCopy = {
   governance: {
     label: 'Who can manage teams and channels',
     open: 'Everyone can manage',
-    openDetail:
-      'Every member can rename, archive and delete teams and channels, add people to them and join any of them.',
     managed: 'Owners manage',
-    managedDetail: 'A team’s creator and a channel’s owner change them, and nobody else.',
+    /**
+     * Behind the question's info icon (owner, 2026-11-13): what each choice lets people do, which
+     * used to be a line under each radio.
+     */
+    help: 'Everyone can manage lets every member rename, archive and delete teams and channels, add people to them and join any of them. Owners manage leaves that to a team’s creator and a channel’s owner.',
     hostOnly: (workspace: string) =>
       `Either way, only you remove people from ${workspace}, change its privacy or delete it.`,
     /** The same, read-only, for a member: who manages, in a word. */
@@ -287,7 +292,10 @@ export const contextCopy = {
    * editor; saving again replaces the newer version on purpose, or they take it instead.
    */
   conflict: (who: string | null) =>
-    `${who ?? 'Someone'} saved a newer version while you were editing. Your text is still here: save again to replace theirs, or use their version.`,
+    `${who ?? 'Someone'} saved a newer version while you were editing.`,
+  /** Behind the conflict's info icon, beside Use their version. */
+  conflictLabel: 'your text',
+  conflictHelp: 'Your text is still here: save again to replace theirs, or use their version.',
   useTheirs: 'Use their version',
   tooLarge: 'The context can be at most 64 KB. Shorten it, then save.',
   /** For whoever may not edit it: a managed workspace's members. */
@@ -443,7 +451,11 @@ export const letInCopy = {
    * sidebar (`sidebar/copy.ts`) and the CLI (`enroll pending`) say the same (QA T-13).
    */
   mismatch: (username: string) =>
-    `A computer trying to join as @${username} showed a different code. Check the code @${username} sent you, then enter it and choose Replace code. Don’t approve a code you didn’t get from @${username}.`,
+    `A computer trying to join as @${username} showed a different code.`,
+  /** Behind the warning's info icon (owner, 2026-11-13): what to do about it. */
+  mismatchLabel: 'a different code',
+  mismatchHelp: (username: string) =>
+    `Check the code @${username} sent you, then enter it and choose Replace code. Don’t approve a code you didn’t get from @${username}.`,
   /** Back from the saved-code view to the field, when a mismatch shows the code was wrong. */
   enterAgain: 'Enter the code again',
   /**
@@ -530,6 +542,7 @@ export const letInCopy = {
   fingerprintFor: (who: string) => `Fingerprint ${who} should see:`,
   fingerprintHelper: (who: string) =>
     `If ${who} asks, read this out. It should match what ${who}’s Crew shows.`,
+  fingerprintHelpLabel: 'reading this out',
   done: 'Done',
   cancel: 'Cancel',
 } as const;
@@ -859,21 +872,33 @@ export const confirmCopy = {
    */
   removeConnection: {
     title: (workspace: string) => `Remove ${workspace} from this computer?`,
+    /**
+     * The consequence at the decision (owner, 2026-11-13: one line up front); what else it does,
+     * and the case of a host, are behind the dialog's Details (`descriptionDetails`).
+     */
     description:
-      'It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. To use the workspace here again, the host has to add this computer. If you host it and no other computer of yours still has it, nobody can let people in, change its privacy or remove anyone there again.',
+      'It deletes this computer’s key for the workspace, so the host has to add this computer before you can use it here again.',
+    descriptionDetails:
+      'It also disconnects and ends every chat’s access through it. Your messages stay on the server. If you host it and no other computer of yours still has it, nobody can let people in, change its privacy or remove anyone there again.',
+    /** Behind Details in each removal: what goes with the key. */
+    alsoDetails:
+      'It also disconnects and ends every chat’s access through it. Your messages stay on the server.',
     /**
      * A member's removal (F3): the old invitation cannot bring it back, and a plain invitation is
      * refused for a member, so it names the one that works. `username` is the person's, or null.
      */
     memberDescription: (workspace: string, username: string | null) =>
-      `It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. To use ${workspace} on this computer again, ask the host to invite you with Add another computer for ${username ? `@${username}` : 'you'}.`,
+      `It deletes this computer’s key for the workspace. To use ${workspace} on this computer again, ask the host to invite you with Add another computer for ${username ? `@${username}` : 'you'}.`,
     /**
      * The host removing it from the only computer of theirs the workspace lists (CLI-1): the host
      * controls end for good, so it asks for the workspace's name first, as the CLI asks for
      * `--give-up-host-controls`.
      */
-    onlyHostDescription: (workspace: string, username: string | null) =>
-      `You host ${workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again. To keep them, first invite another computer of yours with Add another computer for ${username ? `@${username}` : 'yourself'}.`,
+    onlyHostDescription: (workspace: string) =>
+      `You host ${workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again.`,
+    /** Behind the host's Details: how to keep the controls. */
+    onlyHostKeep: (username: string | null) =>
+      `To keep them, first invite another computer of yours with Add another computer for ${username ? `@${username}` : 'yourself'}.`,
     onlyHostConfirm: 'Remove and give up hosting',
     /**
      * Against a server older than account ownership (AO-9): the host-only guard stays, and says
@@ -887,8 +912,11 @@ export const confirmCopy = {
      * through this connection cannot be granted through a new one, and a lost key has a better
      * way back that keeps the connection.
      */
-    accountDescription: (workspace: string, server: string, username: string | null) =>
-      `It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. You can open ${workspace} again from any computer that signs in to ${server || 'the server'}${username ? ` as ${username}` : ''}. Chats given Crew access through this connection can’t be given access through a new one. If this computer lost its key, choose Add this computer again instead: it keeps the connection.`,
+    accountDescription:
+      'It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace.',
+    /** Behind the account removal's Details (owner, 2026-11-13: one line of consequence up front). */
+    accountDetails: (workspace: string, server: string, username: string | null) =>
+      `Your messages stay on the server. You can open ${workspace} again from any computer that signs in to ${server || 'the server'}${username ? ` as ${username}` : ''}. Chats given Crew access through this connection can’t be given access through a new one. If this computer lost its key, choose Add this computer again instead: it keeps the connection.`,
     /**
      * A workspace its host deleted (OW-5): no host controls, messages or way back are left to
      * warn about, only what goes from this computer.
@@ -937,7 +965,9 @@ export const confirmCopy = {
   deleteWorkspace: {
     title: (workspace: string) => `Delete ${workspace} for everyone?`,
     description: (workspace: string, server: string) =>
-      `Crew stops on ${server || 'the server'} and deletes everything ${workspace} keeps there: its teams, channels, messages, files and members. It’s removed from this computer too, and members can only remove it from theirs. This can’t be undone.`,
+      `Crew stops on ${server || 'the server'} and deletes everything ${workspace} keeps there: its teams, channels, messages, files and members. This can’t be undone.`,
+    /** Behind the dialog's Details: what happens on each computer. */
+    details: 'It’s removed from this computer too, and members can only remove it from theirs.',
     confirm: 'Delete workspace',
     toast: (workspace: string) => `Deleted ${workspace}.`,
   },

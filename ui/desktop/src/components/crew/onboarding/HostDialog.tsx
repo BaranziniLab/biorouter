@@ -14,6 +14,7 @@ import { readProviderAffiliation } from '../../privacy/providerAffiliation';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { claimJoin, previewInvitation, type CrewInvitationPreview } from '../api/join';
@@ -1180,6 +1181,13 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     if (step === 'label') {
       return (
         <>
+          <InfoTip
+            label={hostCopy.labelLater}
+            id={labelLaterId}
+            help={hostCopy.labelLaterHelper(workspaceLabel)}
+            side="top"
+            align="end"
+          />
           <Button
             type="button"
             variant="secondary"
@@ -1279,16 +1287,16 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
             <div key={step} className="crew-crossfade-item crew-onboard-form" data-state="open">
               {step === 'name' ? (
                 <>
+                  {/* Who can see the name is a privacy exposure, so it is the one line under the
+                      field (design.md 9.16); the format rule and the live preview of the name
+                      Crew will use are the label's info icon, and the field's description too. */}
                   <Field
                     label={hostCopy.workspaceName}
-                    helper={
-                      slug ? (
-                        <>
-                          {hostCopy.workspaceNameHelper} {hostCopy.preview(slug)}
-                        </>
-                      ) : (
-                        hostCopy.workspaceNameHelper
-                      )
+                    helper={hostCopy.consequence}
+                    info={
+                      slug
+                        ? `${hostCopy.workspaceNameHelper} ${hostCopy.preview(slug)}.`
+                        : hostCopy.workspaceNameHelper
                     }
                   >
                     {(props) => (
@@ -1420,7 +1428,20 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
 
               {step === 'start' && prepared ? (
                 <>
-                  <h3 className="text-label text-text-default">{hostCopy.startHeading(server)}</h3>
+                  {/* How Set up and start Crew works is behind the heading's info icon, and is the
+                      button's description too (owner, 2026-11-13: one line up front). */}
+                  <h3 className="inline-flex items-center gap-1 text-label text-text-default">
+                    <span>{hostCopy.startHeading(server)}</span>
+                    <InfoTip
+                      label={hostCopy.setUpAndStart}
+                      id={startHintId}
+                      help={
+                        setupUnavailable
+                          ? hostCopy.startForMeHint(server, sshUsername(serverLogin))
+                          : hostCopy.setUpAndStartHint(server, sshUsername(serverLogin))
+                      }
+                    />
+                  </h3>
                   {/* The step leads with its one action and its plain steps (U1): the commands it
                       runs are for a person who runs them themselves, under Run it yourself. */}
                   <div className="crew-onboard-stack" data-testid="crew-host-start-for-me">
@@ -1445,11 +1466,6 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                         </Button>
                       ) : null}
                     </div>
-                    <p id={startHintId} className="text-supporting text-text-muted">
-                      {setupUnavailable
-                        ? hostCopy.startForMeHint(server, sshUsername(serverLogin))
-                        : hostCopy.setUpAndStartHint(server, sshUsername(serverLogin))}
-                    </p>
                     {jobShown ? (
                       <SetupProgress
                         job={job}
@@ -1499,7 +1515,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                         ref={outputRef}
                         tabIndex={0}
                         aria-label={hostCopy.startOutput}
-                        className="crew-onboard-output font-mono text-supporting text-text-default"
+                        className="crew-onboard-output font-mono text-code text-text-default"
                         data-testid="crew-host-start-output"
                       >
                         {shownOutput}
@@ -1551,11 +1567,14 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                         label={hostCopy.commandLabel}
                         value={shownCommands}
                       />
-                      <p className="text-body text-text-default">
-                        {hostCopy.runYourselfBody(server, sshUsername(serverLogin))}
-                      </p>
                       <div className="crew-onboard-stack">
-                        <p className="text-supporting text-text-muted">{hostCopy.notSignedIn}</p>
+                        <p className="text-supporting text-text-muted">
+                          <span>{hostCopy.notSignedIn}</span>{' '}
+                          <InfoTip
+                            label={hostCopy.confirmServerLabel}
+                            help={hostCopy.confirmServer}
+                          />
+                        </p>
                         <CopyField
                           label={hostCopy.sshCommandLabel}
                           value={sshLoginCommand({
@@ -1565,7 +1584,6 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                             identity_file: identityFile,
                           })}
                         />
-                        <p className="text-supporting text-text-muted">{hostCopy.confirmServer}</p>
                       </div>
                       <div className="crew-onboard-row">
                         <TerminalToggle
@@ -1616,7 +1634,7 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                                 setProblem(null);
                                 setParse(event.target.value.trim() ? 'checking' : 'idle');
                               }}
-                              className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-label placeholder:text-text-muted"
+                              className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-code placeholder:text-text-muted"
                             />
                           )}
                         </Field>
@@ -1635,27 +1653,31 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                       }}
                     />
                   </Disclosure>
-                  <p className="text-supporting text-text-muted">{hostCopy.consequence}</p>
                 </>
               ) : null}
 
               {step === 'create' ? (
                 <>
-                  <h3 className="text-label text-text-default">
-                    {hostCopy.createHeading(workspaceLabel, server)}
+                  {/* Once saved, how the daemon's name for the server relates to the dialog's
+                      sits behind the heading's info icon (Q4-34). */}
+                  <h3 className="inline-flex items-center gap-1 text-label text-text-default">
+                    <span>{hostCopy.createHeading(workspaceLabel, server)}</span>
+                    {serverAlias ? (
+                      <InfoTip
+                        label={hostCopy.serverAliasLabel}
+                        help={serverAlias}
+                        data-testid="crew-host-server-alias"
+                      />
+                    ) : null}
                   </h3>
-                  {serverAlias ? (
-                    <p
-                      className="text-supporting text-text-muted"
-                      data-testid="crew-host-server-alias"
-                    >
-                      {serverAlias}
-                    </p>
-                  ) : null}
                   {pinned?.fingerprint ? (
                     <div className="crew-onboard-field">
-                      <span className="text-supporting text-text-muted">
-                        {joinCopy.fingerprint}
+                      <span className="inline-flex items-center gap-1 text-supporting text-text-muted">
+                        <span>{joinCopy.fingerprint}</span>
+                        <InfoTip
+                          label={joinCopy.fingerprintLabel}
+                          help={hostCopy.fingerprintHelper}
+                        />
                       </span>
                       <CopyField
                         value={pinned.fingerprint}
@@ -1664,9 +1686,6 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                         }
                         label={joinCopy.fingerprintLabel}
                       />
-                      <p className="text-supporting text-text-muted">
-                        {hostCopy.fingerprintHelper}
-                      </p>
                     </div>
                   ) : null}
                   <p className="text-body text-text-default">
@@ -1676,7 +1695,11 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                       before the person commits, rather than asked again after (G4). */}
                   {chosenInstitution ? (
                     <p className="text-body text-text-default" data-testid="crew-host-create-label">
-                      {hostCopy.createLabel(workspaceLabel, chosenName)}
+                      <span>{hostCopy.createLabel(workspaceLabel, chosenName)}</span>{' '}
+                      <InfoTip
+                        label={hostCopy.createLabelInfo}
+                        help={hostCopy.createLabelHelp(workspaceLabel, chosenName)}
+                      />
                     </p>
                   ) : null}
                   {createNote ? (
@@ -1691,16 +1714,16 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               {step === 'label' ? (
                 // What the label does, and what Not now leaves open (Q3-45).
                 <div className="crew-onboard-stack">
-                  {/* Step 1 asked for the institution already: say what that set, and what this
-                      sets that it did not (Q4-47). */}
-                  <p className="text-body text-text-default" data-testid="crew-host-label-why">
-                    {hostCopy.labelWhy(workspaceLabel, labelName)}
-                  </p>
+                  {/* What the mark does, and that it can't be undone, stay in view. Step 1 asked for
+                      the institution already: what that set, and what this sets that it did not,
+                      is behind the info icon (Q4-47); what Not now leaves open is beside Not now. */}
                   <p className="text-body text-text-default">
-                    {hostCopy.labelEffect(workspaceLabel, labelName)}
-                  </p>
-                  <p id={labelLaterId} className="text-supporting text-text-muted">
-                    {hostCopy.labelLaterHelper(workspaceLabel)}
+                    <span>{hostCopy.labelEffect(workspaceLabel, labelName)}</span>{' '}
+                    <InfoTip
+                      label={hostCopy.labelWhyLabel}
+                      help={hostCopy.labelWhy(workspaceLabel, labelName)}
+                      data-testid="crew-host-label-why"
+                    />
                   </p>
                 </div>
               ) : null}

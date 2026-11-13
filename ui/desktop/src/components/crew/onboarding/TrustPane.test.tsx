@@ -202,11 +202,17 @@ describe('TrustPane', () => {
     ).toBeInTheDocument();
     expect(within(pane).getByText(OFFERED)).toBeInTheDocument();
     expect(within(pane).getByText(KNOWN)).toBeInTheDocument();
+    // The one action is the details for IT; the info icon beside the refusal is no action.
     expect(
       within(pane)
         .getAllByRole('button')
+        .filter((button) => !button.matches('[data-slot="info-tip-trigger"]'))
         .map((button) => button.textContent)
     ).toEqual([trustCopy.copyForIt]);
+    expect(within(pane).getByText(trustCopy.changedBody)).toBeVisible();
+    expect(
+      within(pane).getByRole('button', { name: `About ${trustCopy.changedWhyLabel}` })
+    ).toHaveAccessibleDescription(trustCopy.changedWhy);
 
     fireEvent.click(screen.getByRole('button', { name: trustCopy.copyForIt }));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());

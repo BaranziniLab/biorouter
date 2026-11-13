@@ -209,13 +209,17 @@ describe('team sections', () => {
     // The fixture lists 2 teams and 5 channels (one archived).
     const view = renderTeams({ snapshot: makeSnapshot({ totals: { teams: 4, channels: 6 } }) });
     expect(document.querySelector('[data-crew-sidebar-unlisted]')).toHaveTextContent(
-      '2 more teams and 1 more channel you’re in aren’t listed here, because this workspace is too large to list at once.'
+      '2 more teams and 1 more channel you’re in aren’t listed here.'
     );
+    // Why is the line's info tip (owner, 2026-11-13).
+    expect(
+      screen.getByRole('button', { name: `About ${sidebarCopy.unlistedLabel}` })
+    ).toHaveAccessibleDescription('This workspace is too large to list at once.');
     view.unmount();
 
     const one = renderTeams({ snapshot: makeSnapshot({ totals: { channels: 6 } }) });
     expect(document.querySelector('[data-crew-sidebar-unlisted]')).toHaveTextContent(
-      '1 more channel you’re in isn’t listed here, because this workspace is too large to list at once.'
+      '1 more channel you’re in isn’t listed here.'
     );
     one.unmount();
     // Everything listed, or an older broker that sends no totals: nothing is said.

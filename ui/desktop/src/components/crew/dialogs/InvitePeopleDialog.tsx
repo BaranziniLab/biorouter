@@ -3,6 +3,7 @@ import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { Skeleton } from '../../ui/skeleton';
@@ -179,7 +180,17 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
             </span>
           </p>
           <div className="flex flex-col gap-1.5">
-            <p className="text-label text-text-default">{copy.sendInvitation(first)}</p>
+            {/* What the joiner's Biorouter does is the heading's info tip (owner, 2026-11-13).
+                The server fingerprint to pass on stays a line under the invitation: the manual
+                asks hosts to send it, and the dialog says so in view (F7). */}
+            <p className="text-label text-text-default">
+              {copy.sendInvitation(first)}{' '}
+              <InfoTip
+                label={copy.invitationLabel}
+                help={copy.setsUp(first)}
+                data-testid="crew-invite-sets-up"
+              />
+            </p>
             {invitation.state === 'ready' ? (
               <CopyField value={invitation.message} label={copy.invitationLabel} multiline />
             ) : invitation.state === 'loading' ? (
@@ -203,9 +214,6 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
               </Note>
             )}
             <p className="text-supporting text-text-muted">{copy.serverFingerprint(first)}</p>
-            <p className="text-supporting text-text-muted" data-testid="crew-invite-sets-up">
-              {copy.setsUp(first)}
-            </p>
           </div>
           {/* What to do if the joiner's Crew says it isn't set up: collapsed, in the joiner's own
               words, and handed to whoever runs the server (QA Q4-37). */}
@@ -391,7 +399,7 @@ function LegacyInvite({
               rows={3}
               spellCheck={false}
               placeholder={copy.legacy.joinRequestPlaceholder}
-              className="min-w-0 rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-supporting placeholder:text-text-muted"
+              className="min-w-0 rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-code placeholder:text-text-muted"
               value={request}
               onChange={(event) => setRequest(event.target.value)}
             />

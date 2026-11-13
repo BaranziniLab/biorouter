@@ -204,8 +204,14 @@ describe('a changed host key in a chat', () => {
     const card = screen.getByTestId('crew-step-card');
     expect(screen.getByText(trustCopy.changedTitle('hpc.example.edu'))).toBeInTheDocument();
     expect(screen.getByText(trustCopy.changedBody)).toBeInTheDocument();
-    const buttons = within(card).getAllByRole('button');
+    // Its one action; the info icon beside the refusal only explains it (design.md 9.16).
+    const buttons = within(card)
+      .getAllByRole('button')
+      .filter((button) => !button.getAttribute('aria-label')?.startsWith('About '));
     expect(buttons.map((button) => button.textContent)).toEqual([trustCopy.copyForIt]);
+    expect(
+      within(card).getByRole('button', { name: `About ${trustCopy.changedWhyLabel}` })
+    ).toHaveAccessibleDescription(trustCopy.changedWhy);
     // A changed key is never trusted: no Trust this key, and no warning that would sit by one.
     expect(screen.queryByRole('button', { name: trustHostKeyCopy.trust })).toBeNull();
     expect(screen.queryByText(trustHostKeyCopy.warning)).toBeNull();

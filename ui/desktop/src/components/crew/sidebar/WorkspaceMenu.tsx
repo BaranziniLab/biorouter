@@ -261,18 +261,14 @@ export function WorkspaceMenu({
         >
           {me ? (
             <>
+              {/* The handle is an id to retype, so mono; the server is where the workspace lives,
+                  so it reads in the sans (design.md D-42). */}
               {copy.signedInAs} <bdi className="font-mono" translate="no">{`@${me.username}`}</bdi>{' '}
-              {copy.signedInOn}{' '}
-              <bdi className="font-mono" translate="no">
-                {server}
-              </bdi>
+              {copy.signedInOn} <bdi translate="no">{server}</bdi>
             </>
           ) : (
             <>
-              {copy.server}{' '}
-              <bdi className="font-mono" translate="no">
-                {server}
-              </bdi>
+              {copy.server} <bdi translate="no">{server}</bdi>
             </>
           )}
         </span>
@@ -295,7 +291,10 @@ export function WorkspaceMenu({
           >
             <span className="crew-sidebar-menu-fingerprint-text">
               {copy.fingerprint}{' '}
-              <bdi className="crew-sidebar-menu-fingerprint-value font-mono" translate="no">
+              <bdi
+                className="crew-sidebar-menu-fingerprint-value font-mono text-code"
+                translate="no"
+              >
                 {fingerprint}
               </bdi>
             </span>

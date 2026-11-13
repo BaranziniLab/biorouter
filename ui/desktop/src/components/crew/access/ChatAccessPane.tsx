@@ -22,6 +22,7 @@ import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import {
   PersonName,
@@ -723,7 +724,15 @@ function ChatAccessPaneBody({ sessionId: sessionProp, className }: ChatAccessPan
       <form className="flex flex-col gap-3" onSubmit={(event) => void allow(event)}>
         {confirmedNote}
         {lapsed ? <p className="text-label text-text-default">{lapsed}</p> : null}
-        <p className="text-label text-text-default">{accessCopy.willBeAble(chat)}</p>
+        {/* That the first access fixes the chat's place and model is the heading's info tip; how
+            long access lasts stays in view, as a term of the consent (owner, 2026-11-13). */}
+        <p className="text-label text-text-default">
+          {accessCopy.willBeAble(chat)}{' '}
+          <InfoTip
+            label={accessCopy.fixedOnFirstAccessLabel}
+            help={accessCopy.fixedOnFirstAccess}
+          />
+        </p>
         {summaryLines(true, here, consentExtras, me)}
         {/* Where and with what (AG-F1): the workspace, and the chat's model with its tier, as
             Ask my agent names a model. */}
@@ -745,7 +754,6 @@ function ChatAccessPaneBody({ sessionId: sessionProp, className }: ChatAccessPan
             </>
           ) : null}
         </dl>
-        <p className="text-supporting text-text-muted">{accessCopy.fixedOnFirstAccess}</p>
         <p className="text-supporting text-text-muted">{accessCopy.expiry}</p>
         <AlsoRead
           contextChannels={contextChannels}

@@ -3,6 +3,7 @@ import type { CrewStepRequest } from '../../../api';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { sanitizeDisplayText } from '../identity/displayText';
 import { TrustHostKey } from '../hostKeys/TrustHostKey';
 import { trustCopy } from '../onboarding/copy';
@@ -157,7 +158,10 @@ function ChangedHostKey({
   return (
     <CrewStepFrame kind="hostKey" title={crewHostKeyStepCopy.changedTitle(host)}>
       <div className="crew-onboard-stack" data-testid="crew-step-host-key-changed">
-        <p className="text-body text-text-default">{trustCopy.changedBody}</p>
+        <p className="text-body text-text-default">
+          <span>{trustCopy.changedBody}</span>{' '}
+          <InfoTip label={trustCopy.changedWhyLabel} help={trustCopy.changedWhy} />
+        </p>
         {/* Shown to read and compare, not handed on one by one: the one action is the
             details for IT, which carry both. */}
         {known ? <Fingerprint label={trustCopy.previous} value={known} /> : null}

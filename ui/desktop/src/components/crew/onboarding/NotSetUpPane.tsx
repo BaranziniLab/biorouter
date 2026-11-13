@@ -3,6 +3,7 @@ import { Package } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { connectionServer, personFromProjection, usePeopleDirectory } from '../identity';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
@@ -110,10 +111,14 @@ export function NotSetUpPane() {
               >
                 {notSetUpCopy.setUp}
               </Button>
+              {/* How setup signs in is the button's description and its info tip, not a
+                  paragraph under it (owner, 2026-11-13). */}
+              <InfoTip
+                label={notSetUpCopy.setUp}
+                id={hintId}
+                help={notSetUpCopy.setUpHint(server, username)}
+              />
             </div>
-            <p id={hintId} className="text-supporting text-text-muted">
-              {notSetUpCopy.setUpHint(server, username)}
-            </p>
             {requestedAccess === 'full' && job.phase !== 'idle' ? (
               // The one warning As me on the server has (OW-6), while the job Join asked for sets it,
               // with the host's sentence when Join found this account hosts the workspace (W2).

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Plus } from '../../icons/app-icons';
+import { InfoTip } from '../../ui/info-tip';
 import type { Snapshot } from '../crewApi';
 import { hasJoinable, isOpenWorkspace, mayDeleteTeam } from '../dialogs/governance';
 import { directAddSupported, liveInvitations } from '../dialogs/people';
@@ -165,7 +166,8 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
           let the list read as everything the viewer is in. */}
       {unlisted.teams + unlisted.channels > 0 ? (
         <p className="px-2 py-1.5 text-supporting text-text-muted" data-crew-sidebar-unlisted="">
-          {sidebarCopy.unlisted(unlisted.teams, unlisted.channels)}
+          {sidebarCopy.unlisted(unlisted.teams, unlisted.channels)}{' '}
+          <InfoTip label={sidebarCopy.unlistedLabel} help={sidebarCopy.unlistedWhy} />
         </p>
       ) : null}
       <div className="crew-sidebar-list" data-crew-row-item="">

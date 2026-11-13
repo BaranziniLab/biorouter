@@ -477,6 +477,12 @@ describe('ConnectionSettingsDialog', () => {
       const { crew } = renderSettings();
       await screen.findByLabelText('Connection name');
       expect(level(connectionSettingsCopy.accessOff)).toBeChecked();
+      // What the levels mean is the question's info tip, and the group's description.
+      expect(
+        screen.getByRole('radiogroup', { name: connectionSettingsCopy.access(SERVER) })
+      ).toHaveAccessibleDescription(
+        expect.stringContaining('In a folder, your agent reads and writes files in one folder')
+      );
       expect(screen.queryByLabelText('Remote work folder')).toBeNull();
       save();
       await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));

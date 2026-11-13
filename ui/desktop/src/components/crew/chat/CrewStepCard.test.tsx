@@ -192,9 +192,12 @@ describe('a Crew step card in a chat', () => {
     expect(
       screen.getByText(crewHostKeyStepCopy.changedTitle('hpc.example.edu'))
     ).toBeInTheDocument();
-    expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'Copy details for IT',
-    ]);
+    expect(
+      screen
+        .getAllByRole('button')
+        .filter((button) => !button.getAttribute('aria-label')?.startsWith('About '))
+        .map((button) => button.textContent)
+    ).toEqual(['Copy details for IT']);
     changed.unmount();
   });
 

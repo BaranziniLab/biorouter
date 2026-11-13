@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Button } from '../../ui/button';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { cn } from '../../../utils';
 import { managesChannel, mayDeleteChannel } from '../dialogs/governance';
 import { channelName, PersonName, teamName } from '../identity';
@@ -107,10 +108,13 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
           {channelName(channel)}
         </Row>
         <Row label={aboutCopy.whoCanRead}>
-          <span>{restricted ? aboutCopy.restricted : aboutCopy.publicSafe}</span>
-          <span className="block text-supporting text-text-muted">
-            {restricted ? aboutCopy.restrictedHint : aboutCopy.publicSafeHint}
-          </span>
+          {/* The rule in view; why, from the channel's mark, is its info tip (owner,
+              2026-11-13). */}
+          <span>{restricted ? aboutCopy.restricted : aboutCopy.publicSafe}</span>{' '}
+          <InfoTip
+            label={aboutCopy.whoCanRead}
+            help={restricted ? aboutCopy.restrictedHint : aboutCopy.publicSafeHint}
+          />
         </Row>
         <Row
           label={aboutCopy.owner}

@@ -218,7 +218,7 @@ export const joinCopy = {
    * named, never "they" or "theirs" (Q3-36, Q4-45).
    */
   fingerprintHelper: (host: string) =>
-    `This isn’t the code you send; your code appears after you choose Join. To double-check the invitation, ask ${host} to read the fingerprint from Crew (${host}’s workspace menu shows it).`,
+    `This isn’t the code you send; that appears after you choose Join. To check the invitation, ask ${host} to read the fingerprint from ${host}’s workspace menu in Crew.`,
   username: (server: string) => `Your username on ${server}`,
   usernameFallback: 'Your username on the server',
   /**
@@ -252,15 +252,13 @@ export const joinCopy = {
    * computer and sent to nobody (the join claim carries no mode). A Public connection does NOT
    * limit what the person reads: Restricted is about models only.
    */
-  publicConsequence: (
-    workspace: string,
-    institution: string | null,
-    host: string,
-    hostSubject: string
-  ) =>
+  publicConsequence: (workspace: string, institution: string | null, host: string) =>
     `${workspace} is Private, so nothing changes yet: your agent still uses only private and ${
       institution ? `${institution}-approved` : 'institution-approved'
-    } models here. If ${host} makes ${workspace} Public, public models could read its public-safe channels through your agent. ${hostSubject} isn’t told what you chose.`,
+    } models here. If ${host} makes ${workspace} Public, public models could read its public-safe channels through your agent.`,
+  /** Behind the consequence's info icon: the choice stays on this computer. */
+  publicConsequenceLabel: 'who sees this choice',
+  publicConsequenceUntold: (hostSubject: string) => `${hostSubject} isn’t told what you chose.`,
   privacy: 'Privacy',
   /** The summary's privacy when the invitation doesn't state the workspace's. */
   privacyUnstated: 'The invitation doesn’t say',
@@ -320,14 +318,18 @@ export const joinCopy = {
   /** The three access levels (OW-6), the question Connection settings asks too. */
   agentLegend: (server: string) => `What can your agent do on ${server}?`,
   accessOff: 'Off',
-  accessOffHint: 'Your agent doesn’t use this server.',
   accessFolder: 'In a folder',
-  accessFolderHint: 'It reads and writes one folder, and can run commands there in a sandbox.',
   accessFull: 'As me on the server',
-  accessFullHint: (user: string | null) =>
-    user
-      ? `It runs commands as ${user}, with your files, programs and network.`
-      : 'It runs commands as you, with your files, programs and network.',
+  /**
+   * What the two working levels allow, behind the legend's info icon (owner, 2026-11-13: the
+   * radio labels say the level, the help says what it means). Off needs no gloss: the agent
+   * doesn't use the server.
+   */
+  agentLevelsLabel: 'the access levels',
+  agentLevelsHelp: (user: string | null) =>
+    `In a folder, your agent reads and writes one folder and can run commands there in a sandbox. As me on the server, it runs commands as ${
+      user ?? 'you'
+    }, with your files, programs and network.`,
   /** Why As me on the server can't be chosen: the background service predates it. */
   accessFullUnavailable:
     'As me on the server needs a newer Biorouter background service. Quit and reopen Biorouter to choose it.',
@@ -384,6 +386,7 @@ export const joinCopy = {
   /** After `existing`: where its login is changed, since pasting again changes nothing (F1). */
   existingLogin:
     'To sign in with another account, change Your server login in Connection settings.',
+  existingLoginLabel: 'signing in with another account',
   connectionSettings: 'Connection settings…',
   openExisting: (connection: string) => `Open ${connection}`,
   /**
@@ -419,6 +422,7 @@ export const joinStateCopy = {
    */
   closeNote: (first: string, workspace: string) =>
     `You can close Biorouter: ${first} can still let you in with the same code. Next time, open Crew and connect to ${workspace}.`,
+  closeNoteLabel: 'waiting to be let in',
   /** The join status's `expires_at`, as "Sat 1:41 AM" (Q4-36). */
   expires: (when: string) => `This invitation expires ${when}.`,
   /** The same once that time has passed, before the next poll says `expired`. */
@@ -442,6 +446,9 @@ export const joinStateCopy = {
   notInvitedMessage: (first: string | null, username: string | null, workspace: string) =>
     `${first ? `Hi ${first}, please` : 'Please'} invite ${username ? `@${username}` : 'me'} to ${workspace} in Crew. If I’m already a member there, please use Add another computer for ${username ? `@${username}` : 'me'} instead.`,
   notInvitedMessageLabel: 'message to your host',
+  /** The disclosure the prepared message sits behind. */
+  notInvitedMessageToggle: 'Message to send your host',
+  notInvitedBeforeLabel: 'joining again',
   /**
    * A member the workspace no longer admits (Q3-50): this computer was a member this session, or
    * the daemon recorded that its membership ended. Removed, not "not yet" invited, so there is no
@@ -569,11 +576,15 @@ export const hostCopy = {
   jumpHosts: 'Jump hosts',
   // Step 2
   startHeading: (server: string) => `Start Crew on ${server}`,
-  /** Above the start commands, which both ways run exactly (D-HOST). */
+  /**
+   * Above the start commands, which both ways run exactly (D-HOST): the manual path's one
+   * instruction, what to run, where, and what to do with the result (owner, 2026-11-13: one line,
+   * where it used to take a line above the commands and another below them).
+   */
   runThis: (server: string, user: string | null) =>
     user
-      ? `These commands start Crew on ${server} as ${user}:`
-      : `These commands start Crew on ${server}:`,
+      ? `Run these commands in a terminal signed in to ${server} as ${user}, then paste what they printed.`
+      : `Run these commands in a terminal signed in to ${server}, then paste what they printed.`,
   commandLabel: 'start command',
   /**
    * "Set up and start Crew" (OW-9): the daemon installs Crew in the host's account when it isn't
@@ -585,7 +596,7 @@ export const hostCopy = {
   setUpAndStartHint: (server: string, user: string | null) =>
     `Biorouter signs in to ${server}${
       user ? ` as ${user}` : ''
-    } with your SSH settings, installs Crew in your account if it isn’t there yet, and starts the workspace. If the server asks for a password or a code, a Sign in window opens.`,
+    } with your SSH settings, installs Crew if needed and starts the workspace. A Sign in window opens if the server asks for a password or a code.`,
   /** The same button on a background service before automatic setup: it can't sign in or install. */
   startForMeHint: (server: string, user: string | null) =>
     `Biorouter signs in to ${server}${
@@ -608,16 +619,14 @@ export const hostCopy = {
     'Starting Crew for you needs a newer Biorouter background service. Quit and reopen Biorouter, or run the commands yourself.',
   /** The manual path, folded (D-HOST): the same commands, in the person's own terminal. */
   runYourself: 'Run it yourself in a terminal',
-  runYourselfBody: (server: string, user: string | null) =>
-    user
-      ? `Run the commands above in a terminal signed in to ${server} as ${user}, then paste what they printed.`
-      : `Run the commands above in a terminal signed in to ${server}, then paste what they printed.`,
   openTerminal: 'Open a terminal here',
   hideTerminal: 'Hide terminal',
   pasted: 'Paste what it printed',
   pastedPlaceholder: 'Everything the commands printed',
   notSignedIn: 'Not signed in to the server in a terminal yet? Sign in first:',
   sshCommandLabel: 'sign-in command',
+  /** Behind the info icon beside `notSignedIn`: what to do when the terminal asks about the server. */
+  confirmServerLabel: 'confirming the server',
   confirmServer:
     'If your terminal asks you to confirm the server, compare the fingerprint with the one from your IT team. Type yes only if they match.',
   /**
@@ -627,6 +636,10 @@ export const hostCopy = {
    */
   notInstalled: (server: string) => `Crew isn’t on ${server} yet?`,
   installLabel: 'install commands',
+  /**
+   * The one line under the workspace name, where the name is chosen: a privacy exposure, so it
+   * stays visible (design.md 9.16).
+   */
   consequence: 'Anyone who can sign in to this server can see the workspace name.',
   bad: 'That isn’t what Crew prints. Copy everything after the command ran and paste again.',
   /** The paste, checked inline before Continue. */
@@ -662,13 +675,18 @@ export const hostCopy = {
    * label step's words. `id` is the institution as it reads (`institutionLabel`: "UCSF", Q4-47).
    */
   createLabel: (workspace: string, id: string) =>
-    `Creating ${workspace} also marks it as a ${id} workspace, for everyone who works there. Agents working in ${workspace} can then use only models approved for ${id}. This can’t be undone.`,
+    `Creating ${workspace} also marks it as a ${id} workspace. This can’t be undone.`,
+  /** Behind `createLabel`'s info icon: what the mark does, and for whom. */
+  createLabelHelp: (workspace: string, id: string) =>
+    `The mark is for everyone who works in ${workspace}: agents there can then use only models approved for ${id}.`,
+  createLabelInfo: 'the institution mark',
   /**
    * Once the connection is saved and the daemon's name for its server differs from the one this
    * dialog has been using (Q4-34): the dialog keeps its word, and this says how the two relate —
    * the words Connection settings uses. Every surface after the dialog uses `label`.
    */
   serverAlias: (label: string) => `Your SSH settings call this server ${label}.`,
+  serverAliasLabel: 'the server’s name',
   /**
    * The host's own fingerprint: what a joiner may ask them to read out (Q2-04). The joiner's Join
    * dialog tells them to ask, and the workspace menu shows it after this dialog closes.
@@ -707,9 +725,16 @@ export const hostCopy = {
    */
   labelWhy: (workspace: string, institution: string) =>
     `You set ${institution} as this computer’s institution when you created ${workspace}. Marking ${workspace} sets it for the workspace itself, for everyone who works there.`,
-  /** Workspace-free, for the composer's note, whose title names the workspace. */
-  labelBody:
-    'Agents working here can then use only models approved for that institution. This can’t be undone.',
+  /** The name of `labelWhy`'s info icon, which sits after `labelEffect`. */
+  labelWhyLabel: 'why this is asked',
+  /**
+   * Workspace-free, for the composer's note, whose title names the workspace: that it can't be
+   * undone stays in view, and what the mark does is its info tip (owner, 2026-11-13). The
+   * confirmation Set institution opens says both again at the decision.
+   */
+  labelUndone: 'This can’t be undone.',
+  labelBodyEffect: 'Agents working here can then use only models approved for that institution.',
+  labelBodyLabel: 'the institution mark',
   labelEffect: (workspace: string, id: string) =>
     `Agents working in ${workspace} can then use only models approved for ${id}. This can’t be undone.`,
   /** Under the choice: what Not now leaves open, and where to finish it later. */
@@ -773,8 +798,9 @@ export const trustCopy = {
     ] as const,
   tryAgain: 'Try again',
   changedTitle: (host: string) => `${host}’s identity changed`,
-  changedBody:
-    'Don’t connect until your IT team confirms this change. Crew won’t connect while the old key is in your known hosts file.',
+  changedBody: 'Don’t connect until your IT team confirms this change.',
+  changedWhyLabel: 'the old key',
+  changedWhy: 'Crew won’t connect while the old key is in your known hosts file.',
   previous: 'Fingerprint Crew knew',
   newKey: 'Fingerprint the server offered now',
   copyForIt: 'Copy details for IT',
@@ -803,12 +829,12 @@ export const trustCopy = {
 export const notSetUpCopy = {
   title: (server: string) => `Crew isn’t set up for your account on ${server}`,
   /** Setup is the way on (OW-9): it goes in the person's own account, with no administrator. */
-  body: 'Biorouter can install it in your own account. It goes in ~/.local/bin and needs no administrator.',
+  body: 'Biorouter can install it in your own account, in ~/.local/bin, with no administrator.',
   setUp: 'Set up Crew for my account',
   setUpHint: (server: string, user: string | null) =>
     `Biorouter signs in to ${server}${
       user ? ` as ${user}` : ''
-    } with your SSH settings and installs Crew in your account. If the server asks for a password or a code, a Sign in window opens.`,
+    } with your SSH settings and installs Crew in your account. A Sign in window opens if the server asks for a password or a code.`,
   /** The older ways on, folded: a message for the host, and the manual install. */
   askHost: 'Ask your host instead',
   message: (hostFirst: string | null, username: string | null, server: string) =>

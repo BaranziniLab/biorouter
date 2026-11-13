@@ -12,6 +12,7 @@ import { Check } from '../../icons/app-icons';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
@@ -803,7 +804,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                       }}
                       placeholder={joinCopy.invitationPlaceholder}
                       spellCheck={false}
-                      className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-label placeholder:text-text-muted"
+                      className="crew-onboard-textarea w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-code placeholder:text-text-muted"
                     />
                   )}
                 </Field>
@@ -853,7 +854,10 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                     </Button>
                   }
                 >
-                  {joinCopy.existing(workspaceLabel)} {joinCopy.existingLogin}
+                  {/* The state in view; where its login changes is the action's info (owner,
+                      2026-11-13). */}
+                  <span>{joinCopy.existing(workspaceLabel)}</span>{' '}
+                  <InfoTip label={joinCopy.existingLoginLabel} help={joinCopy.existingLogin} />
                 </Note>
               ) : replaceableId ? (
                 <Note tone="info" role="status" testId="crew-join-replaceable">
@@ -907,10 +911,14 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                         data-testid="crew-join-fingerprint-helper"
                       >
                         {joinCopy.fingerprint}{' '}
-                        <span className="font-mono text-text-default" translate="no">
+                        <span className="font-mono text-code text-text-default" translate="no">
                           {fingerprintShort}
                         </span>
-                        . {joinCopy.fingerprintHelper(hostHandle)}
+                        .{' '}
+                        <InfoTip
+                          label={joinCopy.fingerprintLabel}
+                          help={joinCopy.fingerprintHelper(hostHandle)}
+                        />
                       </p>
                     </Disclosure>
                   ) : null}
@@ -1012,13 +1020,20 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   ) : null}
                   {statedMode === 'private' && mode === 'public' ? (
                     // Public on a Private workspace: what it does and doesn't change (Q2-36).
+                    // What it does and could do stays in view; that the host isn't told is the
+                    // info icon's (owner, 2026-11-13).
                     <Note tone="warning" role="status" testId="crew-join-public-consequence">
-                      {joinCopy.publicConsequence(
-                        workspaceLabel,
-                        institutionLabel(preview?.workspace_institution_id, known),
-                        hostHandle,
-                        hostSubject
-                      )}
+                      <span>
+                        {joinCopy.publicConsequence(
+                          workspaceLabel,
+                          institutionLabel(preview?.workspace_institution_id, known),
+                          hostHandle
+                        )}
+                      </span>{' '}
+                      <InfoTip
+                        label={joinCopy.publicConsequenceLabel}
+                        help={joinCopy.publicConsequenceUntold(hostSubject)}
+                      />
                     </Note>
                   ) : (
                     <MismatchLine

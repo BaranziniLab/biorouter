@@ -44,7 +44,7 @@ The dialog has three steps: Name, Start and Create. To do the same from a termin
 
 ### Name the workspace
 
-1. In **Workspace name**, type a name, such as `Wong Lab`. Crew shows it as "Your workspace: wong-lab". Anyone who can sign in to the server can see it, so leave out patient and sample IDs.
+1. In **Workspace name**, type a name, such as `Wong Lab`. The line under the field says that anyone who can sign in to this server can see the workspace name, so leave out patient and sample IDs. The info icon beside the label gives the format rule and shows the name Crew will use, such as "Your workspace: wong-lab".
 2. In **Your server login**, type your login, such as `alice@hpc.example.edu`, or the server's short name from your SSH settings.
 3. Under **Privacy**, keep **Private** or choose **Public**. With Private, type your short ID in **Institution** if it is empty.
 4. Check **Your agent on {server}**. It starts at **As me on the server**, which lets your agent run commands as your account there, with the warning that goes with it. Choose **In a folder** or **Off** to give it less ([What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server)). As host, your account also holds the workspace's own files, so full access lets your agent read channels you are not in and act as the host. The warning says so: "You host {workspace} from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of {workspace}."
@@ -114,7 +114,7 @@ Every setup code is listed in [Setup refusals](command-line.md#setup-refusals).
 ### Create the workspace
 
 1. In step 3, note the workspace **Fingerprint**. People you invite may ask you to read it out.
-2. If you chose **Private** in step 1, step 3 also says "Creating {workspace} also marks it as a {institution} workspace, for everyone who works there. Agents working in {workspace} can then use only models approved for {institution}. This can’t be undone." To use another institution, go **Back** to step 1 and change **Institution** first.
+2. If you chose **Private** in step 1, step 3 also says "Creating {workspace} also marks it as a {institution} workspace. This can’t be undone." The info icon beside it says that the mark is for everyone who works in the workspace, and that agents there can then use only models approved for that institution. To use another institution, go **Back** to step 1 and change **Institution** first.
 3. Choose **Create workspace**. Step 3 says "Creating {workspace} makes your server account its host. Any computer that signs in as you can open it as host later." This computer becomes your first computer in the workspace. On a server with an older Crew, the host role stays with this computer's key instead ([Limits of the host role](#limits-of-the-host-role)).
 4. If the server asks for a password or a code, type it in the Sign in window.
 
@@ -207,10 +207,10 @@ The team appears with its `#general` channel, which you own, and the checklist c
 
 ## Choose who manages the workspace
 
-In the workspace menu, choose **People…**, **Privacy…** or **Agent access…**, then the **General** tab of "{workspace} settings". Under **Who can manage teams and channels**:
+In the workspace menu, choose **People…**, **Privacy…** or **Agent access…**, then the **General** tab of "{workspace} settings". Under **Who can manage teams and channels** (the info icon beside the question says what each choice lets people do):
 
-- **Everyone can manage**: "Every member can rename, archive and delete teams and channels, add people to them and join any of them." Members can also invite people and let them in.
-- **Owners manage**: "A team’s creator and a channel’s owner change them, and nobody else." Only you invite people and let them in.
+- **Everyone can manage**: every member can rename, archive and delete teams and channels, add people to them and join any of them. Members can also invite people and let them in.
+- **Owners manage**: a team’s creator and a channel’s owner change them, and nobody else. Only you invite people and let them in.
 
 The choice applies at once. Either way, only you remove people from the workspace, change its privacy or delete it. Members see the setting as **Who manages**, "Everyone" or "Owners". A workspace created before this choice existed is managed. From a terminal, run `biorouter crew workspace governance open` or `managed`.
 

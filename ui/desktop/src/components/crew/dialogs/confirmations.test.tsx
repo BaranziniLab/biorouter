@@ -263,8 +263,14 @@ describe('CrewConfirmation', () => {
     expect(description).not.toMatch(/add it again/i);
     expect(description).toMatch(/deletes this computer’s key/);
     expect(description).toMatch(/the host has to add this computer/);
-    // A host removing it from their last computer ends the host controls for good.
-    expect(description).toMatch(/If you host it and no other computer of yours still has it/);
+    // A host removing it from their last computer ends the host controls for good: said behind the
+    // dialog's Details, with what else the removal does (owner, 2026-11-13).
+    const details = confirmCopy.removeConnection.descriptionDetails;
+    expect(details).toMatch(/If you host it and no other computer of yours still has it/);
+    expect(details).toMatch(/Your messages stay on the server/);
+    expect(within(dialog).queryByText(details)).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Details' }));
+    expect(within(dialog).getByText(details)).toBeVisible();
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
     });
@@ -297,9 +303,10 @@ describe('CrewConfirmation', () => {
     const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removeConnection.title('lab'),
     });
-    expect(dialog).toHaveTextContent(
-      confirmCopy.removeConnection.onlyHostDescription('lab', 'alice')
-    );
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.onlyHostDescription('lab'));
+    // How to keep the controls is behind Details.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Details' }));
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.onlyHostKeep('alice'));
     const remove = within(dialog).getByRole('button', {
       name: confirmCopy.removeConnection.onlyHostConfirm,
     });
@@ -459,6 +466,9 @@ describe('deleting channels, teams and workspaces (OW-4, OW-5)', () => {
     expect(dialog).toHaveTextContent(
       confirmCopy.deleteWorkspace.description('lab', 'hpc.example.edu')
     );
+    expect(dialog).toHaveTextContent(/This can’t be undone/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Details' }));
+    expect(dialog).toHaveTextContent(confirmCopy.deleteWorkspace.details);
     const confirm = within(dialog).getByRole('button', { name: 'Delete workspace' });
     expect(confirm).toBeDisabled();
     fireEvent.change(within(dialog).getByLabelText('Type lab to confirm'), {

@@ -466,13 +466,13 @@ A chat's own shell cannot go around the cards. When a chat runs `biorouter crew`
 
 ## What your agent may do on the server
 
-Each connection has an agent access level, which says what your agents may do on the lab server. You choose it for your own account when you join, and change it in **Connection settings…**, under "What can your agent do on {server}?". It applies to every task and connected chat through that connection, and only with a private model. A public model gets none of it, whatever the level.
+Each connection has an agent access level, which says what your agents may do on the lab server. You choose it for your own account when you join, and change it in **Connection settings…**, under "What can your agent do on {server}?". The info icon beside that question says what **In a folder** and **As me on the server** allow. It applies to every task and connected chat through that connection, and only with a private model. A public model gets none of it, whatever the level.
 
 | Level | What your agent may do |
 |---|---|
-| **Off** | "It can’t use files or run commands on {server}." |
-| **In a folder** | "It reads and writes files in one folder, and runs confined commands there." See [Work in the remote work folder](#work-in-the-remote-work-folder). |
-| **As me on the server** | Full access: "It runs commands as {you}, with your files, network and programs." See [As me on the server](#as-me-on-the-server). |
+| **Off** | Your agent can’t use files or run commands on the server. |
+| **In a folder** | Your agent reads and writes files in one folder, and runs confined commands there. See [Work in the remote work folder](#work-in-the-remote-work-folder). |
+| **As me on the server** | Full access: your agent runs commands as you, with your files, network and programs. See [As me on the server](#as-me-on-the-server). |
 
 A new connection made by joining or hosting starts at **As me on the server**, with the warning below, and you may choose less. **Off** stays off: setting Crew up again never raises it, except that `biorouter crew join` on a connection that never connected from this computer gives it the new-connection level and says so ([Joining](joining-a-workspace.md)). **As me on the server** needs a current Crew on the server, in the host's account and in yours, and is unavailable, with "Update Crew on {server} first.", until it is there. `biorouter crew setup --replace-existing` updates your own copy, and the host updates the workspace's ([Upgrade Crew](administration.md#upgrade-crew)). From a terminal, `biorouter crew connections set-access off`, `folder` or `full` sets the level ([Agent access](command-line.md#agent-access)).
 

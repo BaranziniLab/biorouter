@@ -178,8 +178,13 @@ describe('LetInDialog', () => {
     renderLetIn({ username: 'eve', full_name: 'Eve Park', mismatched_attempts: 2 });
     // The host's own typo reads as a check to make, not as an impostor (QA T-13).
     const warning = await screen.findByText(letInCopy.mismatch('eve'));
-    // It names the control that exists (QA Q2-23): the form's own submit is Replace code.
-    expect(warning).toHaveTextContent('then enter it and choose Replace code.');
+    // It names the control that exists (QA Q2-23): the form's own submit is Replace code. What to
+    // do is the warning's info tip (owner, 2026-11-13).
+    expect(
+      screen.getByRole('button', { name: `About ${letInCopy.mismatchLabel}` })
+    ).toHaveAccessibleDescription(
+      expect.stringContaining('then enter it and choose Replace code.')
+    );
     expect(screen.getByRole('button', { name: letInCopy.replace })).toHaveAttribute(
       'type',
       'submit'
@@ -277,6 +282,9 @@ describe('LetInDialog', () => {
     );
     const warning = await screen.findByRole('alert');
     expect(warning).toHaveTextContent(letInCopy.mismatch('eve'));
+    expect(
+      within(warning).getByRole('button', { name: `About ${letInCopy.mismatchLabel}` })
+    ).toHaveAccessibleDescription(letInCopy.mismatchHelp('eve'));
     fireEvent.click(within(warning).getByRole('button', { name: letInCopy.enterAgain }));
     const field = await screen.findByLabelText(letInCopy.code('Eve'));
     expect(field).toHaveValue('');
@@ -729,7 +737,10 @@ describe('LetInDialog, the wording (QA Q2-23)', () => {
       'You already entered a code for @eve, and it didn’t match @eve’s computer. Enter the code @eve sent you and choose Replace code.'
     );
     expect(letInCopy.mismatch('eve')).toBe(
-      'A computer trying to join as @eve showed a different code. Check the code @eve sent you, then enter it and choose Replace code. Don’t approve a code you didn’t get from @eve.'
+      'A computer trying to join as @eve showed a different code.'
+    );
+    expect(letInCopy.mismatchHelp('eve')).toBe(
+      'Check the code @eve sent you, then enter it and choose Replace code. Don’t approve a code you didn’t get from @eve.'
     );
   });
 });
@@ -742,7 +753,10 @@ describe('LetInDialog, the fingerprint the joiner checks (QA Q2-04)', () => {
     renderLive(makeSnapshot({ pending_joins: [{ username: 'eve', full_name: 'Eve Park' }] }));
     const line = await screen.findByText(letInCopy.fingerprintFor('Eve'));
     expect(line).toHaveTextContent(`Fingerprint Eve should see: ${fingerprint}`);
-    expect(screen.getByText(letInCopy.fingerprintHelper('Eve'))).toBeInTheDocument();
+    // When to read it out is the line's info tip (owner, 2026-11-13).
+    expect(
+      within(line).getByRole('button', { name: `About ${letInCopy.fingerprintHelpLabel}` })
+    ).toHaveAccessibleDescription(letInCopy.fingerprintHelper('Eve'));
     // Before the code field, in reading order.
     expect(
       line.compareDocumentPosition(screen.getByLabelText(letInCopy.code('Eve'))) &
@@ -985,13 +999,10 @@ describe('LetInDialog, round 4 (QA Q4-36, Q4-38)', () => {
       node.getAttribute('data-say')
     );
     expect(said).toEqual(
-      expect.arrayContaining([
-        letInCopy.channelsIn('Analysis Lab'),
-        '#general',
-        '#methods',
-        letInCopy.fingerprintHelper('Eve'),
-      ])
+      expect.arrayContaining([letInCopy.channelsIn('Analysis Lab'), '#general', '#methods'])
     );
+    // The saved view keeps the fingerprint's help in its info tip, so the sizer says no line of it.
+    expect(said).not.toContain(letInCopy.fingerprintHelper('Eve'));
     const reserved = Array.from(sizer?.querySelectorAll('.crew-reserve') ?? []).map((node) => [
       node.getAttribute('data-reserve-a'),
       node.getAttribute('data-reserve-b'),

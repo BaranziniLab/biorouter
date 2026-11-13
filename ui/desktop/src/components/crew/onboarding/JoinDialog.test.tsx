@@ -264,13 +264,17 @@ describe('JoinDialog', () => {
     fireEvent.click(check);
 
     const helper = screen.getByTestId('crew-join-fingerprint-helper');
-    // "Hosted by Alice Chen (@alice)" named her in full; later sentences call her what the join
-    // card does, not a bare handle (Q3-46).
-    expect(helper).toHaveTextContent(
-      'Fingerprint 3F2A 9C1E 77B0 D4E1. This isn’t the code you send; your code appears after you choose Join. To double-check the invitation, ask Alice to read the fingerprint from Crew (Alice’s workspace menu shows it).'
+    expect(helper).toHaveTextContent('Fingerprint 3F2A 9C1E 77B0 D4E1.');
+    // What it is for is the info icon's (owner, 2026-11-13). "Hosted by Alice Chen (@alice)"
+    // named her in full; later sentences call her what the join card does, not a bare handle
+    // (Q3-46).
+    const tip = within(helper).getByRole('button', { name: `About ${joinCopy.fingerprintLabel}` });
+    expect(tip).toHaveAccessibleDescription(
+      'This isn’t the code you send; that appears after you choose Join. To check the invitation, ask Alice to read the fingerprint from Alice’s workspace menu in Crew.'
     );
     // A named person is never "they" or "theirs" (Q4-45).
     expect(helper).not.toHaveTextContent(/\btheir(s)?\b/);
+    expect(tip).not.toHaveAccessibleDescription(/\btheir(s)?\b/);
     // No Copy anywhere in the summary: the joiner never sends this.
     expect(within(summary).queryByRole('button', { name: /copy/i })).toBeNull();
     expect(helper).not.toHaveTextContent(/Check this matches/);
@@ -340,8 +344,12 @@ describe('JoinDialog', () => {
     // "can't read Restricted channels" may appear.
     const note = screen.getByTestId('crew-join-public-consequence');
     expect(note).toHaveTextContent(
-      'lab is Private, so nothing changes yet: your agent still uses only private and UCSF-approved models here. If Alice makes lab Public, public models could read its public-safe channels through your agent. Alice isn’t told what you chose.'
+      'lab is Private, so nothing changes yet: your agent still uses only private and UCSF-approved models here. If Alice makes lab Public, public models could read its public-safe channels through your agent.'
     );
+    // That the host isn't told is the note's info tip.
+    expect(
+      within(note).getByRole('button', { name: `About ${joinCopy.publicConsequenceLabel}` })
+    ).toHaveAccessibleDescription('Alice isn’t told what you chose.');
     expect(note).not.toHaveTextContent(/Restricted/);
     expect(note).not.toHaveTextContent(/can’t use/);
     expect(screen.queryByTestId('crew-join-mismatch')).toBeNull();
@@ -524,6 +532,10 @@ describe('JoinDialog', () => {
     expect(row).not.toHaveAccessibleDescription();
     // Three levels; the default carries its one warning, naming the account it acts as.
     expect(screen.getByRole('group', { name: joinCopy.agentLegend('hpc.ucsf.edu') })).toBeVisible();
+    // What each level means is the legend's info tip, and the group's description.
+    expect(
+      screen.getByRole('group', { name: joinCopy.agentLegend('hpc.ucsf.edu') })
+    ).toHaveAccessibleDescription(joinCopy.agentLevelsHelp('bob'));
     expect(screen.getByRole('radio', { name: /^As me on the server/ })).toBeChecked();
     expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
       joinCopy.fullWarning('bob', 'hpc.ucsf.edu')
@@ -831,7 +843,10 @@ describe('JoinDialog', () => {
     const view = renderDialog({ connections: [existing] });
     await paste();
     const note = await screen.findByTestId('crew-join-existing');
-    expect(note).toHaveTextContent(joinCopy.existingLogin);
+    // Where the login changes is the note's info tip, beside the action that goes there.
+    expect(
+      within(note).getByRole('button', { name: `About ${joinCopy.existingLoginLabel}` })
+    ).toHaveAccessibleDescription(joinCopy.existingLogin);
     fireEvent.click(within(note).getByRole('button', { name: joinCopy.connectionSettings }));
     const crew = view.crew();
     expect(crew.closeDialog).toHaveBeenCalled();

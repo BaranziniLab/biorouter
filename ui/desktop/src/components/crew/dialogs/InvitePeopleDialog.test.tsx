@@ -245,6 +245,10 @@ describe('InvitePeopleDialog', () => {
     await invite('bob');
     const dialog = await screen.findByRole('dialog', { name: 'Invite people to lab' });
     const next = await within(dialog).findByText(inviteCopy.nextStep('Bob'), { exact: false });
+    // What Bob's Biorouter does is the heading's info tip (owner, 2026-11-13).
+    expect(within(dialog).getByTestId('crew-invite-sets-up')).toHaveAccessibleDescription(
+      inviteCopy.setsUp('Bob')
+    );
     expect(next).toHaveTextContent(
       `${inviteCopy.nextStep('Bob')} This invitation ${expiresText(EXPIRES_AT)}.`
     );

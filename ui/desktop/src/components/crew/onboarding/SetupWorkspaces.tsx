@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { unknownKeyLookup } from '../hostKeys/hostKeyLookup';
 import { TrustHostKey, useHostKeyFingerprint } from '../hostKeys/TrustHostKey';
 import { trustHostKeyCopy } from '../hostKeys/trustHostKey.copy';
@@ -136,7 +137,10 @@ export function SetupHostKeyHelp({
   if (changed) {
     return (
       <div className="crew-onboard-stack" data-testid="crew-setup-host-key-changed">
-        <p className="text-body text-text-default">{trustCopy.changedBody}</p>
+        <p className="text-body text-text-default">
+          <span>{trustCopy.changedBody}</span>{' '}
+          <InfoTip label={trustCopy.changedWhyLabel} help={trustCopy.changedWhy} />
+        </p>
         {known ? (
           <div className="crew-onboard-field">
             <span className="text-supporting text-text-muted">{trustCopy.previous}</span>

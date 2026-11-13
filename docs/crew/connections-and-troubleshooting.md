@@ -126,7 +126,7 @@ In a chat, the card for a changed key shows the fingerprint Crew knew and the on
 
 ## Crew missing from your server account
 
-"Crew isn’t set up for your account on {server address}" in the main area means your own server account has no usable `~/.local/bin/biorouter-crew`. It says "Biorouter can install it in your own account. It goes in ~/.local/bin and needs no administrator."
+"Crew isn’t set up for your account on {server address}" in the main area means your own server account has no usable `~/.local/bin/biorouter-crew`. It says "Biorouter can install it in your own account, in ~/.local/bin, with no administrator."
 
 1. Choose **Set up Crew for my account**. Biorouter signs in to the server as you with your SSH settings, and the Sign in window opens if the server asks for a password or a code.
 2. Watch the steps: "Checking server", "Signing in", "Installing Crew in your account" and "Connecting". When they finish, Crew connects, and your channels appear.
@@ -192,7 +192,7 @@ A value Crew refuses gets a note under its field, which opens **Advanced** if it
 
 Workspaces on one server share one privacy setting and one institution. If any is Private, all stay Private.
 
-To remove a workspace, choose **Remove {workspace} from this computer…**, then **Remove**. This disconnects it, ends every chat's access to it, and deletes this computer's key for it. Your messages stay on the server, and you stay a member, so your old invitation does not bring the workspace back. On a server with a current Crew, the confirmation asks nothing more, the host included, and says: "It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. You can open chen-lab again from any computer that signs in to lab.example.edu as @bob. Chats given Crew access through this connection can’t be given access through a new one. If this computer lost its key, choose Add this computer again instead: it keeps the connection."
+To remove a workspace, choose **Remove {workspace} from this computer…**, then **Remove**. This disconnects it, ends every chat's access to it, and deletes this computer's key for it. Your messages stay on the server, and you stay a member, so your old invitation does not bring the workspace back. On a server with a current Crew, the confirmation asks nothing more, the host included, and says: "It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace." Its **Details** add: "Your messages stay on the server. You can open chen-lab again from any computer that signs in to lab.example.edu as @bob. Chats given Crew access through this connection can’t be given access through a new one. If this computer lost its key, choose Add this computer again instead: it keeps the connection."
 
 - To use the workspace again, follow [Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server).
 - If this computer only lost its key, choose **Add this computer again** instead ([Add this computer again](joining-a-workspace.md#add-this-computer-again)).
