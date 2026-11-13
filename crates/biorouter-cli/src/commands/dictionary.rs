@@ -162,6 +162,11 @@ pub const MSG_NO_SUGGESTIONS: &str = "No suggestions to review.";
 pub const MSG_SCAN_FAILED: &str = "Biorouter could not finish reading your chats.";
 /// What `suggestions scan` says after it added words.
 pub const MSG_SCAN_REVIEW: &str = "Review them with `biorouter dictionary suggestions`.";
+/// What `/dictionary scan` says after it added words, inside a chat.
+pub const MSG_SCAN_REVIEW_IN_SESSION: &str = "Review them with /dictionary review.";
+/// The TUI's first line for `/dictionary scan`, replaced by its progress as it reads.
+pub const MSG_SCAN_STARTED_IN_SESSION: &str =
+    "Looking for words in your recent chats. Esc stops it.";
 /// Below MSG-SCAN-OFF, which names the Dictionary page's switch: the same switch here.
 pub const MSG_SCAN_TURN_ON: &str =
     "To turn it on here, run `biorouter dictionary settings --learn-from-chats on`.";
@@ -1782,6 +1787,63 @@ pub(crate) async fn run_scan(
         writeln!(streams.out, "{MSG_SCAN_REVIEW}")?;
     }
     Ok(())
+}
+
+/// `/dictionary scan` inside a chat, the TUI's and the classic one's: the same scan as
+/// `suggestions scan`, admitted by the same rules with the chat's facts (a person at this
+/// terminal, never an agent's shell). `stop` ends it after the chat it is reading, keeping
+/// what it found. The sentences to show when it ends, or the refusal's.
+pub(crate) async fn scan_in_session(
+    stop: &AtomicBool,
+    report: &mut (dyn FnMut(&ScanProgress) + Send),
+) -> std::result::Result<Vec<String>, String> {
+    let facts = session_facts();
+    let store = dictionary_store::open_store();
+    authorize(&Action::ScanSuggestions, &facts).map_err(|failure| failure.message)?;
+    scan_admitted(&facts, &store).map_err(|failure| failure.message)?;
+    let mut scanner = SessionScanner;
+    let progress = scanner
+        .scan(stop, report)
+        .await
+        .map_err(|refusal| scan_refused(refusal).message)?;
+    if progress.state == ScanState::Failed {
+        return Err(MSG_SCAN_FAILED.to_string());
+    }
+    let mut lines = vec![msg_scan_ended(&progress)];
+    if progress.words_found > 0 {
+        lines.push(MSG_SCAN_REVIEW_IN_SESSION.to_string());
+    }
+    Ok(lines)
+}
+
+/// `/dictionary scan` in the classic chat: the progress line on stderr as the command
+/// draws it, and Ctrl+C stops the scan after the chat it is reading; unlike the command,
+/// a second Ctrl+C never ends the chat.
+pub(crate) async fn scan_in_classic_session() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let watcher = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            flag.store(true, Ordering::Release);
+        }
+    });
+    let mut err = io::stderr();
+    let mut line = ProgressLine {
+        in_place: err.is_terminal(),
+        err: &mut err,
+        last: None,
+    };
+    let ended = scan_in_session(&stop, &mut |progress| line.show(progress)).await;
+    let _ = line.finish();
+    watcher.abort();
+    match ended {
+        Ok(lines) => {
+            for text in lines {
+                println!("{text}");
+            }
+        }
+        Err(reason) => eprintln!("{reason}"),
+    }
 }
 
 /// Set `stop` at the first Ctrl+C, so the scan stops after the chat it is reading and
@@ -4107,6 +4169,8 @@ mod tests {
             (msg_no_suggestion("EPAS1"), "There is no suggestion EPAS1 to review."),
             (MSG_SCAN_FAILED.into(), "Biorouter could not finish reading your chats."),
             (MSG_SCAN_REVIEW.into(), "Review them with `biorouter dictionary suggestions`."),
+            (MSG_SCAN_REVIEW_IN_SESSION.into(), "Review them with /dictionary review."),
+            (MSG_SCAN_STARTED_IN_SESSION.into(), "Looking for words in your recent chats. Esc stops it."),
             (MSG_SCAN_TURN_ON.into(), "To turn it on here, run `biorouter dictionary settings --learn-from-chats on`."),
             (MSG_SCAN_FROM_THE_COMMAND.into(), "Run `biorouter dictionary suggestions scan` to find words in your recent chats."),
             (line_scan_progress(&progress(ScanState::Running, 11, 40, 3)), "Reading chat 12 of 40, 3 words found so far"),

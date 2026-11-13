@@ -143,7 +143,7 @@ export const DICTATION_MESSAGES = {
   'MSG-SETUP':
     "Dictation turns your speech into text <where>. It needs a speech model: <name> (<size>), downloaded once from the Baranzini Lab's model repository on GitHub into <folder>. Audio is not saved.",
   'MSG-SETUP-SUGGEST':
-    'The agent and Biorouter can propose terms they see in your chats. Biorouter also suggests words you type in chats on public models, on this computer. A term can go into your dictionary when you ask the agent to add it, or reply to its offer naming that term, even if you decline; everything else waits for you to accept it.',
+    'The agent can propose terms it sees in your chats. A term can go into your dictionary when you ask the agent to add it, or reply to its offer naming that term, even if you decline; everything else waits for you to accept it.',
   'MSG-PRIVATE-DRAFT':
     'This message was dictated with your private dictionary terms turned on, so it may contain them, and <model> is a public model. Send it anyway?',
   'MSG-PRIVATE-DRAFT-SWITCH':
@@ -160,8 +160,9 @@ export type DictationMessageId = keyof typeof DICTATION_MESSAGES;
 /**
  * The two other forms the catalog gives MSG-SETUP-SUGGEST's last sentence, one
  * per `agent_writes` setting. The base text above is the `on_request` variant,
- * the default the owner chose (O-3). MSG-SETUP-SUGGEST also drops its middle
- * sentence when `learn_from_chats` starts off.
+ * the default the owner chose (O-3). It is the InfoTip of **Suggest dictionary words
+ * from my chats**, so it stays two sentences; the chat extractor, which needs no agent,
+ * has its own switch and InfoTip (**Suggest words from my messages**, 2026-11-13).
  */
 export const SETUP_SUGGEST_LAST_SENTENCE = {
   on_request:

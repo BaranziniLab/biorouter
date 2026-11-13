@@ -1986,7 +1986,7 @@ At your own interactive terminal, press Ctrl+T or type `/dictate` to record into
 
 `BIOROUTER_CLI_DICTATION_KEY` changes the Ctrl key letter; an empty value turns off the chord while `/dictate` remains available. When it matches `BIOROUTER_CLI_NEWLINE_KEY`, the newline chord wins and the TUI reports the clash. In the TUI a letter the interface already binds (B, C, D or O) is not offered as the dictation key. `/dictate status` shows the terminal state, and `/dictate retry` retries a failed transcription while its recording remains in memory for up to five minutes. After three failures within ten seconds, dictation pauses for that chat.
 
-`/dictionary add <term>` adds a term from the current TUI or classic chat. A term added in a private chat stays private and carries that chat's institution scope. `/dictionary review` opens the suggested terms for local review. A correction to a dictated term before sending can teach the personal dictionary after the message is accepted.
+`/dictionary add <term>` adds a term from the current TUI or classic chat. A term added in a private chat stays private and carries that chat's institution scope. `/dictionary review` opens the suggested terms for local review. `/dictionary scan` looks for words in your recent chats on public models, as `biorouter dictionary suggestions scan` does; Esc (TUI) or Ctrl+C (classic chat) stops it and keeps what it found. A correction to a dictated term before sending can teach the personal dictionary after the message is accepted.
 
 ### Themes
 

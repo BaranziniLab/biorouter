@@ -1670,6 +1670,72 @@ async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Res
     Ok(())
 }
 
+/// `/dictionary scan`: find words in the person's recent chats, as
+/// `biorouter dictionary suggestions scan` does. One note says it started and is replaced in
+/// place by its progress, so the scrollback gains no line per chat; Esc or Ctrl+C stops it
+/// after the chat it is reading, keeping what it found. A refusal (suggestions off, an
+/// agent's shell, managed policy) is a note, not an error: nothing failed.
+#[cfg(feature = "dictation")]
+async fn scan_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Result<()> {
+    use crate::commands::dictionary::{
+        line_scan_progress, scan_in_session, MSG_SCAN_STARTED_IN_SESSION,
+    };
+    use biorouter::dictation::suggestion_scan::{ScanProgress, ScanState};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    let stop = AtomicBool::new(false);
+    let latest: Arc<Mutex<Option<ScanProgress>>> = Arc::default();
+    let heard = Arc::clone(&latest);
+    let mut report = move |progress: &ScanProgress| {
+        *heard.lock().unwrap_or_else(PoisonError::into_inner) = Some(progress.clone());
+    };
+    app.push_note(MSG_SCAN_STARTED_IN_SESSION);
+    let line = app.scrollback.len() - 1;
+    let scan = scan_in_session(&stop, &mut report);
+    tokio::pin!(scan);
+    let ended = loop {
+        let progress = latest.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(progress) = progress {
+            if progress.state == ScanState::Running && progress.chats_total > 0 {
+                app.scrollback[line] = Line::from(Span::styled(
+                    line_scan_progress(&progress),
+                    Style::new().fg(Color::Yellow),
+                ));
+            }
+        }
+        tui.draw(app)?;
+        tokio::select! {
+            ended = &mut scan => break ended,
+            event = rx.recv() => match event {
+                Some(Event::Key(key))
+                    if key.kind == KeyEventKind::Press
+                        && (key.code == KeyCode::Esc
+                            || key.code == KeyCode::Char('c')
+                                && key.modifiers.contains(KeyModifiers::CONTROL)) =>
+                {
+                    stop.store(true, Ordering::Release);
+                }
+                Some(_) => {}
+                None => {
+                    stop.store(true, Ordering::Release);
+                    break (&mut scan).await;
+                }
+            },
+            () = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
+        }
+    };
+    match ended {
+        Ok(lines) => {
+            for text in lines {
+                app.push_note(&text);
+            }
+        }
+        Err(reason) => app.push_note(&reason),
+    }
+    Ok(())
+}
+
 /// After a review that kept or dismissed anything, the offer to turn chat suggestions off
 /// when most were dismissed, as one note.
 #[cfg(feature = "dictation")]
@@ -1768,6 +1834,12 @@ async fn dictation_slash(
         }
         "/dictionary review" => {
             if let Err(reason) = review_dictionary(app, tui, rx).await {
+                app.push_error(&reason.to_string());
+            }
+            true
+        }
+        "/dictionary scan" => {
+            if let Err(reason) = scan_dictionary(app, tui, rx).await {
                 app.push_error(&reason.to_string());
             }
             true
@@ -2944,6 +3016,7 @@ async fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
         items.push(cmd("/dictate install", "Install a speech model"));
         items.push(cmd("/dictionary add", "Add a term from this chat"));
         items.push(cmd("/dictionary review", "Review suggested terms"));
+        items.push(cmd("/dictionary scan", "Find words in your recent chats"));
     }
     items.push(cmd(
         "/folder-access",
@@ -3110,6 +3183,10 @@ fn help_into(app: &mut App) {
             "add a term from this chat".into(),
         ),
         ("/dictionary review".into(), "review suggested terms".into()),
+        (
+            "/dictionary scan".into(),
+            "find words in your recent chats".into(),
+        ),
     ]);
     commands.extend(
         biorouter::agents::execute_commands::list_commands()

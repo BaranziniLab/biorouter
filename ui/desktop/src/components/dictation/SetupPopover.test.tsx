@@ -87,6 +87,22 @@ describe('the setup popover', () => {
     fireEvent.click(button);
     expect(install).not.toHaveBeenCalled();
   });
+  it('keeps the dictionary choice to one line, its explanation in an InfoTip', () => {
+    const status = speechStatus({ active_model: null }, turbo);
+    render(
+      <SetupPopover status={status} progress={null} onNotNow={vi.fn()} onMoreInSettings={vi.fn()} />
+    );
+    const choice = screen.getByTestId('dictation-setup-suggest');
+    expect(
+      screen.getByRole('checkbox', { name: 'Suggest dictionary words from my chats' })
+    ).toBeChecked();
+    expect(
+      screen.getByRole('button', { name: 'About Suggest dictionary words from my chats' })
+    ).toBeInTheDocument();
+    // The help is the InfoTip's description, never a visible paragraph under the box.
+    expect(choice.querySelector('.text-supporting')).toBeNull();
+  });
+
   it('names the model, its size and its folder, and says where speech is transcribed', () => {
     const status = speechStatus({ active_model: null }, turbo);
     render(

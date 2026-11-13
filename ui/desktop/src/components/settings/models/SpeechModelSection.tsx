@@ -5,6 +5,7 @@ import { AlertTriangle } from '../../icons/app-icons';
 import { ManagedPolicyNote } from '../../privacy/ManagedPolicyNote';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
+import { InfoTip } from '../../ui/info-tip';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
@@ -215,15 +216,17 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
       {(!hasUsableModel(status) || activation.needsSave) &&
       status.policy.dictionary.allowed !== false &&
       activation.showChoice ? (
-        <label className="block text-label" data-testid="speech-suggest-from-chats">
-          <Checkbox
-            checked={activation.checked}
-            disabled={activation.disabled}
-            onChange={(event) => activation.setChecked(event.target.checked)}
-          />
-          {DICTATION_ACTIONS.suggestFromChats}
-          <span className="block text-supporting">{activation.help}</span>
-        </label>
+        <div className="flex items-center gap-1 text-label" data-testid="speech-suggest-from-chats">
+          <label>
+            <Checkbox
+              checked={activation.checked}
+              disabled={activation.disabled}
+              onChange={(event) => activation.setChecked(event.target.checked)}
+            />
+            {DICTATION_ACTIONS.suggestFromChats}
+          </label>
+          <InfoTip label={DICTATION_ACTIONS.suggestFromChats} help={activation.help} />
+        </div>
       ) : null}
       {activation.needsSave && !activation.saving ? (
         <Note tone="warning" testId="speech-activation-save-failed" className="mb-2">

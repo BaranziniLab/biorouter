@@ -21,6 +21,7 @@ import {
 } from '../settings/models/speechModelStore';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/Checkbox';
+import { InfoTip } from '../ui/info-tip';
 import { DICTIONARY_LABELS } from '../dictionary/copy';
 import { openDictionaryPage } from '../dictionary/navigation';
 import { useDictionaryActivationChoice } from '../dictionary/activationChoice';
@@ -150,15 +151,17 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
       (!hasUsableModel(status) || activation.needsSave) &&
       status.policy.dictionary.allowed !== false &&
       activation.showChoice ? (
-        <label className="block text-label" data-testid="dictation-setup-suggest">
-          <Checkbox
-            checked={activation.checked}
-            disabled={activation.disabled}
-            onChange={(event) => activation.setChecked(event.target.checked)}
-          />
-          {DICTATION_ACTIONS.suggestFromChats}
-          <span className="block text-supporting">{activation.help}</span>
-        </label>
+        <div className="flex items-center gap-1 text-label" data-testid="dictation-setup-suggest">
+          <label>
+            <Checkbox
+              checked={activation.checked}
+              disabled={activation.disabled}
+              onChange={(event) => activation.setChecked(event.target.checked)}
+            />
+            {DICTATION_ACTIONS.suggestFromChats}
+          </label>
+          <InfoTip label={DICTATION_ACTIONS.suggestFromChats} help={activation.help} />
+        </div>
       ) : null}
       <div className="br-dictation-setup__actions">
         <Button
