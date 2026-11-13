@@ -22,8 +22,9 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::BTreeSet;
 
-/// Said to a public model asked to continue a chat that was private when it was granted, or
-/// when a run is asked from one (the run's `origin_restricted`).
+/// What a public model is told when the chat asking for Crew access has used a private one: its
+/// history carries private context a public model must not continue with (W2-DMN-9, the run's
+/// `origin_restricted`).
 pub(super) const ORIGIN_RESTRICTED_PUBLIC: &str = "This chat has used a private model, so a public model can't continue it with Crew context. Choose a private model.";
 
 /// Said to a public model asked to read a chat's standing grant that does not admit one.
@@ -35,7 +36,7 @@ const GRANT_PRIVATE_TO_A_PUBLIC_MODEL: &str =
 /// For a chat this is its DR-33 privacy: the provider slot folds the chat's decision models
 /// in (`DecisionBoundProvider`), so a chat that one of them made public is a public model
 /// here, whatever its own model is. A tool call's capability is sampled from that same slot.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelPrivacy {
     tier: ProviderTier,
     affiliation: Option<ModelAffiliation>,
@@ -62,7 +63,7 @@ impl ModelPrivacy {
     }
 
     pub fn affiliation(&self) -> Option<ModelAffiliation> {
-        self.affiliation.clone()
+        self.affiliation
     }
 
     /// Whether this is a public model: one hosted outside the person's institution, such as
