@@ -1,7 +1,7 @@
 # Connections and troubleshooting
 
 > **What this is.** How Crew connects to your lab's workspace, how to sign in, set Crew up in your server account and change connection settings, what a deleted workspace looks like, and what each status and error message asks you to do.
-> **Status:** Current. Checked against the Crew code on 2026-10-16.
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app. No SSH or terminal experience is needed.
 
 Your lab's workspace runs on a shared lab server. Your computer reaches it over SSH, the secure login that lab servers use. The Biorouter background service on your computer keeps the connection open and checks the server's identity.
@@ -18,7 +18,7 @@ A word in braces stands for a name that Crew fills in. For example, "Connect to 
 | **Sign-in needed** | Choose the word to [sign in](#sign-in-to-the-server). |
 | "Can’t verify server" | See [Server identity checks](#server-identity-checks). |
 | "Not set up on this server" | Choose **Set up Crew for my account**. See [Crew missing from your server account](#crew-missing-from-your-server-account). |
-| "Not joined yet" | Your host has not let you in yet. See [Joining a workspace](joining-a-workspace.md). |
+| "Not joined yet" | This computer has not joined the workspace yet. Choose **Join** if Crew shows it. On a server with an older Crew, your host has not let you in yet. See [Joining a workspace](joining-a-workspace.md). |
 | "Offline" | You are not connected. This follows a computer restart, **Disconnect**, a saved change to your server login, port, identity file or jump hosts in **Connection settings…**, or a dropped connection. After a drop, Crew [reconnects by itself](#automatic-reconnection). Otherwise, choose **Connect to {workspace}**. |
 | "Connected" with "The workspace server has stopped saving changes. Reading still works." | The server's disk is full or failing. You can read, but posts, uploads and other changes are refused. See [A server that stopped saving](#a-server-that-stopped-saving). |
 | "Deleted by host" | The host deleted the workspace. Only removing it from this computer is left. See [A deleted workspace](#a-deleted-workspace). |
@@ -85,17 +85,25 @@ The window closes when the server accepts you. To stop, choose **Close**. Escape
 
 The Sign in window asks for the server's password even when your SSH settings say `BatchMode yes`. A jump host that wants a password or a code cannot ask through it while `BatchMode yes` applies to that jump host, so ask IT to leave `BatchMode` out of its settings.
 
+### Sign in for a chat
+
+When a chat sets Crew up, connects or joins for you and the server asks for a password or a code, the chat shows a card, "Sign in to {login}". Choose **Sign in**, and the same Sign in window opens. What you type there goes to ssh on the server, never to the chat, the model or the chat's history. When the server accepts you, the card reads "Signed in. The chat carries on." and the chat goes on by itself. **Dismiss** ends the chat's wait with nothing signed in, and a setup that waited still waits, with **Sign in** at the top of Crew. If the server accepts you but Crew is not in your server account yet, the Sign in window says "Crew isn’t set up for your account on {server}. Biorouter can install it in your own account. It goes in ~/.local/bin and needs no administrator." Close the window, and ask the chat to set Crew up, or choose **Set up Crew for my account** in Crew.
+
+The chat can also open the Sign in window when the server refused this computer's SSH key and the key has a passphrase that no SSH agent holds: type the passphrase there. A chat in a `biorouter serve` browser, where Crew does not work, or through ACP cannot show the card, and names `biorouter crew auth` instead ([Sign in, unlock and check a server's key](agents-and-chat-access.md#sign-in-unlock-and-check-a-servers-key)).
+
 ## Server identity checks
 
-Every server has a host key that proves its identity. Your computer keeps the keys it trusts in its known hosts file, `~/.ssh/known_hosts`. Crew connects only to a server whose key is there, and checks that the workspace key matches your invitation. Crew never adds a key for you. A failed check shows "Can’t verify server" and one of three screens.
+Every server has a host key that proves its identity. Your computer keeps the keys it trusts in its known hosts file, `~/.ssh/known_hosts`. Crew connects only to a server whose key is there, and checks that the workspace key matches your invitation. Crew adds a key only when you choose **Trust this key** for a new key you checked, never a changed one. A failed check shows "Can’t verify server" and one of three screens.
 
 ### An unverified server
 
 "Can’t verify {server address} yet" means the server's key is not in your known hosts file. This is normal the first time on each computer. When the key that is missing belongs to a jump host, the screen names the jump host instead, and that is the one to verify.
 
 1. Ask your IT team for the server's fingerprint. It starts with `SHA256:`.
-2. Follow [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer). **How do I verify it?** offers **Open a terminal here**. If terminals are new to you, ask IT to help.
-3. Choose **Try again**. Crew connects, and the Sign in window opens if the server asks.
+2. Compare it with "Fingerprint this computer read from the server" on the screen. While Crew reads it, the screen says "Reading the server’s fingerprint…". If the two match, choose **Trust this key**, and Crew connects again by itself ([Trust the key in Crew](joining-a-workspace.md#trust-the-key-in-crew)). If they differ, stop and tell IT.
+3. If the screen shows no fingerprint, for example for a connection saved with a jump host, follow [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer). **How do I verify it?** offers **Open a terminal here**. If terminals are new to you, ask IT to help. Then choose **Try again**. Crew connects, and the Sign in window opens if the server asks.
+
+A chat that meets an unverified server shows a card with the same title, "Fingerprint this computer read from the server", **Trust this key**, **How do I verify it?**, **Open a terminal here** and **Not now**. Follow the same steps. Once the key is in your known hosts file, whether you chose **Trust this key** or added it in a terminal, the chat goes on by itself, within a second or two. It looks in every known hosts file your SSH settings name for that login, so a key you keep in another file counts too.
 
 ### A changed server identity
 
@@ -105,6 +113,8 @@ Every server has a host key that proves its identity. Your computer keeps the ke
 2. Remove the old key, or ask IT to. In a terminal, type `ssh-keygen -R lab.example.edu` with your server's address, or `ssh-keygen -R '[lab.example.edu]:2222'` for another port.
 3. Choose the workspace name, then **Reconnect**. Expect "Can’t verify {server address} yet".
 4. Follow [An unverified server](#an-unverified-server) with the new fingerprint.
+
+In a chat, the card for a changed key shows the fingerprint Crew knew and the one the server offered now, with **Copy details for IT** and nothing else. There is no **Trust this key** for a changed key, in a chat or in Crew. The chat does not wait or try again. Never let an agent remove the old key for you: in **Completely Autonomous** mode, `ssh-keygen -R` from an agent's shell asks you first ([Permission modes](../security/permission-modes.md#what-still-asks-whatever-your-mode)).
 
 ### A different workspace
 
@@ -127,7 +137,7 @@ If it cannot work for you, **Ask your host instead** gives a ready message for y
 
 ### Setting Crew up in your server account
 
-The same setup runs when you join, when you host (**Set up and start Crew**), and from a terminal (`biorouter crew setup`, `biorouter crew host`). It installs Crew's server program in your own account, checks its SHA-256 on the server, keeps the copy it replaces as `biorouter-crew.previous`, and never replaces a newer copy with an older one. When setup fails, it says why, and **What the server printed** holds the server's own words for IT.
+The same setup runs when you join, when you host (**Set up and start Crew**), when you open a workspace on a server, and from a terminal (`biorouter crew setup`, `biorouter crew host`, `biorouter crew open`). It installs Crew's server program in your own account, checks its SHA-256 on the server, replaces an older copy and keeps it as `biorouter-crew.previous`, and never replaces a newer copy with an older one. It also lists the workspaces your account has on the server, and restarts the ones you host on the new copy when nobody else is connected to them ([Keep Crew current on the server](hosting-a-workspace.md#keep-crew-current-on-the-server)). A setup a chat started appears at the top of Crew too, as "Crew is being set up on {server}.", or as "A setup on {server} is waiting for you to sign in." with **Sign in** ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). When setup fails, it says why, and **What the server printed** holds the server's own words for IT.
 
 | Message starts with | What to do |
 |---|---|
@@ -152,6 +162,7 @@ The same setup runs when you join, when you host (**Set up and start Crew**), an
 | "Other people on {server} can change your home folder" | Run `chmod go-w ~` on the server, then try again. |
 | "Your home folder on {server} is on network storage" or "The Linux on {server} is too old to host a workspace." | Host from another account or server. You can still join workspaces hosted elsewhere. |
 | "…needs a newer Biorouter background service." | See [Replace an old background service](#replace-an-old-background-service). |
+| "You already host {workspace} on {server}." | You chose a name you already host there. Choose **Open it on this computer**, or start a stopped one with the command the sentence names. To host a new workspace, choose another name. |
 
 The code behind each message is in [Setup refusals](command-line.md#setup-refusals).
 
@@ -181,9 +192,12 @@ A value Crew refuses gets a note under its field, which opens **Advanced** if it
 
 Workspaces on one server share one privacy setting and one institution. If any is Private, all stay Private.
 
-To remove a workspace, choose **Remove {workspace} from this computer…**, then **Remove**. This disconnects it, ends every chat's access to it, and deletes this computer's key for it. Your messages stay on the server, and you stay a member, so your old invitation does not bring the workspace back. To use it here again, follow [Add this computer to your existing account](joining-a-workspace.md#add-this-computer-to-your-existing-account).
+To remove a workspace, choose **Remove {workspace} from this computer…**, then **Remove**. This disconnects it, ends every chat's access to it, and deletes this computer's key for it. Your messages stay on the server, and you stay a member, so your old invitation does not bring the workspace back. On a server with a current Crew, the confirmation asks nothing more, the host included, and says: "It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. You can open chen-lab again from any computer that signs in to lab.example.edu as @bob. Chats given Crew access through this connection can’t be given access through a new one. If this computer lost its key, choose Add this computer again instead: it keeps the connection."
 
-If you are the host, read [Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role) before you remove a workspace. To delete the workspace for everyone instead, see [Delete the workspace](hosting-a-workspace.md#delete-the-workspace).
+- To use the workspace again, follow [Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server).
+- If this computer only lost its key, choose **Add this computer again** instead ([Add this computer again](joining-a-workspace.md#add-this-computer-again)).
+
+On a server with an older Crew, a member's confirmation says to ask the host to invite you with **Add another computer for @bob**, and the host's last computer asks for the workspace's name first: read [Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role) before you remove a workspace there. To delete the workspace for everyone instead, see [Delete the workspace](hosting-a-workspace.md#delete-the-workspace).
 
 ## A deleted workspace
 
@@ -215,26 +229,35 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 |---|---|
 | "Can’t reach…" or "Couldn’t reach…" | Check that you are online, and on the VPN (virtual private network) if your institution requires one. Crew keeps trying for an hour. |
 | "Crew isn’t running on {server}" | The workspace is stopped on the server, for example after the server restarted. If you host it, the screen shows the line that starts it, with **Copy**: run it on the server, as [After the server restarts](hosting-a-workspace.md#after-the-server-restarts) shows. Otherwise, the screen says "The workspace server isn’t running. Once {host} starts Crew, this computer connects by itself within a few minutes, or you can connect now." Ask your host to start Crew if they have not. Crew tries every 30 seconds, so it connects within about a minute of the start. |
-| "{server} refused this computer’s SSH key" | The server offered no password or code, so the Sign in window cannot help. Check **Your server login** and **Identity file** in **Connection settings…**, and ask IT which login and key to use. |
+| "{server} refused this computer’s SSH key" | The server offered no password or code, so the Sign in window cannot help. Check **Your server login** and **Identity file** in **Connection settings…**, and ask IT which login and key to use. If your key has a passphrase and no SSH agent holds it, a chat can open the Sign in window for you to type that passphrase ([Sign in for a chat](#sign-in-for-a-chat)). |
 | "Can’t connect…", "Crew can’t connect." or "It didn’t connect" | Your server name may reach a different machine from the one that runs Crew. Ask your host. Otherwise, check **Connection settings…** with IT. |
 | "…asked you to sign in" | [Sign in](#sign-in-to-the-server). |
 | "Crew couldn’t verify…" | See [Server identity checks](#server-identity-checks). |
 | "Crew isn’t running for you…" or "Signed in, but Crew couldn't start…" | Crew is missing from your server account. Crew sets it up by itself after you sign in, or choose **Set up Crew for my account**. See [Crew missing from your server account](#crew-missing-from-your-server-account). |
 | "The host deleted {workspace}." | See [A deleted workspace](#a-deleted-workspace). |
-| "Crew SSH host…", such as "Crew SSH host gateway (the jump host on this connection's route) requires StrictHostKeyChecking yes…" | Your SSH settings file lacks a setting that Crew requires for that jump host. Send the sentence to IT with a link to [SSH requirements](administration.md#ssh-requirements), then connect again. If it adds "This computer is the workspace's server, so it needs no jump host", clear **Jump hosts** in **Connection settings…** instead ([Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server)). |
+| "Crew SSH host…", such as "Crew SSH host gateway (the jump host on this connection's route) requires StrictHostKeyChecking yes…" | Your SSH settings file lacks a setting that Crew requires for that jump host. Send the sentence to IT with a link to [SSH requirements](administration.md#ssh-requirements), then connect again. A chat is told the same sentence, with the code `crew_ssh_settings_refused`. If it adds "This computer is the workspace's server, so it needs no jump host", clear **Jump hosts** in **Connection settings…** instead ([Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server)). |
 | "You already use this server for {other workspace}…" | One computer uses one institution for each server. Ask your host which is right. |
 | "…dropped while it was idle." | Wait, or choose **Reconnect**. |
 | "SSH bridge failed…" | The connection broke during a request, and Crew does not resend it. Choose **Reconnect**. Before you repeat your last action, check if it went through. |
 | "Reconnecting to {workspace}. Nothing was sent; try again in a moment." or "Reconnecting to {workspace} in about {N} seconds. Nothing was sent. Connect now to try at once." | Crew is dialling a broken connection again, and your action was not sent. Try it again once the status reads "Connected", or choose **Connect now** in the main area to try at once. |
 | "Crew couldn’t confirm whether this reached {workspace}…" | The connection broke after the request left. Check the channel before you repeat the action. |
-| "…no longer a member…" or "…doesn’t recognize this computer any more…" | Your host removed you or this computer. Ask your host. |
-| "{workspace} was removed from this computer, so it can’t be opened." | The workspace was removed here while Crew was open, for example with `biorouter crew connections remove`, and Crew opened another. To use it here again, follow [Add this computer to your existing account](joining-a-workspace.md#add-this-computer-to-your-existing-account). |
-| "Your Crew vault is locked." | Choose **Unlock**, and enter your vault passphrase. If it is refused, choose **Unlock** again. See [Use an encrypted vault](privacy-and-security.md#use-an-encrypted-vault). |
-| "A new device was added to your account…" | Choose **Review**. If you did not add that device, tell your host. |
+| "…no longer a member…" or "…doesn’t recognize this computer any more…" | Your host removed you, or, on an older Crew, this computer. Ask your host. |
+| "This computer no longer has its key for {workspace}. Choose Add this computer again to make a new one." | This computer lost its key, for example after its keychain was cleared. Choose **Add this computer again** ([Add this computer again](joining-a-workspace.md#add-this-computer-again)). |
+| "{workspace} no longer recognizes this computer. Choose Add this computer again while you are still a member." | The workspace dropped this computer's key, for example after you removed it in **Keys and security…** on another computer, but your account is still a member. Choose **Add this computer again**. |
+| "You removed this computer from {workspace}. Choose Add this computer again to use it here." | You removed this computer in its own **Keys and security…**. Choose **Add this computer again**. |
+| "Crew can't follow this account's new name, @{new}, because @{other} already uses it in {workspace}. Rename the account back to @{old} on the server and remove @{other} from {workspace} before renaming it again." | You host the workspace, and your server account was renamed to a name another member already uses. Only you can fix it, in the order the sentence gives ([Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role)). |
+| "Crew is being set up on {server}." or "A setup on {server} is waiting for you to sign in." | A chat or a terminal started a setup on that server. Choose **Sign in** when it waits for you, here or on the chat's own **Sign in** card, and type your password or code in the Sign in window. |
+| "Setting up Crew on {server} stopped.", followed by Crew's reason | A setup a chat or a terminal started, which Crew showed here, stopped with an error. Do what the reason says, then ask the chat again, or set Crew up from Crew. **Dismiss** closes the note. |
+| "{workspace}'s server runs an older Crew. Ask @{host} to update it." or "…Update it with biorouter crew setup --server {login}." | What you tried needs a current Crew on the server. Ask your host to update it, or, as the host, run that command ([Keep Crew current on the server](hosting-a-workspace.md#keep-crew-current-on-the-server)). |
+| "You were removed from {workspace}. Ask a member to invite you again." | The workspace removed your account. Ask a member for a new invitation. |
+| "{workspace}’s server runs an older Crew." with **Update Crew**, or with "Ask @{host} to update Crew." | The workspace runs an older Crew than your Biorouter carries (or, on a server too old to report its version, a Crew from before account ownership). The host chooses **Update Crew**, which looks for the workspaces on that server, then **Update Crew** beside the workspace ([Keep Crew current on the server](hosting-a-workspace.md#keep-crew-current-on-the-server)). If the Crew in your own account there is too old to list them, the dialog says so, with its own **Update Crew**, which updates that Crew first and then lists them. A member asks the host. × closes the note. |
+| "{workspace} was removed from this computer, so it can’t be opened." | The workspace was removed here while Crew was open, for example with `biorouter crew connections remove`, and Crew opened another. To use it here again, follow [Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server). |
+| "Your Crew vault is locked." | Choose **Unlock**, and enter your vault passphrase. If it is refused, choose **Unlock** again. See [Use an encrypted vault](privacy-and-security.md#use-an-encrypted-vault). A chat that needs the vault shows its own **Unlock** card, which opens the same passphrase window, so the passphrase never reaches the chat. |
+| "New computer on your account…" or "{count} new computers on your account." | Choose **Review**. If you did not add that computer, take its SSH access to the server away, then remove it ([Your computers](privacy-and-security.md#your-computers)). If you did, choose **Acknowledge**. |
 
 ### Live update messages
 
-**Retry** in the connection bar checks the connection first.
+**Retry** in the connection bar checks the connection first. When live updates stop because this computer lost its key for the workspace, or the workspace no longer recognizes it, the connection bar shows the matching note from [Connection messages](#connection-messages), with **Add this computer again**, rather than one of these.
 
 | Message | What to do |
 |---|---|
@@ -270,7 +293,7 @@ Here, **Reconnect** means: choose **Close**, then **Reconnect** in the workspace
 | "Use the key file’s full path…" under **Identity file** in **Connection settings…**, or "Choose the identity file by its full path." or "Identity file must be an absolute path" when you join | Type the key file's full path, such as `/Users/you/.ssh/id_ed25519` on a Mac or `/home/you/.ssh/id_ed25519` on Linux. A path that starts with `~` is not accepted. Or leave the field empty to sign in with your own SSH settings. |
 | "…needs a newer Biorouter background service…" | See [Replace an old background service](#replace-an-old-background-service). |
 | "Biorouter couldn't reconnect to its background service." with **Try again** and **Quit and reopen** | The background service stopped or was replaced while Biorouter was open, for example by `biorouter crew daemon stop`, and Biorouter could not reconnect by itself. Choose **Try again**. If it repeats, choose **Quit and reopen**. Nothing you were writing is lost. |
-| "This computer has no keyring service Biorouter can use…" or "This computer's keyring service isn't answering…" | This Linux computer has no working keyring. Before your first workspace, set up [an encrypted vault](privacy-and-security.md#use-an-encrypted-vault), or run `biorouter crew credentials init` ([Keep device keys in an encrypted vault](command-line.md#keep-device-keys-in-an-encrypted-vault)). If you already joined, start the keyring again, for example by signing in to the computer's desktop. |
+| "This computer has no keyring service Biorouter can use…" or "This computer's keyring service isn't answering…" | This Linux computer has no working keyring. Before your first workspace, set up [an encrypted vault](privacy-and-security.md#use-an-encrypted-vault), or run `biorouter crew credentials init` ([Keep device keys in an encrypted vault](command-line.md#keep-device-keys-in-an-encrypted-vault)). A chat can set one up too: its **Set up** card opens your computer's own passphrase window ([Sign in, unlock and check a server's key](agents-and-chat-access.md#sign-in-unlock-and-check-a-servers-key)). If you already joined, start the keyring again, for example by signing in to the computer's desktop. |
 | "…didn't let Biorouter use this computer's Crew keys…" | Unlock your keyring, or allow access when it asks, then try again. |
 | "The workspace server can’t save messages right now…" | The server's disk is full or failing. If you host the workspace, follow [Server storage full or failing](administration.md#server-storage-full-or-failing). Otherwise, ask your host. |
 | "This daemon cannot verify human Crew actions…" | See [Replace an old background service](#replace-an-old-background-service). |

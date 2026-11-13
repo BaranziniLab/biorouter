@@ -1,3 +1,5 @@
+import { addedViaCopy } from '../account/copy';
+import { FULL_ACCESS_IS_YOU, fullAccessHost } from '../onboarding/copy';
 import type { LocalPlatform } from './localPath';
 
 /**
@@ -116,10 +118,12 @@ export const connectionSettingsCopy = {
    * the person's consent. `user` is the account (`@crew_alice`), `server` the server's name.
    */
   fullWarning: (user: string, server: string) =>
-    `Your agent will run commands as ${user} on ${server || 'the server'}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.`,
-  /** The host's extra sentence: the broker's own files live in this account. */
-  fullWarningHost: (workspace: string) =>
-    `You host ${workspace} in this account, so it can also read everything ${workspace} keeps on the server, including channels you aren’t in.`,
+    `Your agent will run commands as ${user} on ${server || 'the server'}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. ${FULL_ACCESS_IS_YOU}`,
+  /**
+   * The host's extra sentence: the workspace's own files live in this account. The Join and Host
+   * dialogs say the same words (`fullAccessHost`).
+   */
+  fullWarningHost: fullAccessHost,
   portRange: 'Use a port from 1 to 65535.',
   /** Its own disclosure, closed until opened, whatever Advanced holds (QA T-33). */
   workspaceDetails: 'Workspace details',
@@ -130,7 +134,8 @@ export const connectionSettingsCopy = {
   socketPath: 'Socket path',
   /** Kept for callers; the numeric UID is never rendered (spec identity rule 6). */
   hostUserId: 'Host user ID',
-  deviceId: 'Device ID',
+  /** This computer's ID in the workspace (the protocol's device ID), named as a person says it. */
+  deviceId: 'Computer ID',
   clusterId: 'Cluster ID',
   /** The button that copies a machine value the dialog does not show (spec rule 13). */
   copyValue: (what: string) => `Copy ${what}`,
@@ -361,6 +366,13 @@ export const inviteCopy = {
   installCommandsLabel: 'install commands',
   nextStep: (first: string) =>
     `When ${first} sends you a code, choose Let in… next to their name in the sidebar.`,
+  /**
+   * The same on a workspace that belongs to accounts (account ownership AO-2): the invitation
+   * names the account, and signing in as it is the proof. Let in… stays for an older Biorouter's
+   * code.
+   */
+  nextStepAccount: (first: string) =>
+    `${first} gets in by opening the workspace while signed in to the server as themselves. If their Biorouter shows a code instead, choose Let in… next to their name in the sidebar.`,
   /** After `nextStep`: when the invitation runs out (QA Q4-36). `phrase` is `expiryPhrase`'s. */
   expires: (phrase: string) => `This invitation ${phrase}.`,
   done: 'Done',
@@ -369,8 +381,8 @@ export const inviteCopy = {
   cancel: 'Cancel',
   retry: 'Retry',
   invitationUnavailable: 'The invitation message couldn’t be loaded.',
-  addDevice: (username: string) => `Add another device for @${username}`,
-  addDeviceUnnamed: 'Add another device for this person',
+  addDevice: (username: string) => `Add another computer for @${username}`,
+  addDeviceUnnamed: 'Add another computer for this person',
   refusal: {
     noAccount: (text: string) => `No account named @${text} on this server.`,
     /**
@@ -378,7 +390,13 @@ export const inviteCopy = {
      * computer. The switch is turned on with it, and the sentence says so.
      */
     alreadyMember: (username: string, workspace: string) =>
-      `@${username} is already in ${workspace}. To add this computer of theirs, Add another device for @${username} is now on: choose Invite again.`,
+      `@${username} is already in ${workspace}. To add this computer of theirs, Add another computer for @${username} is now on: choose Invite again.`,
+    /**
+     * The same refusal from a workspace that belongs to accounts (account ownership AO-1): a
+     * member's new computer needs nothing from the host, so nothing is turned on.
+     */
+    alreadyMemberAccount: (username: string, workspace: string) =>
+      `@${username} is already in ${workspace}. A new computer of theirs gets in when they open ${workspace} on it, signed in to the server as @${username}.`,
     canonical: (canonical: string) =>
       `Invite @${canonical} instead: that’s the account’s exact name.`,
   },
@@ -740,17 +758,20 @@ export const keysCopy = {
   unlocked: 'Unlocked',
   unlock: 'Unlock',
   lock: 'Lock',
-  /** This device's key, shown as its grouped fingerprint — never the 64-hex key (QA T-33). */
-  deviceKey: 'This device',
-  deviceKeyLabel: 'this device’s fingerprint',
-  thisDevice: 'This device',
-  devices: 'Devices on your account',
+  /**
+   * This computer's key, shown as its grouped fingerprint — never the 64-hex key (QA T-33). "This
+   * computer", as the account ownership contract and the command line say it.
+   */
+  deviceKey: 'This computer',
+  deviceKeyLabel: 'this computer’s fingerprint',
+  thisDevice: 'This computer',
+  /** A computer the new-computer notice is about, until it is acknowledged (AO-10). */
+  newDevice: 'New',
+  /** The account's computers, as `biorouter crew profile devices` heads them. */
+  devices: 'Computers enrolled as you',
   deviceAdded: (date: string) => `Added ${date}`,
-  addedVia: {
-    bootstrap: 'when the workspace was created',
-    token: 'with an invitation token',
-    invitation_code: 'with an invitation',
-  } as Record<string, string>,
+  /** How each computer was added: the new-computer notice's own words (`addedViaCopy`). */
+  addedVia: addedViaCopy,
   vaultToggle: 'Use an encrypted vault instead',
   vaultNote: 'Only for a new Crew profile. Existing identities aren’t moved.',
   setUpVault: 'Set up vault…',
@@ -808,7 +829,12 @@ export const confirmCopy = {
   },
   removePerson: {
     title: (person: string, workspace: string) => `Remove ${person} from ${workspace}?`,
-    description: 'Removes all of their devices and agent access. Their messages stay in history.',
+    /**
+     * Account ownership (AO-2): a removed account cannot open the workspace again by signing in to
+     * the server; only a new invitation brings it back.
+     */
+    description:
+      'Removes all of their computers and agent access. Their messages stay in history. Signing in to the server as them no longer opens the workspace: to let them back in, invite them again.',
     confirm: (workspace: string) => `Remove from ${workspace}`,
     /** The case-sensitive check on top of the primitive's case-folded one. */
     mismatch: 'Type the exact username to remove access.',
@@ -840,15 +866,29 @@ export const confirmCopy = {
      * refused for a member, so it names the one that works. `username` is the person's, or null.
      */
     memberDescription: (workspace: string, username: string | null) =>
-      `It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. To use ${workspace} on this computer again, ask the host to invite you with Add another device for ${username ? `@${username}` : 'you'}.`,
+      `It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. To use ${workspace} on this computer again, ask the host to invite you with Add another computer for ${username ? `@${username}` : 'you'}.`,
     /**
      * The host removing it from the only computer of theirs the workspace lists (CLI-1): the host
      * controls end for good, so it asks for the workspace's name first, as the CLI asks for
      * `--give-up-host-controls`.
      */
     onlyHostDescription: (workspace: string, username: string | null) =>
-      `You host ${workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again. To keep them, first invite another computer of yours with Add another device for ${username ? `@${username}` : 'yourself'}.`,
+      `You host ${workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again. To keep them, first invite another computer of yours with Add another computer for ${username ? `@${username}` : 'yourself'}.`,
     onlyHostConfirm: 'Remove and give up hosting',
+    /**
+     * Against a server older than account ownership (AO-9): the host-only guard stays, and says
+     * that updating Crew there first makes the host controls follow the account.
+     */
+    onlyHostUpdateFirst: (login: string) =>
+      `Updating Crew on the server first (biorouter crew setup --server ${login}) makes the host controls follow your account instead.`,
+    /**
+     * A workspace that belongs to accounts (AO-9, AO-11): nothing is given up for good, since any
+     * computer that signs in as the account opens it again, host controls and all. Chats granted
+     * through this connection cannot be granted through a new one, and a lost key has a better
+     * way back that keeps the connection.
+     */
+    accountDescription: (workspace: string, server: string, username: string | null) =>
+      `It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. You can open ${workspace} again from any computer that signs in to ${server || 'the server'}${username ? ` as ${username}` : ''}. Chats given Crew access through this connection can’t be given access through a new one. If this computer lost its key, choose Add this computer again instead: it keeps the connection.`,
     /**
      * A workspace its host deleted (OW-5): no host controls, messages or way back are left to
      * warn about, only what goes from this computer.
@@ -949,6 +989,20 @@ export const refusalCopy = {
     'This workspace is full. Reading still works, and you can still remove members and change its privacy. To keep posting, start a new workspace.',
   /** `rate_limited: too many live challenges`. */
   tooManyAttempts: 'Too many attempts at once. Wait a minute, then try again.',
+  /**
+   * `code_mismatch`, from any broker: an older one says "…let this device in". A person's machine
+   * is a computer in every sentence, and a workspace keeps running the broker it started with, so
+   * the words are these whatever it wrote. The current broker's text and the CLI's
+   * (`CODE_MISMATCH` in `commands/crew/output.rs`), byte for byte.
+   */
+  codeMismatch:
+    "The host hasn't let this computer in. Send the host the code shown on your screen.",
+  /**
+   * `already_member` naming the account, from any broker: an older one says "Choose Add device…",
+   * a control no Crew has now. The current broker's words (`broker/join.rs`).
+   */
+  alreadyMember: (username: string) =>
+    `@${username} is already a member. To add another computer for them, choose Add another computer.`,
 } as const;
 
 export const dialogErrorCopy = {

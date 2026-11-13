@@ -191,11 +191,11 @@ describe('JoinStatusCard', () => {
     // F3: a member whose computer was removed reads as not invited too; the card names the
     // invitation that works for them, and so does the prepared message.
     expect(screen.getByTestId('crew-join-not-invited-before')).toHaveTextContent(
-      'If you were in lab before, ask Alice Chen (@alice) to use Add another device for @bob.'
+      'If you were in lab before, ask Alice Chen (@alice) to use Add another computer for @bob.'
     );
     expect(
       screen.getByText(
-        'Hi Alice, please invite @bob to lab in Crew. If I’m already a member there, please use Add another device for @bob instead.'
+        'Hi Alice, please invite @bob to lab in Crew. If I’m already a member there, please use Add another computer for @bob instead.'
       )
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: joinStateCopy.other })).toBeInTheDocument();

@@ -30,6 +30,7 @@ export function fakeConnection(overrides: Partial<CrewConnection> = {}): CrewCon
     remote_execution: false,
     remote_access: 'folder',
     workspace_deleted: false,
+    new_devices: [],
     mode: 'private',
     institution_id: 'ucsf',
     policy_epoch: 1,

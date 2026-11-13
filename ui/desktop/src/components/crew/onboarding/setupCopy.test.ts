@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { inviteCopy } from '../dialogs/copy';
+import { connectionSettingsCopy, inviteCopy } from '../dialogs/copy';
 import * as onboardingCopy from './copy';
-import { hostCopy, joinCopy, notSetUpCopy, setupCopy } from './copy';
+import {
+  FULL_ACCESS_IS_YOU,
+  fullAccessHost,
+  hostCopy,
+  joinCopy,
+  notSetUpCopy,
+  setupCopy,
+} from './copy';
 
 /**
  * Every refusal the daemon's setup answers (`docs/crew/design/open-workspaces-and-automatic-setup.md`
@@ -42,6 +49,9 @@ describe('setupCopy (OW-9)', () => {
       checking: 'Checking server',
       'signing-in': 'Signing in',
       installing: 'Installing Crew in your account',
+      // Account ownership AO-8's two new stages, in the contract's words.
+      finding: 'Looking for workspaces',
+      updating: 'Updating running workspaces',
       starting: 'Starting workspace',
       connecting: 'Connecting',
       ready: 'Ready',
@@ -66,9 +76,26 @@ describe('setupCopy (OW-9)', () => {
 
   it('carries the one warning for As me on the server, and the host’s extra sentence', () => {
     expect(joinCopy.fullWarning('wanjun', 'leo.ucsf.edu')).toBe(
-      'Your agent will run commands as wanjun on leo.ucsf.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.'
+      'Your agent will run commands as wanjun on leo.ucsf.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.'
     );
-    expect(joinCopy.fullWarningHost('lab')).toMatch(/channels you’re not in\.$/);
+    // Under account ownership a process running as the host's account is the host (finding 16).
+    expect(joinCopy.fullWarningHost('lab')).toMatch(
+      /channels you’re not in\. It can also act as the host of lab\.$/
+    );
+    // The command line's and the chat cards' words, the same on every desktop surface: the Join
+    // and Host dialogs, Connection settings, and Not set up's member setup.
+    expect(FULL_ACCESS_IS_YOU).toBe(
+      'Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.'
+    );
+    expect(fullAccessHost('lab')).toBe(
+      'You host lab from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of lab.'
+    );
+    expect(joinCopy.fullWarning(null, 'leo').endsWith(` ${FULL_ACCESS_IS_YOU}`)).toBe(true);
+    expect(
+      connectionSettingsCopy.fullWarning('@alice', 'leo').endsWith(` ${FULL_ACCESS_IS_YOU}`)
+    ).toBe(true);
+    expect(joinCopy.fullWarningHost('lab')).toBe(fullAccessHost('lab'));
+    expect(connectionSettingsCopy.fullWarningHost('lab')).toBe(fullAccessHost('lab'));
     expect(joinCopy.agentLegend('leo')).toBe('What can your agent do on leo?');
     expect([joinCopy.accessOff, joinCopy.accessFolder, joinCopy.accessFull]).toEqual([
       'Off',

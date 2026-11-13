@@ -170,6 +170,7 @@ function HostedDialog({ intent, agentAccess }: { intent: DialogIntent; agentAcce
       return <CrewConfirmation key={key} confirm={intent.confirm} onClose={closeDialog} />;
     case 'join':
     case 'host':
+    case 'open-workspace':
     case 'sign-in':
       return null;
   }

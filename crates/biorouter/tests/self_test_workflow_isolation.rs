@@ -100,13 +100,45 @@ fn crew_phase_is_selectable_and_headless() {
     assert!(all_extensions.contains(&"computercontroller".to_owned()));
 
     let prompt = render_prompt(&[("test_phases", "crew")]);
-    assert!(prompt.contains("PHASE 2E: Crew CLI and MCP scope without human proof"));
+    assert!(prompt.contains("PHASE 2E: Hidden Crew CLI without tool invocation"));
     assert!(prompt.contains("/no_think"));
-    assert!(prompt.contains("`crew__request`"));
-    assert!(prompt.contains("messages.history"));
+    assert!(prompt.contains("`hidden_cli_no_invocation_v1`"));
+    assert!(prompt.contains("--no-session --with-builtin crew"));
+    assert!(prompt.contains("CREW_STANDALONE_NO_INVOCATION_OK"));
+    assert!(prompt.contains("The harness did not supply all five handles."));
     assert!(prompt.contains("<biorouterd> --version"));
     assert!(!prompt.contains("PHASE 2D: Native Biorouter Copilot"));
     assert!(!prompt.contains("computer_use_fixture"));
+
+    let configured = render_prompt(&[
+        ("test_phases", "crew"),
+        ("crew_cli_path", "/tmp/selftest-qa/bin/biorouter"),
+        ("crew_standalone_checker", "/tmp/selftest-qa/checker.py"),
+        ("crew_standalone_profile_root", "/tmp/selftest-qa/provider"),
+        ("crew_standalone_provider", "synthetic-provider"),
+        ("crew_standalone_model", "synthetic-model"),
+    ]);
+    for marker in [
+        "python3 /tmp/selftest-qa/checker.py --cli /tmp/selftest-qa/bin/biorouter",
+        "--profile-root /tmp/selftest-qa/provider --provider synthetic-provider",
+        "--model synthetic-model",
+        "contract=hidden_cli_no_invocation_v1",
+        "tool_request_count=0",
+        "tool_response_count=0",
+        "fixed_response=true",
+        "completed=true",
+        "channel_content_returned=false",
+        "effective_model_roster=NOT OBSERVABLE",
+        "forged_call_denial=NOT OBSERVABLE",
+        "separate_rust_evidence_required=true",
+    ] {
+        assert!(
+            configured.contains(marker),
+            "missing Crew contract marker: {marker}"
+        );
+    }
+    assert!(!configured.contains("`request_count=1`"));
+    assert!(!configured.contains("`exact_denial=true`"));
 }
 
 #[test]

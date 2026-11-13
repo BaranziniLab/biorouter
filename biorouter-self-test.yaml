@@ -30,8 +30,8 @@ activities:
   - Verify daemon-side Ollama readiness, bounded recovery, safe connection diagnostics, and failed Meditation cursors
   - Validate Crew empty-state onboarding, isolated Alice/Bob/Carol development profiles, and private-by-default workspace presentation
   - Exercise Crew first-host preparation and SSH trust validation with synthetic invitation metadata only
-  - Verify Crew request idempotency, human-only session access, and scoped normal-chat tool denial paths
-  - Exercise Crew CLI and daemon parity against an isolated synthetic profile, including help/version and no-start refusal without a vault prompt
+  - Verify Crew request idempotency, human-only session access, and scoped normal-chat tool admission
+  - Exercise the hidden Crew CLI without tool invocation, plus help/version and no-start refusal in isolated profiles
   - Verify Crew transfer lifecycle receipts, resume/forget behavior, and bounded file cleanup using disposable fixtures only
   - Measure performance and resource usage
   - Generate comprehensive test report
@@ -107,7 +107,7 @@ parameters:
     input_type: string
     requirement: optional
     default: ""
-    description: "Opaque harness-owned provider-only profile root, prepared outside model tools; no Crew state or other extensions"
+    description: "Opaque harness-owned provider-only profile root, prepared outside model tools; no Crew state or enabled extensions"
 
   - key: crew_standalone_provider
     input_type: string
@@ -367,7 +367,7 @@ extensions:
   - type: platform
     name: crew
     bundled: true
-    description: Crew request and scope-denial tools for the isolated Crew contract phase
+    description: Crew capability for the isolated hidden CLI contract phase
 # {% endif %}
 
 # {% endif %}
@@ -608,16 +608,18 @@ prompt: |
   {% endif %}
 
   {% if test_depth != "fixture_only" and (test_phases == "all" or "crew" in test_phases) %}
-  ## PHASE 2E: Crew CLI and MCP scope without human proof
+  ## PHASE 2E: Hidden Crew CLI without tool invocation
 
   This phase is selected explicitly with `test_phases=crew` (and is included by
-  `test_phases=all`). It is a headless Crew contract check. Use
+  `test_phases=all`). It checks the named `hidden_cli_no_invocation_v1` contract. Use
   only phase-owned state rooted under `{{ workspace_dir }}` for model-driven
   shell and file actions. Before the workflow starts, the test harness may prepare
   an independent provider-only profile from the authorized selective credential
   projector and supply its opaque root plus approved provider/model and absolute
   CLI path as the `crew_standalone_*` and `crew_cli_path` parameters. That profile
-  contains no Crew connection, grant, SSH configuration, database or other extension.
+  contains no Crew connection, grant, SSH configuration or database and no enabled extension.
+  Its valid disabled registry entries prevent injected defaults from enabling other tools.
+  Its current extension migration marker is prepared before the unchanged-file snapshot.
   The agent must not create or inspect it. Use this host in place, without
   copying or exporting its API key, saved user-action key, private key, SSH key,
   keyring entry, saved credential, or profile files into this phase. Keep that
@@ -645,13 +647,18 @@ prompt: |
      --model {{ crew_standalone_model }} --workdir <fresh absolute directory below {{ workspace_dir }}>`.
      Pass arguments separately without shell interpolation; the workdir must not
      exist before the checker runs. Record its exit code and its nonsecret JSON
-     verdict. Require exit 0 and `result=PASS`, `request_count=1`, `exact_arguments=true`,
-     `response_id_matches=true`, `exact_denial=true`, `channel_content_returned=false`,
-     `local_planning_calls<=1`, `cli_exit=0`, `listener_positive_control=true`, `live_listener_samples>0`,
-     `ordinary_run_baseline=true`,
-     `ordinary_bridge_listeners=1`, `unexpected_tcp_listeners=0`,
-     `phase_daemon_or_ssh=false`, `phase_runtime_created=false`,
-     `provider_files_unchanged=true`, and `baseline_processes_untouched=true`.
+     verdict. Require exit 0, `result=PASS`, `contract=hidden_cli_no_invocation_v1`,
+     `tool_request_count=0`, `tool_response_count=0`, `fixed_response=true`,
+     `completed=true`, `channel_content_returned=false`, `cli_exit=0`,
+     `listener_positive_control=true`, `live_listener_samples>0`,
+     `ordinary_run_baseline=true`, `ordinary_bridge_listeners=1`,
+     `unexpected_tcp_listeners=0`, `phase_daemon_or_ssh=false`,
+     `phase_runtime_created=false`, `provider_files_unchanged=true`,
+     and `baseline_processes_untouched=true`.
+     Require the limitation fields `effective_model_roster=NOT OBSERVABLE`,
+     `forged_call_denial=NOT OBSERVABLE`, and `separate_rust_evidence_required=true`.
+     These fields are under the verdict's `limitations` object. PASS qualifies only
+     the named contract, never an effective roster or forged request admission claim.
      {% else %}
      The harness did not supply all five handles. Report the standalone assertions
      NOT OBSERVABLE without inventing a provider, reading the normal profile or
@@ -661,22 +668,28 @@ prompt: |
      the approved provider/model, `--max-turns 2 --quiet --output-format stream-json`,
      a clean environment and fresh phase-owned HOME/workdir. It uses the opaque
      provider-only root in place, never exposing or copying its config or secrets.
-     Exactly one synthetic `messages.history` request omits `connection_id`:
-     `{"method":"messages.history","params":{"channel_id":"00000000-0000-4000-8000-0000000002e5","limit":1}}`.
-     It pairs the structured tool request/response by ID and accepts either a direct
-     `crew__request` or the runtime's `code_execution__execute_code` transport with
-     exactly one `crew/request` graph node and matching `biorouter/tool-calls` metadata.
-     At most one preceding local `todo__todo_write` may record a bounded synthetic
-     checklist and return only its exact local item-count summary. No other tool,
-     grant, connection action or Crew retry is permitted. Arguments must match
-     exactly and the only returned Crew content must be the exact
-     no-channel denial, optionally inside the normal outer `tool-output` wrapper:
-     `This chat isn't connected to a Crew channel. To connect it, type /crew in this chat.`
-     The code-execution `Result: ` transport prefix must decode as that exact JSON
-     string or a standard MCP object with only `isError=false` and one exact-denial
-     text content item. Known null optional MCP metadata/structured-content fields
-     add no content; nonempty structured payloads and metadata or other fields fail. Extra Crew/other calls, unmatched responses,
-     message/resource/file payloads or additional text fail. The checker first proves its observer sees a checker-owned loopback
+     Both the ordinary baseline and the Crew run use the same fixed prompt.
+     You may see no input echo. Any input echo must be one exact initial user message.
+     It must contain one text item with the checker's fixed prompt and no whitespace
+     changes. The checker sends the exact prompt to stdin.
+     You cannot prove which prompt the model received from stream output alone.
+     The remaining events must be assistant text fragments and one final completion.
+     The fragments must join to `CREW_STANDALONE_NO_INVOCATION_OK`, allowing whitespace
+     only at the response's ends. A duplicate, different or later user message fails.
+     Every tool call,
+     tool response, nontext content item, extra message payload, error, aborted turn,
+     model change, missing completion or extra response text fails the checker.
+     Do not ask the model to invoke an unoffered worker or to say which tools it has.
+     A hidden local chat is not the person's own chat, and it holds no Crew grant.
+     This native stream exposes no effective model tool roster. No tool invocation
+     means it also supplies no forged request denial evidence. Qualify those claims
+     separately with real Rust `Agent::list_tools` and dispatch coverage, including
+     `no_other_session_is_offered_a_crew_tool`,
+     `a_persons_chat_without_a_grant_is_offered_exactly_the_person_tools`, and
+     `an_ungranted_chat_cannot_call_the_worker_tools`. Record that cohort's exact
+     source and result separately; unavailable or failed coverage remains open.
+     Never infer either claim from model prose, a fixed response or zero calls.
+     The checker first proves its observer sees a checker-owned loopback
      listener and closes that control before starting the CLI. It runs a no-Crew
      ordinary native baseline and samples structured listener rows
      on exact live child PIDs. It permits only the single CLI-owned IPv4 loopback
@@ -687,16 +700,16 @@ prompt: |
      a pass inferred from model prose. The checker keeps private 0600 native traces
      below its 0700 phase directory for external QA. Do not read or copy those raw
      traces with model tools; only the fixed nonsecret verdict belongs in the report.
-     Do not discover connections, retry the
-     request, create a grant, invoke a daemon, emulate the refusal or alter a report.
-  3. After that single request, resolve the locally installed native binaries
+     Do not discover connections, make or retry a Crew request, create a grant,
+     invoke a daemon, emulate a refusal or alter a report.
+  3. After the hidden runs, resolve the locally installed native binaries
      without building or starting anything. Run `<biorouter> --version`,
      `<biorouter> crew --help`, `<biorouterd> --version`,
      `<biorouterd> --help`, `<biorouter> crew privacy set-personal --help`,
      and `<biorouter> crew privacy set-workspace --help`; record exact paths,
      exit codes, bounded output, and require `--institution` in both privacy
      command help outputs. These six help/version assertions qualify the CLI
-     surface and no-grant refusal only; same-institution and foreign-institution
+     surface only; same-institution and foreign-institution
      admission remain separate synthetic acceptance coverage.
      An unavailable binary is NOT OBSERVABLE, not a pass, and must not trigger a
      build or fallback.
@@ -710,7 +723,7 @@ prompt: |
      not falsely claim that no session row or run metadata was created. Require
      no daemon process, listener, SSH file, team, connection, invitation,
      provider mutation, credential mutation, or live-workspace write. Record
-     only synthetic paths, session metadata identifiers, and refusal metadata;
+     only synthetic paths, session metadata identifiers, and the named contract verdict;
      scrub secrets and provider/profile paths from logs. If an assertion cannot
      be observed without human proof or credentials, mark it NOT OBSERVABLE
      rather than PASS.
@@ -722,7 +735,7 @@ prompt: |
      Compare before/after snapshots and require no phase-created daemon/runtime
      descriptor/socket and no tracked child listener. Missing ownership evidence
      is NOT OBSERVABLE, never a broad match or an assumed pass.
-  5. Log the exact commands, exit codes, denial result, and before/after
+  5. Log the exact commands, exit codes, named contract result and limits, and before/after
      mutation audit to `{{ workspace_dir }}/phase2e_crew.md`. Keep all test
      inputs synthetic and remove only artifacts created by this phase when
      `cleanup_after` is true.

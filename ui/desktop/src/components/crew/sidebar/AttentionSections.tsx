@@ -7,7 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
-import type { Snapshot } from '../crewApi';
+import { ACCOUNT_IDENTITY_CAPABILITY, type Snapshot } from '../crewApi';
 import { directAddSupported, firstName } from '../dialogs/people';
 import {
   identityCopy,
@@ -599,7 +599,11 @@ function WaitingItem({
       </div>
       {invited && (
         <p id={nextId} className="text-supporting text-text-muted" data-crew-waiting-next="">
-          {copy.waiting.nextStep(firstName(joiner))}
+          {/* A workspace that belongs to accounts lets the joiner in when they open it, signed
+              in as themselves (account ownership); Let in… stays for an older joiner's code. */}
+          {crew.capabilities?.includes(ACCOUNT_IDENTITY_CAPABILITY)
+            ? copy.waiting.nextStepAccount(join.username)
+            : copy.waiting.nextStep(firstName(joiner))}
         </p>
       )}
       {join.otherDeviceTried && (

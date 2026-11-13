@@ -1273,12 +1273,13 @@ async fn run_cron_tick(
         Err(e) => tracing::error!("Failed to persist job status: {}", e),
     }
 
-    let result = execute_job(
+    // Boxed, as in `run_now_armed`: see `execute_job`'s note on the stack.
+    let result = Box::pin(execute_job(
         job_to_execute,
         current_jobs_arc.clone(),
         task_job_id.clone(),
         cancel_token.clone(),
-    )
+    ))
     .await;
 
     // Clears the flag and unregisters the token together, after the file
@@ -2125,7 +2126,15 @@ impl Scheduler {
                 }
             }
 
-            let result = execute_job(job_to_run, jobs.clone(), job_id.clone(), cancel_token).await;
+            // Boxed: a run's whole setup and turn is one large future, and inline its debug
+            // copies sit in this task's frame under the agent loop (`execute_job`'s note).
+            let result = Box::pin(execute_job(
+                job_to_run,
+                jobs.clone(),
+                job_id.clone(),
+                cancel_token,
+            ))
+            .await;
 
             // Flag and token retire together — see `record_run_completion`.
             // `false`: "Run now" was never counted, so there is nothing to give back.
@@ -2867,8 +2876,15 @@ async fn execute_job(
     // Failing loudly is therefore the correct outcome, and it is no longer
     // invisible: `run_workflow_job` records the error on the job as
     // `last_error`, and both schedule views render it.
-    let agent_provider =
-        crate::providers::create_from_persisted(&provider_name, model_config).await?;
+    //
+    // ⚠ This function's frame sits under the whole agent loop of the run, so its large
+    // awaits (the provider, each extension, the setup block) are boxed: in a debug build
+    // every inline await keeps copies of its future in this frame (`Agent::reply`'s note).
+    let agent_provider = Box::pin(crate::providers::create_from_persisted(
+        &provider_name,
+        model_config,
+    ))
+    .await?;
     // The same question of the instance the bind below will use, before any
     // extension is added or any chat is made.
     if let Some(refusal) = scheduled_run_refusal(
@@ -2893,7 +2909,7 @@ async fn execute_job(
     let mut extensions = resolve_extensions_for_new_session(workflow.extensions.as_deref(), None);
     crate::workflow::runtime::ensure_required_extensions(&workflow, &mut extensions);
     for ext in extensions {
-        agent.add_extension(ext.clone()).await?;
+        Box::pin(agent.add_extension(ext.clone())).await?;
     }
 
     let session = agent
@@ -2917,7 +2933,7 @@ async fn execute_job(
     // every night, and each failure left one empty "Scheduled job:
     // daily-meditation" row in the store, hidden from History because it has
     // no messages.
-    let setup = async {
+    let setup = Box::pin(async {
         agent.update_provider(agent_provider, &session.id).await?;
 
         let prepared_workflow_prompt = crate::workflow::runtime::prepare_prompt(
@@ -2954,7 +2970,7 @@ async fn execute_job(
         )
         .await?;
         Ok::<(), anyhow::Error>(())
-    }
+    })
     .await;
     if let Err(error) = setup {
         update_attempt(&jobs, &job_id, |attempt| attempt.session_id = None).await;

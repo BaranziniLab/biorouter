@@ -308,6 +308,11 @@ pub struct RemoteReference {
 /// How long a pending workspace join stays valid after the host invites (24 hours).
 pub const PENDING_JOIN_LIFETIME_SECS: u64 = 24 * 60 * 60;
 
+/// The most devices one principal keeps (account ownership, AO-2). When `auth.account` would
+/// add one more, the broker removes the principal's oldest device in the same record, so
+/// nobody is refused for having too many computers.
+pub const MAX_DEVICES_PER_PRINCIPAL: usize = 32;
+
 /// The host's invitation for one Unix account to join the workspace (S3a), stored in the
 /// broker's `pending_joins` map keyed by the decimal UID. Public so the daemon's tests can build
 /// one.

@@ -5,6 +5,7 @@ import { toastSuccess } from '../../../toasts';
 import type { Snapshot } from '../crewApi';
 import { channelName, personLabel, teamName } from '../identity';
 import { sshUsername } from '../onboarding/joinText';
+import { serverLabel } from '../sidebar/sidebarView';
 import { workspaceKnownDeleted } from '../state/connectFailure';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent, CrewController, ErrorSource } from '../state/types';
@@ -605,9 +606,15 @@ function RemoveConnection({ connectionId, onClose }: { connectionId: string; onC
     lastConnectFailure: selected ? crew.lastConnectFailure : null,
     observationCode: selected ? crew.refreshErrorCode : null,
   });
+  // A workspace that belongs to accounts (AO-9): removing the host's last computer no longer ends
+  // the host controls, since any computer that signs in as the account opens it as host again. The
+  // host-only guard stays only where the verified `hello` does not say so.
+  const accountWorkspace = saved?.account_identity === true;
   const standing = deleted
     ? 'deleted'
-    : removalStanding(snapshot, dir.viewerIsHost, saved?.device_id);
+    : accountWorkspace
+      ? 'account'
+      : removalStanding(snapshot, dir.viewerIsHost, saved?.device_id);
   const username = dir.me?.username ?? sshUsername(saved?.ssh_target) ?? null;
   const remove = () =>
     void runConfirmed(crew, key, () => crew.removeConnection(connectionId)).then(
@@ -619,7 +626,11 @@ function RemoveConnection({ connectionId, onClose }: { connectionId: string; onC
       <DangerousConfirmDialog
         open
         title={confirmCopy.removeConnection.title(workspace)}
-        description={confirmCopy.removeConnection.onlyHostDescription(workspace, username)}
+        description={`${confirmCopy.removeConnection.onlyHostDescription(workspace, username)}${
+          saved?.ssh_target
+            ? ` ${confirmCopy.removeConnection.onlyHostUpdateFirst(saved.ssh_target)}`
+            : ''
+        }`}
         phrase={phrase}
         fieldLabel={confirmCopy.typeToConfirm(phrase)}
         confirmLabel={confirmCopy.removeConnection.onlyHostConfirm}
@@ -638,9 +649,15 @@ function RemoveConnection({ connectionId, onClose }: { connectionId: string; onC
       message={
         standing === 'deleted'
           ? confirmCopy.removeConnection.deletedDescription(workspace)
-          : standing === 'member'
-            ? confirmCopy.removeConnection.memberDescription(workspace, username)
-            : confirmCopy.removeConnection.description
+          : standing === 'account'
+            ? confirmCopy.removeConnection.accountDescription(
+                workspace,
+                saved ? serverLabel(saved) : '',
+                username ? `@${username}` : null
+              )
+            : standing === 'member'
+              ? confirmCopy.removeConnection.memberDescription(workspace, username)
+              : confirmCopy.removeConnection.description
       }
       confirmLabel={confirmCopy.removeConnection.confirm}
       cancelLabel={confirmCopy.cancel}

@@ -5,7 +5,14 @@ import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
 import { TranscriptRow } from './TranscriptRow';
-import { APPROVAL_COPY, sentenceStart, toolCallPhrase } from './toolCallCopy';
+import {
+  APPROVAL_COPY,
+  CREW_READ_CONSENT_EVENT,
+  isCrewPersonTool,
+  isCrewReadConsent,
+  sentenceStart,
+  toolCallPhrase,
+} from './toolCallCopy';
 import { userActionHeaders } from '../utils/userAction';
 import { isBrowserSurface } from '../utils/surface';
 
@@ -96,6 +103,16 @@ export default function ToolConfirmation({
   // degrades to its pre-BR-63 shape rather than breaking.
   const { id: toolConfirmationId, toolName, prompt, risk, preview } = data;
   const folderAccess = preview?.kind === 'folderAccess';
+  // Crew's person tools (AO-12): each card is answered for one action, and no standing permission
+  // applies, so there is nothing to Change. Their prompt is a summary line, then a line per fact.
+  const crewPerson = isCrewPersonTool(toolName);
+  // The read consent lasts until the person takes it back: its button and answered row say so,
+  // never "once".
+  const readConsent = isCrewReadConsent(toolName, data.arguments, prompt);
+  const consentWorkspace =
+    readConsent && typeof data.arguments?.workspace === 'string' && data.arguments.workspace
+      ? data.arguments.workspace
+      : null;
   const browserFolderAccess = folderAccess && isBrowserSurface();
   const [folderApprovalKey, setFolderApprovalKey] = useState('');
 
@@ -224,6 +241,11 @@ export default function ToolConfirmation({
         status: resolvedStatus,
         actionDisplay: newActionDisplay,
       });
+      // The chat now holds a read consent: its Crew bar shows it, with Revoke (AO-12).
+      if (readConsent && resolvedStatus === ALLOW_ONCE)
+        window.dispatchEvent(
+          new CustomEvent(CREW_READ_CONSENT_EVENT, { detail: { sessionId: sessionId } })
+        );
     } catch {
       setConfirmationError(APPROVAL_COPY.confirmFailed);
     } finally {
@@ -279,7 +301,11 @@ export default function ToolConfirmation({
       className="flex items-start gap-2 text-body text-text-warning"
     >
       <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-      <span className="min-w-0">{findingText(prompt)}</span>
+      {/* A Crew card's summary and the lines under it are separate lines (live QA: "as you It
+          can then read…" ran together). */}
+      <span className={crewPerson ? 'min-w-0 whitespace-pre-line' : 'min-w-0'}>
+        {findingText(prompt)}
+      </span>
     </div>
   ) : null;
 
@@ -304,12 +330,15 @@ export default function ToolConfirmation({
             label={
               isClicked
                 ? APPROVAL_COPY.unavailable
-                : APPROVAL_COPY.resolved(sentenceStart(friendlyToolName(toolName)), actionDisplay)
+                : readConsent && status === ALLOW_ONCE
+                  ? APPROVAL_COPY.readConsent.allowed(consentWorkspace)
+                  : APPROVAL_COPY.resolved(sentenceStart(friendlyToolName(toolName)), actionDisplay)
             }
             trailing={
               // The row's own voice (13px muted): a 14px control beside a 13px
               // line read as a second size on one line.
-              !folderAccess && (
+              !folderAccess &&
+              !crewPerson && (
                 <Button
                   type="button"
                   variant="ghost"
@@ -395,7 +424,7 @@ export default function ToolConfirmation({
               disabled={isSending || (browserFolderAccess && !folderApprovalKey)}
               onClick={() => handleButtonClick(ALLOW_ONCE)}
             >
-              {APPROVAL_COPY.allowOnce}
+              {readConsent ? APPROVAL_COPY.readConsent.allow : APPROVAL_COPY.allowOnce}
             </Button>
             {/* Only offer "Always allow" when there's no security finding. A
                 permanent grant is not something to decide from a card that

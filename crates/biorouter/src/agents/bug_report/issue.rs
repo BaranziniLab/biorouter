@@ -916,7 +916,7 @@ mod tests {
             DEFAULT_REPO,
             "Synthetic fixture title",
             &body_file,
-            Duration::from_secs(2),
+            GH_TIMEOUT,
         )
         .await
         .unwrap();

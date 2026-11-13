@@ -1,6 +1,8 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { ModalShell } from '../../ModalShell';
+import { Note } from '../../ui/note';
 import CrewAuthentication, { type CrewSignInTarget } from '../CrewAuthentication';
+import { notSetUpCopy } from '../onboarding/copy';
 import { serverLabel } from '../sidebar/sidebarView';
 import { useCrew } from '../state/CrewControllerContext';
 import { openerOf, restoreFocus, SIGN_IN_FOCUS_FALLBACKS } from '../state/focusReturn';
@@ -19,6 +21,12 @@ export interface SignInDialogProps {
   /** With `target`: the sign-in finished (exit 0), or the person closed it. */
   onSignedIn?: () => void;
   onClose?: () => void;
+  /**
+   * With a connection `target`: the sign-in worked, but Crew isn't set up for the account on the
+   * server (`crew_bridge_missing`). The daemon keeps the sign-in for setting Crew up there, and
+   * the dialog says so in the Crew view's words whether or not this is given.
+   */
+  onBridgeMissing?: () => void;
 }
 
 /**
@@ -45,6 +53,7 @@ export function SignInDialog(props: SignInDialogProps = {}) {
         target={props.target}
         onSignedIn={props.onSignedIn ?? (() => {})}
         onClose={props.onClose ?? (() => {})}
+        onBridgeMissing={props.onBridgeMissing}
       />
     );
   }
@@ -117,10 +126,11 @@ function SignInModal({
     >
       {open ? (
         target.kind === 'connection' ? (
-          <CrewAuthentication
+          <ConnectionSignIn
             key={targetKey}
             connectionId={target.id}
-            onConnected={onSignedIn}
+            host={host}
+            onSignedIn={onSignedIn}
             onClose={onClose}
             onBridgeMissing={onBridgeMissing}
           />
@@ -134,5 +144,46 @@ function SignInModal({
         )
       ) : null}
     </ModalShell>
+  );
+}
+
+/**
+ * The terminal for a saved connection's sign-in. When the sign-in worked on a server where Crew
+ * isn't set up for the account (`crew_bridge_missing`), it says so in the words the Crew view's
+ * Not set up pane uses, rather than the generic "ended" error, and tells `onBridgeMissing`. The
+ * Crew view's own dialog closes on that call and opens the pane; a chat's stays open on these
+ * words until the person closes it, while the chat carries on over the kept sign-in.
+ */
+function ConnectionSignIn({
+  connectionId,
+  host,
+  onSignedIn,
+  onClose,
+  onBridgeMissing,
+}: {
+  connectionId: string;
+  host: string;
+  onSignedIn: () => void;
+  onClose: () => void;
+  onBridgeMissing?: () => void;
+}) {
+  const [notSetUp, setNotSetUp] = useState(false);
+  return (
+    <>
+      {notSetUp ? (
+        <Note role="status" className="mb-3">
+          {`${notSetUpCopy.title(host)}. ${notSetUpCopy.body}`}
+        </Note>
+      ) : null}
+      <CrewAuthentication
+        connectionId={connectionId}
+        onConnected={onSignedIn}
+        onClose={onClose}
+        onBridgeMissing={() => {
+          setNotSetUp(true);
+          onBridgeMissing?.();
+        }}
+      />
+    </>
   );
 }

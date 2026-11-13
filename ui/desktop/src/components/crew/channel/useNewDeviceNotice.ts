@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CrewDevice } from '../crewApi';
 
 /**
@@ -41,6 +41,43 @@ function usableDevices(devices: readonly CrewDevice[] | null | undefined): CrewD
           Boolean(device) && typeof device.fingerprint === 'string' && device.fingerprint !== ''
       )
     : [];
+}
+
+/** The account's computers as one comparable value: their fingerprints, sorted. */
+function devicesKey(devices: readonly CrewDevice[] | null | undefined): string | null {
+  if (devices === null || devices === undefined) return null;
+  return usableDevices(devices)
+    .map((device) => device.fingerprint)
+    .sort()
+    .join('\n');
+}
+
+/**
+ * Calls `onChange` when the verified view's computers on the person's account change on the same
+ * connection (AO-10): the daemon notes them from the very snapshot the view carries, so the saved
+ * connection's `new_devices` is new then, and reading the connections again shows the notice while
+ * the Crew view stays open (live QA: it showed only after going Home and back). A view arrives
+ * every few seconds, so this compares fingerprints, never objects, and reads nothing when they are
+ * the same; the first view of a connection reads nothing either, since the list was read on open.
+ */
+export function useDevicesChanged(
+  connectionId: string,
+  devices: readonly CrewDevice[] | null | undefined,
+  onChange: (() => void) | undefined
+): void {
+  const key = devicesKey(devices);
+  const last = useRef<{ connectionId: string; key: string } | null>(null);
+  const callback = useRef(onChange);
+  useEffect(() => {
+    callback.current = onChange;
+  }, [onChange]);
+  useEffect(() => {
+    if (key === null || !connectionId) return;
+    const previous = last.current;
+    last.current = { connectionId, key };
+    if (previous && previous.connectionId === connectionId && previous.key !== key)
+      callback.current?.();
+  }, [connectionId, key]);
 }
 
 export interface NewDeviceNotice {

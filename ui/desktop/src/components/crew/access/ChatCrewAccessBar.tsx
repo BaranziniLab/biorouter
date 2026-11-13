@@ -11,6 +11,7 @@ import { navigateToRoute } from '../../../utils/navigationUtils';
 import { isMachineIdShaped, sanitizeDisplayText } from '../identity';
 import type { ChatCrewAccess } from './chatCrewAccess';
 import { chatAccessRoute, chatAccessRouteState, chatConnectRouteState } from './ChatConnectNote';
+import { ChatReadsBar } from './ChatReadsBar';
 import { accessCopy } from './copy';
 import {
   InlineConfirm,
@@ -129,8 +130,10 @@ export interface ChatCrewAccessBarProps {
  *   in a neutral note with no warning glyph, and only **Start a new chat**: nothing went wrong, and
  *   a task's access is not granted again from its chat (Q2-09).
  * - A revoke that stopped only on this device, or was not revoked at all, says so, with Retry.
+ * - **No grant, but read consents:** "Reads lab as you" for each workspace the chat may read as the
+ *   person (account ownership AO-12), with **Revoke** (`ChatReadsBar`).
  *
- * Renders nothing when the chat has no Crew grant or the lookup failed.
+ * Renders nothing when the chat has neither a Crew grant nor a read consent, or the lookup failed.
  */
 export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAccessBarProps) {
   const navigate = useNavigate();
@@ -201,7 +204,10 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
     };
   }, [sessionId, holdToken, holdMessage, finished]);
 
-  if (!sessionId || !grant) return null;
+  if (!sessionId) return null;
+  // No grant: the workspaces this chat may read as the person, if any, with Revoke (AO-12). Keyed
+  // by chat, so what one chat's revoke said never shows in another.
+  if (!grant) return <ChatReadsBar key={sessionId} access={access} className={className} />;
 
   const title = sanitizeDisplayText(chatTitle);
   const chat = title && !isMachineIdShaped(title) ? title : null;

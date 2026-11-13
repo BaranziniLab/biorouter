@@ -756,8 +756,10 @@ fn a_task_without_a_work_folder_is_told_where_to_set_one() {
     assert_eq!(message, sentence);
 }
 
-/// `hello` signs its capabilities in order, so the new ones are appended after `presence_v1`
-/// and `join_by_name_v1` stays last. Needs a machine identity (Linux).
+/// `hello` signs its capabilities in order, so the new ones are appended after `presence_v1`,
+/// and with `join-by-name` the last two are `join_by_name_v1` and then `account_identity_v1`
+/// (*amended for account ownership, AO-4*: `join_by_name_v1` used to be last). Needs a machine
+/// identity (Linux).
 #[cfg(target_os = "linux")]
 #[test]
 fn hello_appends_the_new_capabilities_in_order() {
@@ -794,7 +796,13 @@ fn hello_appends_the_new_capabilities_in_order() {
         assert!(at(pair[0]) < at(pair[1]), "{capabilities:?}");
     }
     if cfg!(feature = "join-by-name") {
-        assert_eq!(capabilities.last(), Some(&"join_by_name_v1"));
+        assert_eq!(
+            &capabilities[capabilities.len() - 2..],
+            &["join_by_name_v1", "account_identity_v1"]
+        );
+        assert!(at("wide_runs_v1") < at("join_by_name_v1"));
+    } else {
+        assert!(!capabilities.contains(&"account_identity_v1"));
     }
 }
 

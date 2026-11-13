@@ -22,7 +22,11 @@ export type SetupIntent = 'check' | 'install' | 'host' | 'member';
 export type SetupState = 'running' | 'needs_sign_in' | 'finished' | 'failed' | 'cancelled';
 export type SetupStageState = 'pending' | 'running' | 'done' | 'skipped' | 'failed';
 
-/** What a job works on: a saved connection, or this computer's pending host setup. */
+/**
+ * What a job works on: a saved connection, this computer's pending host setup, or a server login
+ * with no workspace in mind (account ownership AO-8: Open a workspace on a server checks it with
+ * the device it prepared, so the check and the open share one sign-in).
+ */
 export type SetupTarget =
   | { kind: 'connection'; connection_id: string }
   | {
@@ -32,7 +36,46 @@ export type SetupTarget =
       port?: number | null;
       identity_file?: string | null;
       proxy_jump?: string | null;
+    }
+  | {
+      kind: 'server';
+      ssh_target: string;
+      preparation_id?: string | null;
+      port?: number | null;
+      identity_file?: string | null;
+      proxy_jump?: string | null;
     };
+
+/**
+ * The login a job signs in by and the jump hosts it goes through, for a host key it stopped on:
+ * the daemon reads and trusts a key with the login's own SSH settings, and never behind a jump
+ * host, where a key read from this computer could be another machine's.
+ */
+export interface SetupRoute {
+  login: string;
+  proxyJump: string | null;
+}
+
+/**
+ * The route of a job's `target`: its own login and jump hosts, or for a saved connection the
+ * connection's, found in `connections`. `null` when the connection is not there to read.
+ */
+export function setupRouteOf(
+  target: SetupTarget,
+  connections: readonly { id: string; ssh_target: string; proxy_jump?: string | null }[]
+): SetupRoute | null {
+  if (target.kind !== 'connection') {
+    return { login: target.ssh_target, proxyJump: target.proxy_jump ?? null };
+  }
+  const saved = connections.find((connection) => connection.id === target.connection_id);
+  return saved ? { login: saved.ssh_target, proxyJump: saved.proxy_jump ?? null } : null;
+}
+
+/** Whether `route` goes through a jump host. */
+export function routeJumps(route: SetupRoute): boolean {
+  const jump = route.proxyJump?.trim() ?? '';
+  return jump !== '' && jump.toLowerCase() !== 'none';
+}
 
 /**
  * What a connection's agent may do on its server (OW-6): no work folder, the confined folder, or
@@ -60,6 +103,100 @@ export interface SetupInput {
    * person's "Fix it for me".
    */
   fix_storage_permissions?: boolean;
+  /**
+   * Restart the account's running workspaces that run an older Crew even when other people are
+   * connected (AO-8). Absent, the daemon restarts only those nobody else is connected to; `false`
+   * only reports them.
+   */
+  restart_workspaces?: boolean;
+  /**
+   * Restart exactly these hosted workspaces, by ID, even when others are or may be connected
+   * (AO-8): the person's consent for each one they named. One workspace's Update Crew sends its
+   * own ID with `restart_workspaces: false`, so it never restarts another workspace.
+   */
+  restart_workspace_ids?: string[];
+  /** Start these stopped workspaces the account hosts, by ID (AO-7, AO-8). */
+  start_workspaces?: string[];
+}
+
+/** What a server account has to do with a workspace the setup found (AO-6). */
+export type SetupWorkspaceRole = 'host' | 'member' | 'invited' | 'removed';
+/** Where a found workspace stands on its server (AO-6). */
+export type SetupWorkspaceState = 'running' | 'stopped' | 'deleted' | 'storage_failed' | 'unknown';
+
+/**
+ * A workspace on the server the setup signed in to, as `biorouter-crew workspaces` listed it
+ * (AO-6, AO-8). Display and the way to open it; the workspace decides every join.
+ */
+export interface SetupWorkspace {
+  workspaceId: string;
+  name: string | null;
+  role: SetupWorkspaceRole;
+  state: SetupWorkspaceState;
+  /** The host's server account, resolved on the server from the socket's owner. */
+  hostUsername: string | null;
+  /**
+   * The host's UID on the server. Two hosts can list one workspace ID (AO-6), so a row is told
+   * apart by its ID, this and its key's fingerprint (`setupWorkspaceKey`).
+   */
+  hostUid: number | null;
+  /** The workspace's key fingerprint, for comparing with its host's. */
+  fingerprint: string | null;
+  mode: 'private' | 'public' | null;
+  institutionId: string | null;
+  /** The running broker's own version; null when stopped or when it does not say. */
+  version: string | null;
+  /** The running broker is the installed program; null when not running. */
+  binaryCurrent: boolean | null;
+  /** How many other accounts are connected now: the host's own entries only. */
+  othersConnected: number | null;
+  /** The `brcrew1:` line that saves it on this computer, without the server. */
+  invitation: string | null;
+  /** The saved connection on this computer for it, when there is one. */
+  savedConnectionId: string | null;
+  thisComputer: 'connected' | 'saved' | 'not_saved';
+  /** Why the entry could not be read (`state: unknown`), in the server program's words. */
+  error: string | null;
+}
+
+/** A workspace restarted (or started) on the newly installed Crew. */
+export interface SetupRestarted {
+  workspaceId: string;
+  name: string | null;
+  fromVersion: string | null;
+  toVersion: string | null;
+}
+
+/**
+ * Why a job did not list the workspaces on the server (AO-8's `workspaces_unlisted`). `too_old`
+ * and `not_installed` are answered by an install, which puts this computer's Crew in the account
+ * and lists them.
+ */
+export type SetupWorkspacesUnlisted = 'not_installed' | 'too_old' | 'failed' | 'timed_out';
+
+/** Why a running workspace was left on its older Crew (AO-8). */
+export type SetupOutdatedReason =
+  | 'others_connected'
+  | 'running_newer'
+  | 'not_running_installed'
+  | 'custom_state_dir';
+
+export interface SetupOutdated {
+  workspaceId: string;
+  name: string | null;
+  runningVersion: string | null;
+  installedVersion: string | null;
+  othersConnected: number | null;
+  reason: SetupOutdatedReason;
+}
+
+export interface SetupRestartFailed {
+  workspaceId: string;
+  name: string | null;
+  code: string;
+  message: string;
+  /** The command that starts it by hand. */
+  command: string | null;
 }
 
 /** The broker this build carries, as `GET /crew/setup/artifact` describes it. */
@@ -100,6 +237,12 @@ export interface SetupOutcome {
   remoteAccess: 'folder' | 'full' | null;
   /** A host job: the first context document, drawn from the server's fixed probe (OW-8). */
   contextDraft: string | null;
+  /** Workspaces restarted on the installed Crew, or started (AO-8). Absent: none. */
+  restarted?: SetupRestarted[];
+  /** Running workspaces left on an older Crew, with why. Absent: none. */
+  outdated?: SetupOutdated[];
+  /** Workspaces whose restart or start failed. Absent: none. */
+  restartFailed?: SetupRestartFailed[];
 }
 
 export interface SetupRun {
@@ -118,6 +261,17 @@ export interface SetupRun {
   error: { code: string; message: string; detail: string | null } | null;
   /** What the server printed, when the daemon kept it, control characters removed. */
   output: string;
+  /**
+   * The workspaces the job found on the server (AO-8); empty or absent before the workspaces
+   * stage, and from a daemon before account ownership.
+   */
+  workspaces?: SetupWorkspace[];
+  /** Why the server's workspaces could not be listed, when they could not. */
+  workspacesNote?: string | null;
+  /** The same as a code; null when they were listed, or from a daemon that does not say. */
+  workspacesUnlisted?: SetupWorkspacesUnlisted | null;
+  /** The version of the Crew in the account, as the job's check found it. */
+  installedVersion?: string | null;
 }
 
 /** How often a running job is read again. */
@@ -176,10 +330,136 @@ function stagesFrom(wire: unknown): SetupStage[] {
   });
 }
 
+const WORKSPACE_ROLES: readonly string[] = [
+  'host',
+  'member',
+  'invited',
+  'removed',
+] satisfies SetupWorkspaceRole[];
+const WORKSPACE_STATES: readonly string[] = [
+  'running',
+  'stopped',
+  'deleted',
+  'storage_failed',
+  'unknown',
+] satisfies SetupWorkspaceState[];
+const OUTDATED_REASONS: readonly string[] = [
+  'others_connected',
+  'running_newer',
+  'not_running_installed',
+  'custom_state_dir',
+] satisfies SetupOutdatedReason[];
+const UNLISTED: readonly string[] = [
+  'not_installed',
+  'too_old',
+  'failed',
+  'timed_out',
+] satisfies SetupWorkspacesUnlisted[];
+
+/** A count from the wire, or null. */
+function countOf(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/** A version shaped as one, or null: it is shown and compared, never run. */
+function versionOf(value: unknown): string | null {
+  const version = filled(value);
+  return version && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,32})?$/.test(version) ? version : null;
+}
+
+/** Records of a list, or nothing for anything that is not one. */
+function recordsOf(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+/**
+ * A found workspace's identity in a list: its ID, its host's UID and its key's fingerprint. Two
+ * hosts can list one ID (AO-6), and the daemon keeps such entries apart, so the ID alone does not
+ * name a row.
+ */
+export function setupWorkspaceKey(
+  entry: Pick<SetupWorkspace, 'workspaceId' | 'hostUid' | 'fingerprint'>
+): string {
+  return [entry.workspaceId, entry.hostUid ?? '', entry.fingerprint ?? ''].join('\n');
+}
+
+/**
+ * The workspaces a job found (AO-6, AO-8), entry by entry: one without an ID, a role or a state
+ * this build knows is left out rather than refusing the rest.
+ */
+export function setupWorkspacesFrom(wire: unknown): SetupWorkspace[] {
+  return recordsOf(wire).flatMap((entry): SetupWorkspace[] => {
+    const workspaceId = filled(entry.workspace_id);
+    const role = text(entry.role);
+    const state = text(entry.state);
+    if (!workspaceId || !role || !WORKSPACE_ROLES.includes(role)) return [];
+    if (!state || !WORKSPACE_STATES.includes(state)) return [];
+    const invitation = filled(entry.invitation);
+    const here = entry.this_computer;
+    return [
+      {
+        workspaceId,
+        name: filled(entry.name),
+        role: role as SetupWorkspaceRole,
+        state: state as SetupWorkspaceState,
+        hostUsername: filled(entry.host_username),
+        hostUid: countOf(entry.host_uid),
+        fingerprint: filled(entry.workspace_key_fingerprint),
+        mode: entry.mode === 'private' || entry.mode === 'public' ? entry.mode : null,
+        institutionId: filled(entry.institution_id),
+        version: versionOf(entry.version),
+        binaryCurrent: typeof entry.binary_current === 'boolean' ? entry.binary_current : null,
+        othersConnected: countOf(entry.others_connected),
+        invitation: invitation?.startsWith('brcrew1:') ? invitation : null,
+        savedConnectionId: filled(entry.saved_connection_id),
+        thisComputer: here === 'connected' || here === 'saved' ? here : 'not_saved',
+        error: filled(entry.error),
+      },
+    ];
+  });
+}
+
 function outcomeFrom(wire: unknown): SetupOutcome | null {
   if (!isRecord(wire)) return null;
   const replaced = isRecord(wire.upgraded_from) ? text(wire.upgraded_from.version) : null;
   return {
+    restarted: recordsOf(wire.restarted).flatMap((entry) => {
+      const workspaceId = filled(entry.workspace_id);
+      return workspaceId
+        ? [
+            {
+              workspaceId,
+              name: filled(entry.name),
+              fromVersion: versionOf(entry.from_version),
+              toVersion: versionOf(entry.to_version),
+            },
+          ]
+        : [];
+    }),
+    outdated: recordsOf(wire.outdated).flatMap((entry) => {
+      const workspaceId = filled(entry.workspace_id);
+      const reason = text(entry.reason);
+      return workspaceId && reason && OUTDATED_REASONS.includes(reason)
+        ? [
+            {
+              workspaceId,
+              name: filled(entry.name),
+              runningVersion: versionOf(entry.running_version),
+              installedVersion: versionOf(entry.installed_version),
+              othersConnected: countOf(entry.others_connected),
+              reason: reason as SetupOutdatedReason,
+            },
+          ]
+        : [];
+    }),
+    restartFailed: recordsOf(wire.restart_failed).flatMap((entry) => {
+      const workspaceId = filled(entry.workspace_id);
+      const code = filled(entry.code);
+      const message = filled(entry.message);
+      return workspaceId && code && message
+        ? [{ workspaceId, name: filled(entry.name), code, message, command: filled(entry.command) }]
+        : [];
+    }),
     installedVersion: filled(wire.installed_version),
     reused: wire.reused === true,
     previousKept: wire.previous_kept === true,
@@ -214,6 +494,7 @@ export function setupRunFrom(wire: unknown): SetupRun {
   const server = isRecord(wire.server)
     ? { login: filled(wire.server.login), user: filled(wire.server.user) }
     : null;
+  const unlisted = text(wire.workspaces_unlisted);
   return {
     jobId,
     intent: intent as SetupIntent,
@@ -226,7 +507,30 @@ export function setupRunFrom(wire: unknown): SetupRun {
     error:
       code && message ? { code, message, detail: failure ? text(failure.detail) : null } : null,
     output: text(wire.output) ?? '',
+    workspaces: setupWorkspacesFrom(wire.workspaces),
+    workspacesNote: filled(wire.workspaces_note),
+    // A code this build does not know reads as none: the sentence still says why.
+    workspacesUnlisted:
+      unlisted && UNLISTED.includes(unlisted) ? (unlisted as SetupWorkspacesUnlisted) : null,
+    installedVersion: isRecord(wire.installed) ? versionOf(wire.installed.version) : null,
   };
+}
+
+/**
+ * Every setup job this computer's daemon knows, newest first (`GET /crew/setup`): Crew shows one a
+ * chat or a terminal started, with its Sign in button (AO-8). A job that does not read as one is
+ * left out; anything that is not a list reads as none.
+ */
+export async function listSetupJobs(signal?: AbortSignal): Promise<SetupRun[]> {
+  const wire = await crewHttp<unknown>('/setup', 'GET', undefined, signal);
+  if (!Array.isArray(wire)) return [];
+  return wire.flatMap((entry) => {
+    try {
+      return [setupRunFrom(entry)];
+    } catch {
+      return [];
+    }
+  });
 }
 
 /** The broker this build would install. Refused with `crew_install_artifact_unavailable` when none. */
@@ -243,14 +547,36 @@ function targetBody(target: SetupTarget): SetupTarget {
     return { kind: 'connection', connection_id: target.connection_id };
   }
   // The route refuses a field it does not take, so an absent choice is left out, never null.
-  return {
-    kind: 'pending',
-    preparation_id: target.preparation_id,
+  const route = {
     ssh_target: target.ssh_target,
     ...(target.port ? { port: target.port } : {}),
     ...(target.identity_file ? { identity_file: target.identity_file } : {}),
     ...(target.proxy_jump ? { proxy_jump: target.proxy_jump } : {}),
   };
+  if (target.kind === 'server') {
+    return {
+      kind: 'server',
+      ...route,
+      ...(target.preparation_id ? { preparation_id: target.preparation_id } : {}),
+    };
+  }
+  return { kind: 'pending', preparation_id: target.preparation_id, ...route };
+}
+
+/**
+ * The jobs this window started, by ID. Their own surface shows their steps and opens their Sign in
+ * window, so the notice for jobs started elsewhere (a chat, a terminal) leaves them out. Memory
+ * only.
+ */
+const startedHere = new Set<string>();
+
+/** Whether this window started the job (`startSetup`). */
+export function setupStartedHere(jobId: string): boolean {
+  return startedHere.has(jobId);
+}
+
+export function resetSetupStartedHereForTests(): void {
+  startedHere.clear();
 }
 
 /** Start a setup job. Answers the job already under way for the same target, if one is. */
@@ -262,8 +588,17 @@ export async function startSetup(input: SetupInput): Promise<SetupRun> {
     ...(input.replace_existing ? { replace_existing: true } : {}),
     ...(input.agent_access ? { agent_access: input.agent_access } : {}),
     ...(input.fix_storage_permissions ? { fix_storage_permissions: true } : {}),
+    ...(typeof input.restart_workspaces === 'boolean'
+      ? { restart_workspaces: input.restart_workspaces }
+      : {}),
+    ...(input.restart_workspace_ids?.length
+      ? { restart_workspace_ids: input.restart_workspace_ids }
+      : {}),
+    ...(input.start_workspaces?.length ? { start_workspaces: input.start_workspaces } : {}),
   };
-  return setupRunFrom(await crewHttp<unknown>('/setup', 'POST', body));
+  const status = setupRunFrom(await crewHttp<unknown>('/setup', 'POST', body));
+  startedHere.add(status.jobId);
+  return status;
 }
 
 /** Where a job stands. */
@@ -301,6 +636,10 @@ export type PlainSetupStage =
   | 'checking'
   | 'signing-in'
   | 'installing'
+  /** Looking for the account's workspaces on the server (AO-8's `workspaces` stage). */
+  | 'finding'
+  /** Restarting running workspaces on the installed Crew (AO-8's `restart` stage). */
+  | 'updating'
   | 'starting'
   | 'connecting'
   | 'ready';
@@ -320,17 +659,46 @@ const PLAIN_STAGE: Readonly<Record<string, PlainSetupStage>> = {
   prepare_artifact: 'installing',
   transfer: 'installing',
   verify_installed: 'installing',
+  workspaces: 'finding',
+  restart: 'updating',
   start: 'starting',
   connect: 'connecting',
   done: 'ready',
 };
-const LAST_STEPS = new Set(['work_folder', 'context']);
+const LAST_STEPS = new Set(['work_folder', 'context', 'save', 'join', 'configure']);
 
 /** The plain steps a job of `intent` goes through, in order. */
 export function plainStages(intent: SetupIntent): PlainSetupStage[] {
   if (intent === 'host') return ['checking', 'signing-in', 'installing', 'starting', 'ready'];
   if (intent === 'member') return ['checking', 'signing-in', 'installing', 'connecting', 'ready'];
-  return ['checking', 'signing-in', 'installing', 'ready'];
+  // A check installs nothing: it signs in and looks for the account's workspaces (AO-8).
+  if (intent === 'check') return ['checking', 'signing-in', 'finding', 'ready'];
+  return ['checking', 'signing-in', 'installing', 'finding', 'updating', 'ready'];
+}
+
+/**
+ * The plain steps of `run`: a host's or member's job adds Looking for workspaces and Updating
+ * running workspaces when its daemon reports those stages (AO-8), and every job leaves out one of
+ * them that it skipped, so a step that did nothing never reads as done.
+ */
+export function plainStagesFor(intent: SetupIntent, run: SetupRun | null): PlainSetupStage[] {
+  const reported = (name: string) => run?.stages.find((stage) => stage.name === name);
+  const shown = (name: string) => {
+    const stage = reported(name);
+    if (intent === 'check' || intent === 'install') return stage?.state !== 'skipped';
+    return stage !== undefined && stage.state !== 'skipped';
+  };
+  const stages = plainStages(intent).filter(
+    (stage) =>
+      (stage !== 'finding' || shown('workspaces')) && (stage !== 'updating' || shown('restart'))
+  );
+  if (intent !== 'host' && intent !== 'member') return stages;
+  const extra: PlainSetupStage[] = [
+    ...(shown('workspaces') ? (['finding'] as const) : []),
+    ...(shown('restart') ? (['updating'] as const) : []),
+  ];
+  const after = stages.indexOf('installing') + 1;
+  return [...stages.slice(0, after), ...extra, ...stages.slice(after)];
 }
 
 /** Where a job stands in plain steps. A stage name this build does not know reads as checking. */
@@ -343,6 +711,27 @@ export function plainStage(run: SetupRun): PlainSetupStage {
     return 'installing';
   }
   return PLAIN_STAGE[run.stage] ?? 'checking';
+}
+
+/**
+ * Whether version `a` is older than `b`, comparing major, minor and patch. Anything that is not a
+ * version is not older: Crew never offers an update on a version it cannot read.
+ */
+export function versionOlder(a: string | null | undefined, b: string | null | undefined): boolean {
+  const parts = (value: string | null | undefined) =>
+    value && /^\d+\.\d+\.\d+/.test(value)
+      ? value
+          .split(/[-+]/)[0]
+          .split('.')
+          .map((part) => Number(part))
+      : null;
+  const left = parts(a);
+  const right = parts(b);
+  if (!left || !right) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] < right[index];
+  }
+  return false;
 }
 
 /** The file name the manual fallback saves the broker under, and copies to the server. */
@@ -401,6 +790,12 @@ export interface MemberSetupRequest {
    * connection that was already on this computer, whose access the job leaves as it is.
    */
   agentAccess: SetupAgentAccess | null;
+  /**
+   * The workspace, as Join named it, when Join found that the account that joins hosts it (the
+   * invitation's host is that account) and the person chose As me on the server: its warning then
+   * adds the host's sentence (`fullAccessHost`). Absent otherwise.
+   */
+  hostWorkspace?: string;
 }
 
 const memberSetupRequests = new Map<string, { at: number; request: MemberSetupRequest }>();

@@ -68,6 +68,11 @@ const TRANSFER_CHUNK: usize = 262_144;
 /// A transfer writes its progress at most this often (in bytes moved).
 const PROGRESS_EVERY: u64 = 4 * 1024 * 1024;
 
+/// The variable that marks a full-access job's environment: its job ID. The supervisor sets it
+/// on every job it starts, and a `biorouter-crew bridge` that finds it refuses to add or revoke
+/// a device (`agent_session_refused`, accident prevention under account ownership).
+pub(crate) const JOB_ENVIRONMENT: &str = "BIOROUTER_CREW_JOB_ID";
+
 /// How a background transfer reaches the broker: a second connection, opened the way the
 /// bridge opened its first, and the worker credential of the frame that asked for it.
 pub type Connect = Arc<dyn Fn() -> Result<(UnixStream, BufReader<UnixStream>)> + Send + Sync>;
@@ -1004,7 +1009,7 @@ fn spawn_supervisor(context: &Context, dir: &Path, id: &str) -> Result<()> {
     let mut child = std::process::Command::new(&context.program)
         .arg("__crew-run")
         .arg(dir)
-        .env("BIOROUTER_CREW_JOB_ID", id)
+        .env(JOB_ENVIRONMENT, id)
         .current_dir("/")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -1148,9 +1153,16 @@ fn linux_supervise(dir: &Path) -> Result<()> {
         }
     };
     let cwd = record["cwd"].as_str().unwrap_or("/").to_owned();
+    // The job's own ID (its directory's name) marks its environment, whatever this supervisor
+    // inherited, so a bridge the job starts knows it runs inside one and refuses to add or
+    // revoke a device.
+    let job = dir
+        .file_name()
+        .map_or_else(|| "job".into(), |name| name.to_os_string());
     let mut command = std::process::Command::new(&argv[0]);
     command
         .args(&argv[1..])
+        .env(JOB_ENVIRONMENT, job)
         .current_dir(&cwd)
         .stdin(std::process::Stdio::null())
         .stdout(stdout)

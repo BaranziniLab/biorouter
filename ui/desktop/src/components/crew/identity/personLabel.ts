@@ -158,7 +158,8 @@ export function personLayout(
   const displayName = personDisplayName(person.displayName, username);
   const equal = displayNameRepeatsUsername(displayName, username);
   const collides = person.collides === true;
-  const former = person.isFormer === true;
+  // A former principal of an account that is a member again reads as that member (AO-1).
+  const former = person.isFormer === true && person.rejoined !== true;
   const common = { kind: 'person' as const, displayName, handle, former };
 
   if (agent && options.you === true && context !== 'authority') {

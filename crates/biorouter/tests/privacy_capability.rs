@@ -292,6 +292,22 @@ const EXPECTED: &[Site] = &[
     },
     Site {
         needle: "CallCapability::public_enforced(",
+        file: "crates/biorouter-server/src/routes/crew_tools/mod.rs",
+        count: 1,
+        what: "NOT a production decider: `test_support::test_ctx()`, the one helper \
+               the person tools' action files share in their unit tests (signin, \
+               vault, hostkey, more and the step tests). It takes the most \
+               restrictive pair rather than a permissive one invented for a test's \
+               convenience. Counted for the same reason as the `apps.rs` and \
+               `bridge.rs` helpers: a line-wise grep cannot tell a `#[cfg(test)]` \
+               block from production, and a filter that tried would blind the census \
+               to production too. In production a person-tool call carries the \
+               capability the agent loop sampled for that tool call (a `sample(` row \
+               above); the host never builds one. Keep it one helper: a test that \
+               inlines the constructor moves the count off 1 and fires here",
+    },
+    Site {
+        needle: "CallCapability::public_enforced(",
         file: "crates/biorouter-server/src/routes/agent.rs",
         count: 2,
         what: "the two entries with no caller identity — `POST /agent/call_tool` and \
