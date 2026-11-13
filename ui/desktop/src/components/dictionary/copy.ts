@@ -142,6 +142,8 @@ export const DICTIONARY_LABELS = {
     imported: 'Imported',
     matches: 'Matches',
   },
+  /** The title over MSG-DICTIONARY-NO-MATCH, when **Filter terms** matches no row. */
+  noMatches: 'No matches',
   // Under an empty **Added by you**, which shows whenever the dictionary holds any row: a
   // dictionary the agent started has rows that are not the person's yet.
   userGroupEmpty: 'Terms you add show here.',

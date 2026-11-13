@@ -378,7 +378,7 @@ export default function DictionaryView() {
               {shownTotal > 0 && query.trim() && groups[0]?.entries.length === 0 ? (
                 <EmptyState
                   icon={ENTITY_ICONS.dictionary}
-                  title={DICTIONARY_LABELS.groups.matches}
+                  title={DICTIONARY_LABELS.noMatches}
                   description={dictionaryMessage('MSG-DICTIONARY-NO-MATCH')}
                   compact
                 />

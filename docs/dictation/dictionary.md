@@ -1348,7 +1348,7 @@ The page draws only the rows near the viewport (`DictionaryList.tsx`, `rowWindow
 | **From your chats** | active `agent` rows kept by the person, and active `auto` and `correction` rows | when present |
 | **Imported** | active `import` rows | when present |
 
-A query in **Filter terms** collapses the groups into one **Matches** list. As built in PR-20 the rows of a group are in alphabetical order, ignoring case (the listing's own order is newest change first, which would move a row each time it is used or edited), the filter matches the fields `q` searches (written, spoken forms, note) case folded, and a filter that matches nothing shows MSG-DICTIONARY-NO-MATCH. **Added by the agent**, its **Keep** and **Remove**, and agent rows in **Review all…** are built in PR-20, because the review dialog this pull request owns names them; they show only when such rows exist, which PR-23's capability makes possible, so PR-23 adds only the `agent_writes` control.
+A query in **Filter terms** collapses the groups into one **Matches** list. As built in PR-20 the rows of a group are in alphabetical order, ignoring case (the listing's own order is newest change first, which would move a row each time it is used or edited), the filter matches the fields `q` searches (written, spoken forms, note) case folded, and a filter that matches nothing shows MSG-DICTIONARY-NO-MATCH under the title **No matches**. **Added by the agent**, its **Keep** and **Remove**, and agent rows in **Review all…** are built in PR-20, because the review dialog this pull request owns names them; they show only when such rows exist, which PR-23's capability makes possible, so PR-23 adds only the `agent_writes` control.
 
 ### Rows
 

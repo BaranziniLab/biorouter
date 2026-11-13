@@ -351,6 +351,9 @@ describe('the page', () => {
     expect(
       await screen.findByText(DICTIONARY_MESSAGES['MSG-DICTIONARY-NO-MATCH'])
     ).toBeInTheDocument();
+    // Titled for what happened, never the name of the list that is empty.
+    expect(screen.getByText(DICTIONARY_LABELS.noMatches)).toBeInTheDocument();
+    expect(screen.queryByText(DICTIONARY_LABELS.groups.matches)).not.toBeInTheDocument();
   });
 
   it('is read only under managed policy, with export and delete still offered', async () => {

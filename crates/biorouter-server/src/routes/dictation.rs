@@ -41,7 +41,8 @@
 //! the job is dropped on any path, and the transcript on `DELETE` and at the expiry
 //! (P-1). Nothing here logs audio, text, partial text, changes, prompts, dictionary
 //! entries or `context` (DD-93): only a stream's log id (a digest, never the id that
-//! opens the stream), target kinds, scopes, durations, byte counts and model ids.
+//! opens the stream), target kinds, scopes, model ids, sample rates, segment counts and
+//! durations, under a fixed message (`crates/biorouter/tests/dictation_log_fields.rs`).
 //!
 //! A decode that fails while the person is still speaking ends the stream's intake: every
 //! later chunk answers the same `500 engineFailed`, so the client says so at once and its
