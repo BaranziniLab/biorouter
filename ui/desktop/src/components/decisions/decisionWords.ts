@@ -303,9 +303,19 @@ export interface PrivacyBasisWords {
   place: string;
 }
 
-/** `monitor "Done" uses joey-1 · Baseten`, or `null` for a parent's ceiling. */
+/**
+ * Keeps a `·` on the line of the word before it: a line that wraps there breaks
+ * after the dot, never before it, so no line starts with `· Baseten.` (live QA
+ * 2026-11-12, the model chip's 288px menu).
+ */
+const DOT_AFTER_WORD = '\u00a0· ';
+
+/**
+ * `monitor "Done" uses joey-1 · Baseten`, or `null` for a parent's ceiling. The
+ * space before the `·` does not break ({@link DOT_AFTER_WORD}).
+ */
 function basisReason(basis: PrivacyBasisWords): string | null {
-  const model = [basis.model, basis.place].filter(Boolean).join(' · ');
+  const model = [basis.model, basis.place].filter(Boolean).join(DOT_AFTER_WORD);
   switch (basis.source) {
     case 'monitor':
       return `monitor "${basis.label}" uses ${model}`;

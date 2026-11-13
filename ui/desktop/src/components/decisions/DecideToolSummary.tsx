@@ -59,8 +59,14 @@ export const DECIDE_TOOL_COPY = {
   /** `escalate`'s one line: `8 of 30 escalated to clef-flash:latest`. */
   escalated: (escalated: number, of: number, label: string) =>
     `${escalated.toLocaleString('en-US')} of ${of.toLocaleString('en-US')} escalated to ${label}`,
-  /** Escalated answers the second model failed to give; the first answer stands. */
+  /** Escalated chunks the second model failed to answer; the first answer stands. */
   escalationFailed: (count: number) => `${count.toLocaleString('en-US')} failed`,
+  /**
+   * Escalated chunks too long for the second model's window, never sent to it: not a
+   * failure, so said apart from one (`2 too long for elephant-1`).
+   */
+  escalationTooLong: (count: number, label: string) =>
+    `${count.toLocaleString('en-US')} too long for ${label}`,
   escalation: 'Escalation',
   /**
    * The escalation line's InfoTip: the bound and that the second model's answers are
@@ -100,9 +106,12 @@ export const DECIDE_TOOL_COPY = {
     firstP: string | null
   ) =>
     `${label}${p ? ` ${p}` : ''}, was ${firstLabel}${firstP ? ` ${firstP}` : ''} by ${firstModel}`,
-  /** An answer the second model did not give: it failed, or the chunk was too large. */
+  /** An answer the second model did not give, because it failed. */
   escalatedKept: (label: string, firstModel: string) =>
     `${label} by ${firstModel}: the second model gave no answer`,
+  /** An answer the second model was never asked for: the chunk was too long for it. */
+  escalatedTooLong: (label: string, firstModel: string, secondModel: string) =>
+    `${label} by ${firstModel}: too long for ${secondModel}`,
   escalatedMore: (n: number) =>
     `${n.toLocaleString('en-US')} more ${n === 1 ? 'chunk' : 'chunks'} in the decision history`,
 };
@@ -246,6 +255,12 @@ function escalatedAnswerText(
   question: string | null
 ): string {
   const prefix = question ? `${question}: ` : '';
+  if (answer.error && answer.tooLarge) {
+    return (
+      prefix +
+      DECIDE_TOOL_COPY.escalatedTooLong(answer.label, escalation.firstLabel, escalation.label)
+    );
+  }
   if (answer.error) {
     return prefix + DECIDE_TOOL_COPY.escalatedKept(answer.label, escalation.firstLabel);
   }
@@ -263,10 +278,12 @@ function escalatedAnswerText(
 
 /**
  * The open well's escalation line: `8 of 30 escalated to clef-flash:latest`, a private
- * model's padlock after its name, and the failures when there are any, then an InfoTip
- * (hover peeks, click pins) with the bound and what the second model changed. The well
- * is the row's own disclosure, so this never shows while the row is closed; the closed
- * row's meta says only `8 escalated`.
+ * model's padlock after its name, then the chunks it never answered, by why: those too
+ * long for its window (`2 too long for clef-flash:latest`, never sent to it) apart from
+ * those it failed (`1 failed`). Then an InfoTip (hover peeks, click pins) with the
+ * bound and what the second model changed. The well is the row's own disclosure, so
+ * this never shows while the row is closed; the closed row's meta says only
+ * `8 escalated`.
  */
 function EscalationLine({ escalation }: { escalation: DecideEscalation }) {
   return (
@@ -287,8 +304,11 @@ function EscalationLine({ escalation }: { escalation: DecideEscalation }) {
             className={`ml-1 inline-block size-3 align-[-1px] ${PRIVATE_MARK_INK}`}
           />
         ) : null}
-        {escalation.errors > 0
-          ? ` · ${DECIDE_TOOL_COPY.escalationFailed(escalation.errors)}`
+        {escalation.tooLong > 0
+          ? ` · ${DECIDE_TOOL_COPY.escalationTooLong(escalation.tooLong, escalation.label)}`
+          : null}
+        {escalation.failed > 0
+          ? ` · ${DECIDE_TOOL_COPY.escalationFailed(escalation.failed)}`
           : null}
       </span>
       <InfoTip

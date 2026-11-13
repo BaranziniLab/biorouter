@@ -1228,10 +1228,11 @@ impl DecisionService {
                 .zip(automatic_choice(session, &admitted, None));
             let mut text = match elsewhere {
                 Some((provider, other)) => format!(
-                    "{reason} A decision that names no model uses the configured decision \
-                     provider, `{provider}`, which has none this chat may use. Name `{}`, or \
+                    "{reason} A decision that names no model uses the decision provider \
+                     Biorouter is set to, {}, which has none this chat may use. Name {}, or \
                      clear BIOROUTER_DECISION_PROVIDER.",
-                    other.model_ref().label()
+                    provider_in_words(provider),
+                    other.in_words()
                 ),
                 // A local server that is not answering lists none of the
                 // models installed there, so "none is installed" would be
@@ -1449,7 +1450,7 @@ impl DecisionService {
     ) -> DecisionResult<()> {
         if questions.len() > caps.max_questions {
             return Err(DecisionError::Unsupported(format!(
-                "`{}` takes at most {} questions per request, not {}",
+                "{} takes at most {} questions per request, not {}",
                 model.display_name(),
                 caps.max_questions,
                 questions.len()
@@ -1459,15 +1460,15 @@ impl DecisionService {
         for (name, question) in questions {
             if !caps.kinds.contains(&question.kind.tag()) {
                 return Err(DecisionError::Unsupported(format!(
-                    "`{}` cannot answer question `{name}`: it does not take {:?} questions",
+                    "{} cannot answer question `{name}`: it does not take {} questions",
                     model.display_name(),
-                    question.kind.tag()
+                    kind_in_words(question.kind.tag())
                 )));
             }
             if let DecisionKind::Choice { options } = &question.kind {
                 if options.len() > max_options {
                     return Err(DecisionError::Unsupported(format!(
-                        "`{}` takes at most {max_options} options per choice question, and \
+                        "{} takes at most {max_options} options per choice question, and \
                          question `{name}` offers {}. Ask with fewer options, or choose \
                          another model.",
                         model.display_name(),
@@ -2223,6 +2224,28 @@ fn turned_on(
     !before.enabled || before.question.kind != monitor.question.kind || runs_on != ran_on
 }
 
+/// A question kind as a refusal says it: "yes or no", "choice", "score".
+fn kind_in_words(tag: super::types::DecisionKindTag) -> &'static str {
+    use super::types::DecisionKindTag;
+    match tag {
+        DecisionKindTag::Binary => "yes or no",
+        DecisionKindTag::Choice => "choice",
+        DecisionKindTag::Score => "score",
+    }
+}
+
+/// A decision provider as a refusal says it: "Baseten", "Ollama", else its id.
+fn provider_in_words(provider: &str) -> String {
+    use crate::providers::decision::catalog::{
+        BASETEN_DECISION_PROVIDER, OLLAMA_DECISION_PROVIDER,
+    };
+    match provider {
+        BASETEN_DECISION_PROVIDER => "Baseten".to_string(),
+        OLLAMA_DECISION_PROVIDER => "Ollama".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// `text` as a sentence: with a full stop added when it ends without one.
 fn as_sentence(text: &str) -> String {
     let text = text.trim_end();
@@ -2271,14 +2294,14 @@ fn refuse_unlowered_resolution(
     Err(DecisionError::Refused(if resolved {
         format!(
             "This chat runs on a private model, so it becomes private at its first message, and \
-             `{name}`, the decision model it would use with none named, could not read it then. \
-             Choose a decision model that runs on this computer for it, or choose `{name}` for \
+             {name}, the decision model it would use with none named, could not read it then. \
+             Choose a decision model that runs on this computer for it, or choose {name} for \
              this chat before its first message."
         )
     } else {
         format!(
             "This chat runs on a private model, so it becomes private at its first message, and \
-             `{name}` is a public model a private chat cannot use. {}.",
+             {name} is a public model a private chat cannot use. {}.",
             source.advice_text()
         )
     }))
@@ -2557,7 +2580,7 @@ fn privacy_allows(
     .map_err(|e| DecisionError::Refused(e.to_string()))?;
     if session.enforced && !owners_compatible(affiliation, &session.affiliations) {
         return Err(DecisionError::Refused(format!(
-            "This chat holds private data from an institution `{name}` is not covered by, so \
+            "This chat holds private data from an institution that does not cover {name}, so \
              this decision cannot run on it. Choose a decision model that runs on this computer, \
              or one that institution covers."
         )));
@@ -2927,7 +2950,9 @@ fn named_for_chunk(
                 tokens: text,
                 usable,
                 limit,
-                model,
+                // An adapter may write the name in backticks; a sentence a
+                // person reads names it plainly.
+                model: model.trim_matches('`').to_string(),
             }
         }
         other => other,
@@ -3003,7 +3028,7 @@ fn check_fit(
         return Ok(());
     }
     Err(DecisionError::Unsupported(format!(
-        "`{}`'s {}-token window cannot hold {} beside the text {} about: Biorouter keeps \
+        "{}'s {}-token window cannot hold {} beside the text {} about: Biorouter keeps \
          room for the model's own framing, and that leaves about {room} tokens of text, under \
          the {MIN_STATE_TOKENS} needed at the least. Shorten the {}, or choose a model with a \
          larger window.",
@@ -3086,7 +3111,7 @@ async fn check_size(
         let bytes = model.request_bytes(request);
         if bytes > limit {
             return Err(DecisionError::Invalid(format!(
-                "{chunk} is about {bytes} bytes, over the {limit}-byte request limit of `{}`. \
+                "{chunk} is about {bytes} bytes, over the {limit}-byte request limit of {}. \
                  Split it into smaller pieces and ask again.",
                 model.display_name()
             )));
@@ -3101,7 +3126,7 @@ async fn check_size(
             tokens,
             usable,
             limit,
-            model: format!("`{}`", model.display_name()),
+            model: model.display_name(),
         });
     }
     Ok(())
@@ -5422,8 +5447,8 @@ mod tests {
         let why = svc.check_settings(&chat, &scored, None).await.unwrap_err();
         assert!(
             why.starts_with(
-                "Nothing was saved: monitor \"Done\" could not run. `local` cannot \
-                             answer question `done`: it does not take Score questions"
+                "Nothing was saved: monitor \"Done\" could not run. local cannot \
+                             answer question `done`: it does not take score questions"
             ),
             "{why}"
         );
@@ -5506,7 +5531,7 @@ mod tests {
         let text = err.to_string();
         assert!(matches!(err, DecisionError::Unsupported(_)), "{err:?}");
         assert!(
-            text.starts_with("`small`'s 2048-token window cannot hold this question"),
+            text.starts_with("small's 2048-token window cannot hold this question"),
             "{text}"
         );
         // The same question fits a larger window, and a short one fits the small.
@@ -5661,6 +5686,7 @@ mod tests {
             tokens: 2_503,
             usable: 2_048,
             limit: 2_048,
+            // As an adapter writes it, in backticks: the sentence names it plainly.
             model: "`tev1:0.8b`".into(),
         };
         // R3-F2: the server's whole-prompt count, said in the unit
@@ -5671,7 +5697,7 @@ mod tests {
         assert_eq!(
             named.to_string(),
             "Chunk `note-7` is about 2177 tokens, more than the about 1669 tokens of text \
-             `tev1:0.8b` takes beside these questions (its window is 2048 tokens). Split it \
+             tev1:0.8b takes beside these questions (its window is 2048 tokens). Split it \
              into smaller pieces and ask again."
         );
         assert_eq!(usable_chunk(2_048, None).tokens, 1_669);
@@ -5931,7 +5957,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(why.contains("does not take Score questions"), "{why}");
+        assert!(why.contains("does not take score questions"), "{why}");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
@@ -5997,7 +6023,7 @@ mod tests {
         assert!(
             why.starts_with(
                 "Nothing was saved: monitor \"Done\" could not run. This chat holds \
-                             private data from an institution `hosted` is not covered by"
+                             private data from an institution that does not cover hosted"
             ),
             "{why}"
         );
@@ -6030,7 +6056,7 @@ mod tests {
         assert_eq!(
             svc.check_settings(&fresh, &cloud, None).await.unwrap_err(),
             "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
-             model, so it becomes private at its first message, and `cloud` is a public model a \
+             model, so it becomes private at its first message, and cloud is a public model a \
              private chat cannot use. Choose a decision model that runs on this computer.",
             "a public model the save does not make standing (here a provider the fold does not \
              know) is refused"
@@ -6079,9 +6105,9 @@ mod tests {
                 .await
                 .unwrap_err(),
             "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
-             model, so it becomes private at its first message, and `cloud`, the decision model \
+             model, so it becomes private at its first message, and cloud, the decision model \
              it would use with none named, could not read it then. Choose a decision model that \
-             runs on this computer for it, or choose `cloud` for this chat before its first \
+             runs on this computer for it, or choose cloud for this chat before its first \
              message."
         );
         assert_eq!(
@@ -6180,7 +6206,7 @@ mod tests {
         assert!(
             why.starts_with(
                 "Nothing was saved: this decision chat's model test_decision/local \
-                             could not answer this question. `local` cannot answer question"
+                             could not answer this question. local cannot answer question"
             ),
             "{why}"
         );
@@ -6449,9 +6475,9 @@ mod tests {
         assert_eq!(
             err,
             DecisionError::Refused(format!(
-                "{CREW_SCOPED_REFUSAL} A decision that names no model uses the configured \
-                 decision provider, `baseten_decision`, which has none this chat may use. Name \
-                 `ollama_decision/tev1:0.8b`, or clear BIOROUTER_DECISION_PROVIDER."
+                "{CREW_SCOPED_REFUSAL} A decision that names no model uses the decision \
+                 provider Biorouter is set to, Baseten, which has none this chat may use. Name \
+                 tev1:0.8b on this computer, or clear BIOROUTER_DECISION_PROVIDER."
             ))
         );
         assert!(

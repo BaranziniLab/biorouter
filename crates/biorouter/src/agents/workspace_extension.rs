@@ -18633,8 +18633,15 @@ pub(crate) mod tests {
         let refused = orchestrate(&c, &parent, args).await;
         let text = result_text(&refused);
         assert_eq!(refused.is_error, Some(true), "{text}");
-        assert!(text.contains("Phase \"build\"'s gate model:"), "{text}");
-        assert!(text.contains("test_decision/tev1"), "{text}");
+        // The refusal `decide` gives, in the same plain words: the models this
+        // chat may use by their names and where they run, never
+        // `provider/model` (`resolve_model_name`).
+        assert_eq!(
+            text,
+            "Error: Phase \"build\"'s gate model: A decision model named nosuch:1b is not set \
+             up. This chat may use tev1 on this computer. Nothing was changed."
+        );
+        assert!(!text.contains("test_decision"), "{text}");
     }
 
     /// The whole loop the owner asked for: a gate that fails hands the work

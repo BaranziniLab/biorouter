@@ -381,6 +381,12 @@ export interface DecideEscalatedAnswer {
   firstP: number | null;
   /** Why the second model gave no answer, when it did not (the first answer stands). */
   error: string | null;
+  /**
+   * The chunk was too long for the second model's window, so it was never sent to it
+   * (`tooLarge`, or the chunk named in the escalation's `tooLargeIds`); `error` says
+   * how long. Otherwise a missing answer is a failure.
+   */
+  tooLarge: boolean;
 }
 
 /** One chunk `escalate` asked again (`EscalatedItem`). */
@@ -407,8 +413,15 @@ export interface DecideEscalation {
   answers: number;
   decided: number;
   changed: number;
-  /** Answers asked again that failed: the first answer stands. */
+  /**
+   * Answers asked again that the second model gave no answer to, so the first answer
+   * stands: it failed, or the chunk was too long for it.
+   */
   errors: number;
+  /** Chunks too long for the second model's window, never sent to it (`tooLargeIds`). */
+  tooLong: number;
+  /** Chunks the second model was sent and gave no answer to (a failure, not a size). */
+  failed: number;
   items: DecideEscalatedItem[];
 }
 
@@ -511,11 +524,12 @@ function voteModelsOf(value: unknown): DecideVoteModel[] {
     : [];
 }
 
-function escalatedAnswerOf(value: unknown): DecideEscalatedAnswer[] {
+function escalatedAnswerOf(value: unknown, chunkTooLarge: boolean): DecideEscalatedAnswer[] {
   const answer = record(value);
   const question = text(answer?.question);
   const label = text(answer?.label);
   if (!answer || !question || !label) return [];
+  const error = text(answer.error);
   return [
     {
       question,
@@ -524,7 +538,8 @@ function escalatedAnswerOf(value: unknown): DecideEscalatedAnswer[] {
       by: text(answer.by) ?? '',
       firstLabel: text(answer.firstLabel) ?? '',
       firstP: probability(answer.firstP),
-      error: text(answer.error),
+      error,
+      tooLarge: error !== null && (answer.tooLarge === true || chunkTooLarge),
     },
   ];
 }
@@ -533,15 +548,40 @@ function escalationOf(value: unknown): DecideEscalation | null {
   const escalation = record(value);
   const label = text(escalation?.label);
   if (!escalation || !label) return null;
+  // Every escalated chunk too long for the second model, uncapped (`too_large_ids`).
+  const tooLargeIds = new Set(
+    Array.isArray(escalation.tooLargeIds)
+      ? escalation.tooLargeIds.filter((id): id is string => typeof id === 'string')
+      : []
+  );
   const items = Array.isArray(escalation.items)
     ? escalation.items.flatMap((entry): DecideEscalatedItem[] => {
         const item = record(entry);
         const chunkId = text(item?.chunkId);
         if (!item || !chunkId) return [];
-        const answers = Array.isArray(item.answers) ? item.answers.flatMap(escalatedAnswerOf) : [];
+        const answers = Array.isArray(item.answers)
+          ? item.answers.flatMap((answer) => escalatedAnswerOf(answer, tooLargeIds.has(chunkId)))
+          : [];
         return answers.length > 0 ? [{ chunkId, answers }] : [];
       })
     : [];
+  const chunksWhere = (test: (answer: DecideEscalatedAnswer) => boolean) =>
+    items.filter((item) => item.answers.some(test)).length;
+  const errors = count(escalation.errors);
+  const tooLong = Math.max(
+    tooLargeIds.size,
+    chunksWhere((answer) => answer.tooLarge)
+  );
+  // The second model's failures by chunk (`error_groups`, which leaves out a chunk
+  // too long for it), each group's listed ids plus its `more`.
+  const failedInGroups = Array.isArray(escalation.errorGroups)
+    ? escalation.errorGroups.reduce((sum: number, entry: unknown) => {
+        const group = record(entry);
+        if (!group) return sum;
+        const listed = Array.isArray(group.chunkIds) ? group.chunkIds.length : 0;
+        return sum + listed + count(group.more);
+      }, 0)
+    : 0;
   return {
     label,
     tier: escalation.tier === 'public' || escalation.tier === 'private' ? escalation.tier : null,
@@ -552,7 +592,19 @@ function escalationOf(value: unknown): DecideEscalation | null {
     answers: count(escalation.answers),
     decided: count(escalation.decided),
     changed: count(escalation.changed),
-    errors: count(escalation.errors),
+    errors,
+    tooLong,
+    // By chunk, as the line's other counts are. A result that lists no chunk and no
+    // group (none could be read) still says its failed answers rather than nothing,
+    // less the ones too long for the second model: `errors` counts those as well, and
+    // the line already says them as too long.
+    failed:
+      items.length > 0 || failedInGroups > 0
+        ? Math.max(
+            failedInGroups,
+            chunksWhere((answer) => answer.error !== null && !answer.tooLarge)
+          )
+        : Math.max(0, errors - tooLong),
     items,
   };
 }

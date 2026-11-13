@@ -1047,7 +1047,7 @@ mod tests {
         assert!(
             unusable.0.starts_with(
                 "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
-                 model, so it becomes private at its first message, and `cloud` is a public \
+                 model, so it becomes private at its first message, and cloud is a public \
                  model a private chat cannot use."
             ),
             "{unusable}"

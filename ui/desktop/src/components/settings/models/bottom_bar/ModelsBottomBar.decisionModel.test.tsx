@@ -182,3 +182,31 @@ describe('the model chip of a decision chat', () => {
     expect(await screen.findByTestId('non-private-model-chip-note')).toHaveTextContent('SHORT');
   });
 });
+
+describe('a public chat its default decision model made public', () => {
+  it('keeps the dot of "joey-1 · Baseten" on the line of the word before it', async () => {
+    render(
+      <ModelsBottomBar
+        sessionId="chat-5"
+        privacyTier="public"
+        privacyBasis={{
+          source: 'default',
+          label: '',
+          model: 'joey-1',
+          place: 'Baseten',
+          summary: 'its default decision model is joey-1, a Baseten model',
+        }}
+        effectiveModel={{ provider: 'openai', model: 'gpt-5.5' }}
+        setView={vi.fn()}
+      />
+    );
+    await openMenu();
+    const line = screen.getByTestId('chat-privacy-line');
+    // Live QA 2026-11-12: at the menu's 288px this wrapped as "… is joey-1" / "· Baseten.".
+    // The space before the dot does not break, so a wrap now falls after it.
+    expect(line.textContent).toBe(
+      'Public chat: its default decision model is joey-1\u00a0· Baseten.'
+    );
+    expect(line.textContent).not.toMatch(/ ·/);
+  });
+});

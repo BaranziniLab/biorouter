@@ -1633,13 +1633,16 @@ async fn an_oversized_adhoc_state_is_413_and_nothing_is_sent() {
     )
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    // The model by its plain name, never in backticks: a person reads this.
     assert!(
         body.starts_with("The text is about ")
             && body.contains(
-                "`small-checker` takes beside these questions (its window is 2048 tokens)"
+                " tokens of text small-checker takes beside these questions (its window is \
+                 2048 tokens). Split it into smaller pieces and ask again."
             ),
         "{body}"
     );
+    assert!(!body.contains('`'), "{body}");
     assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
 }
 

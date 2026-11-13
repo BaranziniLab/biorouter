@@ -52,8 +52,9 @@ use crate::decision::service::{usable_chunk, ModelSource, UsableChunk};
 use crate::decision::types::MAX_CHOICE_OPTIONS;
 use crate::decision::types::{validate_questions, DecisionKindTag};
 use crate::decision::{
-    Answer, ChunkOutcome, Decision, DecisionAdapter, DecisionChunk, DecisionContext, DecisionKind,
-    DecisionModelRef, DecisionOrigin, DecisionService, DecisionSession, Question, Threshold,
+    model_in_words, Answer, ChunkOutcome, Decision, DecisionAdapter, DecisionChunk,
+    DecisionContext, DecisionKind, DecisionModelRef, DecisionOrigin, DecisionService,
+    DecisionSession, Question, Threshold,
 };
 use crate::privacy::ProviderTier;
 use crate::providers::decision::catalog::{
@@ -1964,17 +1965,14 @@ impl DecisionsClient {
                 Ok(Some(self.named_model(session, wanted).await?))
             }
             _ => match &session.chat_default_model {
-                Ok(Some(default)) => self
-                    .named_model(session, &default.label())
+                Ok(Some(default)) => resolve_named(self.service, session, &default.label())
                     .await
                     .map(Some)
-                    .map_err(|why| {
-                        format!("This chat's default decision model is not usable: {why}")
-                    }),
+                    .map_err(|problem| problem.for_default(default)),
                 Ok(None) => Ok(None),
                 Err(why) => Err(format!(
-                    "{why}, so this chat's default decision model is unknown. Name one in \
-                     `model`."
+                    "{why}, so this chat's default decision model is unknown. Name a decision \
+                     model as this call's model."
                 )),
             },
         }
@@ -2128,13 +2126,22 @@ impl DecisionsClient {
         ask: &EscalationAsk,
         questions: &IndexMap<String, Question>,
     ) -> Result<(DecisionModelRef, EscalationAsk), String> {
-        let refused = |why: String| {
-            format!("Nothing was decided: `escalate` names a model this call cannot use. {why}")
-        };
-        let model = self
-            .named_model(session, &ask.model)
+        let model = resolve_named(self.service, session, &ask.model)
             .await
-            .map_err(refused)?;
+            .map_err(|problem| match problem {
+                NameProblem::Refused(why) => format!(
+                    "Nothing was decided: {}, the model to escalate to, can't be used in this \
+                     chat. {why}",
+                    name_as_written(&ask.model)
+                ),
+                other => format!("Nothing was decided. {}", other.for_name(&ask.model)),
+            })?;
+        let refused = |why: String| {
+            format!(
+                "Nothing was decided: {}, the model to escalate to, can't answer this call. {why}",
+                model_in_words(&model)
+            )
+        };
         let first = match first {
             Some(first) => Some(first.clone()),
             None => self
@@ -2145,9 +2152,9 @@ impl DecisionsClient {
         };
         if first.as_ref() == Some(&model) {
             return Err(format!(
-                "`escalate` names {}, the model that decides first. Name a different model in \
-                 `escalate`, or another first model in `model`.",
-                model_label(&model)
+                "Nothing was decided: the model to escalate to is {}, the model that decides \
+                 first. Name a different model to escalate to, or another first model.",
+                model_in_words(&model)
             ));
         }
         let source = ModelSource::of(Some(session), Some(&model));
@@ -2294,8 +2301,8 @@ impl DecisionsClient {
             let model = self.named_model(session, name).await?;
             if models.contains(&model) {
                 return Err(format!(
-                    "`models` names {} twice. Name each model once.",
-                    decision_model_display_label(&model)
+                    "The vote names {} twice. Name each model once.",
+                    model_in_words(&model)
                 ));
             }
             models.push(model);
@@ -2384,42 +2391,166 @@ impl DecisionsClient {
 /// this chat may not use is refused with its reason. `decide`'s `model` and
 /// `models`, and a phase gate's `model` (G-8), all resolve here, so a name
 /// that works in one works in the others.
+///
+/// The refusal is one plain sentence that a person reads on the decide card
+/// and the agent reads as its result: each model by its name and where it
+/// runs (`tev1:0.8b on this computer`, `joey-1 on Baseten`), never by
+/// `provider/model`, except where only that spelling tells two models apart.
 pub(crate) async fn resolve_model_name(
     service: &DecisionService,
     session: &DecisionSession,
     wanted: &str,
 ) -> Result<DecisionModelRef, String> {
+    resolve_named(service, session, wanted)
+        .await
+        .map_err(|problem| problem.for_name(wanted))
+}
+
+/// Why a decision model's name did not resolve for a chat.
+#[derive(Debug, Clone, PartialEq)]
+enum NameProblem {
+    /// No listed model answers to it. Holds each model this chat may use,
+    /// in words.
+    NotSetUp { usable: Vec<String> },
+    /// Several listed models answer to it: each one in words (where it runs
+    /// only for a model this chat may use, its bare name otherwise), and the
+    /// provider/model spelling that names it alone.
+    Ambiguous(Vec<(String, String)>),
+    /// It names a listed model this chat may not use, for this reason.
+    Refused(String),
+}
+
+impl NameProblem {
+    /// For a name the call wrote: `decide`'s `model` or `escalate`, a vote's
+    /// `models`, a gate's model.
+    fn for_name(&self, wanted: &str) -> String {
+        let name = name_as_written(wanted);
+        match self {
+            Self::NotSetUp { usable } => format!(
+                "A decision model named {name} is not set up. {}",
+                usable_sentence(usable)
+            ),
+            Self::Ambiguous(models) => format!(
+                "{name} names more than one decision model: {}. Name one of them by \
+                 provider/model: {}.",
+                and_list(
+                    &models
+                        .iter()
+                        .map(|(words, _)| words.clone())
+                        .collect::<Vec<_>>()
+                ),
+                or_list(
+                    &models
+                        .iter()
+                        .map(|(_, spelling)| spelling.clone())
+                        .collect::<Vec<_>>()
+                )
+            ),
+            Self::Refused(reason) => reason.clone(),
+        }
+    }
+
+    /// For the chat's own default decision model, which no call named.
+    fn for_default(&self, default: &DecisionModelRef) -> String {
+        let named = model_in_words(default);
+        match self {
+            Self::NotSetUp { usable } => format!(
+                "This chat's default decision model, {named}, is not set up. {} Name one of \
+                 them as this call's model, or choose another default in the chat's Monitors \
+                 dialog.",
+                usable_sentence(usable)
+            ),
+            Self::Ambiguous(_) => format!(
+                "This chat's default decision model, {named}, can't be used here. {}",
+                self.for_name(&default.label())
+            ),
+            Self::Refused(reason) => {
+                format!("This chat's default decision model, {named}, can't be used here. {reason}")
+            }
+        }
+    }
+}
+
+/// [`resolve_model_name`], with the reason a name did not resolve kept apart.
+async fn resolve_named(
+    service: &DecisionService,
+    session: &DecisionSession,
+    wanted: &str,
+) -> Result<DecisionModelRef, NameProblem> {
     let listed = service.models_for(Some(session)).await;
     let found = match find_named(&listed, wanted) {
         Ok(found) => found,
-        Err(spellings) => {
-            return Err(format!(
-                "`{wanted}` names more than one decision model: {}. Name one of them as \
-                 provider/model.",
-                spellings.join(", ")
-            ))
+        Err(several) => {
+            // Where a model runs is said only for one this chat may use, as the
+            // NotSetUp list says it: a refused model's place can name a server
+            // (`the Ollama server at 10.0.0.5`) the chat has no business learning.
+            return Err(NameProblem::Ambiguous(
+                several
+                    .iter()
+                    .map(|(entry, reason)| {
+                        let model = entry.model_ref();
+                        (
+                            if reason.is_none() {
+                                entry.in_words()
+                            } else {
+                                decision_model_short_name(&model)
+                            },
+                            decision_model_display_label(&model),
+                        )
+                    })
+                    .collect(),
+            ));
         }
     };
     let Some((entry, reason)) = found else {
-        let names: Vec<String> = listed
-            .iter()
-            .filter(|(_, reason)| reason.is_none())
-            .map(|(entry, _)| decision_model_display_label(&entry.model_ref()))
-            .collect();
-        return Err(format!(
-            "`{wanted}` is not a decision model this computer offers. Models this chat may \
-             use: {}.",
-            if names.is_empty() {
-                "none".to_string()
-            } else {
-                names.join(", ")
-            }
-        ));
+        return Err(NameProblem::NotSetUp {
+            usable: listed
+                .iter()
+                .filter(|(_, reason)| reason.is_none())
+                .map(|(entry, _)| entry.in_words())
+                .collect(),
+        });
     };
     if let Some(reason) = reason {
-        return Err(reason.clone());
+        return Err(NameProblem::Refused(reason.clone()));
     }
     Ok(entry.model_ref())
+}
+
+/// The name a call wrote, as a sentence says it: the model's own name when it
+/// was written as provider/model (`test_decision/gpt-giant` is `gpt-giant`),
+/// else the name as written.
+fn name_as_written(wanted: &str) -> String {
+    let wanted = wanted.trim();
+    match DecisionModelRef::parse(wanted) {
+        Some(parsed) => decision_model_short_name(&parsed),
+        None => wanted.to_string(),
+    }
+}
+
+/// The models a chat may use, as the sentence after a refusal says them.
+fn usable_sentence(usable: &[String]) -> String {
+    if usable.is_empty() {
+        "No decision model this chat may use is set up.".to_string()
+    } else {
+        format!("This chat may use {}.", or_list(usable))
+    }
+}
+
+fn and_list(items: &[String]) -> String {
+    joined(items, "and")
+}
+
+fn or_list(items: &[String]) -> String {
+    joined(items, "or")
+}
+
+fn joined(items: &[String], last: &str) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., tail] => format!("{} {last} {tail}", init.join(", ")),
+    }
 }
 
 /// The listed model `wanted` names, for a surface that resolves a name
@@ -2434,7 +2565,14 @@ pub fn listed_model_named(
     listed: &[(DecisionModelEntry, Option<String>)],
     wanted: &str,
 ) -> Result<Option<DecisionModelRef>, Vec<String>> {
-    find_named(listed, wanted).map(|hit| hit.map(|(entry, _)| entry.model_ref()))
+    find_named(listed, wanted)
+        .map(|hit| hit.map(|(entry, _)| entry.model_ref()))
+        .map_err(|several| {
+            several
+                .iter()
+                .map(|(entry, _)| decision_model_display_label(&entry.model_ref()))
+                .collect()
+        })
 }
 
 /// `models`, when the call names them: 2 to 5, and never with `model`.
@@ -2467,31 +2605,32 @@ fn vote_models(params: &DecideParams) -> Result<Option<Vec<String>>, String> {
     Ok(Some(models))
 }
 
+/// A model as the service lists it for a chat: the entry, and the reason this
+/// chat may not use it (`None` when it may).
+type ListedModel = (DecisionModelEntry, Option<String>);
+
 /// The listed model `wanted` names: by provider/model first, else by a bare
 /// model id or alias that exactly one listed model answers to. `Err` holds
-/// the provider/model spellings of every model a bare name matched, when it
+/// every model a bare name matched, each with its refusal reason, when it
 /// matched more than one.
 fn find_named<'a>(
-    listed: &'a [(DecisionModelEntry, Option<String>)],
+    listed: &'a [ListedModel],
     wanted: &str,
-) -> Result<Option<&'a (DecisionModelEntry, Option<String>)>, Vec<String>> {
+) -> Result<Option<&'a ListedModel>, Vec<&'a ListedModel>> {
     let wanted = wanted.trim();
     if let Some(parsed) = DecisionModelRef::parse(wanted) {
         if let Some(hit) = listed.iter().find(|(entry, _)| entry.answers_to(&parsed)) {
             return Ok(Some(hit));
         }
     }
-    let bare: Vec<&(DecisionModelEntry, Option<String>)> = listed
+    let bare: Vec<&ListedModel> = listed
         .iter()
         .filter(|(entry, _)| entry.model == wanted || entry.display_name == wanted)
         .collect();
     match bare.as_slice() {
         [] => Ok(None),
         [one] => Ok(Some(*one)),
-        many => Err(many
-            .iter()
-            .map(|(entry, _)| decision_model_display_label(&entry.model_ref()))
-            .collect()),
+        many => Err(many.to_vec()),
     }
 }
 
@@ -2688,9 +2827,10 @@ impl McpClientTrait for DecisionsClient {
             "decision_models" => self.handle_decision_models(session_id, enforced).await,
             other => Err(format!("Unknown tool: {other}")),
         };
-        Ok(result.unwrap_or_else(|error| {
-            CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
-        }))
+        // The sentence alone: the result is marked as an error, and the decide
+        // card already says the call failed above it, so an "Error:" in front
+        // only repeated that.
+        Ok(result.unwrap_or_else(|error| CallToolResult::error(vec![Content::text(error)])))
     }
 
     fn get_info(&self) -> Option<&InitializeResult> {
@@ -3690,10 +3830,13 @@ mod tests {
         .unwrap();
         let missing = call(&client, &session, "decide", args, enforced()).await;
         assert_eq!(missing.is_error, Some(true));
-        assert!(
-            text(&missing).contains("default decision model is not usable"),
-            "{}",
-            text(&missing)
+        // The model by its name, never `test_decision/gone`, and the ones this chat
+        // may use by their names and where they run.
+        assert_eq!(
+            text(&missing),
+            "This chat's default decision model, gone, is not set up. This chat may use tev1 \
+             on this computer or cloud. Name one of them as this call's model, or choose \
+             another default in the chat's Monitors dialog."
         );
         assert_eq!(
             local_calls.load(Ordering::SeqCst) + cloud_calls.load(Ordering::SeqCst),
@@ -3728,7 +3871,14 @@ mod tests {
         .await;
         assert_eq!(result.is_error, Some(true));
         let body = text(&result);
-        assert!(body.contains("test_decision/tev1"), "{body}");
+        // Plain words for the person on the card and the agent alike: the name
+        // as written, never in backticks, and the models it may use by where
+        // they run, never `provider/model`.
+        assert_eq!(
+            body,
+            "A decision model named gpt-giant is not set up. This chat may use tev1 on this \
+             computer."
+        );
         let unknown_bare = call(
             &client,
             &session,
@@ -3739,10 +3889,10 @@ mod tests {
         )
         .await;
         assert_eq!(unknown_bare.is_error, Some(true));
+        assert_eq!(text(&unknown_bare), body);
         assert!(
-            text(&unknown_bare).contains("test_decision/tev1"),
-            "{}",
-            text(&unknown_bare)
+            !body.contains('`') && !body.contains("test_decision"),
+            "{body}"
         );
     }
 
@@ -3815,6 +3965,48 @@ mod tests {
         )
         .await;
         assert_eq!(one.is_error, Some(false), "{}", text(&one));
+    }
+
+    /// A name two listed models answer to says where each runs only for a model
+    /// this chat may use: a refused model is named alone, so the refusal never
+    /// tells the chat where a model it may not reach is served.
+    #[tokio::test]
+    async fn an_ambiguous_name_says_where_only_the_usable_models_run() {
+        let usable = entry(
+            "twin",
+            ProviderTier::Private,
+            true,
+            DecisionAdapter::SystemOne,
+        );
+        let mut refused = entry(
+            "twin",
+            ProviderTier::Public,
+            false,
+            DecisionAdapter::SystemOne,
+        );
+        refused.provider = "baseten_decision".into();
+        // A private chat may not use a public model.
+        let (client, session) =
+            client_with(vec![model(usable, 0.9), model(refused, 0.9)], true).await;
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}},
+                   "chunks": [{"id": "a", "text": "x"}], "model": "twin"}),
+            enforced(),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true));
+        let body = text(&result);
+        assert!(
+            body.starts_with("twin names more than one decision model: ")
+                && body.contains("twin on this computer")
+                && !body.contains("on Baseten")
+                && body.contains("test_decision/twin")
+                && body.contains("baseten_decision/twin"),
+            "{body}"
+        );
     }
 
     #[tokio::test]
@@ -4589,7 +4781,9 @@ mod tests {
         let body = text(&result);
         assert_eq!(result.is_error, Some(true), "{body}");
         assert!(
-            body.contains("Nothing was decided: `escalate` names a model this call cannot use."),
+            body.starts_with(
+                "Nothing was decided: clef, the model to escalate to, can't be used in this chat."
+            ),
             "{body}"
         );
         assert!(body.contains("private"), "{body}");
@@ -5025,7 +5219,7 @@ mod tests {
             (json!({"escalate": {"model": " "}}), "needs `model`"),
             (
                 json!({"escalate": {"model": "gpt-giant"}}),
-                "not a decision model this computer offers",
+                "Nothing was decided. A decision model named gpt-giant is not set up.",
             ),
         ] {
             let result = call(&client, &session, "decide", ask(extra), enforced()).await;
