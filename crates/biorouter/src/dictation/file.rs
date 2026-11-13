@@ -348,13 +348,71 @@ async fn run(
         ));
     }
 
+    let Decoded {
+        retried,
+        pieces,
+        detected,
+    } = decode_queued(
+        supervisor,
+        &spec,
+        &whole,
+        &params,
+        stream,
+        queued,
+        &mut timings,
+    )
+    .await?;
+    timings.wall_ms = started.elapsed().as_millis() as u64;
+    let raw_text = text::filter_whole_output(&text::join(pieces.iter().map(|p| p.text.as_str())));
+    if raw_text.is_empty() {
+        let mut nothing = RecordingTranscript::nothing_heard(audio_ms, speech_ms, timings);
+        nothing.retried = retried;
+        return Ok(nothing);
+    }
+    Ok(RecordingTranscript {
+        text: raw_text.clone(),
+        raw_text,
+        segments: pieces,
+        no_speech: false,
+        retried,
+        audio_ms,
+        speech_ms,
+        timings,
+        language: main_language(&detected),
+    })
+}
+
+/// What [`decode_queued`] kept of a recording's decodes.
+struct Decoded {
+    /// The first reason a decode was retried, if one was.
+    retried: Option<RetryReason>,
+    /// Every piece with words, in recording order and times.
+    pieces: Vec<TimedText>,
+    /// The language each kept decode detected, with its segment's speech.
+    detected: Vec<(String, u64)>,
+}
+
+/// Awaits each queued decode of the recording in order, through the recognizer: the echo
+/// and collapse checks against the prompt that was sent, one unprompted retry on the
+/// retry stream (`stream + 1`) when it can change anything, a stripped recital kept as one
+/// piece, and only the pieces with words. A failed job answers its error at once, which
+/// drops every job still queued.
+async fn decode_queued(
+    supervisor: &Supervisor,
+    spec: &Arc<LoadSpec>,
+    whole: &PcmSlice,
+    params: &TranscribeParams,
+    stream: StreamKey,
+    queued: Vec<Queued>,
+    timings: &mut RecordingTimings,
+) -> Result<Decoded, DictationError> {
     let prompt_sent = !params.prompt_terms.is_empty();
     let mut retried = None;
     let mut pieces: Vec<TimedText> = Vec::new();
     let mut detected: Vec<(String, u64)> = Vec::new();
     for job in queued {
         let result = job.answer.await.unwrap_or(Err(SupervisorError::Stopped))?;
-        count(&mut timings, &result);
+        count(timings, &result);
         let sent = sent_prompt(&params.prompt_terms, result.prompt_terms_used);
         let assessment = echo::assess(&result.text, sent, job.speech_ms);
         let mut kept = Some(result);
@@ -368,13 +426,13 @@ async fn run(
                 ..params.clone()
             };
             let (_, answer) = supervisor.submit_transcribe(
-                Arc::clone(&spec),
+                Arc::clone(spec),
                 stream + 1,
                 whole.slice_ms(&job.range),
                 unprompted,
             );
             let again = answer.await.unwrap_or(Err(SupervisorError::Stopped))?;
-            count(&mut timings, &again);
+            count(timings, &again);
             // Judged against the prompt that was sent, as the first decode was: a term the
             // worker could not fit was never in the decoder's context, so the retry cannot
             // have recited it.
@@ -408,23 +466,10 @@ async fn run(
             });
         }
     }
-    timings.wall_ms = started.elapsed().as_millis() as u64;
-    let raw_text = text::filter_whole_output(&text::join(pieces.iter().map(|p| p.text.as_str())));
-    if raw_text.is_empty() {
-        let mut nothing = RecordingTranscript::nothing_heard(audio_ms, speech_ms, timings);
-        nothing.retried = retried;
-        return Ok(nothing);
-    }
-    Ok(RecordingTranscript {
-        text: raw_text.clone(),
-        raw_text,
-        segments: pieces,
-        no_speech: false,
+    Ok(Decoded {
         retried,
-        audio_ms,
-        speech_ms,
-        timings,
-        language: main_language(&detected),
+        pieces,
+        detected,
     })
 }
 

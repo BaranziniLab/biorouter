@@ -2111,28 +2111,38 @@ pub async fn interrupt(
                 }),
             ))
         }
+        Err(refused) => Err(steer_refused(&state, &session_id, phase, refused)),
+    }
+}
+
+/// The 409 for a steer the agent's queue refused (#69), logged with the loop `phase` it
+/// met. `TurnEnded` says whether another turn is already running (`not_accepting_yet`)
+/// or none is (`no_turn`); `TurnClosing` says the turn is ending.
+fn steer_refused(
+    state: &AppState,
+    session_id: &str,
+    phase: biorouter::agents::loop_phase::LoopPhase,
+    refused: InterruptRefused,
+) -> axum::response::Response {
+    match refused {
         // #69: the turn the caller addressed has ended. Refusing is the honest
         // answer — queueing for whatever runs next is the bug this replaces.
-        Err(InterruptRefused::TurnEnded) => {
-            let reason = if state.is_turn_active(&session_id) {
+        InterruptRefused::TurnEnded => {
+            let reason = if state.is_turn_active(session_id) {
                 InterruptRefusalReason::NotAcceptingYet
             } else {
                 InterruptRefusalReason::NoTurn
             };
             tracing::info!(session_id, phase = phase.as_str(), ?reason, "steer_refused");
-            Err(interrupt_conflict(&state, &session_id, reason))
+            interrupt_conflict(state, session_id, reason)
         }
-        Err(InterruptRefused::TurnClosing) => {
+        InterruptRefused::TurnClosing => {
             tracing::info!(
                 session_id,
                 phase = phase.as_str(),
                 "steer_refused turn_closing"
             );
-            Err(interrupt_conflict(
-                &state,
-                &session_id,
-                InterruptRefusalReason::TurnClosing,
-            ))
+            interrupt_conflict(state, session_id, InterruptRefusalReason::TurnClosing)
         }
     }
 }

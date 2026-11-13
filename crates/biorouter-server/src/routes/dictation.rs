@@ -1321,9 +1321,7 @@ async fn decode(
         decode: None,
     };
     let prompt = dictionary.prompt_terms();
-    let mut wait_ms = 0;
-    let mut tail_ms = 0;
-    let mut tail_audio_s = 0.0;
+    let mut clock = TailClock::default();
     while let Some(job) = jobs.next().await {
         if stream.closed.load(Ordering::SeqCst) {
             return;
@@ -1334,43 +1332,7 @@ async fn decode(
             let _ = prepared.wait_for(|ready| *ready).await;
         }
         let started = Instant::now();
-        let result = match job {
-            Job::Segment {
-                pcm,
-                offset_ms,
-                speech_ms,
-            } => {
-                let length_ms = (pcm.len() as u64) / SAMPLES_PER_MS;
-                let decoded = service::service()
-                    .decode_segment(
-                        stream.spec.clone(),
-                        stream.key,
-                        PcmSlice::whole(pcm.shared()),
-                        Some(speech_ms),
-                        &request,
-                    )
-                    .await;
-                drop(pcm);
-                decoded.map(|d| vec![(offset_ms, length_ms, d)])
-            }
-            Job::Tail {
-                pcm,
-                offset_ms,
-                rate,
-                open_speech_ms,
-            } => {
-                if let Some(finish_at) = stream.inner().finish_at {
-                    wait_ms = started.saturating_duration_since(finish_at).as_millis() as u64;
-                }
-                let tail =
-                    decode_tail(&stream, &request, pcm, offset_ms, rate, open_speech_ms).await;
-                tail_ms = started.elapsed().as_millis() as u64;
-                if let Ok((_, audio_ms)) = &tail {
-                    tail_audio_s = *audio_ms as f64 / 1000.0;
-                }
-                tail.map(|(decoded, _)| decoded)
-            }
-        };
+        let result = decode_job(&stream, &request, job, started, &mut clock).await;
         let mut inner = stream.inner();
         stream.job_done(&mut inner);
         match result {
@@ -1391,22 +1353,7 @@ async fn decode(
             }
             Err(DictationError::Cancelled) => return,
             Err(error) => {
-                tracing::info!(stream = %stream.log_id, "dictation stream failed");
-                let refusal = refusal_of(&error, None);
-                // The jobs still queued will never run: they stop counting now, so the
-                // stream can expire and the daemon's queue is not held by it, and they
-                // are dropped with the queue when this returns, their audio zeroed. The
-                // stream takes no more audio: every later chunk answers this refusal.
-                if let Some(shared) = stream.shared.upgrade() {
-                    shared.queued.fetch_sub(inner.pending, Ordering::SeqCst);
-                }
-                inner.pending = 0;
-                inner.jobs = None;
-                inner.wipe();
-                inner.wipe_text();
-                drop(inner);
-                stream.cancel.cancel();
-                stream.outcome.send_replace(Some(Arc::new(Err(refusal))));
+                fail_stream(&stream, inner, &error);
                 return;
             }
         }
@@ -1418,6 +1365,122 @@ async fn decode(
     if !inner.finishing {
         return;
     }
+    let transcript = transcript_of(&stream, &inner, &dictionary, &prompt, clock);
+    // P-1: the audio goes as soon as the transcript is ready.
+    inner.wipe();
+    inner.wipe_text();
+    drop(inner);
+    tracing::info!(
+        stream = %stream.log_id,
+        target_kind = stream.target_kind.as_str(),
+        bias_scope = dictionary.scope().as_str(),
+        model = %stream.model,
+        audio_ms = (transcript.audio_s * 1000.0) as u64,
+        segments = transcript.timings.segments,
+        stop_to_text_ms = transcript.elapsed_ms,
+        wait_ms = clock.wait_ms,
+        tail_ms = clock.tail_ms,
+        "dictation stream transcribed"
+    );
+    stream.outcome.send_replace(Some(Arc::new(Ok(transcript))));
+    if stream.closed.load(Ordering::SeqCst) {
+        // A `DELETE` or the expiry crossed the answer: the transcript goes as the close
+        // would have taken it.
+        stream.retire_outcome();
+    }
+}
+
+/// What the tail at stop cost, for the transcript's timings: the wait for a load still
+/// running at stop, the tail's own decode, and the tail's audio. All zero until the tail
+/// is decoded.
+#[derive(Clone, Copy, Default)]
+struct TailClock {
+    wait_ms: u64,
+    tail_ms: u64,
+    tail_audio_s: f64,
+}
+
+/// One job of [`decode`] on the shared worker: a closed segment, or the tail at stop,
+/// whose wait (from the stop to `started`), decode time and audio length go into
+/// `clock`. Answers the decoded segments with their offsets and lengths; the job's copy of
+/// the audio is dropped, and so zeroed, on every return.
+async fn decode_job(
+    stream: &LiveStream,
+    request: &TranscribeRequest,
+    job: Job,
+    started: Instant,
+    clock: &mut TailClock,
+) -> Result<Vec<(u64, u64, service::SegmentDecode)>, DictationError> {
+    match job {
+        Job::Segment {
+            pcm,
+            offset_ms,
+            speech_ms,
+        } => {
+            let length_ms = (pcm.len() as u64) / SAMPLES_PER_MS;
+            let decoded = service::service()
+                .decode_segment(
+                    stream.spec.clone(),
+                    stream.key,
+                    PcmSlice::whole(pcm.shared()),
+                    Some(speech_ms),
+                    request,
+                )
+                .await;
+            drop(pcm);
+            decoded.map(|d| vec![(offset_ms, length_ms, d)])
+        }
+        Job::Tail {
+            pcm,
+            offset_ms,
+            rate,
+            open_speech_ms,
+        } => {
+            if let Some(finish_at) = stream.inner().finish_at {
+                clock.wait_ms = started.saturating_duration_since(finish_at).as_millis() as u64;
+            }
+            let tail = decode_tail(stream, request, pcm, offset_ms, rate, open_speech_ms).await;
+            clock.tail_ms = started.elapsed().as_millis() as u64;
+            if let Ok((_, audio_ms)) = &tail {
+                clock.tail_audio_s = *audio_ms as f64 / 1000.0;
+            }
+            tail.map(|(decoded, _)| decoded)
+        }
+    }
+}
+
+/// A decode of `stream` failed with `error`: its queued jobs stop counting, its audio and
+/// text are wiped, its decodes are cancelled, and the failure becomes its outcome. Takes
+/// the stream's lock as [`decode`] held it, and releases it before the cancel.
+fn fail_stream(stream: &LiveStream, mut inner: MutexGuard<'_, Inner>, error: &DictationError) {
+    tracing::info!(stream = %stream.log_id, "dictation stream failed");
+    let refusal = refusal_of(error, None);
+    // The jobs still queued will never run: they stop counting now, so the
+    // stream can expire and the daemon's queue is not held by it, and they
+    // are dropped with the queue when the decoder returns, right after this, their audio
+    // zeroed. The stream takes no more audio: every later chunk answers this refusal.
+    if let Some(shared) = stream.shared.upgrade() {
+        shared.queued.fetch_sub(inner.pending, Ordering::SeqCst);
+    }
+    inner.pending = 0;
+    inner.jobs = None;
+    inner.wipe();
+    inner.wipe_text();
+    drop(inner);
+    stream.cancel.cancel();
+    stream.outcome.send_replace(Some(Arc::new(Err(refusal))));
+}
+
+/// The transcript of a finished `stream` from the pieces its decodes left in `inner`,
+/// corrected by its `dictionary` against the `prompt` it sent, with the tail's `clock`.
+/// Reads `inner` only; the caller wipes it once the transcript is built.
+fn transcript_of(
+    stream: &LiveStream,
+    inner: &Inner,
+    dictionary: &DictionaryRequest,
+    prompt: &[String],
+    clock: TailClock,
+) -> DictationTranscript {
     let raw_text =
         text::filter_whole_output(&text::join(inner.pieces.iter().map(|p| p.text.as_str())));
     let audio_s = inner.pcm.len() as f64 / f64::from(stream.rate);
@@ -1429,11 +1492,11 @@ async fn decode(
     let (text, changes, segments) = if raw_text.is_empty() {
         (String::new(), Vec::new(), Vec::new())
     } else {
-        let corrected = dictionary.correct(&raw_text, &prompt);
+        let corrected = dictionary.correct(&raw_text, prompt);
         let segments = inner
             .pieces
             .iter()
-            .map(|p| segment(p, dictionary.correct_piece(&p.text, &prompt)))
+            .map(|p| segment(p, dictionary.correct_piece(&p.text, prompt)))
             .collect();
         let changes = corrected
             .changes
@@ -1452,7 +1515,7 @@ async fn decode(
     let elapsed_ms = inner
         .finish_at
         .map_or(0, |at| at.elapsed().as_millis() as u64);
-    let transcript = DictationTranscript {
+    DictationTranscript {
         no_speech: raw_text.is_empty(),
         dictionary_only: (stream.target_kind == DictationTargetKind::External)
             .then(|| dictionary.eligible.dictionary_only(&text)),
@@ -1469,32 +1532,10 @@ async fn decode(
         }),
         timings: DictationTranscriptTimings {
             segments: inner.segments_decoded,
-            wait_ms,
-            tail_ms,
-            tail_audio_s,
+            wait_ms: clock.wait_ms,
+            tail_ms: clock.tail_ms,
+            tail_audio_s: clock.tail_audio_s,
         },
-    };
-    // P-1: the audio goes as soon as the transcript is ready.
-    inner.wipe();
-    inner.wipe_text();
-    drop(inner);
-    tracing::info!(
-        stream = %stream.log_id,
-        target_kind = stream.target_kind.as_str(),
-        bias_scope = dictionary.scope().as_str(),
-        model = %stream.model,
-        audio_ms = (audio_s * 1000.0) as u64,
-        segments = transcript.timings.segments,
-        stop_to_text_ms = elapsed_ms,
-        wait_ms,
-        tail_ms,
-        "dictation stream transcribed"
-    );
-    stream.outcome.send_replace(Some(Arc::new(Ok(transcript))));
-    if stream.closed.load(Ordering::SeqCst) {
-        // A `DELETE` or the expiry crossed the answer: the transcript goes as the close
-        // would have taken it.
-        stream.retire_outcome();
     }
 }
 
@@ -2077,51 +2118,7 @@ async fn open_stream(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<DictationStreamCreated, Refusal> {
     let request: DictationStreamRequest = json_body(body)?;
-    let policy = ManagedPolicy::load().dictation().clone();
-    if !policy.enabled.is_allowed() {
-        return Err(Refusal::policy(policy.enabled.allowance()));
-    }
-    if !policy.capture.is_allowed() {
-        return Err(Refusal::policy(policy.capture.allowance()));
-    }
-    if let Some(error) = service::spawn_refusal() {
-        return Err(refusal_of(&error, None));
-    }
-    if request.format != "s16le" || !SAMPLE_RATES.contains(&request.sample_rate) {
-        return Err(Refusal::bad_request());
-    }
-    if request.context.as_ref().map_or(0, String::len) > MAX_CONTEXT_BYTES {
-        return Err(Refusal::too_large());
-    }
-    let streams = &state.dictation;
-    if let Some(refusal) = streams.admission_refusal() {
-        return Err(refusal);
-    }
-    let language = request
-        .language
-        .as_deref()
-        .map(|l| service::language_setting(Some(l.to_string())))
-        .unwrap_or_else(service::configured_language);
-    let spec = match service::service().resolve_for(None, Some(&language)).await {
-        Ok(spec) => spec,
-        Err(error) => {
-            let reason = install_allowance(
-                &policy,
-                CATALOG.default_for(service::host_class()).map(|e| e.id),
-                headers,
-            )
-            .reason;
-            return Err(refusal_of(&error, reason));
-        }
-    };
-    let model = service::model_id(&spec);
-    if let Some(short) = service::memory_refusal(&spec, &model) {
-        return Err(Refusal::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "serverMemory",
-            short.to_string(),
-        ));
-    }
+    let (language, spec, model) = admit_stream(state, headers, &request).await?;
 
     // The model loads while the person speaks, started before anything else here so no
     // decision below delays it. The tail waits for it before its clock starts, so a load
@@ -2134,6 +2131,7 @@ async fn open_stream(
         prepared_tx.send_replace(true);
     });
 
+    let streams = &state.dictation;
     let id = new_stream_id();
     let log_id = log_id_of(&id);
     // DD-30's target and the dictionary it admits, beside the model load and after the
@@ -2197,6 +2195,64 @@ async fn open_stream(
         idle_timeout_s: streams.limits().idle.as_secs(),
         max_seconds: MAX_STREAM_SECONDS,
     })
+}
+
+/// The checks a new stream passes before anything starts, in this order: managed policy
+/// (dictation, then live capture), the engine, the format and the context's size, the
+/// daemon's admission limits, then the model for the stream's language and the memory to
+/// load it. Answers the language, the model's load spec and its id. The model's load, the
+/// stream and its target decision all start after this answers.
+async fn admit_stream(
+    state: &AppState,
+    headers: &HeaderMap,
+    request: &DictationStreamRequest,
+) -> Result<(String, LoadSpec, String), Refusal> {
+    let policy = ManagedPolicy::load().dictation().clone();
+    if !policy.enabled.is_allowed() {
+        return Err(Refusal::policy(policy.enabled.allowance()));
+    }
+    if !policy.capture.is_allowed() {
+        return Err(Refusal::policy(policy.capture.allowance()));
+    }
+    if let Some(error) = service::spawn_refusal() {
+        return Err(refusal_of(&error, None));
+    }
+    if request.format != "s16le" || !SAMPLE_RATES.contains(&request.sample_rate) {
+        return Err(Refusal::bad_request());
+    }
+    if request.context.as_ref().map_or(0, String::len) > MAX_CONTEXT_BYTES {
+        return Err(Refusal::too_large());
+    }
+    let streams = &state.dictation;
+    if let Some(refusal) = streams.admission_refusal() {
+        return Err(refusal);
+    }
+    let language = request
+        .language
+        .as_deref()
+        .map(|l| service::language_setting(Some(l.to_string())))
+        .unwrap_or_else(service::configured_language);
+    let spec = match service::service().resolve_for(None, Some(&language)).await {
+        Ok(spec) => spec,
+        Err(error) => {
+            let reason = install_allowance(
+                &policy,
+                CATALOG.default_for(service::host_class()).map(|e| e.id),
+                headers,
+            )
+            .reason;
+            return Err(refusal_of(&error, reason));
+        }
+    };
+    let model = service::model_id(&spec);
+    if let Some(short) = service::memory_refusal(&spec, &model) {
+        return Err(Refusal::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "serverMemory",
+            short.to_string(),
+        ));
+    }
+    Ok((language, spec, model))
 }
 
 /// One chunk into `stream`, as `PUT` and `finish` take it. `segment` is false for the tail
@@ -2588,33 +2644,7 @@ async fn start_install(
     options.progress = Some(progress_tx);
     options.cancel = cancel;
     let streams = Arc::clone(&state.dictation);
-    tokio::spawn(async move {
-        let result = models::install_files(&target, &files, &options).await;
-        drop(options);
-        match result {
-            Ok(outcomes) => {
-                tracing::info!(
-                    model = job.model,
-                    elapsed_ms = job.started.elapsed().as_millis() as u64,
-                    "dictation model installed"
-                );
-                *lock(&job.outcome) = Some(Ok(()));
-                // The first load after an install compiles the model's Metal pipelines,
-                // 3.0 to 4.2 s [M]; the warm up pays that now, not at the first stop.
-                if outcomes.iter().any(|o| o.id == job.model && o.downloaded) {
-                    warm_up_in_background(vec![job.model], "install", &streams);
-                }
-            }
-            Err(error) => {
-                let message = match error {
-                    models::InstallError::Offline => biorouter::dictation::msg_offline(&target),
-                    other => other.to_string(),
-                };
-                tracing::info!(model = job.model, "dictation model install stopped");
-                *lock(&job.outcome) = Some(Err(message));
-            }
-        }
-    });
+    tokio::spawn(run_install(job, target, files, options, streams));
     Ok((
         StatusCode::ACCEPTED,
         DictationInstallStarted {
@@ -2622,6 +2652,43 @@ async fn start_install(
             phase: DictationInstallPhase::Downloading,
         },
     ))
+}
+
+/// The install [`start_install`] admitted, on a task of its own: fetches `files` into
+/// `target`, records the outcome on `job` for the status, and warms the model up when it
+/// was downloaded.
+async fn run_install(
+    job: Arc<InstallJob>,
+    target: std::path::PathBuf,
+    files: Vec<&'static SttCatalogEntry>,
+    options: InstallOptions,
+    streams: Arc<DictationStreams>,
+) {
+    let result = models::install_files(&target, &files, &options).await;
+    drop(options);
+    match result {
+        Ok(outcomes) => {
+            tracing::info!(
+                model = job.model,
+                elapsed_ms = job.started.elapsed().as_millis() as u64,
+                "dictation model installed"
+            );
+            *lock(&job.outcome) = Some(Ok(()));
+            // The first load after an install compiles the model's Metal pipelines,
+            // 3.0 to 4.2 s [M]; the warm up pays that now, not at the first stop.
+            if outcomes.iter().any(|o| o.id == job.model && o.downloaded) {
+                warm_up_in_background(vec![job.model], "install", &streams);
+            }
+        }
+        Err(error) => {
+            let message = match error {
+                models::InstallError::Offline => biorouter::dictation::msg_offline(&target),
+                other => other.to_string(),
+            };
+            tracing::info!(model = job.model, "dictation model install stopped");
+            *lock(&job.outcome) = Some(Err(message));
+        }
+    }
 }
 
 #[utoipa::path(
