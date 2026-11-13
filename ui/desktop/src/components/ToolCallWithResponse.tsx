@@ -976,11 +976,12 @@ const sidecarIdCount = (value: unknown): number =>
       : 0;
 
 /**
- * What the ride-along `todo` field of a real call did to the checklist, as the
- * row's muted meta ("Completing 2 tasks, adding 1 task"), or null when the call
- * carries none. The agent strips the field before the tool runs and applies it
- * afterwards (`todo_extension::apply_todo_sidecar`), so without this a person
- * would see the checklist move with no row saying why.
+ * What the ride-along `todo` field of a real call asks of the checklist
+ * ("Completing 2 tasks, adding 1 task"), or null when the call carries none.
+ * The agent strips the field before the tool runs and applies it only once the
+ * call succeeded (`apply_sidecar_after_success` in `agents/agent.rs`), so without
+ * this a person would see the checklist move with no row saying why. The row
+ * shows it through {@link todoSidecarMeta}, which knows how the call ended.
  */
 export const summarizeTodoSidecar = (args: Record<string, unknown> | undefined): string | null => {
   let sidecar: unknown = args?.todo;
@@ -1009,6 +1010,26 @@ export const summarizeTodoSidecar = (args: Record<string, unknown> | undefined):
   if (parts.length === 0) return null;
   const phrase = parts.join(', ');
   return phrase.charAt(0).toUpperCase() + phrase.slice(1);
+};
+
+/** The row's meta for a failed call whose `todo` field the agent therefore dropped. */
+export const TODO_SIDECAR_NOT_APPLIED = 'Checklist not updated';
+
+/**
+ * The row's checklist meta, by how the call ended. A failed or refused call
+ * leaves the checklist as it was (the agent tells the model the update was not
+ * applied), so only a call that succeeded says what it did to the checklist, a
+ * failed one says it was not updated, and one still running or stopped without
+ * an answer says nothing about the checklist yet.
+ */
+export const todoSidecarMeta = (
+  args: Record<string, unknown> | undefined,
+  status: ToolLoadingStatus
+): string | null => {
+  const summary = summarizeTodoSidecar(args);
+  if (!summary) return null;
+  if (status === 'success') return summary;
+  return status === 'error' ? TODO_SIDECAR_NOT_APPLIED : null;
 };
 
 const summarizeExtensionManagerCall = (
@@ -1779,7 +1800,7 @@ function ToolCallView({
   const metaParts = [
     liveDetail,
     decideMeta,
-    summarizeTodoSidecar(toolCall.arguments),
+    todoSidecarMeta(toolCall.arguments, loadingStatus),
     providerExecution === 'child' ? TOOL_ROW_COPY.notGated : null,
   ]
     .filter((part): part is string => Boolean(part))

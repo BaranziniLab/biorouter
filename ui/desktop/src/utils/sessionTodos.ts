@@ -115,8 +115,8 @@ export function withDerivedActiveItem(items: readonly TodoItem[]): TodoItem[] {
  * The argument the backend adds to its workhorse tools' schemas
  * (`todo_extension::TODO_SIDECAR_FIELD`) so checklist progress rides on a real
  * call. The agent strips it before the tool runs and applies it to the
- * checklist afterwards, so a request carrying one changed the persisted list
- * without any `todo__*` request in the transcript.
+ * checklist once the call succeeded, so a request carrying one changed the
+ * persisted list without any `todo__*` request in the transcript.
  */
 const TODO_SIDECAR_FIELD = 'todo';
 
@@ -194,10 +194,11 @@ function executedTodoMutations(resultValue: unknown): number {
  * Only acknowledged mutations invalidate the persisted checklist, never proposed arguments.
  *
  * A request carrying the ride-along `todo` field counts once ANY response for it
- * exists, success or failure: the agent applies the field after the call is
- * dispatched whatever the tool answered, so a failed script can still have
- * moved the checklist. A refetch that finds nothing changed costs one metadata
- * read.
+ * exists, success or failure. The agent applies the field only after the call
+ * succeeded (`apply_sidecar_after_success` in `agents/agent.rs`), so a failed
+ * call never moved the checklist; it is counted anyway because telling the two
+ * apart here buys nothing, and a refetch that finds nothing changed costs one
+ * metadata read.
  */
 export function todoMutationRevision(messages: readonly Message[]): string {
   const requests = new Set<string>();

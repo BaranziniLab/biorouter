@@ -44,8 +44,18 @@ export function limitSourceReading(state: SessionUsageLimitResponse): string {
   return state.chatOverride?.mode === 'unlimited' ? COPY.source.unlimited : COPY.source.none;
 }
 
-/** "$1.20 of $5.00 used · 12,000 of 500,000 tokens used", or what has been used with no limit. */
-export function chatUsedReading(state: SessionUsageLimitResponse, showCosts: boolean): string {
+/**
+ * "This chat and its subagents: $1.20 of $5.00 used · 12,000 of 500,000 tokens used", or what has
+ * been used with no limit. The daemon counts a chat's limit over the chat and every subagent it
+ * started, while the card's cost above counts the chat's own requests only, so the line names
+ * what it counts: the two figures differ by the subagents' share. `ownChat` is false in a
+ * subagent's chat, whose line is its parent's.
+ */
+export function chatUsedReading(
+  state: SessionUsageLimitResponse,
+  showCosts: boolean,
+  ownChat = true
+): string {
   const { limit, used } = state;
   const parts: string[] = [];
   if (showCosts && limit.maxUsd != null && used.chatUsd != null) {
@@ -54,8 +64,9 @@ export function chatUsedReading(state: SessionUsageLimitResponse, showCosts: boo
   if (limit.maxTokens != null) {
     parts.push(COPY.usedTokens(used.chatTokens, limit.maxTokens));
   }
-  if (parts.length === 0) return COPY.usedOnly(formatLimitTokens(used.chatTokens));
-  return parts.join(' · ');
+  const reading =
+    parts.length === 0 ? COPY.usedOnly(formatLimitTokens(used.chatTokens)) : parts.join(' · ');
+  return ownChat ? COPY.chatUsed(reading) : COPY.parentUsed(reading);
 }
 
 /**
@@ -267,7 +278,7 @@ export function UsageLimitSection({
           {limitReading(state.limit)}
         </FooterCardValue>
         <FooterCardDetail>{limitSourceReading(state)}</FooterCardDetail>
-        <FooterCardDetail>{chatUsedReading(state, showCosts)}</FooterCardDetail>
+        <FooterCardDetail>{chatUsedReading(state, showCosts, ownChat)}</FooterCardDetail>
         {monthLine && <FooterCardDetail>{monthLine}</FooterCardDetail>}
 
         {state.paused && (

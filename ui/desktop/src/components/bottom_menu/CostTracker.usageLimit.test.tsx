@@ -185,6 +185,51 @@ describe('the cost item with a usage limit to manage', () => {
     expect(section).toHaveTextContent('$1.20 of $5.00 used');
   });
 
+  it('says the used amount counts the chat and its subagents, where the cost above counts the chat alone', async () => {
+    // The chat's own rows cost $1.20; with its subagents the limit has counted $4.00.
+    mocks.getLimit.mockResolvedValue({
+      data: limitState({
+        limit: { maxTokens: null, maxUsd: 5, source: 'default' },
+        defaults: { maxTokens: null, maxUsd: 5 },
+        used: { ...limitState().used, chatUsd: 4 },
+      }),
+    });
+    const { unmount } = render(<Harness modelCostRows={[pricedRow]} />);
+    let dialog = await openCard(await screen.findByTestId('chat-cost'));
+    expect(dialog).toHaveTextContent('Cost of this chat');
+    let section = within(dialog).getByTestId('usage-limit-section');
+    await waitFor(() =>
+      expect(
+        within(section).getByText(USAGE_LIMIT_COPY.chatUsed('$4.00 of $5.00 used'))
+      ).toBeInTheDocument()
+    );
+    expect(USAGE_LIMIT_COPY.chatUsed('$4.00 of $5.00 used')).toBe(
+      'This chat and its subagents: $4.00 of $5.00 used'
+    );
+    unmount();
+
+    // With no limit set, what was used still says whose it is.
+    mocks.getLimit.mockResolvedValue({ data: limitState() });
+    const second = render(<Harness modelCostRows={[]} />);
+    dialog = await openCard(usageTrigger());
+    section = within(dialog).getByTestId('usage-limit-section');
+    await waitFor(() =>
+      expect(section).toHaveTextContent('This chat and its subagents: 12,000 tokens used')
+    );
+    second.unmount();
+
+    // A subagent's chat shows its parent's count, and says so.
+    mocks.getLimit.mockResolvedValue({ data: limitState({ billingSessionId: 'parent' }) });
+    render(<Harness modelCostRows={[]} />);
+    dialog = await openCard(usageTrigger());
+    section = within(dialog).getByTestId('usage-limit-section');
+    await waitFor(() =>
+      expect(section).toHaveTextContent(
+        'The chat that started this one, with its subagents: 12,000 tokens used'
+      )
+    );
+  });
+
   it('sets this chat’s limit in dollars for a priced model, through the client, with the proof', async () => {
     const user = userEvent.setup();
     mocks.putLimit.mockResolvedValue({
