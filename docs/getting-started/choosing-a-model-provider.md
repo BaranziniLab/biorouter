@@ -517,7 +517,7 @@ You can also specify provider and model on a per-session or per-workflow basis w
 
 Biorouter supports routing tasks across multiple models:
 
-- **Default worker model** — The chat's model leads, and the subagents it starts run on a default worker model you choose (potentially a different provider), unless the agent names another. See [Model control](../agent-loop/subagents.md#model-control).
+- **Default worker model**: the chat's model leads, and the subagents it starts run on a default worker model you choose (potentially a different provider), unless the agent names another. See [Model control](../agent-loop/subagents.md#model-control).
 - **Per-workflow model override** — A workflow can specify `settings.biorouter_provider` and `settings.biorouter_model` to use a different model for that workflow without changing your default.
 - **Per-session override** — The CLI supports `--provider` and `--model` flags when starting a session.
 

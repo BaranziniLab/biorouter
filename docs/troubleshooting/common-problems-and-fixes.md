@@ -557,7 +557,7 @@ Still running into issues? [Open an issue on GitHub][github-issues] where the bi
 - [Diagnostics and bug reports](diagnostics-and-bug-reports.md) — how to generate the bundle every issue report should carry, and where to file the report.
 - [Installation](../getting-started/installation.md) — the install and reinstall path several fixes above end in.
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — provider setup, including Ollama and its current default models.
-- [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_DISABLE_KEYRING`, `BIOROUTER_TERMINAL`, the default worker model, and provider retry tuning.
+- [Environment variables](../configuration/environment-variables.md): `BIOROUTER_DISABLE_KEYRING`, `BIOROUTER_TERMINAL`, the default worker model, and provider retry tuning.
 - [Secret storage](../security/secret-storage.md) — what biorouter puts in the system keychain and how the plaintext fallback works.
 
 [github-issues]: https://github.com/BaranziniLab/biorouter/issues
