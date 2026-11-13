@@ -31,9 +31,13 @@ biorouter-dictation = { path = "../biorouter-dictation", optional = true, featur
 # and they add 1,115,736 B to a stripped Linux x86_64 probe built in the release image and
 # 1,081,624 B to a macOS x86_64 one [M]; the size ceilings that hold `biorouter` are
 # `dictation_size_ceiling` in scripts/smoke-test-release-artifacts.sh.
-# Opus (symphonia 0.5 has no decoder), WebM, and Apple Lossless (ALAC, not in O-39) are
-# refused with an `ffmpeg` line that converts them.
-symphonia = { version = "0.5.5", optional = true, default-features = false, features = ["wav", "pcm", "aiff", "flac", "mp3", "aac", "isomp4", "vorbis", "ogg"] }
+# Apple Lossless (ALAC) in an M4A, which Voice Memos writes when set to Lossless, joined on
+# 2026-11-13 (O-41, decided by the owner), adding 11,924 B of code and data to the stripped
+# release `biorouter` on macOS arm64, 96 B of file size because it fit in the segments' page
+# padding [M].
+# Opus (symphonia 0.5 has no decoder) and WebM are refused with an `ffmpeg` line that
+# converts them.
+symphonia = { version = "0.5.5", optional = true, default-features = false, features = ["wav", "pcm", "aiff", "flac", "mp3", "aac", "isomp4", "vorbis", "ogg", "alac"] }
 # The terminal's microphone (PR-25, DD-5, DD-73): the child side of
 # `biorouter __br-dictation-worker capture`, over the vendored miniaudio. Only this crate
 # depends on it, so `biorouterd` never links capture code (P-10).

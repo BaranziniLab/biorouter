@@ -1461,27 +1461,29 @@ fn encode(dir: &Path, source: &Path, name: &str, codec: &[&str]) -> PathBuf {
 #[cfg(feature = "dictation")]
 const ADTS_EXTRA_SAMPLES: f64 = 2_112.0 + 1_024.0;
 
-/// The compressed kinds `transcribe` reads (DD-78, O-39), each as `ffmpeg` writes it,
-/// with the codec arguments and whether it is ADTS: MP3, AAC in an MP4 file (`.m4a`) and
-/// in ADTS (`.aac`), Ogg Vorbis (ffmpeg's own encoder, which Homebrew's build carries
+/// The compressed kinds `transcribe` reads (DD-78, O-39, O-41), each as `ffmpeg` writes
+/// it, with the codec arguments and whether it is ADTS: MP3, AAC in an MP4 file (`.m4a`)
+/// and in ADTS (`.aac`), Apple Lossless in an MP4 file, Ogg Vorbis (ffmpeg's own encoder, which Homebrew's build carries
 /// where libvorbis is missing, and which takes stereo only) and FLAC in Ogg.
 #[cfg(feature = "dictation")]
-const COMPRESSED: [(&str, &[&str], bool); 5] = [
+const COMPRESSED: [(&str, &[&str], bool); 6] = [
     ("tone.mp3", &["libmp3lame"], false),
     ("tone.m4a", &["aac"], false),
+    ("lossless.m4a", &["alac"], false),
     ("tone.aac", &["aac", "-f", "adts"], true),
     ("tone.ogg", &["vorbis", "-strict", "-2", "-ac", "2"], false),
     ("tone.oga", &["flac", "-f", "ogg"], false),
 ];
 
-/// MP3, M4A, AAC and Ogg Vorbis, which no test process can encode, through `ffmpeg` (the
+/// MP3, M4A (AAC and Apple Lossless), AAC and Ogg Vorbis, which no test process can
+/// encode, through `ffmpeg` (the
 /// accuracy workflow installs it), beside the committed encoder output that the default
 /// tests in `decode.rs` read. A 44.1 kHz stereo tone of 3 s decodes to 16 kHz mono
 /// within 1 % of its length from each, from a file and from standard input: gapless
 /// decoding trims the encoder's delay and padding (MP3's LAME header, Ogg's granule
 /// positions, the M4A's edit list), which on this tone were 1 % of it otherwise [M]; ADTS
-/// keeps its priming ([`ADTS_EXTRA_SAMPLES`]). Opus (in Ogg), WebM and Apple Lossless (in
-/// an M4A) are refused with the `ffmpeg` line, each named.
+/// keeps its priming ([`ADTS_EXTRA_SAMPLES`]). Opus (in Ogg) and WebM are refused with
+/// the `ffmpeg` line, each named; Apple Lossless decodes since O-41.
 #[cfg(feature = "dictation")]
 #[test]
 #[ignore = "needs ffmpeg"]
@@ -1551,7 +1553,6 @@ fn mp3_m4a_aac_and_ogg_decode_to_the_expected_length() {
         ("tone.opus", &["libopus"][..], "Opus"),
         ("voice.ogg", &["libopus", "-f", "ogg"][..], "Opus"),
         ("talk.webm", &["libopus"][..], "WebM"),
-        ("lossless.m4a", &["alac"][..], "Apple Lossless"),
     ] {
         let encoded = encode(dir.path(), &source, name, codec);
         let refused = DecodeError::UnsupportedFormat {

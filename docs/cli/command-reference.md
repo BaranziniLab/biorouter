@@ -344,7 +344,7 @@ biorouter dictate --format json --no-review
 
 ### transcribe [options] `<FILE|->`
 
-Transcribe a recording on this computer with the local engine and your personal dictionary, and print the text. Nothing leaves the computer. It reads WAV (any rate, depth and channel count), AIFF, FLAC, MP3, M4A and MP4 audio (AAC), raw AAC (ADTS) and Ogg (Vorbis or FLAC), or `-` for standard input, so a phone's or a Mac's voice memo needs no conversion; Opus, WebM and Apple Lossless are refused with an `ffmpeg` line that converts the file to WAV first. A recording may be up to 2 hours long, and standard input up to 200 MB. The command runs in cron, scripts, Docker and an agent's shell alike; in an agent's shell it uses only your public dictionary terms and records no use of them.
+Transcribe a recording on this computer with the local engine and your personal dictionary, and print the text. Nothing leaves the computer. It reads WAV (any rate, depth and channel count), AIFF, FLAC, MP3, M4A and MP4 audio (AAC or Apple Lossless), raw AAC (ADTS) and Ogg (Vorbis or FLAC), or `-` for standard input, so a phone's or a Mac's voice memo needs no conversion, a Lossless one included; Opus and WebM are refused with an `ffmpeg` line that converts the file to WAV first. A recording may be up to 2 hours long, and standard input up to 200 MB. The command runs in cron, scripts, Docker and an agent's shell alike; in an agent's shell it uses only your public dictionary terms and records no use of them.
 
 **Options:**
 

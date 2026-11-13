@@ -258,13 +258,23 @@ LINUX_DESKTOP_SMOKE="$ROOT/scripts/smoke-linux-desktop.sh"
 # take, already holds them. Replace an inferred leg with a measured one, and its slack with
 # 1 MiB, from the first CI cross build of these binaries. A pull request that grows other
 # code raises its ceiling here, in the same change, and says why.
+#
+# Re-measured 2026-11-13, before #485 merged, on main through #486 merged into this branch
+# with O-41's Apple Lossless decoder: the stripped release builds on macOS arm64 were
+# 183,819,696 B (biorouter) and 173,710,224 B (biorouterd), +19,769,876 B and +19,255,784 B
+# over v1.94.1 unsigned [M]. The PR-12b lines above had been passed by about 5.7 MB and
+# 6.9 MB, by this branch's later pull requests (PR-13 to PR-33) and by main's own growth
+# since v1.94.1, so a release would have failed here; the arm64 lines take the new growth,
+# and the inferred legs its part outside PR-09's spike (more_cli, more_daemon). The ALAC
+# decoder itself adds 11,924 B of sections to biorouter, 96 B of file size because it fit
+# in the segments' page padding.
 dictation_size_ceiling() { # <platform> <binary>
-  local slack=1048576 inferred=$((32 << 20)) more_cli=6021092 more_daemon=4333544
+  local slack=1048576 inferred=$((32 << 20)) more_cli=13079876 more_daemon=12565784
   case "$1/$2" in
     linux-x64/biorouter) echo $((187413248 + 2170000 + more_cli + inferred)) ;;
     linux-x64/biorouterd) echo $((176920720 + 2170000 + more_daemon + inferred)) ;;
-    darwin-arm64/biorouter) echo $((164389760 + 12711092 + slack)) ;;
-    darwin-arm64/biorouterd) echo $((154775664 + 11023544 + slack)) ;;
+    darwin-arm64/biorouter) echo $((164389760 + 19769876 + slack)) ;;
+    darwin-arm64/biorouterd) echo $((154775664 + 19255784 + slack)) ;;
     darwin-x64/biorouter) echo $((176538336 + 1690000 + more_cli + inferred)) ;;
     darwin-x64/biorouterd) echo $((166285184 + 1690000 + more_daemon + inferred)) ;;
     *) die "no dictation size ceiling for $1/$2" ;;

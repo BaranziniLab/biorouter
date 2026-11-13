@@ -3,13 +3,14 @@
 //! symphonia decodes, in this crate only: WAV of any rate, channel count and depth
 //! (integer, float, A-law and mu-law), AIFF, FLAC, MP3, AAC in an MP4 file (`.m4a`,
 //! `.mp4`, a phone's or a Mac's voice memo) or in ADTS (`.aac`, including the MPEG-2
-//! headers Apple's encoder writes), and Ogg holding Vorbis or FLAC. An M4A's encoder
+//! headers Apple's encoder writes), Apple Lossless in an M4A (a voice memo recorded with
+//! Lossless on, O-41), and Ogg holding Vorbis or FLAC. An M4A's encoder
 //! priming and padding are dropped as its edit list or Apple's `iTunSMPB` tag says
 //! ([`Trim`]), which symphonia 0.5 reads but does not apply; ADTS says nothing of them, so
 //! a `.aac` keeps up to 48 ms of priming before its speech. The engine and the daemon take
 //! 16 kHz mono PCM and never parse a file. Opus and WebM are refused before anything is
 //! decoded, with an `ffmpeg` line that converts them, and so is a codec found inside a
-//! container symphonia reads but cannot decode, named when it is Apple Lossless or Opus.
+//! container symphonia reads but cannot decode, named when it is Opus.
 //!
 //! The decode runs on its own thread while the model loads (`commands/transcribe.rs`), so
 //! a compressed format adds no wait before the first decode unless reading the file takes
@@ -33,7 +34,7 @@ use std::path::Path;
 use biorouter::dictation::audio::{f32_to_s16, resample_to_16k, SAMPLE_RATE};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{
-    CodecType, Decoder, DecoderOptions, CODEC_TYPE_ALAC, CODEC_TYPE_NULL, CODEC_TYPE_OPUS,
+    CodecType, Decoder, DecoderOptions, CODEC_TYPE_NULL, CODEC_TYPE_OPUS,
 };
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader};
@@ -58,7 +59,7 @@ pub enum DecodeError {
     NotFound,
     Unreadable,
     /// A kind Biorouter does not decode, named for the person when it can be (`Opus`,
-    /// `WebM`, `Apple Lossless`, or the file's extension); `None` for bytes no reader
+    /// `WebM`, or the file's extension); `None` for bytes no reader
     /// knows that came with no name, or a file named as a kind Biorouter reads.
     UnsupportedFormat {
         kind: Option<String>,
@@ -128,8 +129,8 @@ impl Decoded {
 }
 
 /// The extensions of the kinds Biorouter reads. A file named so that is still refused holds
-/// something else (an ADPCM WAV from a voice recorder, compressed AIFF-C, an Apple Lossless
-/// M4A, a WebM renamed), so its extension does not name what was refused, and the message
+/// something else (an ADPCM WAV from a voice recorder, compressed AIFF-C, an Opus stream in
+/// an MP4, a WebM renamed), so its extension does not name what was refused, and the message
 /// names no kind unless the codec does.
 const READ_EXTENSIONS: [&str; 13] = [
     "wav", "wave", "aif", "aiff", "aifc", "flac", "mp3", "m4a", "mp4", "m4b", "aac", "ogg", "oga",
@@ -159,10 +160,9 @@ fn refused_magic(head: &[u8]) -> Option<&'static str> {
 }
 
 /// The name of a codec that a container Biorouter reads can hold but no decoder here
-/// takes: Apple Lossless in an M4A (a "Lossless" voice memo), Opus in an MP4 or Ogg file.
+/// takes: Opus in an MP4 or Ogg file. Apple Lossless in an M4A is read (O-41).
 fn refused_codec(codec: CodecType) -> Option<&'static str> {
     match codec {
-        CODEC_TYPE_ALAC => Some("Apple Lossless"),
         CODEC_TYPE_OPUS => Some("Opus"),
         _ => None,
     }
@@ -616,7 +616,7 @@ type OpenTrack = (Box<dyn FormatReader>, u32, Box<dyn Decoder>);
 
 /// The probed container, its first track with a codec, and that track's decoder. A
 /// container or codec Biorouter does not read is refused (named by `kind`, or by the codec
-/// when it is Apple Lossless or Opus), and a header that gives more than 2 hours is refused
+/// when it is Opus), and a header that gives more than 2 hours is refused
 /// before anything is decoded.
 fn open_track(
     source: Box<dyn MediaSource>,
@@ -661,7 +661,24 @@ fn open_track(
     Ok((format, track_id, decoder))
 }
 
+/// Decodes `source`, refusing a damaged recording rather than crashing on it: symphonia
+/// 0.5's readers can panic on bytes they do not check (its MP4 reader indexes a sample
+/// table before checking it, `atoms/stsc.rs`), which a cut or corrupted `.m4a` reaches, so
+/// a panic in here answers as any recording Biorouter cannot read does.
 fn decode(
+    source: Box<dyn MediaSource>,
+    ext: Option<&str>,
+    kind: Option<String>,
+    trim: Trim,
+) -> Result<Decoded, DecodeError> {
+    let refused = DecodeError::UnsupportedFormat { kind: kind.clone() };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        decode_unguarded(source, ext, kind, trim)
+    }))
+    .unwrap_or(Err(refused))
+}
+
+fn decode_unguarded(
     source: Box<dyn MediaSource>,
     ext: Option<&str>,
     kind: Option<String>,
@@ -1228,7 +1245,11 @@ mod tests {
             "{}",
             error.message("memo.wav")
         );
-        assert_eq!(refused_codec(CODEC_TYPE_ALAC), Some("Apple Lossless"));
+        assert_eq!(
+            refused_codec(symphonia::core::codecs::CODEC_TYPE_ALAC),
+            None,
+            "Apple Lossless is read (O-41)"
+        );
         assert_eq!(refused_codec(CODEC_TYPE_OPUS), Some("Opus"));
         assert_eq!(refused_codec(symphonia::core::codecs::CODEC_TYPE_AAC), None);
         let unnamed = decode_reader(b"these are notes, not audio".as_slice()).unwrap_err();
@@ -1424,10 +1445,10 @@ mod tests {
         assert_eq!(trimmed.samples, whole.samples[1_024..17_024]);
     }
 
-    /// Encoder output, a few KB each (28,130 B in all), made on macOS with ffmpeg 9.0.2 and
+    /// Encoder output, a few KB each (52,577 B in all), made on macOS with ffmpeg 9.0.2 and
     /// `afconvert` from [`chirp`] at 48 kHz mono 16 bit, so the default tests decode the
-    /// codecs O-39 ships rather than only parsing their containers (removing symphonia's
-    /// `aac`, `isomp4`, `vorbis` or `ogg` feature fails them). They live with the other
+    /// codecs O-39 and O-41 ship rather than only parsing their containers (removing
+    /// symphonia's `aac`, `isomp4`, `vorbis`, `ogg` or `alac` feature fails them). They live with the other
     /// dictation fixtures, inside the budget `scripts/check-dictation-fixtures.sh` holds
     /// (DD-95):
     /// - `chirp-apple.m4a`: `afconvert -f m4af -d aac@48000 -b 64000`, AAC-LC with 2,112
@@ -1437,7 +1458,9 @@ mod tests {
     /// - `chirp-apple.aac`: `afconvert -f adts -d aac@48000 -b 64000`, MPEG-2 ADTS (0xFFF9);
     /// - `chirp-vorbis.ogg`: `ffmpeg -bitexact -c:a vorbis -strict -2 -ac 2 -map_metadata -1`,
     ///   stereo;
-    /// - `silence-alac.m4a`: half a second of 16 kHz silence, `afconvert -f m4af -d alac`.
+    /// - `chirp-alac.m4a`: `afconvert -f m4af -d alac`, Apple Lossless as Voice Memos writes
+    ///   it with Lossless on, from a 16 bit WAV quantized as [`wav`] does (4,096 samples a
+    ///   packet, an `iTunSMPB` tag, the `moov` box before the audio).
     const APPLE_M4A: &[u8] =
         include_bytes!("../../../biorouter-dictation/tests/fixtures/chirp-apple.m4a");
     const FFMPEG_M4A: &[u8] =
@@ -1447,7 +1470,7 @@ mod tests {
     const VORBIS_OGG: &[u8] =
         include_bytes!("../../../biorouter-dictation/tests/fixtures/chirp-vorbis.ogg");
     const ALAC_M4A: &[u8] =
-        include_bytes!("../../../biorouter-dictation/tests/fixtures/silence-alac.m4a");
+        include_bytes!("../../../biorouter-dictation/tests/fixtures/chirp-alac.m4a");
 
     /// The fixtures' signal at `rate`: one second of a linear chirp from 300 Hz to 3,000 Hz
     /// at 0.3 of full scale, with 10 ms raised cosine fades.
@@ -1595,23 +1618,89 @@ mod tests {
         }
     }
 
-    /// An Apple Lossless M4A (a "Lossless" voice memo) is refused and named, with the
-    /// `ffmpeg` line, from a file and from standard input: symphonia's MP4 reader names the
-    /// codec, and no ALAC decoder ships (O-39 named AAC only).
+    /// An Apple Lossless M4A (a voice memo recorded with Lossless on, O-41) decodes, from a
+    /// file and from standard input, to exactly what the same 16 bit samples give as a WAV:
+    /// the codec is lossless, so only the resampling to 16 kHz touches them, the same for
+    /// both.
     #[test]
-    fn an_apple_lossless_m4a_is_refused_and_named() {
+    fn an_apple_lossless_m4a_decodes_exactly() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(dir.path(), "New Recording.m4a", ALAC_M4A);
-        let error = decode_path(&path).unwrap_err();
-        assert_eq!(error, refused("Apple Lossless"));
-        assert_eq!(error.outcome(), Outcome::UnsupportedFormat);
-        assert_eq!(
-            error.message("New Recording.m4a"),
-            "Biorouter cannot read Apple Lossless recordings. Convert it to WAV first, for example: ffmpeg -i 'New Recording.m4a' -ar 16000 -ac 1 'New Recording'.wav"
+        let decoded = decode_path(&path).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!((decoded.source_rate, decoded.channels), (48_000, 1));
+        assert_eq!(decoded.samples.len(), 16_000);
+        let same = write(
+            dir.path(),
+            "same.wav",
+            &wav(48_000, 1, false, &chirp(48_000)),
         );
+        assert_eq!(decoded, decode_path(&same).unwrap(), "lossless");
+        assert_eq!(decode_reader(ALAC_M4A).unwrap(), decoded, "on stdin");
+    }
+
+    /// A damaged Apple Lossless M4A fails cleanly: cut short at any point, or with any one
+    /// byte changed, it decodes what it can or is refused, and never panics, though
+    /// symphonia's MP4 reader panics on some of these bytes (a damaged `stsc` box) and
+    /// [`decode`] catches it. A decoder configuration with a bit depth of 0 is refused as a
+    /// recording Biorouter cannot read.
+    #[test]
+    fn a_damaged_apple_lossless_m4a_fails_cleanly() {
+        let whole = decode_reader(ALAC_M4A).unwrap().samples.len();
+        let find = |name: &[u8]| {
+            ALAC_M4A
+                .windows(4)
+                .position(|w| w == name)
+                .expect("a box of the fixture")
+        };
+        // The boxes that describe the audio come first (`moov`), the audio after (`mdat`):
+        // the parser is read densely, the codec's packets sparsely, so the debug build's run
+        // stays at a few seconds. Of every one byte change to `moov`, only the entry counts
+        // of `stts` and `stsc` made symphonia panic [M, 2026-11-13: offsets 486 to 488 and
+        // 518 to 521 of 4,092]; a cut never did.
+        let audio = find(b"mdat");
+        for at in (0..audio)
+            .step_by(5)
+            .chain((audio..ALAC_M4A.len()).step_by(401))
+        {
+            if let Ok(decoded) = decode_reader(&ALAC_M4A[..at]) {
+                assert!(decoded.samples.len() <= whole, "cut at {at}");
+            }
+        }
+        for at in (0..audio)
+            .step_by(31)
+            .chain((audio..ALAC_M4A.len()).step_by(1_601))
+        {
+            let mut bytes = ALAC_M4A.to_vec();
+            bytes[at] ^= 0xA5;
+            // Any answer will do, an error or audio; returning at all is the test.
+            let _ = decode_reader(bytes.as_slice());
+        }
+        // The panic itself, caught: a damaged `stsc` entry count.
+        let mut bytes = ALAC_M4A.to_vec();
+        bytes[find(b"stsc") + 8] ^= 0xA5;
         assert_eq!(
-            decode_reader(ALAC_M4A).unwrap_err(),
-            refused("Apple Lossless")
+            decode_reader(bytes.as_slice()).unwrap_err(),
+            DecodeError::UnsupportedFormat { kind: None }
+        );
+        // The `alac` box inside the sample entry: size, type, version and flags, then the
+        // decoder's configuration, whose sixth byte is the bit depth.
+        let entry = ALAC_M4A
+            .windows(4)
+            .position(|w| w == b"alac")
+            .expect("the sample entry");
+        let config = entry
+            + 4
+            + ALAC_M4A[entry + 4..]
+                .windows(4)
+                .position(|w| w == b"alac")
+                .expect("the decoder's configuration");
+        let depth = config + 4 + 4 + 5;
+        assert_eq!(ALAC_M4A[depth], 16, "the fixture's bit depth");
+        let mut bytes = ALAC_M4A.to_vec();
+        bytes[depth] = 0;
+        assert_eq!(
+            decode_reader(bytes.as_slice()).unwrap_err(),
+            DecodeError::UnsupportedFormat { kind: None }
         );
     }
 
