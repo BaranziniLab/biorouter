@@ -244,9 +244,11 @@ export function acknowledgeRemoteHttp(key: string): void {
 /**
  * Per viewer settings in `localStorage`, never state that must persist: the
  * device, noise reduction, whether the microphone shows, the hosts whose
- * disclosure was shown or whose plain `http:` address was confirmed, and a hint
- * to hide the button at the next launch when policy forbade dictation. Every
- * read and write is wrapped, so a blocked storage behaves as the defaults.
+ * disclosure was shown or whose plain `http:` address was confirmed, and whether
+ * the last status said policy forbade dictation (`policyOffHint`). Nothing hides
+ * the microphone on that hint: under policy it stays in place, disabled, with the
+ * policy's sentence (`resolveDictationPhase`). Every read and write is wrapped,
+ * so a blocked storage behaves as the defaults.
  */
 export interface DictationViewerSettings {
   deviceId?: string;
@@ -300,7 +302,7 @@ function rememberPolicyHint(status: DictationStatus): void {
 
 // ── the microphone's phase before any recording ──────────────────────────────
 
-export type ResolvedPhase = 'removed' | 'unavailable' | 'not-installed' | 'installing' | 'idle';
+export type ResolvedPhase = 'unavailable' | 'not-installed' | 'installing' | 'idle';
 
 export interface PhaseDecision {
   phase: ResolvedPhase;
@@ -438,7 +440,25 @@ export function resolveDictationPhase(
   if (current.load === 'absent') return unavailable('MSG-REMOTE-OLD', remoteOldValues(env));
   const status = current.status;
   if (!status) return { phase: 'idle' };
-  if (!status.policy.enabled.allowed || !status.policy.capture.allowed) return { phase: 'removed' };
+  // Managed policy that turns dictation or live capture off keeps the microphone in its place,
+  // disabled, with the policy's own sentence as its reason (owner decision, 2026-11-13): a control
+  // that can never work here says why before it is touched, rather than vanishing. The sentence
+  // is the daemon's `reason` for the refused door, as the Settings policy note reads it
+  // (`privacy/ManagedPolicyNote.tsx`), and the catalog's only when the daemon gave none.
+  if (!status.policy.enabled.allowed) {
+    return {
+      phase: 'unavailable',
+      reasonId: 'MSG-POLICY',
+      reason: status.policy.enabled.reason || dictationMessage('MSG-POLICY'),
+    };
+  }
+  if (!status.policy.capture.allowed) {
+    return {
+      phase: 'unavailable',
+      reasonId: 'MSG-POLICY-CAPTURE',
+      reason: status.policy.capture.reason || dictationMessage('MSG-POLICY-CAPTURE'),
+    };
+  }
   if (!status.engine.compiled) return unavailable('MSG-NO-ENGINE');
   if (status.engine.state === 'unsupported_cpu') {
     const missing = status.engine.missing_cpu_features.join(', ');

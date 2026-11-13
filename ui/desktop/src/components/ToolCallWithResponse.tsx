@@ -1719,6 +1719,16 @@ function ToolCallView({
     new Set()
   );
   const [busyDictionaryRow, setBusyDictionaryRow] = React.useState<string | null>(null);
+  // A row still asks the person for something (Add, or Keep and Undo) while the agent wrote it,
+  // it is suggested or not yet reviewed, and nothing settled it here. Review in Dictionary shows
+  // only while one does: a call whose every row is the person's own or already settled has
+  // nothing left to review there (owner decision, 2026-11-13).
+  const dictionaryRowAwaitsAction = (row: (typeof dictionaryAddRows)[number]) =>
+    typeof row.id === 'string' &&
+    !settledDictionaryRows.has(row.id) &&
+    row.source === 'agent' &&
+    (row.status === 'suggested' || (row.status === 'active' && row.reviewed === false));
+  const dictionaryReviewOffered = dictionaryAddRows.some(dictionaryRowAwaitsAction);
   const actOnDictionaryRow = (
     id: string,
     term: string,
@@ -2017,20 +2027,18 @@ function ToolCallView({
       triggerClassName="br-tool-disclosure"
       // The terms, each with its own Keep and Undo, and Review in Dictionary take their own line
       // under the label: beside it they squeezed the label to "Added te…" in the 760px column.
-      trailingPlacement={dictionaryAddRows.length > 0 ? 'below' : 'inline'}
+      // The line shows only while a row awaits the person; once none does, it goes whole.
+      trailingPlacement={dictionaryReviewOffered ? 'below' : 'inline'}
       trailing={
-        dictionaryAddRows.length > 0 ? (
+        dictionaryReviewOffered ? (
           <span
             className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"
             data-testid="dictionary-tool-actions"
           >
             {dictionaryAddRows.map((row) => {
               const id = row.id;
-              if (!id || settledDictionaryRows.has(id)) return null;
-              const suggested = row.source === 'agent' && row.status === 'suggested';
-              const unreviewed =
-                row.source === 'agent' && row.status === 'active' && row.reviewed === false;
-              if (!suggested && !unreviewed) return null;
+              if (!id || !dictionaryRowAwaitsAction(row)) return null;
+              const suggested = row.status === 'suggested';
               // The term the call recorded, drawn beside its own buttons and named in each, so
               // a call that added two terms never reads "Keep Undo Keep Undo". The agent wrote
               // it, so it is drawn as untrusted text. A row from before the rows carried it

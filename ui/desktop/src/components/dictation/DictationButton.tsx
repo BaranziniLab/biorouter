@@ -88,11 +88,10 @@ export function levelToMeter(rms: number): number {
 export function dictationPhaseFor(
   activity: DictationActivity,
   decision: PhaseDecision
-): DictationPhase | 'removed' {
+): DictationPhase {
   if (activity === 'arming' || activity === 'recording' || activity === 'transcribing') {
     return activity;
   }
-  if (decision.phase === 'removed') return 'removed';
   if (decision.phase === 'unavailable') return 'unavailable';
   if (decision.phase === 'not-installed' || decision.phase === 'installing') return decision.phase;
   return activity === 'error' ? 'error' : 'idle';
@@ -189,7 +188,7 @@ export function DictationButton({
     return () => observer.disconnect();
   }, [pill]);
 
-  if (!control.available || phase === 'removed') return null;
+  if (!control.available) return null;
   // Hidden by the person's choice: the chord still dictates, and the pill takes
   // the button's place until the dictation ends. A chord that found no model
   // shows the button too, for as long as the setup popover it opened, so the

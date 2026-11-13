@@ -383,14 +383,53 @@ describe('phases and names', () => {
     expect(mic()).toHaveAccessibleName('This build of Biorouter has no local dictation engine.');
   });
 
-  it('is removed when policy turns dictation off', async () => {
+  it('stays in place, disabled, with the policy sentence as its reason when policy turns capture off', async () => {
+    const reason = DICTATION_MESSAGES['MSG-POLICY-CAPTURE'];
     status = speechStatus({
-      policy: { ...speechStatus().policy, capture: { allowed: false, reason: 'Off.' } },
+      policy: { ...speechStatus().policy, capture: { allowed: false, reason } },
     });
     render(<Host />);
     fireEvent.focus(screen.getByTestId('field'));
     await settle();
-    expect(screen.queryByTestId('dictation-button')).toBeNull();
+    expect(mic()).toBeInTheDocument();
+    expect(mic()).toHaveAttribute('data-dictation-phase', 'unavailable');
+    expect(mic()).toBeDisabled();
+    expect(mic()).toHaveAccessibleName(reason);
+    // The disabled button gets no pointer events; the focusable slot around it carries the
+    // reason, and its tooltip says it before the control is touched (here reached with Tab).
+    const slot = mic().closest('span[tabindex="0"]') as HTMLElement;
+    expect(slot).toHaveAccessibleName(reason);
+    fireEvent.keyDown(document.body, { key: 'Tab' });
+    act(() => slot.focus());
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(reason);
+    // A press starts nothing, and the chord says the same sentence in the notice row.
+    fireEvent.pointerDown(mic(), { button: 0 });
+    await settle();
+    expect(captures).toHaveLength(0);
+    fireEvent.keyDown(screen.getByTestId('field'), {
+      code: 'KeyD',
+      key: 'D',
+      metaKey: true,
+      shiftKey: true,
+    });
+    await settle();
+    expect(captures).toHaveLength(0);
+    expect(getDictationSnapshot().notice?.text).toBe(reason);
+    expect(mic()).toBeDisabled();
+  });
+
+  it('stays disabled with MSG-POLICY when policy turns dictation off', async () => {
+    status = speechStatus({
+      policy: {
+        ...speechStatus().policy,
+        enabled: { allowed: false, reason: DICTATION_MESSAGES['MSG-POLICY'] },
+      },
+    });
+    render(<Host />);
+    fireEvent.focus(screen.getByTestId('field'));
+    await settle();
+    expect(mic()).toBeDisabled();
+    expect(mic()).toHaveAccessibleName(DICTATION_MESSAGES['MSG-POLICY']);
   });
 });
 

@@ -2592,9 +2592,79 @@ describe('dictionary result actions', () => {
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Keep EPAS1' })).not.toBeInTheDocument()
     );
-    // A settled term leaves with its buttons; Review in Dictionary stays.
+    // A settled term leaves with its buttons, and with the last one Review in Dictionary goes
+    // too: nothing is left there to review.
     expect(screen.queryByTestId('dictionary-tool-term')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Review in Dictionary' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review in Dictionary' })).not.toBeInTheDocument();
+  });
+
+  it('offers Review in Dictionary only while a row still needs the person', () => {
+    const response = (
+      rows: Array<Record<string, unknown>>,
+      id = 'dictionary-add-1'
+    ): ToolResponseMessageContent => ({
+      type: 'toolResponse',
+      id,
+      toolResult: {
+        status: 'success',
+        value: {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ dictionary_rows: rows }),
+              annotations: { audience: ['user'] },
+            },
+          ],
+        },
+      },
+    });
+    const own = {
+      id: 'dct_own',
+      written: 'EPAS1',
+      status: 'active',
+      reviewed: true,
+      source: 'user',
+    };
+    const kept = {
+      id: 'dct_kept',
+      rev: 2,
+      written: 'HIF2A',
+      status: 'active',
+      reviewed: true,
+      source: 'agent',
+    };
+    const pending = {
+      id: 'dct_new',
+      rev: 1,
+      written: 'VHL',
+      status: 'active',
+      reviewed: false,
+      source: 'agent',
+    };
+    // Every row is the person's own or already reviewed: nothing to review, so no link.
+    const { unmount } = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={response([own, kept])}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.queryByRole('button', { name: 'Review in Dictionary' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dictionary-tool-actions')).not.toBeInTheDocument();
+    unmount();
+    // One row still needs Keep or Undo: the link shows beside it.
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={request}
+        toolResponse={response([own, kept, pending])}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    const actions = screen.getByTestId('dictionary-tool-actions');
+    expect(within(actions).getByRole('button', { name: 'Keep VHL' })).toBeInTheDocument();
+    expect(within(actions).getByRole('button', { name: 'Review in Dictionary' })).toBeVisible();
   });
 
   it('draws each term beside its own Keep and Undo, so two pairs are told apart', async () => {

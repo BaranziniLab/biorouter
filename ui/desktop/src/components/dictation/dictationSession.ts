@@ -204,7 +204,6 @@ export type StartOutcome =
   | { kind: 'setup' }
   | { kind: 'origin-notice' }
   | { kind: 'unavailable'; reason: string }
-  | { kind: 'removed' }
   | { kind: 'failed'; notice: DictationNotice }
   | { kind: 'cancelled' };
 
@@ -1070,8 +1069,6 @@ function outcomeFor(decision: PhaseDecision): StartOutcome {
     case 'not-installed':
     case 'installing':
       return { kind: 'setup' };
-    case 'removed':
-      return { kind: 'removed' };
     default:
       return { kind: 'unavailable', reason: decision.reason ?? '' };
   }

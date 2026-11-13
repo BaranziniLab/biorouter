@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BUNDLED_BIOROUTER_VERSION } from '../../utils/biorouterVersion';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import { resetCapturePrewarmForTests } from './capture';
+import { DICTATION_MESSAGES } from './copy';
 import type { DictationApi, DictationResult, DictationStatus } from './dictationApi';
 import {
   DICTATION_VIEWER_KEY,
@@ -269,15 +270,44 @@ describe('resolveDictationPhase: the phase table', () => {
     ).toBe('idle');
   });
 
-  it('policy that forbids dictation or live capture removes the button', () => {
-    const off = { allowed: false, reason: 'x' };
+  it('policy that forbids dictation or live capture leaves the button unavailable with its reason', () => {
     const base = status();
+    const enabledOff = { allowed: false, reason: 'Dictation is off here.' };
+    const captureOff = { allowed: false, reason: 'Live capture is off here.' };
+    // The daemon's own sentence for the refused door, as Settings shows it.
     expect(
-      resolveDictationPhase(loaded(status({ policy: { ...base.policy, enabled: off } })), env).phase
-    ).toBe('removed');
+      resolveDictationPhase(
+        loaded(status({ policy: { ...base.policy, enabled: enabledOff, capture: captureOff } })),
+        env
+      )
+    ).toEqual({
+      phase: 'unavailable',
+      reasonId: 'MSG-POLICY',
+      reason: 'Dictation is off here.',
+    });
     expect(
-      resolveDictationPhase(loaded(status({ policy: { ...base.policy, capture: off } })), env).phase
-    ).toBe('removed');
+      resolveDictationPhase(
+        loaded(status({ policy: { ...base.policy, capture: captureOff } })),
+        env
+      )
+    ).toEqual({
+      phase: 'unavailable',
+      reasonId: 'MSG-POLICY-CAPTURE',
+      reason: 'Live capture is off here.',
+    });
+    // The catalog's sentence only when the daemon gave none.
+    expect(
+      resolveDictationPhase(
+        loaded(status({ policy: { ...base.policy, enabled: { allowed: false, reason: null } } })),
+        env
+      ).reason
+    ).toBe(DICTATION_MESSAGES['MSG-POLICY']);
+    expect(
+      resolveDictationPhase(
+        loaded(status({ policy: { ...base.policy, capture: { allowed: false, reason: null } } })),
+        env
+      ).reason
+    ).toBe(DICTATION_MESSAGES['MSG-POLICY-CAPTURE']);
   });
 
   it('no engine, and an unsupported processor, are unavailable with their sentences', () => {
