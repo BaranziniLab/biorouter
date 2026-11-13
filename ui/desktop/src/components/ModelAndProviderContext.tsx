@@ -267,11 +267,18 @@ const localModelNamesOf = (catalog: readonly LlamaCppModel[] | undefined): Local
  */
 const isDownloaded = (model: LlamaCppModel | undefined) => model?.download_status === 'downloaded';
 
-/** The warm-up dialog's sentence: a download is named only while one may still happen. */
-export const warmupDialogSubtitle = (modelName: string, downloaded: boolean): string =>
+/** The warm-up dialog's one line under its title (owner, 2026-11-13: one line up front). */
+export const warmupDialogSubtitle = (modelName: string): string =>
+  `${modelName} runs on this computer.`;
+
+/**
+ * Why first use is slow, the title's InfoTip. A download is named only while one may still happen
+ * (W2-5): a model already on this computer only loads.
+ */
+export const warmupFirstUseHelp = (downloaded: boolean): string =>
   downloaded
-    ? `${modelName} runs on this computer. First use can take a while because the model may need to load and produce a test response.`
-    : `${modelName} runs on this computer. First use can take a while because the model may need to load, download, and produce a test response.`;
+    ? 'First use can take a while because the model may need to load and produce a test response.'
+    : 'First use can take a while because the model may need to load, download, and produce a test response.';
 
 const formatContext = (tokens: number | undefined) =>
   typeof tokens === 'number' && tokens > 0 ? tokens.toLocaleString() : 'unknown';
@@ -380,10 +387,8 @@ const PlacePath = ({ path }: { path: string }) => (
   </span>
 );
 
-/** The warm-up dialog's first-use reason, its title's InfoTip. */
+/** The warm-up dialog's first-use reason, its title's InfoTip (`warmupFirstUseHelp`). */
 export const WARMUP_FIRST_USE_LABEL = 'first use';
-export const WARMUP_FIRST_USE_HELP =
-  'First use can take a while because the model may need to load, download, and produce a test response.';
 /** The custom-spec warning, said in two layers: the fact, then the advice behind Details. */
 const CUSTOM_SPEC_WARNING = 'Custom Hugging Face specs are not memory-rated here.';
 const CUSTOM_SPEC_ADVICE =
@@ -1134,12 +1139,16 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         title="Warm up local model"
         // One line under the title; why first use is slow is the title's InfoTip (owner,
         // 2026-11-13: one line up front, the detail on hover).
-        titleInfo={<InfoTip label={WARMUP_FIRST_USE_LABEL} help={WARMUP_FIRST_USE_HELP} />}
+        titleInfo={
+          <InfoTip
+            label={WARMUP_FIRST_USE_LABEL}
+            help={warmupFirstUseHelp(isDownloaded(llamaWarmupDialog?.entry))}
+          />
+        }
         subtitle={
           llamaWarmupDialog
             ? warmupDialogSubtitle(
-                llamaWarmupDialog.entry?.display_name ?? llamaWarmupDialog.model.name,
-                isDownloaded(llamaWarmupDialog.entry)
+                llamaWarmupDialog.entry?.display_name ?? llamaWarmupDialog.model.name
               )
             : undefined
         }

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ModelAndProviderProvider,
   useModelAndProvider,
-  WARMUP_FIRST_USE_HELP,
+  warmupFirstUseHelp,
   WARMUP_FIRST_USE_LABEL,
 } from './ModelAndProviderContext';
 import { MODAL_ANCHOR_TOP_STYLE } from './ModalShell';
@@ -265,8 +265,8 @@ describe('the local-model warm-up dialog fits the window', () => {
     expect(dialog).toHaveAccessibleDescription('Qwen3.6 35B runs on this computer.');
     expect(
       within(dialog).getByRole('button', { name: `About ${WARMUP_FIRST_USE_LABEL}` })
-    ).toHaveAccessibleDescription(WARMUP_FIRST_USE_HELP);
-    expect(WARMUP_FIRST_USE_HELP).toMatch(/^First use can take a while/);
+    ).toHaveAccessibleDescription(warmupFirstUseHelp(false));
+    expect(warmupFirstUseHelp(false)).toMatch(/^First use can take a while/);
   });
 
   it('opens on the warning and the buttons, with the detail folded under its summary', async () => {
@@ -316,6 +316,7 @@ describe('the local-model warm-up dialog fits the window', () => {
 describe('the warm-up dialog says only what is true of the local copy', () => {
   it('names the size as the model size, whichever way the copy stands', async () => {
     const dialog = await openTheSheet();
+    openTheDetail();
     expect(within(dialog).getByText('Model size')).toBeInTheDocument();
     expect(within(dialog).getByText('23 GB')).toBeInTheDocument();
     expect(within(dialog).queryByText('Download')).toBeNull();
@@ -323,7 +324,12 @@ describe('the warm-up dialog says only what is true of the local copy', () => {
 
   it('keeps the download wording and its details while the model still needs downloading', async () => {
     const dialog = await openTheSheet();
-    expect(dialog).toHaveAccessibleDescription(/may need to load, download, and produce/);
+    // The one line under the title; why first use is slow, download and all, is its InfoTip.
+    expect(dialog).toHaveAccessibleDescription('Qwen3.6 35B runs on this computer.');
+    expect(
+      within(dialog).getByRole('button', { name: `About ${WARMUP_FIRST_USE_LABEL}` })
+    ).toHaveAccessibleDescription(/may need to load, download, and produce/);
+    openTheDetail();
     expect(within(dialog).getByText('Needs download')).toBeInTheDocument();
     for (const label of ['Llama Server fallback', 'Ollama model', 'Model store', 'Model blob']) {
       expect(within(dialog).getByText(label)).toBeInTheDocument();
@@ -333,9 +339,13 @@ describe('the warm-up dialog says only what is true of the local copy', () => {
   it('drops the download wording and its details once the model is on this computer', async () => {
     mocks.llamacppStatus.mockResolvedValue(downloadedStatus);
     const dialog = await openTheSheet();
-    expect(dialog).toHaveAccessibleDescription(
-      'Qwen3.6 35B runs on this computer. First use can take a while because the model may need to load and produce a test response.'
+    expect(dialog).toHaveAccessibleDescription('Qwen3.6 35B runs on this computer.');
+    expect(
+      within(dialog).getByRole('button', { name: `About ${WARMUP_FIRST_USE_LABEL}` })
+    ).toHaveAccessibleDescription(
+      'First use can take a while because the model may need to load and produce a test response.'
     );
+    openTheDetail();
     expect(within(dialog).getByText('Model size')).toBeInTheDocument();
     expect(within(dialog).getByText('Downloaded')).toBeInTheDocument();
     for (const label of ['Llama Server fallback', 'Ollama model', 'Model store', 'Model blob']) {
@@ -363,6 +373,7 @@ describe('the warm-up dialog says only what is true of the local copy', () => {
       },
     });
     const dialog = await openTheSheet();
+    openTheDetail();
     expect(within(dialog).getByText('Downloaded in Ollama')).toBeInTheDocument();
     expect(within(dialog).queryByText('Llama Server fallback')).toBeNull();
     expect(within(dialog).queryByText('Model blob')).toBeNull();
@@ -499,6 +510,7 @@ describe('the warm-up dialog says the fit in plain words', () => {
   ])('%s reads as words, never as the id', async (kind, os, detected, verdict) => {
     mocks.llamacppStatus.mockResolvedValue(machine(kind, os));
     const dialog = await openTheSheet();
+    openTheDetail();
     const row = (label: string) => within(dialog).getByText(label).nextElementSibling;
     expect(row('Detected GPU memory')).toHaveTextContent(detected);
     expect(row('Recommended GPU memory')).toHaveTextContent('48 GB');
