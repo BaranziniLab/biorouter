@@ -26,7 +26,7 @@ use biorouter::decision::log::{
 };
 use biorouter::decision::Question;
 use ratatui::layout::{Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
@@ -117,7 +117,9 @@ pub fn card_lines(record: &DecisionRecord) -> Vec<Line<'static>> {
                 "  {}",
                 clip(&crate::commands::decide::terminal_advice(error), 200)
             ),
-            Style::new().fg(Color::Red),
+            // Red is rare (design.md 9.14): an error reads in the terminal's
+            // own ink; its words say what went wrong.
+            Style::new(),
         )));
         return lines;
     }
@@ -296,10 +298,7 @@ impl DecisionsOverlay {
         let head = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
         let mut lines = Vec::new();
         if let Some(error) = &self.error {
-            lines.push(Line::from(Span::styled(
-                error.clone(),
-                Style::new().fg(Color::Red),
-            )));
+            lines.push(Line::from(Span::styled(error.clone(), Style::new())));
         }
         if let Some(calls) = &self.calls {
             lines.push(Line::from(vec![

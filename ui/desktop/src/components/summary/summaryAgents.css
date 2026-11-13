@@ -10,8 +10,11 @@
  * The content's rules hold here too, and styles/summaryRail.test.ts reads this
  * file to keep them: two type sizes only (13/18 `--text-secondary` for rows,
  * 12/16 `--text-supporting` for labels, counts and second lines), 28px rows, and
- * no hairline anywhere. Sections are parted by 12px of space; a row answers the
- * pointer with the card's fill step, never with an outline.
+ * no box (owner direction, 2026-11-12): a phase, its grid and its rows sit on the
+ * card's own ground, labelled by the phase's line and parted from the next phase
+ * by one inset hairline, the only line drawn here. The sections themselves are
+ * parted by chatSummary.css's divider. A row answers the pointer with the card's
+ * fill step, never with an outline.
  *
  * Unlayered, so these beat the layered D-15 focus fill on the same buttons; every
  * rule that paints a row therefore restates the focus fill and its 2px edge.
@@ -23,20 +26,6 @@
   flex-direction: column;
 }
 
-/* 12px from whatever sits above (the to-do list, or its refresh error) and to
-   the statistics below, the gap the content's other parts keep. */
-.br-summary__body > * + .br-agents {
-  margin-top: 12px;
-}
-
-.br-agents + .br-summary__stats {
-  margin-top: 12px;
-}
-
-.br-agents__section + .br-agents__section {
-  margin-top: 12px;
-}
-
 .br-agents__phases,
 .br-agents__list {
   min-width: 0;
@@ -45,16 +34,29 @@
   list-style: none;
 }
 
+/* A PHASE IS A CHUNK, NOT A BOX. Its line (the chevron, the title, the count
+   and the gate's flag) is its heading; its grid and rows follow on the card's
+   own ground, with no fill, radius or padding of its own. A phase after the
+   first is parted from the one above by a hairline inset to the content, 4px of
+   space on either side (9 to 10px from the line to the text): inset, where the
+   section divider (chatSummary.css) runs the card's full width, so a phase never
+   reads as a section. A structural line, the kind design.md 9.11 keeps. */
+.br-agents__phase {
+  min-width: 0;
+}
+
 .br-agents__phase + .br-agents__phase {
   margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* ROWS. Every control here is a full-width button that bleeds 8px into the
    body's 12px gutter, so its text keeps the to-do list's left edge and its
-   hover wash has room. */
+   hover wash has room. Nothing between a row and the card is a box, so the wash
+   is the card's own hover step. */
 .br-agents__row,
 .br-agents__phase-toggle,
-.br-agents__group-toggle,
 .br-agents__more {
   display: flex;
   width: calc(100% + 16px);
@@ -85,20 +87,23 @@
 
 .br-agents__row:hover,
 .br-agents__phase-toggle:not([data-static]):hover,
-.br-agents__group-toggle:hover,
 .br-agents__more:hover {
   background-color: var(--br-control-hover, var(--background-fill-strong));
 }
 
 .br-agents__row:focus-visible,
 .br-agents__phase-toggle:focus-visible,
-.br-agents__group-toggle:focus-visible,
 .br-agents__more:focus-visible,
 .br-agents__retry:focus-visible {
   outline: none;
   background-color: var(--background-focus);
   color: var(--text-default);
   box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* A row's mark sits in the 14px glyph slot, centred on the 18px first line. */
+.br-agents__glyph {
+  color: inherit;
 }
 
 .br-agents__text {
@@ -108,8 +113,16 @@
   flex-direction: column;
 }
 
+/* The first line: the role or name, which gives way, then the run time and the
+   lock, which never do. */
+.br-agents__name-line {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
 .br-agents__name,
-.br-agents__phase-title,
 .br-agents__meta,
 .br-agents__trailing {
   min-width: 0;
@@ -118,6 +131,18 @@
   white-space: nowrap;
 }
 
+/* A phase's title is one line, cut with an ellipsis, so its count and its gate
+   always stay on that line beside it (vision review, 2026-11-12: a title that
+   wrapped to a second line pushed them down). The whole title is the title's
+   own tooltip, the phase toggle's accessible name and the gate's. */
+.br-agents__phase-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-agents__name,
 .br-agents__phase-title {
   flex: 1 1 auto;
 }
@@ -131,9 +156,9 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* A COMFORTABLE ROW'S SECOND LINE: one muted 12px line, what the child is
-   doing ("Working…", "Quiet for 4m") or what it found, cut with an ellipsis
-   (F-2). The model and the setup counts are in the peek's Details. */
+/* A COMFORTABLE ROW'S SECOND LINE (a chat of four agents or fewer): one muted
+   12px line, the model and what the child is doing ("Working…", "Quiet for
+   4m") or what it found, cut with an ellipsis. */
 .br-agents__meta {
   display: block;
 }
@@ -149,13 +174,13 @@
   max-width: 45%;
 }
 
-.br-agents__row[data-quiet] .br-agents__trailing {
-  color: var(--text-warning);
-}
-
-.br-agents__row[data-status='completed'] .br-agents__name,
-.br-agents__row[data-status='unknown'] .br-agents__name {
-  color: var(--text-muted);
+/* A quiet child's "quiet 4m" and a failure's "Failed · 1m45s" read in the
+   default ink: the word is what tells them apart, never a warning or danger
+   hue (owner direction, 2026-11-12). A name is the default ink at every
+   status, finished ones included. */
+.br-agents__row[data-quiet] .br-agents__trailing,
+.br-agents__row[data-mark='failed'] .br-agents__trailing {
+  color: var(--text-default);
 }
 
 /* The lock: a shape, in the row's muted ink (F-16): an all-private roster is
@@ -164,6 +189,7 @@
   display: inline-flex;
   height: 18px;
   flex: none;
+  align-self: center;
   align-items: center;
   color: var(--text-muted);
 }
@@ -173,43 +199,14 @@
   height: 12px;
 }
 
-/* STATUS INK, on top of the shape. Running wears the accent, a question or a
-   short ending the warning ink, a failure the danger ink; the rest stay muted. */
-.br-agents__row[data-status='running'] .br-agents__glyph,
-.br-agents__row[data-status='queued'] .br-agents__glyph {
-  color: var(--text-accent);
-}
-
-.br-agents__row[data-status='blocked'] .br-agents__glyph,
-.br-agents__row[data-status='incomplete'] .br-agents__glyph,
-.br-agents__row[data-status='interrupted'] .br-agents__glyph {
-  color: var(--text-warning);
-}
-
-.br-agents__row[data-status='failed'] .br-agents__glyph {
-  color: var(--text-danger);
-}
-
-/* A running child's dashed circle turns slowly, so a live row reads as live
-   without a second mark. Never under reduced motion. */
-.br-agents__row[data-status='running'] .br-agents__glyph > svg {
-  animation: br-agents-turn 3s linear infinite;
-}
-
-@keyframes br-agents-turn {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* PHASES (F-1). One 28px line per phase: the toggle (status glyph, title,
-   "2 of 2", chevron) and, at the line's end, the gate's chip or "Add gate". Two
+/* PHASES (F-1). One 28px line per group: the toggle (title, "2 of 5",
+   chevron) and, at the line's end, the gate's flag or "Add gate". Two
    siblings, never a button inside a button. A muted line under it only when
    there is something to act on. */
 .br-agents__phase-line {
   display: flex;
   min-width: 0;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
 }
 
@@ -217,6 +214,20 @@
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
+}
+
+/* The chevron, the count and the gate share the title's one line. */
+.br-agents__phase-toggle {
+  align-items: flex-start;
+}
+
+.br-agents__phase-line > .br-agents__gate-slot,
+.br-agents__phase-line > .br-agents__gate {
+  margin-top: 4px;
+}
+
+.br-agents__phase-toggle .br-summary__count {
+  line-height: var(--text-secondary--line-height);
 }
 
 /* The phase's "1 of 1" never gives way: beside a gate chip at the rail's
@@ -231,153 +242,59 @@
   flex: 1 1 auto;
 }
 
-.br-agents__phase-toggle {
-  align-items: center;
-}
-
 .br-agents__phase-line:has(.br-agents__gate-slot, .br-agents__gate) .br-agents__phase-toggle {
   width: calc(100% + 8px);
   margin-right: 0;
 }
 
-.br-agents__phase[data-status='completed'] .br-agents__phase-title,
-.br-agents__phase[data-status='skipped'] .br-agents__phase-title {
-  color: var(--text-muted);
+/* A PHASE WITH NO SUBAGENTS AND NO GATE ("Check the numbers", "Pending"): its
+   status word ends the line on the rows' right edge, where a row's run time
+   sits, and "Add gate" lies over the word rather than holding a slot of its
+   own. While the phase is hovered or the plus focused the plus shows and the
+   word steps back, as a sidebar row's time gives way to its menu. A reserved
+   slot left the word adrift mid-line and pushed the title onto two lines
+   (review, 2026-11-12). Only a static line does this: a phase with rows has a
+   toggle under the word, and a hidden plus there would take its clicks. */
+.br-agents__phase-line[data-word-end] {
+  position: relative;
 }
 
-.br-agents__phase[data-status='in_progress'] .br-agents__phase-toggle .br-summary__glyph {
-  color: var(--text-accent);
+.br-agents__phase-line[data-word-end] > .br-agents__phase-toggle {
+  width: calc(100% + 16px);
+  margin-right: -8px;
 }
 
-.br-agents__phase[data-status='blocked'] .br-agents__phase-toggle .br-summary__glyph {
-  color: var(--text-warning);
+.br-agents__phase-line[data-word-end] > .br-agents__gate-slot {
+  position: absolute;
+  top: 0;
+  right: 0;
 }
 
-.br-agents__phase-counts {
-  font-size: var(--text-supporting);
-  line-height: var(--text-supporting--line-height);
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+.br-agents__phase-line[data-word-end]:has([data-add-gate][data-visible]) .br-summary__count {
+  visibility: hidden;
 }
 
-/* A COMFORTABLE ROW'S SECOND LINE: one muted 12px line, what the child is
-   doing ("Working…", "Quiet for 4m") or what it found, cut with an ellipsis
-   (F-2). The model and the setup counts are in the peek's Details. */
-.br-agents__meta {
-  display: block;
-}
-
-/* A dense row is one line: the trailing figure sits on the 18px line's
-   baseline band, and a long name gives way to it. */
-.br-agents__row[data-layout='dense'] {
-  align-items: center;
-}
-
-.br-agents__trailing {
-  flex: none;
-  max-width: 45%;
-}
-
-.br-agents__row[data-quiet] .br-agents__trailing {
-  color: var(--text-warning);
-}
-
-.br-agents__row[data-status='completed'] .br-agents__name,
-.br-agents__row[data-status='unknown'] .br-agents__name {
-  color: var(--text-muted);
-}
-
-/* The lock: a shape, in the row's muted ink (F-16): an all-private roster is
-   not a column of accent marks. Accent is kept for what needs the person. */
-.br-agents__lock {
-  display: inline-flex;
-  height: 18px;
-  flex: none;
-  align-items: center;
-  color: var(--text-muted);
-}
-
-.br-agents__lock > svg {
-  width: 12px;
-  height: 12px;
-}
-
-/* STATUS INK, on top of the shape. Running wears the accent, a question or a
-   short ending the warning ink, a failure the danger ink; the rest stay muted. */
-.br-agents__row[data-status='running'] .br-agents__glyph,
-.br-agents__row[data-status='queued'] .br-agents__glyph {
-  color: var(--text-accent);
-}
-
-.br-agents__row[data-status='blocked'] .br-agents__glyph,
-.br-agents__row[data-status='incomplete'] .br-agents__glyph,
-.br-agents__row[data-status='interrupted'] .br-agents__glyph {
-  color: var(--text-warning);
-}
-
-.br-agents__row[data-status='failed'] .br-agents__glyph {
-  color: var(--text-danger);
-}
-
-/* A running child's dashed circle turns slowly, so a live row reads as live
-   without a second mark. Never under reduced motion. */
-.br-agents__row[data-status='running'] .br-agents__glyph > svg {
-  animation: br-agents-turn 3s linear infinite;
-}
-
-@keyframes br-agents-turn {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* PHASES. The toggle carries the kind glyph, the title, "2 of 5" and the
-   disclosure chevron; the thin bar and the counts sit under it. */
-.br-agents__phase-toggle {
-  align-items: center;
-}
-
-.br-agents__phase[data-status='completed'] .br-agents__phase-title,
-.br-agents__phase[data-status='skipped'] .br-agents__phase-title {
-  color: var(--text-muted);
-}
-
-.br-agents__phase[data-status='in_progress'] .br-agents__phase-toggle .br-summary__glyph {
-  color: var(--text-accent);
-}
-
-.br-agents__phase[data-status='blocked'] .br-agents__phase-toggle .br-summary__glyph {
-  color: var(--text-warning);
-}
-
+/* A phase's title is the default ink whatever the phase's status: its count
+   or status word says where it stands. The held line ("Waits for the gate
+   after Build") sits on the title's text edge, past the chevron's column, so
+   it reads as the phase's and not the section's. */
 .br-agents__phase-counts {
   margin: 0 0 2px;
+  padding-left: 22px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.br-agents__phase .br-agents__list {
-  margin-bottom: 4px;
-}
-
-/* DENSE GROUPS. A group's header is a label-sized disclosure: 12px muted words,
-   its count, and the chevron. */
-.br-agents__group-toggle {
-  align-items: center;
-  color: var(--text-muted);
-}
-
-.br-agents__group-label {
+.br-agents__group-body {
   min-width: 0;
-  flex: 1 1 auto;
-  font-size: var(--text-supporting);
-  line-height: var(--text-supporting--line-height);
 }
 
+/* The chevron leads, in the rows' 14px glyph column, so a heading's words sit on
+   the rows' text edge. */
 .br-agents__chevron {
   display: inline-flex;
-  width: 12px;
+  width: 14px;
   height: 18px;
   flex: none;
   align-items: center;
@@ -395,11 +312,44 @@
   transform: rotate(90deg);
 }
 
+/* "Show 7 more" sits on the rows' text edge, past their glyph column. */
 .br-agents__more {
+  padding-left: 30px;
   align-items: center;
   color: var(--text-muted);
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
+}
+
+/* THE KEY, one muted line under the section's heading and before the grid it
+   explains, only while decision-model subagents (circles) mix with
+   language-model ones (squares): "Models:", then "language" and "decision",
+   each after its solid shape, in muted 12px words. At the roster's foot it read
+   as part of the last phase (review, 2026-11-12); "Language model" and
+   "Decision model" took two lines in the 228px card, and this takes one. A line
+   of words, never a box. Its shapes say kind, not status, so they wear the muted ink rather
+   than the finished sage (the selector outranks the grid's inks). */
+.br-agents__key {
+  display: flex;
+  min-width: 0;
+  margin: 0 0 6px;
+  padding: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-agents__key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.br-agents__key .br-agents__key-item > .br-agent-mark {
+  color: var(--text-muted);
 }
 
 /* The refresh error's Retry, at the error line's 12. A plain button, so it
@@ -425,12 +375,14 @@
   background-color: var(--br-control-hover, var(--background-fill-strong));
 }
 
-/* A COLLAPSIBLE HEADING (SummarySectionHeading.tsx: To do, Decisions), drawn as
-   the roster's group toggle is: 12px muted words, the count, a chevron that
-   turns when open, 28px, no fill at rest and the card's hover step under the
-   pointer. The toggle bleeds 8px into the body's gutter on each side, so its
-   label keeps the rows' left edge; with a trailing button (Monitors) it stops
-   at that button instead. Authored here, beside the group toggle it copies. */
+/* A SECTION HEADING (SummarySectionHeading.tsx: To do, Plan, Agents, Decisions,
+   This chat): the label on the left in the app's one caps style (`text-caps`,
+   12px uppercase at +0.04em, muted), so a section never reads as one of the
+   13px groups or rows inside it; the count or status on the right in 12px
+   muted figures; a chevron that turns when open. 28px, no fill at rest and the
+   card's hover step under the pointer. The toggle bleeds 8px into the body's
+   gutter on each side, so its label keeps the rows' left edge; with a trailing
+   button (Monitors) it stops at that button instead. */
 .br-summary__heading[data-collapsible] {
   justify-content: flex-start;
   gap: 4px;
@@ -476,6 +428,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: var(--text-caps--letter-spacing, 0.04em);
 }
 
 .br-summary__toggle .br-summary__count {
@@ -515,7 +469,11 @@
 
 /* THE PEEK (SubagentPeek.tsx), on the footer card's light popover surface
    (`.br-footer-card`, pickers.css) and built from its parts. Only what is the
-   peek's own is here: the title's glyph, the clamps, and the Details facts. */
+   peek's own is here: the title's glyph, the model and watcher lines tucked
+   under the title, the clamps, and the Details facts. */
+.br-agents-peek .br-agents-peek__lines {
+  margin-top: -8px;
+}
 .br-agents-peek .br-agents-peek__title {
   display: flex;
   align-items: flex-start;
@@ -572,13 +530,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .br-agents__row[data-status='running'] .br-agents__glyph > svg {
-    animation: none;
-  }
-
   .br-agents__row,
   .br-agents__phase-toggle,
-  .br-agents__group-toggle,
   .br-agents__more,
   .br-agents__chevron {
     transition: none;

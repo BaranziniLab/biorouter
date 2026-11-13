@@ -1,0 +1,183 @@
+/* @ws WS-SUMMARY-GRID begin: the agent grid's marks and squares */
+/*
+ * THE AGENT GRID (components/summary/AgentMark.tsx, agentGrid.ts and the grid in
+ * SummarySubagents.tsx): one mark per piece of work, a square for a language-model
+ * agent and a circle for decision-model work, filled by status and inked on top.
+ *
+ * Authored CSS, not new Tailwind strings, for the reason chatSummary.css gives:
+ * under BIOROUTER_NO_HMR a newly written utility can silently fail to generate.
+ * Unlayered, so the focus edge here beats the layered D-15 focus fill.
+ *
+ * A mark is an SVG in `currentColor`, so its ink is one `color` per status. Every
+ * ink is an existing semantic token, at least 3:1 against the card's fill in both
+ * modes and every family (graphical objects, WCAG 1.4.11), and the shape says the
+ * status on its own, so forced colours (one system ink) still read.
+ */
+
+.br-agent-mark {
+  display: block;
+  flex: none;
+  overflow: visible;
+  color: var(--text-muted);
+}
+
+.br-agent-mark__ring,
+.br-agent-mark__cross {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.br-agent-mark__cross {
+  stroke-linecap: round;
+}
+
+/* At 7px a 1.5-unit ring is under a pixel: the dense block draws it at 2. */
+.br-agent-mark[data-small] .br-agent-mark__ring,
+.br-agent-mark[data-small] .br-agent-mark__cross {
+  stroke-width: 2;
+}
+
+.br-agent-mark__core,
+.br-agent-mark__fill {
+  fill: currentColor;
+}
+
+/* THE INKS (owner direction, 2026-11-12: red is rare, and a failure is calm;
+   design.md 9.14). Running: the info blue. Finished: a calm sage, the success
+   ink greyed with the muted ink (60:40) and set at 70% over the card's fill.
+   Measured against that fill it is 3.3:1 at its lowest (Alma Mater light) and
+   4.4:1 at its highest (Alma Mater dark), so a block of finished work recedes
+   beside the live marks and still clears the 3:1 a graphic needs. Waiting for
+   the person, stalled, stopped or interrupted: the half fill in the default
+   ink, with no hue of its own. Failed: the outline with a small cross, in the
+   muted ink at full strength, never the danger red and never an opacity fade;
+   its cross tells it from a mark not started, and the word "Failed" is on its
+   row and its card. Not started and no outcome stay in the muted ink, told
+   apart by their hollow shapes. Every one is a token, so a change to the app's
+   inks reaches the grid. */
+.br-agent-mark[data-kind='running'] {
+  color: var(--text-info);
+}
+
+.br-agent-mark[data-kind='waiting'] {
+  color: var(--text-default);
+}
+
+.br-agent-mark[data-kind='failed'] {
+  color: var(--text-muted);
+}
+
+/* A passed gate's flag (SummarySubagents.tsx) wears the finished sage too. */
+.br-agent-mark[data-kind='done'],
+.br-agents__gate-glyph[data-kind='done'] {
+  color: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--text-success) 60%, var(--text-muted)) 70%,
+    var(--background-fill)
+  );
+}
+
+/* A running child's core breathes, so a live grid reads as live without a
+   second mark. Opacity only, and never under reduced motion. */
+.br-agent-mark[data-pulse] .br-agent-mark__core {
+  animation: br-agent-mark-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes br-agent-mark-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* A GROUP'S GRID: the squares wrap in rows across the card, in spawn order, so a
+   square never moves while its group runs. 4px between 10px squares; the dense
+   block (100 agents or more) packs 7px squares 2px apart. */
+/* 2px in, so the grid's first column sits on the rows' 10px marks, centred in
+   their 14px glyph column. */
+.br-agent-grid {
+  min-width: 0;
+  padding: 4px 0 6px 2px;
+}
+
+.br-agent-grid__cells {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+  list-style: none;
+}
+
+.br-agent-grid[data-size='dense'] .br-agent-grid__cells {
+  gap: 2px;
+}
+
+.br-agent-grid__item {
+  display: flex;
+}
+
+/* A square is its own button, exactly the mark's size: no padding, no fill. The
+   grid is an overview; the rows under it are the larger targets for the same
+   cards. */
+.br-agent-grid__cell {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  cursor: pointer;
+  transition: transform var(--dur-fast-min) var(--ease-out);
+}
+
+.br-agent-grid__cell[data-shape='circle'] {
+  border-radius: 50%;
+}
+
+.br-agent-grid__cell:hover {
+  transform: scale(1.3);
+}
+
+/* A kept card's square (hover peeks, click pins): ringed in the default ink, 2px
+   off the mark, while its card is kept; a preview leaves it at rest. */
+.br-agent-grid__cell[data-pinned='true'] {
+  outline: 1.5px solid var(--text-default);
+  outline-offset: 1.5px;
+}
+
+.br-agent-grid__cell:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-agent-mark[data-pulse] .br-agent-mark__core {
+    animation: none;
+  }
+
+  .br-agent-grid__cell {
+    transition: none;
+  }
+
+  .br-agent-grid__cell:hover {
+    transform: none;
+  }
+}
+
+/* Forced colours repaint every mark in the one system ink; the shapes (hollow,
+   core, half, solid, cross, bar) still tell the statuses apart. Running takes
+   the highlight ink, the one other colour the system offers. */
+@media (forced-colors: active) {
+  .br-agent-mark {
+    color: CanvasText;
+  }
+
+  .br-agent-mark[data-kind='running'] {
+    color: Highlight;
+  }
+}
+/* @ws WS-SUMMARY-GRID end */

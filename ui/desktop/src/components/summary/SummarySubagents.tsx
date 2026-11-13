@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -6,19 +7,10 @@ import {
   useState,
   type FocusEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react';
 import { plainExcerpt } from './plainExcerpt';
-import {
-  AlertCircle,
-  ArrowRight,
-  Check,
-  ChevronRight,
-  CircleDotDashed,
-  CircleIcon,
-  Lock,
-  Plus,
-  X,
-} from '../icons/app-icons';
+import { ChevronRight, Flag, Lock, Plus } from '../icons/app-icons';
 import { usePrivacyTiersEnabled } from '../ConfigContext';
 import { PopoverContent } from '../ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
@@ -30,11 +22,8 @@ import {
 } from '../bottom_menu/FooterCard';
 import { footerCardTriggerProps, useFooterCard } from '../bottom_menu/useFooterCard';
 import { thresholdLine } from '../decisions/decisionWords';
-import { SUBAGENT_STATUS_GLYPHS, SUBAGENT_STATUS_WORDS } from '../subagent/subagentStatus';
-import { formatCount } from '../../utils/usageStats';
+import { SUBAGENT_STATUS_WORDS } from '../subagent/subagentStatus';
 import {
-  GROUP_ROW_LIMIT,
-  SUBAGENT_GROUPS,
   completedPhaseCount,
   formatElapsed,
   heldByTitle,
@@ -42,42 +31,57 @@ import {
   isClosedPhase,
   isQuiet,
   phaseOpenByDefault,
-  rowsByPhase,
   subagentCounts,
-  subagentGroup,
-  subagentListLayout,
   subagentTitle,
   type PhaseSnapshot,
-  type PhaseStatus,
   type SessionSubagents,
-  type SubagentGroup,
-  type SubagentListLayout,
   type SubagentRow,
 } from '../../utils/sessionSubagents';
-import {
-  phaseGateState,
-  type PhaseGateSnapshot,
-  type PhaseGateState,
-} from '../../utils/sessionDecisions';
+import { phaseGateState, type PhaseGateSnapshot } from '../../utils/sessionDecisions';
 import { summaryCopy } from './copy';
-import { SubagentPeek } from './SubagentPeek';
+import { SubagentPeek, peekModelName } from './SubagentPeek';
+import { AgentMark } from './AgentMark';
+import {
+  AGENT_MARK_PX,
+  agentGridSize,
+  agentGroups,
+  agentMarkKind,
+  agentMarkPulses,
+  agentMarkShape,
+  agentRowMarkPx,
+  gateMarkKind,
+  groupDrawsGrid,
+  groupDrawsGridFolded,
+  splitHead,
+  type AgentGridSize,
+  type AgentGroup,
+} from './agentGrid';
+import { SummarySectionHeading, useSectionToggle } from './SummarySectionHeading';
 import { forgetRoster, rememberRoster, rememberedRoster } from './rosterMemory';
 import './summaryAgents.css';
+import './summaryAgentGrid.css';
 import './summaryDecisions.css';
 
 const copy = summaryCopy.agents;
 
 /**
- * The words a phase's gate chip and line say. Kept here, beside the chip that
- * says them, rather than in `summary/copy.ts`.
+ * The words a phase's gate mark and line say. Kept here, beside the mark that
+ * says them, rather than in `summary/copy.ts`. The held line names the gated
+ * phase last, so a long title is cut at its end and the sentence still reads
+ * ("Waits for the gate after Draft the dosing ta…"); the possessive form read
+ * badly with a long title.
  */
 export const PHASE_GATE_ROW_COPY = {
-  waitsFor: (title: string) => `Waits for ${title}'s gate`,
+  waitsFor: (title: string) => `Waits for the gate after ${title}`,
   addGate: 'Add gate',
   addGateLabel: (phase: string) => `Add gate, ${phase}`,
 };
 
-/** A gate chip's own words (spec 3.3): the chip, then the sentence its tooltip says. */
+/**
+ * A gate mark's own words (spec 3.3): the mark's one word, then the sentence its
+ * tooltip says. Every sentence opens on "Gate", so the flag's accessible name
+ * always says what it is.
+ */
 const GATE_CHIP_COPY = {
   chip: {
     pending: 'Gate',
@@ -92,40 +96,20 @@ const GATE_CHIP_COPY = {
   notPassed: 'Gate not passed',
   needsYou: 'Gate needs you',
   blocked: 'Gate blocked',
-  passedByYou: 'Passed by you',
-  skippedByYou: 'Skipped by you',
-  passStands: 'Your pass stands until its subagents finish',
-  skipStands: 'Your skip stands until its subagents finish',
+  passedByYou: 'Gate passed by you',
+  skippedByYou: 'Gate skipped by you',
+  passStands: 'Gate passed by you once its subagents finish',
+  skipStands: 'Gate skipped by you once its subagents finish',
   attempt: (attempt: number, max: number) => `attempt ${attempt} of ${max}`,
   blockedAfter: (max: number) => `blocked after ${max} attempts`,
   unevaluated: 'could not be evaluated',
-};
-
-type Glyph = typeof CircleIcon;
-
-/** A phase's status by SHAPE, the To do list's shapes (never by colour alone). */
-const PHASE_STATUS_ICONS: Record<PhaseStatus, Glyph> = {
-  pending: CircleIcon,
-  in_progress: CircleDotDashed,
-  completed: Check,
-  blocked: AlertCircle,
-  skipped: ArrowRight,
-};
-
-/** A gate chip's shapes: the gate dialog's own. */
-const GATE_ICONS: Record<PhaseGateState, Glyph> = {
-  pending: CircleIcon,
-  passed: Check,
-  failed: X,
-  blocked: AlertCircle,
-  skipped: ArrowRight,
 };
 
 export interface SummarySubagentsData {
   /**
    * The chat these belong to. With it, the section keeps showing the last roster
    * it drew for this chat while a re-read is out or failed (H-12: a tab switch
-   * that remounted the summary showed no Phases block until the next visit).
+   * that remounted the summary showed no Plan section until the next visit).
    */
   sessionId?: string;
   data: SessionSubagents | null;
@@ -138,9 +122,15 @@ export interface SummarySubagentsData {
    * Open a phase's gate dialog (`decisions/PhaseGateDialog.tsx`), which holds the
    * person's controls and the gate's decision history; for an open phase with no
    * gate, the dialog opens on its editor ("Add gate"). Without it a phase's gate
-   * chip is drawn, but is not a control, and no phase offers "Add gate".
+   * mark is drawn, but is not a control, and no phase offers "Add gate".
    */
   onOpenGate?: (phaseId: string) => void;
+  /**
+   * The chat's monitors that watch its subagents too (`subagentWatchers`): every
+   * subagent's card says it is watched by them. The Chat summary passes them from
+   * the chat's decision settings.
+   */
+  watchedBy?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -148,8 +138,9 @@ export interface SummarySubagentsData {
 // ---------------------------------------------------------------------------
 
 /**
- * A row's second line (spec 4.1): `Waiting to start`, `Working…`, `Quiet for 4m`,
- * `Stopping…`, or once it ended its result line, else its status word.
+ * What a child is doing, or found (spec 4.1): `Waiting to start`, `Working…`,
+ * `Quiet for 4m`, `Stopping…`, or once it ended its result line, else its status
+ * word.
  */
 export function subagentLine(row: SubagentRow): string {
   switch (row.status) {
@@ -168,23 +159,55 @@ export function subagentLine(row: SubagentRow): string {
   }
 }
 
-/** A dense row's trailing note: the run time, or `quiet 4m`; nothing without either. */
-function denseTrailing(row: SubagentRow): string | null {
+/**
+ * A row's trailing figure: the run time, or `quiet 4m`; nothing without either.
+ * A failure leads with its word, `Failed · 1m45s`, so it is found by the word
+ * and its crossed mark, never by a red ink (owner direction, 2026-11-12).
+ */
+export function rowTrailing(row: SubagentRow): string | null {
   if (isQuiet(row)) return copy.quietShort(formatElapsed(row.quietSeconds) ?? '');
-  return formatElapsed(row.elapsedSeconds);
+  const elapsed = formatElapsed(row.elapsedSeconds);
+  if (row.status === 'failed') {
+    const word = SUBAGENT_STATUS_WORDS.failed;
+    return elapsed ? `${word} · ${elapsed}` : word;
+  }
+  return elapsed;
 }
 
 /**
- * A gate chip's words (spec 3.3): the chip's one word and the full sentence its
+ * An agent's accessible name, the same on its square and its row: the status
+ * word, the role or name, the model, the run time, and whether it is decision
+ * work or private. "Running, Reader 2, sonnet-4-5, 4m". Named explicitly: the
+ * visible spans are laid out as lines, and a name computed from them runs the
+ * words together.
+ */
+export function agentLabel(row: SubagentRow, isPrivate: boolean): string {
+  return [
+    isQuiet(row)
+      ? copy.quietFor(formatElapsed(row.quietSeconds) ?? '')
+      : SUBAGENT_STATUS_WORDS[row.status],
+    subagentTitle(row),
+    peekModelName(row),
+    formatElapsed(row.elapsedSeconds),
+    agentMarkShape(row) === 'circle' ? copy.decisionModel.toLowerCase() : null,
+    isPrivate ? copy.private : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+
+/**
+ * A gate's words (spec 3.3): the mark's one word and the full sentence its
  * tooltip says, with the probability named by its outcome (R2: `P(yes) 0.62 ·
  * threshold 0.80`). A gate's questions are yes/no, so the watched outcome is yes.
  * Without the phase, its status is not known, and a person's decision reads as
- * one that stands.
+ * one that stands. `needsYou` and `attention` say when the word is drawn beside
+ * the mark: only when the gate wants a look.
  */
 export function gateChipWords(
   gate: PhaseGateSnapshot,
   phase?: Pick<PhaseSnapshot, 'status'>
-): { chip: string; sentence: string; needsYou: boolean } {
+): { chip: string; sentence: string; needsYou: boolean; attention: boolean } {
   const c = GATE_CHIP_COPY;
   const closed = phase ? isClosedPhase(phase) : false;
   const numbers = thresholdLine({ type: 'yes', p: gate.threshold }, null, gate.lastMinP);
@@ -193,6 +216,7 @@ export function gateChipWords(
       chip: c.chip.passed,
       sentence: closed ? c.passedByYou : c.passStands,
       needsYou: false,
+      attention: false,
     };
   }
   if (gate.personDecision === 'skip') {
@@ -200,6 +224,7 @@ export function gateChipWords(
       chip: c.chip.skipped,
       sentence: closed ? c.skippedByYou : c.skipStands,
       needsYou: false,
+      attention: false,
     };
   }
   const blockedReason =
@@ -209,13 +234,24 @@ export function gateChipWords(
       chip: c.chip.needsYou,
       sentence: gate.blocked ? `${c.needsYou}: ${blockedReason}` : c.needsYou,
       needsYou: true,
+      attention: true,
     };
   }
   if (gate.blocked) {
-    return { chip: c.chip.blocked, sentence: `${c.blocked}: ${blockedReason}`, needsYou: false };
+    return {
+      chip: c.chip.blocked,
+      sentence: `${c.blocked}: ${blockedReason}`,
+      needsYou: false,
+      attention: true,
+    };
   }
   if (gate.lastPassed === true) {
-    return { chip: c.chip.passed, sentence: `${c.passed} · ${numbers}`, needsYou: false };
+    return {
+      chip: c.chip.passed,
+      sentence: `${c.passed} · ${numbers}`,
+      needsYou: false,
+      attention: false,
+    };
   }
   if (gate.lastPassed === false) {
     const attempt = c.attempt(Math.max(1, gate.attempts), gate.maxAttempts);
@@ -223,59 +259,62 @@ export function gateChipWords(
       chip: c.chip.failed,
       sentence: `${c.notPassed} · ${numbers} · ${attempt}`,
       needsYou: false,
+      attention: true,
     };
   }
-  return { chip: c.chip.pending, sentence: `${c.notAsked} · ${numbers}`, needsYou: false };
+  return {
+    chip: c.chip.pending,
+    sentence: `${c.notAsked} · ${numbers}`,
+    needsYou: false,
+    attention: false,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // The view: what is drawn, and the row keys in document order
 // ---------------------------------------------------------------------------
 
-interface RowsSlice {
+interface GroupView {
+  group: AgentGroup;
+  /** The toggle's row key; `all` (no plan) has no toggle of its own. */
+  key: string;
+  /** The title: the phase's, "Other agents", or none for `all`. */
+  title: string | null;
+  open: boolean;
+  /** Draws its grid of squares above its rows: a group of two or more in a larger chat. */
+  grid: boolean;
+  /** The rows drawn: every one, or the head and, once shown, the rest. */
   shown: SubagentRow[];
-  /** The rows "Show all N" would add. */
+  /** The rows "Show N more" would add. */
   hidden: number;
-  total: number;
-  /** The "Show all" / "Show fewer" row's key, when the list is longer than the limit. */
+  /** The "Show N more" / "Show fewer" row's key, when the group has a rest. */
   moreKey: string | null;
   all: boolean;
-}
-
-interface PhaseView {
-  phase: PhaseSnapshot;
-  key: string;
-  open: boolean;
-  rows: RowsSlice;
-}
-
-interface GroupView {
-  group: SubagentGroup;
-  key: string;
-  open: boolean;
-  rows: RowsSlice;
-}
-
-interface ListView {
-  label: string;
-  rows: SubagentRow[];
-  /** Comfortable lists are flat; dense ones are grouped by state. */
-  flat: RowsSlice | null;
-  groups: GroupView[];
+  /**
+   * Folded, it still draws its grid: some agent in it is not finished (running,
+   * waiting, failed, not started), so the grid is the group's live summary, as
+   * the reference's "Check 2/3" is, a group of one included. A folded group whose
+   * every agent finished is its line alone (`groupDrawsGridFolded`).
+   */
+  gridWhileFolded: boolean;
 }
 
 interface View {
-  layout: SubagentListLayout;
-  phases: PhaseView[] | null;
-  list: ListView | null;
+  size: AgentGridSize;
+  plan: SessionSubagents['plan'];
+  groups: GroupView[];
+  total: number;
   keys: string[];
   preferredKey: string | null;
 }
 
-/** A row whose peek is kept stays in the group it was kept in, so a poll never remounts it. */
-type PinnedGroups = ReadonlyMap<string, SubagentGroup>;
-
 const agentKey = (row: SubagentRow) => `agent:${row.sessionId}`;
+const gridKey = (group: AgentGroup) => `grid:${group.key}`;
+const gateKey = (phase: PhaseSnapshot) => `gate:${phase.id}`;
+const addGateKey = (phase: PhaseSnapshot) => `addgate:${phase.id}`;
+
+/** An open phase with no gate offers "Add gate" (to the person, when the mark is a control). */
+const offersAddGate = (phase: PhaseSnapshot) => !phase.gate && !isClosedPhase(phase);
 
 /** The row element carrying `data-row={key}` inside `container`, if one is drawn. */
 function rowElement(container: HTMLElement | null, key: string): HTMLElement | null {
@@ -292,123 +331,77 @@ interface FocusedRow {
   node: HTMLElement;
 }
 
-function slice(rows: SubagentRow[], scope: string, showAll: Record<string, boolean>): RowsSlice {
-  const all = showAll[scope] === true;
-  const long = rows.length > GROUP_ROW_LIMIT;
-  const shown = long && !all ? rows.slice(0, GROUP_ROW_LIMIT) : rows;
-  return {
-    shown,
-    hidden: rows.length - shown.length,
-    total: rows.length,
-    moreKey: long ? `more:${scope}` : null,
-    all,
-  };
-}
-
-function pushSlice(keys: string[], rows: RowsSlice) {
-  for (const row of rows.shown) keys.push(agentKey(row));
-  if (rows.moreKey) keys.push(rows.moreKey);
-}
-
-function buildList(
-  label: string,
-  rows: SubagentRow[],
-  layout: SubagentListLayout,
-  scope: string,
-  openState: Record<string, boolean>,
-  showAll: Record<string, boolean>,
-  keys: string[],
-  pinned: PinnedGroups
-): ListView {
-  if (layout === 'comfortable') {
-    const flat = slice(rows, scope, showAll);
-    pushSlice(keys, flat);
-    return { label, rows, flat, groups: [] };
-  }
-  const groups: GroupView[] = [];
-  for (const group of SUBAGENT_GROUPS) {
-    const members = rows.filter(
-      (row) => (pinned.get(row.sessionId) ?? subagentGroup(row.status)) === group
-    );
-    if (members.length === 0) continue;
-    const key = `group:${scope}:${group}`;
-    const open = openState[key] ?? true;
-    const view: GroupView = {
-      group,
-      key,
-      open,
-      rows: slice(members, `${scope}:${group}`, showAll),
-    };
-    keys.push(key);
-    if (open) pushSlice(keys, view.rows);
-    groups.push(view);
-  }
-  return { label, rows, flat: null, groups };
-}
-
-const gateKey = (phase: PhaseSnapshot) => `gate:${phase.id}`;
-const addGateKey = (phase: PhaseSnapshot) => `addgate:${phase.id}`;
-
-/** An open phase with no gate offers "Add gate" (to the person, when the chip is a control). */
-const offersAddGate = (phase: PhaseSnapshot) => !phase.gate && !isClosedPhase(phase);
-
 function buildView(
   data: SessionSubagents | null,
   openState: Record<string, boolean>,
   showAll: Record<string, boolean>,
   gatesOpen: boolean,
-  pinned: PinnedGroups
+  keep: ReadonlySet<string>
 ): View {
   const keys: string[] = [];
   const rows = inSpawnOrder(data?.subagents ?? []);
-  const layout = subagentListLayout(rows.length);
-  if (!data || (rows.length === 0 && !data.plan)) {
-    return { layout, phases: null, list: null, keys, preferredKey: null };
+  const size = agentGridSize(rows.length);
+  const plan = data?.plan ?? null;
+  if (!data || (rows.length === 0 && !plan)) {
+    return { size, plan, groups: [], total: 0, keys, preferredKey: null };
   }
-  let phases: PhaseView[] | null = null;
-  let list: ListView | null = null;
-  if (data.plan) {
-    const { phases: byPhase, unphased } = rowsByPhase(data.plan, rows);
-    phases = data.plan.phases.map((phase) => {
-      const members = byPhase.get(phase.id) ?? [];
-      const key = `phase:${phase.id}`;
-      const open = openState[key] ?? phaseOpenByDefault(phase, data.plan!.phases.length);
-      const view: PhaseView = { phase, key, open, rows: slice(members, key, showAll) };
-      if (members.length > 0) keys.push(key);
-      // The gate chip (or "Add gate") sits at the end of the phase's line.
-      if (gatesOpen && phase.gate) keys.push(gateKey(phase));
-      if (gatesOpen && offersAddGate(phase)) keys.push(addGateKey(phase));
-      if (members.length > 0 && open) pushSlice(keys, view.rows);
-      return view;
-    });
-    if (unphased.length > 0) {
-      list = buildList(
-        copy.otherSubagents,
-        unphased,
-        layout,
-        'other',
-        openState,
-        showAll,
-        keys,
-        pinned
-      );
+  const groups = agentGroups(plan, rows).map((group): GroupView => {
+    const phase = group.phase;
+    const title = phase ? phase.title : group.key === 'other' ? copy.otherAgents : null;
+    const key = group.key;
+    const open =
+      group.key === 'all'
+        ? true
+        : (openState[key] ?? (phase ? phaseOpenByDefault(phase, plan!.phases.length) : true));
+    const grid = groupDrawsGrid(group.rows.length, size);
+    const all = showAll[key] === true;
+    let shown = group.rows;
+    let hidden = 0;
+    if (grid) {
+      const split = splitHead(group.rows, keep);
+      shown = all ? [...split.head, ...split.rest] : split.head;
+      hidden = split.rest.length;
     }
-  } else {
-    list = buildList(copy.subagents, rows, layout, 'all', openState, showAll, keys, pinned);
-  }
-  const firstRunning = rows.find((row) => subagentGroup(row.status) === 'running');
+    const moreKey = grid && hidden > 0 ? `more:${key}` : null;
+    const gridWhileFolded = !open && groupDrawsGridFolded(group.rows, size);
+    const view: GroupView = {
+      group,
+      key,
+      title,
+      open,
+      grid,
+      shown,
+      hidden,
+      moreKey,
+      all,
+      gridWhileFolded,
+    };
+    if (group.key !== 'all' && group.rows.length > 0) keys.push(key);
+    // The gate mark (or "Add gate") sits at the end of the phase's line.
+    if (phase && gatesOpen && phase.gate) keys.push(gateKey(phase));
+    if (phase && gatesOpen && offersAddGate(phase)) keys.push(addGateKey(phase));
+    if (gridWhileFolded) keys.push(gridKey(group));
+    if (open && group.rows.length > 0) {
+      if (grid) keys.push(gridKey(group));
+      for (const row of shown) keys.push(agentKey(row));
+      if (moreKey) keys.push(moreKey);
+    }
+    return view;
+  });
+  const firstRunning = rows.find((row) => agentMarkKind(row) === 'running');
   const runningKey = firstRunning ? agentKey(firstRunning) : null;
   return {
-    layout,
-    phases,
-    list,
+    size,
+    plan,
+    groups,
+    total: rows.length,
     keys,
     preferredKey: runningKey && keys.includes(runningKey) ? runningKey : (keys[0] ?? null),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Rows
+// The card every square and row opens: hover peeks, click pins
 // ---------------------------------------------------------------------------
 
 interface RowControls {
@@ -418,146 +411,287 @@ interface RowControls {
   onOpenGate?: SummarySubagentsData['onOpenGate'];
   /** The plan, for the title of the phase whose gate holds another. */
   plan: SessionSubagents['plan'];
-  /** A row's peek was kept (with the group it sits in) or let go (`null`). */
-  onPinnedChange: (sessionId: string, group: SubagentGroup | null) => void;
+  /** A row's or square's card was kept (`true`) or let go (`false`). */
+  onKeptChange: (sessionId: string, kept: boolean) => void;
+  watchedBy: readonly string[];
+}
+
+/** The space between a peek and the summary card it hangs beside. */
+const PEEK_GAP_PX = 8;
+
+/**
+ * How far a peek stands off its trigger: to the summary card's own left edge,
+ * then `PEEK_GAP_PX` past it, so a card opened from a square in the middle of
+ * the grid hangs clear of the rail and never covers its rows' marks (review,
+ * 2026-11-12). Outside a summary card it is the gap alone.
+ */
+function peekSideOffset(trigger: Element | null): number {
+  const surface = trigger?.closest('.br-summary-card, .br-summary-popover');
+  if (!trigger || !surface) return PEEK_GAP_PX;
+  const inset = trigger.getBoundingClientRect().left - surface.getBoundingClientRect().left;
+  return Math.max(PEEK_GAP_PX, Math.round(inset) + PEEK_GAP_PX);
 }
 
 /**
- * One subagent: the status glyph, its role or name, and one line saying what it
- * is doing or what it found (F-2); dense, one 28px line with the run time. The
- * lock of a private child in muted ink (F-16).
- *
- * Hover peeks, click pins (R8, D-43), on the composer footer's own machinery
- * (`useFooterCard`): a hover previews the peek after 300ms and the row stays at
- * rest; a click, Enter or Space keeps it and marks the row `data-pinned`; Escape,
- * a press outside or a second click closes it. A click no longer opens the tab:
- * "Open in a tab" is in the peek.
+ * One agent's card on the composer footer's own machinery (`useFooterCard`, R8,
+ * D-43): a hover previews it after 300ms and the trigger stays at rest; a click,
+ * Enter or Space keeps it and marks the trigger `data-pinned`; Escape, a press
+ * outside or a second click closes it. The card holds "Open in a tab". A square
+ * and a row are two triggers of the same card content, and one card is open at a
+ * time across the roster (`FooterCardGroup`).
  */
-function SubagentRowItem({
+function AgentCard({
   row,
-  layout,
   controls,
+  trigger,
 }: {
   row: SubagentRow;
-  layout: SubagentListLayout;
   controls: RowControls;
+  trigger: (props: ReturnType<typeof footerCardTriggerProps>) => ReactNode;
 }) {
-  const key = agentKey(row);
   const card = useFooterCard();
   const cardId = useId();
-  const trigger = footerCardTriggerProps(card, cardId);
-  const tiersEnabled = usePrivacyTiersEnabled();
-  const Icon = SUBAGENT_STATUS_GLYPHS[row.status];
-  const word = SUBAGENT_STATUS_WORDS[row.status];
   const title = subagentTitle(row);
-  const quiet = isQuiet(row);
-  const isPrivate = tiersEnabled && row.privacyTier === 'private';
-  const line = layout === 'comfortable' ? subagentLine(row) : null;
-  const trailing = layout === 'dense' ? denseTrailing(row) : null;
-  // Named explicitly: the visible spans are laid out as lines, and an accessible
-  // name computed from them runs the words together.
-  const label = [word, title, line ?? trailing, isPrivate ? copy.private : null]
-    .filter(Boolean)
-    .join(', ');
 
-  // Keep the row in the group it was kept in while its peek is kept (spec 4.2).
-  const { onPinnedChange } = controls;
-  const pinnedGroup = card.pinned ? subagentGroup(row.status) : null;
-  const pinnedRef = useRef<SubagentGroup | null>(null);
+  // The trigger, to measure where the card's peek hangs (`peekSideOffset`) once
+  // it opens, before it is painted.
+  const triggerNode = useRef<HTMLElement | null>(null);
+  const { triggerRef } = card;
+  const ref = useCallback(
+    (node: HTMLElement | null) => {
+      triggerNode.current = node;
+      triggerRef(node);
+    },
+    [triggerRef]
+  );
+  const [sideOffset, setSideOffset] = useState(PEEK_GAP_PX);
+  useLayoutEffect(() => {
+    if (card.open) setSideOffset(peekSideOffset(triggerNode.current));
+  }, [card.open]);
+
+  // A kept card's row stays drawn while it is kept, whatever a poll does to its rank.
+  const { onKeptChange } = controls;
+  const keptRef = useRef(false);
   useEffect(() => {
-    if (card.pinned && pinnedRef.current === null) {
-      pinnedRef.current = pinnedGroup;
-      onPinnedChange(row.sessionId, pinnedGroup);
-    } else if (!card.pinned && pinnedRef.current !== null) {
-      pinnedRef.current = null;
-      onPinnedChange(row.sessionId, null);
+    if (card.pinned !== keptRef.current) {
+      keptRef.current = card.pinned;
+      onKeptChange(row.sessionId, card.pinned);
     }
-  }, [card.pinned, pinnedGroup, onPinnedChange, row.sessionId]);
+  }, [card.pinned, onKeptChange, row.sessionId]);
   useEffect(
     () => () => {
-      if (pinnedRef.current !== null) onPinnedChange(row.sessionId, null);
+      if (keptRef.current) onKeptChange(row.sessionId, false);
     },
-    [onPinnedChange, row.sessionId]
+    [onKeptChange, row.sessionId]
   );
 
   return (
-    <li className="br-agents__item" data-row-item="">
-      <FooterCardRoot card={card}>
-        <button
-          type="button"
-          className="br-agents__row"
-          data-row={key}
-          data-layout={layout}
-          data-status={row.status}
-          data-quiet={quiet ? '' : undefined}
-          data-testid={`subagent-row-${row.sessionId}`}
-          aria-label={label}
-          tabIndex={controls.tabIndexFor(key)}
-          {...trigger}
-          onFocus={() => {
-            controls.onRowFocus(key);
-            trigger.onFocus();
-          }}
+    <FooterCardRoot card={card}>
+      {trigger({ ...footerCardTriggerProps(card, cardId), ref })}
+      {card.open ? (
+        <PopoverContent
+          id={cardId}
+          ref={card.contentRef}
+          side="left"
+          align="start"
+          sideOffset={sideOffset}
+          collisionPadding={FOOTER_CARD_COLLISION_PADDING}
+          aria-label={copy.peek.label(title)}
+          data-testid={`subagent-card-${row.sessionId}`}
+          data-pinned={card.pinned ? 'true' : undefined}
+          className="br-footer-card br-agents-peek"
+          {...card.contentHandlers}
         >
-          <span className="br-summary__glyph br-agents__glyph" aria-hidden="true">
-            <Icon />
-          </span>
-          <span className="br-agents__text" aria-hidden="true">
-            <span className="br-agents__name">{title}</span>
-            {line ? <span className="br-agents__meta">{line}</span> : null}
-          </span>
-          {trailing ? (
-            <span className="br-agents__trailing" aria-hidden="true">
-              {trailing}
-            </span>
-          ) : null}
-          {isPrivate ? (
-            <span className="br-agents__lock" aria-hidden="true">
-              <Lock />
-            </span>
-          ) : null}
-        </button>
-        {card.open ? (
-          <PopoverContent
-            id={cardId}
-            ref={card.contentRef}
-            side="left"
-            align="start"
-            sideOffset={12}
-            collisionPadding={FOOTER_CARD_COLLISION_PADDING}
-            aria-label={copy.peek.label(title)}
-            data-testid={`subagent-card-${row.sessionId}`}
-            data-pinned={card.pinned ? 'true' : undefined}
-            className="br-footer-card br-agents-peek"
-            {...card.contentHandlers}
+          <SubagentPeek
+            row={row}
+            watchedBy={controls.watchedBy}
+            onOpen={() => {
+              controls.onOpen(row.sessionId, title);
+              card.close();
+            }}
+          />
+        </PopoverContent>
+      ) : null}
+    </FooterCardRoot>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rows and squares
+// ---------------------------------------------------------------------------
+
+/**
+ * One agent as a row: its mark, its role or name, and its run time on the right.
+ * In a chat of four agents or fewer (`rows`), a second line says the model
+ * and what it is doing or found; otherwise it is one 28px line under the grid.
+ * The lock of a private child sits at its end in muted ink (F-16).
+ */
+function AgentRow({
+  row,
+  size,
+  controls,
+}: {
+  row: SubagentRow;
+  size: AgentGridSize;
+  controls: RowControls;
+}) {
+  const key = agentKey(row);
+  const tiersEnabled = usePrivacyTiersEnabled();
+  const title = subagentTitle(row);
+  const quiet = isQuiet(row);
+  const isPrivate = tiersEnabled && row.privacyTier === 'private';
+  const layout = size === 'rows' ? 'comfortable' : 'dense';
+  const trailing = rowTrailing(row);
+  const model = peekModelName(row);
+  const line =
+    layout === 'comfortable' ? [model, subagentLine(row)].filter(Boolean).join(' · ') : null;
+  const kind = agentMarkKind(row);
+  return (
+    <li className="br-agents__item" data-row-item="">
+      <AgentCard
+        row={row}
+        controls={controls}
+        trigger={(trigger) => (
+          <button
+            type="button"
+            className="br-agents__row"
+            data-row={key}
+            data-layout={layout}
+            data-status={row.status}
+            data-mark={kind}
+            data-quiet={quiet ? '' : undefined}
+            data-testid={`subagent-row-${row.sessionId}`}
+            aria-label={agentLabel(row, isPrivate)}
+            tabIndex={controls.tabIndexFor(key)}
+            {...trigger}
+            onFocus={() => {
+              controls.onRowFocus(key);
+              trigger.onFocus();
+            }}
           >
-            <SubagentPeek
-              row={row}
-              onOpen={() => {
-                controls.onOpen(row.sessionId, title);
-                card.close();
-              }}
-            />
-          </PopoverContent>
-        ) : null}
-      </FooterCardRoot>
+            <span className="br-summary__glyph br-agents__glyph" aria-hidden="true">
+              <AgentMark
+                kind={kind}
+                shape={agentMarkShape(row)}
+                size={agentRowMarkPx(size)}
+                pulse={agentMarkPulses(row)}
+              />
+            </span>
+            <span className="br-agents__text" aria-hidden="true">
+              <span className="br-agents__name-line">
+                <span className="br-agents__name">{title}</span>
+                {trailing ? <span className="br-agents__trailing">{trailing}</span> : null}
+                {isPrivate ? (
+                  <span className="br-agents__lock">
+                    <Lock />
+                  </span>
+                ) : null}
+              </span>
+              {line ? <span className="br-agents__meta">{line}</span> : null}
+            </span>
+          </button>
+        )}
+      />
     </li>
   );
 }
 
+/**
+ * A group's grid: one square per agent, in spawn order, so a square never moves
+ * while the group runs. A square's hover peeks its card and a click keeps it, as
+ * a row's does. The grid is ONE stop of the roster's arrow-key order (its current
+ * square carries the group's `data-row`): Up and Down leave it for the rows above
+ * and below, Left and Right move between its squares.
+ */
+function AgentGrid({
+  group,
+  size,
+  title,
+  controls,
+}: {
+  group: AgentGroup;
+  size: AgentGridSize;
+  title: string | null;
+  controls: RowControls;
+}) {
+  const tiersEnabled = usePrivacyTiersEnabled();
+  const key = gridKey(group);
+  const [current, setCurrent] = useState(0);
+  const index = Math.min(current, group.rows.length - 1);
+  const listRef = useRef<HTMLUListElement>(null);
+  const onKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const rtl = listRef.current ? getComputedStyle(listRef.current).direction === 'rtl' : false;
+    const forward = (event.key === 'ArrowRight') !== rtl;
+    const next = Math.max(0, Math.min(group.rows.length - 1, index + (forward ? 1 : -1)));
+    event.preventDefault();
+    if (next === index) return;
+    setCurrent(next);
+    listRef.current?.querySelectorAll<HTMLElement>('[data-grid-cell]')[next]?.focus();
+  };
+  return (
+    <div className="br-agent-grid" data-size={size} data-row-item="">
+      <ul
+        ref={listRef}
+        className="br-agent-grid__cells"
+        aria-label={title ? copy.gridLabel(title) : copy.gridOfChat}
+        onKeyDown={onKeyDown}
+      >
+        {group.rows.map((row, i) => {
+          const isPrivate = tiersEnabled && row.privacyTier === 'private';
+          const kind = agentMarkKind(row);
+          return (
+            <li key={row.sessionId} className="br-agent-grid__item">
+              <AgentCard
+                row={row}
+                controls={controls}
+                trigger={(trigger) => (
+                  <button
+                    type="button"
+                    className="br-agent-grid__cell"
+                    data-grid-cell=""
+                    data-row={i === index ? key : undefined}
+                    data-mark={kind}
+                    data-shape={agentMarkShape(row)}
+                    data-testid={`subagent-cell-${row.sessionId}`}
+                    aria-label={agentLabel(row, isPrivate)}
+                    tabIndex={i === index ? controls.tabIndexFor(key) : -1}
+                    {...trigger}
+                    onFocus={() => {
+                      setCurrent(i);
+                      controls.onRowFocus(key);
+                      trigger.onFocus();
+                    }}
+                  >
+                    <AgentMark
+                      kind={kind}
+                      shape={agentMarkShape(row)}
+                      size={AGENT_MARK_PX[size]}
+                      pulse={agentMarkPulses(row)}
+                    />
+                  </button>
+                )}
+              />
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function MoreRow({
-  rows,
-  scope,
+  view,
   controls,
   onToggle,
 }: {
-  rows: RowsSlice;
-  scope: string;
+  view: GroupView;
   controls: RowControls;
-  onToggle: (scope: string) => void;
+  onToggle: (key: string) => void;
 }) {
-  if (!rows.moreKey) return null;
-  const key = rows.moreKey;
+  if (!view.moreKey) return null;
+  const key = view.moreKey;
   return (
     <li className="br-agents__item" data-row-item="">
       <button
@@ -566,79 +700,98 @@ function MoreRow({
         data-row={key}
         tabIndex={controls.tabIndexFor(key)}
         onFocus={() => controls.onRowFocus(key)}
-        onClick={() => onToggle(scope)}
+        onClick={() => onToggle(view.key)}
       >
-        {rows.all ? copy.showFewer : copy.showAll(rows.total)}
+        {view.all ? copy.showFewer : copy.showMore(view.hidden)}
       </button>
     </li>
   );
 }
 
-function RowList({
-  rows,
-  scope,
-  layout,
+/** A group's body: its grid, then its rows and "Show N more". */
+function GroupBody({
+  view,
+  size,
   controls,
   onToggleAll,
   id,
-  label,
 }: {
-  rows: RowsSlice;
-  scope: string;
-  layout: SubagentListLayout;
+  view: GroupView;
+  size: AgentGridSize;
   controls: RowControls;
-  onToggleAll: (scope: string) => void;
+  onToggleAll: (key: string) => void;
   id?: string;
-  label?: string;
 }) {
   return (
-    <ul id={id} aria-label={label} className="br-agents__list" data-layout={layout}>
-      {rows.shown.map((row) => (
-        <SubagentRowItem key={row.sessionId} row={row} layout={layout} controls={controls} />
-      ))}
-      <MoreRow rows={rows} scope={scope} controls={controls} onToggle={onToggleAll} />
-    </ul>
+    <div id={id} className="br-agents__group-body">
+      {view.grid ? (
+        <AgentGrid group={view.group} size={size} title={view.title} controls={controls} />
+      ) : null}
+      <ul
+        aria-label={view.title ? copy.rowsLabel(view.title) : copy.rowsOfChat}
+        className="br-agents__list"
+        data-layout={size === 'rows' ? 'comfortable' : 'dense'}
+      >
+        {view.shown.map((row) => (
+          <AgentRow key={row.sessionId} row={row} size={size} controls={controls} />
+        ))}
+        <MoreRow view={view} controls={controls} onToggle={onToggleAll} />
+      </ul>
+    </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Phases and their gates
+// ---------------------------------------------------------------------------
+
 /**
- * The muted line under a phase, only when there is something to act on (spec
- * 3.1): what it waits for, and its failed or blocked subagents. Running and
- * quiet counts are on the rows.
+ * The secondary line under a phase, only when an earlier gate holds it (spec
+ * 3.1): "Waits for the gate after Build". Its failed and blocked subagents are
+ * its grid's crosses and half-filled marks, and words in its name.
  */
-function phaseNoticeLine(phase: PhaseSnapshot, heldBy: string | null): string {
+function phaseNoticeLine(heldBy: string | null): string {
+  return heldBy ? PHASE_GATE_ROW_COPY.waitsFor(heldBy) : '';
+}
+
+/** "1 failed, 1 blocked", for a phase's accessible name; `null` when neither. */
+function phaseTroubleWords(phase: PhaseSnapshot): string | null {
   const { counts } = phase;
-  return [
-    heldBy ? PHASE_GATE_ROW_COPY.waitsFor(heldBy) : null,
+  const words = [
     counts.failed > 0 ? copy.failed(counts.failed) : null,
     counts.blocked > 0 ? copy.blocked(counts.blocked) : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  ].filter(Boolean);
+  return words.length > 0 ? words.join(', ') : null;
 }
 
 /**
- * A phase gate as a 20px chip at the end of its phase's line (owner rule: a
- * gate's evaluations are never transcript rows, and F-1: never a row of its
- * own). Pressing it opens the gate's dialog. Its state is a glyph and a word,
- * never colour alone; the full sentence is its tooltip and its name.
+ * A phase gate as a small flag at the end of its phase's line (owner rule: a
+ * gate's evaluations are never transcript rows, and F-1: never a row of its own).
+ * A flag and never a circle, so a circle only ever means decision-model work
+ * (owner direction, 2026-11-12: the gate's old dot read as one). The flag is an
+ * outline until the gate passes, then solid; its word is drawn beside it only
+ * when the gate wants a look ("Needs you", "Not passed", "Blocked"), and never in
+ * red. The full sentence, which opens on "Gate", is its tooltip and its name.
+ * Pressing it opens the gate's dialog.
  */
 function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowControls }) {
   const gate = phase.gate;
   if (!gate) return null;
   // The gate dialog reads the same rule.
   const state = phaseGateState(gate);
-  const Icon = GATE_ICONS[state];
   const words = gateChipWords(gate, phase);
   const name = `${words.sentence}, ${phase.title}`;
+  const kind = gateMarkKind(gate);
   const content = (
     <>
-      <span className="br-agents__gate-glyph" aria-hidden="true">
-        <Icon />
+      <span className="br-agents__gate-glyph" data-kind={kind} aria-hidden="true">
+        <Flag />
       </span>
-      <span className="br-agents__gate-text" aria-hidden="true">
-        {words.chip}
-      </span>
+      {words.attention ? (
+        <span className="br-agents__gate-text" aria-hidden="true">
+          {words.chip}
+        </span>
+      ) : null}
     </>
   );
   if (!controls.onOpenGate) {
@@ -647,10 +800,14 @@ function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowCont
         className="br-agents__gate"
         role="img"
         data-state={state}
+        data-mark={kind}
         data-static=""
+        data-attention={words.attention ? '' : undefined}
         data-needs-person={words.needsYou ? '' : undefined}
         data-testid={`phase-gate-${phase.id}`}
         aria-label={name}
+        // Not a control here, so no Tooltip: the pointer still reads the sentence.
+        title={words.sentence}
       >
         {content}
       </span>
@@ -667,6 +824,8 @@ function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowCont
             className="br-agents__gate"
             data-row={key}
             data-state={state}
+            data-mark={kind}
+            data-attention={words.attention ? '' : undefined}
             data-needs-person={words.needsYou ? '' : undefined}
             data-testid={`phase-gate-${phase.id}`}
             aria-label={name}
@@ -684,10 +843,11 @@ function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowCont
 }
 
 /**
- * "Add gate" on an open phase with no gate, drawn as the chip in the chip's
- * slot: quiet until the phase is hovered or the button focused, always in the
- * arrow-key order, so a keyboard finds it the way a pointer does. Pressing it
- * opens the gate dialog on its editor.
+ * "Add gate" on an open phase with no gate, drawn in the gate's slot as a 20px
+ * plus (its words are its name and its tooltip, so it never takes the phase
+ * title's room): quiet until the phase is hovered or the button focused, always
+ * in the arrow-key order, so a keyboard finds it the way a pointer does. Pressing
+ * it opens the gate dialog on its editor.
  */
 function AddGateButton({
   phase,
@@ -705,73 +865,90 @@ function AddGateButton({
   const visible = shown || focused;
   return (
     <span data-row-item="" className="br-agents__gate-slot">
-      <button
-        type="button"
-        className="br-agents__gate"
-        data-row={key}
-        data-add-gate=""
-        data-visible={visible ? '' : undefined}
-        data-testid={`phase-add-gate-${phase.id}`}
-        aria-label={PHASE_GATE_ROW_COPY.addGateLabel(phase.title)}
-        tabIndex={controls.tabIndexFor(key)}
-        onFocus={() => {
-          setFocused(true);
-          controls.onRowFocus(key);
-        }}
-        onBlur={() => setFocused(false)}
-        onClick={() => open(phase.id)}
-      >
-        <span className="br-agents__gate-glyph" aria-hidden="true">
-          <Plus />
-        </span>
-        <span className="br-agents__gate-text">{PHASE_GATE_ROW_COPY.addGate}</span>
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="br-agents__gate"
+            data-row={key}
+            data-add-gate=""
+            data-visible={visible ? '' : undefined}
+            data-testid={`phase-add-gate-${phase.id}`}
+            aria-label={PHASE_GATE_ROW_COPY.addGateLabel(phase.title)}
+            tabIndex={controls.tabIndexFor(key)}
+            onFocus={() => {
+              setFocused(true);
+              controls.onRowFocus(key);
+            }}
+            onBlur={() => setFocused(false)}
+            onClick={() => open(phase.id)}
+          >
+            <span className="br-agents__gate-glyph" aria-hidden="true">
+              <Plus />
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{PHASE_GATE_ROW_COPY.addGate}</TooltipContent>
+      </Tooltip>
     </span>
   );
 }
 
-function PhaseItem({
+/**
+ * One group of the Plan section: a phase (or "Other agents"), as a collapsible
+ * line with its title (one line, cut with an ellipsis, the whole title its
+ * tooltip), "done of total" on the right and its gate's flag, then its grid, its
+ * rows and "Show N more". A phase that used no subagents is one static line that
+ * says where it stands ("Pending", "Skipped").
+ */
+function GroupItem({
   view,
-  layout,
+  size,
   controls,
   onToggle,
   onToggleAll,
 }: {
-  view: PhaseView;
-  layout: SubagentListLayout;
+  view: GroupView;
+  size: AgentGridSize;
   controls: RowControls;
   onToggle: (key: string, open: boolean) => void;
-  onToggleAll: (scope: string) => void;
+  onToggleAll: (key: string) => void;
 }) {
-  const { phase, key, open, rows } = view;
-  const listId = useId();
+  const { group, key, open } = view;
+  const phase = group.phase;
+  const bodyId = useId();
   const [hovered, setHovered] = useState(false);
-  const Icon = PHASE_STATUS_ICONS[phase.status];
-  const total = Math.max(phase.counts.total, rows.total);
-  const done = Math.min(phase.counts.done, total);
+  const rowsTotal = group.rows.length;
+  const total = phase ? Math.max(phase.counts.total, rowsTotal) : rowsTotal;
+  const done = phase ? Math.min(phase.counts.done, total) : subagentCounts(group.rows).done;
   // H-12: a phase that used no subagents (its work was the parent's own) shows no
-  // "0 of 0"; its glyph says where it stands.
-  const count = total > 0 ? summaryCopy.todoCount(done, total) : null;
-  const heldBy = heldByTitle(controls.plan, phase);
-  const notice = phaseNoticeLine(phase, heldBy);
+  // "0 of 0"; its status word says where it stands.
+  const count =
+    total > 0 ? summaryCopy.todoCount(done, total) : phase ? copy.phaseStatus[phase.status] : null;
+  const heldBy = phase ? heldByTitle(controls.plan, phase) : null;
+  const notice = phaseNoticeLine(heldBy);
+  const title = view.title ?? copy.agents;
   // "Read the trials, research phase, in progress, 1 of 3 subagents done": named
-  // explicitly, for the reason a subagent row is. The kind lives here only.
-  const label = [
-    phase.title,
-    copy.phaseKindWords(copy.phaseKind[phase.kind]),
-    copy.phaseStatus[phase.status].toLowerCase(),
-    count ? `${count}${copy.phaseAgentsSuffix}` : null,
-    heldBy ? PHASE_GATE_ROW_COPY.waitsFor(heldBy) : null,
-  ]
-    .filter(Boolean)
-    .join(', ');
+  // explicitly, for the reason a row is. The kind lives here only.
+  const label = phase
+    ? [
+        phase.title,
+        copy.phaseKindWords(copy.phaseKind[phase.kind]),
+        copy.phaseStatus[phase.status].toLowerCase(),
+        total > 0 ? `${summaryCopy.todoCount(done, total)}${copy.phaseAgentsSuffix}` : null,
+        phaseTroubleWords(phase),
+        heldBy ? PHASE_GATE_ROW_COPY.waitsFor(heldBy) : null,
+      ]
+        .filter(Boolean)
+        .join(', ')
+    : `${title}, ${summaryCopy.todoCount(done, total)}${copy.doneSuffix}`;
   const heading = (
     <>
-      <span className="br-summary__glyph" aria-hidden="true">
-        <Icon />
+      <span className="br-agents__chevron" data-open={open ? '' : undefined} aria-hidden="true">
+        {rowsTotal > 0 ? <ChevronRight /> : null}
       </span>
-      <span className="br-agents__phase-title" aria-hidden="true">
-        {phase.title}
+      <span className="br-agents__phase-title" title={title} aria-hidden="true">
+        {title}
       </span>
       {count ? (
         <span className="br-summary__count" aria-hidden="true">
@@ -783,14 +960,18 @@ function PhaseItem({
   return (
     <li
       className="br-agents__phase"
-      data-status={phase.status}
-      data-phase-id={phase.id}
-      data-held-by={heldBy ? (phase.heldBy ?? undefined) : undefined}
+      data-status={phase?.status}
+      data-phase-id={phase?.id}
+      data-group={group.key}
+      data-held-by={heldBy ? (phase?.heldBy ?? undefined) : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div className="br-agents__phase-line">
-        {rows.total > 0 ? (
+      <div
+        className="br-agents__phase-line"
+        data-word-end={rowsTotal === 0 && !phase?.gate ? '' : undefined}
+      >
+        {rowsTotal > 0 ? (
           <span data-row-item="" className="br-agents__phase-slot">
             <button
               type="button"
@@ -798,19 +979,12 @@ function PhaseItem({
               data-row={key}
               aria-label={label}
               aria-expanded={open}
-              aria-controls={open ? listId : undefined}
+              aria-controls={open ? bodyId : undefined}
               tabIndex={controls.tabIndexFor(key)}
               onFocus={() => controls.onRowFocus(key)}
               onClick={() => onToggle(key, !open)}
             >
               {heading}
-              <span
-                className="br-agents__chevron"
-                data-open={open ? '' : undefined}
-                aria-hidden="true"
-              >
-                <ChevronRight />
-              </span>
             </button>
           </span>
         ) : (
@@ -818,108 +992,86 @@ function PhaseItem({
             {heading}
           </div>
         )}
-        <GateChip phase={phase} controls={controls} />
-        <AddGateButton phase={phase} controls={controls} shown={hovered} />
+        {phase ? <GateChip phase={phase} controls={controls} /> : null}
+        {phase ? <AddGateButton phase={phase} controls={controls} shown={hovered} /> : null}
       </div>
       {notice ? <p className="br-agents__phase-counts">{notice}</p> : null}
-      {open && rows.total > 0 ? (
-        <RowList
-          id={listId}
-          rows={rows}
-          scope={key}
-          layout={layout}
+      {open && rowsTotal > 0 ? (
+        <GroupBody
+          id={bodyId}
+          view={view}
+          size={size}
           controls={controls}
           onToggleAll={onToggleAll}
         />
+      ) : view.gridWhileFolded ? (
+        <AgentGrid group={group} size={size} title={view.title} controls={controls} />
       ) : null}
     </li>
   );
 }
 
-function GroupItem({
-  view,
-  layout,
-  controls,
-  onToggle,
-  onToggleAll,
-  scope,
-}: {
-  view: GroupView;
-  layout: SubagentListLayout;
-  controls: RowControls;
-  onToggle: (key: string, open: boolean) => void;
-  onToggleAll: (scope: string) => void;
-  scope: string;
-}) {
-  const listId = useId();
-  const { group, key, open, rows } = view;
+/**
+ * The notation's key, one secondary line under the section's heading, before the
+ * grid it explains (review, 2026-11-12: at the roster's foot it read as part of
+ * the last phase): "Models:", a square, "language", a circle, "decision", solid
+ * and in the muted ink, as the terminal's pane writes "models: ■ language  ●
+ * decision" under its heading. Drawn only while the roster mixes
+ * the two shapes, which is when a person needs it; a roster of one kind says
+ * nothing. Hidden from assistive technology, since every square and row already
+ * says "decision model" in its name.
+ */
+function ShapeKey({ rows }: { rows: readonly SubagentRow[] }) {
+  const shapes = new Set(rows.map((row) => agentMarkShape(row)));
+  if (shapes.size < 2) return null;
   return (
-    <div className="br-agents__group" data-group={group}>
-      <div data-row-item="">
-        <button
-          type="button"
-          className="br-agents__group-toggle"
-          data-row={key}
-          aria-label={`${copy.groups[group]}, ${formatCount(rows.total)}`}
-          aria-expanded={open}
-          aria-controls={open ? listId : undefined}
-          tabIndex={controls.tabIndexFor(key)}
-          onFocus={() => controls.onRowFocus(key)}
-          onClick={() => onToggle(key, !open)}
-        >
-          <span className="br-agents__group-label">{copy.groups[group]}</span>
-          <span className="br-summary__count">{formatCount(rows.total)}</span>
-          <span className="br-agents__chevron" data-open={open ? '' : undefined} aria-hidden="true">
-            <ChevronRight />
-          </span>
-        </button>
-      </div>
-      {open ? (
-        <RowList
-          id={listId}
-          rows={rows}
-          scope={`${scope}:${group}`}
-          layout={layout}
-          controls={controls}
-          onToggleAll={onToggleAll}
-          label={copy.groups[group]}
-        />
-      ) : null}
-    </div>
+    <p className="br-agents__key" aria-hidden="true" data-testid="summary-agents-key">
+      <span>{copy.keyLabel}</span>
+      <span className="br-agents__key-item">
+        <AgentMark kind="done" shape="square" size={AGENT_MARK_PX.grid} />
+        {copy.keyLanguage}
+      </span>
+      <span className="br-agents__key-item">
+        <AgentMark kind="done" shape="circle" size={AGENT_MARK_PX.grid} />
+        {copy.keyDecision}
+      </span>
+    </p>
   );
 }
 
-function ListCount({ rows }: { rows: SubagentRow[] }) {
+function ListCount({ rows }: { rows: readonly SubagentRow[] }) {
   const counts = subagentCounts(rows);
-  const visible = `${counts.running > 0 ? `${copy.running(counts.running)} · ` : ''}${summaryCopy.todoCount(counts.done, counts.total)}`;
   return (
     <>
-      <span className="br-summary__count" aria-hidden="true">
-        {visible}
-      </span>
-      <span className="sr-only" aria-live="polite">
-        {summaryCopy.todoCount(counts.done, counts.total)}
-        {copy.doneSuffix}
-      </span>
+      {counts.running > 0 ? `${copy.running(counts.running)} · ` : ''}
+      {summaryCopy.todoCount(counts.done, counts.total)}
     </>
   );
 }
 
 /**
- * The chat's subagents, and its phase plan when its agent declared one, inside
- * the Chat summary (the docked rail and its popover alike).
+ * The chat's subagents, inside the Chat summary (the docked rail and its popover
+ * alike), drawn in the agent grid's notation (`agentGrid.ts`): one mark per
+ * agent, a square for a language-model agent and a circle for decision-model
+ * work, filled and inked by status.
  *
- * Up to four subagents get comfortable two-line rows (status by shape and the
- * role or name, then what it is doing or found). Five or more get dense 28px
- * rows grouped by state, Running, Needs attention and Done, each group
- * collapsible and showing at most 12 rows before "Show all N". With a plan, the
- * subagents sit under their phases, one line per phase (status glyph, title,
- * count, chevron, and the gate's chip), and any in no phase under "Other
- * subagents".
+ * - With a phase plan, a Plan section: one collapsible group per phase in plan
+ *   order (title, "done of total", the gate's flag), then "Other agents".
+ * - Without one, an Agents section holding the whole roster as one group.
+ * - In a chat of four agents or fewer every agent is a two-line row led by a 14px
+ *   mark. With more, a group of more than four draws its grid of squares (10px,
+ *   7px from 100 agents), then its first five rows (waiting for the person,
+ *   failed, running, then the newest), then "Show N more".
  *
- * A row's hover previews its peek and a click keeps it (one open at a time); the
- * peek holds "Open in a tab" and the setup. The whole area is one tab stop; the
- * arrow keys, Home and End move between rows and open nothing.
+ * Nothing here is a box: the groups, grids and rows sit on the card's ground,
+ * and a phase is parted from the one above by an inset hairline. While
+ * decision-model subagents mix with language-model ones, a one-line key under
+ * the section's heading says which shape is which.
+ *
+ * A square's or row's hover previews its card and a click keeps it (one open at a
+ * time); the card holds "Open in a tab" and the setup. The roster is one tab stop;
+ * the arrow keys, Home and End move between rows, and Left and Right between a
+ * grid's squares, opening nothing.
  */
 export function SummarySubagents({
   sessionId,
@@ -929,10 +1081,14 @@ export function SummarySubagents({
   refresh,
   onOpen,
   onOpenGate,
+  watchedBy = [],
 }: SummarySubagentsData) {
   const [openState, setOpenState] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
-  const [pinned, setPinned] = useState<ReadonlyMap<string, SubagentGroup>>(new Map());
+  const [kept, setKept] = useState<ReadonlySet<string>>(new Set());
+  const [focusedAgent, setFocusedAgent] = useState<string | null>(null);
+  const [sectionOpen, setSectionOpen] = useSectionToggle(true);
+  const sectionBodyId = useId();
 
   // H-12: while a re-read is out or failed, keep drawing what this chat's roster
   // last was; a real answer replaces it, and an answer of "none" forgets it.
@@ -944,16 +1100,19 @@ export function SummarySubagents({
     else if (!loading && !error) forgetRoster(sessionId);
   }, [sessionId, given, loading, error]);
 
-  const view = buildView(data, openState, showAll, !!onOpenGate, pinned);
-  const roving = useRovingRows(view.keys, view.preferredKey);
+  // A row whose card is kept, or that holds focus, stays drawn whatever its rank.
+  const keep = focusedAgent ? new Set([...kept, focusedAgent]) : kept;
+  const view = buildView(data, openState, showAll, !!onOpenGate, keep);
+  const keys = sectionOpen ? view.keys : [];
+  const roving = useRovingRows(keys, view.preferredKey);
 
-  // A row can be remounted under the person's focus. A poll that moves a child
-  // to another state group (it finished), or a fifth spawn that turns the flat
-  // list into groups, draws the row under a different parent, and React keys
-  // match only siblings, so its old button is removed and focus falls to the
-  // body. After every render that could redraw rows (new data, a disclosure),
-  // put focus back on the same row's new button. Only for a row whose element
-  // was REMOVED while focused: focus the person moved elsewhere is left alone.
+  // A row can be remounted under the person's focus: a poll that moves a child
+  // into or out of a group's grid, or a fifth spawn that turns the rows into a
+  // grid, draws the row under a different parent, and React keys match only
+  // siblings, so its old button is removed and focus falls to the body. After
+  // every render that could redraw rows (new data, a disclosure), put focus back
+  // on the same row's new button. Only for a row whose element was REMOVED while
+  // focused: focus the person moved elsewhere is left alone.
   const focusedRow = useRef<FocusedRow | null>(null);
   useLayoutEffect(() => {
     const held = focusedRow.current;
@@ -966,18 +1125,18 @@ export function SummarySubagents({
     }
   }, [data, openState, showAll, roving.containerRef]);
 
-  const onPinnedChange = useRef((id: string, group: SubagentGroup | null) => {
-    setPinned((current) => {
-      if (group === null ? !current.has(id) : current.get(id) === group) return current;
-      const next = new Map(current);
-      if (group === null) next.delete(id);
-      else next.set(id, group);
+  const onKeptChange = useRef((id: string, isKept: boolean) => {
+    setKept((current) => {
+      if (current.has(id) === isKept) return current;
+      const next = new Set(current);
+      if (isKept) next.add(id);
+      else next.delete(id);
       return next;
     });
   }).current;
 
-  const plan = data?.plan ?? null;
-  if (!data || (!view.phases && !view.list)) {
+  const plan = view.plan;
+  if (!data || view.groups.length === 0) {
     // A first read that failed has nothing to keep drawing: say so, with Retry.
     return error ? <RefreshError refresh={refresh} /> : null;
   }
@@ -988,18 +1147,21 @@ export function SummarySubagents({
     onOpen,
     onOpenGate,
     plan,
-    onPinnedChange,
+    onKeptChange,
+    watchedBy,
   };
   const toggle = (key: string, open: boolean) =>
     setOpenState((current) => ({ ...current, [key]: open }));
-  const toggleAll = (scope: string) =>
-    setShowAll((current) => ({ ...current, [scope]: !current[scope] }));
+  const toggleAll = (key: string) =>
+    setShowAll((current) => ({ ...current, [key]: !current[key] }));
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => roving.onKeyDown(event);
   const onFocus = (event: FocusEvent<HTMLElement>) => {
     roving.onFocus(event);
     const target = event.target;
     const key = target.getAttribute('data-row');
     focusedRow.current = key !== null ? { key, node: target } : null;
+    const agent = key?.startsWith('agent:') ? key.slice('agent:'.length) : null;
+    if (agent !== focusedAgent) setFocusedAgent(agent);
   };
   const onBlur = (event: FocusEvent<HTMLElement>) => {
     roving.onBlur(event);
@@ -1007,6 +1169,7 @@ export function SummarySubagents({
     if (next instanceof Node && roving.containerRef.current?.contains(next)) return;
     if (next instanceof Node) {
       focusedRow.current = null;
+      setFocusedAgent(null);
       return;
     }
     // Focus went nowhere: the window lost focus, a click landed on nothing
@@ -1020,77 +1183,70 @@ export function SummarySubagents({
     });
   };
 
+  const allRows = data.subagents;
+  const sectionLabel = plan ? copy.plan : copy.agents;
+  const sectionName = plan ? copy.planLabel(plan.title) : copy.agents;
+  const visibleCount = plan ? (
+    summaryCopy.todoCount(completedPhaseCount(plan), plan.phases.length)
+  ) : (
+    <ListCount rows={allRows} />
+  );
+  const spokenCount = plan
+    ? `${summaryCopy.todoCount(completedPhaseCount(plan), plan.phases.length)}${copy.phasesCountSuffix}`
+    : `${summaryCopy.todoCount(subagentCounts(allRows).done, allRows.length)}${copy.doneSuffix}`;
+  const lone = !plan ? view.groups[0] : null;
+
   return (
     <FooterCardGroup>
-      <div
-        ref={roving.containerRef}
-        className="br-agents"
-        data-layout={view.layout}
-        onKeyDown={onKeyDown}
-        onFocus={onFocus}
-        onBlur={onBlur}
+      <section
+        aria-label={sectionName}
+        className="br-summary__section br-agents__section"
+        data-testid={plan ? 'summary-plan' : 'summary-agents'}
+        data-size={view.size}
       >
-        {plan && view.phases && (
-          <section
-            aria-label={copy.phasesLabel(plan.title)}
-            className="br-summary__section br-agents__section"
+        <SummarySectionHeading
+          label={sectionLabel}
+          count={visibleCount}
+          open={sectionOpen}
+          onOpenChange={setSectionOpen}
+          controls={sectionBodyId}
+          testId={plan ? 'summary-plan-toggle' : 'summary-agents-toggle'}
+        >
+          <span className="sr-only" aria-live="polite">
+            {spokenCount}
+          </span>
+        </SummarySectionHeading>
+        {sectionOpen ? (
+          <div
+            id={sectionBodyId}
+            ref={roving.containerRef}
+            className="br-agents"
+            data-size={view.size}
+            onKeyDown={onKeyDown}
+            onFocus={onFocus}
+            onBlur={onBlur}
           >
-            <div className="br-summary__heading">
-              <h3 className="br-summary__label">{copy.phases}</h3>
-              <span className="br-summary__count" aria-hidden="true">
-                {summaryCopy.todoCount(completedPhaseCount(plan), plan.phases.length)}
-              </span>
-              <span className="sr-only" aria-live="polite">
-                {summaryCopy.todoCount(completedPhaseCount(plan), plan.phases.length)}
-                {copy.phasesCountSuffix}
-              </span>
-            </div>
-            <ol aria-label={copy.phaseListLabel} className="br-agents__phases">
-              {view.phases.map((phaseView) => (
-                <PhaseItem
-                  key={phaseView.phase.id}
-                  view={phaseView}
-                  layout={view.layout}
-                  controls={controls}
-                  onToggle={toggle}
-                  onToggleAll={toggleAll}
-                />
-              ))}
-            </ol>
-          </section>
-        )}
-        {view.list && (
-          <section aria-label={view.list.label} className="br-summary__section br-agents__section">
-            <div className="br-summary__heading">
-              <h3 className="br-summary__label">{view.list.label}</h3>
-              <ListCount rows={view.list.rows} />
-            </div>
-            {view.list.flat ? (
-              <RowList
-                rows={view.list.flat}
-                scope={plan ? 'other' : 'all'}
-                layout={view.layout}
-                controls={controls}
-                onToggleAll={toggleAll}
-                label={copy.subagentListLabel}
-              />
+            <ShapeKey rows={allRows} />
+            {lone ? (
+              <GroupBody view={lone} size={view.size} controls={controls} onToggleAll={toggleAll} />
             ) : (
-              view.list.groups.map((group) => (
-                <GroupItem
-                  key={group.key}
-                  view={group}
-                  layout={view.layout}
-                  controls={controls}
-                  onToggle={toggle}
-                  onToggleAll={toggleAll}
-                  scope={plan ? 'other' : 'all'}
-                />
-              ))
+              <ol aria-label={copy.phaseListLabel} className="br-agents__phases">
+                {view.groups.map((groupView) => (
+                  <GroupItem
+                    key={groupView.key}
+                    view={groupView}
+                    size={view.size}
+                    controls={controls}
+                    onToggle={toggle}
+                    onToggleAll={toggleAll}
+                  />
+                ))}
+              </ol>
             )}
-          </section>
-        )}
+          </div>
+        ) : null}
         {error && <RefreshError refresh={refresh} />}
-      </div>
+      </section>
     </FooterCardGroup>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import { ChevronRight } from '../icons/app-icons';
 import './summaryAgents.css';
 
@@ -13,12 +13,15 @@ export function useSectionToggle(defaultOpen: boolean): [boolean, (open: boolean
 }
 
 /**
- * The one collapsible heading of the Chat summary (To do, Decisions), drawn like
- * the roster's group toggle (`.br-agents__group-toggle`): the label, a muted
- * count, and a chevron on the right that turns 90° when open, 28px, no fill at
- * rest and the card's hover step under the pointer. The toggle is a button inside
- * the `h3`, so the heading stays a heading; `trailing` (the Monitors button) sits
- * after it on the same line. The live count is the caller's, a sibling, as before.
+ * The one heading of every Chat summary section (To do, Plan or Agents,
+ * Decisions, This chat): a chevron in the rows' glyph column that turns 90° when
+ * open, the label in the app's caps style, and the count or status on the right
+ * in muted figures. 28px, no fill at rest and the card's hover step under the
+ * pointer. Its label sits on the rows' text edge, so a section reads as the
+ * heading of what is under it, and a phase line inside it (13px, sentence case)
+ * never reads as a section. The toggle is a button inside the `h3`, so the
+ * heading stays a heading; `trailing` (the Monitors button) sits after it on the
+ * same line. The live count is the caller's, a sibling, as before.
  */
 export function SummarySectionHeading({
   label,
@@ -29,6 +32,7 @@ export function SummarySectionHeading({
   trailing,
   children,
   testId,
+  countDescribes = false,
 }: {
   label: string;
   /** The visible count, beside the label; read by the caller's live region. */
@@ -41,7 +45,14 @@ export function SummarySectionHeading({
   /** The caller's `sr-only` live count, kept a sibling of the heading's `h3`. */
   children?: ReactNode;
   testId?: string;
+  /**
+   * The count is the toggle's accessible description (This chat's "211k tokens"),
+   * for a section with no live count of its own to read it.
+   */
+  countDescribes?: boolean;
 }) {
+  const countId = useId();
+  const hasCount = count !== undefined && count !== null && count !== '';
   return (
     <div
       className="br-summary__heading"
@@ -54,18 +65,19 @@ export function SummarySectionHeading({
           className="br-summary__toggle"
           aria-expanded={open}
           aria-controls={open ? controls : undefined}
+          aria-describedby={countDescribes && hasCount ? countId : undefined}
           data-testid={testId}
           onClick={() => onOpenChange(!open)}
         >
-          <span className="br-summary__toggle-label">{label}</span>
-          {count !== undefined && count !== null && count !== '' ? (
-            <span className="br-summary__count" aria-hidden="true">
-              {count}
-            </span>
-          ) : null}
           <span className="br-agents__chevron" data-open={open ? '' : undefined} aria-hidden="true">
             <ChevronRight />
           </span>
+          <span className="br-summary__toggle-label">{label}</span>
+          {hasCount ? (
+            <span id={countId} className="br-summary__count" aria-hidden="true">
+              {count}
+            </span>
+          ) : null}
         </button>
       </h3>
       {trailing}

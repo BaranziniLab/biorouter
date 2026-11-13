@@ -27,7 +27,10 @@ gh run list --workflow rust.yml --limit 25 --json databaseId,headSha,conclusion,
 gh run view <run-id> --json jobs   # read startedAt / completedAt per job
 ```
 
-On this repo `test (windows-latest)` finishes in **20–41 minutes**. When it sat at 120+
+On this repo the full `test (windows-latest)` suite (every push to `main`, and a pull
+request that touches Windows code) finishes in **20 to 41 minutes**; a pull request that
+does not touch Windows code runs a subset in about a quarter of that
+([continuous integration](../testing/continuous-integration.md)). When it sat at 120+
 minutes it was hanging, and it had been hanging on every merged head — while each
 contributing branch had passed Windows individually in about 20. A defect that appears
 only after a merge is invisible to every branch's own CI, which is exactly why the

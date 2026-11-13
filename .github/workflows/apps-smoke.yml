@@ -36,7 +36,7 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # The image's own toolchain must not reach the cache key, and only main
-      # saves. rust.yml's `test` job has the measurements behind both.
+      # saves. rust.yml's `lib-tests` job has the measurements behind both.
       - name: Keep only the pinned Rust toolchain (stable cache key)
         shell: bash
         run: |

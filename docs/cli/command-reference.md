@@ -944,7 +944,7 @@ Follow a running one: biorouter session attach <session id>. Read a finished one
 
 A gated phase's line adds who set its gate and your decision, as in "· gate set by the agent,
 passed by you", and " · needs you" when the gate waits for you; a phase an earlier gate holds adds
-" · waits for Build's gate". A subagent a monitor stopped shows the monitor's sentence as its last
+" · waits for the gate after Build". A subagent a monitor stopped shows the monitor's sentence as its last
 line ("Stopped by monitor 'Off task' (set by this chat's agent): …"). To see or change the gates
 themselves, use [`session gates`](#session-gates).
 
@@ -1196,7 +1196,7 @@ questions, the threshold, the attempts used, the last result ("not passed last t
 P(yes) 0.42)", never "failed"), whether it is blocked, who set it
 and your decision), the model it asks, how many times its attempts were given again, the last
 error, what it holds, a "needs you" line when it waits for you, and "your pass stands" or "your
-skip stands" on an open phase. A held phase reads "waits for build's gate", naming the holder by
+skip stands" on an open phase. A held phase reads "waits for the gate after build", naming the holder by
 its id, which is what the subcommands take.
 
 **With and without a daemon.** With a daemon, `list` reads `GET /sessions/{session_id}/subagents`

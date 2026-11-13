@@ -1,13 +1,5 @@
 import { useId } from 'react';
-import {
-  AlertTriangle,
-  CircleIcon,
-  Eye,
-  EyeOff,
-  Flag,
-  SlidersHorizontal,
-} from '../icons/app-icons';
-import { ENTITY_ICONS, type EntityIcon } from '../icons/entity-icons';
+import { SlidersHorizontal } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import type { SessionDecisions } from '../../hooks/useSessionDecisions';
@@ -15,11 +7,12 @@ import type { DecisionGateSource, DecisionHistoryFilter } from '../../utils/sess
 import type { PhaseStatus } from '../../utils/sessionSubagents';
 import { summaryCopy } from './copy';
 import { SummarySectionHeading, useSectionToggle } from './SummarySectionHeading';
+import { AgentMark } from './AgentMark';
+import { AGENT_MARK_PX, DECISION_STATE_MARKS } from './agentGrid';
 import {
   decisionsHeadline,
   summaryDecisionRows,
   type SummaryDecisionRow,
-  type SummaryDecisionState,
 } from './summaryDecisionRows';
 import './summaryDecisions.css';
 
@@ -33,23 +26,6 @@ const copy = summaryCopy.decisions;
 export interface SummaryGateSource extends DecisionGateSource {
   status?: PhaseStatus;
 }
-
-/**
- * A row's state, told apart by SHAPE (never by colour alone): a raised flag once
- * a monitor fired, an open eye for one that checked and stayed quiet (never a
- * cross: a quiet monitor did nothing wrong, R1), an open circle for one not
- * checked yet, a struck eye when off, a warning for an error, and the decision
- * mark for `decide` batches and the decision chat. Keyed by state, so a new one
- * fails the build here.
- */
-export const DECISION_STATE_ICONS: Record<SummaryDecisionState, EntityIcon> = {
-  fired: Flag,
-  quiet: Eye,
-  pending: CircleIcon,
-  off: EyeOff,
-  error: AlertTriangle,
-  done: ENTITY_ICONS.decision,
-};
 
 export interface SummaryDecisionsData {
   sessionId: string;
@@ -109,7 +85,6 @@ function SourceRow({
   row: SummaryDecisionRow;
   onOpen: (filter: DecisionHistoryFilter) => void;
 }) {
-  const Icon = DECISION_STATE_ICONS[row.state];
   const named = { ...row, label: rowTitle(row) };
   return (
     <li className="br-decisions__item">
@@ -123,8 +98,19 @@ function SourceRow({
         aria-description={copy.openHint}
         onClick={() => onOpen({ origin: row.origin, originId: row.originId ?? null })}
       >
+        {/* Decision-model work, so a circle of the agent grid's notation
+            (`agentGrid.ts`), filled by state, never by colour alone: half full
+            once a monitor fired, solid for one that checked and stayed quiet
+            (never the failed cross: a quiet monitor did nothing wrong, R1) and
+            for `decide` batches and a decision chat's answers, hollow for one
+            not checked yet, a bar when off, the outline with a small cross
+            for an error. */}
         <span className="br-summary__glyph br-decisions__glyph" aria-hidden="true">
-          <Icon />
+          <AgentMark
+            kind={DECISION_STATE_MARKS[row.state]}
+            shape="circle"
+            size={AGENT_MARK_PX.grid}
+          />
         </span>
         <span className="br-decisions__name" aria-hidden="true">
           {named.label}
@@ -146,7 +132,8 @@ function SourceRow({
  * its own only when a monitor fired or a check errored, and once the person
  * toggles it their choice holds. Open, it shows one 28px row per monitor that
  * exists now (A-1), then the `decide` batches together and the decision chat:
- * a glyph by shape, the name, and one trailing word. No probabilities and no bars
+ * a circle filled by state (decision-model work, in the agent grid's notation),
+ * the name, and one trailing word. No probabilities and no bars
  * (R2: none can then sit beside the wrong answer; the history has them). A row
  * opens the decision history filtered to that source.
  *

@@ -7,8 +7,9 @@
  * The content's rules hold here too, and SummaryDecisions.test.tsx reads this
  * file to keep them: two type sizes only (13/18 `--text-secondary` for a row's
  * name, 12/16 `--text-supporting` for counts and second lines), rows at least
- * 28px, and no hairline anywhere. The section is parted from its neighbours by
- * 12px of space; a row answers the pointer with the card's fill step.
+ * 28px, no box and no line of its own. The section is parted from the one above
+ * it by the summary's one section divider (chatSummary.css); a row answers the
+ * pointer with the card's fill step.
  *
  * Unlayered, so these beat the layered D-15 focus fill on the same buttons;
  * every rule that paints a row restates the focus fill and its 2px edge.
@@ -18,16 +19,6 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-}
-
-/* 12px from whatever sits above (the to-do list, its error, the subagents)
-   and to the statistics below. */
-.br-summary__body > * + .br-decisions {
-  margin-top: 12px;
-}
-
-.br-decisions + .br-summary__stats {
-  margin-top: 12px;
 }
 
 .br-decisions__list {
@@ -90,14 +81,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Accent only for what needs the person: a monitor that fired. */
-.br-decisions__row[data-state='fired'] .br-decisions__glyph {
-  color: var(--text-accent);
-}
-
-.br-decisions__row[data-state='error'] .br-decisions__glyph {
-  color: var(--text-warning);
-}
+/* A row's circle carries its own ink (summaryAgentGrid.css): half full in the
+   default ink once a monitor fired, the muted outline with its small cross for
+   an error (never the danger red: the row's word says "Error"), a muted success
+   tint for a quiet monitor and for answers that landed. */
 
 /* THE MONITORS BUTTON (F-16): a 24px quiet icon button on the heading line,
    after the toggle, whether the section is open or closed. The Button's own
@@ -141,11 +128,16 @@
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
-/* A PHASE GATE'S CHIP at the end of its phase's line (SummarySubagents.tsx,
-   spec 3.3): 20px, the inner radius, 12px words and a 12px glyph, resting on the
-   control ground one step back from the filled card (no fill on a fill) and the
-   hover step under the pointer. The transparent 1px border is what forced
-   colours draw. "Add gate" wears the same chip in the same slot. */
+/* A PHASE GATE'S MARK at the end of its phase's line (SummarySubagents.tsx,
+   spec 3.3): a 20px control holding a 12px flag, the registry's `Flag`. A gate
+   is a flag and never a circle, so a circle in the summary only ever means
+   decision-model work (owner direction, 2026-11-12: the gate's old dot read as
+   one). It has no fill at rest in any state, so it is never a box beside the
+   phase's title: a gate not asked yet is a muted outline flag, a passed one a
+   solid flag in the finished sage, and a gate that wants a look adds its word
+   ("Needs you", "Not passed", "Blocked") beside the flag. The card's hover step
+   under the pointer. The transparent 1px border is what forced colours draw.
+   "Add gate" is a plus in the same slot. */
 .br-agents__gate-slot {
   display: inline-flex;
   flex: none;
@@ -161,7 +153,7 @@
   align-items: center;
   border: 1px solid transparent;
   border-radius: var(--radius-inner);
-  background-color: var(--br-control-ground, var(--background-default));
+  background-color: transparent;
   color: var(--text-muted);
   font: inherit;
   font-size: var(--text-supporting);
@@ -185,6 +177,16 @@
   height: 12px;
 }
 
+/* A passed gate's flag is solid: the pennant takes its stroke's ink. */
+.br-agents__gate-glyph[data-kind='done'] > svg {
+  fill: currentColor;
+}
+
+/* A mark alone keeps 5px a side, so its hover step is near square. */
+.br-agents__gate:not([data-attention], [data-add-gate]) {
+  padding: 0 5px;
+}
+
 button.br-agents__gate:hover {
   background-color: var(--br-control-hover, var(--background-fill-strong));
   color: var(--text-default);
@@ -197,7 +199,14 @@ button.br-agents__gate:focus-visible {
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
-/* A gate that waits for the person: its glyph and word in the accent. */
+/* A gate that wants a look reads solid, never red (owner direction,
+   2026-11-12: red is rare): its flag and its word ("Not passed", "Blocked") in
+   the default ink, and a gate that waits for the person in the accent, the one
+   colour this summary keeps for what needs the person. */
+.br-agents__gate[data-attention] {
+  color: var(--text-default);
+}
+
 .br-agents__gate[data-needs-person] {
   color: var(--text-accent);
 }

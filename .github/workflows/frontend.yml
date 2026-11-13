@@ -8,8 +8,10 @@ name: Frontend
 # machine last happened to run it by hand.
 #
 # Scope is deliberately narrow. The cheap static gates and vitest run on
-# ubuntu-latest; separate jobs regenerate the API contract and exercise the file
-# preview surface in Electron. It does not package, sign, notarize, or stage any
+# ubuntu-latest; separate jobs exercise the file preview surface in Electron.
+# The generated API contract (schema + TypeScript client) is checked in
+# rust.yml's `integration (ubuntu, 3/3)` job, which already builds the schema
+# generator. It does not package, sign, notarize, or stage any
 # release binary, and it never writes to `ui/desktop/src/bin/` — so the release
 # pipeline's "one platform at a time" and "reinstall node_modules after a Docker
 # build" invariants are untouched.
@@ -49,69 +51,6 @@ env:
   FORCE_COLOR: "1"
 
 jobs:
-  # ── Generated API contract ────────────────────────────────────────────────
-  # `scripts/check-openapi-schema.sh` is only a diff checker. The schema and
-  # TypeScript client must be regenerated first or a stale committed client is
-  # indistinguishable from a current one. Keep this as a PR job as well as the
-  # local `just check-openapi-schema` target so CI cannot go green on drift.
-  api-contract:
-    name: Generated API contract
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.92"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: ui/desktop/package-lock.json
-
-      - uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # The image's own toolchain must not reach the cache key, and only main
-      # saves. rust.yml's `test` job has the measurements behind both.
-      - name: Keep only the pinned Rust toolchain (stable cache key)
-        working-directory: ${{ github.workspace }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          pinned=$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)
-          [ -n "$pinned" ]
-          for t in $(rustup toolchain list | tr -d '\r' | cut -d' ' -f1); do
-            if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
-          done
-          rustup toolchain list
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: openapi-contract
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install Rust native build dependencies
-        working-directory: ${{ github.workspace }}
-        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Regenerate server OpenAPI schema
-        working-directory: ${{ github.workspace }}
-        run: cargo run -p biorouter-server --bin generate_schema --locked
-
-      - name: Regenerate TypeScript API client
-        run: npx @hey-api/openapi-ts
-
-      - name: Generated schema and client are committed
-        working-directory: ${{ github.workspace }}
-        run: ./scripts/check-openapi-schema.sh
-
   # ── Static gates: typecheck, lint, theme codegen, contrast, token mirrors ──
   # Measured at ~42s CPU (tsc) + ~32s CPU (eslint) + ~1s CPU (the three node
   # scripts). eslint is NOT type-aware here — eslint.config.js declares no
@@ -329,10 +268,19 @@ jobs:
         run: node --test landing/scripts/layout-stability.browser.test.mjs
 
   # ── Unit tests ────────────────────────────────────────────────────────────
+  # Three shards at once (`--shard=i/3`, vitest's own file partition). One job
+  # took 22 minutes median running vitest alone on 2026-11-13, the longest job
+  # in this workflow; per-file setup dominates (see below), so files split
+  # across runners scale close to linearly. The required check is the gate job
+  # `Unit tests (vitest)` below, not these.
   unit:
-    name: Unit tests (vitest)
+    name: vitest (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -378,9 +326,32 @@ jobs:
       # NO --retry. A retry flag green-washes precisely the "everything is
       # green" pathology that let several bugs ship from this branch, and a
       # clean full run needs zero retries. If a test needs one, fix the test.
-      - name: Run vitest
+      # One literal step per shard rather than `--shard=${{ matrix.shard }}/3`:
+      # src/test/vitestIsolation.test.ts hands every vitest command in this file
+      # to vitest's own parser, which rejects an unexpanded expression.
+      - name: Run vitest (shard 1 of 3)
+        if: matrix.shard == 1
         run: |
           npx vitest run \
+            --shard=1/3 \
+            --testTimeout=30000 \
+            --reporter=default \
+            --reporter=junit \
+            --outputFile.junit=./vitest-junit.xml
+      - name: Run vitest (shard 2 of 3)
+        if: matrix.shard == 2
+        run: |
+          npx vitest run \
+            --shard=2/3 \
+            --testTimeout=30000 \
+            --reporter=default \
+            --reporter=junit \
+            --outputFile.junit=./vitest-junit.xml
+      - name: Run vitest (shard 3 of 3)
+        if: matrix.shard == 3
+        run: |
+          npx vitest run \
+            --shard=3/3 \
             --testTimeout=30000 \
             --reporter=default \
             --reporter=junit \
@@ -390,10 +361,40 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: vitest-junit
+          name: vitest-junit-${{ matrix.shard }}
           path: ui/desktop/vitest-junit.xml
           if-no-files-found: warn
           retention-days: 7
+
+  # The required check `Unit tests (vitest)`. A gate: it fails unless every
+  # vitest shard, the static checks (typecheck, eslint, theme codegen,
+  # contrast, token mirrors) and the registry generator passed. Before
+  # 2026-11-13 only vitest was required, so a pull request with a type error
+  # could merge on auto-merge. The browser and native jobs (BAAM shelf,
+  # Preview panel, Console windows) stay informational, as before.
+  # `!cancelled()` and not `always()`: a gate that still wants to run on a
+  # cancelled run can sit queued and hold a concurrency group.
+  unit-gate:
+    name: Unit tests (vitest)
+    needs: [unit, static, registry]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Every vitest shard and static gate passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          bad=$(jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(" ")' <<<"$NEEDS")
+          if [ -n "$bad" ]; then
+            echo "::error::not green: $bad"
+            exit 1
+          fi
 
   # ── File preview panel in a native Electron renderer ─────────────────────
   # Vitest/jsdom cannot render PDFs, Office documents or compositor captures.

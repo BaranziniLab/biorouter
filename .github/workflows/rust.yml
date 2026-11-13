@@ -1,22 +1,45 @@
 name: Rust
 
-# BR-70 — the repo's first `cargo` CI. Two orthogonal axes:
+# BR-70: the repo's `cargo` CI. Two orthogonal axes:
 #   * cross-check  — does the code we SHIP (windows-gnu / linux-gnu) COMPILE,
 #                    including #[cfg(test)] code, using the release's own docker
-#                    recipe (scripts/cross-env.sh)? This is the PR gate.
+#                    recipe (scripts/cross-env.sh)?
 #   * test         — does the platform BEHAVIOUR work on real kernels (macOS
 #                    Seatbelt, Linux Landlock, Windows PowerShell + taskkill)?
 # A nightly job runs the full cross BUILD — link errors, the glibc floor, and
 # the shipped packages' runtime-library contract — none of which a `cargo check`
 # can see, because a check never links and so never emits a NEEDED entry or a
 # symbol version.
+#
+# What runs when (docs/testing/continuous-integration.md has the measurements):
+#
+#   pull request   every ubuntu suite (lib, bins, every integration binary,
+#                  the serve browser contract, the generated API contract), the
+#                  windows-gnu compile, hostname and socket gates, and on macOS
+#                  and Windows the OS-specific subset: the sandbox suites, plus
+#                  on Windows the console-window regression test. A pull
+#                  request that changes code specific to macOS or Windows gets
+#                  that OS's FULL suite instead (scripts/ci/choose-os-suite.sh).
+#   main, nightly  all of that, plus the FULL macOS and Windows suites (lib +
+#                  bins, Ollama readiness), the linux-gnu cross check, the
+#                  ubuntu socket gate and the informational host clippy.
+#   label ci:full  a pull request carrying it gets the main-branch set. GitHub
+#                  reads labels from the event that started the run, so add the
+#                  label and then push (or dispatch this workflow on the branch).
+#
+# The required checks are `test (ubuntu-latest)`, `test (macos-latest)` and
+# `test (windows-latest)`. `test (ubuntu-latest)` is a gate job that fails
+# unless every ubuntu job it names passed, so the cross gates, the socket gate
+# and the guards block a merge as well (before, only the three test jobs did).
+# Job names are a contract with branch protection: renaming any of the three
+# blocks every merge.
 
 on:
   pull_request:
   push:
     branches: [main]
   schedule:
-    - cron: "0 7 * * *"   # nightly: the expensive full cross-BUILD + glibc floor
+    - cron: "0 7 * * *"   # nightly: the full cross BUILD + glibc floor, and the full macOS/Windows suites
   # A schedule-only job is a job nobody can check. When this was written,
   # cross-build-nightly had run 36 times since 2026-07-15 — its entire existence
   # up to then — for 33 failures and 3 cancellations and not one green. (It has
@@ -25,11 +48,10 @@ on:
   # there was no way to ASK it a question: you could read the log the morning
   # after, change something, and then wait a day to learn whether the change
   # helped. Manual dispatch turns a 24-hour edit loop into a 20-minute one. It
-  # runs every job in this file, the nightly included; the three PR-gate jobs
-  # are cheap next to the cross build and their signal is never unwelcome. Read
-  # cross-build-nightly's OWN conclusion rather than the run's, though — the
-  # matrix carries whatever is red on main at the time (windows-latest was, the
-  # day this was written), and that says nothing about the cross build.
+  # runs every job in this file, the nightly and the full macOS and Windows
+  # suites included. Read cross-build-nightly's OWN conclusion rather than the
+  # run's, though: the other jobs carry whatever is red on main at the time,
+  # and that says nothing about the cross build.
   workflow_dispatch:
 
 # Keyed by event as well as ref, and the event half is load-bearing. `github.ref`
@@ -53,6 +75,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # 'true' runs the full macOS and Windows suites and the main-only extras;
+  # 'false' (an unlabelled pull request) runs the subset. Read only in step
+  # `if:` conditions, because a job-level `if:` cannot see `env`. Its name
+  # starts with neither CARGO nor RUST on purpose: rust-cache hashes those
+  # variables into its key, and a new one would make every cache miss.
+  CI_FULL_SUITE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
 
 jobs:
   # ── 1. Cheap guards ────────────────────────────────────────────────────────
@@ -61,16 +89,9 @@ jobs:
     # and this workflow has done exactly that: `test (macos-latest)` finished
     # BUILDING in ~13 minutes and then sat silent for 5h46m on three
     # `subagent_handler` tests that await `run_complete_subagent_task`
-    # unbounded, until the ceiling cancelled it. Same three names on a feature
-    # branch and on clean main; not reproducible on a developer's own macOS.
-    #
-    # These budgets are deliberately well ABOVE the measured maxima (warm
-    # cache, 2026-08-27: guards 0.1m, cross-check 8.2m, test 15.0m, serve
-    # 9.5m) so a merely slow run is never failed -- they exist to make a HANG
-    # cheap and legible, not to police duration. The native test job has its
-    # own cold-cache budget below, rather than GitHub's six-hour default.
-    # (The `test` job's budget was 40 until 2026-10-18, when its cold runs
-    # reached it; that job's comment has the numbers.)
+    # unbounded, until the ceiling cancelled it. Every job here has a budget
+    # well above its measured maximum, so a slow run is never failed but a
+    # hang is cheap and legible.
     timeout-minutes: 10
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -129,28 +150,27 @@ jobs:
   # ── 2. Cross COMPILE gate — the BR-70 core. Docker, the SAME images/flags as
   #      scripts/release.sh (both source scripts/cross-env.sh). ubuntu-latest is
   #      just the docker HOST; the TARGET triple is what is being proven.
+  #
+  # Pull requests check windows-gnu only. The linux-gnu check proves the code
+  # compiles in the release's bullseye image, which the ubuntu test jobs (same
+  # triple, newer image) and the nightly full cross build cover between them,
+  # so it runs after merge and nightly rather than on every push.
+  #
+  # No cache. The actions/cache step this job used to carry restored nothing in
+  # 12 of 12 runs measured on 2026-11-13 (the repository sits at its 10 GB
+  # cache ceiling, so a new entry is evicted before it is read), while its save
+  # cost 0.6 minutes a run and pushed main's shared caches toward eviction.
+  # The cold check is ~9 minutes, inside the pull request budget.
   cross-check:
-    timeout-minutes: 30
+    timeout-minutes: 40
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-gnu]
+        target: ${{ fromJSON(github.event_name == 'pull_request' && '["x86_64-pc-windows-gnu"]' || '["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"]') }}
     steps:
       - uses: actions/checkout@v4
-
-      # Registry + per-triple target dir, persisted across runs. The per-triple
-      # target dir is why this is minutes, not a quarter-hour — and it makes the
-      # mac/linux build-script clobber (release.sh) structurally impossible here.
-      - name: Restore cross cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            .cross-cache/registry
-            .cross-cache/target/${{ matrix.target }}
-          key: cross-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/cross-env.sh') }}
-          restore-keys: cross-${{ matrix.target }}-
 
       - name: cargo check --workspace --all-targets (${{ matrix.target }})
         run: |
@@ -166,100 +186,94 @@ jobs:
               cross_windows "cargo check --workspace --all-targets --locked" /cross-target ;;
           esac
 
-      # The socket gate again (the `test` job runs it on ubuntu), for the target
-      # where the bug it guards against lives: `cfg(windows)` production code is
-      # compiled only here, so a Windows-only tokio bind would pass the ubuntu
-      # run. `cross_windows` appends `--target x86_64-pc-windows-gnu`, which the
-      # script hands to cargo, and the script adds `--release` itself, so this
-      # leg lints exactly what the ubuntu one does, for the other target.
-      # rust-toolchain.toml's `default` profile is what puts clippy in the
-      # container's toolchain; the image's python3 (3.11+, for tomllib) runs
-      # gate.py. `!cancelled()` for the same reason as in the `test` job: a
-      # failed `cargo check` above must not hide a site the gate would report.
-      - name: No production socket a Windows child process can inherit (${{ matrix.target }})
+      # No dependency may call a hostname API that spawns HOSTNAME.EXE without
+      # CREATE_NO_WINDOW (#461): clippy's `disallowed_methods`, configured by
+      # the repository's clippy.toml, denied. It ran on the native Windows job
+      # until 2026-11-13 and moved here, onto the target we ship, because it
+      # cost the Windows pull request job 4 minutes there and reuses this
+      # job's dependency checks here. The native Windows job still runs it on
+      # main and nightly, so MSVC keeps a run. `!cancelled()`: a failed
+      # `cargo check` above must not hide a site this gate would report.
+      - name: No Windows-unsafe dependency hostname calls (${{ matrix.target }})
         if: matrix.target == 'x86_64-pc-windows-gnu' && !cancelled()
         run: |
           set -euo pipefail
           export CROSS_REGISTRY_MOUNT="$PWD/.cross-cache/registry"
           export CROSS_TARGET_MOUNT="$PWD/.cross-cache/target/${{ matrix.target }}"
           . scripts/cross-env.sh
-          cross_windows "./scripts/check-non-inheritable-sockets.sh" /cross-target
+          cross_windows "./scripts/ci/clippy-disallowed-methods.sh" /cross-target
 
-  # ── 3. Native unit tests on REAL kernels. This is where platform BEHAVIOUR is
-  #      proven: PowerShell selection + taskkill (windows), Seatbelt (macos),
-  #      Landlock (ubuntu, once BR-69 slice 2 lands — this runner is its venue).
-  #      NOTE: windows-latest is MSVC; we SHIP mingw/gnu. Job 2 covers the gnu
-  #      ABI, this job covers the Windows behaviour. Both are load-bearing.
-  test:
-    # ⚠ Sized for a COLD cache, because main's first run after any change to
-    # the cache key (a dependency in Cargo.lock, the toolchain, a CARGO_* env)
-    # is cold by design, and an evicted cache makes it cold without one. 40
-    # was set when this job took 15 minutes warm; the integration-binary step
-    # and the socket gate have since doubled that, and the budget stayed. So a
-    # cold ubuntu run was a red X with every step green. Measured over the
-    # completed runs of 2026-10-10..18, by rust-cache's own restore line:
-    #
-    #   ubuntu  warm 21.3-31.0m (n=52)   cold 30.5-40.2m (n=10, eight >37;
-    #           39156748556 and 39158205693 were cancelled at 40.0 and 40.2
-    #           with every step, "Complete job" included, green)
-    #   macos   warm 14.3-38.2m (n=60)   cold 20.1-37.6m (n=6)
-    #   windows warm 15.5-29.7m (n=54)   cold 21.3-31.6m (n=8), and one cold
-    #           run still in `cargo test` when 40 hit (39057096529, main)
-    #
-    # Main run 41393586499 reached 60 minutes during host Clippy after all
-    # tests and the socket gate passed. 90 left room for that cold build
-    # and cache upload while keeping a hung job bounded.
-    #
-    # 120 since 2026-11-13: with the dictation engine (whisper.cpp, Metal) and
-    # the Crew work merged, macOS took 77, 86 and 87 minutes on
-    # feat/local-dictation (runs 43376048191, 43389839745, 43389847969), and
-    # both runs with Crew merged in (43406267556, 43406263024) hit 90 inside
-    # `cargo test` with every test so far passing: the workspace lib and bins
-    # step alone took 76 minutes, and the engine binaries' first Metal run
-    # in each test process takes over a minute. Still bounded for a hang.
-    timeout-minutes: 120
+  # The socket gate for the target where the bug it guards against lives:
+  # `cfg(windows)` production code is compiled only here, so a Windows-only
+  # tokio bind would pass an ubuntu run. `cross_windows` appends `--target
+  # x86_64-pc-windows-gnu`, which the script hands to cargo, and the script
+  # adds `--release` itself. rust-toolchain.toml's `default` profile is what
+  # puts clippy in the container's toolchain; the image's python3 (3.11+, for
+  # tomllib) runs gate.py. Exit 1 is a site, 2 a gate that could not run, 3 a
+  # rotten configuration; the script's header says more.
+  #
+  # Its own job since 2026-11-13: it compiles every dependency again in the
+  # release profile (8.1 minutes measured), and run after the check above it
+  # made that job 18.5 minutes, the longest on a pull request after the test
+  # jobs. In parallel it costs no wall time. The ubuntu leg of this gate runs
+  # on main and nightly (the `lib-tests` job); the property it guards is a
+  # Windows one, and this leg compiles the Windows code.
+  socket-gate:
+    name: No inheritable sockets (x86_64-pc-windows-gnu)
+    timeout-minutes: 40
     if: github.event_name != 'schedule'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Probe Windows directory reopen and nested-handle move semantics
-        if: runner.os == 'Windows'
-        timeout-minutes: 1
-        shell: pwsh
+      - name: No production socket a Windows child process can inherit (x86_64-pc-windows-gnu)
         run: |
-          python scripts/security/windows-directory-lease-probe.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/security/windows-nested-handle-probe.py
+          set -euo pipefail
+          mkdir -p .cross-cache/registry .cross-cache/target/x86_64-pc-windows-gnu
+          export CROSS_REGISTRY_MOUNT="$PWD/.cross-cache/registry"
+          export CROSS_TARGET_MOUNT="$PWD/.cross-cache/target/x86_64-pc-windows-gnu"
+          . scripts/cross-env.sh
+          cross_windows "./scripts/check-non-inheritable-sockets.sh" /cross-target
+
+  # ── 3. Native tests on REAL kernels. This is where platform BEHAVIOUR is
+  #      proven: PowerShell selection + taskkill (windows), Seatbelt (macos),
+  #      Landlock (ubuntu). NOTE: windows-latest is MSVC; we SHIP mingw/gnu.
+  #      The cross jobs cover the gnu ABI, the Windows job covers the Windows
+  #      behaviour. Both are load-bearing.
+  #
+  # ubuntu runs the whole workspace on every pull request, split across four
+  # jobs that run at once: `lib-tests` (every library's unit tests) and three
+  # `integration` shards (bins, Ollama, sandbox, every `tests/*.rs` binary,
+  # and the serve and API contracts). Until 2026-11-13 one job ran all of it
+  # in sequence, 43 minutes median on a pull request; measured then, compiling
+  # the library tests took 7.7 minutes and running them 7.9, and the
+  # integration binaries 4.9 and 11.0.
+  #
+  # Every ubuntu test job builds with `cargo test --workspace`, never `-p`, so
+  # they resolve features the same way and share ONE dependency cache (the
+  # `shared-key` below is the key the single `test` job used, so the cache main
+  # already holds keeps working). A `-p` build resolves features for that
+  # package alone: the Ollama step's `-p biorouter` rebuilt 124 crates on every
+  # run (3.6 minutes on ubuntu, 8 on macOS) for that reason alone.
+  lib-tests:
+    name: lib tests (ubuntu)
+    # Sized for a COLD cache: main's first run after any change to the cache
+    # key (a dependency in Cargo.lock, the toolchain, a CARGO_* env) is cold by
+    # design, and an evicted cache makes it cold without one.
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"
           components: clippy
 
-      # MSVC's test PDBs dominate the Windows link and cache footprint (the
-      # biorouter harness alone produced a ~1.1 GiB PDB). This keeps debug
-      # assertions, overflow checks and panic locations while omitting debugger
-      # symbols that CI never consumes. Set it before rust-cache so the action's
-      # CARGO_* environment hash separates these artifacts from debug=2 builds.
-      #
-      # macOS is included for a different reason: it is the only runner in this
-      # matrix with NO Rust cache (see the cache-on-failure note below), so it
-      # pays a cold full-workspace build every run and its debug symbols are
-      # what would push the repository over GitHub's 10 GiB cache ceiling once
-      # it finally saves one.
-      #
-      # ⚠ Ubuntu was left out while it had a warm 1.7 GiB cache and no problem
-      # for this to fix. It has one now: the integration-binary step below
-      # links ~117 more executables, and on Linux every one of them EMBEDS the
-      # DWARF of everything it links rather than leaving it in a side file.
-      # Measured 2026-09-11 (run 34628149105) with debug=2: that build took the
-      # runner from 70 GB free to 1.4 GB and died with `No space left on
-      # device` before it finished. The variable changes rust-cache's key, so
-      # ubuntu builds cold (measured: lib + bins 3.7 -> 7.5 min) until main's
-      # first run with it saves the new cache. A one-time price.
+      # Debug info off for tests. On Linux every test executable EMBEDS the
+      # DWARF of everything it links: measured 2026-09-11 (run 34628149105)
+      # with debug=2, the integration build took the runner from 70 GB free to
+      # 1.4 GB and died with `No space left on device`. It keeps debug
+      # assertions, overflow checks and panic locations. Set it before
+      # rust-cache, whose key hashes every CARGO_* variable.
       - name: Reduce CI test debuginfo
         shell: bash
         run: echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
@@ -269,14 +283,12 @@ jobs:
       # image ships its own `stable`, which nothing here builds with
       # (rust-toolchain.toml pins 1.92), so each image that moves that stable
       # changes every Rust cache key in the repository at once. Measured: image
-      # 20260901.588 -> 20261002.596 moved it from 1.98.1 to 1.99.0, the ubuntu
-      # key went from `...-15238ee1-c299e55f` to `...-edf29d0d-c299e55f`, and
-      # every ubuntu run built cold from 2026-10-10 until main next saved, on
-      # 10-12 (37.0-39.2 minutes each). While an image rolls out, runners on
-      # the old and new images compute different keys, and main ends up saving
-      # both. Removing every toolchain but the pinned one keeps the key on what
-      # this build actually compiles with. `serve`, frontend.yml and
-      # apps-smoke.yml do the same before their rust-cache steps.
+      # 20260901.588 -> 20261002.596 moved it from 1.98.1 to 1.99.0 and every
+      # ubuntu run built cold from 2026-10-10 until main next saved, on 10-12
+      # (37.0-39.2 minutes each). Removing every toolchain but the pinned one
+      # keeps the key on what this build actually compiles with. Every job
+      # with a rust-cache step here, apps-smoke.yml and security-storage.yml do
+      # the same.
       - name: Keep only the pinned Rust toolchain (stable cache key)
         shell: bash
         run: |
@@ -288,53 +300,29 @@ jobs:
           done
           rustup toolchain list
 
-      # ⚠ `cache-on-failure` is what breaks a self-perpetuating deadlock, not a
-      # convenience. rust-cache's post step is skipped whenever the job does not
-      # succeed, so a job that cannot finish never saves a cache, is cold on the
-      # next run, and therefore cannot finish. That is exactly what happened to
-      # `test (macos-latest)`: it was cancelled on main at d0a177f8 after 360
-      # minutes with its post step skipped, and `gh cache list` subsequently
-      # showed no `v0-rust-macos-latest-*` entry at all while ubuntu and windows
-      # both had one. Every macOS run since has compiled the whole workspace
-      # from scratch — 56+ minutes against a 20 minute budget, versus 17.8m on
-      # the last run that had a warm cache (44ac420f).
+      # ⚠ `cache-on-failure` breaks a self-perpetuating deadlock: rust-cache's
+      # post step is skipped whenever the job does not succeed, so a job that
+      # cannot finish never saves a cache, is cold on the next run, and
+      # therefore cannot finish. Compiled dependencies are valid whether or not
+      # the tests passed.
       #
-      # Compiled dependencies are valid whether or not the *tests* passed, so
-      # saving them on a red job costs nothing and means a broken test can never
-      # again strand the cache.
       # ⚠ `save-if` restricts SAVING to main, and that is what keeps a cache
       # available to anyone at all. GitHub scopes a cache to the branch that
-      # wrote it: a feature branch can read its own caches and **main's**, and
-      # nothing else. So every feature-branch run was writing its own private
-      # 1-1.7 GiB copy per OS that no other branch could ever use, while the
-      # repository sat at 9.74 GiB against a 10 GiB ceiling — evicting main's
-      # copies, which are the only ones shared. Measured on windows-latest, by
-      # rust-cache's own restore time:
+      # wrote it: a feature branch can read its own caches and main's, nothing
+      # else, and the repository has a 10 GB ceiling evicted least recently
+      # used. Branch-written copies evicted main's shared ones (2026-10-18:
+      # two pushes to main found "No cache found" for an unchanged key and ran
+      # cold). Every cache writer in .github/workflows/ saves from main only.
       #
-      #   restore 0.7m -> `cargo test`  9.4m   (hit, branch's own earlier cache)
-      #   restore 0.1m -> `cargo test` 19.5m   (miss)
-      #   restore 0.1m -> `cargo test` 17.4m   (miss)
-      #
-      # With saving confined to main, every branch restores one authoritative,
-      # continuously refreshed cache and none of them compete for the ceiling.
-      # A PR that changes Cargo.lock still builds cold and cannot save; that is
-      # the accepted cost, and it is much smaller than three OSes' worth of
-      # write-only caches evicting the shared ones on every push.
-      #
-      # ⚠ The rule only works if EVERY cache writer follows it, and until
-      # 2026-10-18 this was the only one that did. On 2026-10-18 the release
-      # branch's package workflows saved two cross caches (2.6 GB, readable by
-      # that branch alone and never read again) at 18:16-18:18, the repository
-      # went past 10 GB, and GitHub evicted the least recently used entry: this
-      # job's ubuntu cache, last read at 17:39:11, one second before `serve`'s.
-      # The next two pushes to main (39156748556, 39158205693) found "No cache
-      # found" for an unchanged key and were cancelled at 40 minutes. `serve`,
-      # frontend.yml and apps-smoke.yml now save from main only as well, and
-      # the two GUI package workflows no longer persist a cache at all (their
-      # files say why). Main's own caches come to about 8.3 GB of the 10.
+      # This job is the ONE ubuntu writer of the shared key: `cargo test
+      # --workspace --lib` compiles every member's normal and dev dependencies,
+      # a superset of what each integration shard needs, and on main it also
+      # runs the clippy and release-profile socket checks, so their artifacts
+      # are in the saved cache too. The shards read it and never write it,
+      # which would race four writers for one key.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}
+          shared-key: ubuntu-latest-test
           cache-on-failure: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -344,16 +332,12 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Linux native build dependencies
-        if: matrix.os == 'ubuntu-latest'
         run: |
           # ⚠ Drop the runner image's Microsoft apt repositories FIRST.
           # `packages.microsoft.com` has repeatedly answered 403 for the
           # `azure-cli` and `prod` lists that the hosted image ships
           # preinstalled, and `apt-get update` exits 100 on any repository it
-          # cannot refresh — so an outage on a third-party CDN we do not use
-          # fails this job with `E: ... is no longer signed`. Nothing here
-          # installs from them. Removing them makes the update depend only on
-          # the archives the packages below actually come from.
+          # cannot refresh. Nothing here installs from them.
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
                      /etc/apt/sources.list.d/azure-cli.list \
                      /etc/apt/sources.list.d/microsoft-prod.sources \
@@ -365,11 +349,6 @@ jobs:
         with:
           node-version: 24
 
-      - name: Windows launcher runtime digest (actual PowerShell template)
-        if: matrix.os == 'windows-latest'
-        timeout-minutes: 2
-        run: node scripts/agent-drafter/check-windows-runtime-digest.mjs
-
       - name: Full export payload (generated launchers and authenticated daemon fixture)
         timeout-minutes: 2
         run: node scripts/agent-drafter/check-export-payload.mjs
@@ -377,78 +356,566 @@ jobs:
       - name: Stage pinned native app compiler
         timeout-minutes: 2
         shell: bash
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const { execFileSync } = require('node:child_process');
-          const { fetchEsbuild, ESBUILD_VERSION } = require('./ui/desktop/scripts/fetch-esbuild.js');
-          const compiler = path.resolve(fetchEsbuild(process.platform, process.arch, {
-            binDir: path.join(process.env.RUNNER_TEMP, 'biorouter-test-tools'),
-            cacheDir: path.join(process.env.RUNNER_TEMP, 'biorouter-esbuild-cache'),
-          }));
-          const version = execFileSync(compiler, ['--version'], {
-            encoding: 'utf8', timeout: 5000, maxBuffer: 64,
-          }).trim();
-          if (version !== ESBUILD_VERSION) throw new Error('Native esbuild does not match the pinned release');
-          fs.appendFileSync(process.env.GITHUB_ENV, `BIOROUTER_ESBUILD_BIN=${compiler}\n`);
-          NODE
+        run: node scripts/ci/stage-esbuild.cjs
 
-      # Start narrow (lib + bins on every OS) so the matrix is green on arrival;
-      # widen as it proves stable. This selector leaves out `tests/`; those
-      # binaries run in their own step below, ubuntu only, with no network.
-      # (They were long assumed to need cassettes and credentials the runners
-      # lack. Measured, they do not: `mcp_integration_test` REPLAYS its
-      # cassettes offline and only records under BIOROUTER_RECORD_MCP, and the
-      # tests that need a real provider or vendor CLI are `#[ignore]`d.)
+      # ⚠ `--no-fail-fast` is load-bearing, not a nicety. Without it cargo
+      # stops at the FIRST test binary that fails, and everything ordered
+      # after it never runs: on windows-latest that hid four crates for a
+      # hundred consecutive runs.
       #
-      # ⚠ It does NOT follow that nothing in this step touches the network. The
-      # selector filters by TARGET, not by behaviour, and a test that lives in
-      # `src/` is a unit test as far as cargo is concerned however far it dials.
-      # `biorouter-server/src/tunnel/lapstone_test.rs` did exactly that against a
-      # third-party Cloudflare worker, and because `biorouter-server/src/main.rs`
-      # re-declares `mod tunnel;` rather than using the library, both `--lib` and
-      # `--bins` carried it: 2 tests x 2 targets x 3 platforms, twelve live
-      # requests per run, red whenever that worker had a bad day. It is now
-      # opt-in behind BIOROUTER_TEST_LAPSTONE_TUNNEL. Gate the test, not the
-      # selector, if another one appears.
-      # ⚠ `--no-fail-fast` is load-bearing on this matrix, not a nicety. Without
-      # it cargo stops at the FIRST test binary that fails, and everything
-      # ordered after it never runs. On windows-latest that was `biorouter_mcp`,
-      # so `biorouter_sandbox`, `biorouter_server`, `biorouterd` and
-      # `biorouter_test` were unreported for a hundred consecutive runs: each
-      # batch of Windows fixes made the job fail one binary further along, which
-      # read as "a new rotating set of failures" and was really one hidden queue
-      # being drained one CI round-trip at a time. One run now names them all.
-      # ⚠ **The OS credential store must be off, or macOS hangs until the job
-      # is killed.** `Config::read` resolves a secret through `keyring`, and on
-      # a runner with no unlocked login keychain `SecKeychainFindGenericPassword`
-      # blocks on an authorization prompt nothing is there to answer. The
-      # secrets tests in `routes::action_required` sit on that call, so the
-      # whole binary stops: `test (macos-latest)` ran SIX HOURS on main
-      # (run 32997530845) and was cancelled. Reproduced locally and sampled —
-      # `Config::read` -> `keyring::Entry::get_password` ->
-      # `SecKeychainFindGenericPassword` -> `CSSM_DecryptData`, blocked. With
-      # this set the same binary finishes in seconds.
+      # ⚠ The OS credential store must be off, or macOS hangs until the job is
+      # killed (`SecKeychainFindGenericPassword` blocks on a prompt nobody can
+      # answer; run 32997530845 ran six hours). Set on every OS because the
+      # store is unwanted on every runner; nothing asserts keyring behaviour.
       #
-      # Windows reaches the same code through the Credential Manager. Whether
-      # that is what has made windows-latest slow is NOT measured, so this is
-      # not offered as the explanation there — it is set on the whole matrix
-      # because the store is unwanted on every runner, not as a Windows fix.
-      #
-      # It costs no coverage: nothing in the workspace asserts keyring
-      # behaviour — the store is incidental to these tests, which are about
-      # routes. `serve` below and `release-artifact-smoke.yml` already set it
-      # for the same reason; this is the one job that was missing it.
-      - name: cargo test (Ollama readiness and recovery)
+      # ⚠ The selector filters by TARGET, not by behaviour: a test in `src/` is
+      # a unit test however far it dials. `lapstone_test.rs` once made twelve
+      # live requests per run to a third-party worker; gate such a test (it is
+      # opt-in behind BIOROUTER_TEST_LAPSTONE_TUNNEL now), not the selector.
+      - name: cargo test (workspace, every library's unit tests)
         env:
           BIOROUTER_DISABLE_KEYRING: "true"
-        run: cargo test -p biorouter --test ollama_readiness --test ollama_diagnostics_20261006_2 --test ollama_protocols --locked --no-fail-fast -- --test-threads=2
+        run: cargo test --workspace --lib --locked --no-fail-fast
+
+      # The ubuntu leg of the socket gate (the `socket-gate` job runs the
+      # Windows leg on every pull request). Main and nightly only: the gate
+      # guards a Windows property, and this leg compiles no `cfg(windows)` code.
+      - name: No production socket a Windows child process can inherit
+        if: ${{ !cancelled() && env.CI_FULL_SUITE == 'true' }}
+        run: ./scripts/check-non-inheritable-sockets.sh
+
+      # Informational: it fails only on a compile error, which the cross check
+      # (--all-targets) and the test builds already catch on every pull
+      # request. Main and nightly only.
+      - name: clippy (host, informational until warnings are burned down)
+        if: ${{ !cancelled() && env.CI_FULL_SUITE == 'true' }}
+        run: cargo clippy --workspace --all-targets --locked
+
+  integration:
+    name: integration (ubuntu, ${{ matrix.shard }}/3)
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      SHARD: ${{ matrix.shard }}
+      SHARDS: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+          components: clippy
+      # Same order and the same CARGO_* environment as `lib-tests`, so the
+      # rust-cache key computes to the shared one. See that job for each step.
+      - name: Reduce CI test debuginfo
+        shell: bash
+        run: echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
+      - name: Keep only the pinned Rust toolchain (stable cache key)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned=$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)
+          [ -n "$pinned" ]
+          for t in $(rustup toolchain list | tr -d '\r' | cut -d' ' -f1); do
+            if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
+          done
+          rustup toolchain list
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-latest-test
+          save-if: "false"
+      - name: Install protoc (build-script dep)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Linux native build dependencies
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/azure-cli.list \
+                     /etc/apt/sources.list.d/microsoft-prod.sources \
+                     /etc/apt/sources.list.d/azure-cli.sources
+          sudo apt-get update
+          sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+      - name: Stage pinned native app compiler
+        timeout-minutes: 2
+        shell: bash
+        run: node scripts/ci/stage-esbuild.cjs
+
+      # The offline step below builds inside a network namespace, so every
+      # crate source must be on disk first. Before the split, earlier cargo
+      # steps in the same job fetched them as a side effect.
+      - name: Fetch crate sources
+        run: cargo fetch --locked
+
+      # The bin targets' own unit tests. `biorouterd` re-declares `mod routes;`
+      # rather than using the library, so its test target compiles the routes
+      # a second way, and a lib-only path (`crate::auth`) that passes the
+      # library build fails here.
+      - name: cargo test (workspace, bin targets)
+        if: matrix.shard == 1
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --bins --locked --no-fail-fast
+
+      - name: cargo test (Ollama readiness and recovery)
+        if: matrix.shard == 1 && !cancelled()
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test ollama_readiness --test ollama_diagnostics_20261006_2 --test ollama_protocols --locked --no-fail-fast -- --test-threads=2
+
+      # The cross-platform-sensitive suite BR-70 exists to prove; the macOS and
+      # Windows jobs run it too.
+      - name: cargo test (sandbox integration)
+        if: matrix.shard == 1 && !cancelled()
+        run: cargo test --workspace --test sandbox --locked --no-fail-fast
+
+      # ── Every other `tests/*.rs` binary, bar a table of exceptions ─────────
+      #
+      # The guards CLAUDE.md treats as load-bearing (the privacy master-switch
+      # binaries, the keyless-daemon binaries, `privacy_ar15_is_retired`,
+      # `every_test_binary_is_sandboxed`, the privacy wiring census) live here.
+      # Before this step ran them (PR #239), they ran only when someone
+      # remembered to, and from eb594ded until PR #229
+      # `the_documented_closure_is_the_one_the_code_performs` read the wrong
+      # function and would have stayed green with the AR-15 gate deleted.
+      #
+      # ⚠ The table is an EXCLUSION list on purpose. An allowlist would rebuild
+      # the gap one file at a time; this way a new binary runs the day it
+      # lands, and one that cannot run hermetically gets a line saying why. A
+      # line naming a target that no longer exists fails the step.
+      #
+      # Sharding: the remaining targets, sorted by name, are dealt round-robin
+      # across the three shards (target i goes to shard i mod 3, plus one).
+      # Every shard computes the same list and checks the same table, so every
+      # target runs in exactly one shard. Measured on 2026-11-13 the 208
+      # binaries then ran 11.0 minutes in sequence; dealt this way the shards
+      # take about 2.4, 5.4 and 3.3 of it.
+      #
+      # ⚠ Never add `--ignored` or `--include-ignored`. The live tests (real
+      # providers, the vendor CLIs, llama.cpp downloads, GitHub fetches) are
+      # `#[ignore]`d inside binaries whose other tests belong here.
+      #
+      # ⚠ No network, enforced rather than assumed. The tests run in a network
+      # namespace holding nothing but loopback, so a test that dials out fails
+      # at once instead of passing whenever the third party is up. `setpriv`
+      # drops back to the runner user once loopback is up: as root, every
+      # "permission denied" assertion would pass for the wrong reason.
+      #
+      # `ui_example_apps` bundles each example with `npx --yes esbuild` when no
+      # local esbuild exists. Offline it does NOT fail: npx sits on the
+      # unreachable registry until the bundler's 60 s timeout, then the test
+      # passes on the type-stripper fallback without esbuild ever running.
+      #
+      # windows-latest failed 31 tests in 9 binaries that had never run there
+      # (2026-09-11), which is why this is ubuntu only: widening means fixing
+      # those first, and `unshare` is Linux-only.
+      - name: cargo test (integration binaries, no network)
+        if: ${{ !cancelled() }}
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+          # One line per target, no wrapping: the first word is the name.
+          # target          why it does not run in this step
+          excluded='
+          sandbox           shard 1 runs it in its own step, as the macOS and Windows jobs do
+          ollama_readiness   shard 1 runs it in its own step, two threads at a time
+          ollama_diagnostics_20261006_2 shard 1 runs it in its own step, two threads at a time
+          ollama_protocols   shard 1 runs it in its own step, two threads at a time
+          ui_example_apps   needs the npm registry (`npx --yes esbuild`); apps-smoke.yml runs it after `npm ci`
+          '
+          all=$(cargo metadata --format-version 1 --no-deps --locked \
+                  | jq -r '.packages[].targets[] | select(.kind == ["test"]) | .name' | sort)
+          # `--test` selects by name across the workspace, so a name two
+          # packages share would run (or be excluded) twice over.
+          dup=$(uniq -d <<<"$all")
+          if [ -n "$dup" ]; then
+            echo "::error::two packages have an integration target named: $dup"; exit 1
+          fi
+          skip=$(awk 'NF { print $1 }' <<<"$excluded" | sort)
+          stale=$(comm -13 <(echo "$all") <(echo "$skip"))
+          if [ -n "$stale" ]; then
+            echo "::error::the exclusion table names targets that no longer exist; delete their lines: $stale"; exit 1
+          fi
+          awk 'NF { t = $1; $1 = ""; printf "not run here: %s --%s\n", t, $0 }' <<<"$excluded"
+          mapfile -t run < <(comm -23 <(echo "$all") <(echo "$skip"))
+          args=()
+          for i in "${!run[@]}"; do
+            if [ $(( i % SHARDS )) -eq $(( SHARD - 1 )) ]; then args+=(--test "${run[$i]}"); fi
+          done
+          echo "shard $SHARD of $SHARDS runs $(( ${#args[@]} / 2 )) of ${#run[@]} integration binaries"
+          # sudo-rs ignores -E. Pass the offline build profile after dropping
+          # privileges, or Cargo rebuilds with debuginfo and fills the runner.
+          sudo unshare --net -- sh -c \
+            'ip link set lo up && exec setpriv --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups -- "$@"' sh \
+            env HOME="$HOME" PATH="$PATH" \
+            CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+            CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_NET_OFFLINE=true \
+            BIOROUTER_DISABLE_KEYRING=true BIOROUTER_ESBUILD_BIN="$BIOROUTER_ESBUILD_BIN" \
+            sh -c '
+              set -eu
+              printf "offline Cargo: debug=%s incremental=%s offline=%s keyring_disabled=%s\n" \
+                "$CARGO_PROFILE_TEST_DEBUG" "$CARGO_INCREMENTAL" "$CARGO_NET_OFFLINE" "$BIOROUTER_DISABLE_KEYRING"
+              test "$CARGO_PROFILE_TEST_DEBUG" = 0
+              test "$CARGO_INCREMENTAL" = 0
+              test "$CARGO_NET_OFFLINE" = true
+              test "$BIOROUTER_DISABLE_KEYRING" = true
+              test -x "$BIOROUTER_ESBUILD_BIN"
+              exec cargo test --workspace --locked --no-fail-fast "$@"
+            ' sh "${args[@]}"
+
+      # ── `biorouter serve` end to end, and the generated API contract ───────
+      #
+      # Shard 3 carries what used to be two more jobs, each of which compiled
+      # the daemon on its own: `serve` here (11.6 minutes median, its own 2 GB
+      # cache) and `Generated API contract` in frontend.yml (5.8 minutes, a
+      # 1.3 GB cache). They now use the executables this job's cargo build
+      # already made. Asking for one integration test from each package builds
+      # that package's bin targets (cargo builds a package's binaries for its
+      # integration tests) in the unit graph above, so this is a no-op when the
+      # shard already ran them. A renamed test fails here ("no test target
+      # named"), not silently.
+      - name: Build the command, the daemon and the schema generator
+        if: matrix.shard == 3 && !cancelled()
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked --no-run --test serve_lifecycle --test knowledge_routes
+          for bin in biorouter biorouterd generate_schema; do
+            test -x "target/debug/$bin" || { echo "::error::target/debug/$bin was not built"; exit 1; }
+          done
+
+      - name: Install the interface's dependencies
+        if: matrix.shard == 3 && !cancelled()
+        working-directory: ui/desktop
+        run: npm ci
+        env:
+          # No test here launches Electron; skipping its ~150 MB download
+          # removes a network flake source.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+      # `scripts/check-openapi-schema.sh` is only a diff checker. The schema and
+      # TypeScript client must be regenerated first or a stale committed client
+      # is indistinguishable from a current one. `generate_schema` reads
+      # CARGO_MANIFEST_DIR at run time to find ui/desktop/openapi.json, which
+      # `cargo run` used to set for it.
+      - name: Generated API contract (schema and TypeScript client are committed)
+        if: matrix.shard == 3 && !cancelled()
+        run: |
+          set -euo pipefail
+          CARGO_MANIFEST_DIR="$PWD/crates/biorouter-server" ./target/debug/generate_schema > /dev/null
+          (cd ui/desktop && npx @hey-api/openapi-ts)
+          ./scripts/check-openapi-schema.sh
+
+      # Before this step there was NO CI coverage of browser mode at all. It
+      # cannot drive a real agent turn: there are no provider credentials here,
+      # and a browser session may not set a provider by design (decision SD-1
+      # in docs/deployment/serve-decisions.md). What it does assert is
+      # everything between the browser and that boundary. SIGTERM, SIGINT and
+      # SIGKILL to `serve` are `serve_lifecycle`'s job, in the offline step.
+      - name: Build the interface bundle
+        if: matrix.shard == 3 && !cancelled()
+        working-directory: ui/desktop
+        run: |
+          npm run build:web
+          # A RELATIVE base (issue #402): the daemon names the interface's mount
+          # in a <base href> it writes into the shell, so one bundle works at the
+          # root of a hostname and under a reverse proxy's path prefix. A
+          # root-base bundle asks for /assets/... at the proxy's root and never
+          # mounts there.
+          grep -q 'src="./assets/' src/web/index.html
+          ! grep -q 'src="/assets/' src/web/index.html
+          worklet=$(find src/web/assets -maxdepth 1 -type f -name '*pcmCapture*.js' -print -quit)
+          [ -n "$worklet" ] || { echo 'the PCM capture worklet was inlined or omitted'; exit 1; }
+          worklet_ref=0
+          for chunk in src/web/assets/*.js; do
+            [ "$chunk" = "$worklet" ] && continue
+            if grep -qF "$(basename "$worklet")" "$chunk"; then worklet_ref=1; break; fi
+          done
+          [ "$worklet_ref" = 1 ] \
+            || { echo 'the web bundle does not reference the PCM capture worklet file'; exit 1; }
+
+      # The served dictation step below drives Chromium and Firefox with fake audio, and
+      # Firefox reads it through a PulseAudio server that step starts when none answers.
+      - name: Install Playwright browsers and the audio server for served dictation
+        if: matrix.shard == 3 && !cancelled()
+        working-directory: ui/desktop
+        run: |
+          set -euo pipefail
+          sudo apt-get install --yes --no-install-recommends pulseaudio pulseaudio-utils
+          npx playwright install --with-deps chromium firefox
+
+      - name: Serve, and check the whole browser contract
+        if: matrix.shard == 3 && !cancelled()
+        run: |
+          set -euo pipefail
+          export BIOROUTER_PATH_ROOT="$RUNNER_TEMP/serve-root"
+          export BIOROUTER_DISABLE_KEYRING=true
+          mkdir -p "$BIOROUTER_PATH_ROOT"
+          ./target/debug/biorouter serve \
+            --port 18777 --token citoken \
+            --web-dir "$PWD/ui/desktop/src/web" > "$RUNNER_TEMP/serve.log" 2>&1 &
+          serve_pid=$!
+          for _ in $(seq 1 90); do
+            curl -fsS -o /dev/null "http://127.0.0.1:18777/?t=citoken" && break
+            sleep 1
+          done
+
+          fail() { echo "FAILED: $1"; echo '--- serve log ---'; cat "$RUNNER_TEMP/serve.log"; exit 1; }
+
+          # The document carries the daemon secret, so it is gated.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18777/)" = 401 ] \
+            || fail 'the shell was served without a credential'
+          [ "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:18777/?t=wrong')" = 401 ] \
+            || fail 'a wrong token was accepted'
+
+          # The token is exchanged for a cookie and leaves the address bar. It is
+          # not consumed (SD-9 in docs/deployment/serve-decisions.md): the
+          # readiness loop above has already redeemed it. The answer is a page of
+          # the daemon's own origin that moves on to /, not a 303: a redirect
+          # drops a SameSite=Strict cookie on a navigation that `serve --open`'s
+          # file: page started (routes::web_ui::exchange_bounce).
+          curl -s -o "$RUNNER_TEMP/bounce.html" -D "$RUNNER_TEMP/h" "http://127.0.0.1:18777/?t=citoken"
+          grep -qi '^HTTP/1.1 200' "$RUNNER_TEMP/h" || fail 'the token exchange did not answer its page'
+          grep -qi 'set-cookie: biorouter_session=' "$RUNNER_TEMP/h" || fail 'no session cookie'
+          grep -qi 'HttpOnly' "$RUNNER_TEMP/h" || fail 'the session cookie is readable from script'
+          grep -qi 'SameSite=Strict' "$RUNNER_TEMP/h" || fail 'the session cookie is sent cross-site'
+          grep -qi 'cache-control: no-store' "$RUNNER_TEMP/h" || fail 'the exchange page is cacheable'
+          grep -qi 'referrer-policy: no-referrer' "$RUNNER_TEMP/h" || fail 'the exchange page leaks its address'
+          grep -q 'http-equiv="refresh" content="0;url=./"' "$RUNNER_TEMP/bounce.html" \
+            || fail 'the exchange page does not move on to the interface'
+          ! grep -q citoken "$RUNNER_TEMP/bounce.html" || fail 'the exchange page carries the token'
+
+          # With the cookie, the shell and its runtime configuration.
+          curl -fsS -b 'biorouter_session=citoken' http://127.0.0.1:18777/ > "$RUNNER_TEMP/shell.html"
+          grep -q '__BIOROUTER_HEADLESS_CONFIG__' "$RUNNER_TEMP/shell.html" || fail 'no runtime config'
+          grep -qE '"secretKey":"[0-9a-f]{64}"' "$RUNNER_TEMP/shell.html" || fail 'no daemon secret'
+          # ABSENT, not empty: empty is falsy in the renderer and sends the
+          # browser to a hardcoded 127.0.0.1:3000.
+          ! grep -q 'apiBaseUrl' "$RUNNER_TEMP/shell.html" \
+            || fail 'apiBaseUrl is present; the renderer will not use its own origin'
+          grep -q 'no-store' <(curl -s -D - -o /dev/null -b 'biorouter_session=citoken' http://127.0.0.1:18777/) \
+            || fail 'the shell is cacheable and it carries the secret'
+          # The shell names its mount, relative to where the request landed, so
+          # the relative bundle resolves under a proxy's path prefix and on a
+          # path that fell through to the shell alike.
+          grep -q '<head><base href="./">' "$RUNNER_TEMP/shell.html" || fail 'the shell names no mount'
+          # To a file first: under pipefail, `grep -q` exiting early can kill
+          # curl mid-write and fail the step at random.
+          curl -fsS -b 'biorouter_session=citoken' -o "$RUNNER_TEMP/deep.html" http://127.0.0.1:18777/a/b/c \
+            || fail 'a deep path did not answer'
+          grep -q '<base href="../../">' "$RUNNER_TEMP/deep.html" || fail 'a deep path does not lead back to the mount'
+
+          # Behind an HTTPS reverse proxy (issue #402). The browser's Fetch
+          # Metadata is what says the page is at a secure address; the scheme a
+          # proxy chain reports is not asked, because JupyterHub's chain reports
+          # `https,http`. Without the metadata, a network address is refused.
+          nav=(-H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document')
+          for proto in https 'https,http' http; do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session=citoken' "${nav[@]}" \
+                -H 'Host: hub.example.org' -H "X-Forwarded-Proto: $proto" http://127.0.0.1:18777/)" = 200 ] \
+              || fail "a proxied navigation with X-Forwarded-Proto: $proto was refused"
+          done
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session=citoken' \
+              -H 'Host: 192.168.1.5:18777' -H 'X-Forwarded-Proto: https' http://127.0.0.1:18777/)" = 403 ] \
+            || fail 'a network address without Fetch Metadata was served the shell'
+
+          # The bundle is really served.
+          asset=$(grep -o '/assets/index-[A-Za-z0-9_-]*\.js' "$RUNNER_TEMP/shell.html" | head -1)
+          [ -n "$asset" ] || fail 'no bundle reference in the shell'
+          curl -fsS -o /dev/null "http://127.0.0.1:18777$asset" || fail 'the bundle is not served'
+
+          # The interface's own endpoints are behind the daemon's auth now. They
+          # had none at all before.
+          secret=$(grep -o '"secretKey":"[0-9a-f]*"' "$RUNNER_TEMP/shell.html" | cut -d'"' -f4)
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18777/headless/health)" = 401 ] \
+            || fail 'an interface endpoint answered without the secret'
+          curl -fsS -H "X-Secret-Key: $secret" http://127.0.0.1:18777/headless/health \
+            | grep -q '"status":"ok"' || fail 'the interface endpoint did not answer with the secret'
+
+          # And a path traversal is refused, which the retired implementation
+          # allowed outright: fs_read had no validation of any kind.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Secret-Key: $secret" \
+              'http://127.0.0.1:18777/headless/fs/read?path=/etc/passwd')" = 403 ] \
+            || fail 'the filesystem endpoint read outside its allowed roots'
+
+          # Stopping serve by pid stops its daemon. It used to leave the daemon
+          # running, still holding this port and still honouring the token.
+          # `serve` reaps the daemon before it exits, so the port is closed the
+          # moment `wait` returns.
+          kill "$serve_pid" || fail 'serve was no longer running'
+          wait "$serve_pid" || true
+          ! curl -s -o /dev/null --max-time 5 http://127.0.0.1:18777/status \
+            || fail 'the daemon outlived serve'
+          echo 'the browser contract holds'
+
+      - name: Served microphone and dictation in Chromium and Firefox
+        if: matrix.shard == 3 && !cancelled()
+        working-directory: ui/desktop
+        env:
+          BIOROUTER_SERVE_BIN: ${{ github.workspace }}/target/debug/biorouter
+          BIOROUTER_PW_CHANNEL: chromium
+        run: |
+          set -euo pipefail
+          pulse_pid=
+          pulse_start=
+          pulse_start_of() {
+            [ -r "/proc/$1/stat" ] || return 1
+            sed 's/^.*) //' "/proc/$1/stat" | awk '{print $20}'
+          }
+          stop_owned_pulse() {
+            if [ -n "$pulse_pid" ] &&
+               [ "$(pulse_start_of "$pulse_pid" 2>/dev/null || true)" = "$pulse_start" ] &&
+               [ "$(cat "/proc/$pulse_pid/comm" 2>/dev/null || true)" = pulseaudio ]; then
+              kill -TERM "$pulse_pid" 2>/dev/null || true
+              wait "$pulse_pid" || true
+            fi
+          }
+          trap stop_owned_pulse EXIT
+          if ! pactl info >/dev/null 2>&1; then
+            export XDG_RUNTIME_DIR="$RUNNER_TEMP/serve-pulse-runtime"
+            mkdir -p "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            pulseaudio --daemonize=no --exit-idle-time=-1 > "$RUNNER_TEMP/serve-pulse.log" 2>&1 &
+            pulse_pid=$!
+            pulse_start="$(pulse_start_of "$pulse_pid")"
+            [ -n "$pulse_start" ] || { echo 'FAILED: Firefox audio server process not recorded'; exit 1; }
+            printf '%s %s\n' "$pulse_pid" "$pulse_start" > "$RUNNER_TEMP/serve-pulse-owned.pid"
+            for _ in $(seq 1 50); do
+              if pactl info >/dev/null 2>&1; then break; fi
+              if ! kill -0 "$pulse_pid" 2>/dev/null; then break; fi
+              sleep 0.2
+            done
+            pactl info >/dev/null 2>&1 || { echo 'FAILED: Firefox audio server unavailable'; exit 1; }
+          fi
+          npx playwright test tests/e2e/serve-app-microphone.spec.ts tests/e2e/serve-dictation.spec.ts --reporter=list
+
+  # The required check `test (ubuntu-latest)`. A gate rather than a test job:
+  # it fails unless every ubuntu job above passed (a job a `schedule` run skips
+  # by design counts as passing). `!cancelled()` and not `always()`: a gate that
+  # still wants to run on a cancelled run can sit queued and hold a
+  # concurrency group (computer-use-package-acceptance.yml, 2026-09-18).
+  test-ubuntu:
+    name: test (ubuntu-latest)
+    needs: [guards, cross-check, socket-gate, lib-tests, integration]
+    if: ${{ !cancelled() }}
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every ubuntu job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          bad=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(" ")' <<<"$NEEDS")
+          if [ -n "$bad" ]; then
+            echo "::error::not green: $bad"
+            exit 1
+          fi
+
+  # macOS. On a pull request only what is specific to macOS runs: the Seatbelt
+  # sandbox, unit and integration. The full suite runs on main, nightly, on a
+  # pull request labelled ci:full, and on a pull request whose change touches
+  # macOS code (a `target_os = "macos"` cfg in a diff hunk, a path naming
+  # macOS, or the toolchain; scripts/ci/choose-os-suite.sh).
+  #
+  # Why the subset is safe here and not on Windows: everyone who works on this
+  # repository builds and tests on a Mac, so `cfg(target_os = "macos")` code is
+  # compiled and run on every change before it is pushed, which is not true of
+  # Windows or Linux code. And why it is needed: measured 2026-11-13 on main
+  # (run 43494893092), compiling the workspace's lib and bin tests took 45.5
+  # minutes here against 7.7 on ubuntu. The hosted arm64 runner has three cores
+  # and 7 GB of memory, and the `biorouter` test crate alone outgrows it. The
+  # job ran 58 minutes median on a pull request, the longest in the repository,
+  # on the runner pool GitHub limits to five at a time.
+  test-macos:
+    name: test (macos-latest)
+    timeout-minutes: 120
+    runs-on: macos-latest
+    steps:
+      # Depth 2: the merge commit and its base, so the chooser can read the diff.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      # Full suite or pull request subset; scripts/ci/choose-os-suite.sh says
+      # what selects which, and prints its reason in this step's log.
+      - name: Choose the suite
+        id: suite
+        shell: bash
+        run: scripts/ci/choose-os-suite.sh macos
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+          components: clippy
+      # Debug info off for tests: macOS's debug symbols are what would push the
+      # repository over its 10 GB cache ceiling. Set before rust-cache.
+      - name: Reduce CI test debuginfo
+        shell: bash
+        run: echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
+      - name: Keep only the pinned Rust toolchain (stable cache key)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned=$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)
+          [ -n "$pinned" ]
+          for t in $(rustup toolchain list | tr -d '\r' | cut -d' ' -f1); do
+            if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
+          done
+          rustup toolchain list
+      # The key the one `test` matrix job used, so main's cache keeps working.
+      # `cache-on-failure`: this job was once cancelled at 360 minutes with its
+      # post step skipped, and every run after compiled the workspace cold.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-latest-test
+          cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install protoc (build-script dep)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Full export payload (generated launchers and authenticated daemon fixture)
+        timeout-minutes: 2
+        run: node scripts/agent-drafter/check-export-payload.mjs
+      - name: Stage pinned native app compiler
+        timeout-minutes: 2
+        shell: bash
+        run: node scripts/ci/stage-esbuild.cjs
+
+      # Pull request subset: the sandbox library's unit tests (Seatbelt and
+      # the owner-private filesystem checks). `-p` keeps the build to this leaf
+      # crate; the full suite below runs them through the workspace instead.
+      - name: cargo test (sandbox library)
+        if: steps.suite.outputs.full != 'true'
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test -p biorouter-sandbox --lib --locked --no-fail-fast
+
+      - name: cargo test (Ollama readiness and recovery)
+        if: steps.suite.outputs.full == 'true'
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test ollama_readiness --test ollama_diagnostics_20261006_2 --test ollama_protocols --locked --no-fail-fast -- --test-threads=2
 
       - name: cargo test (workspace, lib + bins)
+        if: ${{ !cancelled() && steps.suite.outputs.full == 'true' }}
         env:
           BIOROUTER_DISABLE_KEYRING: "true"
-        run: cargo test --workspace --lib --bins --locked --no-fail-fast --timings
+        run: cargo test --workspace --lib --bins --locked --no-fail-fast
 
       # Minimum macOS of the backends (dictation plan, DD-11). .cargo/config.toml
       # sets MACOSX_DEPLOYMENT_TARGET=12.0 for every cargo build; without it rustc
@@ -456,6 +923,11 @@ jobs:
       # strong import newer than the Mac makes dyld refuse the whole binary. The
       # self test proves the check fails on a binary built with the variable
       # cleared, and that the config file is what carries it.
+      #
+      # Full suite only: it reuses the unit graph the lib + bins step above
+      # builds, and a change that could move the floor (the toolchain or
+      # .cargo/config.toml) selects the full suite, as does every dispatch of
+      # this workflow for an engine change (CLAUDE.md, Local dictation).
       #
       # The binaries checked are the real `biorouterd` and `biorouter`, not the
       # test executables the step above linked for those bin targets. A test
@@ -479,7 +951,7 @@ jobs:
       # reads a stripped binary's imports with nm, which is how release.sh's
       # build_mac_backends and verify check the stripped binaries that ship.
       - name: Backends declare macOS 12.0
-        if: matrix.os == 'macos-latest' && !cancelled()
+        if: ${{ !cancelled() && steps.suite.outputs.full == 'true' }}
         timeout-minutes: 15
         shell: bash
         env:
@@ -513,12 +985,158 @@ jobs:
           PY
           xargs scripts/check-macos-deployment.sh --require-imports < "$RUNNER_TEMP/backend-executables"
 
-      - name: Copilot hostname lookup never creates a Windows child console
-        if: runner.os == 'Windows'
-        timeout-minutes: 10
+      # The dictation engine's offline tests, the real `biorouterd`'s worker roles (PR-09:
+      # capture and an unknown role answer 2, and the self test decodes jfk.wav with the
+      # vendored fixtures), and the real engine worker under the real supervisor with
+      # `biorouter dictation status` (PR-10: frames on real pipes, a killed worker, a
+      # refused header, the managed policy). Ubuntu runs the three binaries in the offline
+      # integration step; this is their run on macOS, with Metal. Full suite only, like
+      # the lib + bins step whose unit graph `--workspace` keeps, so only biorouterd and
+      # the three tests are compiled again.
+      - name: cargo test (dictation engine, worker roles and supervisor)
+        if: ${{ !cancelled() && steps.suite.outputs.full == 'true' }}
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test dictation_engine_offline --test dictation_worker_role --test dictation_worker --locked --no-fail-fast
+
+      - name: cargo test (sandbox integration)
+        if: ${{ !cancelled() }}
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test sandbox --locked --no-fail-fast
+
+  # Windows (MSVC). On a pull request: the sandbox suites (unit, integration
+  # and bounded_fs's retained-handle and ACL fixtures), the directory probes
+  # and the console-window regression test. The full suite runs on main,
+  # nightly, on a pull request labelled ci:full, and on a pull request whose
+  # change touches Windows code (a Windows cfg in a diff hunk, a path naming
+  # Windows, the dependency set or the toolchain; scripts/ci/choose-os-suite.sh).
+  # Nobody here develops on Windows, so that code is tested nowhere else
+  # before merge. Measured 2026-11-13 the full job ran 33 minutes median on a
+  # pull request: 11.5 compiling lib and bin tests, 11.1 running them.
+  test-windows:
+    name: test (windows-latest)
+    timeout-minutes: 75
+    runs-on: windows-latest
+    steps:
+      # Depth 2: the merge commit and its base, so the chooser can read the diff.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      # Full suite or pull request subset; scripts/ci/choose-os-suite.sh says
+      # what selects which, and prints its reason in this step's log.
+      - name: Choose the suite
+        id: suite
+        shell: bash
+        run: scripts/ci/choose-os-suite.sh windows
+      - name: Probe Windows directory reopen and nested-handle move semantics
+        timeout-minutes: 1
         shell: pwsh
         run: |
-          $messages = cargo test -p biorouter --test computer_use_hostname --locked --no-run --message-format=json
+          python scripts/security/windows-directory-lease-probe.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/security/windows-nested-handle-probe.py
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+          components: clippy
+      # MSVC's test PDBs dominate the Windows link and cache footprint (the
+      # biorouter harness alone produced a ~1.1 GiB PDB). Set before rust-cache.
+      - name: Reduce CI test debuginfo
+        shell: bash
+        run: echo 'CARGO_PROFILE_TEST_DEBUG=0' >> "$GITHUB_ENV"
+      - name: Keep only the pinned Rust toolchain (stable cache key)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned=$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)
+          [ -n "$pinned" ]
+          for t in $(rustup toolchain list | tr -d '\r' | cut -d' ' -f1); do
+            if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
+          done
+          rustup toolchain list
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-latest-test
+          cache-on-failure: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install protoc (build-script dep)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Windows launcher runtime digest (actual PowerShell template)
+        timeout-minutes: 2
+        run: node scripts/agent-drafter/check-windows-runtime-digest.mjs
+      - name: Full export payload (generated launchers and authenticated daemon fixture)
+        timeout-minutes: 2
+        run: node scripts/agent-drafter/check-export-payload.mjs
+      - name: Stage pinned native app compiler
+        timeout-minutes: 2
+        shell: bash
+        run: node scripts/ci/stage-esbuild.cjs
+
+      - name: cargo test (sandbox library)
+        if: steps.suite.outputs.full != 'true'
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test -p biorouter-sandbox --lib --locked --no-fail-fast
+
+      - name: cargo test (Ollama readiness and recovery)
+        if: steps.suite.outputs.full == 'true'
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test ollama_readiness --test ollama_diagnostics_20261006_2 --test ollama_protocols --locked --no-fail-fast -- --test-threads=2
+
+      # Windows reaches the credential store through the Credential Manager;
+      # BIOROUTER_DISABLE_KEYRING keeps it out as on every OS.
+      - name: cargo test (workspace, lib + bins)
+        if: ${{ !cancelled() && steps.suite.outputs.full == 'true' }}
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --lib --bins --locked --no-fail-fast --timings
+
+      - name: Upload Windows Cargo timings
+        if: ${{ always() && steps.suite.outputs.full == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cargo-timings
+          path: target/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      # The dictation engine's offline tests, the real `biorouterd`'s worker roles (PR-09:
+      # capture and an unknown role answer 2, and the self test decodes jfk.wav with the
+      # vendored fixtures), and the real engine worker under the real supervisor with
+      # `biorouter dictation status` (PR-10: frames on real pipes, a killed worker, a
+      # refused header, the managed policy). Ubuntu runs the three binaries in the offline
+      # integration step; this is their run on the MSVC leg, which is where M-3 is decided
+      # (`MSVC_NATIVE` in crates/biorouter-dictation/build.rs). Full suite only, like the lib
+      # + bins step whose unit graph `--workspace` keeps, so only biorouterd and the three
+      # tests are compiled again.
+      - name: cargo test (dictation engine, worker roles and supervisor)
+        if: ${{ !cancelled() && steps.suite.outputs.full == 'true' }}
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test dictation_engine_offline --test dictation_worker_role --test dictation_worker --locked --no-fail-fast
+
+      - name: cargo test (sandbox integration and bounded_fs)
+        if: ${{ !cancelled() }}
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test sandbox --test bounded_fs --locked --no-fail-fast
+
+      # #461: the hostname lookup once spawned a visible HOSTNAME.EXE console.
+      # `--workspace` (not `-p biorouter`) so the build reuses the cached
+      # dependency graph instead of resolving features for one package.
+      - name: Copilot hostname lookup never creates a Windows child console
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $messages = cargo test --workspace --test computer_use_hostname --locked --no-run --message-format=json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $artifact = $messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object {
             $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'computer_use_hostname' -and $_.executable
@@ -527,7 +1145,7 @@ jobs:
           ./scripts/test-copilot-hostname-windows.ps1 -TestBinary $artifact.executable -OutputDirectory target/copilot-hostname-evidence
 
       - name: Upload Windows Copilot hostname process trace and screenshots
-        if: runner.os == 'Windows' && always()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-copilot-hostname-evidence
@@ -535,179 +1153,19 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # The MSVC run of the gate the `cross-check` job runs on windows-gnu for
+      # every pull request. Main and nightly only.
       - name: No Windows-unsafe dependency hostname calls
-        if: runner.os == 'Windows' && !cancelled()
+        if: ${{ !cancelled() && steps.suite.outputs.full == 'true' }}
         run: cargo clippy --workspace --lib --bins --locked -- -D clippy::disallowed_methods
-
-      - name: Upload Windows Cargo timings
-        if: matrix.os == 'windows-latest' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-cargo-timings
-          path: target/cargo-timings/cargo-timing.html
-          if-no-files-found: warn
-          retention-days: 14
-
-      # The cross-platform-sensitive suites BR-70 exists to prove, run on every
-      # OS they apply to. The workspace step above already runs the sandbox,
-      # developer shell/background and security unit tests through their library
-      # targets. The sandbox integration runs on every OS; Windows also runs
-      # bounded_fs to exercise its retained-handle and ACL fixtures natively.
-      # Ubuntu runs bounded_fs in the offline integration step below.
-      - name: cargo test (sandbox integration)
-        run: cargo test -p biorouter-sandbox --test sandbox ${{ matrix.os == 'windows-latest' && '--test bounded_fs' || '' }} --locked --no-fail-fast
-
-      # The dictation engine's offline tests, the real `biorouterd`'s worker roles (PR-09:
-      # capture and an unknown role answer 2, and the self test decodes jfk.wav with the
-      # vendored fixtures), and the real engine worker under the real supervisor with
-      # `biorouter dictation status` (PR-10: frames on real pipes, a killed worker, a
-      # refused header, the managed policy). Ubuntu runs the three binaries in the offline
-      # integration step below; this is their run on macOS and on the MSVC leg, which is
-      # where M-3 is decided (`MSVC_NATIVE` in crates/biorouter-dictation/build.rs).
-      # `--workspace` keeps the unit graph of the lib + bins step, so only biorouterd and
-      # the three tests are compiled again.
-      - name: cargo test (dictation engine, worker roles and supervisor)
-        if: matrix.os != 'ubuntu-latest'
-        env:
-          BIOROUTER_DISABLE_KEYRING: "true"
-        run: cargo test --workspace --test dictation_engine_offline --test dictation_worker_role --test dictation_worker --locked --no-fail-fast
-
-      # ── Every other `tests/*.rs` binary, bar a table of exceptions ─────────
-      #
-      # Until this step no workflow ran them. The lib + bins selector above
-      # leaves `tests/` out, and `clippy --all-targets` below only COMPILES
-      # them, which says nothing about whether they pass. So the guards
-      # CLAUDE.md treats as load-bearing (the privacy master-switch binaries,
-      # the keyless-daemon binaries, `privacy_ar15_is_retired`,
-      # `every_test_binary_is_sandboxed`) ran only when someone remembered to.
-      # The cost is on record: from eb594ded until PR #229,
-      # `the_documented_closure_is_the_one_the_code_performs` read the wrong
-      # function, and would have stayed green with the AR-15 gate deleted.
-      #
-      # ⚠ The table is an EXCLUSION list on purpose. An allowlist would rebuild
-      # the gap one file at a time: a new binary would run only if its author
-      # remembered to add it. This way it runs the day it lands, and one that
-      # cannot run hermetically gets a line saying why. A line naming a target
-      # that no longer exists fails the step, so the table cannot outlive what
-      # it excuses.
-      #
-      # ⚠ Never add `--ignored` or `--include-ignored`. The live tests (real
-      # providers, the vendor CLIs, llama.cpp downloads, GitHub fetches) are
-      # `#[ignore]`d inside binaries whose other tests belong here, so the
-      # binary stays in and its live tests stay out.
-      #
-      # ⚠ No network, enforced rather than assumed. The tests run in a network
-      # namespace holding nothing but loopback, so a test that dials out fails
-      # at once with a connection error instead of passing whenever the third
-      # party is up (the lapstone note above is what that looks like).
-      # `setpriv` drops back to the runner user once loopback is up: as root,
-      # every "permission denied" assertion would pass for the wrong reason.
-      # Servers on 127.0.0.1 and ::1 work as usual.
-      #
-      # The table's second entry is the instructive one. `ui_example_apps`
-      # bundles each example with `npx --yes esbuild` when no local esbuild
-      # exists, and this job installs none. Offline it does NOT fail: measured,
-      # npx sits on the unreachable registry until the bundler's 60 s timeout,
-      # then the test passes on the type-stripper fallback without esbuild
-      # ever running. That is a minute spent proving nothing, and a pass that
-      # turns into a failure the day npm's retries give up before the timeout.
-      #
-      # Measured 2026-09-11, one binary at a time on hosted runners (scratch
-      # runs 34628149105 and 34629544896). ubuntu, inside the namespace: all
-      # 119 binaries green, 687 tests passed, 0 failed, 49 ignored. Building
-      # them took 135 s on top of the lib + bins build (14.5 GiB of
-      # executables, with the debuginfo setting above) and the 117 this step
-      # selects spend ~135 s in their tests. macOS was green but for one
-      # log-capture test that failed once in ~70 runs. windows-latest fails
-      # 31 tests in 9 binaries that had never run there, which is why this is
-      # ubuntu only: widening means fixing those first, and `unshare` is
-      # Linux-only, so another OS also needs its own way to stay offline.
-      - name: cargo test (integration binaries, no network)
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          BIOROUTER_DISABLE_KEYRING: "true"
-          CARGO_NET_OFFLINE: "true"
-        run: |
-          set -euo pipefail
-          # One line per target, no wrapping: the first word is the name.
-          # target          why it does not run in this step
-          excluded='
-          sandbox           "cargo test (sandbox integration)" above runs it, on every OS
-          ollama_readiness   "cargo test (Ollama readiness and recovery)" above runs it, on every OS
-          ollama_diagnostics_20261006_2 "cargo test (Ollama readiness and recovery)" above runs it, on every OS
-          ollama_protocols   "cargo test (Ollama readiness and recovery)" above runs it, on every OS
-          ui_example_apps   needs the npm registry (`npx --yes esbuild`); apps-smoke.yml runs it after `npm ci`
-          '
-          all=$(cargo metadata --format-version 1 --no-deps --locked \
-                  | jq -r '.packages[].targets[] | select(.kind == ["test"]) | .name' | sort)
-          # `--test` selects by name across the workspace, so a name two
-          # packages share would run (or be excluded) twice over.
-          dup=$(uniq -d <<<"$all")
-          if [ -n "$dup" ]; then
-            echo "::error::two packages have an integration target named: $dup"; exit 1
-          fi
-          skip=$(awk 'NF { print $1 }' <<<"$excluded" | sort)
-          stale=$(comm -13 <(echo "$all") <(echo "$skip"))
-          if [ -n "$stale" ]; then
-            echo "::error::the exclusion table names targets that no longer exist; delete their lines: $stale"; exit 1
-          fi
-          awk 'NF { t = $1; $1 = ""; printf "not run here: %s --%s\n", t, $0 }' <<<"$excluded"
-          args=()
-          for t in $(comm -23 <(echo "$all") <(echo "$skip")); do args+=(--test "$t"); done
-          echo "running $(( ${#args[@]} / 2 )) integration binaries"
-          # sudo-rs ignores -E. Pass the offline build profile after dropping
-          # privileges, or Cargo rebuilds with debuginfo and fills the runner.
-          sudo unshare --net -- sh -c \
-            'ip link set lo up && exec setpriv --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups -- "$@"' sh \
-            env HOME="$HOME" PATH="$PATH" \
-            CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
-            CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_NET_OFFLINE=true \
-            BIOROUTER_DISABLE_KEYRING=true BIOROUTER_ESBUILD_BIN="$BIOROUTER_ESBUILD_BIN" \
-            sh -c '
-              set -eu
-              printf "offline Cargo: debug=%s incremental=%s offline=%s keyring_disabled=%s\n" \
-                "$CARGO_PROFILE_TEST_DEBUG" "$CARGO_INCREMENTAL" "$CARGO_NET_OFFLINE" "$BIOROUTER_DISABLE_KEYRING"
-              test "$CARGO_PROFILE_TEST_DEBUG" = 0
-              test "$CARGO_INCREMENTAL" = 0
-              test "$CARGO_NET_OFFLINE" = true
-              test "$BIOROUTER_DISABLE_KEYRING" = true
-              test -x "$BIOROUTER_ESBUILD_BIN"
-              exec cargo test --workspace --locked --no-fail-fast "$@"
-            ' sh "${args[@]}"
-
-      # ⚠ BLOCKING, unlike the clippy step below it. No production code may open
-      # a socket a Windows child process inherits (tokio's `TcpListener::bind`
-      # and `TcpStream::connect`, the websocket `connect_async` family: see
-      # scripts/clippy-non-inheritable/clippy.toml for the list and why). It is
-      # clippy's `disallowed_methods`, force-warned so no `#[allow]` hides a
-      # site, over `--lib --bins` in the release profile with every other lint
-      # allowed, so it neither waits on the warnings below nor touches test code.
-      # It checks the dependencies itself, in release and without
-      # dev-dependency features, so it shares little with the steps around it
-      # (measured on an M-series Mac: 1m48s with no release clippy cache, a few
-      # seconds after that; a runner is slower). Exit 1 is a site, 2 a gate that could not run, 3 a rotten
-      # configuration; the script's header says more.
-      # `!cancelled()`: it runs even when a test step above has failed. Without
-      # it a red test skipped the gate, and a PR that broke a test AND added an
-      # inheritable socket was told about the test only. A failure here still
-      # fails the job: there is no `continue-on-error`.
-      # The `cross-check` job runs it again for the Windows target, where
-      # `cfg(windows)` code is compiled and this ubuntu run cannot see it.
-      - name: No production socket a Windows child process can inherit
-        if: matrix.os == 'ubuntu-latest' && !cancelled()
-        run: ./scripts/check-non-inheritable-sockets.sh
-
-      - name: clippy (host, informational until warnings are burned down)
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo clippy --workspace --all-targets --locked
 
   # ── 4. Nightly: the FULL cross BUILD. `check` cannot catch link errors
   #      (aws-lc-sys / winpthread) or glibc symbol-version regressions.
   cross-build-nightly:
     timeout-minutes: 120
-    # The three jobs above are gated `!= 'schedule'`, so they pick up
-    # workflow_dispatch on their own; this one has to name it, or the button
-    # would run everything EXCEPT the job it was added for.
+    # The jobs above that skip `schedule` pick up workflow_dispatch on their
+    # own; this one has to name it, or the button would run everything EXCEPT
+    # the job it was added for.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -1032,254 +1490,3 @@ jobs:
         with:
           path: ${{ runner.temp }}\m1-models
           key: dictation-m1-windows-small-en-${{ hashFiles('crates/biorouter-dictation/src/catalog.rs') }}
-
-  # `biorouter serve` end to end: the daemon serving the interface, the token
-  # exchange, and the endpoints that were previously unauthenticated.
-  #
-  # Before this job there was NO CI coverage of browser mode at all -- `grep -rn
-  # headless .github/` returned nothing while a tarball of it was a shipped
-  # release asset. The one smoke test that existed asserted the served page
-  # contained "<!doctype html>", which is true of a completely non-functional
-  # app.
-  #
-  # It cannot drive a real agent turn: there are no provider credentials here,
-  # and a browser session may not set a provider by design (decision SD-1 in
-  # docs/deployment/serve-decisions.md). What it does assert is everything
-  # between the browser and that boundary.
-  serve:
-    # Was 30 against a measured 9.5m. The lifecycle step below builds
-    # biorouter-cli's tests, which unify its dev-dependency features and so
-    # recompile part of the graph a plain `cargo build` already built (4m56s on
-    # a loaded M4 Max); the budget keeps the same margin over that.
-    timeout-minutes: 45
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.92"
-      # Same as the `test` job: the image's own toolchain must not reach the
-      # cache key.
-      - name: Keep only the pinned Rust toolchain (stable cache key)
-        shell: bash
-        run: |
-          set -euo pipefail
-          pinned=$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)
-          [ -n "$pinned" ]
-          for t in $(rustup toolchain list | tr -d '\r' | cut -d' ' -f1); do
-            if [ "$t" != "$pinned" ]; then rustup toolchain uninstall "$t"; fi
-          done
-          rustup toolchain list
-      # Saves from main only, like `test` and for the reason given there. When
-      # main's copy was evicted (2026-10-11/12), every PR's first run here
-      # wrote its own 1.9 GB copy that no other branch could read, which
-      # pushed the repository further past the ceiling.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: serve
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Install protoc (build-script dep)
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Install Linux native build dependencies
-        run: |
-          # ⚠ Drop the runner image's Microsoft apt repositories FIRST.
-          # `packages.microsoft.com` has repeatedly answered 403 for the
-          # `azure-cli` and `prod` lists that the hosted image ships
-          # preinstalled, and `apt-get update` exits 100 on any repository it
-          # cannot refresh — so an outage on a third-party CDN we do not use
-          # fails this job with `E: ... is no longer signed`. Nothing here
-          # installs from them. Removing them makes the update depend only on
-          # the archives the packages below actually come from.
-          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
-                     /etc/apt/sources.list.d/azure-cli.list \
-                     /etc/apt/sources.list.d/microsoft-prod.sources \
-                     /etc/apt/sources.list.d/azure-cli.sources
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends libdbus-1-dev libxdo-dev liblzma-dev pulseaudio pulseaudio-utils
-
-      - name: Build the interface bundle
-        working-directory: ui/desktop
-        run: |
-          npm ci
-          npm run build:web
-          # A RELATIVE base (issue #402): the daemon names the interface's mount
-          # in a <base href> it writes into the shell, so one bundle works at the
-          # root of a hostname and under a reverse proxy's path prefix. A
-          # root-base bundle asks for /assets/... at the proxy's root and never
-          # mounts there.
-          grep -q 'src="./assets/' src/web/index.html
-          ! grep -q 'src="/assets/' src/web/index.html
-          worklet=$(find src/web/assets -maxdepth 1 -type f -name '*pcmCapture*.js' -print -quit)
-          [ -n "$worklet" ] || { echo 'the PCM capture worklet was inlined or omitted'; exit 1; }
-          worklet_ref=0
-          for chunk in src/web/assets/*.js; do
-            [ "$chunk" = "$worklet" ] && continue
-            if grep -qF "$(basename "$worklet")" "$chunk"; then worklet_ref=1; break; fi
-          done
-          [ "$worklet_ref" = 1 ] \
-            || { echo 'the web bundle does not reference the PCM capture worklet file'; exit 1; }
-
-      - name: Install Playwright browsers for served dictation
-        working-directory: ui/desktop
-        run: npx playwright install --with-deps chromium firefox
-
-      - name: Build the command and the daemon
-        run: cargo build -p biorouter-cli -p biorouter-server
-
-      - name: Serve, and check the whole browser contract
-        run: |
-          set -euo pipefail
-          export BIOROUTER_PATH_ROOT="$RUNNER_TEMP/serve-root"
-          export BIOROUTER_DISABLE_KEYRING=true
-          mkdir -p "$BIOROUTER_PATH_ROOT"
-          ./target/debug/biorouter serve \
-            --port 18777 --token citoken \
-            --web-dir "$PWD/ui/desktop/src/web" > "$RUNNER_TEMP/serve.log" 2>&1 &
-          serve_pid=$!
-          for _ in $(seq 1 90); do
-            curl -fsS -o /dev/null "http://127.0.0.1:18777/?t=citoken" && break
-            sleep 1
-          done
-
-          fail() { echo "FAILED: $1"; echo '--- serve log ---'; cat "$RUNNER_TEMP/serve.log"; exit 1; }
-
-          # The document carries the daemon secret, so it is gated.
-          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18777/)" = 401 ] \
-            || fail 'the shell was served without a credential'
-          [ "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:18777/?t=wrong')" = 401 ] \
-            || fail 'a wrong token was accepted'
-
-          # The token is exchanged for a cookie and leaves the address bar. It is
-          # not consumed (SD-9 in docs/deployment/serve-decisions.md): the
-          # readiness loop above has already redeemed it. The answer is a page of
-          # the daemon's own origin that moves on to /, not a 303: a redirect
-          # drops a SameSite=Strict cookie on a navigation that `serve --open`'s
-          # file: page started (routes::web_ui::exchange_bounce).
-          curl -s -o "$RUNNER_TEMP/bounce.html" -D "$RUNNER_TEMP/h" "http://127.0.0.1:18777/?t=citoken"
-          grep -qi '^HTTP/1.1 200' "$RUNNER_TEMP/h" || fail 'the token exchange did not answer its page'
-          grep -qi 'set-cookie: biorouter_session=' "$RUNNER_TEMP/h" || fail 'no session cookie'
-          grep -qi 'HttpOnly' "$RUNNER_TEMP/h" || fail 'the session cookie is readable from script'
-          grep -qi 'SameSite=Strict' "$RUNNER_TEMP/h" || fail 'the session cookie is sent cross-site'
-          grep -qi 'cache-control: no-store' "$RUNNER_TEMP/h" || fail 'the exchange page is cacheable'
-          grep -qi 'referrer-policy: no-referrer' "$RUNNER_TEMP/h" || fail 'the exchange page leaks its address'
-          grep -q 'http-equiv="refresh" content="0;url=./"' "$RUNNER_TEMP/bounce.html" \
-            || fail 'the exchange page does not move on to the interface'
-          ! grep -q citoken "$RUNNER_TEMP/bounce.html" || fail 'the exchange page carries the token'
-
-          # With the cookie, the shell and its runtime configuration.
-          curl -fsS -b 'biorouter_session=citoken' http://127.0.0.1:18777/ > "$RUNNER_TEMP/shell.html"
-          grep -q '__BIOROUTER_HEADLESS_CONFIG__' "$RUNNER_TEMP/shell.html" || fail 'no runtime config'
-          grep -qE '"secretKey":"[0-9a-f]{64}"' "$RUNNER_TEMP/shell.html" || fail 'no daemon secret'
-          # ABSENT, not empty: empty is falsy in the renderer and sends the
-          # browser to a hardcoded 127.0.0.1:3000.
-          ! grep -q 'apiBaseUrl' "$RUNNER_TEMP/shell.html" \
-            || fail 'apiBaseUrl is present; the renderer will not use its own origin'
-          grep -q 'no-store' <(curl -s -D - -o /dev/null -b 'biorouter_session=citoken' http://127.0.0.1:18777/) \
-            || fail 'the shell is cacheable and it carries the secret'
-          # The shell names its mount, relative to where the request landed, so
-          # the relative bundle resolves under a proxy's path prefix and on a
-          # path that fell through to the shell alike.
-          grep -q '<head><base href="./">' "$RUNNER_TEMP/shell.html" || fail 'the shell names no mount'
-          # To a file first: under pipefail, `grep -q` exiting early can kill
-          # curl mid-write and fail the step at random.
-          curl -fsS -b 'biorouter_session=citoken' -o "$RUNNER_TEMP/deep.html" http://127.0.0.1:18777/a/b/c \
-            || fail 'a deep path did not answer'
-          grep -q '<base href="../../">' "$RUNNER_TEMP/deep.html" || fail 'a deep path does not lead back to the mount'
-
-          # Behind an HTTPS reverse proxy (issue #402). The browser's Fetch
-          # Metadata is what says the page is at a secure address; the scheme a
-          # proxy chain reports is not asked, because JupyterHub's chain reports
-          # `https,http`. Without the metadata, a network address is refused.
-          nav=(-H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document')
-          for proto in https 'https,http' http; do
-            [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session=citoken' "${nav[@]}" \
-                -H 'Host: hub.example.org' -H "X-Forwarded-Proto: $proto" http://127.0.0.1:18777/)" = 200 ] \
-              || fail "a proxied navigation with X-Forwarded-Proto: $proto was refused"
-          done
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session=citoken' \
-              -H 'Host: 192.168.1.5:18777' -H 'X-Forwarded-Proto: https' http://127.0.0.1:18777/)" = 403 ] \
-            || fail 'a network address without Fetch Metadata was served the shell'
-
-          # The bundle is really served.
-          asset=$(grep -o '/assets/index-[A-Za-z0-9_-]*\.js' "$RUNNER_TEMP/shell.html" | head -1)
-          [ -n "$asset" ] || fail 'no bundle reference in the shell'
-          curl -fsS -o /dev/null "http://127.0.0.1:18777$asset" || fail 'the bundle is not served'
-
-          # The interface's own endpoints are behind the daemon's auth now. They
-          # had none at all before.
-          secret=$(grep -o '"secretKey":"[0-9a-f]*"' "$RUNNER_TEMP/shell.html" | cut -d'"' -f4)
-          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18777/headless/health)" = 401 ] \
-            || fail 'an interface endpoint answered without the secret'
-          curl -fsS -H "X-Secret-Key: $secret" http://127.0.0.1:18777/headless/health \
-            | grep -q '"status":"ok"' || fail 'the interface endpoint did not answer with the secret'
-
-          # And a path traversal is refused, which the retired implementation
-          # allowed outright: fs_read had no validation of any kind.
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Secret-Key: $secret" \
-              'http://127.0.0.1:18777/headless/fs/read?path=/etc/passwd')" = 403 ] \
-            || fail 'the filesystem endpoint read outside its allowed roots'
-
-          # Stopping serve by pid stops its daemon. It used to leave the daemon
-          # running, still holding this port and still honouring the token.
-          # `serve` reaps the daemon before it exits, so the port is closed the
-          # moment `wait` returns.
-          kill "$serve_pid" || fail 'serve was no longer running'
-          wait "$serve_pid" || true
-          ! curl -s -o /dev/null --max-time 5 http://127.0.0.1:18777/status \
-            || fail 'the daemon outlived serve'
-          echo 'the browser contract holds'
-
-      - name: Served microphone and dictation in Chromium and Firefox
-        working-directory: ui/desktop
-        env:
-          BIOROUTER_SERVE_BIN: ${{ github.workspace }}/target/debug/biorouter
-          BIOROUTER_PW_CHANNEL: chromium
-        run: |
-          set -euo pipefail
-          pulse_pid=
-          pulse_start=
-          pulse_start_of() {
-            [ -r "/proc/$1/stat" ] || return 1
-            sed 's/^.*) //' "/proc/$1/stat" | awk '{print $20}'
-          }
-          stop_owned_pulse() {
-            if [ -n "$pulse_pid" ] &&
-               [ "$(pulse_start_of "$pulse_pid" 2>/dev/null || true)" = "$pulse_start" ] &&
-               [ "$(cat "/proc/$pulse_pid/comm" 2>/dev/null || true)" = pulseaudio ]; then
-              kill -TERM "$pulse_pid" 2>/dev/null || true
-              wait "$pulse_pid" || true
-            fi
-          }
-          trap stop_owned_pulse EXIT
-          if ! pactl info >/dev/null 2>&1; then
-            export XDG_RUNTIME_DIR="$RUNNER_TEMP/serve-pulse-runtime"
-            mkdir -p "$XDG_RUNTIME_DIR"
-            chmod 700 "$XDG_RUNTIME_DIR"
-            pulseaudio --daemonize=no --exit-idle-time=-1 > "$RUNNER_TEMP/serve-pulse.log" 2>&1 &
-            pulse_pid=$!
-            pulse_start="$(pulse_start_of "$pulse_pid")"
-            [ -n "$pulse_start" ] || { echo 'FAILED: Firefox audio server process not recorded'; exit 1; }
-            printf '%s %s\n' "$pulse_pid" "$pulse_start" > "$RUNNER_TEMP/serve-pulse-owned.pid"
-            for _ in $(seq 1 50); do
-              if pactl info >/dev/null 2>&1; then break; fi
-              if ! kill -0 "$pulse_pid" 2>/dev/null; then break; fi
-              sleep 0.2
-            done
-            pactl info >/dev/null 2>&1 || { echo 'FAILED: Firefox audio server unavailable'; exit 1; }
-          fi
-          npx playwright test tests/e2e/serve-app-microphone.spec.ts tests/e2e/serve-dictation.spec.ts --reporter=list
-
-      # SIGTERM and SIGINT to `serve`, and SIGKILL, which leaves only the
-      # daemon's own parent watch to stop it. Here rather than in the workspace
-      # test job, which runs `--lib --bins` only: this needs a `biorouterd` from
-      # the same tree beside `biorouter`, which the build step above provides.
-      - name: Stopping serve stops its daemon
-        env:
-          BIOROUTER_DISABLE_KEYRING: "true"
-        run: cargo test -p biorouter-cli --test serve_lifecycle

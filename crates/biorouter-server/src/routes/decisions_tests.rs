@@ -3335,11 +3335,25 @@ async fn the_install_route_starts_and_reports_progress() {
     assert_eq!(started["job"]["model"], "tev1:0.8b", "{body}");
     assert_eq!(started["job"]["state"], "downloading", "{body}");
 
+    // The POST above already reported "downloading", so the polls only have to
+    // show the job moving forward to "installed". On a loaded runner the first
+    // poll can come after the fake download has finished; requiring the polls
+    // themselves to start at "downloading" made the test fail there (seen:
+    // ["verifying", "installed"]).
     let (seen, report) = install_states(&app).await;
-    assert_eq!(
-        seen.first().map(String::as_str),
-        Some("downloading"),
-        "{seen:?}"
+    let order = ["downloading", "verifying", "installed"];
+    let positions: Vec<usize> = seen
+        .iter()
+        .map(|state| {
+            order
+                .iter()
+                .position(|known| known == state)
+                .unwrap_or_else(|| panic!("an unexpected install state: {seen:?}"))
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "the install went backwards: {seen:?}"
     );
     assert_eq!(
         seen.last().map(String::as_str),

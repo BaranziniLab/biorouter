@@ -63,9 +63,7 @@ function toolCallsValue(container: HTMLElement): string {
 }
 
 function openDetails(container: HTMLElement) {
-  const trigger = [...container.querySelectorAll('button')].find(
-    (button) => button.textContent === summaryCopy.details
-  );
+  const trigger = container.querySelector<HTMLElement>('[data-testid="summary-details-toggle"]');
   if (trigger) fireEvent.click(trigger);
 }
 

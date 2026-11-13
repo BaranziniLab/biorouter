@@ -257,6 +257,8 @@ describe('the subagents in the summary card, in a real layout engine', () => {
     model?: string;
     gate?: boolean;
     markdownResult?: boolean;
+    /** Press every "Show N more", so every row is drawn. */
+    expand?: boolean;
   }): Promise<{
     tab: Page;
     measured: Measured;
@@ -272,6 +274,10 @@ describe('the subagents in the summary card, in a real layout engine', () => {
     }, params);
     await tab.addScriptTag({ content: script });
     await tab.waitForSelector('.br-agents');
+    if (params.expand) {
+      for (const more of await tab.$$('.br-agents__more')) await more.click();
+      await tab.mouse.move(0, 0);
+    }
     await tab.evaluate(
       () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
     );
@@ -284,7 +290,7 @@ describe('the subagents in the summary card, in a real layout engine', () => {
         );
       const edges = Array.from(
         document.querySelectorAll(
-          '.br-agents__row, .br-agents__phase-toggle, .br-agents__group-toggle, .br-agents__more, ' +
+          '.br-agents__row, .br-agents__phase-toggle, .br-agents__more, ' +
             '.br-agents__name, .br-agents__meta, .br-agents__trailing, .br-agents__phase-title, ' +
             '.br-agents__phase-counts, .br-agents__plan-title, .br-summary__count'
         )
@@ -306,7 +312,7 @@ describe('the subagents in the summary card, in a real layout engine', () => {
         },
         dense: heights(".br-agents__row[data-layout='dense']"),
         comfortable: heights(".br-agents__row[data-layout='comfortable']"),
-        toggles: heights('.br-agents__group-toggle, .br-agents__more, .br-agents__phase-toggle'),
+        toggles: heights('.br-agents__more, .br-agents__phase-toggle'),
         rightmost: Math.max(...edges),
         pageScrollWidth: document.documentElement.scrollWidth,
         viewport: window.innerWidth,
@@ -361,11 +367,12 @@ describe('the subagents in the summary card, in a real layout engine', () => {
 
   it('lays 30 subagents out as 28px rows that scroll inside the card at 240px', async (ctx) => {
     if (!browser) return ctx.skip();
-    const { tab, measured } = await mount({ agents: 30 });
+    // Every row drawn (Show 25 more pressed), under the grid of 30 squares.
+    const { tab, measured } = await mount({ agents: 30, expand: true });
     try {
       // The narrowest real card: the 240px column less the cell's 12px right padding.
       expect(measured.card.width).toBe(RAIL_WIDTH - 12);
-      expect(measured.dense.length).toBeGreaterThan(12);
+      expect(measured.dense.length).toBe(30);
       for (const height of measured.dense) expect(height).toBe(28);
       for (const height of measured.toggles) expect(height).toBe(28);
       expect(measured.comfortable).toEqual([]);
@@ -442,7 +449,7 @@ describe('the subagents in the summary card, in a real layout engine', () => {
       expect(kept.pinned).toBe('true');
       // The kept row wears the strong fill; at rest it had none.
       expect(kept.fill).not.toBe(resting.fill);
-      // The peek hangs to the LEFT of the row, 12px off, from its top.
+      // The peek hangs to the LEFT of the row, clear of the card, from its top.
       expect(kept.peekRight!).toBeLessThanOrEqual(kept.rowLeft);
       expect(Math.abs(kept.peekTop! - kept.rowTop)).toBeLessThanOrEqual(1);
 
@@ -459,7 +466,7 @@ describe('the subagents in the summary card, in a real layout engine', () => {
 
   it('keeps a phase plan of 30 subagents to the same rows and the same width', async (ctx) => {
     if (!browser) return ctx.skip();
-    const { tab, measured } = await mount({ agents: 30, plan: true });
+    const { tab, measured } = await mount({ agents: 30, plan: true, expand: true });
     try {
       for (const height of measured.dense) expect(height).toBe(28);
       expect(measured.body.scrollHeight).toBeGreaterThan(measured.body.clientHeight);
@@ -496,6 +503,9 @@ describe('the subagents in the summary card, in a real layout engine', () => {
       });
       expect(phase.gate, 'the instrument: the phase has its gate chip').toBe(true);
       expect(phase.text).toBe('4 of 4');
+      // The count never wraps, and the long title gives way on its one line, cut with an
+      // ellipsis (vision review, 2026-11-12: a title on two lines pushed the count and the
+      // gate down): one 18px line inside the row's 5px padding.
       expect(phase.lines).toBe(1);
       expect(phase.height).toBe(28);
     } finally {

@@ -309,10 +309,12 @@ pub fn decision_words(decision: PersonGateAction) -> &'static str {
     }
 }
 
-/// "waits for research's gate", the line a held phase carries. `holder` is
-/// what the surface names phases by.
+/// "waits for the gate after research", the line a held phase carries, as the
+/// desktop's Chat summary words it. `holder` is what the surface names phases
+/// by, and it comes last, so a long title cut at the line's end still reads
+/// (the possessive "research's gate" read badly with a long title).
 pub fn held_words(holder: &str) -> String {
-    format!("waits for {}'s gate", printable(holder))
+    format!("waits for the gate after {}", printable(holder))
 }
 
 fn status_words(status: PhaseStatus) -> &'static str {
@@ -1525,7 +1527,9 @@ mod tests {
         );
         assert!(text.contains("     holds write"), "{text}");
         assert!(
-            text.contains("  2. ○ write  write title  pending · waits for research's gate\n"),
+            text.contains(
+                "  2. ○ write  write title  pending · waits for the gate after research\n"
+            ),
             "{text}"
         );
         assert!(text.contains("     no gate"), "{text}");
@@ -1732,7 +1736,7 @@ mod tests {
         assert_eq!(plan.phases[1].held_by.as_deref(), Some("research"));
         let text = render_gates(&chat, Some(&plan)).join("\n");
         assert!(text.contains("set by you"), "{text}");
-        assert!(text.contains("waits for research's gate"), "{text}");
+        assert!(text.contains("waits for the gate after research"), "{text}");
 
         let passed = write_locally(
             &service(true),

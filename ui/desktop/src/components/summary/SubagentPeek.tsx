@@ -3,13 +3,15 @@ import { plainExcerpt } from './plainExcerpt';
 import {
   FooterCardAction,
   FooterCardActions,
+  FooterCardDetail,
   FooterCardSection,
   FooterCardValue,
 } from '../bottom_menu/FooterCard';
+import { usePrivacyTiersEnabled } from '../ConfigContext';
 import { Disclosure } from '../ui/disclosure';
 import { useOptionalKnowledge } from '../knowledge/KnowledgeContext';
 import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
-import { decisionModelDisplay } from '../decisions/decisionWords';
+import { decisionModelDisplay, joinWithAnd } from '../decisions/decisionWords';
 import { isDecisionProvider } from '../decisions/decisionWire';
 import { SUBAGENT_STATUS_WORDS } from '../subagent/subagentStatus';
 import { formatCount, formatTokensCompact } from '../../utils/usageStats';
@@ -57,6 +59,31 @@ export function peekModelName(row: Pick<SubagentRow, 'modelName' | 'providerName
   return shortModelLabel(row.modelName);
 }
 
+/**
+ * The card's line under its title (owner request, 2026-11-11): the model and where
+ * it runs. A decision model says so first, with its alias and its place
+ * (`Decision model · tev1:0.8b · this computer`); a language model is its short
+ * name and, while privacy tiers are on, the chat tier it runs at
+ * (`sonnet-4-5 · Public`). `null` when the row names no model.
+ */
+export function peekModelLine(
+  row: Pick<SubagentRow, 'modelName' | 'providerName' | 'privacyTier'>,
+  tiersEnabled: boolean
+): string | null {
+  const model = peekModelName(row);
+  if (isDecisionProvider(row.providerName)) {
+    return [summaryCopy.agents.decisionModel, model].filter(Boolean).join(' · ');
+  }
+  if (!model) return null;
+  const tier = tiersEnabled && row.privacyTier ? copy.tier[row.privacyTier] : null;
+  return tier ? `${model} · ${tier}` : model;
+}
+
+/** `Watched by Latch stop and Scope check`, or `null` when no monitor watches it. */
+export function peekWatchedLine(watchedBy: readonly string[]): string | null {
+  return watchedBy.length > 0 ? copy.watchedBy(joinWithAnd([...watchedBy])) : null;
+}
+
 /** `Completed · 3s`, `Running · 4m`, `Quiet for 4m`, `Stopped · 1m`. */
 export function peekResultLabel(row: SubagentRow): string {
   if (isQuiet(row)) return summaryCopy.agents.quietFor(formatElapsed(row.quietSeconds) ?? '');
@@ -80,18 +107,26 @@ export function peekUsedLine(row: SubagentRow): string {
  * The content of a subagent's peek (spec 4.3), built only from the footer card's
  * parts and one Disclosure, so a preview and a kept peek look the same and the
  * peek reads like every other card the app hangs off a control: its title, the
- * task when the title is a role, the result, "Open in a tab", then Details with
- * the setup by display name (no provider keys, dated slugs or raw ids).
+ * model and where it runs (and, for a decision model or a watched subagent, that
+ * it is decision-model work), the task when the title is a role, the status and
+ * run time over the result, "Open in a tab", then Details with the setup by
+ * display name (no provider keys, dated slugs or raw ids).
  */
 export function SubagentPeek({
   row,
   onOpen,
+  watchedBy = [],
 }: {
   row: SubagentRow;
   /** "Open in a tab": open the child as a tab, then close the peek. */
   onOpen: () => void;
+  /** The chat's monitors that watch its subagents (`subagentWatchers`). */
+  watchedBy?: readonly string[];
 }) {
   const knowledge = useOptionalKnowledge();
+  const tiersEnabled = usePrivacyTiersEnabled();
+  const modelLine = peekModelLine(row, tiersEnabled);
+  const watchedLine = peekWatchedLine(watchedBy);
   const title = subagentTitle(row);
   const model = peekModelName(row);
   const knowledgeNames = row.knowledgeBases.map(
@@ -114,6 +149,12 @@ export function SubagentPeek({
         />
         <span>{title}</span>
       </FooterCardValue>
+      {modelLine || watchedLine ? (
+        <div className="br-agents-peek__lines">
+          {modelLine ? <FooterCardDetail>{modelLine}</FooterCardDetail> : null}
+          {watchedLine ? <FooterCardDetail>{watchedLine}</FooterCardDetail> : null}
+        </div>
+      ) : null}
       {row.role && row.name ? (
         <FooterCardSection label={copy.task}>
           <FooterCardValue className="br-agents-peek__clamp" data-lines="3">

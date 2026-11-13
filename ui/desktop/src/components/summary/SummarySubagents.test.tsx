@@ -1,6 +1,10 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { parseSessionSubagents, type SessionSubagents } from '../../utils/sessionSubagents';
+import {
+  inSpawnOrder,
+  parseSessionSubagents,
+  type SessionSubagents,
+} from '../../utils/sessionSubagents';
 import {
   olderPhase,
   wirePhase,
@@ -62,32 +66,44 @@ describe('nothing to list', () => {
 });
 
 describe('up to four subagents: comfortable two-line rows', () => {
-  it('leads with the status shape and the role or name, then one line of what it is doing', () => {
+  it('leads with the square and the role or name, the run time, then the model and what it is doing', () => {
     draw(
       data([
         wireRow({ sessionId: 'a', role: 'Reviewer' }),
         wireRow({ sessionId: 'b', status: 'completed', elapsedSeconds: 3900, quietSeconds: null }),
       ])
     );
-    const section = screen.getByRole('region', { name: copy.subagents });
-    expect(within(section).getByText(copy.subagents)).toBeInTheDocument();
+    const section = screen.getByRole('region', { name: copy.agents });
+    expect(within(section).getByText(copy.agents)).toBeInTheDocument();
     // Heading counts: running first, then done of total.
     expect(within(section).getByText(`${copy.running(1)} · 1 of 2`)).toBeInTheDocument();
     expect(within(section).getByText(`1 of 2${copy.doneSuffix}`)).toHaveAttribute(
       'aria-live',
       'polite'
     );
+    // Four or fewer: rows only, no grid.
+    expect(section.querySelector('.br-agent-grid')).toBeNull();
 
     const first = screen.getByTestId('subagent-row-a');
     expect(first).toHaveAttribute('data-layout', 'comfortable');
     expect(first).toHaveAttribute('data-status', 'running');
-    expect(first).toHaveAccessibleName('Running, Reviewer, Working…');
-    expect(first).toHaveTextContent(/^ReviewerWorking…$/);
+    expect(first).toHaveAttribute('data-mark', 'running');
+    // The square: a language model's mark, its running core breathing.
+    const mark = first.querySelector('.br-agent-mark')!;
+    expect(mark).toHaveAttribute('data-shape', 'square');
+    expect(mark).toHaveAttribute('data-kind', 'running');
+    expect(mark).toHaveAttribute('data-pulse', '');
+    expect(mark).toHaveAttribute('width', '14');
+    expect(first).toHaveAccessibleName('Running, Reviewer, claude-sonnet-4-5, 1m');
+    expect(first).toHaveTextContent(/^Reviewer1mclaude-sonnet-4-5 · Working…$/);
     const second = screen.getByTestId('subagent-row-b');
     // An ended child with no result line says its status word.
-    expect(second).toHaveAccessibleName('Completed, Search PubMed for trials, Completed');
-    // No state groups in a short list.
-    expect(screen.queryByRole('button', { name: /Needs attention/ })).toBeNull();
+    expect(second).toHaveAccessibleName(
+      'Completed, Search PubMed for trials, claude-sonnet-4-5, 1h 5m'
+    );
+    expect(second.querySelector('.br-agents__meta')).toHaveTextContent(
+      'claude-sonnet-4-5 · Completed'
+    );
   });
 
   it('follows section 4.1 for the second line, status by status', () => {
@@ -106,30 +122,65 @@ describe('up to four subagents: comfortable two-line rows', () => {
     );
     const line = (id: string) =>
       screen.getByTestId(`subagent-row-${id}`).querySelector('.br-agents__meta')?.textContent;
-    expect(line('q')).toBe('Waiting to start');
-    expect(line('c')).toBe('Stopping…');
-    expect(line('r')).toBe('Found 12 trials');
-    // A child that ended early reads Stopped, never Incomplete.
-    expect(line('i')).toBe('Stopped');
+    expect(line('q')).toBe('claude-sonnet-4-5 · Waiting to start');
+    expect(line('c')).toBe('claude-sonnet-4-5 · Stopping…');
+    expect(line('r')).toBe('claude-sonnet-4-5 · Found 12 trials');
+    // A child that ended early reads Stopped, never Incomplete, and waits for a look.
+    expect(line('i')).toBe('claude-sonnet-4-5 · Stopped');
     expect(screen.getByTestId('subagent-row-i')).toHaveAccessibleName(
-      'Stopped, Search PubMed for trials, Stopped'
+      'Stopped, Search PubMed for trials, claude-sonnet-4-5, 1m'
     );
+    expect(screen.getByTestId('subagent-row-i')).toHaveAttribute('data-mark', 'waiting');
   });
 
-  it('draws no model, setup counts or run time on the row (C-9: they are in the peek)', () => {
+  it('names the model and the run time on the row (owner, 2026-11-11), never the setup', () => {
     draw(data([wireRow({ sessionId: 'a' })]));
     const row = screen.getByTestId('subagent-row-a');
     expect(row.querySelector('[data-count]')).toBeNull();
-    expect(row).not.toHaveTextContent(/claude|anthropic|1m|developer/);
+    expect(row).toHaveTextContent('claude-sonnet-4-5');
+    expect(row.querySelector('.br-agents__trailing')).toHaveTextContent('1m');
+    expect(row).not.toHaveTextContent(/anthropic|developer|20250929/);
   });
 
-  it('says a long-silent active child is quiet, never stalled', () => {
+  it('says a long-silent active child is quiet, never stalled, and marks it waiting', () => {
     draw(data([wireRow({ sessionId: 'a', quietSeconds: 240 })]));
     const row = screen.getByTestId('subagent-row-a');
     expect(row).toHaveAttribute('data-quiet', '');
+    expect(row).toHaveAttribute('data-mark', 'waiting');
     expect(row).toHaveTextContent(copy.quietFor('4m'));
     expect(row).not.toHaveTextContent(/stall|dead|stuck/i);
-    expect(row).toHaveAccessibleName('Running, Search PubMed for trials, Quiet for 4m');
+    expect(row).toHaveAccessibleName(
+      'Quiet for 4m, Search PubMed for trials, claude-sonnet-4-5, 1m'
+    );
+  });
+
+  // Owner direction, 2026-11-12: red is rare. A failure is the muted outline with its small
+  // cross and the word "Failed" on its row and its card, never a red ink, so the word has to
+  // be there.
+  it('says Failed in words on a failed row, beside its crossed mark', async () => {
+    draw(
+      data([
+        wireRow({
+          sessionId: 'f',
+          role: 'Auditor',
+          status: 'failed',
+          quietSeconds: null,
+          elapsedSeconds: 105,
+          resultLine: 'The registry export could not be read',
+        }),
+      ])
+    );
+    const row = screen.getByTestId('subagent-row-f');
+    expect(row).toHaveAttribute('data-mark', 'failed');
+    expect(row.querySelector('.br-agent-mark')).toHaveAttribute('data-kind', 'failed');
+    expect(row.querySelector('.br-agents__trailing')).toHaveTextContent(/^Failed · 1m$/);
+    expect(row.querySelector('.br-agents__meta')).toHaveTextContent(
+      'claude-sonnet-4-5 · The registry export could not be read'
+    );
+    expect(row).toHaveAccessibleName('Failed, Auditor, claude-sonnet-4-5, 1m');
+    fireEvent.click(row);
+    const card = await screen.findByTestId('subagent-card-f');
+    expect(card).toHaveTextContent('Failed · 1m');
   });
 
   it('keeps the peek on click, and does not open the tab: Open in a tab does, with its role', async () => {
@@ -151,103 +202,170 @@ describe('up to four subagents: comfortable two-line rows', () => {
   it('marks a private child with a muted lock, read as words', () => {
     draw(data([wireRow({ sessionId: 'a', privacyTier: 'private' })]));
     const row = screen.getByTestId('subagent-row-a');
-    expect(row).toHaveAccessibleName('Running, Search PubMed for trials, Working…, private');
+    expect(row).toHaveAccessibleName(
+      'Running, Search PubMed for trials, claude-sonnet-4-5, 1m, private'
+    );
     expect(row.querySelector('.br-agents__lock')).not.toBeNull();
   });
-});
 
-describe('five or more: dense rows grouped by state', () => {
-  const rows = [
-    ...many(3, 'running', 'run'),
-    wireRow({ sessionId: 'blocked', status: 'blocked', name: 'Asks a question' }),
-    wireRow({ sessionId: 'failed', status: 'failed', name: 'Broke' }),
-    ...many(15, 'completed', 'done'),
-  ];
-
-  it('groups Running, Needs attention and Done, in that order, with counts', () => {
-    draw(data(rows));
-    const toggles = screen
-      .getAllByRole('button', { expanded: true })
-      .map((button) => button.getAttribute('aria-label'));
-    expect(toggles).toEqual([
-      `${copy.groups.running}, 3`,
-      `${copy.groups.attention}, 2`,
-      `${copy.groups.done}, 15`,
-    ]);
-    expect(screen.getByTestId('subagent-row-run-0')).toHaveAttribute('data-layout', 'dense');
-    // A dense row is one line: the run time trails, the setup line is gone.
-    expect(screen.getByTestId('subagent-row-run-0').querySelector('[data-count]')).toBeNull();
-    expect(screen.getByTestId('subagent-row-run-0')).toHaveAccessibleName(
-      'Running, run task 1, 1m'
-    );
-    expect(
-      within(screen.getByRole('list', { name: copy.groups.attention })).getAllByRole('button')
-    ).toHaveLength(2);
-  });
-
-  it('orders each group by spawn, never by when its children finished', () => {
-    const fanOut = (n: number, status: string, second: number) =>
-      wireRow({
-        sessionId: `r${n}`,
-        name: `ribosome ${n}`,
-        status,
-        quietSeconds: null,
-        createdAt: `2026-11-04T10:00:0${second}Z`,
-      });
-    // One fan-out, all but the first spawned in the same second, so the roster's tie-break is
-    // a race; the finished ones arrive here in the order they finished.
-    const finished = [
-      fanOut(10, 'completed', 1),
-      fanOut(1, 'completed', 0),
-      fanOut(3, 'completed', 1),
-    ];
-    const { rerender } = draw(
+  it('draws a subagent on a decision model as a circle, and says so', () => {
+    draw(
       data([
-        fanOut(5, 'running', 1),
-        fanOut(4, 'running', 1),
-        ...finished,
-        fanOut(2, 'completed', 1),
+        wireRow({
+          sessionId: 'd',
+          role: 'Dose check',
+          providerName: 'ollama_decision',
+          modelName: 'tev1:0.8b',
+          status: 'completed',
+          quietSeconds: null,
+        }),
       ])
     );
-    const order = (group: string) =>
-      within(screen.getByRole('list', { name: group }))
-        .getAllByTestId(/^subagent-row-/)
-        .map((row) => row.getAttribute('data-testid')!.replace('subagent-row-', ''));
-    expect(order(copy.groups.done)).toEqual(['r1', 'r2', 'r3', 'r10']);
-    expect(order(copy.groups.running)).toEqual(['r4', 'r5']);
+    const row = screen.getByTestId('subagent-row-d');
+    expect(row.querySelector('.br-agent-mark')).toHaveAttribute('data-shape', 'circle');
+    expect(row.querySelector('.br-agent-mark')).toHaveAttribute('data-kind', 'done');
+    expect(row).toHaveAccessibleName(
+      'Completed, Dose check, tev1:0.8b · this computer, 1m, decision model'
+    );
+  });
 
-    // r4 finishes last, and takes its sibling place in Done rather than the end.
+  it('adds the key only while squares and circles mix, and keeps it out of the spoken order', () => {
+    const judge = wireRow({
+      sessionId: 'd',
+      role: 'Dose check',
+      providerName: 'ollama_decision',
+      modelName: 'tev1:0.8b',
+      status: 'completed',
+      quietSeconds: null,
+    });
+    const reader = wireRow({ sessionId: 'a', role: 'Reader' });
+    // One kind of model: nothing to tell apart, so no key.
+    const { rerender } = draw(data([reader]));
+    expect(screen.queryByTestId('summary-agents-key')).toBeNull();
     rerender(
       <SummarySubagents
-        data={data([
-          fanOut(5, 'running', 1),
-          ...finished,
-          fanOut(2, 'completed', 1),
-          fanOut(4, 'completed', 1),
-        ])}
+        data={data([judge])}
         loading={false}
         error={false}
         refresh={() => {}}
         onOpen={() => {}}
       />
     );
-    expect(order(copy.groups.done)).toEqual(['r1', 'r2', 'r3', 'r4', 'r10']);
+    expect(screen.queryByTestId('summary-agents-key')).toBeNull();
+    // Both: "Models:", a square, "language", a circle, "decision", as the
+    // terminal's pane writes "models: ■ language  ● decision".
+    rerender(
+      <SummarySubagents
+        data={data([reader, judge])}
+        loading={false}
+        error={false}
+        refresh={() => {}}
+        onOpen={() => {}}
+      />
+    );
+    const key = screen.getByTestId('summary-agents-key');
+    expect(key).toHaveTextContent(`${copy.keyLabel}${copy.keyLanguage}${copy.keyDecision}`);
+    expect(key).toHaveAttribute('aria-hidden', 'true');
+    expect(
+      [...key.querySelectorAll('.br-agent-mark')].map((mark) => [
+        mark.getAttribute('data-shape'),
+        mark.getAttribute('data-kind'),
+      ])
+    ).toEqual([
+      ['square', 'done'],
+      ['circle', 'done'],
+    ]);
+    // It is words, not a row: the roving order never stops on it.
+    expect(key.querySelector('[data-row]')).toBeNull();
+    expect(key.closest('.br-agents')).not.toBeNull();
+  });
+});
+
+describe('five or more: a grid of squares, then the first five rows', () => {
+  const rows = [
+    ...many(3, 'running', 'run'),
+    wireRow({ sessionId: 'blocked', status: 'blocked', name: 'Asks a question' }),
+    wireRow({ sessionId: 'failed', status: 'failed', name: 'Broke' }),
+    ...many(15, 'completed', 'done'),
+  ];
+  const cells = () =>
+    within(screen.getByRole('list', { name: copy.gridOfChat }))
+      .getAllByRole('button')
+      .map((cell) => cell.getAttribute('data-testid')!.replace('subagent-cell-', ''));
+  const listed = () =>
+    within(screen.getByRole('list', { name: copy.rowsOfChat }))
+      .getAllByTestId(/^subagent-row-/)
+      .map((row) => row.getAttribute('data-testid')!.replace('subagent-row-', ''));
+
+  it('draws one 10px square per agent in spawn order, each named in words', () => {
+    draw(data(rows));
+    expect(cells()).toEqual(inSpawnOrder(data(rows).subagents).map((row) => row.sessionId));
+    expect(cells()).toHaveLength(20);
+    const square = screen.getByTestId('subagent-cell-failed');
+    expect(square).toHaveAccessibleName('Failed, Broke, claude-sonnet-4-5, 1m');
+    expect(square.querySelector('.br-agent-mark')).toHaveAttribute('width', '10');
+    expect(square.querySelector('.br-agent-mark')).toHaveAttribute('data-kind', 'failed');
+    expect(
+      screen.getByTestId('subagent-cell-blocked').querySelector('.br-agent-mark')
+    ).toHaveAttribute('data-kind', 'waiting');
   });
 
-  it('shows at most 12 rows of a group, then Show all N, and folds a group', () => {
+  it('lists who needs a look first: waiting, failed, running, then the newest', () => {
     draw(data(rows));
-    const done = screen.getByRole('list', { name: copy.groups.done });
-    expect(within(done).getAllByTestId(/^subagent-row-/)).toHaveLength(12);
-    fireEvent.click(within(done).getByRole('button', { name: copy.showAll(15) }));
-    expect(within(done).getAllByTestId(/^subagent-row-/)).toHaveLength(15);
-    fireEvent.click(within(done).getByRole('button', { name: copy.showFewer }));
-    expect(within(done).getAllByTestId(/^subagent-row-/)).toHaveLength(12);
+    expect(listed()).toEqual(['blocked', 'failed', 'run-0', 'run-1', 'run-2']);
+    expect(screen.getByTestId('subagent-row-run-0')).toHaveAttribute('data-layout', 'dense');
+    // A dense row is one line: the run time trails, no second line.
+    expect(screen.getByTestId('subagent-row-run-0').querySelector('.br-agents__meta')).toBeNull();
+    expect(screen.getByTestId('subagent-row-run-0')).toHaveAccessibleName(
+      'Running, run task 1, claude-sonnet-4-5, 1m'
+    );
+  });
 
-    const toggle = screen.getByRole('button', { name: `${copy.groups.done}, 15` });
+  it('keeps a square where it is when its child finishes', () => {
+    const { rerender } = draw(data(rows));
+    const before = cells();
+    rerender(
+      <SummarySubagents
+        data={data(
+          rows.map((row) =>
+            row.sessionId === 'run-1' ? { ...row, status: 'completed', quietSeconds: null } : row
+          )
+        )}
+        loading={false}
+        error={false}
+        refresh={() => {}}
+        onOpen={() => {}}
+      />
+    );
+    expect(cells()).toEqual(before);
+    expect(listed()).not.toContain('run-1');
+  });
+
+  it('shows five rows, then Show N more, then Show fewer, and folds the section', () => {
+    draw(data(rows));
+    expect(listed()).toHaveLength(5);
+    fireEvent.click(screen.getByRole('button', { name: copy.showMore(15) }));
+    expect(listed()).toHaveLength(20);
+    fireEvent.click(screen.getByRole('button', { name: copy.showFewer }));
+    expect(listed()).toHaveLength(5);
+
+    const toggle = screen.getByTestId('summary-agents-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('list', { name: copy.groups.done })).toBeNull();
-    expect(screen.getByTestId('subagent-row-run-0')).toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-cell-run-0')).toBeNull();
+    // The heading keeps its count while folded.
+    expect(toggle).toHaveTextContent(`${copy.running(3)} · 15 of 20`);
+  });
+
+  it('keeps the card of a square as a row’s: hover peeks, click keeps', async () => {
+    draw(data(rows));
+    const square = screen.getByTestId('subagent-cell-failed');
+    fireEvent.click(square);
+    expect(square).toHaveAttribute('data-pinned', 'true');
+    const card = await screen.findByTestId('subagent-card-failed');
+    expect(card).toHaveTextContent('Broke');
+    expect(card).toHaveTextContent(copy.peek.openInTab);
   });
 });
 
@@ -285,35 +403,40 @@ describe('with a phase plan', () => {
     wireRow({ sessionId: 'loose', status: 'running', name: 'A one-off check' }),
   ];
 
-  it('draws each phase as one line: status glyph, title, count, and no bar', () => {
+  it('draws each phase as one chunk: its title, its count, and no bar', () => {
     draw(data(rows, plan));
-    const phases = screen.getByRole('region', { name: copy.phasesLabel('Survey the trials') });
+    const section = screen.getByRole('region', { name: copy.planLabel('Survey the trials') });
     // The plan's title is the section's name, not a line of its own.
-    expect(within(phases).queryByText('Survey the trials')).toBeNull();
-    expect(within(phases).getByText(`1 of 4${copy.phasesCountSuffix}`)).toBeInTheDocument();
-    const list = within(phases).getByRole('list', { name: copy.phaseListLabel });
+    expect(within(section).queryByText('Survey the trials')).toBeNull();
+    expect(within(section).getByText(copy.plan)).toBeInTheDocument();
+    expect(within(section).getByText(`1 of 4${copy.phasesCountSuffix}`)).toBeInTheDocument();
+    const list = within(section).getByRole('list', { name: copy.phaseListLabel });
     const items = within(list)
       .getAllByRole('listitem')
       .filter((li) => li.dataset.phaseId);
     expect(items.map((li) => li.dataset.phaseId)).toEqual(['plan', 'research', 'verify', 'meet']);
-    expect(within(phases).queryByRole('progressbar')).toBeNull();
+    expect(within(section).queryByRole('progressbar')).toBeNull();
 
     const research = items[1];
-    // Only what needs acting on, under the line: the running and quiet counts are on the rows.
-    expect(within(research).getByText('1 failed')).toHaveClass('br-agents__phase-counts');
+    // Its failures are its grid's crosses and words in its name, never a line under it.
+    expect(within(research).queryByText('1 failed')).toBeNull();
     const toggle = within(research).getByRole('button', { name: /^Read the trials/ });
     expect(toggle).toHaveAccessibleName(
-      'Read the trials, research phase, in progress, 1 of 3 subagents done'
+      'Read the trials, research phase, in progress, 1 of 3 subagents done, 1 failed'
     );
     expect(toggle).toHaveTextContent('1 of 3');
     expect(toggle.closest('.br-agents__phase-line')).not.toBeNull();
+    // Five agents in the chat: the open phase draws its grid, in spawn order.
+    const grid = within(research).getByRole('list', { name: copy.gridLabel('Read the trials') });
+    expect(within(grid).getAllByRole('button')).toHaveLength(3);
   });
 
-  it('shows no "0 of 0" for a phase that used no subagents (H-12)', () => {
+  it('shows no "0 of 0" for a phase that used no subagents (H-12), but where it stands', () => {
     draw(data(rows, plan));
     const verify = screen.getByRole('group', { name: /^Check the numbers/ });
     expect(verify).toHaveAccessibleName('Check the numbers, verification phase, pending');
     expect(verify).not.toHaveTextContent(/0 of 0/);
+    expect(verify).toHaveTextContent(copy.phaseStatus.pending);
   });
 
   it('opens the running phase and folds the finished one in a plan of more than three', () => {
@@ -323,6 +446,8 @@ describe('with a phase plan', () => {
     expect(planToggle).toHaveAttribute('aria-expanded', 'false');
     expect(researchToggle).toHaveAttribute('aria-expanded', 'true');
     expect(screen.queryByTestId('subagent-row-p1')).toBeNull();
+    // A folded phase whose every agent finished draws its line alone.
+    expect(screen.queryByTestId('subagent-cell-p1')).toBeNull();
     expect(screen.getByTestId('subagent-row-r2')).toBeInTheDocument();
     fireEvent.click(planToggle);
     expect(screen.getByTestId('subagent-row-p1')).toBeInTheDocument();
@@ -330,19 +455,47 @@ describe('with a phase plan', () => {
     expect(screen.queryByRole('button', { name: /^Check the numbers/ })).toBeNull();
   });
 
-  it('lists a subagent in no phase under Other subagents', () => {
+  it('keeps a folded phase’s grid while something in it is not finished', () => {
     draw(data(rows, plan));
-    const other = screen.getByRole('region', { name: copy.otherSubagents });
+    const researchToggle = screen.getByRole('button', { name: /^Read the trials/ });
+    fireEvent.click(researchToggle);
+    expect(researchToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('subagent-row-r2')).toBeNull();
+    expect(screen.getByTestId('subagent-cell-r2')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-cell-r3')).toBeInTheDocument();
+  });
+
+  it('draws a group of one as its row alone, and its square only while folded and unfinished', () => {
+    draw(data(rows, plan));
+    // Open: the lone running agent is its row, with no square above it.
+    const other = document.querySelector<HTMLElement>('[data-group="other"]')!;
     expect(within(other).getByTestId('subagent-row-loose')).toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: copy.subagents })).toBeNull();
+    expect(within(other).queryByTestId('subagent-cell-loose')).toBeNull();
+    expect(other.querySelector('.br-agent-grid')).toBeNull();
+    // A finished phase of one, opened, is its row alone too.
+    fireEvent.click(screen.getByRole('button', { name: /^Plan the search/ }));
+    expect(screen.getByTestId('subagent-row-p1')).toBeInTheDocument();
+    expect(screen.queryByTestId('subagent-cell-p1')).toBeNull();
+    // Folded, the square is the only sign of where the running agent stands.
+    fireEvent.click(within(other).getByRole('button', { name: /^Other agents/ }));
+    expect(within(other).queryByTestId('subagent-row-loose')).toBeNull();
+    expect(within(other).getByTestId('subagent-cell-loose')).toBeInTheDocument();
+  });
+
+  it('lists a subagent in no phase under Other agents, inside the Plan section', () => {
+    draw(data(rows, plan));
+    const other = document.querySelector<HTMLElement>('[data-group="other"]')!;
+    expect(within(other).getByText(copy.otherAgents)).toBeInTheDocument();
+    expect(within(other).getByTestId('subagent-row-loose')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: copy.agents })).toBeNull();
   });
 
   it('draws the phases of a plan that has no subagents yet', () => {
     draw(data([], plan));
     expect(
-      screen.getByRole('region', { name: copy.phasesLabel('Survey the trials') })
+      screen.getByRole('region', { name: copy.planLabel('Survey the trials') })
     ).toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: copy.otherSubagents })).toBeNull();
+    expect(document.querySelector('[data-group="other"]')).toBeNull();
   });
 });
 
@@ -487,34 +640,33 @@ describe('keyboard', () => {
     );
   }
 
-  it('keeps a kept peek, and its row, through a poll that finishes the child', async () => {
+  it('keeps a kept peek, and its row, through a poll that ranks the child out of the five', async () => {
     const running = many(6, 'running', 'run');
     const { rerender } = draw(data(running));
     const before = screen.getByTestId('subagent-row-run-2');
-    fireEvent.click(before);
+    // A pointer's click (detail 1): it keeps the card and leaves focus where it is.
+    fireEvent.click(before, { detail: 1 });
     expect(await screen.findByTestId('subagent-card-run-2')).toBeInTheDocument();
 
-    // The child finishes. While its peek is kept the row stays where it was kept,
-    // so the poll does not remount it and the peek stays open.
+    // The child finishes, which ranks it after the five still running. While its
+    // peek is kept the row stays drawn, so the poll does not remount it and the
+    // peek stays open.
     const finished = running.map((row, i) =>
       i === 2 ? { ...row, status: 'completed', quietSeconds: null } : row
     );
     act(() => redraw(rerender, data(finished)));
     const after = screen.getByTestId('subagent-row-run-2');
     expect(after).toBe(before);
-    expect(after.closest('[data-group]')).toHaveAttribute('data-group', 'running');
     expect(screen.getByTestId('subagent-card-run-2')).toBeInTheDocument();
     expect(after).toHaveAttribute('data-status', 'completed');
 
-    // Let go, it moves to Done.
-    fireEvent.click(after);
-    expect(screen.getByTestId('subagent-row-run-2').closest('[data-group]')).toHaveAttribute(
-      'data-group',
-      'done'
-    );
+    // Let go, it leaves the first five for Show more.
+    fireEvent.click(after, { detail: 1 });
+    expect(screen.queryByTestId('subagent-row-run-2')).toBeNull();
+    expect(screen.getByRole('button', { name: copy.showMore(1) })).toBeInTheDocument();
   });
 
-  it('keeps focus on a row that a poll moves to another group', () => {
+  it('keeps focus on a row whose child finishes while it holds focus', () => {
     const running = many(6, 'running', 'run');
     const { rerender } = draw(data(running));
     const before = screen.getByTestId('subagent-row-run-2');
@@ -524,13 +676,12 @@ describe('keyboard', () => {
     );
     act(() => redraw(rerender, data(finished)));
     const after = screen.getByTestId('subagent-row-run-2');
-    expect(after).not.toBe(before);
-    expect(after.closest('[data-group]')).toHaveAttribute('data-group', 'done');
+    expect(after).toHaveAttribute('data-status', 'completed');
     expect(document.activeElement).toBe(after);
     expect(after.tabIndex).toBe(0);
   });
 
-  it('keeps focus on a row when a fifth spawn turns the flat list into groups', () => {
+  it('keeps focus on a row when a fifth spawn turns the rows into a grid', () => {
     const four = many(4, 'running', 'run');
     const { rerender } = draw(data(four));
     const before = screen.getByTestId('subagent-row-run-1');
@@ -556,12 +707,29 @@ describe('keyboard', () => {
     outside.remove();
   });
 
-  it('reaches group headers and Show all from the arrows too', () => {
+  it('reaches the grid and Show more from the arrows, and Left and Right walk the squares', () => {
     draw(data([...many(3, 'running', 'run'), ...many(13, 'completed', 'done')]));
-    const first = screen.getByRole('button', { name: `${copy.groups.running}, 3` });
+    const first = screen.getByTestId('subagent-row-run-0');
+    // The tab stop starts on the first running row.
+    expect(first.tabIndex).toBe(0);
     act(() => first.focus());
+    // Up leaves the rows for the grid: ONE stop, on its current square.
+    fireEvent.keyDown(first, { key: 'ArrowUp' });
+    const cells = screen.getAllByTestId(/^subagent-cell-/);
+    expect(document.activeElement).toBe(cells[0]);
+    expect(cells.filter((cell) => cell.hasAttribute('data-row'))).toEqual([cells[0]]);
+    fireEvent.keyDown(cells[0], { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(cells[1]);
+    expect(cells[1]).toHaveAttribute('data-row');
+    expect(cells[0]).not.toHaveAttribute('data-row');
+    fireEvent.keyDown(cells[1], { key: 'ArrowLeft' });
+    expect(document.activeElement).toBe(cells[0]);
+    // A move with the arrows opens no card.
+    expect(screen.queryByTestId(/^subagent-card-/)).toBeNull();
+    fireEvent.keyDown(cells[0], { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(first);
     fireEvent.keyDown(first, { key: 'End' });
-    expect(document.activeElement).toHaveTextContent(copy.showAll(13));
+    expect(document.activeElement).toHaveTextContent(copy.showMore(11));
   });
 });
 
@@ -615,6 +783,12 @@ describe('phase gates and the person', () => {
     draw(data([], gatedPlan(GATE)), { onOpenGate });
     const chip = screen.getByTestId('phase-gate-research');
     expect(chip).toHaveTextContent('Needs you');
+    // A flag, never a circle: a circle only ever means decision-model work. It waits for
+    // the person, in the accent and never in red.
+    expect(chip.querySelector('.br-agent-mark')).toBeNull();
+    expect(chip.querySelector('.br-agents__gate-glyph svg')).not.toBeNull();
+    expect(chip.querySelector('.br-agents__gate-glyph')).toHaveAttribute('data-kind', 'waiting');
+    expect(chip).toHaveAttribute('data-mark', 'waiting');
     expect(chip).toHaveAttribute('data-state', 'blocked');
     expect(chip).toHaveAttribute('data-needs-person');
     expect(chip).toHaveAccessibleName('Gate needs you: blocked after 1 attempts, Research');
@@ -628,13 +802,13 @@ describe('phase gates and the person', () => {
     draw(data([], gatedPlan(GATE)), { onOpenGate: () => {} });
     for (const id of ['write', 'review']) {
       const item = phaseItem(id);
-      expect(within(item).getByText("Waits for Research's gate")).toHaveClass(
+      expect(within(item).getByText('Waits for the gate after Research')).toHaveClass(
         'br-agents__phase-counts'
       );
       expect(item).toHaveAttribute('data-held-by', 'research');
     }
     expect(
-      within(phaseItem('write')).getByRole('group', { name: /Waits for Research's gate$/ })
+      within(phaseItem('write')).getByRole('group', { name: /Waits for the gate after Research$/ })
     ).toBeInTheDocument();
     expect(within(phaseItem('research')).queryByText(/Waits for/)).toBeNull();
   });
@@ -661,21 +835,28 @@ describe('phase gates and the person', () => {
           onOpenGate={() => {}}
         />
       );
-    expect(screen.getByTestId('phase-gate-research')).toHaveTextContent('Passed');
+    // A gate that wants no look is its flag alone, solid once passed; the words are its
+    // name, which always opens on "Gate".
+    expect(screen.getByTestId('phase-gate-research')).toHaveTextContent(/^$/);
+    expect(
+      screen.getByTestId('phase-gate-research').querySelector('.br-agents__gate-glyph')
+    ).toHaveAttribute('data-kind', 'done');
     expect(screen.getByTestId('phase-gate-research')).toHaveAccessibleName(
-      'Passed by you, Research'
+      'Gate passed by you, Research'
     );
     expect(screen.getByTestId('phase-gate-research')).toHaveAttribute('data-state', 'passed');
     redraw({ ...GATE, blocked: false, needsPerson: false, personDecision: 'skip' }, 'skipped');
-    expect(screen.getByTestId('phase-gate-research')).toHaveTextContent('Skipped');
+    expect(
+      screen.getByTestId('phase-gate-research').querySelector('.br-agents__gate-glyph')
+    ).toHaveAttribute('data-kind', 'idle');
     expect(screen.getByTestId('phase-gate-research')).toHaveAccessibleName(
-      'Skipped by you, Research'
+      'Gate skipped by you, Research'
     );
     expect(screen.getByTestId('phase-gate-research')).toHaveAttribute('data-state', 'skipped');
     // Recorded while its subagents still work: the pass stands, it has not closed the phase.
     redraw({ ...GATE, personDecision: 'pass' }, 'in_progress');
     expect(screen.getByTestId('phase-gate-research')).toHaveAccessibleName(
-      'Your pass stands until its subagents finish, Research'
+      'Gate passed by you once its subagents finish, Research'
     );
     expect(screen.getByTestId('phase-gate-research')).not.toHaveAttribute('data-needs-person');
   });
@@ -706,7 +887,9 @@ describe('phase gates and the person', () => {
       }),
       { onOpenGate: () => {} }
     );
-    expect(screen.getByTestId('phase-gate-verify')).toHaveTextContent('Gate');
+    expect(
+      screen.getByTestId('phase-gate-verify').querySelector('.br-agents__gate-glyph')
+    ).toHaveAttribute('data-kind', 'queued');
     expect(screen.getByTestId('phase-gate-verify')).toHaveAccessibleName(
       'Gate not asked yet · threshold 0.80, Check the numbers'
     );
@@ -734,7 +917,8 @@ describe('phase gates and the person', () => {
     // A closed phase has nothing to gate.
     expect(screen.queryByTestId('phase-add-gate-done')).toBeNull();
     const add = screen.getByTestId('phase-add-gate-draft');
-    expect(add).toHaveTextContent('Add gate');
+    // A compact plus: its words are its name (and its tooltip), never the title's room.
+    expect(add).toHaveTextContent(/^$/);
     expect(add).toHaveAccessibleName('Add gate, Draft');
     // In the chip's slot on the phase's line, with no inline style.
     expect(add.closest('.br-agents__phase-line')).not.toBeNull();

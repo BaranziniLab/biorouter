@@ -624,7 +624,7 @@ add_subdirectory(${BR_WHISPER_SRC} whisper)
 
 ### The MSVC test leg
 
-The `rust.yml` `test` job runs on `windows-latest` with MSVC, while Biorouter ships mingw [C `rust.yml`]. PR-09 builds the engine under MSVC (`MSVC_NATIVE = true` in `build.rs`), as `CLAUDE.md` records; the dispatched runs named under M-1 were green with it (M-3). The design weighed a `target_env = "msvc"` stub that answers `no_engine` and preferred building it: a stub leaves native Windows execution of the engine untested on every pull request. `windows-latest` has CMake 4.4.5 [R], and `aws-lc-sys` 0.30.0, which already builds through the `cmake` crate [C `Cargo.lock`], runs that build with MSVC in the same job [R CI logs read by the design]. The extra time was estimated at 1.5 to 3 minutes per run on a job measured at 27.8 minutes [I].
+The `rust.yml` `test (windows-latest)` job runs with MSVC, while Biorouter ships mingw [C `rust.yml`]. PR-09 builds the engine under MSVC (`MSVC_NATIVE = true` in `build.rs`), as `CLAUDE.md` records; the dispatched runs named under M-1 were green with it (M-3). The design weighed a `target_env = "msvc"` stub that answers `no_engine` and preferred building it: a stub leaves native Windows execution of the engine untested on every pull request. `windows-latest` has CMake 4.4.5 [R], and `aws-lc-sys` 0.30.0, which already builds through the `cmake` crate [C `Cargo.lock`], runs that build with MSVC in the same job [R CI logs read by the design]. The extra time was estimated at 1.5 to 3 minutes per run on a job measured at 27.8 minutes [I].
 
 Under `target_env = "msvc"`, `build.rs` changes four things:
 

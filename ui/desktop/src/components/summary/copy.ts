@@ -31,8 +31,21 @@ export const summaryCopy = {
   retry: 'Retry',
 
   statsLabel: 'Chat statistics',
-  /** The disclosure the statistics sit behind (F-1). */
-  details: 'Details',
+  /**
+   * The section the chat's own figures sit in, closed by default (F-1): what the
+   * chat itself used, apart from its plan, its agents and its decisions.
+   */
+  details: 'This chat',
+  /**
+   * The same section in a subagent's own chat, so its figures read as the
+   * subagent's conversation and not the chat that started it.
+   */
+  subagentDetails: 'Subagent chat',
+  /** The chat's model, by its short name. */
+  model: 'Model',
+  /** The chat's privacy tier, while tiers are on. */
+  privacy: 'Privacy',
+  tierWords: { private: 'Private', public: 'Public' },
   /**
    * Its closed summary: the token figure alone, "392k tokens". Nothing when there
    * is no figure ("N/A": a model with no certified total, such as a running
@@ -60,12 +73,34 @@ export const summaryCopy = {
   buttonWithSubagents: (base: string, running: number) =>
     `${base}, ${running} ${running === 1 ? 'subagent' : 'subagents'} running`,
 
-  /** The subagents and phases sections (`summary/SummarySubagents.tsx`). */
+  /** The Plan and Agents sections (`summary/SummarySubagents.tsx`). */
   agents: {
-    phases: 'Phases',
-    /** The Phases section's accessible name, with the plan's title: "Phases: Fever notes". */
-    phasesLabel: (title: string | null | undefined) =>
-      title?.trim() ? `Phases: ${title.trim()}` : 'Phases',
+    /** The section of a chat with a phase plan: its phases, each with its agents. */
+    plan: 'Plan',
+    /** The Plan section's accessible name, with the plan's title: "Plan: Fever notes". */
+    planLabel: (title: string | null | undefined) =>
+      title?.trim() ? `Plan: ${title.trim()}` : 'Plan',
+    /** The section of a chat with subagents and no plan, and a group's fallback title. */
+    agents: 'Agents',
+    /** A group's grid of squares: "Agents, Read the trials". */
+    gridLabel: (group: string) => `Agents, ${group}`,
+    /** A group's rows: "Agents listed, Read the trials". */
+    rowsLabel: (group: string) => `Agents listed, ${group}`,
+    /** The grid and the rows of a chat with no plan. */
+    gridOfChat: 'Agents of this chat',
+    rowsOfChat: 'Agents listed',
+    /** "Show 12 more", under a group's first rows. */
+    showMore: (count: number) => `Show ${count} more`,
+    /** Said of a subagent whose own model is a decision model. */
+    decisionModel: 'Decision model',
+    /**
+     * The key to the grid's two shapes, one line under the section's heading:
+     * "Models: ■ language ● decision". Short enough for one line in the rail at
+     * its narrowest, where "Language model" and "Decision model" took two.
+     */
+    keyLabel: 'Models:',
+    keyLanguage: 'language',
+    keyDecision: 'decision',
     /** Read after the phase count by assistive technology only: "1 of 4 phases complete". */
     phasesCountSuffix: ' phases complete',
     phaseListLabel: 'Phases of the plan',
@@ -73,16 +108,13 @@ export const summaryCopy = {
     phaseAgentsSuffix: ' subagents done',
     /** A phase's accessible kind: "research phase". */
     phaseKindWords: (kind: string) => `${kind.toLowerCase()} phase`,
-    subagents: 'Subagents',
-    otherSubagents: 'Other subagents',
-    subagentListLabel: 'Subagents of this chat',
+    /** The Plan section's group for subagents in no phase the plan knows. */
+    otherAgents: 'Other agents',
     /** Read after a list's count: "4 of 10 done". */
     doneSuffix: ' done',
     running: (count: number) => `${count} running`,
     failed: (count: number) => `${count} failed`,
     blocked: (count: number) => `${count} blocked`,
-    groups: { running: 'Running', attention: 'Needs attention', done: 'Done' },
-    showAll: (count: number) => `Show all ${count}`,
     showFewer: 'Show fewer',
     refreshFailed: 'Subagents could not refresh.',
     /** A row's second line while it works (F-2). */
@@ -129,6 +161,10 @@ export const summaryCopy = {
       none: 'None',
       /** After the first names of a long list: "and 10 more". */
       more: (count: number) => `and ${count} more`,
+      /** Where a language model runs, by the tier it runs at. */
+      tier: { private: 'Private', public: 'Public' },
+      /** The monitors that watch a subagent: "Watched by Latch stop". */
+      watchedBy: (names: string) => `Watched by ${names}`,
       tokens: (value: string) => `${value} tokens`,
       toolCalls: (count: string, n: number) => `${count} ${n === 1 ? 'tool call' : 'tool calls'}`,
       messages: (count: string, n: number) => `${count} ${n === 1 ? 'message' : 'messages'}`,

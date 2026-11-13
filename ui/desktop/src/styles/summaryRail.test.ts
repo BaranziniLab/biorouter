@@ -289,7 +289,7 @@ describe('the summary’s type: two sizes only, 13 and 12', () => {
   });
 });
 
-describe('the summary is filled, not outlined (owner message 13, R-27)', () => {
+describe('the summary is filled, not outlined, and parted into sections by hairlines (R-27, owner direction 2026-11-12)', () => {
   const CONTENT_CODE = readFileSync(
     join(__dirname, '../components/summary/chatSummary.css'),
     'utf8'
@@ -321,11 +321,35 @@ describe('the summary is filled, not outlined (owner message 13, R-27)', () => {
     expect(codeWithoutComments(RAIL_TSX)).toMatch(/className="br-summary-card br-fill-surface"/);
   });
 
-  it('parts the to-do list, the statistics and the footer by space, never by a hairline', () => {
-    expect(CONTENT_CODE).not.toMatch(/border(-top|-bottom)?\s*:/);
-    expect(property(contentRule('.br-summary__stats[data-after-todos]'), 'margin-top')).toBe(
-      '12px'
+  /**
+   * Sections, never boxes (owner direction, 2026-11-12). The divider between two sections is a
+   * structural line, the kind design.md 9.11 ("Fills before lines") keeps, and it is the ONE line
+   * the content draws: no section, list or row names a fill or a radius of its own, so nothing in
+   * the card is a box inside the box. The footer is parted by space.
+   */
+  it('parts its sections with one hairline across the card, and draws no other line or box', () => {
+    const borders = [
+      ...CONTENT_CODE.matchAll(/border(?:-top|-bottom|-left|-right)?\s*:\s*[^;]+;/g),
+    ];
+    expect(borders.map(([declaration]) => declaration)).toEqual([
+      'border-top: 1px solid var(--border-subtle);',
+    ]);
+    const divider = contentRule('.br-summary__body > * + .br-summary__section');
+    expect(property(divider, 'border-top')).toBe('1px solid var(--border-subtle)');
+    // Across the card's whole width: it reaches into the body's 12px gutter and gives the
+    // gutter back as padding, so nothing inside the section moves sideways.
+    expect(property(divider, 'margin')).toBe('8px -12px 0');
+    expect(property(divider, 'padding')).toBe('8px 12px 0');
+    // The old per-section gaps are gone: the divider is the one rule that parts them.
+    expect(CONTENT_CODE).not.toMatch(/\.br-summary__details\s*\{/);
+    expect(CONTENT_CODE).not.toMatch(/data-after-todos/);
+    // No fill and no radius anywhere in the content but the popover's own surface.
+    const filled = [...CONTENT_CODE.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([, , body]) =>
+      /(^|[;\s])(background(-color)?|border-radius):/.test(body)
     );
+    expect(filled.map(([, selector]) => selector.replace(/\s+/g, ' ').trim())).toEqual([
+      '.br-summary .br-summary__progress',
+    ]);
     expect(property(contentRule('.br-summary__footer'), 'padding')).toBe('4px');
   });
 
@@ -385,9 +409,21 @@ describe('the subagents keep the summary’s rules', () => {
     join(__dirname, '../components/summary/summaryAgents.css'),
     'utf8'
   ).replace(/\/\*[\s\S]*?\*\//g, '');
+  const GRID_CSS = readFileSync(
+    join(__dirname, '../components/summary/summaryAgentGrid.css'),
+    'utf8'
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
   const AGENTS_TSX = codeWithoutComments(
     readFileSync(join(__dirname, '../components/summary/SummarySubagents.tsx'), 'utf8')
   );
+  const DECISIONS_CSS = readFileSync(
+    join(__dirname, '../components/summary/summaryDecisions.css'),
+    'utf8'
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
+  const SUMMARY_CSS = readFileSync(
+    join(__dirname, '../components/summary/chatSummary.css'),
+    'utf8'
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
 
   /** The body of the one top-level rule whose selector list is exactly `selector`. */
   function agentsRule(selector: string): string {
@@ -412,40 +448,188 @@ describe('the subagents keep the summary’s rules', () => {
     }
   });
 
-  it('draws no line: every border it names is a reset', () => {
+  it('draws one line, the inset hairline between two phases; every other border is a reset', () => {
     const borders = [
       ...AGENTS_CSS.matchAll(/border(?:-top|-bottom|-left|-right)?\s*:\s*([^;]+);/g),
     ];
-    for (const [, value] of borders) expect(['0', 'none'], value).toContain(value.trim());
+    const lines = borders.filter(([, value]) => !['0', 'none'].includes(value.trim()));
+    expect(lines.map(([declaration]) => declaration)).toEqual([
+      'border-top: 1px solid var(--border-subtle);',
+    ]);
+    expect(property(agentsRule('.br-agents__phase + .br-agents__phase'), 'border-top')).toBe(
+      '1px solid var(--border-subtle)'
+    );
     expect(AGENTS_CSS).not.toMatch(/outline:(?!\s*none\s*;)[^;]+;/);
   });
 
   it('gives every row the 28px of the card’s other rows', () => {
-    const rows = agentsRule(
-      '.br-agents__row, .br-agents__phase-toggle, .br-agents__group-toggle, .br-agents__more'
-    );
+    const rows = agentsRule('.br-agents__row, .br-agents__phase-toggle, .br-agents__more');
     expect(property(rows, 'min-height')).toBe('28px');
     expect(property(rows, 'font-size')).toBe('var(--text-secondary)');
   });
 
-  it('parts its sections from the to-do list and the statistics by 12px of space', () => {
-    expect(property(agentsRule('.br-summary__body > * + .br-agents'), 'margin-top')).toBe('12px');
-    expect(property(agentsRule('.br-agents + .br-summary__stats'), 'margin-top')).toBe('12px');
-    expect(property(agentsRule('.br-agents__section + .br-agents__section'), 'margin-top')).toBe(
-      '12px'
-    );
+  it('keeps no section spacing of its own: the content’s one divider parts every section', () => {
+    expect(AGENTS_CSS).not.toMatch(/br-agents__section/);
   });
 
-  it('restates the focus fill wherever it paints a row, and stops turning under reduced motion', () => {
+  /**
+   * The phase cards were white boxes on the grey rail (before/phases-20.png), a box in the
+   * card's box, which the owner named for removal on 2026-11-12. A phase is now a chunk on
+   * the card's ground: its line is its heading, and a hairline inset to the content (the
+   * section divider runs the card's full width) parts it from the phase above.
+   */
+  it('draws a phase as a chunk on the card’s own ground, never a box', () => {
+    const phase = agentsRule('.br-agents__phase');
+    for (const name of ['background', 'background-color', 'border-radius', 'padding']) {
+      expect(property(phase, name), name).toBeNull();
+    }
+    const next = agentsRule('.br-agents__phase + .br-agents__phase');
+    expect(property(next, 'border-top')).toBe('1px solid var(--border-subtle)');
+    expect(property(next, 'margin-top')).toBe('4px');
+    expect(property(next, 'padding-top')).toBe('4px');
+    // Nothing that holds a phase, its grid or its rows names a fill or a radius: a row's hover,
+    // focus and kept fills are the only fills, and they belong to the row.
+    const containers = [
+      ...AGENTS_CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g),
+      ...GRID_CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g),
+    ]
+      .map(([, selector, body]) => ({ selector: selector.replace(/\s+/g, ' ').trim(), body }))
+      .filter(({ selector }) =>
+        /\.br-agents(__phases?|__group-body|__list)?(?![\w-])|\.br-agent-grid(__cells|__item)?(?![\w-])/.test(
+          selector
+        )
+      )
+      .filter(({ selector }) => !/__(row|toggle|more|cell(?!s)|retry|chevron)/.test(selector));
+    expect(containers.length).toBeGreaterThan(0);
+    for (const { selector, body } of containers) {
+      expect(body, selector).not.toMatch(/(^|[;\s])(background(-color)?|border-radius):/);
+    }
+  });
+
+  it('labels a section in the app’s one caps style, at the supporting size', () => {
+    const label = agentsRule('.br-summary__toggle-label');
+    expect(property(label, 'text-transform')).toBe('uppercase');
+    expect(property(label, 'letter-spacing')).toBe('var(--text-caps--letter-spacing, 0.04em)');
+  });
+
+  it('restates the focus fill wherever it paints a row, and stops the pulse under reduced motion', () => {
     const focus = agentsRule(
-      '.br-agents__row:focus-visible, .br-agents__phase-toggle:focus-visible, .br-agents__group-toggle:focus-visible, .br-agents__more:focus-visible, .br-agents__retry:focus-visible'
+      '.br-agents__row:focus-visible, .br-agents__phase-toggle:focus-visible, .br-agents__more:focus-visible, .br-agents__retry:focus-visible'
     );
     expect(property(focus, 'background-color')).toBe('var(--background-focus)');
     expect(property(focus, 'box-shadow')).toBe('inset 0 0 0 2px var(--border-focus)');
-    const reduced = AGENTS_CSS.slice(AGENTS_CSS.indexOf('@media (prefers-reduced-motion: reduce)'));
-    expect(reduced).toMatch(
-      /\.br-agents__row\[data-status='running'\] \.br-agents__glyph > svg \{\s*animation: none;/
+    // A running mark breathes (opacity only), and never under reduced motion.
+    expect(GRID_CSS).toMatch(
+      /\.br-agent-mark\[data-pulse\] \.br-agent-mark__core \{\s*animation: br-agent-mark-pulse/
     );
+    const reduced = GRID_CSS.slice(GRID_CSS.indexOf('@media (prefers-reduced-motion: reduce)'));
+    expect(reduced).toMatch(
+      /\.br-agent-mark\[data-pulse\] \.br-agent-mark__core \{\s*animation: none;/
+    );
+    const frames = GRID_CSS.match(/@keyframes br-agent-mark-pulse \{[\s\S]*?\}\s*\}/)?.[0] ?? '';
+    expect([...frames.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1])).toEqual(['opacity']);
+  });
+
+  /**
+   * Owner direction, 2026-11-12: red is rare (design.md 9.14). A failed mark is the outline with
+   * a small cross in the muted ink, and a mark waiting for the person (or stalled) the half fill
+   * in the default ink, so neither reaches for a danger or warning hue; the word says which.
+   */
+  it('inks every status with an existing token, never red, and draws it in forced colours', () => {
+    for (const [kind, ink] of [
+      ['running', 'var(--text-info)'],
+      ['waiting', 'var(--text-default)'],
+      ['failed', 'var(--text-muted)'],
+    ]) {
+      const rule = GRID_CSS.match(
+        new RegExp(`\\.br-agent-mark\\[data-kind='${kind}'\\] \\{([^}]*)\\}`)
+      );
+      expect(property(rule?.[1] ?? '', 'color'), kind).toBe(ink);
+    }
+    expect(GRID_CSS).toMatch(/\.br-agent-mark\[data-kind='done'\][^{]*\{[^}]*--text-success/);
+    // The failed mark is the ring and its small cross, both stroked at the ring's width.
+    expect(GRID_CSS).toMatch(
+      /\.br-agent-mark__ring,\s*\.br-agent-mark__cross \{[^}]*stroke: currentColor;/
+    );
+    // The grid declares no type of its own.
+    expect(GRID_CSS).not.toMatch(/font-size:/);
+    const forced = GRID_CSS.slice(GRID_CSS.indexOf('@media (forced-colors: active)'));
+    expect(forced).toMatch(/\.br-agent-mark \{\s*color: CanvasText;/);
+  });
+
+  it('names no danger or warning ink anywhere in the summary', () => {
+    for (const [name, css] of [
+      ['chatSummary.css', SUMMARY_CSS],
+      ['summaryAgents.css', AGENTS_CSS],
+      ['summaryAgentGrid.css', GRID_CSS],
+      ['summaryDecisions.css', DECISIONS_CSS],
+    ]) {
+      expect(css, name).not.toMatch(/--(?:text|background|border|wash)-(?:danger|warning)/);
+    }
+    // A gate that wants a look reads solid, and one that waits for the person takes the accent.
+    expect(
+      property(
+        DECISIONS_CSS.match(/\.br-agents__gate\[data-attention\] \{([^}]*)\}/)?.[1] ?? '',
+        'color'
+      )
+    ).toBe('var(--text-default)');
+    expect(
+      property(
+        DECISIONS_CSS.match(/\.br-agents__gate\[data-needs-person\] \{([^}]*)\}/)?.[1] ?? '',
+        'color'
+      )
+    ).toBe('var(--text-accent)');
+    // A failed refresh is a sentence in the default ink beside its Retry.
+    expect(property(SUMMARY_CSS.match(/\.br-summary__error \{([^}]*)\}/)?.[1] ?? '', 'color')).toBe(
+      'var(--text-default)'
+    );
+  });
+
+  /**
+   * Owner direction, 2026-11-12: text reads solid. A name, a phase title and a value keep the
+   * default ink at every status; secondary text is the muted token itself, never the subtler
+   * step, a mix or an opacity fade. The ui-readability lane strengthens `--text-muted` at the
+   * token layer (design.md 9.14), so the rail takes that change with no edit here.
+   */
+  it('keeps names and phase titles in the default ink, and secondary text on the muted token', () => {
+    // No rule fades a name or a title.
+    expect(AGENTS_CSS).not.toMatch(/__name[^{]*\{[^}]*color: var\(--text-muted\)/);
+    expect(AGENTS_CSS).not.toMatch(/__phase-title[^{]*\{[^}]*color/);
+    expect(AGENTS_CSS).not.toMatch(/\[data-status='[a-z_]+'\] \.br-agents__(?:name|phase-title)/);
+    for (const selector of [
+      '.br-agents__meta, .br-agents__trailing, .br-agents__phase-counts',
+      '.br-agents__more',
+      '.br-agents__key',
+    ]) {
+      expect(property(agentsRule(selector), 'color'), selector).toBe('var(--text-muted)');
+    }
+    // Every text ink in the rail is a token: the default, the muted or the accent (a running
+    // to-do's glyph). Never the subtle step, a mix or a literal.
+    for (const [name, css] of [
+      ['chatSummary.css', SUMMARY_CSS],
+      ['summaryAgents.css', AGENTS_CSS],
+      ['summaryDecisions.css', DECISIONS_CSS],
+    ]) {
+      const inks = [...css.matchAll(/(?:^|[\s;{])color:\s*([^;]+);/g)].map((m) => m[1].trim());
+      expect(inks.length, name).toBeGreaterThan(0);
+      for (const ink of inks) {
+        expect(
+          ['var(--text-default)', 'var(--text-muted)', 'var(--text-accent)', 'inherit'],
+          `${name}: ${ink}`
+        ).toContain(ink);
+      }
+      expect(css, name).not.toMatch(/--text-subtle/);
+    }
+    // Text never fades by opacity (only the quiet "Add gate" plus does, in summaryDecisions.css).
+    expect(AGENTS_CSS).not.toMatch(/opacity:/);
+  });
+
+  it('keeps a phase title to one line, cut with an ellipsis', () => {
+    const title = agentsRule('.br-agents__phase-title');
+    expect(property(title, 'white-space')).toBe('nowrap');
+    expect(property(title, 'text-overflow')).toBe('ellipsis');
+    expect(property(title, 'overflow')).toBe('hidden');
+    expect(title).not.toMatch(/line-clamp/);
   });
 
   it('draws its rows as plain buttons, so the card’s three Buttons stay three', () => {

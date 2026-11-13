@@ -10,10 +10,14 @@
  * Two sizes only: 13/18 for rows and actions (`--text-secondary`), 12/16 for
  * labels and counts (`--text-supporting`). Rows are 28px.
  *
- * Fills before lines (owner message 13, R-27): the parts are told apart by
- * space, never by a hairline. The to-do list, the statistics and the footer
- * each sit 12px apart (22px between their text, against 10px between rows),
- * and the body's scroll edges fade instead of meeting a rule.
+ * Sections, not boxes (owner direction, 2026-11-12). Each part of the body is a
+ * section (To do, Plan or Agents, Decisions, This chat) that opens on its small
+ * muted heading, and every section after the first is parted from the one above
+ * by ONE hairline across the card. A divider between sections is a structural
+ * line, the kind design.md 9.11 ("Fills before lines") keeps; nothing inside
+ * the card has a fill or a box of its own, so no box ever sits in a box. The
+ * footer is parted by space, and the body's scroll edges fade instead of
+ * meeting a rule.
  */
 .br-summary {
   display: flex;
@@ -124,24 +128,16 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* DETAILS: the chat's statistics behind the shared Disclosure, closed by default
-   (F-1). Its trigger takes the rows' left edge, and its summary ("392k tokens")
-   sits in the label's muted 12px. */
-.br-summary__body > * + .br-summary__details {
-  margin-top: 12px;
-}
-
-/* The trigger is a Button, 14/500 at every rung: here it takes the summary's
-   12px label role, so the card keeps its two sizes. */
-.br-summary__details .biorouter-disclosure-trigger {
-  font-size: var(--text-supporting);
-  line-height: var(--text-supporting--line-height);
-  font-weight: 400;
-}
-
-/* The rows sit 4px under the trigger, not a form's 12px. */
-.br-summary__details .biorouter-disclosure-body {
-  padding-top: 4px;
+/* THE SECTION DIVIDER. A section after the first draws a hairline above its
+   heading, across the card's full width (it reaches into the body's 12px gutter
+   and gives the gutter back as padding, so nothing inside moves), with 8px of
+   space on either side: 14px from the line to the text above and below it. A
+   phase's divider inside Plan is inset to the content (summaryAgents.css), so
+   the two levels read apart. The one line this stylesheet draws. */
+.br-summary__body > * + .br-summary__section {
+  margin: 8px -12px 0;
+  padding: 8px 12px 0;
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* The bar itself is the primitive's `size="thin"` (4px); only its gap and its
@@ -207,8 +203,11 @@
   color: var(--text-accent);
 }
 
+/* A blocked item's alert glyph is in the default ink: its shape and its status
+   word say it is blocked, as a blocked subagent's half fill does, never a
+   warning hue (owner direction, 2026-11-12). */
 .br-summary__todo[data-status='blocked'] > .br-summary__glyph {
-  color: var(--text-warning);
+  color: var(--text-default);
 }
 
 /* A status that changed after the row first rendered crossfades its glyph in;
@@ -223,6 +222,10 @@
   }
 }
 
+/* A refresh that failed ("To do could not refresh.", and the Plan's and the
+   Decisions' lines, which share this class) is a sentence in the default ink
+   beside its Retry, never a status hue (design.md 9.14: red is rare, and a
+   sentence is never set in a status colour). */
 .br-summary__error {
   display: flex;
   min-height: 28px;
@@ -231,7 +234,7 @@
   gap: 8px;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
-  color: var(--text-warning);
+  color: var(--text-default);
 }
 
 /* A Button is 14/500 at every rung; the rail has two sizes, so the retry joins
@@ -246,10 +249,6 @@
 
 .br-summary__stats {
   margin: 0;
-}
-
-.br-summary__stats[data-after-todos] {
-  margin-top: 12px;
 }
 
 .br-summary__stat {
@@ -279,7 +278,8 @@
 
 /* The footer never scrolls: two full-width ghost rows, 12px under the body's
    last row (its 8px padding and this 4px). The actions' leading glyphs, which
-   no statistic has, mark them as actions; no hairline. */
+   no statistic has, mark them as actions; space parts them from the body, not a
+   hairline. */
 .br-summary__footer {
   display: flex;
   flex: none;

@@ -9437,13 +9437,6 @@ mod wait_tests {
 
         let harness = harness(vec![job("running")]).await;
         let arguments = serde_json::json!({ "job_id": "j-held-script" });
-        // The same check ran just now: the next one waits out its interval.
-        crate::tool_monitor::poll_pacing::remember_for_test(
-            &harness.session_id,
-            "fixture__status",
-            arguments.as_object(),
-            Duration::from_millis(300),
-        );
         let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
         let guard = crate::agents::tool_dispatch_limits::ToolDispatchGuard::for_test(Arc::clone(
             &semaphore,
@@ -9473,6 +9466,17 @@ mod wait_tests {
             None,
         ));
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        // The same check ran just now: the next one waits out its interval. Recorded here, after
+        // the setup above, and long, because the hold is the interval minus the time since this
+        // record: with a short one recorded before the setup, a slow runner (Windows CI, whose
+        // timers also tick about every 15 ms) spent the hold before the call reached it, and the
+        // check below never saw the permit free.
+        crate::tool_monitor::poll_pacing::remember_for_test(
+            &harness.session_id,
+            "fixture__status",
+            arguments.as_object(),
+            Duration::from_secs(2),
+        );
         call_tx
             .send((
                 "fixture__status".to_string(),
@@ -9480,13 +9484,14 @@ mod wait_tests {
                 response_tx,
             ))
             .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(1_500);
         let mut freed = false;
-        for _ in 0..100 {
+        while tokio::time::Instant::now() < deadline {
             if semaphore.available_permits() == 1 {
                 freed = true;
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert!(freed, "a held script call must hold no dispatch permit");
         let answer = tokio::time::timeout(Duration::from_secs(5), response_rx)
