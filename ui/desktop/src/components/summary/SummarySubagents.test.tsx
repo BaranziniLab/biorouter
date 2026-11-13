@@ -154,6 +154,35 @@ describe('up to four subagents: comfortable two-line rows', () => {
     );
   });
 
+  // Owner direction, 2026-11-12: red is rare. A failure is the muted outline with its small
+  // cross and the word "Failed" on its row and its card, never a red ink, so the word has to
+  // be there.
+  it('says Failed in words on a failed row, beside its crossed mark', async () => {
+    draw(
+      data([
+        wireRow({
+          sessionId: 'f',
+          role: 'Auditor',
+          status: 'failed',
+          quietSeconds: null,
+          elapsedSeconds: 105,
+          resultLine: 'The registry export could not be read',
+        }),
+      ])
+    );
+    const row = screen.getByTestId('subagent-row-f');
+    expect(row).toHaveAttribute('data-mark', 'failed');
+    expect(row.querySelector('.br-agent-mark')).toHaveAttribute('data-kind', 'failed');
+    expect(row.querySelector('.br-agents__trailing')).toHaveTextContent(/^Failed · 1m$/);
+    expect(row.querySelector('.br-agents__meta')).toHaveTextContent(
+      'claude-sonnet-4-5 · The registry export could not be read'
+    );
+    expect(row).toHaveAccessibleName('Failed, Auditor, claude-sonnet-4-5, 1m');
+    fireEvent.click(row);
+    const card = await screen.findByTestId('subagent-card-f');
+    expect(card).toHaveTextContent('Failed · 1m');
+  });
+
   it('keeps the peek on click, and does not open the tab: Open in a tab does, with its role', async () => {
     const { onOpen } = draw(data([wireRow({ sessionId: 'a', role: 'Reviewer' })]));
     const row = screen.getByTestId('subagent-row-a');
@@ -754,9 +783,12 @@ describe('phase gates and the person', () => {
     draw(data([], gatedPlan(GATE)), { onOpenGate });
     const chip = screen.getByTestId('phase-gate-research');
     expect(chip).toHaveTextContent('Needs you');
-    // Decision-model work: a circle, half full while it waits for the person.
-    expect(chip.querySelector('.br-agent-mark')).toHaveAttribute('data-shape', 'circle');
-    expect(chip.querySelector('.br-agent-mark')).toHaveAttribute('data-kind', 'waiting');
+    // A flag, never a circle: a circle only ever means decision-model work. It waits for
+    // the person, in the accent and never in red.
+    expect(chip.querySelector('.br-agent-mark')).toBeNull();
+    expect(chip.querySelector('.br-agents__gate-glyph svg')).not.toBeNull();
+    expect(chip.querySelector('.br-agents__gate-glyph')).toHaveAttribute('data-kind', 'waiting');
+    expect(chip).toHaveAttribute('data-mark', 'waiting');
     expect(chip).toHaveAttribute('data-state', 'blocked');
     expect(chip).toHaveAttribute('data-needs-person');
     expect(chip).toHaveAccessibleName('Gate needs you: blocked after 1 attempts, Research');
@@ -770,13 +802,13 @@ describe('phase gates and the person', () => {
     draw(data([], gatedPlan(GATE)), { onOpenGate: () => {} });
     for (const id of ['write', 'review']) {
       const item = phaseItem(id);
-      expect(within(item).getByText("Waits for Research's gate")).toHaveClass(
+      expect(within(item).getByText('Waits for the gate after Research')).toHaveClass(
         'br-agents__phase-counts'
       );
       expect(item).toHaveAttribute('data-held-by', 'research');
     }
     expect(
-      within(phaseItem('write')).getByRole('group', { name: /Waits for Research's gate$/ })
+      within(phaseItem('write')).getByRole('group', { name: /Waits for the gate after Research$/ })
     ).toBeInTheDocument();
     expect(within(phaseItem('research')).queryByText(/Waits for/)).toBeNull();
   });
@@ -803,27 +835,28 @@ describe('phase gates and the person', () => {
           onOpenGate={() => {}}
         />
       );
-    // A gate that wants no look is its circle alone; the words are its name.
+    // A gate that wants no look is its flag alone, solid once passed; the words are its
+    // name, which always opens on "Gate".
     expect(screen.getByTestId('phase-gate-research')).toHaveTextContent(/^$/);
     expect(
-      screen.getByTestId('phase-gate-research').querySelector('.br-agent-mark')
+      screen.getByTestId('phase-gate-research').querySelector('.br-agents__gate-glyph')
     ).toHaveAttribute('data-kind', 'done');
     expect(screen.getByTestId('phase-gate-research')).toHaveAccessibleName(
-      'Passed by you, Research'
+      'Gate passed by you, Research'
     );
     expect(screen.getByTestId('phase-gate-research')).toHaveAttribute('data-state', 'passed');
     redraw({ ...GATE, blocked: false, needsPerson: false, personDecision: 'skip' }, 'skipped');
     expect(
-      screen.getByTestId('phase-gate-research').querySelector('.br-agent-mark')
+      screen.getByTestId('phase-gate-research').querySelector('.br-agents__gate-glyph')
     ).toHaveAttribute('data-kind', 'idle');
     expect(screen.getByTestId('phase-gate-research')).toHaveAccessibleName(
-      'Skipped by you, Research'
+      'Gate skipped by you, Research'
     );
     expect(screen.getByTestId('phase-gate-research')).toHaveAttribute('data-state', 'skipped');
     // Recorded while its subagents still work: the pass stands, it has not closed the phase.
     redraw({ ...GATE, personDecision: 'pass' }, 'in_progress');
     expect(screen.getByTestId('phase-gate-research')).toHaveAccessibleName(
-      'Your pass stands until its subagents finish, Research'
+      'Gate passed by you once its subagents finish, Research'
     );
     expect(screen.getByTestId('phase-gate-research')).not.toHaveAttribute('data-needs-person');
   });
@@ -854,10 +887,9 @@ describe('phase gates and the person', () => {
       }),
       { onOpenGate: () => {} }
     );
-    expect(screen.getByTestId('phase-gate-verify').querySelector('.br-agent-mark')).toHaveAttribute(
-      'data-kind',
-      'queued'
-    );
+    expect(
+      screen.getByTestId('phase-gate-verify').querySelector('.br-agents__gate-glyph')
+    ).toHaveAttribute('data-kind', 'queued');
     expect(screen.getByTestId('phase-gate-verify')).toHaveAccessibleName(
       'Gate not asked yet · threshold 0.80, Check the numbers'
     );

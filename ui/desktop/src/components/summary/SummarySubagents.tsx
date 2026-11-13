@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { plainExcerpt } from './plainExcerpt';
-import { ChevronRight, Lock, Plus } from '../icons/app-icons';
+import { ChevronRight, Flag, Lock, Plus } from '../icons/app-icons';
 import { usePrivacyTiersEnabled } from '../ConfigContext';
 import { PopoverContent } from '../ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
@@ -66,15 +66,22 @@ const copy = summaryCopy.agents;
 
 /**
  * The words a phase's gate mark and line say. Kept here, beside the mark that
- * says them, rather than in `summary/copy.ts`.
+ * says them, rather than in `summary/copy.ts`. The held line names the gated
+ * phase last, so a long title is cut at its end and the sentence still reads
+ * ("Waits for the gate after Draft the dosing ta…"); the possessive form read
+ * badly with a long title.
  */
 export const PHASE_GATE_ROW_COPY = {
-  waitsFor: (title: string) => `Waits for ${title}'s gate`,
+  waitsFor: (title: string) => `Waits for the gate after ${title}`,
   addGate: 'Add gate',
   addGateLabel: (phase: string) => `Add gate, ${phase}`,
 };
 
-/** A gate mark's own words (spec 3.3): the mark's one word, then the sentence its tooltip says. */
+/**
+ * A gate mark's own words (spec 3.3): the mark's one word, then the sentence its
+ * tooltip says. Every sentence opens on "Gate", so the flag's accessible name
+ * always says what it is.
+ */
 const GATE_CHIP_COPY = {
   chip: {
     pending: 'Gate',
@@ -89,10 +96,10 @@ const GATE_CHIP_COPY = {
   notPassed: 'Gate not passed',
   needsYou: 'Gate needs you',
   blocked: 'Gate blocked',
-  passedByYou: 'Passed by you',
-  skippedByYou: 'Skipped by you',
-  passStands: 'Your pass stands until its subagents finish',
-  skipStands: 'Your skip stands until its subagents finish',
+  passedByYou: 'Gate passed by you',
+  skippedByYou: 'Gate skipped by you',
+  passStands: 'Gate passed by you once its subagents finish',
+  skipStands: 'Gate skipped by you once its subagents finish',
   attempt: (attempt: number, max: number) => `attempt ${attempt} of ${max}`,
   blockedAfter: (max: number) => `blocked after ${max} attempts`,
   unevaluated: 'could not be evaluated',
@@ -152,10 +159,19 @@ export function subagentLine(row: SubagentRow): string {
   }
 }
 
-/** A row's trailing figure: the run time, or `quiet 4m`; nothing without either. */
-function rowTrailing(row: SubagentRow): string | null {
+/**
+ * A row's trailing figure: the run time, or `quiet 4m`; nothing without either.
+ * A failure leads with its word, `Failed · 1m45s`, so it is found by the word
+ * and its crossed mark, never by a red ink (owner direction, 2026-11-12).
+ */
+export function rowTrailing(row: SubagentRow): string | null {
   if (isQuiet(row)) return copy.quietShort(formatElapsed(row.quietSeconds) ?? '');
-  return formatElapsed(row.elapsedSeconds);
+  const elapsed = formatElapsed(row.elapsedSeconds);
+  if (row.status === 'failed') {
+    const word = SUBAGENT_STATUS_WORDS.failed;
+    return elapsed ? `${word} · ${elapsed}` : word;
+  }
+  return elapsed;
 }
 
 /**
@@ -506,7 +522,7 @@ function AgentCard({
 
 /**
  * One agent as a row: its mark, its role or name, and its run time on the right.
- * In a chat of four agents or fewer (`rows`), a second muted line says the model
+ * In a chat of four agents or fewer (`rows`), a second line says the model
  * and what it is doing or found; otherwise it is one 28px line under the grid.
  * The lock of a private child sits at its end in muted ink (F-16).
  */
@@ -730,9 +746,9 @@ function GroupBody({
 // ---------------------------------------------------------------------------
 
 /**
- * The muted line under a phase, only when an earlier gate holds it (spec 3.1):
- * "Waits for Build's gate". Its failed and blocked subagents are its grid's
- * crosses and half-filled marks, and words in its name.
+ * The secondary line under a phase, only when an earlier gate holds it (spec
+ * 3.1): "Waits for the gate after Build". Its failed and blocked subagents are
+ * its grid's crosses and half-filled marks, and words in its name.
  */
 function phaseNoticeLine(heldBy: string | null): string {
   return heldBy ? PHASE_GATE_ROW_COPY.waitsFor(heldBy) : '';
@@ -749,12 +765,14 @@ function phaseTroubleWords(phase: PhaseSnapshot): string | null {
 }
 
 /**
- * A phase gate as a small circle at the end of its phase's line (owner rule: a
+ * A phase gate as a small flag at the end of its phase's line (owner rule: a
  * gate's evaluations are never transcript rows, and F-1: never a row of its own).
- * A gate is decision-model work, so its mark is a circle, filled by its state;
- * its word is drawn beside it only when the gate wants a look ("Needs you", "Not
- * passed", "Blocked"). The full sentence is its tooltip and its name. Pressing it
- * opens the gate's dialog.
+ * A flag and never a circle, so a circle only ever means decision-model work
+ * (owner direction, 2026-11-12: the gate's old dot read as one). The flag is an
+ * outline until the gate passes, then solid; its word is drawn beside it only
+ * when the gate wants a look ("Needs you", "Not passed", "Blocked"), and never in
+ * red. The full sentence, which opens on "Gate", is its tooltip and its name.
+ * Pressing it opens the gate's dialog.
  */
 function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowControls }) {
   const gate = phase.gate;
@@ -763,10 +781,11 @@ function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowCont
   const state = phaseGateState(gate);
   const words = gateChipWords(gate, phase);
   const name = `${words.sentence}, ${phase.title}`;
+  const kind = gateMarkKind(gate);
   const content = (
     <>
-      <span className="br-agents__gate-glyph" aria-hidden="true">
-        <AgentMark kind={gateMarkKind(gate)} shape="circle" size={AGENT_MARK_PX.grid} />
+      <span className="br-agents__gate-glyph" data-kind={kind} aria-hidden="true">
+        <Flag />
       </span>
       {words.attention ? (
         <span className="br-agents__gate-text" aria-hidden="true">
@@ -781,11 +800,14 @@ function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowCont
         className="br-agents__gate"
         role="img"
         data-state={state}
+        data-mark={kind}
         data-static=""
         data-attention={words.attention ? '' : undefined}
         data-needs-person={words.needsYou ? '' : undefined}
         data-testid={`phase-gate-${phase.id}`}
         aria-label={name}
+        // Not a control here, so no Tooltip: the pointer still reads the sentence.
+        title={words.sentence}
       >
         {content}
       </span>
@@ -802,6 +824,7 @@ function GateChip({ phase, controls }: { phase: PhaseSnapshot; controls: RowCont
             className="br-agents__gate"
             data-row={key}
             data-state={state}
+            data-mark={kind}
             data-attention={words.attention ? '' : undefined}
             data-needs-person={words.needsYou ? '' : undefined}
             data-testid={`phase-gate-${phase.id}`}
@@ -873,9 +896,10 @@ function AddGateButton({
 
 /**
  * One group of the Plan section: a phase (or "Other agents"), as a collapsible
- * line with its title, "done of total" on the right and its gate's mark, then its
- * grid, its rows and "Show N more". A phase that used no subagents is one static
- * line that says where it stands ("Pending", "Skipped").
+ * line with its title (one line, cut with an ellipsis, the whole title its
+ * tooltip), "done of total" on the right and its gate's flag, then its grid, its
+ * rows and "Show N more". A phase that used no subagents is one static line that
+ * says where it stands ("Pending", "Skipped").
  */
 function GroupItem({
   view,
@@ -923,7 +947,7 @@ function GroupItem({
       <span className="br-agents__chevron" data-open={open ? '' : undefined} aria-hidden="true">
         {rowsTotal > 0 ? <ChevronRight /> : null}
       </span>
-      <span className="br-agents__phase-title" aria-hidden="true">
+      <span className="br-agents__phase-title" title={title} aria-hidden="true">
         {title}
       </span>
       {count ? (
@@ -988,7 +1012,7 @@ function GroupItem({
 }
 
 /**
- * The notation's key, one muted line under the section's heading, before the
+ * The notation's key, one secondary line under the section's heading, before the
  * grid it explains (review, 2026-11-12: at the roster's foot it read as part of
  * the last phase): "Models:", a square, "language", a circle, "decision", solid
  * and in the muted ink, as the terminal's pane writes "models: ■ language  ●
@@ -1032,7 +1056,7 @@ function ListCount({ rows }: { rows: readonly SubagentRow[] }) {
  * work, filled and inked by status.
  *
  * - With a phase plan, a Plan section: one collapsible group per phase in plan
- *   order (title, "done of total", the gate's circle), then "Other agents".
+ *   order (title, "done of total", the gate's flag), then "Other agents".
  * - Without one, an Agents section holding the whole roster as one group.
  * - In a chat of four agents or fewer every agent is a two-line row led by a 14px
  *   mark. With more, a group of more than four draws its grid of squares (10px,

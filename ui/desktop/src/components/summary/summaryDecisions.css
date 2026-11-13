@@ -81,9 +81,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* A row's circle carries its own ink (summaryAgentGrid.css): the warning amber
-   once a monitor fired, the danger red for an error, a muted success tint for a
-   quiet monitor and for answers that landed. */
+/* A row's circle carries its own ink (summaryAgentGrid.css): half full in the
+   default ink once a monitor fired, the muted outline with its small cross for
+   an error (never the danger red: the row's word says "Error"), a muted success
+   tint for a quiet monitor and for answers that landed. */
 
 /* THE MONITORS BUTTON (F-16): a 24px quiet icon button on the heading line,
    after the toggle, whether the section is open or closed. The Button's own
@@ -128,13 +129,15 @@
 }
 
 /* A PHASE GATE'S MARK at the end of its phase's line (SummarySubagents.tsx,
-   spec 3.3): a 20px control holding the gate's 10px circle (decision-model
-   work, in the agent grid's notation). It has no fill at rest in any state, so
-   it is never a box beside the phase's title (owner direction, 2026-11-12): a
-   passed or waiting gate is a small mark beside the count, and a gate that wants
-   a look ("Needs you", "Not passed", "Blocked") adds its word in the circle's
-   ink. The card's hover step under the pointer. The transparent 1px border is
-   what forced colours draw. "Add gate" is a plus in the same slot. */
+   spec 3.3): a 20px control holding a 12px flag, the registry's `Flag`. A gate
+   is a flag and never a circle, so a circle in the summary only ever means
+   decision-model work (owner direction, 2026-11-12: the gate's old dot read as
+   one). It has no fill at rest in any state, so it is never a box beside the
+   phase's title: a gate not asked yet is a muted outline flag, a passed one a
+   solid flag in the finished sage, and a gate that wants a look adds its word
+   ("Needs you", "Not passed", "Blocked") beside the flag. The card's hover step
+   under the pointer. The transparent 1px border is what forced colours draw.
+   "Add gate" is a plus in the same slot. */
 .br-agents__gate-slot {
   display: inline-flex;
   flex: none;
@@ -174,6 +177,11 @@
   height: 12px;
 }
 
+/* A passed gate's flag is solid: the pennant takes its stroke's ink. */
+.br-agents__gate-glyph[data-kind='done'] > svg {
+  fill: currentColor;
+}
+
 /* A mark alone keeps 5px a side, so its hover step is near square. */
 .br-agents__gate:not([data-attention], [data-add-gate]) {
   padding: 0 5px;
@@ -191,14 +199,16 @@ button.br-agents__gate:focus-visible {
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
-/* A gate's word wears its circle's ink: the danger red for one not passed or
-   blocked, the warning amber for one that waits for the person. */
+/* A gate that wants a look reads solid, never red (owner direction,
+   2026-11-12: red is rare): its flag and its word ("Not passed", "Blocked") in
+   the default ink, and a gate that waits for the person in the accent, the one
+   colour this summary keeps for what needs the person. */
 .br-agents__gate[data-attention] {
-  color: var(--text-danger);
+  color: var(--text-default);
 }
 
 .br-agents__gate[data-needs-person] {
-  color: var(--text-warning);
+  color: var(--text-accent);
 }
 
 /* "Add gate": quiet until the phase is hovered or the button focused, but

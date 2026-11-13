@@ -16,7 +16,7 @@
  * With `SUMMARY_GRID_SHOTS=<dir>` it also saves PNGs of the rail for review, each in light and dark:
  * three agents (`agents-3`), twenty agents across a plan with gates, a decision-model subagent and
  * monitors (`phases-20`), 150 agents across three phases with decision-model subagents among them
- * (`agents-150`), and a square's card (`peek`).
+ * (`agents-150`), and a failed square's card (`peek`).
  */
 import { mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -585,11 +585,52 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
         ['running', 'waiting', 'failed', 'done'].map((kind) => byKind.get(kind)!.color)
       );
       expect(inks.size).toBe(4);
-      // The gates and the Decisions rows are circles; every subagent here is a square.
-      const gates = await tab.$$eval('.br-agents__gate .br-agent-mark', (found) =>
-        found.map((mark) => mark.getAttribute('data-shape'))
+      // Never red (owner direction, 2026-11-12; design.md 9.13): no mark, word or gate in the
+      // Plan or the Decisions section computes to the danger or warning ink, and the failed mark
+      // is the muted ink. Once the theme maps the danger tone onto the ink itself (the
+      // ui-readability lane does), a match says nothing, so only a hue that is not an ink counts.
+      const reds = await tab.evaluate(() => {
+        const probe = document.createElement('span');
+        // A colour transition would hand back the colour it starts from.
+        probe.style.transition = 'none';
+        document.querySelector('.br-summary-card')!.appendChild(probe);
+        const ink = (token: string) => {
+          probe.style.color = `var(${token})`;
+          return getComputedStyle(probe).color;
+        };
+        const inks = new Set([ink('--text-default'), ink('--text-muted')]);
+        const hues = [ink('--text-danger'), ink('--text-warning')].filter((hue) => !inks.has(hue));
+        const muted = ink('--text-muted');
+        probe.remove();
+        const painted = Array.from(
+          document.querySelectorAll('[data-testid="summary-plan"] *, .br-decisions *')
+        ).filter((element) => hues.includes(getComputedStyle(element).color));
+        const failed = document.querySelector('.br-agent-mark[data-kind="failed"]')!;
+        return {
+          hues: hues.length,
+          count: painted.length,
+          failedIsMuted: getComputedStyle(failed).color === muted,
+        };
+      });
+      // The instrument: the warning amber stays a hue in every theme, so the probe has
+      // something to find.
+      expect(reds.hues).toBeGreaterThanOrEqual(1);
+      expect(reds.count).toBe(0);
+      expect(reds.failedIsMuted).toBe(true);
+      // A gate is a flag and never a circle, so a circle only ever means decision-model work;
+      // the Decisions rows are circles, and every subagent here but the one judge is a square.
+      const gates = await tab.$$eval('.br-agents__gate:not([data-add-gate])', (found) =>
+        found.map((gate) => ({
+          circles: gate.querySelectorAll('.br-agent-mark').length,
+          flag: !!gate.querySelector('.br-agents__gate-glyph svg'),
+          name: gate.getAttribute('aria-label'),
+        }))
       );
-      expect(gates).toEqual(['circle', 'circle']);
+      expect(gates.map((gate) => [gate.circles, gate.flag])).toEqual([
+        [0, true],
+        [0, true],
+      ]);
+      for (const gate of gates) expect(gate.name).toMatch(/^Gate /);
       const decisions = await tab.$$eval('.br-decisions .br-agent-mark', (found) =>
         found.map((mark) => mark.getAttribute('data-shape'))
       );
@@ -712,6 +753,44 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
       expect(Math.abs(pending.wordRight - pending.edge)).toBeLessThanOrEqual(1);
       expect(Math.abs(pending.wordTop - pending.titleTop)).toBeLessThanOrEqual(2);
       expect(pending.titleHeight).toBeLessThanOrEqual(18);
+      // Every phase title is one line, cut with an ellipsis, with its count and its gate on
+      // that same line (vision review, 2026-11-12: "Draft the dosing tables" wrapped and pushed
+      // them down). The whole title is the title's tooltip.
+      const lines = await tab.evaluate(() =>
+        Array.from(document.querySelectorAll('.br-agents__phase-line')).map((line) => {
+          const title = line.querySelector<HTMLElement>('.br-agents__phase-title')!;
+          const titleBox = title.getBoundingClientRect();
+          const count = line.querySelector('.br-summary__count')?.getBoundingClientRect();
+          const gate = line.querySelector('.br-agents__gate')?.getBoundingClientRect();
+          return {
+            text: title.textContent,
+            tooltip: title.getAttribute('title'),
+            height: titleBox.height,
+            cut: title.scrollWidth > title.clientWidth,
+            countTop: count ? count.top - titleBox.top : 0,
+            gateMiddle: gate
+              ? (gate.top + gate.bottom) / 2 - (titleBox.top + titleBox.bottom) / 2
+              : 0,
+          };
+        })
+      );
+      expect(lines.map((line) => line.text)).toEqual([
+        'Audit the sources',
+        'Draft the dosing tables',
+        'Check the numbers',
+      ]);
+      // The instrument: at the rail's narrowest the long title really is cut.
+      expect(lines.find((line) => line.text === 'Draft the dosing tables')!.cut).toBe(true);
+      for (const line of lines) {
+        expect(line.height, line.text!).toBe(18);
+        expect(line.tooltip).toBe(line.text);
+        expect(Math.abs(line.countTop), line.text!).toBeLessThanOrEqual(2);
+        expect(Math.abs(line.gateMiddle), line.text!).toBeLessThanOrEqual(1);
+      }
+      // The held line names the gated phase last.
+      expect(await tab.textContent('[data-phase-id="check"] .br-agents__phase-counts')).toBe(
+        'Waits for the gate after Draft the dosing tables'
+      );
       expect(
         await tab.getAttribute(
           '[data-testid="subagent-cell-child-18"] .br-agent-mark',
@@ -744,13 +823,18 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
       });
       try {
         await shot(phases, `phases-20-${mode}.png`);
-        const cell = phases.locator('[data-testid="subagent-cell-child-9"]');
+        // The failed agent's card: "Failed" in words, beside its muted crossed square.
+        const cell = phases.locator('[data-testid="subagent-cell-child-5"]');
         await cell.hover();
-        await phases.locator('[data-testid="subagent-card-child-9"]').waitFor();
-        await placedPeek(phases, 'subagent-card-child-9');
+        await phases.locator('[data-testid="subagent-card-child-5"]').waitFor();
+        await placedPeek(phases, 'subagent-card-child-5');
+        expect(
+          await phases.textContent('[data-testid="subagent-card-child-5"]'),
+          'the failed card says so in words'
+        ).toContain('Failed');
         const box = await phases.evaluate(() => {
           const card = document
-            .querySelector('[data-testid="subagent-card-child-9"]')!
+            .querySelector('[data-testid="subagent-card-child-5"]')!
             .getBoundingClientRect();
           const rail = document.querySelector('.br-summary-card')!.getBoundingClientRect();
           const top = Math.min(card.top, rail.top) - 8;

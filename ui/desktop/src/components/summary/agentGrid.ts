@@ -12,19 +12,23 @@ import type { SummaryDecisionState } from './summaryDecisionRows';
 
 /**
  * THE AGENT GRID'S NOTATION (owner request, 2026-11-11), the one the Chat summary's
- * roster, its phase gates, its Decisions rows and the terminal's `/subagents` view
- * share: one small mark per piece of work, its SHAPE saying what kind of model did
- * it and its FILL saying where it stands, with the status ink on top.
+ * roster, its Decisions rows and the terminal's `/subagents` view share: one small
+ * mark per piece of work, its SHAPE saying what kind of model did it and its FILL
+ * saying where it stands, with the status ink on top. A phase gate is a flag
+ * beside its phase, never one of these marks, so a circle only ever means
+ * decision-model work; `gateMarkKind` still names its state.
  *
  * - Shape: a square for a language-model agent, a circle for decision-model work
  *   (a subagent whose own model is a decision model, a monitor, a `decide`
- *   fan-out or vote, a phase gate).
+ *   fan-out or vote).
  * - Fill, so status never depends on colour alone: hollow (waiting to start),
  *   hollow with a core (running), half full (stalled, or waiting for the person),
- *   solid (finished), solid with a cross cut out (failed), hollow with a bar (no
+ *   solid (finished), hollow with a small cross (failed), hollow with a bar (no
  *   outcome: unknown, skipped, off).
- * - Ink: running the info blue, finished a muted success tint, failed the danger
- *   red, waiting the warning amber, the rest muted (`summaryAgentGrid.css`).
+ * - Ink: running the info blue, finished a muted success tint, waiting the
+ *   default ink, failed and the rest the muted ink (`summaryAgentGrid.css`).
+ *   Never red (owner direction, 2026-11-12): a failure is found by its cross
+ *   and the word "Failed", not by an alarm colour.
  *
  * Pure: no React and no DOM, so every rule here is tested without rendering.
  */
@@ -239,9 +243,11 @@ export function agentGroups(
 // ---------------------------------------------------------------------------
 
 /**
- * A phase gate's mark (always a circle): passed, or passed by the person, is
- * finished; a pass not reached is failed, as is a gate blocked with nobody asked;
- * a gate that needs the person waits; a skip is idle; not asked yet is hollow.
+ * A phase gate's state, in the notation's kinds: passed, or passed by the person,
+ * is finished (a solid flag in the finished sage); a pass not reached is failed,
+ * as is a gate blocked with nobody asked; a gate that needs the person waits; a
+ * skip is idle; not asked yet is queued (an outline flag). The gate itself is a
+ * flag (`SummarySubagents.tsx`), never a circle.
  */
 export function gateMarkKind(gate: PhaseGateSnapshot): AgentMarkKind {
   if (gate.personDecision === 'pass') return 'done';

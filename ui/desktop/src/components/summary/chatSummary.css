@@ -203,8 +203,11 @@
   color: var(--text-accent);
 }
 
+/* A blocked item's alert glyph is in the default ink: its shape and its status
+   word say it is blocked, as a blocked subagent's half fill does, never a
+   warning hue (owner direction, 2026-11-12). */
 .br-summary__todo[data-status='blocked'] > .br-summary__glyph {
-  color: var(--text-warning);
+  color: var(--text-default);
 }
 
 /* A status that changed after the row first rendered crossfades its glyph in;
@@ -219,6 +222,10 @@
   }
 }
 
+/* A refresh that failed ("To do could not refresh.", and the Plan's and the
+   Decisions' lines, which share this class) is a sentence in the default ink
+   beside its Retry, never a status hue (design.md 9.13: red is rare, and a
+   sentence is never set in a status colour). */
 .br-summary__error {
   display: flex;
   min-height: 28px;
@@ -227,7 +234,7 @@
   gap: 8px;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
-  color: var(--text-warning);
+  color: var(--text-default);
 }
 
 /* A Button is 14/500 at every rung; the rail has two sizes, so the retry joins
