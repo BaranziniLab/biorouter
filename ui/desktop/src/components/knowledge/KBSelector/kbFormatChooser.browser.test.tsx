@@ -314,8 +314,14 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
           message: 'typing lifts the alert',
         })
         .toBe(0);
-      const typed = await look(page, NAME);
-      expect(typed.edge).not.toBe(edge.edge);
+      // The edge leaves the danger colour through a transition, so it is waited for too: the
+      // fixed pause this replaced was also what let the old edge fade.
+      await expect
+        .poll(async () => (await look(page, NAME)).edge, {
+          timeout: 5_000,
+          message: 'typing lifts the danger edge',
+        })
+        .not.toBe(edge.edge);
       expect(Math.abs((await look(page, CREATE)).top - createBefore.top)).toBeLessThan(0.6);
     } finally {
       await page.close();
