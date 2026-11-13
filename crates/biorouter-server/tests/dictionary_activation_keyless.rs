@@ -98,7 +98,9 @@ async fn keyless_daemon_does_not_attach_the_dictionary_to_a_chat() {
     let text = String::from_utf8_lossy(&bytes);
     assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
     assert!(
-        text.contains(&dictionary::msg_dictionary_host_settings("--suggest-from-chats on")),
+        text.contains(&dictionary::msg_dictionary_host_settings(
+            "--suggest-from-chats on"
+        )),
         "{text}"
     );
 }

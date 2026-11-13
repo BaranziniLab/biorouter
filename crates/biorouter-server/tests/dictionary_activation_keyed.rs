@@ -116,5 +116,9 @@ async fn attaching_the_dictionary_to_a_chat_needs_the_persons_proof_on_a_keyed_d
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(body.contains(dictionary::MSG_DICTIONARY_AGENT), "{body}");
     let (status, body) = attach_dictionary(&app, &session.id, true).await;
-    assert_ne!(status, StatusCode::FORBIDDEN, "the person's attach was refused: {body}");
+    assert_ne!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the person's attach was refused: {body}"
+    );
 }

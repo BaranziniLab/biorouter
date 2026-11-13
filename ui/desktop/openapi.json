@@ -312,7 +312,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "403": {
-            "description": "Refused by a privacy or subagent-control boundary: the named chat is private/absent, or is a subagent, and the request carried no proof it came from the user"
+            "description": "Refused by a privacy or subagent-control boundary: the named chat is private/absent, or is a subagent, and the request carried no proof it came from the user; or the extension is the Dictionary and the person did not ask (DD-56)"
           },
           "409": {
             "description": "Refused by a privacy boundary (issue #56, DR-16): a private extension cannot be attached to a chat running on a public model"

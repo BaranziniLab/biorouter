@@ -8656,7 +8656,7 @@ export type AgentAddExtensionErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy or subagent-control boundary: the named chat is private/absent, or is a subagent, and the request carried no proof it came from the user
+     * Refused by a privacy or subagent-control boundary: the named chat is private/absent, or is a subagent, and the request carried no proof it came from the user; or the extension is the Dictionary and the person did not ask (DD-56)
      */
     403: unknown;
     /**
