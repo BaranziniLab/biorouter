@@ -576,8 +576,9 @@ export function useExtensionPicker(
  * has not answered yet, a read that failed, or a chat that really has none. Only
  * the last may say there are none: before the answer, or after a
  * failure, that sentence was false while fourteen extensions loaded. And even
- * then it says none were ADDED, and that built-in capabilities stay on: they run
- * in every chat, so "none available" read as nothing running at all.
+ * then it says none were ADDED, and its InfoTip (`extensionsEmptyHelp`) that
+ * built-in capabilities stay on: they run in every chat, so "none available"
+ * read as nothing running at all.
  */
 export function extensionsEmptyText(
   picker: Pick<ExtensionPicker, 'query' | 'answered' | 'failed'> &
@@ -587,6 +588,18 @@ export function extensionsEmptyText(
   if (!picker.answered) return EXTENSIONS_COPY.loading;
   if (picker.failed) return EXTENSIONS_COPY.loadFailed;
   return picker.isHubView ? EXTENSIONS_COPY.emptyNextChat : EXTENSIONS_COPY.empty;
+}
+
+/**
+ * The InfoTip beside the empty line (design.md 9.16): only a list that really
+ * has none says built-in capabilities stay on. A query that matched nothing, a
+ * list still loading or a read that failed has nothing more to explain.
+ */
+export function extensionsEmptyHelp(
+  picker: Pick<ExtensionPicker, 'query' | 'answered' | 'failed'>
+): { about: string; text: string } | undefined {
+  if (picker.query || !picker.answered || picker.failed) return undefined;
+  return { about: EXTENSIONS_COPY.emptyHelpAbout, text: EXTENSIONS_COPY.emptyHelp };
 }
 
 /** The extensions list inside the Tools popover. */
@@ -608,6 +621,7 @@ export function ExtensionsPanel({
       scopeHelp={picker.isHubView ? EXTENSIONS_COPY.helpNextChat : EXTENSIONS_COPY.helpChat}
       bulk={picker.bulk}
       emptyText={extensionsEmptyText(picker)}
+      emptyHelp={extensionsEmptyHelp(picker)}
       inputRef={inputRef}
     >
       {picker.rows.map(({ ext, title, pairingRefused, disabled, pending }) => (

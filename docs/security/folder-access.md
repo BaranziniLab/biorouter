@@ -29,12 +29,12 @@ An absolute file path or a connector's returned result path does not itself gran
   chat to retry. See
   [when nobody answers a card](permission-modes.md#when-nobody-answers-a-card).
 
-The approval card in the chat asks one question, "Allow access to this external folder?", and
-shows the folder under it. The info icon beside the question says, in two sentences, what access
-is asked for and what **Allow once** covers, then when a session grant ends. The files the
-operation touches fold under **Files in this operation**, with their count. Each button says what
-it does when you point at it, and a screen reader hears the same words as the button's
-description. If a browser approval is refused without a reason, the card says "Folder approval
+The approval card in the chat asks one question that names the folder as the call asked for it,
+such as "Allow this chat to read ~/notes?", or "Subagent 'reviewer' asks to read ~/notes" when a
+subagent asks. The info icon beside the question says, in two sentences, what access is asked
+for and what **Allow once** covers, then when a session grant ends. **Details** holds the exact
+folder and files the operation touches and the grant's terms. Each button says what it does when
+you point at it, and a screen reader hears the same words as the button's description. If a browser approval is refused without a reason, the card says "Folder approval
 was refused." and its info icon says to check the approval key and try again.
 
 A symbolic link that leaves the workspace follows the same approval flow. The approval card

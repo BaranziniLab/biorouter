@@ -58,13 +58,16 @@ export const EXTENSIONS_COPY = {
   /**
    * A chat with no extensions added (A-6, E-3). Never "No extensions available":
    * built-in capabilities run in every chat whatever this list holds, so that
-   * sentence read as nothing running while fourteen loaded.
+   * sentence read as nothing running while fourteen loaded. `emptyHelp` says so,
+   * in the InfoTip beside this line (design.md 9.16: one line, then helper text).
    */
-  empty:
-    'No extensions added to this chat. Built-in capabilities are always on; manage them in Settings.',
+  empty: 'No extensions added to this chat.',
   /** The same on Home, where the list is the next chat's. */
-  emptyNextChat:
-    'No extensions added for the next chat. Built-in capabilities are always on; manage them in Settings.',
+  emptyNextChat: 'No extensions added for the next chat.',
+  /** What the empty line's InfoTip is about: its name reads "About built-in capabilities". */
+  emptyHelpAbout: 'built-in capabilities',
+  /** The empty line's InfoTip, in a chat and on Home alike. */
+  emptyHelp: 'Built-in capabilities are always on; manage them in Settings.',
   /** The list while this chat's extensions have not answered yet (A-6). */
   loading: 'Loading extensions…',
   /** The list when this chat's extensions could not be read (A-6). */

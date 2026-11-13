@@ -54,6 +54,12 @@ export interface PickerPanelProps {
   bulk?: { label: string; onClick: () => void; disabled?: boolean } | null;
   /** Shown instead of rows when there are none. */
   emptyText: string;
+  /**
+   * More to say about an empty list, in an InfoTip beside `emptyText` (design.md
+   * 9.16: one line, then helper text). `about` names it ("About built-in
+   * capabilities"), `text` is the help, two sentences at most.
+   */
+  emptyHelp?: { about: string; text: string };
   /** Focused when the popover opens on this list. */
   inputRef?: React.Ref<HTMLInputElement>;
   children: React.ReactNode;
@@ -69,6 +75,7 @@ export function PickerPanel({
   scopeHelp,
   bulk,
   emptyText,
+  emptyHelp,
   inputRef,
   children,
   'data-testid': testId,
@@ -109,7 +116,18 @@ export function PickerPanel({
         {hasRows ? (
           children
         ) : (
-          <CommandEmpty className="br-picker-panel__empty">{emptyText}</CommandEmpty>
+          <CommandEmpty className="br-picker-panel__empty">
+            {emptyHelp ? (
+              // One centred group: the line, then its glyph 4px after the last word. The
+              // InfoTip keeps its own keys: `Command` leaves any target but the field alone.
+              <span className="br-picker-panel__empty-line">
+                <span>{emptyText}</span>
+                <InfoTip label={emptyHelp.about} help={emptyHelp.text} />
+              </span>
+            ) : (
+              emptyText
+            )}
+          </CommandEmpty>
         )}
       </CommandList>
     </Command>

@@ -2383,16 +2383,18 @@ Crew timeline and the terminal. Syntax colours are unchanged.
 
 ### 9.16 · One line, then helper text
 
-The owner, 2026-11-13: large, solid chunks of text impede reading. A surface shows the one line a person needs, a
+The owner, 2026-11-13: large, solid chunks of text impede reading. This is 9.13 (Simplicity first, D-44) applied to
+prose: 9.13 decides which controls and numbers come first, this section decides how much text sits beside them. A surface shows the one line a person needs, a
 label, a question or a state word, and everything else is helper text that waits until it is asked for. There is
 almost always a way to fold a paragraph; finding it is part of designing the surface.
 
 - **The layers.** The visible line; then an `InfoTip` right beside it (the small circled icon, at most two full
   sentences, about 160 characters); then a Details disclosure (`ui/disclosure.tsx`) for anything longer or for a
   list; then a page or dialog of its own. A hover card that already exists on a surface may carry the same detail.
-- **The example.** The folder access card shows "Allow access to this external folder?", an info icon beside it
-  with what a grant covers and how long it lasts, the folder path, and "Files in this operation (N)" folded. The
-  daemon's long prompt, which only restated the preview, is not drawn.
+- **The example.** The folder access card asks one question, "Allow this chat to read ~/notes?" (or names the
+  subagent that asks), with an info icon beside it for what a grant covers and how long it lasts, and the exact
+  paths and terms under Details (9.13's R2-1 gave it the question and the Details). The daemon's long prompt,
+  which only restated the preview, is not drawn.
 - **What stays visible**, as principle 2 already says: the first line of an error that just happened, a refusal's
   reason, a privacy disclosure whose full text is mandated (`Note` with `unclamped`, DR-17), and one line of
   consequence for an irreversible action. Their extra sentences may still fold.

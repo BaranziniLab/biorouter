@@ -333,6 +333,43 @@ describe('the picker shell', () => {
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'zzz' } });
     expect(screen.queryAllByRole('option')).toHaveLength(0);
     expect(screen.getByText('No extensions found')).toBeInTheDocument();
+    // An empty line with nothing more to say draws no second InfoTip.
+    expect(screen.getAllByRole('button', { name: /^About / })).toHaveLength(1);
+  });
+
+  /** design.md 9.16: an empty list shows one line; what explains it waits in an InfoTip. */
+  it('folds an empty list’s explanation into an InfoTip beside its one line', async () => {
+    const user = userEvent.setup();
+    render(
+      <PickerPanel
+        listLabel="Extensions"
+        searchPlaceholder="Search extensions…"
+        query=""
+        onQueryChange={() => {}}
+        scopeLabel="This chat"
+        scopeHelp="Help."
+        emptyText="No extensions added to this chat."
+        emptyHelp={{
+          about: 'built-in capabilities',
+          text: 'Built-in capabilities are always on; manage them in Settings.',
+        }}
+      >
+        {[]}
+      </PickerPanel>
+    );
+    const line = screen.getByText('No extensions added to this chat.');
+    const tip = screen.getByRole('button', { name: 'About built-in capabilities' });
+    // Beside the line, in one group, and named for what it explains.
+    expect(line.closest('.br-picker-panel__empty-line')).toBe(
+      tip.closest('.br-picker-panel__empty-line')
+    );
+    expect(tip).toHaveAccessibleDescription(
+      'Built-in capabilities are always on; manage them in Settings.'
+    );
+    // Enter on the glyph keeps its tip; the listbox's keys stay with the field.
+    tip.focus();
+    await user.keyboard('{Enter}');
+    expect(tip).toHaveAttribute('data-pinned', 'true');
   });
 
   /**
