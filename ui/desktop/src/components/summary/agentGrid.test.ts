@@ -27,6 +27,7 @@ import {
   agentRowMarkPx,
   gateMarkKind,
   groupDrawsGrid,
+  groupDrawsGridFolded,
   headRank,
   inHeadOrder,
   splitHead,
@@ -70,11 +71,27 @@ describe('the size scales with the count', () => {
     expect(agentRowMarkPx('dense')).toBe(10);
   });
 
-  it('draws a group’s grid in every group of a larger chat, and none in a chat of rows', () => {
+  it('draws an open group’s grid from two agents in a larger chat, and none in a chat of rows', () => {
     expect(groupDrawsGrid(3, 'rows')).toBe(false);
     expect(groupDrawsGrid(0, 'grid')).toBe(false);
-    expect(groupDrawsGrid(1, 'grid')).toBe(true);
+    // A group of one is its row alone: one square above the row it repeats is noise.
+    expect(groupDrawsGrid(1, 'grid')).toBe(false);
+    expect(groupDrawsGrid(1, 'dense')).toBe(false);
+    expect(groupDrawsGrid(2, 'grid')).toBe(true);
     expect(groupDrawsGrid(150, 'dense')).toBe(true);
+  });
+
+  it('keeps a folded group’s grid while an agent in it is unfinished, a group of one too', () => {
+    const running = one({ status: 'running', quietSeconds: 2 });
+    const done = one({ status: 'completed', quietSeconds: null });
+    // Folded, the square is the only sign of where a lone agent stands.
+    expect(groupDrawsGridFolded([running], 'grid')).toBe(true);
+    expect(groupDrawsGridFolded([done, running], 'dense')).toBe(true);
+    // A folded group whose every agent finished is its line alone.
+    expect(groupDrawsGridFolded([done], 'grid')).toBe(false);
+    expect(groupDrawsGridFolded([], 'grid')).toBe(false);
+    // A chat of rows draws no grid at all.
+    expect(groupDrawsGridFolded([running], 'rows')).toBe(false);
   });
 });
 

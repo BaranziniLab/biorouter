@@ -109,13 +109,28 @@ export function agentRowMarkPx(size: AgentGridSize): number {
 }
 
 /**
- * Whether a group of `count` agents draws its grid: never in a chat of rows (four
- * agents or fewer), and in a larger chat every group that has an agent, however
- * small, so each group reads in the same notation and a folded one can still
- * show its live grid.
+ * Whether an open group of `count` agents draws its grid above its rows: never in
+ * a chat of rows (four agents or fewer), and in a larger chat every group of two
+ * or more, so the groups read in the same notation. A group of one is its row
+ * alone: a single square above the one row it repeats said nothing the row's own
+ * mark does not (live check, 2026-11-12).
  */
 export function groupDrawsGrid(count: number, size: AgentGridSize): boolean {
-  return size !== 'rows' && count > 0;
+  return size !== 'rows' && count > 1;
+}
+
+/**
+ * Whether a folded group still draws its grid: in a larger chat, while some agent
+ * in it is not finished (running, waiting, failed, not started), so the grid is
+ * the folded group's live summary, as the reference's "Check 2/3" is. A group of
+ * one does too, since folded its square is the only sign of where its agent
+ * stands. A folded group whose every agent finished is its line alone.
+ */
+export function groupDrawsGridFolded(
+  rows: readonly Pick<SubagentRow, 'status' | 'quietSeconds'>[],
+  size: AgentGridSize
+): boolean {
+  return size !== 'rows' && rows.some((row) => agentMarkKind(row) !== 'done');
 }
 
 // ---------------------------------------------------------------------------
