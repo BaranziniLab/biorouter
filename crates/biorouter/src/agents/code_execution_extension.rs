@@ -4543,6 +4543,9 @@ impl McpClientTrait for CodeExecutionClient {
                                               note: "Summarise the export when it is done." });
                         record_result(w);  // { state: "watching", watch_id } - then end your turn
                         ```
+                        A background shell job answers with TEXT, not an object: shell({ command, background:
+                        true }) returns "Started background job job-1. ...". Take the id from that text and
+                        watch developer__shell_status with { job_id: "job-1" }.
                         ```javascript
                         import { submit_job, job_status } from "module_name";
                         const job = submit_job({ query: "..." });

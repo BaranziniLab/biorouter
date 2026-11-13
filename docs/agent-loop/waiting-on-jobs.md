@@ -108,6 +108,8 @@ const done = wait_for({ tool: "module_name__job_status", arguments: { job_id: jo
 record_result({ state: done.state, status: done.last_result });
 ```
 
+A background shell job is the exception to `job.job_id`: `shell({ command, background: true })` answers with text ("Started background job job-1. ..."), so the script takes the id from that text and waits on `developer__shell_status` with `{ job_id: "job-1" }`. The `execute_code` description says so, because a model that copied the object form passed an undefined id and got `not_a_job` (live check, 2026-11-12).
+
 ```javascript
 let status = job_status({ job_id: id });
 while (status.status === "running" || status.status === "queued") {

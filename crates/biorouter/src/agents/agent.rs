@@ -5437,6 +5437,20 @@ struct EagerCompactionGuard {
     in_flight: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
+/// The estimated size of what follows the last agent-visible assistant
+/// message (the new message, a paste): the part of a reply's first request
+/// that the previous request plus its answer does not account for.
+fn added_since_last_answer(messages: &[Message]) -> u64 {
+    let after = messages
+        .iter()
+        .rposition(|message| {
+            message.role == rmcp::model::Role::Assistant && message.is_agent_visible()
+        })
+        .map_or(0, |at| at + 1);
+    crate::context_mgmt::estimate_request_size(messages.get(after..).unwrap_or_default(), "", &[])
+        as u64
+}
+
 impl Drop for EagerCompactionGuard {
     fn drop(&mut self) {
         self.in_flight
@@ -5446,6 +5460,7 @@ impl Drop for EagerCompactionGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_background_compaction(
     provider: Arc<dyn Provider>,
     session_manager: Arc<SessionManager>,
@@ -12042,18 +12057,9 @@ impl Agent {
                     // A reply's first request also carries what came after the
                     // previous request's answer (the new message, a paste),
                     // which the previous request plus its answer leaves out.
-                    let added = previous.is_none().then(|| {
-                        let after = next
-                            .messages
-                            .iter()
-                            .rposition(|message| {
-                                message.role == rmcp::model::Role::Assistant
-                                    && message.is_agent_visible()
-                            })
-                            .map_or(0, |at| at + 1);
-                        crate::context_mgmt::estimate_request_size(&next.messages[after..], "", &[])
-                            as u64
-                    });
+                    let added = previous
+                        .is_none()
+                        .then(|| added_since_last_answer(next.messages));
                     usage_limit::NextRequestInputs {
                         provider: Some(next.provider.to_string()),
                         model: Some(next.model),
@@ -13358,7 +13364,18 @@ impl Agent {
         // so it is skipped while a usage limit holds the chat's next request;
         // command hooks still run. The turn finishes, and its end stores the
         // stop notice that says why.
-        let limit_held = self.usage_limit_hold(session_id).await.is_some();
+        // The spend read is made only when a model could be asked: a goal, or a
+        // Stop hook configured for this folder or this chat.
+        let may_ask_a_model = active_goal.is_some()
+            || self
+                .hooks_manager
+                .has_session_hooks(session_id, crate::hooks::HookEvent::Stop)
+                .await
+            || self
+                .hooks_manager
+                .has_hooks(crate::hooks::HookEvent::Stop, None, working_dir)
+                .await;
+        let limit_held = may_ask_a_model && self.usage_limit_hold(session_id).await.is_some();
         let transcript_tail = crate::agents::goal::transcript_tail(conversation);
         match self
             .hooks_manager

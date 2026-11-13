@@ -221,7 +221,7 @@ pub fn new_output_in<'a>(tool_name: &str, text: &'a str) -> Option<&'a str> {
     // `shell_status` with a timeout adds a closing paragraph of its own.
     let body = ["\n\nThe job has finished.", "\n\nStill running after "]
         .iter()
-        .find_map(|closing| body.rfind(closing).map(|at| &body[..at]))
+        .find_map(|closing| body.rfind(closing).and_then(|at| body.get(..at)))
         .unwrap_or(body);
     let trimmed = body.trim();
     (!trimmed.is_empty() && trimmed != "(no new output)").then_some(body.trim_end())
