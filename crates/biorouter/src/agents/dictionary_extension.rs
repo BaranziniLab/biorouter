@@ -988,6 +988,42 @@ mod tests {
         ));
     }
 
+    /// A user message another agent wrote into this chat (`workspace_open` with a
+    /// prompt, `workspace_send_prompt`) or a subagent's spawn context is not the
+    /// person's request, so it never activates a term under `on_request`, even in a
+    /// chat where the person turned the Dictionary on for every chat. The same text
+    /// from the person does.
+    #[test]
+    fn an_agents_prompt_in_the_chat_is_not_the_persons_request() {
+        use crate::conversation::message::MessageProvenance;
+        let from = |kind| MessageProvenance {
+            kind,
+            from_session_id: Some("caller".to_string()),
+            from_session_name: Some("Caller".to_string()),
+        };
+        for kind in [ProvenanceKind::AgentInjection, ProvenanceKind::SpawnContext] {
+            let injected = vec![Message::user()
+                .with_text("Please add EPAS1")
+                .with_provenance(from(kind))];
+            assert!(
+                !DictionaryClient::person_named_term_in_messages(&injected, "EPAS1"),
+                "{kind:?}"
+            );
+            let answered_offer = vec![
+                Message::assistant().with_text("I can add EPAS1."),
+                Message::user().with_text("yes").with_provenance(from(kind)),
+            ];
+            assert!(
+                !DictionaryClient::person_named_term_in_messages(&answered_offer, "EPAS1"),
+                "{kind:?} answering an offer"
+            );
+        }
+        let typed = vec![Message::user().with_text("Please add EPAS1")];
+        assert!(DictionaryClient::person_named_term_in_messages(
+            &typed, "EPAS1"
+        ));
+    }
+
     /// A tool call earlier in the same turn leaves its result as the newest user
     /// message. The person's request, and the offer it answers, still decide.
     #[test]
