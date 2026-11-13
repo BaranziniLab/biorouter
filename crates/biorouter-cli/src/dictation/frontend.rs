@@ -884,26 +884,15 @@ async fn run_inner(
     model_affiliation: Option<biorouter::privacy::ModelAffiliation>,
     state: &FrontendSession,
     operation: u64,
-    _dispatch_started: Instant,
+    dispatch_started: Instant,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     events: &mpsc::UnboundedSender<Event>,
 ) -> Result<(), Failure> {
-    let policy = biorouter::managed::ManagedPolicy::load();
-    for rule in [&policy.dictation().enabled, &policy.dictation().capture] {
-        if let Some(reason) = rule.reason() {
-            return Err(reason.to_string().into());
-        }
-    }
-    let consent =
-        CaptureConsent::at_this_terminal().map_err(|_| messages::MSG_NO_TTY.to_string())?;
-    if let Some(refusal) = service::spawn_refusal() {
-        return Err(refusal.to_string().into());
-    }
+    let consent = refuse_before_start()?;
     let language = service::configured_language();
     let svc = service::service();
     svc.spawn_ahead().map_err(|e| e.to_string())?;
-    if commands.try_recv().is_ok() {
-        let _ = events.send(Event::Cancelled);
+    if cancelled_already(commands, events) {
         return Ok(());
     }
     let model = svc.resolve_for(None, Some(&language));
@@ -919,8 +908,7 @@ async fn run_inner(
             return Ok(());
         }
     };
-    if commands.try_recv().is_ok() {
-        let _ = events.send(Event::Cancelled);
+    if cancelled_already(commands, events) {
         return Ok(());
     }
     let prepared = tokio::spawn({
@@ -928,9 +916,138 @@ async fn run_inner(
         async move { svc.prepare_with(spec).await }
     });
     let dictionary = tokio::spawn(dictionary(session_id, model_affiliation));
+    open_microphone(&mut child, &consent).await?;
+    let title = TerminalTitle::push();
+    let cancel = CancellationToken::new();
+    let (mut decoder, dictionary_rx) = live_decode(spec, language, cancel.clone(), dictionary);
+    let mut recorder = Recorder::new(None);
+    let mut peaks = VecDeque::from(vec![0.0; 5]);
+    let started = Instant::now();
+    let cancelled = record(
+        &mut child,
+        &mut recorder,
+        &mut decoder,
+        &mut peaks,
+        commands,
+        events,
+        dispatch_started,
+    )
+    .await?;
+    if cancelled {
+        cancel.cancel();
+        tokio::spawn(child.close());
+        drop(title);
+        let _ = events.send(Event::Cancelled);
+        return Ok(());
+    }
+    child.stop().await;
+    drop(title);
+    drain(&mut child, &mut recorder).await;
+    tokio::spawn(child.close());
+    let pcm = recorder.finish().map_err(|ended| match ended {
+        Ended::TooShort => messages::MSG_TOO_SHORT.to_string(),
+        Ended::Silent => messages::MSG_NO_SPEECH.to_string(),
+    })?;
+    let _ = events.send(Event::Transcribing(messages::line_transcribing(
+        started.elapsed().as_millis() as u64,
+    )));
+    let decoded = tokio::select! {
+        decoded = decoder.finish(&pcm) => decoded.map_err(|_| Failure { message: messages::MSG_ENGINE_FAILED_CLI.into(), audio: Some(pcm.to_vec()) })?,
+        command = commands.recv() => {
+            if matches!(command, Some(Command::Cancel) | None) {
+                cancel.cancel();
+                let _ = events.send(Event::Cancelled);
+                return Ok(());
+            }
+            return Err(messages::MSG_ENGINE_FAILED_CLI.into());
+        }
+    };
+    drop(pcm);
+    drop(prepared);
+    let raw = decoded.raw_text();
+    let dictionary = dictionary_rx.await.ok().flatten();
+    let text = dictionary.as_ref().map_or_else(
+        || raw.clone(),
+        |dictionary| dictionary.correct(&raw, &dictionary.prompt_terms()).text,
+    );
+    if text.trim().is_empty() {
+        return Err(messages::MSG_NO_SPEECH.into());
+    }
+    state.send_text_if_live(operation, events, text);
+    Ok(())
+}
+
+/// The live decode for this capture, on the worker's model (or a test's fixed text): its
+/// first decode waits for the dictionary, and the receiver gets that dictionary for the
+/// correction after the decode.
+fn live_decode(
+    spec: biorouter::dictation::LoadSpec,
+    language: String,
+    cancel: CancellationToken,
+    dictionary: tokio::task::JoinHandle<Option<Arc<DictionaryRequest>>>,
+) -> (LiveDecode, DictionaryReceiver) {
+    let (dictionary_tx, dictionary_rx) = tokio::sync::oneshot::channel();
+    let request = async move {
+        let dictionary = dictionary.await.ok().flatten();
+        let _ = dictionary_tx.send(dictionary.clone());
+        TranscribeRequest {
+            language,
+            cancel,
+            dictionary,
+            decode: None,
+        }
+    };
+    let engine: Arc<dyn controller::Engine> = match controller::test_text() {
+        Some(text) => Arc::new(FixedText { text }),
+        None => Arc::new(ServiceEngine {
+            spec,
+            stream: STREAM,
+        }),
+    };
+    (LiveDecode::new(engine, request), dictionary_rx)
+}
+
+/// The dictionary the live decode used, once its first decode had it.
+type DictionaryReceiver = tokio::sync::oneshot::Receiver<Option<Arc<DictionaryRequest>>>;
+
+/// The refusals that need nothing started: the managed policy's `enabled` and `capture`
+/// rules, a person at this terminal, and a processor the engine runs on.
+fn refuse_before_start() -> Result<CaptureConsent, Failure> {
+    let policy = biorouter::managed::ManagedPolicy::load();
+    for rule in [&policy.dictation().enabled, &policy.dictation().capture] {
+        if let Some(reason) = rule.reason() {
+            return Err(reason.to_string().into());
+        }
+    }
+    let consent =
+        CaptureConsent::at_this_terminal().map_err(|_| messages::MSG_NO_TTY.to_string())?;
+    if let Some(refusal) = service::spawn_refusal() {
+        return Err(refusal.to_string().into());
+    }
+    Ok(consent)
+}
+
+/// Whether a command already waiting cancelled the capture before the microphone opened;
+/// if so, says so on `events`.
+fn cancelled_already(
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    events: &mpsc::UnboundedSender<Event>,
+) -> bool {
+    if commands.try_recv().is_ok() {
+        let _ = events.send(Event::Cancelled);
+        return true;
+    }
+    false
+}
+
+/// Opens the microphone, and waits up to 10 s for the device to stream.
+async fn open_microphone(
+    child: &mut CaptureChild,
+    consent: &CaptureConsent,
+) -> Result<(), Failure> {
     child
         .start(
-            &consent,
+            consent,
             std::env::var("BIOROUTER_CLI_DICTATION_DEVICE").ok(),
         )
         .await
@@ -949,33 +1066,21 @@ async fn run_inner(
     if !ready {
         return Err(messages::MSG_MIC_BUSY.into());
     }
-    let title = TerminalTitle::push();
-    let cancel = CancellationToken::new();
-    let (dictionary_tx, dictionary_rx) = tokio::sync::oneshot::channel();
-    let request = {
-        let cancel = cancel.clone();
-        async move {
-            let dictionary = dictionary.await.ok().flatten();
-            let _ = dictionary_tx.send(dictionary.clone());
-            TranscribeRequest {
-                language,
-                cancel,
-                dictionary,
-                decode: None,
-            }
-        }
-    };
-    let engine: Arc<dyn controller::Engine> = match controller::test_text() {
-        Some(text) => Arc::new(FixedText { text }),
-        None => Arc::new(ServiceEngine {
-            spec,
-            stream: STREAM,
-        }),
-    };
-    let mut decoder = LiveDecode::new(engine, request);
-    let mut recorder = Recorder::new(None);
-    let mut peaks = VecDeque::from(vec![0.0; 5]);
-    let started = Instant::now();
+    Ok(())
+}
+
+/// The recording: audio into the recorder and the live decode, the level onto `events`,
+/// until a stop command, the recorder's own stop, or a cancel (`Ok(true)`). A device that
+/// is lost fails it.
+async fn record(
+    child: &mut CaptureChild,
+    recorder: &mut Recorder,
+    decoder: &mut LiveDecode,
+    peaks: &mut VecDeque<f32>,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    events: &mpsc::UnboundedSender<Event>,
+    _dispatch_started: Instant,
+) -> Result<bool, Failure> {
     #[cfg(debug_assertions)]
     let mut first_audio_seen = false;
     let mut cancelled = false;
@@ -1009,15 +1114,11 @@ async fn run_inner(
             },
         }
     }
-    if cancelled {
-        cancel.cancel();
-        tokio::spawn(child.close());
-        drop(title);
-        let _ = events.send(Event::Cancelled);
-        return Ok(());
-    }
-    child.stop().await;
-    drop(title);
+    Ok(cancelled)
+}
+
+/// After `stop`: the child's last frames into the recorder, for at most 500 ms.
+async fn drain(child: &mut CaptureChild, recorder: &mut Recorder) {
     let _ = tokio::time::timeout(Duration::from_millis(500), async {
         loop {
             match child.next().await {
@@ -1031,38 +1132,6 @@ async fn run_inner(
         }
     })
     .await;
-    tokio::spawn(child.close());
-    let pcm = recorder.finish().map_err(|ended| match ended {
-        Ended::TooShort => messages::MSG_TOO_SHORT.to_string(),
-        Ended::Silent => messages::MSG_NO_SPEECH.to_string(),
-    })?;
-    let _ = events.send(Event::Transcribing(messages::line_transcribing(
-        started.elapsed().as_millis() as u64,
-    )));
-    let decoded = tokio::select! {
-        decoded = decoder.finish(&pcm) => decoded.map_err(|_| Failure { message: messages::MSG_ENGINE_FAILED_CLI.into(), audio: Some(pcm.to_vec()) })?,
-        command = commands.recv() => {
-            if matches!(command, Some(Command::Cancel) | None) {
-                cancel.cancel();
-                let _ = events.send(Event::Cancelled);
-                return Ok(());
-            }
-            return Err(messages::MSG_ENGINE_FAILED_CLI.into());
-        }
-    };
-    drop(pcm);
-    drop(prepared);
-    let raw = decoded.raw_text();
-    let dictionary = dictionary_rx.await.ok().flatten();
-    let text = dictionary.as_ref().map_or_else(
-        || raw.clone(),
-        |dictionary| dictionary.correct(&raw, &dictionary.prompt_terms()).text,
-    );
-    if text.trim().is_empty() {
-        return Err(messages::MSG_NO_SPEECH.into());
-    }
-    state.send_text_if_live(operation, events, text);
-    Ok(())
 }
 
 #[cfg(test)]

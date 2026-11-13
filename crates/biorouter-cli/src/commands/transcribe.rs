@@ -206,31 +206,15 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
     use std::time::Instant;
 
     use biorouter::dictation::service::{self, TranscribeRequest};
-    use biorouter::dictation::DictationError;
     use tokio_util::sync::CancellationToken;
 
-    use crate::dictation::decode;
-
     let started = Instant::now();
-    if let Some(refusal) = service::spawn_refusal() {
-        return Err(failure_of(refusal));
-    }
-    // DD-77 reads this once: it decides the bias target and whether usage is recorded.
-    let agent_shell = std::env::var_os(super::dictation::AGENT_SHELL_ENV);
-    let records_usage = !is_agent_shell(agent_shell.as_deref());
-    // The managed policy is read once: `enabled` refuses the run, and `dictionary: false`
-    // runs it as `--no-dictionary` does, so no store is read and no usage is written.
-    let policy = biorouter::managed::ManagedPolicy::load();
-    let enabled = &policy.dictation().enabled;
-    if !enabled.is_allowed() {
-        return Err(failure_of(DictationError::Policy(enabled.allowance())));
-    }
-    let no_dictionary = without_dictionary(args.no_dictionary, &policy.dictation().dictionary);
-    let language = match args.language.as_deref() {
-        Some(language) => language.trim().to_ascii_lowercase(),
-        None => service::configured_language(),
-    };
-    service::check_language_code(&language).map_err(failure_of)?;
+    let Admitted {
+        agent_shell,
+        records_usage,
+        no_dictionary,
+        language,
+    } = admit(&args)?;
 
     // Ctrl-C cancels the transcription and exits 4. The worker leads its own process
     // group, so the terminal's SIGINT reaches only this process.
@@ -241,7 +225,6 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
             on_interrupt.cancel();
         }
     });
-    let cancelled = || Failure::new(Outcome::Cancelled, messages::MSG_CANCELLED);
 
     // The worker process starts now; the file is read while the model loads. This process
     // loads one model for one recording, so the load skips the encoder warm up, which on
@@ -250,67 +233,9 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
     let svc = service::service();
     svc.one_shot();
     svc.spawn_ahead().map_err(failure_of)?;
-    let model = args.model.clone();
-    let model_language = language.clone();
-    let prepared = tokio::spawn(async move {
-        // DD-32's thread count asks the llama sidecar, which took about 100 ms here [M]:
-        // longer than finding the model and starting the worker. So the load does not
-        // wait for it. The load uses the full count, which only the detector's warm up
-        // reads, and every decode carries DD-32's count.
-        let threads = tokio::spawn(svc.threads());
-        let mut spec = svc
-            .resolve_for(model.as_deref(), Some(&model_language))
-            .await?;
-        let resolved = started.elapsed();
-        spec.n_threads = service::base_threads();
-        let loaded = svc.prepare_with(spec.clone()).await?;
-        spec.n_threads = threads.await.unwrap_or_else(|_| service::base_threads());
-        Ok::<_, DictationError>((spec, loaded, resolved, started.elapsed()))
-    });
-
-    // The dictionary, prepared while the model loads and the file decodes: the bias set
-    // under DD-77, its ranking against the context and the corrector (and the decoder
-    // bonus table, when measurement turns the bonus on, which the worker builds right after
-    // the model loads). `--no-dictionary` and the managed `dictionary: false` prepare
-    // nothing.
-    let context = match &args.context_file {
-        Some(path) => Some(read_context(path)?),
-        None => None,
-    };
-    let dictionary = {
-        let session = args.session.clone();
-        tokio::spawn(async move {
-            let request = prepare_dictionary(no_dictionary, session, context, agent_shell)
-                .await
-                .map(Arc::new);
-            if let Some(request) = &request {
-                let _ = svc.install_bias(request);
-            }
-            (request, started.elapsed())
-        })
-    };
-
-    let input = args.input.clone();
-    let decoding = tokio::task::spawn_blocking(move || {
-        if input == "-" {
-            decode::decode_reader(std::io::stdin().lock())
-        } else {
-            decode::decode_path(std::path::Path::new(&input))
-        }
-    });
-    let decoded = tokio::select! {
-        decoded = decoding => decoded
-            .map_err(|_| Failure::new(Outcome::Unreadable, messages::msg_unreadable(&args.input)))?
-            .map_err(|e| Failure::new(e.outcome(), e.message(&args.input)))?,
-        () = cancel.cancelled() => return Err(cancelled()),
-    };
-    let read_ms = started.elapsed().as_millis() as u64;
-    decoded
-        .check_length()
-        .map_err(|e| Failure::new(e.outcome(), e.message(&args.input)))?;
-    if decoded.is_digital_silence() {
-        return Err(Failure::new(Outcome::NoSpeech, messages::MSG_NO_SPEECH));
-    }
+    let prepared = start_model(svc, args.model.clone(), language.clone(), started);
+    let dictionary = start_dictionary(&args, svc, no_dictionary, agent_shell, started)?;
+    let (decoded, read_ms) = read_recording(&args.input, &cancel, started).await?;
 
     let (spec, loaded, resolved, ready) = tokio::select! {
         ready = prepared => ready
@@ -342,7 +267,219 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
         return Err(Failure::new(Outcome::NoSpeech, messages::MSG_NO_SPEECH));
     }
     let total_ms = started.elapsed().as_millis() as u64;
-    let json = JsonTranscript {
+    let timings = JsonTimings {
+        dictionary_ms: dictionary_ready.as_millis() as u64,
+        correct_us: dictated.correct_us,
+        total_ms,
+        read_ms,
+        resolve_ms: resolved.as_millis() as u64,
+        model_ready_ms: ready.as_millis() as u64,
+        load_ms: loaded.load_ms,
+        warmup_ms: loaded.warmup_ms,
+        transcribe_ms,
+        vad_ms: transcript.timings.vad_ms,
+        encode_ms: transcript.timings.encode_ms,
+        decode_ms: transcript.timings.decode_ms,
+        decodes: transcript.timings.decodes,
+        backend: loaded.backend,
+    };
+    let json = transcript_json(&dictated, model_id, language, total_ms, timings);
+    let rendered = render(args.format, &json);
+    match &args.output {
+        Some(path) => std::fs::write(path, rendered)
+            .map_err(|_| Failure::new(Outcome::Unwritable, messages::msg_unwritable(Some(path))))?,
+        None => {
+            write_stdout(rendered.as_bytes(), &mut std::io::stdout().lock())?;
+            #[cfg(unix)]
+            close_stdout();
+        }
+    }
+    // The text is out, and a reader of the pipe has seen its end. Only now does the
+    // dictionary learn which of its terms it used, so the write costs nothing between stop
+    // and text.
+    if let Some(dictionary) = dictionary.filter(|_| records_usage) {
+        let text = transcript.text.clone();
+        let _ = tokio::task::spawn_blocking(move || record_uses(&dictionary, &text)).await;
+    }
+    Ok(())
+}
+
+/// What the refusals before the worker starts leave for the run.
+#[cfg(feature = "dictation")]
+struct Admitted {
+    /// `BIOROUTER_TERMINAL`'s value, read once (DD-77).
+    agent_shell: Option<std::ffi::OsString>,
+    /// Not an agent's shell, so the terms the text holds have their `uses` raised.
+    records_usage: bool,
+    /// `--no-dictionary`, or the managed `dictionary: false`.
+    no_dictionary: bool,
+    language: String,
+}
+
+/// The refusals before the worker starts: a processor the engine cannot run on, the
+/// managed `enabled: false`, and a language code no model knows.
+#[cfg(feature = "dictation")]
+fn admit(args: &TranscribeArgs) -> Result<Admitted, Failure> {
+    use biorouter::dictation::service;
+    use biorouter::dictation::DictationError;
+
+    if let Some(refusal) = service::spawn_refusal() {
+        return Err(failure_of(refusal));
+    }
+    // DD-77 reads this once: it decides the bias target and whether usage is recorded.
+    let agent_shell = std::env::var_os(super::dictation::AGENT_SHELL_ENV);
+    let records_usage = !is_agent_shell(agent_shell.as_deref());
+    // The managed policy is read once: `enabled` refuses the run, and `dictionary: false`
+    // runs it as `--no-dictionary` does, so no store is read and no usage is written.
+    let policy = biorouter::managed::ManagedPolicy::load();
+    let enabled = &policy.dictation().enabled;
+    if !enabled.is_allowed() {
+        return Err(failure_of(DictationError::Policy(enabled.allowance())));
+    }
+    let no_dictionary = without_dictionary(args.no_dictionary, &policy.dictation().dictionary);
+    let language = match args.language.as_deref() {
+        Some(language) => language.trim().to_ascii_lowercase(),
+        None => service::configured_language(),
+    };
+    service::check_language_code(&language).map_err(failure_of)?;
+    Ok(Admitted {
+        agent_shell,
+        records_usage,
+        no_dictionary,
+        language,
+    })
+}
+
+/// MSG-CANCELLED: Ctrl-C ended the run (exit 4).
+#[cfg(feature = "dictation")]
+fn cancelled() -> Failure {
+    Failure::new(Outcome::Cancelled, messages::MSG_CANCELLED)
+}
+
+/// The model found and loaded on its own task: the spec with DD-32's thread count for
+/// every decode, the load, and when the model was found and when it was ready, both
+/// counted from `started`.
+#[cfg(feature = "dictation")]
+fn start_model(
+    svc: &'static biorouter::dictation::DictationService,
+    model: Option<String>,
+    model_language: String,
+    started: std::time::Instant,
+) -> tokio::task::JoinHandle<Result<PreparedModel, biorouter::dictation::DictationError>> {
+    use biorouter::dictation::service;
+    use biorouter::dictation::DictationError;
+
+    tokio::spawn(async move {
+        // DD-32's thread count asks the llama sidecar, which took about 100 ms here [M]:
+        // longer than finding the model and starting the worker. So the load does not
+        // wait for it. The load uses the full count, which only the detector's warm up
+        // reads, and every decode carries DD-32's count.
+        let threads = tokio::spawn(svc.threads());
+        let mut spec = svc
+            .resolve_for(model.as_deref(), Some(&model_language))
+            .await?;
+        let resolved = started.elapsed();
+        spec.n_threads = service::base_threads();
+        let loaded = svc.prepare_with(spec.clone()).await?;
+        spec.n_threads = threads.await.unwrap_or_else(|_| service::base_threads());
+        Ok::<_, DictationError>((spec, loaded, resolved, started.elapsed()))
+    })
+}
+
+/// What [`start_model`] gives: the spec, the load, and when the model was found and
+/// when it was ready.
+#[cfg(feature = "dictation")]
+type PreparedModel = (
+    biorouter::dictation::LoadSpec,
+    biorouter::dictation::Loaded,
+    std::time::Duration,
+    std::time::Duration,
+);
+
+/// The dictionary, prepared on its own task while the model loads and the file decodes:
+/// the bias set under DD-77, its ranking against the context and the corrector (and the
+/// decoder bonus table, when measurement turns the bonus on, which the worker builds right
+/// after the model loads). `--no-dictionary` and the managed `dictionary: false` prepare
+/// nothing. A `--context-file` that cannot be read ends the run first.
+#[cfg(feature = "dictation")]
+fn start_dictionary(
+    args: &TranscribeArgs,
+    svc: &'static biorouter::dictation::DictationService,
+    no_dictionary: bool,
+    agent_shell: Option<std::ffi::OsString>,
+    started: std::time::Instant,
+) -> Result<PreparedDictionary, Failure> {
+    use std::sync::Arc;
+
+    let context = match &args.context_file {
+        Some(path) => Some(read_context(path)?),
+        None => None,
+    };
+    let session = args.session.clone();
+    Ok(tokio::spawn(async move {
+        let request = prepare_dictionary(no_dictionary, session, context, agent_shell)
+            .await
+            .map(Arc::new);
+        if let Some(request) = &request {
+            let _ = svc.install_bias(request);
+        }
+        (request, started.elapsed())
+    }))
+}
+
+/// What [`start_dictionary`] gives: the dictionary, and when it was ready.
+#[cfg(feature = "dictation")]
+type PreparedDictionary = tokio::task::JoinHandle<(
+    Option<std::sync::Arc<biorouter::dictation::DictionaryRequest>>,
+    std::time::Duration,
+)>;
+
+/// The recording, decoded to 16 kHz mono on a blocking thread while the model loads, and
+/// when that finished (from `started`); Ctrl-C cancels the wait. A recording under half a
+/// second, or exact zeros, is answered here, before the model is needed.
+#[cfg(feature = "dictation")]
+async fn read_recording(
+    input: &str,
+    cancel: &tokio_util::sync::CancellationToken,
+    started: std::time::Instant,
+) -> Result<(crate::dictation::decode::Decoded, u64), Failure> {
+    use crate::dictation::decode;
+
+    let source = input.to_string();
+    let decoding = tokio::task::spawn_blocking(move || {
+        if source == "-" {
+            decode::decode_reader(std::io::stdin().lock())
+        } else {
+            decode::decode_path(std::path::Path::new(&source))
+        }
+    });
+    let decoded = tokio::select! {
+        decoded = decoding => decoded
+            .map_err(|_| Failure::new(Outcome::Unreadable, messages::msg_unreadable(input)))?
+            .map_err(|e| Failure::new(e.outcome(), e.message(input)))?,
+        () = cancel.cancelled() => return Err(cancelled()),
+    };
+    let read_ms = started.elapsed().as_millis() as u64;
+    decoded
+        .check_length()
+        .map_err(|e| Failure::new(e.outcome(), e.message(input)))?;
+    if decoded.is_digital_silence() {
+        return Err(Failure::new(Outcome::NoSpeech, messages::MSG_NO_SPEECH));
+    }
+    Ok((decoded, read_ms))
+}
+
+/// `--format json`'s object for a transcription, which every format renders.
+#[cfg(feature = "dictation")]
+fn transcript_json(
+    dictated: &biorouter::dictation::DictatedRecording,
+    model: String,
+    language: String,
+    elapsed_ms: u64,
+    timings: JsonTimings,
+) -> JsonTranscript {
+    let transcript = &dictated.transcript;
+    JsonTranscript {
         schema: crate::dictation::SCHEMA,
         text: transcript.text.clone(),
         raw_text: transcript.raw_text.clone(),
@@ -367,50 +504,17 @@ async fn run(args: TranscribeArgs) -> Result<(), Failure> {
                 text: s.text.clone(),
             })
             .collect(),
-        model: model_id,
+        model,
         language: reported_language(language, transcript.language.as_deref()),
         audio_s: transcript.audio_ms as f64 / 1_000.0,
-        elapsed_ms: total_ms,
+        elapsed_ms,
         bias_scope: dictated.bias_scope.as_str().into(),
         retried: transcript.retried.map(|reason| JsonRetried {
             reason: reason.as_str().into(),
         }),
         no_speech: false,
-        timings: JsonTimings {
-            dictionary_ms: dictionary_ready.as_millis() as u64,
-            correct_us: dictated.correct_us,
-            total_ms,
-            read_ms,
-            resolve_ms: resolved.as_millis() as u64,
-            model_ready_ms: ready.as_millis() as u64,
-            load_ms: loaded.load_ms,
-            warmup_ms: loaded.warmup_ms,
-            transcribe_ms,
-            vad_ms: transcript.timings.vad_ms,
-            encode_ms: transcript.timings.encode_ms,
-            decode_ms: transcript.timings.decode_ms,
-            decodes: transcript.timings.decodes,
-            backend: loaded.backend,
-        },
-    };
-    let rendered = render(args.format, &json);
-    match &args.output {
-        Some(path) => std::fs::write(path, rendered)
-            .map_err(|_| Failure::new(Outcome::Unwritable, messages::msg_unwritable(Some(path))))?,
-        None => {
-            write_stdout(rendered.as_bytes(), &mut std::io::stdout().lock())?;
-            #[cfg(unix)]
-            close_stdout();
-        }
+        timings,
     }
-    // The text is out, and a reader of the pipe has seen its end. Only now does the
-    // dictionary learn which of its terms it used, so the write costs nothing between stop
-    // and text.
-    if let Some(dictionary) = dictionary.filter(|_| records_usage) {
-        let text = transcript.text.clone();
-        let _ = tokio::task::spawn_blocking(move || record_uses(&dictionary, &text)).await;
-    }
-    Ok(())
 }
 
 /// The `language` of `--format json`: the code the run asked for, or, for `auto`, the one

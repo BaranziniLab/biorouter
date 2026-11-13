@@ -33,10 +33,10 @@ use std::path::Path;
 use biorouter::dictation::audio::{f32_to_s16, resample_to_16k, SAMPLE_RATE};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{
-    CodecType, DecoderOptions, CODEC_TYPE_ALAC, CODEC_TYPE_NULL, CODEC_TYPE_OPUS,
+    CodecType, Decoder, DecoderOptions, CODEC_TYPE_ALAC, CODEC_TYPE_NULL, CODEC_TYPE_OPUS,
 };
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
@@ -611,12 +611,18 @@ fn read_up_to(reader: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> 
     Ok(got)
 }
 
-fn decode(
+/// A probed container, the id of the track to decode, and that track's decoder.
+type OpenTrack = (Box<dyn FormatReader>, u32, Box<dyn Decoder>);
+
+/// The probed container, its first track with a codec, and that track's decoder. A
+/// container or codec Biorouter does not read is refused (named by `kind`, or by the codec
+/// when it is Apple Lossless or Opus), and a header that gives more than 2 hours is refused
+/// before anything is decoded.
+fn open_track(
     source: Box<dyn MediaSource>,
     ext: Option<&str>,
-    kind: Option<String>,
-    trim: Trim,
-) -> Result<Decoded, DecodeError> {
+    kind: &Option<String>,
+) -> Result<OpenTrack, DecodeError> {
     let unsupported = || DecodeError::UnsupportedFormat { kind: kind.clone() };
     let stream = MediaSourceStream::new(source, Default::default());
     let mut hint = Hint::new();
@@ -633,7 +639,7 @@ fn decode(
     let probed = symphonia::default::get_probe()
         .format(&hint, stream, &options, &MetadataOptions::default())
         .map_err(|_| unsupported())?;
-    let mut format = probed.format;
+    let format = probed.format;
     let track = format
         .tracks()
         .iter()
@@ -646,12 +652,23 @@ fn decode(
             return Err(DecodeError::TooLong);
         }
     }
-    let mut decoder = symphonia::default::get_codecs()
+    let decoder = symphonia::default::get_codecs()
         .make(&params, &DecoderOptions::default())
         .map_err(|_| match refused_codec(params.codec) {
             Some(codec) => refused(codec),
             None => unsupported(),
         })?;
+    Ok((format, track_id, decoder))
+}
+
+fn decode(
+    source: Box<dyn MediaSource>,
+    ext: Option<&str>,
+    kind: Option<String>,
+    trim: Trim,
+) -> Result<Decoded, DecodeError> {
+    let unsupported = || DecodeError::UnsupportedFormat { kind: kind.clone() };
+    let (mut format, track_id, mut decoder) = open_track(source, ext, &kind)?;
 
     let mut resampler: Option<To16k> = None;
     let mut channels = 0usize;
