@@ -37,6 +37,11 @@ const mocks = vi.hoisted(() => ({
   install: vi.fn(),
   startInstall: vi.fn(),
   hasSubagents: vi.fn(),
+  refreshSidebar: vi.fn(),
+}));
+vi.mock('../BioRouterSidebar/useSidebarSessions', async (original) => ({
+  ...(await original<typeof import('../BioRouterSidebar/useSidebarSessions')>()),
+  refreshSidebarChats: mocks.refreshSidebar,
 }));
 vi.mock('./chatSubagents', () => ({
   fetchHasSubagents: mocks.hasSubagents,
@@ -263,6 +268,7 @@ beforeEach(() => {
   // A roster that could not be read, unless a test says otherwise: the box stays in
   // More options, and no answer lands after a test that does not wait for it.
   mocks.hasSubagents.mockReset().mockResolvedValue(null);
+  mocks.refreshSidebar.mockReset();
 });
 
 afterEach(() => {
@@ -1844,6 +1850,26 @@ describe('owners and subagents', () => {
       expect(within(screen.getByTestId('monitor-subagents')).getByRole('checkbox')).toBeChecked();
     });
 
+    it('shows the box up front when a monitor already watches subagents, with none yet', async () => {
+      mocks.hasSubagents.mockResolvedValue(false);
+      const watching = settingsWith({ ...STORED.monitors[0], applyToSubagents: true });
+      mocks.settings.mockResolvedValue({ data: watching, missing: false });
+      await drawReady({ settings: watching });
+      await waitFor(() => expect(mocks.hasSubagents).toHaveBeenCalled());
+      fillNewMonitor('Secrets', 'Is a secret in the output?');
+      const box = screen.getByTestId('monitor-subagents');
+      expect(moreOptionsOpen()).toBe(false);
+      expect(within(box).getByRole('checkbox')).not.toBeChecked();
+      openMoreOptions();
+      expect(inMoreOptions()).toBeNull();
+      fireEvent.click(screen.getByTestId('monitor-cancel'));
+      // The monitor that watches them opens with the box up front and checked, and
+      // More options stays closed.
+      await rowAction('Form reached', 'Edit');
+      expect(moreOptionsOpen()).toBe(false);
+      expect(within(screen.getByTestId('monitor-subagents')).getByRole('checkbox')).toBeChecked();
+    });
+
     it('never shows the box on a subagent chat, and does not read a roster there', async () => {
       await drawReady({ isSubagentChat: true });
       fireEvent.click(screen.getByTestId('monitor-add'));
@@ -2002,5 +2028,38 @@ describe('the install panel', () => {
     await waitFor(() => expect(mocks.catalog).toHaveBeenCalled());
     expect(screen.queryByTestId('decision-model-install')).toBeNull();
     expect(mocks.install).not.toHaveBeenCalled();
+  });
+});
+
+/** A saved change is activity and can change why the chat is public (DR-33). */
+describe('the sidebar after a save', () => {
+  it('asks the sidebar to re-read its chats once a write has landed', async () => {
+    await drawReady();
+    fireEvent.click(screen.getByRole('switch', { name: 'Form reached' }));
+    await savedMonitors();
+    await waitFor(() => expect(mocks.refreshSidebar).toHaveBeenCalledTimes(1));
+    // After the write, never before it: a read that outran it would find the old row.
+    expect(mocks.save.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.refreshSidebar.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('leaves the sidebar alone when the write is refused', async () => {
+    mocks.save.mockRejectedValue(new Error('Nothing was saved: `Form reached` could not run.'));
+    await drawReady();
+    fireEvent.click(screen.getByRole('switch', { name: 'Form reached' }));
+    await screen.findByTestId('monitor-row-error');
+    expect(mocks.refreshSidebar).not.toHaveBeenCalled();
+  });
+
+  it('leaves the sidebar alone in draft mode, where nothing is stored yet', async () => {
+    const onChange = vi.fn();
+    await drawReady({
+      sessionId: '',
+      draft: { chat: { boundProvider: 'versa_azure', boundModel: 'gpt-5.5' }, onChange },
+    });
+    fireEvent.click(screen.getByRole('switch', { name: 'Form reached' }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(mocks.refreshSidebar).not.toHaveBeenCalled();
   });
 });

@@ -397,7 +397,10 @@ Two moves are not held:
 A chat row is a 16px kind glyph (`ChatKindIcon`, which carries the lock badge of a private chat), the
 title, and a 16px trailing slot that holds the running ring and gives way to `⋯` on hover or focus.
 The hover card opens after 700ms with the title (only when it is cut off) and
-`~/folder · 3h ago · 12 messages`, sized to its text up to 320px. It opens 16px past the row's end,
+`~/folder · 3h ago · 12 messages`, sized to its text up to 320px. On a chat that one of its own
+public decision models made public, the card adds one line, such as "Public: its decision model
+joey-1 runs on Baseten.", read again as soon as the chat's monitors are saved in this window
+(another window catches up when it comes to the front). The card opens 16px past the row's end,
 which puts it 8px clear of the pane divider rather than on it (a folder's path tooltip lands on the
 same x). It closes when its row can no
 longer be seen: Chats collapsed, the sidebar closed, or the row scrolled out of the list. The active

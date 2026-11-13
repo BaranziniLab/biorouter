@@ -3298,6 +3298,61 @@ mod tests {
         );
     }
 
+    /// Owner decision 4: a private chat refused a public subagent (DR-19) shows
+    /// the person the line the desktop card and the line-oriented terminal add,
+    /// under the spawn's request only. The same words from any other tool, or
+    /// any other spawn failure, add nothing.
+    #[test]
+    fn a_refused_public_subagent_tells_the_person_what_to_do() {
+        use biorouter::agents::subagent_tool::{
+            MAKE_CHAT_PUBLIC_FROM_HISTORY, PUBLIC_CHILD_REFUSAL_OPENING,
+        };
+        use rmcp::model::{CallToolRequestParams, ErrorCode, ErrorData};
+        let req = |id: &str, name: &str| {
+            Message::assistant().with_tool_request(
+                id,
+                Ok(CallToolRequestParams {
+                    name: name.to_string().into(),
+                    arguments: None,
+                    meta: None,
+                    task: None,
+                }),
+            )
+        };
+        let refused = |id: &str, message: String| {
+            Message::user().with_tool_response(
+                id,
+                Err(ErrorData::new(ErrorCode::INVALID_REQUEST, message, None)),
+            )
+        };
+        let dr19 = biorouter::privacy::PrivacyRefusal::spawn_downgrade(
+            biorouter::privacy::ProviderTier::Public,
+        )
+        .to_string();
+
+        let mut app = App::new(StatusInfo::default());
+        app.push_message(&req("shell", "developer__shell"), false);
+        app.push_message(&refused("shell", dr19.clone()), false);
+        app.push_message(&req("cap", "workspace__subagent"), false);
+        app.push_message(
+            &refused("cap", "the subagent cap was reached".to_string()),
+            false,
+        );
+        let text = buffer_text(&mut app, 200, 40);
+        assert!(!text.contains(MAKE_CHAT_PUBLIC_FROM_HISTORY), "{text}");
+        assert!(!text.contains(PUBLIC_CHILD_REFUSAL_OPENING), "{text}");
+
+        app.push_message(&req("spawn", "subagent"), false);
+        app.push_message(&refused("spawn", dr19), false);
+        let text = buffer_text(&mut app, 200, 40);
+        assert!(text.contains(PUBLIC_CHILD_REFUSAL_OPENING), "{text}");
+        assert!(text.contains(MAKE_CHAT_PUBLIC_FROM_HISTORY), "{text}");
+        assert!(
+            app.pending_spawn_calls.is_empty(),
+            "a spawn's request is forgotten once its result is drawn"
+        );
+    }
+
     // B2: an older tool result collapses once a newer tool call starts; the
     // current tool result stays expanded.
     #[test]

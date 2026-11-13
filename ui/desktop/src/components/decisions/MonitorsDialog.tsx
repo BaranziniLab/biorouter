@@ -46,6 +46,7 @@ import {
   type Threshold,
 } from '../../utils/sessionDecisions';
 import { isBrowserSurface } from '../../utils/surface';
+import { refreshSidebarChats } from '../BioRouterSidebar/useSidebarSessions';
 import { fetchHasSubagents, knownHasSubagents } from './chatSubagents';
 import { DecisionModelInstall, type DecisionInstallReason } from './DecisionModelInstall';
 import {
@@ -340,8 +341,8 @@ export function newMonitor(): MonitorCriterion {
  * Whether a monitor uses any setting "More options" hides, set differently from a
  * new monitor's: then the editor opens with it open, so the person sees what
  * defines this monitor without hunting for it. `subagentsUpFront`: the chat already
- * has subagents, so "Also watch the subagents" sits outside "More options" and does
- * not open it.
+ * has subagents, or a monitor already watches them, so "Also watch the subagents"
+ * sits outside "More options" and does not open it.
  */
 export function usesHiddenSettings(
   monitor: MonitorCriterion,
@@ -597,9 +598,9 @@ function MonitorEditor({
   /** A subagent's chat, whose monitors cannot be set to watch subagents of its own. */
   isSubagentChat: boolean;
   /**
-   * The chat already has subagents (owner decision 2): "Also watch the subagents"
-   * sits up front, beside what the monitor does, rather than in "More options".
-   * It stays off until the person turns it on.
+   * The chat already has subagents (owner decision 2), or a stored monitor already
+   * watches them: "Also watch the subagents" sits up front, beside what the monitor
+   * does, rather than in "More options". It stays off until the person turns it on.
    */
   subagentsUpFront: boolean;
   /**
@@ -1182,7 +1183,8 @@ export interface MonitorsDialogProps {
   /**
    * The chat already has subagents, so "Also watch the subagents" sits up front in a
    * monitor's editor (owner decision 2). Left out, the dialog reads the chat's roster
-   * when it opens; `null` says it is not known, and the option stays in "More options".
+   * when it opens; `null` says it is not known, and the option stays in "More options"
+   * unless a stored monitor already watches subagents, which also puts it up front.
    */
   hasSubagents?: boolean | null;
   /**
@@ -1506,8 +1508,13 @@ export function MonitorsDialog({
   const isSubagentChat =
     givenSubagentChat ||
     monitors.some((monitor) => monitor.setBy === 'agent' || !!monitor.inheritedFrom);
+  // Up front once the chat has subagents, or once a stored monitor already watches
+  // them: a setting that is on is never hidden behind "More options". The stored
+  // list, not the editor's draft, so ticking the box does not move it under the pointer.
   const subagentsUpFront =
-    !isSubagentChat && (givenHasSubagents ?? (isDraft ? null : fetchedHasSubagents)) === true;
+    !isSubagentChat &&
+    ((givenHasSubagents ?? (isDraft ? null : fetchedHasSubagents)) === true ||
+      monitors.some((monitor) => monitor.applyToSubagents === true));
   const isCrewChat =
     givenCrewChat ||
     models.some((entry) => entry.unavailableReason?.startsWith(CREW_REASON_OPENING) === true);
@@ -1669,6 +1676,10 @@ export function MonitorsDialog({
         );
         const { tierEffect, tierEffectLine, ...stored } = saved;
         onSaved?.(stored);
+        // The save is activity, and may make the chat public by a decision model or
+        // stop doing so, so the sidebar re-reads its rows now: the order and the
+        // row's hover note follow at once. After the write has landed.
+        refreshSidebarChats();
         if (!current()) return;
         remember(stored);
         setMonitors(stored.monitors);
