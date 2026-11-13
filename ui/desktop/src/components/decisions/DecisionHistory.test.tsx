@@ -20,6 +20,8 @@ import DecisionHistory, {
   visibleRange,
 } from './DecisionHistory';
 import { CALIBRATION_COPY } from './decisionWords';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AlertCircle } from '../icons/app-icons';
 
 const mocks = vi.hoisted(() => ({ page: vi.fn(), detail: vi.fn(), summary: vi.fn() }));
 vi.mock('../../utils/sessionDecisions', async (original) => ({
@@ -447,6 +449,31 @@ describe('DecisionHistory', () => {
     expect(detail).not.toHaveTextContent('≥');
     // An answer-type call shows no verdict on its head line: the answer is item 4.
     expect(within(detail).queryByTestId('decision-detail-verdict')).toBeNull();
+  });
+
+  it('says why a call failed in the primary ink with the failure glyph, never in red', async () => {
+    const failed = wire(0, {
+      outcome: 'error',
+      decisions: [],
+      error: 'The decision model did not answer in 10 s',
+    });
+    mocks.page.mockImplementation(async () => ({
+      records: [parseDecisionRecord(failed)!],
+      nextCursor: null,
+      total: 1,
+    }));
+    mocks.detail.mockImplementation(async () =>
+      parseDecisionDetail({ record: failed, context: { text: 'Full note d0' } })
+    );
+    draw();
+    const detail = await screen.findByTestId('decision-detail');
+    const error = within(detail).getByTestId('decision-detail-error');
+    expect(error).toHaveTextContent('Error: The decision model did not answer in 10 s');
+    // Red is rare (design.md 9.13): ink, words and the failure glyph.
+    const host = document.createElement('div');
+    host.innerHTML = renderToStaticMarkup(<AlertCircle />);
+    expect(error.querySelector('svg')?.innerHTML).toBe(host.querySelector('svg')?.innerHTML);
+    expect(error.outerHTML).not.toMatch(/danger/);
   });
 
   it('keeps the bars, model, tier, latency, tokens, certainty, chunk and context under Details', async () => {

@@ -43,6 +43,7 @@ import {
 import {
   acceleratorMemoryLabel,
   detectedMemoryText,
+  fitVerdict,
   llamaMemoryWarning,
   windowsVramNote,
 } from './settings/models/localModelMemory';
@@ -1130,11 +1131,6 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
                     )}
                   </>
                 )}
-                {llamaWarmupDialog.entry?.suitability_message && (
-                  <div className="pt-1 text-text-default break-words">
-                    {llamaWarmupDialog.entry.suitability_message}
-                  </div>
-                )}
                 <WarmupDetailRow label="Default context">
                   {formatContext(llamaWarmupDialog.status.system.default_context_size)} tokens
                 </WarmupDetailRow>
@@ -1150,6 +1146,15 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
                     ? localModelsCopy.gigabytes(llamaWarmupDialog.entry.recommended_gpu_memory_gib)
                     : 'unknown'}
                 </WarmupDetailRow>
+                {/* The daemon's verdict in the words Settings' info dialog uses (`fitVerdict`);
+                    the numbers are the memory rows above, the kind in plain words ("128 GB
+                    unified memory"). The daemon's own sentence printed the kind's id ("128 GiB
+                    apple_unified meets the 48 GiB recommendation") and repeated those rows. */}
+                {llamaWarmupDialog.entry && (
+                  <WarmupDetailRow label="Recommendation">
+                    {fitVerdict(llamaWarmupDialog.entry, llamaWarmupDialog.status.system)}
+                  </WarmupDetailRow>
+                )}
               </div>
             </div>
 

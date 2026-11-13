@@ -164,9 +164,11 @@ describe('the decide tool row', () => {
     expect(well).not.toHaveTextContent('Questions');
     expect(well).not.toHaveTextContent('Result');
     // The distinct errors, with how many chunks each hit, not which ones.
-    expect(screen.getByTestId('decide-tool-errors')).toHaveTextContent(
-      '2 chunksThe decision model did not answer in 10 s'
-    );
+    const errors = screen.getByTestId('decide-tool-errors');
+    expect(errors).toHaveTextContent('2 chunksThe decision model did not answer in 10 s');
+    // Red is rare (design.md 9.13): each error is the failure glyph and words, in ink.
+    expect(within(errors).getAllByTestId('decide-tool-error-glyph')).toHaveLength(1);
+    expect(errors.outerHTML).not.toMatch(/danger|warning/);
     // No chunk text, no chunk id, no per-chunk line anywhere in the row.
     expect(container).not.toHaveTextContent('PHI-1');
     expect(container).not.toHaveTextContent('note-0');

@@ -41,7 +41,6 @@ import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier'
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { isDecisionProvider } from '../../../decisions/decisionWire';
 import { decisionModelPlace, privacyBasisChipLine } from '../../../decisions/decisionWords';
-import { cn } from '../../../../utils';
 import { decisionModelLabel, type PrivacyBasis } from '../../../../utils/sessionDecisions';
 import { switchModelCopy } from '../copy';
 import { isBrowserSurface } from '../../../../utils/surface';
@@ -840,24 +839,23 @@ export default function ModelsBottomBar({
             </div>
             <div className="mt-0.5 truncate text-label text-text-default">{lineModelName}</div>
             {providerLine && (
+              // Read whole at the menu's 288px, never cut (live QA, 2026-11-12: "Llama
+              // Server · Private …" and "On this mac…"). The provider and the tier are one
+              // line that wraps; who covers the model is its own line, glyph first, so a
+              // wrap never strands a "·" at the start of a line.
               <div
                 data-testid="model-provider-line"
-                className={cn(
-                  'flex min-w-0 items-center gap-1.5 text-supporting text-text-muted',
-                  decisionPlace && 'flex-wrap'
-                )}
+                className="flex min-w-0 flex-col text-supporting text-text-muted [overflow-wrap:anywhere]"
               >
-                <span
-                  className={cn('min-w-0', decisionPlace ? '[overflow-wrap:anywhere]' : 'truncate')}
-                >
-                  {providerLine}
-                </span>
+                <span className="min-w-0">{providerLine}</span>
                 {lineAffiliationWords && (
-                  <>
-                    <span aria-hidden="true">·</span>
+                  <span
+                    className="flex min-w-0 items-center gap-1.5"
+                    data-testid="model-affiliation-line"
+                  >
                     <AffiliationBadge affiliation={affiliation} dense />
-                    <span className="min-w-0 truncate">{lineAffiliationWords.label}</span>
-                  </>
+                    <span className="min-w-0">{lineAffiliationWords.label}</span>
+                  </span>
                 )}
               </div>
             )}

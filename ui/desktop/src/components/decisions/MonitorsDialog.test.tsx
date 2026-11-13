@@ -27,6 +27,8 @@ import {
   usesHiddenSettings,
   validateMonitor,
 } from './MonitorsDialog';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AlertCircle } from '../icons/app-icons';
 
 const mocks = vi.hoisted(() => ({
   save: vi.fn(),
@@ -609,9 +611,12 @@ describe('each change applies when it is made', () => {
     await drawReady();
     const toggle = screen.getByRole('switch', { name: 'Form reached' });
     fireEvent.click(toggle);
-    expect(await screen.findByTestId('monitor-row-error')).toHaveTextContent(
-      'Nothing was saved: Form reached could not run.'
-    );
+    const error = await screen.findByTestId('monitor-row-error');
+    expect(error).toHaveTextContent('Nothing was saved: Form reached could not run.');
+    // Red is rare (design.md 9.13): the failure glyph and the words, in the primary ink.
+    const host = document.createElement('div');
+    host.innerHTML = renderToStaticMarkup(<AlertCircle />);
+    expect(error.querySelector('svg')?.innerHTML).toBe(host.querySelector('svg')?.innerHTML);
     expect(toggle).toHaveAttribute('aria-checked', 'true');
   });
 
@@ -1218,7 +1223,9 @@ describe('when the model list cannot be read', () => {
     );
     const field = await openEditor();
     const error = await within(field).findByTestId('monitor-models-error');
-    expect(error.firstChild?.textContent).toBe('Biorouter refused to list the decision models.');
+    // The failure glyph first, then the one sentence.
+    expect(error.firstChild?.nodeName.toLowerCase()).toBe('svg');
+    expect(error.childNodes[1]?.textContent).toBe('Biorouter refused to list the decision models.');
   });
 
   it('says a failure with its message, and the Retry link reads again keeping the draft', async () => {
