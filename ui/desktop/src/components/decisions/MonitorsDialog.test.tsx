@@ -36,6 +36,11 @@ const mocks = vi.hoisted(() => ({
   settings: vi.fn(),
   install: vi.fn(),
   startInstall: vi.fn(),
+  hasSubagents: vi.fn(),
+}));
+vi.mock('./chatSubagents', () => ({
+  fetchHasSubagents: mocks.hasSubagents,
+  knownHasSubagents: () => null,
 }));
 vi.mock('../../utils/sessionDecisions', async (original) => ({
   ...(await original<typeof import('../../utils/sessionDecisions')>()),
@@ -255,6 +260,9 @@ beforeEach(() => {
   mocks.settings.mockReset().mockResolvedValue({ data: STORED, missing: false });
   mocks.install.mockReset().mockResolvedValue({ data: INSTALL_STATUS, missing: false });
   mocks.startInstall.mockReset();
+  // A roster that could not be read, unless a test says otherwise: the box stays in
+  // More options, and no answer lands after a test that does not wait for it.
+  mocks.hasSubagents.mockReset().mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -365,6 +373,13 @@ describe('a monitor row', () => {
     expect(monitorRowLine(wireMonitor({ timing: 'turn_end', action: 'notify' }))).toBe(
       'Notify me · when P(yes) is at or above 0.85 · when the turn ends'
     );
+  });
+
+  it('says on its row when a monitor also watches subagents, and only then', () => {
+    expect(monitorRowLine(wireMonitor({ applyToSubagents: true }))).toBe(
+      'Stop the turn · when P(yes) is at or above 0.85 · after each step · also watches subagents'
+    );
+    expect(monitorRowLine(wireMonitor({ applyToSubagents: false }))).not.toMatch(/subagents/);
   });
 
   it('is a list row in a flat shell, not a filled box; the editor is still a filled box', async () => {
@@ -852,6 +867,12 @@ describe('the editor, in place', () => {
           : ({ ...base, ...change } as MonitorCriterion);
       expect(usesHiddenSettings(monitor)).toBe(true);
       expect(usesHiddenSettings(base)).toBe(false);
+    });
+
+    it('does not count watching subagents when that box sits up front', () => {
+      const watching = { ...STORED.monitors[0], applyToSubagents: true };
+      expect(usesHiddenSettings(watching, { subagentsUpFront: true })).toBe(false);
+      expect(usesHiddenSettings(watching, { subagentsUpFront: false })).toBe(true);
     });
 
     it('opens on edit when the stored monitor uses one of them', async () => {
@@ -1762,6 +1783,74 @@ describe('owners and subagents', () => {
     fireEvent.click(within(box).getByRole('checkbox'));
     saveEditor();
     expect((await savedMonitors())[1].applyToSubagents).toBe(true);
+  });
+
+  /** Owner decision 2: off by default, and in plain sight once the chat has subagents. */
+  describe('on a chat that already has subagents', () => {
+    const inMoreOptions = () =>
+      within(screen.getByTestId('monitor-more-options')).queryByTestId('monitor-subagents');
+
+    it('keeps the box in More options while the chat has none', async () => {
+      mocks.hasSubagents.mockResolvedValue(false);
+      await drawReady();
+      await waitFor(() => expect(mocks.hasSubagents).toHaveBeenCalledWith('s1', expect.anything()));
+      fireEvent.click(screen.getByTestId('monitor-add'));
+      expect(screen.queryByTestId('monitor-subagents')).toBeNull();
+      openMoreOptions();
+      expect(inMoreOptions()).toBeInTheDocument();
+    });
+
+    it('shows the box up front, off, once the dialog reads that the chat has subagents', async () => {
+      mocks.hasSubagents.mockResolvedValue(true);
+      await drawReady();
+      await waitFor(() => expect(mocks.hasSubagents).toHaveBeenCalled());
+      fillNewMonitor('Secrets', 'Is a secret in the output?');
+      const box = await screen.findByTestId('monitor-subagents');
+      expect(moreOptionsOpen()).toBe(false);
+      expect(within(box).getByRole('checkbox')).not.toBeChecked();
+      openMoreOptions();
+      expect(inMoreOptions()).toBeNull();
+      // Saved off when left alone: the default does not change because subagents exist.
+      saveEditor();
+      expect((await savedMonitors())[1].applyToSubagents).toBe(false);
+    });
+
+    it('takes the caller’s word without reading the roster', async () => {
+      await drawReady({ hasSubagents: true });
+      fireEvent.click(screen.getByTestId('monitor-add'));
+      expect(screen.getByTestId('monitor-subagents')).toBeInTheDocument();
+      expect(moreOptionsOpen()).toBe(false);
+      expect(mocks.hasSubagents).not.toHaveBeenCalled();
+    });
+
+    it('turned on up front, it saves and the row line says so', async () => {
+      await drawReady({ hasSubagents: true });
+      fillNewMonitor('Secrets', 'Is a secret in the output?');
+      fireEvent.click(within(screen.getByTestId('monitor-subagents')).getByRole('checkbox'));
+      saveEditor();
+      expect((await savedMonitors())[1].applyToSubagents).toBe(true);
+      await waitFor(() => expect(screen.queryByTestId('monitor-editor')).toBeNull());
+      expect(screen.getAllByTestId('monitor-line')[1]).toHaveTextContent(
+        'Notify me · when P(yes) is at or above 0.85 · after each step · also watches subagents'
+      );
+    });
+
+    it('does not open More options on edit just because the monitor watches subagents', async () => {
+      const watching = settingsWith({ ...STORED.monitors[0], applyToSubagents: true });
+      mocks.settings.mockResolvedValue({ data: watching, missing: false });
+      await drawReady({ settings: watching, hasSubagents: true });
+      await rowAction('Form reached', 'Edit');
+      expect(moreOptionsOpen()).toBe(false);
+      expect(within(screen.getByTestId('monitor-subagents')).getByRole('checkbox')).toBeChecked();
+    });
+
+    it('never shows the box on a subagent chat, and does not read a roster there', async () => {
+      await drawReady({ isSubagentChat: true });
+      fireEvent.click(screen.getByTestId('monitor-add'));
+      openMoreOptions();
+      expect(screen.queryByTestId('monitor-subagents')).toBeNull();
+      expect(mocks.hasSubagents).not.toHaveBeenCalled();
+    });
   });
 });
 

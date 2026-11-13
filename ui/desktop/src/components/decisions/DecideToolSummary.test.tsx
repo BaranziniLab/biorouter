@@ -469,7 +469,7 @@ describe('a call that escalated', () => {
     changed: 11,
     errors: 1,
     items,
-    errorGroups: [],
+    errorGroups: [{ message: 'the decision server failed', chunkIds: ['note-2'], more: 0 }],
   };
   const summary = oneQuestion({
     escalation,
@@ -527,6 +527,7 @@ describe('a call that escalated', () => {
         decided: 12,
         changed: 3,
         items: items.map((item) => ({ ...item, answers: [answer()] })),
+        errorGroups: [],
       },
     };
     const { container } = show(true, ONE_ARGS, clean);
@@ -560,6 +561,91 @@ describe('a call that escalated', () => {
     expect(screen.getByTestId('decide-tool-escalated')).toHaveTextContent(
       'Chunk 5Does this note state the patient has multiple sclerosis?: no 0.90, was yes 0.60 ' +
         'by tev1:0.8b; Is an EDSS score stated?: yes 0.90, was no 0.60 by tev1:0.8b'
+    );
+  });
+
+  it('counts the chunks too long for the second model apart from the ones it failed', () => {
+    const tooLong = (chunkId: string) => ({
+      chunkId,
+      answers: [
+        answer({
+          label: 'yes',
+          p: 0.6,
+          by: 'tev1:0.8b',
+          error:
+            'Chunk 1 is about 20000 tokens, more than the about 15000 tokens of text elephant-1 takes beside these questions (its window is 16384 tokens). Split it into smaller pieces and ask again.',
+          tooLarge: true,
+        }),
+      ],
+    });
+    const mixed = {
+      ...summary,
+      escalation: {
+        ...escalation,
+        label: 'elephant-1',
+        tier: 'public',
+        escalated: 4,
+        answers: 4,
+        decided: 1,
+        changed: 1,
+        errors: 3,
+        items: [
+          tooLong('note-0'),
+          tooLong('note-2'),
+          {
+            chunkId: 'note-4',
+            answers: [
+              answer({
+                label: 'yes',
+                p: 0.6,
+                by: 'tev1:0.8b',
+                error: 'the decision server failed',
+              }),
+            ],
+          },
+          { chunkId: 'note-6', answers: [answer({ by: 'elephant-1' })] },
+        ],
+        errorGroups: [{ message: 'the decision server failed', chunkIds: ['note-4'], more: 0 }],
+        tooLargeIds: ['note-0', 'note-2'],
+      },
+    };
+    const { container } = show(true, ONE_ARGS, mixed);
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-escalation-text')).toHaveTextContent(
+      /^4 of 30 escalated to elephant-1 · 2 too long for elephant-1 · 1 failed$/
+    );
+    const listed = screen.getByTestId('decide-tool-escalated').querySelectorAll('li');
+    expect(listed[0]).toHaveTextContent('Chunk 1yes by tev1:0.8b: too long for elephant-1');
+    expect(listed[2]).toHaveTextContent('Chunk 5yes by tev1:0.8b: the second model gave no answer');
+  });
+
+  it('says nothing failed when every missing answer was a chunk too long', () => {
+    const onlyTooLong = {
+      ...summary,
+      escalation: {
+        ...escalation,
+        label: 'elephant-1',
+        escalated: 1,
+        answers: 1,
+        decided: 0,
+        changed: 0,
+        errors: 1,
+        items: [
+          {
+            chunkId: 'note-0',
+            answers: [
+              answer({ label: 'yes', p: 0.6, by: 'tev1:0.8b', error: 'too long', tooLarge: true }),
+            ],
+          },
+        ],
+        errorGroups: [],
+        tooLargeIds: ['note-0'],
+      },
+    };
+    const { container } = show(true, ONE_ARGS, onlyTooLong);
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-escalation-text')).toHaveTextContent(
+      /^1 of 30 escalated to elephant-1 · 1 too long for elephant-1$/
     );
   });
 

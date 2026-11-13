@@ -173,7 +173,7 @@ describe('the model and effort chip', () => {
     const chip = await screen.findByTestId('model-chip');
     await waitFor(() =>
       expect(chip).toHaveAccessibleName(
-        /Public chat: monitor "Done" uses joey-1 · Baseten\. Effort: Normal$/
+        /Public chat: monitor "Done" uses joey-1\u00a0· Baseten\. Effort: Normal$/
       )
     );
   });

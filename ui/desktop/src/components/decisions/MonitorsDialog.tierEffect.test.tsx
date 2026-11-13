@@ -26,6 +26,11 @@ vi.mock('../../utils/sessionDecisions', async (original) => ({
   fetchDecisionCatalog: mocks.catalog,
   fetchDecisionSettings: mocks.settings,
 }));
+// No roster read in these tests: a chat with no subagents.
+vi.mock('./chatSubagents', () => ({
+  fetchHasSubagents: async () => false,
+  knownHasSubagents: () => null,
+}));
 
 const MODELS = parseDecisionModelEntries([
   {

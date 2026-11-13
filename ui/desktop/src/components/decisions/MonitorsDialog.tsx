@@ -46,6 +46,7 @@ import {
   type Threshold,
 } from '../../utils/sessionDecisions';
 import { isBrowserSurface } from '../../utils/surface';
+import { fetchHasSubagents, knownHasSubagents } from './chatSubagents';
 import { DecisionModelInstall, type DecisionInstallReason } from './DecisionModelInstall';
 import {
   DECISION_MODEL_OPTION_COPY,
@@ -338,9 +339,14 @@ export function newMonitor(): MonitorCriterion {
 /**
  * Whether a monitor uses any setting "More options" hides, set differently from a
  * new monitor's: then the editor opens with it open, so the person sees what
- * defines this monitor without hunting for it.
+ * defines this monitor without hunting for it. `subagentsUpFront`: the chat already
+ * has subagents, so "Also watch the subagents" sits outside "More options" and does
+ * not open it.
  */
-export function usesHiddenSettings(monitor: MonitorCriterion): boolean {
+export function usesHiddenSettings(
+  monitor: MonitorCriterion,
+  { subagentsUpFront = false }: { subagentsUpFront?: boolean } = {}
+): boolean {
   const fresh = newMonitor();
   return (
     monitor.question.kind.type !== 'binary' ||
@@ -351,7 +357,7 @@ export function usesHiddenSettings(monitor: MonitorCriterion): boolean {
     monitor.timing !== fresh.timing ||
     monitor.onError !== fresh.onError ||
     rearmLevel(monitor) !== null ||
-    monitor.applyToSubagents === true
+    (!subagentsUpFront && monitor.applyToSubagents === true)
   );
 }
 
@@ -457,8 +463,10 @@ function watchedOutcome(rule: Threshold, question: Question): string {
  * A monitor row's second line: what it does, its rule in words and when it checks,
  * `Stop the turn · when P(yes) is at or above 0.85 · after each step` (never `≥`),
  * or, for a choice whose option is not chosen yet,
- * `Notify me · choose the option it fires on · after each step`. The peek says the
- * timing again, because a long line is cut with an ellipsis.
+ * `Notify me · choose the option it fires on · after each step`, then
+ * `also watches subagents` when it does (owner decision 2: the person sees which
+ * monitors reach the subagents without opening one). The peek says the timing and
+ * the subagents again, because a long line is cut with an ellipsis.
  */
 export function monitorRowLine(monitor: MonitorCriterion): string {
   const rule = monitorThreshold(monitor);
@@ -466,7 +474,10 @@ export function monitorRowLine(monitor: MonitorCriterion): string {
     copy.actions[monitor.action],
     rule ? ruleInWords(rule, monitor.question) : copy.chooseOptionPhrase,
     copy.peekTimings[monitor.timing],
-  ].join(' · ');
+    monitor.applyToSubagents ? copy.peekSubagents : null,
+  ]
+    .filter((part): part is string => !!part)
+    .join(' · ');
 }
 
 /**
@@ -559,6 +570,7 @@ function MonitorEditor({
   catalogProblem,
   onRetryCatalog,
   isSubagentChat,
+  subagentsUpFront,
   opened,
   moreOpen,
   onMoreOpenChange,
@@ -584,6 +596,12 @@ function MonitorEditor({
   onRetryCatalog: () => void;
   /** A subagent's chat, whose monitors cannot be set to watch subagents of its own. */
   isSubagentChat: boolean;
+  /**
+   * The chat already has subagents (owner decision 2): "Also watch the subagents"
+   * sits up front, beside what the monitor does, rather than in "More options".
+   * It stays off until the person turns it on.
+   */
+  subagentsUpFront: boolean;
   /**
    * The monitor as it was when this edit began (`null` for a new one). The
    * slider's stops are built from its threshold, not from the draft's: a stored
@@ -715,6 +733,18 @@ function MonitorEditor({
     rule ? watchedOutcome(rule, draft.question) : 'yes',
     formatProbability(keptLevel ?? draft.threshold)
   );
+  // A subagent's own monitors never reach subagents of its own (`settings.rs`), so
+  // its chat has no box. The label wraps the box, so the square itself toggles it
+  // (`ui/Checkbox`). Up front once the chat has subagents, else in "More options".
+  const subagentsBox = isSubagentChat ? null : (
+    <label className="br-dh-check" data-testid="monitor-subagents">
+      <Checkbox
+        checked={draft.applyToSubagents === true}
+        onChange={(event) => onChange({ ...draft, applyToSubagents: event.target.checked })}
+      />
+      <span>{copy.subagents}</span>
+    </label>
+  );
 
   return (
     // A filled box, so the fields in it rest one step back on the page ground:
@@ -763,6 +793,7 @@ function MonitorEditor({
           onValueChange={(value) => onChange({ ...draft, action: value as MonitorAction })}
         />
       </div>
+      {subagentsUpFront ? subagentsBox : null}
       <Disclosure
         label={copy.moreOptions}
         summary={hiddenSummary(draft)}
@@ -1076,17 +1107,7 @@ function MonitorEditor({
               <InfoTip label={copy.stopOnlyOnce} help={stopInfo} id={stopInfoId} />
             </div>
           ) : null}
-          {/* A subagent's own monitors never reach subagents of its own (`settings.rs`). The
-              label wraps the box, so the square itself toggles it (`ui/Checkbox`). */}
-          {isSubagentChat ? null : (
-            <label className="br-dh-check" data-testid="monitor-subagents">
-              <Checkbox
-                checked={draft.applyToSubagents === true}
-                onChange={(event) => onChange({ ...draft, applyToSubagents: event.target.checked })}
-              />
-              <span>{copy.subagents}</span>
-            </label>
-          )}
+          {subagentsUpFront ? null : subagentsBox}
         </div>
       </Disclosure>
       {refusal ? (
@@ -1158,6 +1179,12 @@ export interface MonitorsDialogProps {
    * from the chat that started it, live only in a subagent's chat).
    */
   isSubagentChat?: boolean;
+  /**
+   * The chat already has subagents, so "Also watch the subagents" sits up front in a
+   * monitor's editor (owner decision 2). Left out, the dialog reads the chat's roster
+   * when it opens; `null` says it is not known, and the option stays in "More options".
+   */
+  hasSubagents?: boolean | null;
   /**
    * The chat works under a Crew grant, for the install panel's first sentence.
    * Also read from the catalog: the daemon names the grant in each hosted model's reason.
@@ -1259,6 +1286,7 @@ export function MonitorsDialog({
   chatRefusal: givenChatRefusal,
   readOnly = false,
   isSubagentChat: givenSubagentChat = false,
+  hasSubagents: givenHasSubagents,
   isCrewChat: givenCrewChat = false,
   chatModelName = null,
   draft = undefined,
@@ -1396,6 +1424,22 @@ export function MonitorsDialog({
     if (!open) setCatalogRead(false);
   }, [open]);
 
+  // Whether the chat already has subagents, read on each open unless the caller
+  // says: a chat with none yet keeps "Also watch the subagents" in "More options".
+  const [fetchedHasSubagents, setFetchedHasSubagents] = useState<boolean | null>(null);
+  const isDraft = draft !== undefined;
+  useEffect(() => {
+    if (!open || isDraft || !sessionId || givenSubagentChat || givenHasSubagents !== undefined) {
+      return;
+    }
+    setFetchedHasSubagents(knownHasSubagents(sessionId));
+    const controller = new AbortController();
+    void fetchHasSubagents(sessionId, controller.signal).then((has) => {
+      if (!controller.signal.aborted && has !== null) setFetchedHasSubagents(has);
+    });
+    return () => controller.abort();
+  }, [open, isDraft, sessionId, givenSubagentChat, givenHasSubagents]);
+
   useEffect(() => {
     if (!open || givenModels) return;
     const controller = new AbortController();
@@ -1462,6 +1506,8 @@ export function MonitorsDialog({
   const isSubagentChat =
     givenSubagentChat ||
     monitors.some((monitor) => monitor.setBy === 'agent' || !!monitor.inheritedFrom);
+  const subagentsUpFront =
+    !isSubagentChat && (givenHasSubagents ?? (isDraft ? null : fetchedHasSubagents)) === true;
   const isCrewChat =
     givenCrewChat ||
     models.some((entry) => entry.unavailableReason?.startsWith(CREW_REASON_OPENING) === true);
@@ -1652,7 +1698,7 @@ export function MonitorsDialog({
     setStatus({ kind: 'idle' });
     setShowErrors(false);
     setEditorRefusal(null);
-    setMoreOpen(monitor ? usesHiddenSettings(monitor) : false);
+    setMoreOpen(monitor ? usesHiddenSettings(monitor, { subagentsUpFront }) : false);
     setEditing(
       monitor
         ? { id: monitor.id, draft: monitor, opened: monitor }
@@ -1903,6 +1949,7 @@ export function MonitorsDialog({
       catalogProblem={catalogIssue}
       onRetryCatalog={() => setCatalogAttempt((attempt) => attempt + 1)}
       isSubagentChat={isSubagentChat}
+      subagentsUpFront={subagentsUpFront}
       opened={editing.opened}
       moreOpen={moreOpen}
       onMoreOpenChange={setMoreOpen}

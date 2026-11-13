@@ -337,6 +337,9 @@ describe('a decide batch summary', () => {
       decided: 1,
       changed: 1,
       errors: 1,
+      tooLong: 0,
+      // The dropped item held the failure, and no group names it.
+      failed: 0,
       // An answer with no label, or an item with no id, is dropped rather than drawn empty.
       items: [
         {
@@ -350,11 +353,101 @@ describe('a decide batch summary', () => {
               firstLabel: 'yes',
               firstP: 0.55,
               error: null,
+              tooLarge: false,
             },
           ],
         },
       ],
     });
+  });
+
+  it('tells the chunks too long for the second model from the ones it failed', () => {
+    const kept = (chunkId: string, error: string, tooLarge?: boolean) => ({
+      chunkId,
+      answers: [
+        {
+          question: 'has_ms',
+          label: 'yes',
+          p: 0.6,
+          by: 'tev1:0.8b',
+          firstLabel: 'yes',
+          firstP: 0.6,
+          error,
+          ...(tooLarge === undefined ? {} : { tooLarge }),
+        },
+      ],
+    });
+    const parsed = parseDecideBatchSummary({
+      status: 'success',
+      value: {
+        content: [],
+        structuredContent: {
+          ...wireDecideSummary(),
+          escalation: {
+            model: { provider: 'baseten_decision', model: 'elephant-1' },
+            label: 'elephant-1',
+            tier: 'public',
+            firstLabel: 'tev1:0.8b',
+            below: 0.8,
+            firstDecided: 30,
+            escalated: 3,
+            answers: 3,
+            decided: 0,
+            changed: 0,
+            errors: 3,
+            items: [
+              kept('n01', 'Chunk 1 is about 20000 tokens, more than …', true),
+              // Named only in `tooLargeIds`: still too long, not failed.
+              kept('n02', 'Chunk 2 is about 20000 tokens, more than …'),
+              kept('n03', 'the decision server failed'),
+            ],
+            errorGroups: [{ message: 'the decision server failed', chunkIds: ['n03'], more: 0 }],
+            tooLargeIds: ['n01', 'n02'],
+          },
+        },
+      },
+    });
+    expect(parsed?.escalation).toMatchObject({ errors: 3, tooLong: 2, failed: 1 });
+    expect(parsed?.escalation?.items.map((item) => item.answers[0].tooLarge)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it('does not count a chunk too long for the second model as failed when no chunk is listed', () => {
+    // `errors` includes the chunks too long for the second model, so a result that lists
+    // no chunk and no group must not say the same two as "too long" and "failed" both.
+    const escalationWith = (errors: number) =>
+      parseDecideBatchSummary({
+        status: 'success',
+        value: {
+          content: [],
+          structuredContent: {
+            ...wireDecideSummary(),
+            escalation: {
+              model: { provider: 'baseten_decision', model: 'elephant-1' },
+              label: 'elephant-1',
+              tier: 'public',
+              firstLabel: 'tev1:0.8b',
+              below: 0.8,
+              firstDecided: 30,
+              escalated: 3,
+              answers: 3,
+              decided: 0,
+              changed: 0,
+              errors,
+              items: [],
+              errorGroups: [],
+              tooLargeIds: ['n01', 'n02'],
+            },
+          },
+        },
+      })?.escalation;
+    expect(escalationWith(2)).toMatchObject({ errors: 2, tooLong: 2, failed: 0 });
+    expect(escalationWith(3)).toMatchObject({ errors: 3, tooLong: 2, failed: 1 });
+    // Never below zero, whatever the counts say.
+    expect(escalationWith(1)).toMatchObject({ errors: 1, tooLong: 2, failed: 0 });
   });
 
   it('reads the four answer groups that add up to the chunks decided (G-3)', () => {

@@ -85,6 +85,7 @@ function App() {
       settings={current}
       onSaved={setCurrent}
       models={models}
+      hasSubagents={false}
     />
   );
 }

@@ -110,7 +110,7 @@ describe('a chat a decision model made public, said where the chat says its tier
     expect(
       privacyBasisTip({ source: 'monitor', label: 'Done', model: 'joey-1', place: 'Baseten' })
     ).toBe(
-      'Public: monitor "Done" uses joey-1 · Baseten. A chat is as private as its least private model, so it can\'t use private extensions, knowledge bases or chats.'
+      'Public: monitor "Done" uses joey-1\u00a0· Baseten. A chat is as private as its least private model, so it can\'t use private extensions, knowledge bases or chats.'
     );
     expect(privacyBasisTip({ source: 'parent', label: 'p', model: '', place: '' })).toBe(
       "Public: it is part of a public chat's work."
@@ -120,13 +120,25 @@ describe('a chat a decision model made public, said where the chat says its tier
   it('the model chip’s line names the reason too, since a tabbed chat has no pill (M1-2)', () => {
     expect(
       privacyBasisChipLine({ source: 'gate', label: 'Draft', model: 'joey-1', place: 'Baseten' })
-    ).toBe('Public chat: the gate on phase "Draft" uses joey-1 · Baseten.');
+    ).toBe('Public chat: the gate on phase "Draft" uses joey-1\u00a0· Baseten.');
     expect(
       privacyBasisChipLine({ source: 'default', label: '', model: 'joey-1', place: 'Baseten' })
-    ).toBe('Public chat: its default decision model is joey-1 · Baseten.');
+    ).toBe('Public chat: its default decision model is joey-1\u00a0· Baseten.');
     expect(privacyBasisChipLine({ source: 'parent', label: 'p', model: '', place: '' })).toBe(
       "Public chat: it is part of a public chat's work."
     );
+  });
+
+  it('never starts a wrapped line with the dot: its space before is a non-breaking one', () => {
+    const line = privacyBasisChipLine({
+      source: 'default',
+      label: '',
+      model: 'joey-1',
+      place: 'Baseten',
+    });
+    // The only breakable spaces are words' own; none sits right before a `·`.
+    expect(line).not.toMatch(/ ·/);
+    expect(line.split(' ').some((word) => word.startsWith('·'))).toBe(false);
   });
 
   it('the model switch says the chat stays public, by its decision models or its parent', () => {

@@ -116,6 +116,53 @@ impl DecisionModelEntry {
     }
 }
 
+impl DecisionModelEntry {
+    /// The model as a sentence names it for a person and an agent alike: its
+    /// name and where it runs ([`model_in_words`]), from what the listing
+    /// knows about it, so a model on this computer says so.
+    pub fn in_words(&self) -> String {
+        words(&self.model_ref(), Some(self.local))
+    }
+}
+
+/// A decision model as a sentence names it: its name (a Baseten model's alias,
+/// any other's id) and where it runs, `tev1:0.8b on this computer`,
+/// `joey-1 on Baseten`, `clef-flash:latest on the Ollama server at 10.0.0.5`.
+/// Never `provider/model` and never a slug: a refusal or a failure a person
+/// reads on a decide card (and the agent reads as its result) says this, and
+/// the bare name still names the model wherever a model is asked for. A model
+/// whose place is unknown is named alone.
+pub fn model_in_words(model: &DecisionModelRef) -> String {
+    words(model, None)
+}
+
+fn words(model: &DecisionModelRef, local: Option<bool>) -> String {
+    let name = crate::providers::decision::catalog::decision_model_short_name(model);
+    match place(model, local) {
+        Some(place) => format!("{name} on {place}"),
+        None => name,
+    }
+}
+
+/// Where `model` runs, in the words the tier-effect lines use
+/// (`privacy::decision_axes::HostLabel::place`): "this computer", "Baseten",
+/// "the Ollama server at …", "Ollama's cloud". Text only: it decides nothing.
+fn place(model: &DecisionModelRef, local: Option<bool>) -> Option<String> {
+    use crate::providers::decision::catalog::{
+        BASETEN_DECISION_PROVIDER, OLLAMA_DECISION_PROVIDER,
+    };
+    if local == Some(true) {
+        return Some("this computer".to_string());
+    }
+    match model.provider.as_str() {
+        BASETEN_DECISION_PROVIDER => Some("Baseten".to_string()),
+        OLLAMA_DECISION_PROVIDER => {
+            crate::privacy::decision_axes::declared_name(model).map(|named| named.host.place())
+        }
+        _ => None,
+    }
+}
+
 /// Lists and opens decision models. The production source reads config and
 /// asks the servers; tests supply their own.
 #[async_trait]
@@ -132,5 +179,51 @@ pub trait DecisionModelSource: Send + Sync {
     /// advice, which would be wrong for a model already on this computer.
     async fn unavailable_hint(&self) -> Option<String> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(provider: &str, model: &str, display: &str, local: bool) -> DecisionModelEntry {
+        DecisionModelEntry {
+            provider: provider.into(),
+            model: model.into(),
+            display_name: display.into(),
+            context_tokens: 2048,
+            kinds: vec![DecisionKindTag::Binary],
+            tier: if local {
+                ProviderTier::Private
+            } else {
+                ProviderTier::Public
+            },
+            affiliation: None,
+            adapter: DecisionAdapter::SystemOne,
+            local,
+            load_refusal: None,
+        }
+    }
+
+    /// A refusal names a model the way a person reads it: its alias or id and
+    /// where it runs, never `provider/model` or a Baseten slug.
+    #[test]
+    fn a_model_in_words_is_its_name_and_where_it_runs() {
+        let joey =
+            DecisionModelRef::new("baseten_decision", "decision-models/baseten-joey-2b-latest");
+        assert_eq!(model_in_words(&joey), "joey-1 on Baseten");
+        assert_eq!(
+            entry("ollama_decision", "tev1:0.8b", "tev1:0.8b", true).in_words(),
+            "tev1:0.8b on this computer"
+        );
+        // A provider this build does not know is named alone.
+        assert_eq!(
+            model_in_words(&DecisionModelRef::new("test_decision", "gone")),
+            "gone"
+        );
+        assert_eq!(
+            entry("test_decision", "tev1", "tev1", true).in_words(),
+            "tev1 on this computer"
+        );
     }
 }
