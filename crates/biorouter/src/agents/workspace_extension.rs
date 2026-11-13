@@ -6801,8 +6801,14 @@ impl WorkspaceClient {
                         .with_origin_label(Some(phase.title.clone()))
                         .with_turn(crate::decision::turns::current_turn(caller));
                     let chat_model = self.chat_model_of(caller).await;
-                    plan::judge_gate(self.decision_service, &session, &gate, state, chat_model)
-                        .await
+                    // A gate the chat's own model judges is a side call on this chat:
+                    // counted in its usage, never held at a limit (`SideCall::GateJudge`).
+                    crate::session::session_manager::side_usage::with_side_usage_chat(
+                        sm,
+                        caller,
+                        plan::judge_gate(self.decision_service, &session, &gate, state, chat_model),
+                    )
+                    .await
                 }
                 Err(e) => (
                     plan::GateVerdict::Error(format!("this chat could not be read ({e})")),
@@ -19035,6 +19041,56 @@ pub(crate) mod tests {
             "chat_model"
         );
         assert_eq!(done.calls(), 1);
+    }
+
+    /// A gate the chat's own model judges is billed like any other call the chat
+    /// makes outside its turns: one `side:gate_judge` row on the chat, counted in
+    /// its spend, and never the request the next one is estimated from.
+    #[tokio::test]
+    async fn a_gate_the_chats_own_model_judges_is_counted_on_the_chat() {
+        use crate::agents::orchestration_plan::gate_chat_stub::ChatStub;
+        let (c, parent) = gated_client(Vec::new()).await;
+        let judge = ChatStub::answering_with_usage(
+            r#"{"tests_pass": {"answer": "no", "p_yes": 0.2}}"#,
+            crate::providers::base::Usage::new(Some(1_200), Some(40), Some(1_240)),
+        );
+        let c = c.with_chat_model(judge.provider());
+        let declared = orchestrate(&c, &parent, gated_plan_args()).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let sm = &c.context.session_manager;
+        let spent_before = sm.spend_snapshot(&parent, false).await.unwrap().chat_tokens;
+        let basis_before = sm.last_request_usage(&parent).await.unwrap();
+
+        let held = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&held);
+        assert_eq!(held.is_error, Some(false), "{text}");
+        assert!(text.contains("NOT completed"), "{text}");
+        assert_eq!(judge.calls(), 1, "one completion");
+
+        let pool = sm.storage().pool().await.unwrap();
+        let keys: Vec<String> =
+            sqlx::query_scalar("SELECT event_key FROM token_events WHERE session_id = ?")
+                .bind(&parent)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        assert!(keys[0].starts_with("side:gate_judge:"), "{keys:?}");
+        assert_eq!(
+            sm.spend_snapshot(&parent, false).await.unwrap().chat_tokens - spent_before,
+            1_240,
+            "the judgment counts toward the chat"
+        );
+        assert_eq!(
+            sm.last_request_usage(&parent).await.unwrap(),
+            basis_before,
+            "a side call is never the basis of the next request's estimate"
+        );
     }
 
     /// A gate that names no model, whose decision model cannot be reached,

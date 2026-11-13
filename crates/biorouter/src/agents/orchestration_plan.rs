@@ -3605,6 +3605,12 @@ pub(crate) async fn judge_gate(
 /// has no decision model it may use", "joey-1 on Baseten could not be reached
 /// (...)"). `decision_error` is what the decision model's attempt said, kept
 /// as the error when there is no chat model to ask.
+///
+/// The request is billed, so every answered one is recorded as a side call
+/// ([`SideCall::GateJudge`](crate::session::session_manager::side_usage::SideCall::GateJudge)),
+/// an answer that cannot be read included, on the chat the caller scoped with
+/// `side_usage::with_side_usage_chat`. Like a decision model's gate, it is
+/// counted and never held at a usage limit.
 async fn judge_with_chat_model(
     chat_model: Option<&dyn crate::providers::base::Provider>,
     gate: &PhaseGate,
@@ -3631,7 +3637,16 @@ async fn judge_with_chat_model(
     )
     .await;
     let text = match reply {
-        Ok(Ok((message, _usage))) => message.as_concat_text(),
+        Ok(Ok((message, usage))) => {
+            crate::session::session_manager::side_usage::record_side_call_usage(
+                None,
+                crate::session::session_manager::side_usage::SideCall::GateJudge,
+                provider.get_name(),
+                &usage,
+            )
+            .await;
+            message.as_concat_text()
+        }
         Ok(Err(error)) => {
             return (
                 GateVerdict::Error(format!(
@@ -8888,6 +8903,7 @@ pub(crate) mod gate_chat_stub {
 
     pub(crate) struct ChatStub {
         reply: Option<String>,
+        usage: Usage,
         calls: Arc<AtomicUsize>,
         last_prompt: Arc<Mutex<String>>,
     }
@@ -8901,18 +8917,25 @@ pub(crate) mod gate_chat_stub {
 
     impl ChatStub {
         pub(crate) fn answering(reply: &str) -> ChatStubHandle {
-            Self::build(Some(reply.to_string()))
+            Self::build(Some(reply.to_string()), Usage::default())
+        }
+
+        /// [`Self::answering`], reporting `usage` for each answer as a billed
+        /// provider would.
+        pub(crate) fn answering_with_usage(reply: &str, usage: Usage) -> ChatStubHandle {
+            Self::build(Some(reply.to_string()), usage)
         }
 
         pub(crate) fn failing() -> ChatStubHandle {
-            Self::build(None)
+            Self::build(None, Usage::default())
         }
 
-        fn build(reply: Option<String>) -> ChatStubHandle {
+        fn build(reply: Option<String>, usage: Usage) -> ChatStubHandle {
             let calls = Arc::new(AtomicUsize::new(0));
             let last_prompt = Arc::new(Mutex::new(String::new()));
             let provider = Arc::new(ChatStub {
                 reply,
+                usage,
                 calls: calls.clone(),
                 last_prompt: last_prompt.clone(),
             });
@@ -8972,7 +8995,7 @@ pub(crate) mod gate_chat_stub {
             match &self.reply {
                 Some(text) => Ok((
                     Message::assistant().with_text(text),
-                    ProviderUsage::new("stub-chat-model".to_string(), Usage::default()),
+                    ProviderUsage::new("stub-chat-model".to_string(), self.usage),
                 )),
                 None => Err(ProviderError::ExecutionError("the stub failed".to_string())),
             }

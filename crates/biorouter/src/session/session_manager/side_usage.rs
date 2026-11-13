@@ -1,7 +1,8 @@
 //! Usage of provider calls a chat makes outside its turns: the stall check, a
 //! prompt hook's judge, the permission judge, the chat's title, a knowledge
-//! macro's sub-agent, MCP sampling, generating a workflow from the chat, and a
-//! compaction that was billed but did not land.
+//! macro's sub-agent, MCP sampling, generating a workflow from the chat, a
+//! phase gate the chat's own model judged, and a compaction that was billed but
+//! did not land.
 //! Each is billed by the provider, so each is written to the usage ledger as a
 //! side call ([`super::SideUsageEntry`]):
 //! counted in the chat's tokens and dollars and in the Usage panel, never as a
@@ -40,6 +41,10 @@ pub enum SideCall {
     /// A compaction whose summary was billed but did not land: it failed, or
     /// the history moved under it (`context_mgmt::record_unapplied_compaction_usage`).
     Compaction,
+    /// A phase gate judged by the chat model (no usable decision model):
+    /// `orchestration_plan::judge_gate`'s fallback. Counted, never held at a
+    /// limit, like the decision-model gate it stands in for.
+    GateJudge,
 }
 
 impl SideCall {
@@ -53,6 +58,7 @@ impl SideCall {
             SideCall::McpSampling => "mcp_sampling",
             SideCall::WorkflowCreation => "workflow_creation",
             SideCall::Compaction => "compaction",
+            SideCall::GateJudge => "gate_judge",
         }
     }
 }
