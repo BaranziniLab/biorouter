@@ -624,8 +624,8 @@ pub(super) fn shown_result(tool: &str, last: &str) -> String {
     };
     format!(
         "{}\n[...]\n{}\n(The result is {} bytes; its first {head_end} and last {} are shown.{again})",
-        &last[..head_end],
-        &last[tail_start..],
+        last.get(..head_end).unwrap_or_default(),
+        last.get(tail_start..).unwrap_or_default(),
         last.len(),
         last.len() - tail_start,
     )

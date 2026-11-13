@@ -407,6 +407,15 @@ pub(crate) fn create_private_dir(dir: &Path) -> Result<(), std::io::Error> {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),
         }
+        // `set_permissions` follows a symlink, so a link planted where the
+        // folder should be would have its target's mode changed and the saved
+        // text written wherever it points. Only a real folder is used.
+        if !std::fs::symlink_metadata(dir)?.file_type().is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a folder", dir.display()),
+            ));
+        }
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
     }
     #[cfg(not(unix))]
@@ -716,6 +725,24 @@ mod tests {
         assert!(Path::new(path).starts_with(dir.path().join(HANDLE_DIR)));
         assert_eq!(mode(Path::new(path)), 0o600);
         assert_eq!(mode(&dir.path().join(HANDLE_DIR)), 0o700);
+    }
+
+    /// A symlink planted where the private folder should be is refused, and
+    /// the folder it points at keeps its mode: `set_permissions` follows links.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_in_place_of_the_private_folder_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("elsewhere");
+        fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        let link = dir.path().join("tool-output");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(create_private_dir(&link).is_err());
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "the link's target is left alone");
     }
 
     #[tokio::test]

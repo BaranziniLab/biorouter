@@ -18609,6 +18609,12 @@ mod tests {
 
         let db = data_dir.join(SESSIONS_FOLDER).join(DB_NAME);
         let pool = raw_pool(&db).await;
+        // A build that predates #56 had no `parent_session_id`, so it had no
+        // index on it either; SQLite refuses to drop an indexed column.
+        sqlx::query("DROP INDEX IF EXISTS idx_sessions_parent")
+            .execute(&pool)
+            .await
+            .unwrap();
         for column in ["privacy_tier", "privacy_reason", "parent_session_id"] {
             if SessionStorage::table_has_column(&pool, "sessions", column)
                 .await
