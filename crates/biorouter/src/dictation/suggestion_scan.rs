@@ -163,6 +163,27 @@ pub fn row_may_be_scanned(session: &Session, now: chrono::DateTime<chrono::Utc>)
         && session.updated_at >= now - chrono::Duration::days(SCAN_DAYS)
 }
 
+/// Whether a stored chat is public by more than its stored tier, which ratchets only while
+/// privacy tiers are on: the model it is bound to is not one the provider registry calls
+/// Private, and it has touched no institution's model or connector (an unreadable record
+/// counts as touched). A chat that fails either is never read.
+async fn chat_is_public(sessions: &SessionManager, chat: &Session) -> bool {
+    if chat.privacy_tier != crate::privacy::SessionClassification::Public {
+        return false;
+    }
+    if let Some(name) = chat.provider_name.as_deref() {
+        if crate::workflow::privacy::declared_provider_tier(name).await
+            == crate::privacy::ProviderTier::Private
+        {
+            return false;
+        }
+    }
+    sessions
+        .session_affiliations(&chat.id)
+        .await
+        .is_ok_and(|institutions| institutions.is_empty())
+}
+
 /// One word across the chats read: its first spelling, and the chats it was found in,
 /// newest first.
 struct Gathered {
@@ -338,7 +359,7 @@ pub async fn scan(
         if super::extractor::chat_may_learn(&row).await {
             if let Ok(chat) = sessions.get_session(&row.id, true).await {
                 // Read again: the chat may have changed tier since it was listed.
-                if row_may_be_scanned(&chat, now) {
+                if row_may_be_scanned(&chat, now) && chat_is_public(sessions, &chat).await {
                     harvest.read_chat(&chat);
                 }
             }
@@ -426,20 +447,27 @@ pub fn start<S: Send + Sync + 'static>(
         stop
     };
     let run = JOB.runs.fetch_add(1, Ordering::AcqRel) + 1;
+    let publish = move |progress: &ScanProgress| {
+        if JOB.runs.load(Ordering::Acquire) == run {
+            *JOB.progress.lock().unwrap_or_else(PoisonError::into_inner) = progress.clone();
+        }
+    };
+    // The scan runs in a task of its own, so a panic inside it ends as `Failed` rather
+    // than leaving the job `Running`, which would refuse every later scan until the
+    // daemon restarts.
+    let scanning = tokio::spawn(async move {
+        let mut report = publish;
+        scan(sessions(&owner), &stop, &mut report).await
+    });
     tokio::spawn(async move {
-        let mut report = |progress: &ScanProgress| {
-            if JOB.runs.load(Ordering::Acquire) == run {
-                *JOB.progress.lock().unwrap_or_else(PoisonError::into_inner) = progress.clone();
-            }
-        };
-        let ended = match scan(sessions(&owner), &stop, &mut report).await {
-            Ok(progress) => progress,
-            Err(_) => ScanProgress {
+        let ended = match scanning.await {
+            Ok(Ok(progress)) => progress,
+            Ok(Err(_)) | Err(_) => ScanProgress {
                 state: ScanState::Failed,
                 ..status()
             },
         };
-        report(&ended);
+        publish(&ended);
     });
     Ok(status())
 }

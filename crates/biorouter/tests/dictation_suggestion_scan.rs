@@ -117,6 +117,27 @@ async fn a_scan_suggests_only_the_persons_words_from_public_chats() {
             .await
             .unwrap();
     }
+    // Public by its stored tier, which ratchets only while privacy tiers are on, yet bound
+    // to a model the registry calls Private, or having touched an institution.
+    for name in ["local model one", "local model two"] {
+        let chat = stored_chat(&fx, SessionType::User, name, &["SCANLOC24"]).await;
+        fx.sessions
+            .update(&chat.id)
+            .provider_name("ollama")
+            .apply()
+            .await
+            .unwrap();
+    }
+    for name in ["touched one", "touched two"] {
+        let chat = stored_chat(&fx, SessionType::User, name, &["SCANINS24"]).await;
+        fx.sessions
+            .record_required_session_affiliation(
+                &chat.id,
+                biorouter::privacy::affiliation::InstitutionId::new("ucsf"),
+            )
+            .await
+            .unwrap();
+    }
     for name in ["app:notes:client-1", "app:notes:client-2"] {
         stored_chat(&fx, SessionType::User, name, &["SCANAPP24"]).await;
     }
@@ -139,11 +160,13 @@ async fn a_scan_suggests_only_the_persons_words_from_public_chats() {
 
     let progress = run(&fx).await.unwrap();
     assert_eq!(progress.state, ScanState::Finished);
+    // The two person chats, the renamed one, and the four whose stored tier is Public but
+    // whose model or institutions keep them out, which are listed and then not read.
     assert_eq!(
-        progress.chats_total, 3,
-        "the two person chats and the renamed one: {progress:?}"
+        progress.chats_total, 7,
+        "the person chats, the renamed one and the four held back: {progress:?}"
     );
-    assert_eq!(progress.chats_read, 3);
+    assert_eq!(progress.chats_read, 7);
     assert_eq!(progress.words_found, 1);
 
     let rows = rows_named("SCANTWO24");
@@ -163,6 +186,8 @@ async fn a_scan_suggests_only_the_persons_words_from_public_chats() {
         "SCANAPP24",
         "SCANACP24",
         "SCANKND24",
+        "SCANLOC24",
+        "SCANINS24",
     ] {
         assert!(rows_named(term).is_empty(), "the scan suggested {term}");
     }
