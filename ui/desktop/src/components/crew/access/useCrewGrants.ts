@@ -6,6 +6,7 @@ import {
   type CrewSessionGrant,
 } from '../api/grants';
 import { isRevocationUnconfirmed, isStaleDaemon, STALE_DAEMON_MESSAGE } from '../api/errors';
+import { changeTouches, useCrewChanged } from '../state/useCrewChanges';
 import { accessCopy } from './copy';
 import {
   forgetRevokeWaiting,
@@ -22,9 +23,11 @@ import {
  * control: a hook only reads the daemon's list, and `revoke` reports what the daemon answered.
  *
  * **No polling**, with one exception. A list is fetched when the surface that shows it opens,
- * after every action taken through this module, and when another surface announces a change
- * ({@link CREW_GRANTS_CHANGED_EVENT}) — so the pane, the Access tab, the Agents section and the
- * ordinary chat stay in step without any of them asking on a timer. The exception is a revoke that
+ * after every action taken through this module, when another surface announces a change
+ * ({@link CREW_GRANTS_CHANGED_EVENT}), and when Crew's change feed says a change may concern its
+ * connections (a chat's `grants_revoke` or `tasks_ask`, another window, the terminal: WI-15) — so
+ * the pane, the Access tab, the Agents section and the ordinary chat stay in step without any of
+ * them asking the grants route on a timer. The exception is a revoke that
  * stopped only on this device: the daemon confirms it with the workspace by itself once the
  * connection is back (F3), which no surface here causes, so while one is listed the list is read
  * again on a timer ({@link useUnconfirmedRevokeWatch}) until it says confirmed.
@@ -308,6 +311,13 @@ export function useCrewGrants(
       setNonce((value) => value + 1);
     });
   }, [enabled, ids]);
+
+  useCrewChanged(
+    (delta) => {
+      if (ids.length > 0 && changeTouches(delta, ids)) setNonce((value) => value + 1);
+    },
+    { enabled }
+  );
 
   useEffect(() => {
     if (!enabled) return;

@@ -29,6 +29,7 @@ import {
   modelDisplay,
   modelMismatch,
   modelRefusalText,
+  fullAccessWarning,
   remoteAccessText,
   sameNamedFiles,
   sharedWhen,
@@ -248,7 +249,7 @@ export interface AgentTaskPaneProps {
  * says early what the daemon would refuse; every other model still takes the request path.
  */
 export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
-  const { crew, snapshot, channel, team, verified, workspace } = usePanePresentation();
+  const { crew, snapshot, channel, team, verified, workspace, dir } = usePanePresentation();
   const navigate = useNavigate();
   // The composer opens the pane for `@agent` with the task's words without the trigger and the
   // draft they came from (OW-10); otherwise the Task is the draft itself. A seed that arrives while
@@ -341,6 +342,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const gateTitleId = useId();
   const fileWarningId = useId();
   const sameNameId = useId();
+  const fullWarningId = useId();
 
   const { reportError, dismissError, error } = crew;
   useEffect(() => {
@@ -452,6 +454,9 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const hasAdvanced =
     otherChannels.length > 0 || contextChannels.length > 0 || Boolean(crew.connection?.remote_root);
   const folderText = remoteAccessText(crew.connection);
+  // Full access, said before Start whatever Advanced shows: what running as the account means,
+  // and for the host what it adds (W1, W2).
+  const fullWarning = fullAccessWarning(crew.connection, workspace, dir.viewerIsHost);
   const alsoReads = contextChannels
     .filter((id) => id !== channel.id)
     .map((id) => {
@@ -804,6 +809,15 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             ? agentCopy.scopeWide(here, alsoReads.length + 1)
             : agentCopy.scope(here)}
         </p>
+        {fullWarning && (
+          <p
+            id={fullWarningId}
+            className="text-supporting text-text-muted"
+            data-testid="crew-agent-full-access"
+          >
+            {fullWarning}
+          </p>
+        )}
         {/* Before Start, which it disables: the pane says what the daemon would refuse (T-47), for
             a model the institution has not approved and a public model alike (AG-F4). */}
         {blockText && (
@@ -849,6 +863,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             disabled={startDisabled}
             aria-describedby={
               [
+                fullWarning ? fullWarningId : null,
                 blockText ? mismatchId : null,
                 unshared.length > 0 ? fileWarningId : null,
                 sameNamed.length > 0 ? sameNameId : null,

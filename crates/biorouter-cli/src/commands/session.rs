@@ -1148,6 +1148,148 @@ pub async fn prompt_interactive_session_selection(
     }
 }
 
+/// Said on stderr when an interactive `biorouter session` runs its chat on the shared daemon
+/// because one is running (D4).
+pub(crate) const RUNS_ON_THE_SHARED_DAEMON: &str = "This chat runs on the shared Biorouter daemon, so it can use Crew as you. Add --local to run a chat in this terminal only.";
+
+/// How long [`shared_daemon_for_chat`] waits for a running daemon to answer before the chat
+/// runs in this process instead.
+const SHARED_DAEMON_PROBE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// What decides where an interactive chat runs (D4), read from its command line and process.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ChatRequest {
+    /// `--local`: this process, whatever is running.
+    pub local: bool,
+    /// Standard input, output and error are all a terminal, so a person is there to answer the
+    /// chat's cards. A redirected or piped command keeps its chat in this process.
+    pub at_a_terminal: bool,
+    /// An option only a chat in this process takes was given: `--name`, `--path`, `--debug`,
+    /// `--max-tool-repetitions`, `--max-turns` or an extension added on the command line.
+    pub in_process_option: bool,
+    /// The provider and model the chat starts on are known ([`chat_model`]), or, for a chat
+    /// resumed by its ID, `--provider` and `--model` were given together or not at all.
+    pub model_known: bool,
+    /// The command runs in an agent's own shell ([`needs_terminal::in_agent_shell`]). A chat
+    /// that acts as the person is never started from there.
+    pub agent_shell: bool,
+}
+
+impl ChatRequest {
+    /// Whether the chat may run on the shared daemon, before any daemon is asked.
+    pub fn may_use_the_shared_daemon(&self) -> bool {
+        !self.local
+            && self.at_a_terminal
+            && !self.in_process_option
+            && self.model_known
+            && !self.agent_shell
+    }
+}
+
+/// Whether standard input, output and error are all a terminal.
+pub(crate) fn at_a_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal()
+}
+
+/// D4: the shared daemon an interactive chat runs on, or `None` to run it in this process. A
+/// daemon is used only when [`ChatRequest::may_use_the_shared_daemon`] holds, the user-action
+/// key file its starter saved is present, and it answers that key within
+/// [`SHARED_DAEMON_PROBE`]. Never starts, stops or replaces a daemon: `--shared-daemon` is how
+/// a person asks for one to be started.
+pub(crate) async fn shared_daemon_for_chat(
+    request: &ChatRequest,
+) -> Option<crate::daemon_client::CrewClient> {
+    if !request.may_use_the_shared_daemon() {
+        return None;
+    }
+    // Without the file, connecting waits for a starter to save one; a chat that can run here
+    // does not wait for that.
+    if fs::symlink_metadata(biorouter::daemon_runtime::user_action_key_path()).is_err() {
+        return None;
+    }
+    let connect = crate::daemon_client::CrewClient::connect(true);
+    match tokio::time::timeout(SHARED_DAEMON_PROBE, connect).await {
+        Ok(Ok(client)) => Some(client),
+        Ok(Err(_)) | Err(_) => {
+            tracing::debug!("no usable shared daemon, so the chat runs in this process");
+            None
+        }
+    }
+}
+
+/// The provider and model a new chat on the shared daemon starts on, as an in-process chat
+/// chooses them: `--provider` and `--model` together, or with neither, the `configured` pair.
+/// `None` when the pair is incomplete; such a chat stays in this process, which resolves a lone
+/// `--provider` its own way.
+pub(crate) fn chat_model(
+    provider: Option<&str>,
+    model: Option<&str>,
+    configured: impl FnOnce() -> (Option<String>, Option<String>),
+) -> Option<(String, String)> {
+    fn named(value: Option<&str>) -> Option<String> {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    }
+    match (provider, model) {
+        (None, None) => {
+            let (provider, model) = configured();
+            Some((named(provider.as_deref())?, named(model.as_deref())?))
+        }
+        (provider, model) => Some((named(provider)?, named(model)?)),
+    }
+}
+
+/// The configured provider and model, as [`chat_model`] reads them.
+pub(crate) fn configured_model() -> (Option<String>, Option<String>) {
+    let config = biorouter::config::Config::global();
+    (
+        config.get_biorouter_provider().ok(),
+        config.get_biorouter_model().ok(),
+    )
+}
+
+/// The chat `--resume` with no ID resumes on the shared daemon: the most recent one, found as
+/// an in-process chat finds it.
+pub(crate) async fn latest_chat_id() -> Result<Option<String>> {
+    Ok(SessionManager::instance()
+        .list_sessions()
+        .await?
+        .first()
+        .map(|session| session.id.clone()))
+}
+
+/// Start a new chat on the shared daemon the way an in-process `biorouter session` starts one:
+/// in `working_dir`, on `provider` and `model`, with the configured extensions. The request
+/// names no extensions, so the daemon starts the configured ones, as for a new desktop chat.
+/// Answers the chat's ID, which the conversation then checks before using it.
+pub(crate) async fn start_daemon_chat(
+    client: &crate::daemon_client::CrewClient,
+    working_dir: &std::path::Path,
+    provider: &str,
+    model: &str,
+) -> Result<String> {
+    let session = client
+        .request(
+            "POST",
+            "/agent/start",
+            Some(serde_json::json!({
+                "working_dir": working_dir,
+                "provider": provider,
+                "model": model,
+            })),
+        )
+        .await?;
+    session["id"]
+        .as_str()
+        .map(str::to_owned)
+        .context("The daemon did not return a chat ID")
+}
+
 /// Save a Crew registry in which a grant that stands restricts each of
 /// `session_ids`, for a test running in a process of its own.
 ///
@@ -1206,6 +1348,279 @@ pub(crate) fn restrict_by_crew_grant(session_ids: &[&str]) {
         "scopes": scopes,
     });
     std::fs::write(&registry, serde_json::to_vec(&saved).unwrap()).unwrap();
+}
+
+/// D4: where an interactive chat runs, against a daemon fixture in this test binary's sandbox.
+#[cfg(all(test, unix))]
+mod chat_place_tests {
+    use super::*;
+    use biorouter::daemon_runtime::{self, Descriptor, Endpoint};
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+    use hyper::server::conn::http1 as server_http1;
+    use hyper::{service::service_fn, Request, Response};
+    use hyper_util::rt::TokioIo;
+    use serial_test::serial;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    const KEY: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    /// Every request the fixture answered other than the identity check: method, path, body.
+    type Seen = Arc<Mutex<Vec<(String, String, serde_json::Value)>>>;
+
+    /// A runtime directory with no daemon record, socket or saved key in it.
+    fn clean_runtime() -> PathBuf {
+        let directory = daemon_runtime::runtime_directory();
+        daemon_runtime::private_directory(&directory).expect("the runtime directory is private");
+        for file in ["owner.lock", "owner.lock.old", "daemon.sock"] {
+            let _ = fs::remove_file(directory.join(file));
+        }
+        let _ = fs::remove_file(daemon_runtime::descriptor_path());
+        let _ = fs::remove_file(daemon_runtime::user_action_key_path());
+        directory
+    }
+
+    /// A running daemon for this profile: `/daemon/identity` answers its identity,
+    /// `/agent/start` a new chat's ID, and every other path `{"ok":true}`.
+    async fn running_daemon() -> (Descriptor, Seen) {
+        let directory = clean_runtime();
+        let socket = directory.join("daemon.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("the socket binds");
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).expect("private socket");
+        let descriptor = Descriptor {
+            version: daemon_runtime::VERSION,
+            profile_id: daemon_runtime::profile_identity().expect("the sandbox profile"),
+            instance_id: "44444444-4444-4444-8444-444444444444".to_owned(),
+            pid: std::process::id(),
+            endpoint: Endpoint::Unix { path: socket },
+            api_secret: "daemon-secret-for-chat-place-tests-1".to_owned(),
+            user_action_installed: true,
+        };
+        daemon_runtime::write_private(&daemon_runtime::descriptor_path(), &descriptor)
+            .expect("the record writes");
+        let identity = descriptor.identity();
+        let seen = Seen::default();
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (identity, recorded) = (identity.clone(), recorded.clone());
+                tokio::spawn(async move {
+                    let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                        let (identity, recorded) = (identity.clone(), recorded.clone());
+                        async move {
+                            let method = request.method().to_string();
+                            let path = request.uri().path().to_owned();
+                            let bytes = request
+                                .into_body()
+                                .collect()
+                                .await
+                                .map(|body| body.to_bytes())
+                                .unwrap_or_default();
+                            let body =
+                                serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+                            let answer = match path.as_str() {
+                                "/daemon/identity" => serde_json::to_vec(&identity).unwrap(),
+                                "/agent/start" => br#"{"id":"20261107_9"}"#.to_vec(),
+                                _ => br#"{"ok":true}"#.to_vec(),
+                            };
+                            if path != "/daemon/identity" {
+                                recorded.lock().unwrap().push((method, path, body));
+                            }
+                            Ok::<_, std::convert::Infallible>(
+                                Response::builder()
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(answer)))
+                                    .expect("the answer builds"),
+                            )
+                        }
+                    });
+                    let _ = server_http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        (descriptor, seen)
+    }
+
+    /// A chat that may use the shared daemon: at a terminal, with a known model.
+    fn at_a_terminal_chat() -> ChatRequest {
+        ChatRequest {
+            at_a_terminal: true,
+            model_known: true,
+            ..ChatRequest::default()
+        }
+    }
+
+    /// With a running daemon and its saved key, a terminal chat runs on it, and the daemon was
+    /// asked with that key before it was chosen.
+    #[tokio::test]
+    #[serial]
+    async fn a_terminal_chat_runs_on_the_running_shared_daemon() {
+        let (descriptor, seen) = running_daemon().await;
+        daemon_runtime::write_user_action_key(&descriptor, KEY).expect("the key saves");
+        let chosen = shared_daemon_for_chat(&at_a_terminal_chat()).await;
+        assert!(chosen.is_some(), "the chat runs on the shared daemon");
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|(method, path, _)| method == "GET" && path == "/crew/connections"),
+            "the daemon answered the saved key"
+        );
+        clean_runtime();
+    }
+
+    /// With no daemon running, the chat runs in this process.
+    #[tokio::test]
+    #[serial]
+    async fn with_no_daemon_the_chat_runs_here() {
+        clean_runtime();
+        assert!(shared_daemon_for_chat(&at_a_terminal_chat())
+            .await
+            .is_none());
+    }
+
+    /// `--local` keeps the chat in this process, and the running daemon is never asked.
+    #[tokio::test]
+    #[serial]
+    async fn local_keeps_the_chat_here_without_asking_the_daemon() {
+        let (descriptor, seen) = running_daemon().await;
+        daemon_runtime::write_user_action_key(&descriptor, KEY).expect("the key saves");
+        let local = ChatRequest {
+            local: true,
+            ..at_a_terminal_chat()
+        };
+        assert!(shared_daemon_for_chat(&local).await.is_none());
+        assert!(seen.lock().unwrap().is_empty(), "--local never reaches it");
+        clean_runtime();
+    }
+
+    /// A running daemon whose key file is absent is not waited for: the chat runs here at once
+    /// and the daemon is never asked (connecting would wait seconds for a starter to save one).
+    #[tokio::test]
+    #[serial]
+    async fn a_daemon_with_no_saved_key_is_not_waited_for() {
+        let (_descriptor, seen) = running_daemon().await;
+        let started = std::time::Instant::now();
+        assert!(shared_daemon_for_chat(&at_a_terminal_chat())
+            .await
+            .is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(seen.lock().unwrap().is_empty());
+        clean_runtime();
+    }
+
+    /// Each condition alone keeps the chat in this process.
+    #[test]
+    fn each_condition_alone_keeps_the_chat_here() {
+        assert!(at_a_terminal_chat().may_use_the_shared_daemon());
+        let base = at_a_terminal_chat();
+        for (what, request) in [
+            (
+                "--local",
+                ChatRequest {
+                    local: true,
+                    ..base
+                },
+            ),
+            (
+                "no terminal",
+                ChatRequest {
+                    at_a_terminal: false,
+                    ..base
+                },
+            ),
+            (
+                "an in-process option",
+                ChatRequest {
+                    in_process_option: true,
+                    ..base
+                },
+            ),
+            (
+                "no known model",
+                ChatRequest {
+                    model_known: false,
+                    ..base
+                },
+            ),
+            (
+                "an agent's shell",
+                ChatRequest {
+                    agent_shell: true,
+                    ..base
+                },
+            ),
+        ] {
+            assert!(!request.may_use_the_shared_daemon(), "{what}");
+        }
+    }
+
+    /// A new chat on the shared daemon is started in this folder on the chosen model, and the
+    /// request names no extensions, so the daemon starts the configured ones.
+    #[tokio::test]
+    #[serial]
+    async fn a_new_daemon_chat_starts_with_the_configured_extensions() {
+        let (descriptor, seen) = running_daemon().await;
+        let client = crate::daemon_client::CrewClient::for_test(descriptor, KEY);
+        let id = start_daemon_chat(
+            &client,
+            std::path::Path::new("/tmp/chat-place-project"),
+            "synthetic-provider",
+            "synthetic-model",
+        )
+        .await
+        .expect("the chat starts");
+        assert_eq!(id, "20261107_9");
+        let seen = seen.lock().unwrap();
+        let (method, _, body) = seen
+            .iter()
+            .find(|(_, path, _)| path == "/agent/start")
+            .expect("the daemon was asked to start a chat");
+        assert_eq!(method, "POST");
+        assert_eq!(body["working_dir"], "/tmp/chat-place-project");
+        assert_eq!(body["provider"], "synthetic-provider");
+        assert_eq!(body["model"], "synthetic-model");
+        assert!(
+            body.get("extension_overrides").is_none(),
+            "naming no extensions starts the configured ones: {body}"
+        );
+        drop(seen);
+        clean_runtime();
+    }
+
+    /// A new chat's model: both flags, or with neither the configured pair; anything partial
+    /// or blank is not known, and the configured pair is read only when no flag was given.
+    #[test]
+    fn a_chat_model_is_both_flags_or_the_configured_pair() {
+        let configured = || {
+            (
+                Some("cfg-provider".to_owned()),
+                Some("cfg-model".to_owned()),
+            )
+        };
+        let never = || -> (Option<String>, Option<String>) {
+            panic!("the configured pair is read only when no flag was given")
+        };
+        let pair = |p: &str, m: &str| Some((p.to_owned(), m.to_owned()));
+        assert_eq!(chat_model(Some("p"), Some("m"), never), pair("p", "m"));
+        assert_eq!(
+            chat_model(None, None, configured),
+            pair("cfg-provider", "cfg-model")
+        );
+        assert_eq!(chat_model(Some("p"), None, never), None);
+        assert_eq!(chat_model(None, Some("m"), never), None);
+        assert_eq!(chat_model(Some(" "), Some("m"), never), None);
+        assert_eq!(chat_model(None, None, || (Some("p".into()), None)), None);
+        assert_eq!(chat_model(None, None, || (None, None)), None);
+    }
 }
 
 #[cfg(test)]

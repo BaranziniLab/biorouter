@@ -1,0 +1,1173 @@
+//! The person tools' message, context and file actions (AO-12): what `biorouter crew history`,
+//! `search`, `send`, `workspace context` and `files` do.
+//!
+//! A read of messages, files or the context document goes through [`reading`]: the call's
+//! privacy scope, the person's read consent, and the channels the call may see. A public model
+//! gets only messages, files and references the workspace does not restrict, in channels that
+//! are public-safe; everything else is withheld and counted. The chat is raised Private before
+//! anything protected returns ([`Ctx::release`]).
+//!
+//! A write from a chat classified Private is marked Private (`personal_mode`), and its card says
+//! when it crosses into something Public. A file is shared and downloaded through the same
+//! transfer service `POST /crew/files` and `POST /crew/transfers` use; the card names the file's
+//! resolved path and size. `send` posts one message as the composer does: its text, files from
+//! this computer and references to server files, all on one card and in one `message.post`.
+//!
+//! Every change answers the connection and channel it was made in (`connection_id`,
+//! `channel_id`), so the chat's row can open it in Crew.
+
+use std::collections::BTreeSet;
+
+use anyhow::Result;
+use biorouter::crew::CrewManager;
+use biorouter_server::crew::local_files::Direction;
+use biorouter_server::crew::transfers::{
+    service, FileCapability, FilePurpose, FileRequest, Receipt, StartRequest, TransferService,
+};
+use futures::future::BoxFuture;
+use serde_json::{json, Value};
+
+use super::more::{may_name, receipt_view};
+use super::places::{
+    check_message_size, crossing, item, local_path, place, post_params, posted, private_where_kept,
+    private_write, public_safe, reading, resolve, send, size_words, yours, Place, Reading,
+};
+use super::{idempotency_key, naming, said, Card, Ctx, Progress, Resolved};
+use crate::routes::crew::names::SelectorKind;
+
+/// The most messages a page reads (the broker's own limit).
+const PAGE: u64 = 200;
+/// How many messages `files_list` and a download by name read at most, newest first.
+const FILE_SCAN_MESSAGES: usize = 2000;
+/// How often a transfer the action waits on is asked where it stands.
+const TRANSFER_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+// ------------------------------------------------------------------------------------- reads
+
+/// `page` as `reading` lets the call see it: messages it may not read withheld and counted, and
+/// the names beside them only for what is kept.
+fn narrowed(reading: &Reading, mut page: Value) -> Value {
+    let messages = page["messages"].as_array().cloned().unwrap_or_default();
+    let (kept, withheld): (Vec<Value>, Vec<Value>) = messages
+        .into_iter()
+        .partition(|message| reading.keeps(message));
+    let authors: BTreeSet<String> = kept
+        .iter()
+        .filter_map(|message| message["actor_id"].as_str())
+        .map(str::to_owned)
+        .collect();
+    if let Some(people) = page["people"].as_object_mut() {
+        people.retain(|id, _| authors.contains(id));
+    }
+    if let Some(names) = page["channel_names"].as_object_mut() {
+        names.retain(|id, _| reading.scope.channel_allowed(id));
+    }
+    page["messages"] = json!(kept);
+    page["withheld"] = json!({"messages": withheld.len()});
+    page
+}
+
+/// `biorouter crew history CHANNEL` (and `watch`, with `after`): a channel's messages, newest
+/// last; with `after`, only those after it, oldest first.
+pub(super) fn history(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let typed = ctx.required("channel")?;
+        let reading = reading(ctx).await?;
+        let channel = reading.channel(&typed)?;
+        let limit = ctx.number("limit").unwrap_or(50).clamp(1, PAGE);
+        let mut params = json!({"channel_id": channel.id, "limit": limit});
+        match ctx.text("after") {
+            Some(after) => params["after"] = json!(after),
+            None => params["latest"] = json!(true),
+        }
+        if let Some(before) = ctx.text("before") {
+            params["before"] = json!(before);
+        }
+        let page = ctx
+            .crew()?
+            .human_request(&reading.connection.id, "messages.history", params, None)
+            .await?;
+        let mut answer = narrowed(&reading, page);
+        answer["channel"] = json!(reading.phrase(&channel));
+        answer["channel_id"] = json!(channel.id);
+        ctx.release(&reading.scope, answer).await
+    })
+}
+
+/// `biorouter crew search CHANNEL QUERY`: one channel's messages that contain the words.
+pub(super) fn search(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let typed = ctx.required("channel")?;
+        let query = ctx.required("query")?;
+        let reading = reading(ctx).await?;
+        let channel = reading.channel(&typed)?;
+        let limit = ctx.number("limit").unwrap_or(50).clamp(1, PAGE);
+        let mut params = json!({"channel_id": channel.id, "query": query, "limit": limit});
+        if let Some(after) = ctx.text("after") {
+            params["after"] = json!(after);
+        }
+        let page = ctx
+            .crew()?
+            .human_request(&reading.connection.id, "messages.search", params, None)
+            .await?;
+        let mut answer = narrowed(&reading, page);
+        answer["channel"] = json!(reading.phrase(&channel));
+        answer["channel_id"] = json!(channel.id);
+        ctx.release(&reading.scope, answer).await
+    })
+}
+
+/// `biorouter crew workspace context show`: the document members wrote about the server, and
+/// its revision.
+pub(super) fn context_show(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let reading = reading(ctx).await?;
+        let current = ctx
+            .crew()?
+            .human_request(
+                &reading.connection.id,
+                "workspace.context.get",
+                json!({}),
+                None,
+            )
+            .await?;
+        let answer = json!({"workspace": reading.workspace, "context": current["context"]});
+        ctx.release(&reading.scope, answer).await
+    })
+}
+
+/// One attachment `files_list` found, as it lists it.
+fn listed_file(id: &str, blob: &Value, message: &Value) -> Value {
+    json!({
+        "attachment_id": id,
+        "name": blob["name"],
+        "size": blob["size"],
+        "media_type": blob["media_type"],
+        "shared_by": message["actor_id"],
+        "shared_at": message["created_at"],
+        "message_id": message["id"],
+    })
+}
+
+/// The files shared in `channel_id`, newest first, each attachment once at its newest post, as
+/// `biorouter crew files list` reads them from the channel's history: at most `limit`, and
+/// stopping at `wanted` when a name is looked for. Answers the files, how many could not be
+/// opened, how many were withheld from this call, and whether the whole history was read.
+async fn shared_files(
+    ctx: &Ctx,
+    reading: &Reading,
+    channel_id: &str,
+    limit: usize,
+    wanted: Option<&str>,
+) -> Result<(Vec<Value>, usize, usize, bool)> {
+    let crew = ctx.crew()?;
+    let connection = &reading.connection.id;
+    let mut files = Vec::new();
+    let mut seen = BTreeSet::new();
+    let (mut unavailable, mut withheld, mut read) = (0usize, 0usize, 0usize);
+    let mut before: Option<String> = None;
+    let complete = loop {
+        let mut params = json!({"channel_id": channel_id, "latest": true, "limit": PAGE});
+        if let Some(before) = &before {
+            params["before"] = json!(before);
+        }
+        let page = crew
+            .human_request(connection, "messages.history", params, None)
+            .await?;
+        let messages = page["messages"].as_array().cloned().unwrap_or_default();
+        read += messages.len();
+        // A latest page runs oldest to newest; the newest is wanted first.
+        for message in messages.iter().rev() {
+            let attachments: Vec<&str> = message["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            if !reading.keeps(message) {
+                withheld += attachments.len();
+                continue;
+            }
+            for id in attachments {
+                if files.len() >= limit || !seen.insert(id.to_owned()) {
+                    continue;
+                }
+                match crew
+                    .human_request(connection, "blob.status", json!({"blob_id": id}), None)
+                    .await
+                {
+                    Ok(blob) if blob["name"].is_string() => {
+                        if !reading.keeps(&blob) {
+                            withheld += 1;
+                            continue;
+                        }
+                        let found = blob["name"].as_str() == wanted;
+                        files.push(listed_file(id, &blob, message));
+                        if found {
+                            return Ok((files, unavailable, withheld, false));
+                        }
+                    }
+                    _ => unavailable += 1,
+                }
+            }
+        }
+        if files.len() >= limit || messages.len() < PAGE as usize {
+            break true;
+        }
+        if read >= FILE_SCAN_MESSAGES {
+            break false;
+        }
+        match messages.first().and_then(|message| message["id"].as_str()) {
+            Some(oldest) => before = Some(oldest.to_owned()),
+            None => break true,
+        }
+    };
+    Ok((files, unavailable, withheld, complete))
+}
+
+/// `biorouter crew files list CHANNEL`: the files shared in a channel, newest first. Files this
+/// call may not read are counted, not listed; `complete` is false when older messages were left
+/// unread.
+pub(super) fn files_list(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let typed = ctx.required("channel")?;
+        let reading = reading(ctx).await?;
+        let channel = reading.channel(&typed)?;
+        let limit = usize::try_from(ctx.number("limit").unwrap_or(50).clamp(1, PAGE))?;
+        let (files, unavailable, withheld, complete) =
+            shared_files(ctx, &reading, &channel.id, limit, None).await?;
+        let answer = json!({
+            "channel": reading.phrase(&channel),
+            "channel_id": channel.id,
+            "files": files,
+            "unavailable": unavailable,
+            "withheld": {"files": withheld},
+            "complete": complete,
+        });
+        ctx.release(&reading.scope, answer).await
+    })
+}
+
+/// A transfer refusal in the transfer routes' own code and sentence: a credential file, a
+/// folder others can change, an existing destination.
+fn transfer_refusal(error: anyhow::Error) -> anyhow::Error {
+    let refused = crate::routes::crew_transfers::TransferError::from(error);
+    let (code, sentence) = refused.code_and_sentence();
+    said(Some(code), sentence.to_owned())
+}
+
+/// `biorouter crew files status TRANSFER`: where a transfer stands. A shared file's name is
+/// workspace content, either way it went, so it is returned only to a call that may read that
+/// workspace's channel, after the person's consent, and only where `files_pending` would name it
+/// ([`may_name`]: never a restricted download, nor an upload whose selection required Private,
+/// to a read that does not raise the chat), and the chat is raised as a read raises it. Every
+/// other answer is the transfer's ID, state, direction and size alone ([`receipt_view`]).
+pub(super) fn files_status(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let id = ctx.required("transfer_id")?;
+        let receipt = service()
+            .await
+            .map_err(transfer_refusal)?
+            .get(&id)
+            .await
+            .map_err(|_| {
+                said(
+                    None,
+                    "No transfer with that ID on this computer. Crew lists them under Files.",
+                )
+            })?;
+        let crew = ctx.crew()?;
+        let Ok(connection) = crew.connection(&receipt.connection_id).await else {
+            return Ok(receipt_view(&receipt, false));
+        };
+        let Ok(snapshot) = ctx.snapshot(&connection).await else {
+            return Ok(receipt_view(&receipt, false));
+        };
+        let scope = match ctx.content_scope(&connection, &snapshot).await {
+            Ok(scope) if scope.channel_allowed(&receipt.channel_id) => scope,
+            _ => return Ok(receipt_view(&receipt, false)),
+        };
+        let workspace = Ctx::workspace_label(&connection, Some(&snapshot));
+        let scope = if ctx.read_consent(&connection, &workspace).await? {
+            // The card waited for the person: judged again on the workspace as it is now.
+            match ctx.rescoped(&connection.id).await {
+                Ok((_, _, scope)) if scope.channel_allowed(&receipt.channel_id) => scope,
+                _ => return Ok(receipt_view(&receipt, false)),
+            }
+        } else {
+            scope
+        };
+        let named = may_name(ctx, &scope, &receipt).await;
+        ctx.release(&scope, receipt_view(&receipt, named)).await
+    })
+}
+
+// ----------------------------------------------------------------------------------- changes
+
+/// The most local files, and the most server references, one message from a chat carries.
+const MAX_MESSAGE_ITEMS: usize = 10;
+
+/// `answer` with the connection and channel a change was made in, at its top, so a chat row
+/// can name them and open them in Crew.
+fn in_channel(mut answer: Value, connection_id: &str, channel_id: &str) -> Value {
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("connection_id".into(), json!(connection_id));
+        fields.insert("channel_id".into(), json!(channel_id));
+    }
+    answer
+}
+
+/// One local file a message shares: its resolved path, the name it is shared under, its size,
+/// and what the card said it is ([`FileStamp`]), compared again when it is selected.
+struct Outgoing {
+    path: std::path::PathBuf,
+    name: String,
+    size: u64,
+    stamp: FileStamp,
+}
+
+/// The local files `typed` names, each resolved and read for its card. Refused before any card
+/// when one is not a file, is named twice, or there are more than [`MAX_MESSAGE_ITEMS`].
+fn outgoing_files(typed: &[String]) -> Result<Vec<Outgoing>> {
+    if typed.len() > MAX_MESSAGE_ITEMS {
+        return Err(said(
+            None,
+            format!("One message carries at most {MAX_MESSAGE_ITEMS} files. Send the rest in another message."),
+        ));
+    }
+    let mut files: Vec<Outgoing> = Vec::with_capacity(typed.len());
+    for text in typed {
+        let path = local_path(text)?;
+        if files.iter().any(|file| file.path == path) {
+            return Err(said(
+                None,
+                format!("{} is named twice. Name each file once.", path.display()),
+            ));
+        }
+        let (metadata, name) = shareable_file(&path)?;
+        files.push(Outgoing {
+            path,
+            name,
+            size: metadata.len(),
+            stamp: FileStamp::of(&metadata),
+        });
+    }
+    Ok(files)
+}
+
+/// A file on the server a post references: its full path, and the label the post shows.
+struct ServerFile {
+    path: String,
+    label: String,
+}
+
+/// A server file `path` names: a full path without `..`.
+fn server_file(path: &str) -> Result<ServerFile> {
+    let remote = std::path::Path::new(path);
+    if !path.starts_with('/')
+        || remote
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(said(
+            None,
+            "Give the file's full path on the server, like /data/lab/results.csv, without ..",
+        ));
+    }
+    let label = remote.file_name().map_or_else(
+        || path.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    Ok(ServerFile {
+        path: path.to_owned(),
+        label,
+    })
+}
+
+/// The server files `typed` names ([`server_file`]), each once, at most [`MAX_MESSAGE_ITEMS`].
+fn server_files(typed: &[String]) -> Result<Vec<ServerFile>> {
+    if typed.len() > MAX_MESSAGE_ITEMS {
+        return Err(said(
+            None,
+            format!("One message carries at most {MAX_MESSAGE_ITEMS} references. Send the rest in another message."),
+        ));
+    }
+    let mut files: Vec<ServerFile> = Vec::with_capacity(typed.len());
+    for path in typed {
+        let file = server_file(path)?;
+        if files.iter().any(|known| known.path == file.path) {
+            return Err(said(
+                None,
+                format!("{path} is named twice. Name each file once."),
+            ));
+        }
+        files.push(file);
+    }
+    Ok(files)
+}
+
+/// `3 files from this computer and a reference to a file on the server`: what a message carries
+/// besides its text, as its card's heading says it.
+fn carried(files: usize, references: usize) -> String {
+    let files = match files {
+        0 => None,
+        1 => Some("1 file from this computer".to_owned()),
+        many => Some(format!("{many} files from this computer")),
+    };
+    let references = match references {
+        0 => None,
+        1 => Some("a reference to a file on the server".to_owned()),
+        many => Some(format!("{many} references to files on the server")),
+    };
+    files
+        .into_iter()
+        .chain(references)
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
+/// The card a message parks: everything it posts. The text whole, each local file by name,
+/// size and resolved path, each server file by its path, the channel, and the Private marking
+/// when the write is Private. A message with text alone is said as it always was. The caller
+/// adds the crossing line.
+fn message_card(
+    place: &Place,
+    channel: &Resolved,
+    text: &str,
+    files: &[Outgoing],
+    references: &[ServerFile],
+    private: bool,
+) -> Card {
+    let at = place.channel(channel);
+    let items = carried(files.len(), references.len());
+    let card = if items.is_empty() {
+        place.card(|here| format!("Post this in {at} in {here} as you"))
+    } else if text.is_empty() {
+        place.card(|here| format!("Post {items} in {at} in {here} as you"))
+    } else {
+        place.card(|here| format!("Post this with {items} in {at} in {here} as you"))
+    };
+    let mut card = card.show("channel", channel.label.clone());
+    if !text.is_empty() {
+        card = card.show("text", text.to_owned());
+    }
+    for file in files {
+        card = card.line(format!(
+            "{} ({}), from {}.",
+            file.name,
+            size_words(file.size),
+            file.path.display()
+        ));
+    }
+    for file in references {
+        card = card.line(format!("{} on the server.", file.path));
+    }
+    if !files.is_empty() {
+        let shown: Vec<Value> = files
+            .iter()
+            .map(|file| json!({"path": file.path.display().to_string(), "size_bytes": file.size}))
+            .collect();
+        card = card.show("attachments", shown);
+    }
+    if !references.is_empty() {
+        card = card
+            .line("Referenced files stay on the server; members who can read them there open them from the post. The post is restricted, so public models never read it.")
+            .show("references", references.iter().map(|file| file.path.clone()).collect::<Vec<_>>());
+    }
+    if private {
+        card = card.line(if files.is_empty() {
+            "It is marked Private, so public models never read it."
+        } else {
+            "The files and the post are marked Private, so public models never read them."
+        });
+    }
+    card
+}
+
+/// `biorouter crew send CHANNEL --text TEXT`, with the composer's attachments and references:
+/// post one message as the person. The card shows everything it posts; from a Private chat it
+/// is marked Private, and so are the files it shares.
+pub(super) fn send_message(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let typed = ctx.required("channel")?;
+        let text = ctx
+            .raw_text("text")
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_default();
+        let files = outgoing_files(&ctx.texts("attachments"))?;
+        let references = server_files(&ctx.texts("references"))?;
+        if text.is_empty() && files.is_empty() && references.is_empty() {
+            return Err(said(None, "send needs text, attachments or references."));
+        }
+        check_message_size(&text)?;
+        let place = place(ctx).await?;
+        let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
+        yours(&place.snapshot, &channel, &typed)?;
+        // A post with a reference is restricted by the workspace, so with no file of its own it
+        // is marked Private where that can be kept, as files_reference marks it.
+        let private = if files.is_empty() && !references.is_empty() {
+            private_where_kept(ctx, &place).await?
+        } else {
+            private_write(ctx, &place).await?
+        };
+        let mut card = message_card(&place, &channel, &text, &files, &references, private);
+        if let Some(line) = crossing(ctx, &place, public_safe(&place, &channel.id)).await {
+            card = card.line(line);
+        }
+        ctx.approve(card).await?;
+        // One idempotency key per step, in order: each upload, each reference, the post.
+        let (uploads, referenced) = (files.len(), references.len());
+        let message = Message {
+            connection_id: place.connection.id.clone(),
+            channel_id: channel.id.clone(),
+            text,
+            private,
+            references,
+            reference_keys: (uploads..uploads + referenced)
+                .map(|step| idempotency_key(ctx, step))
+                .collect(),
+            post_key: idempotency_key(ctx, uploads + referenced),
+        };
+        if files.is_empty() {
+            let crew = ctx.crew()?;
+            return message.post(&crew, &[]).await;
+        }
+        share_and_post(ctx, message, files).await
+    })
+}
+
+/// A message to post once its files are uploaded: where it goes, its text, the server files it
+/// references, and the idempotency key of each step after the uploads, from the tool call's ID.
+struct Message {
+    connection_id: String,
+    channel_id: String,
+    text: String,
+    private: bool,
+    references: Vec<ServerFile>,
+    reference_keys: Vec<String>,
+    post_key: String,
+}
+
+impl Message {
+    /// Create the references, then post the message with `blob_ids` and them, as one post.
+    /// Answers the post's IDs.
+    async fn post(&self, crew: &CrewManager, blob_ids: &[String]) -> Result<Value> {
+        let mut reference_ids = Vec::with_capacity(self.references.len());
+        for (file, key) in self.references.iter().zip(&self.reference_keys) {
+            let created = crew
+                .human_request(
+                    &self.connection_id,
+                    "reference.create",
+                    json!({"channel_id": self.channel_id, "path": file.path, "label": file.label, "idempotency_key": key}),
+                    Some(key.clone()),
+                )
+                .await?;
+            let id = created["id"]
+                .as_str()
+                .ok_or_else(|| said(None, super::FAILED))?;
+            reference_ids.push(id.to_owned());
+        }
+        let mut params = post_params(
+            &self.channel_id,
+            &self.text,
+            blob_ids,
+            &reference_ids,
+            self.private,
+        );
+        params["idempotency_key"] = json!(self.post_key);
+        let result = crew
+            .human_request(
+                &self.connection_id,
+                "message.post",
+                params,
+                Some(self.post_key.clone()),
+            )
+            .await?;
+        let mut answer = in_channel(posted(&result), &self.connection_id, &self.channel_id);
+        if !reference_ids.is_empty() {
+            answer["reference_ids"] = json!(reference_ids);
+        }
+        Ok(answer)
+    }
+}
+
+/// Select each of `files` for an upload, only as its card showed it, and start every upload; the
+/// step keys are the call's first ones, one per file. A file changed since the card is refused
+/// with nothing started; an upload that can't start pauses the ones already started, which wait
+/// in Crew, under Files.
+async fn start_uploads(
+    ctx: &Ctx,
+    message: &Message,
+    files: &[Outgoing],
+) -> Result<(std::sync::Arc<TransferService>, Vec<String>)> {
+    let transfers = service().await.map_err(transfer_refusal)?;
+    let mut selected = Vec::with_capacity(files.len());
+    for (step, file) in files.iter().enumerate() {
+        let key = idempotency_key(ctx, step);
+        let request = FileRequest {
+            approval_pending: false,
+            expected_mode: message
+                .private
+                .then_some(biorouter::crew::ClusterMode::Private),
+            purpose: FilePurpose::Transfer,
+            connection_id: message.connection_id.clone(),
+            channel_id: message.channel_id.clone(),
+            direction: Direction::Upload,
+            path: file.path.clone(),
+            overwrite: false,
+            blob_id: None,
+            transfer_id: None,
+            request_id: Some(key.clone()),
+        };
+        match select_shown(request, &file.stamp, &file.name).await {
+            Ok(capability) => selected.push((key, capability.capability_id)),
+            Err(error) => {
+                for (_, capability) in &selected {
+                    let _ = transfers.discard(capability).await;
+                }
+                return Err(error);
+            }
+        }
+    }
+    let mut started: Vec<String> = Vec::with_capacity(selected.len());
+    for (index, (key, capability)) in selected.iter().enumerate() {
+        let receipt = transfers
+            .start(StartRequest {
+                request_id: key.clone(),
+                connection_id: message.connection_id.clone(),
+                channel_id: message.channel_id.clone(),
+                direction: Direction::Upload,
+                file_capability: capability.clone(),
+                blob_id: None,
+            })
+            .await;
+        match receipt {
+            Ok(receipt) => started.push(receipt.id),
+            Err(error) => {
+                for (_, unstarted) in &selected[index + 1..] {
+                    let _ = transfers.discard(unstarted).await;
+                }
+                for id in &started {
+                    let _ = transfers.pause(id).await;
+                }
+                return Err(transfer_refusal(error));
+            }
+        }
+    }
+    Ok((transfers, started))
+}
+
+/// Upload each of `files`, then post `message` with every one of them attached, as one post.
+/// While the uploads run past the call's wait, the answer says where they stand.
+async fn share_and_post(ctx: &Ctx, message: Message, files: Vec<Outgoing>) -> Result<Value> {
+    let (transfers, transfer_ids) = start_uploads(ctx, &message, &files).await?;
+    let progress = Progress::default();
+    progress.set("connection_id", message.connection_id.clone());
+    progress.set("channel_id", message.channel_id.clone());
+    progress.set("transfer_ids", transfer_ids.clone());
+    progress.set("stage", "uploading");
+    let watched = progress.clone();
+    let crew = ctx.crew()?;
+    let names: Vec<String> = files.into_iter().map(|file| file.name).collect();
+    ctx.follow(progress, async move {
+        let mut blob_ids = Vec::with_capacity(transfer_ids.len());
+        for id in &transfer_ids {
+            let done = finished(&transfers, id, &watched).await?;
+            blob_ids.push(done.blob_id.ok_or_else(|| said(None, super::FAILED))?);
+        }
+        watched.set("stage", "post");
+        let mut answer = message.post(&crew, &blob_ids).await?;
+        let shared: Vec<Value> = names
+            .iter()
+            .zip(&blob_ids)
+            .zip(&transfer_ids)
+            .map(|((name, blob), transfer)| {
+                json!({"name": name, "blob_id": blob, "transfer_id": transfer})
+            })
+            .collect();
+        answer["shared"] = json!(true);
+        answer["attachments"] = json!(shared);
+        answer["transfer_ids"] = json!(transfer_ids);
+        Ok(answer)
+    })
+    .await
+}
+
+/// Wait for the transfer `id` to finish, recording its state in `progress`. A transfer that
+/// stops (refused, or waiting for its file to be chosen again) is said, with where to resume it.
+async fn finished(service: &TransferService, id: &str, progress: &Progress) -> Result<Receipt> {
+    loop {
+        let receipt = service.get(id).await.map_err(transfer_refusal)?;
+        progress.set("stage", receipt.state.clone());
+        match receipt.state.as_str() {
+            "completed" => return Ok(receipt),
+            "failed" | "needs_file_selection" | "paused" | "publication_unconfirmed" => {
+                return Err(said(
+                    None,
+                    format!(
+                        "The transfer stopped ({}){}. It is kept in Crew, under Files, where it can be resumed.",
+                        receipt.state,
+                        receipt
+                            .error
+                            .as_deref()
+                            .map(|error| format!(": {error}"))
+                            .unwrap_or_default()
+                    ),
+                ))
+            }
+            _ => tokio::time::sleep(TRANSFER_POLL).await,
+        }
+    }
+}
+
+/// What a share's card says the local file is: where it sits on disk, its size and its last
+/// change. Compared again after the approval, so the file shared is the one the person allowed.
+#[derive(Debug, PartialEq, Eq)]
+struct FileStamp {
+    /// Device and inode, where the platform has them.
+    identity: Option<(u64, u64)>,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            Some((metadata.dev(), metadata.ino()))
+        };
+        #[cfg(not(unix))]
+        let identity = None;
+        Self {
+            identity,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        }
+    }
+
+    /// Whether the file at `path` is still the one this stamp describes.
+    fn still_at(&self, path: &std::path::Path) -> bool {
+        std::fs::metadata(path).is_ok_and(|now| Self::of(&now) == *self)
+    }
+}
+
+/// Select `request`'s file for an upload, as the transfer service holds it for the transfer,
+/// only when it is the file the card showed (`shown`): checked before the selection and again
+/// after it, with the selection's own size. A file replaced, rewritten or resized while the card
+/// waited is refused, and nothing is shared.
+async fn select_shown(
+    request: FileRequest,
+    shown: &FileStamp,
+    name: &str,
+) -> Result<FileCapability> {
+    let changed = || {
+        said(
+            None,
+            format!("{name} changed on this computer while this waited for your approval, so nothing was shared. Ask again to share it as it is now."),
+        )
+    };
+    let path = request.path.clone();
+    if !shown.still_at(&path) {
+        return Err(changed());
+    }
+    let transfers = service().await.map_err(transfer_refusal)?;
+    let capability = transfers
+        .register(request)
+        .await
+        .map_err(transfer_refusal)?;
+    if capability.size != Some(shown.size) || !shown.still_at(&path) {
+        let _ = transfers.discard(&capability.capability_id).await;
+        return Err(changed());
+    }
+    Ok(capability)
+}
+
+/// The local file a share sends: its metadata and the name it is shared under. Refused when
+/// nothing is at `path`, or what is there is not one file.
+fn shareable_file(path: &std::path::Path) -> Result<(std::fs::Metadata, String)> {
+    let metadata = std::fs::metadata(path).map_err(|_| {
+        said(
+            None,
+            format!("There is no file at {} on this computer.", path.display()),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(said(
+            None,
+            format!(
+                "{} is not a file. Name each file to share, not a folder.",
+                path.display()
+            ),
+        ));
+    }
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    Ok((metadata, name))
+}
+
+/// The card a share parks: the file by name, size and resolved path, its channel, the post's
+/// text when there is one, and the Private marking when the write is Private. The caller adds
+/// the crossing line.
+fn share_card(
+    place: &Place,
+    channel: &Resolved,
+    path: &std::path::Path,
+    size: u64,
+    name: &str,
+    text: &str,
+    private: bool,
+) -> Card {
+    let mut card = place
+        .card(|here| {
+            format!(
+                "Share {name} ({}) from this computer in {} in {here} as you",
+                size_words(size),
+                place.channel(channel)
+            )
+        })
+        .line(format!("From {}.", path.display()))
+        .show("path", path.display().to_string())
+        .show("size_bytes", size)
+        .show("channel", channel.label.clone());
+    if !text.is_empty() {
+        card = card.show("text", text.to_owned());
+    }
+    if private {
+        card = card
+            .line("The file and the post are marked Private, so public models never read them.");
+    }
+    card
+}
+
+/// `biorouter crew files upload CHANNEL FILE`, then a post that carries it (and `text`, when
+/// given). The card names the file's resolved path and size; from a Private chat the file and
+/// the post are marked Private.
+pub(super) fn files_share(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let typed = ctx.required("channel")?;
+        let path = local_path(&ctx.required("path")?)?;
+        let text = ctx
+            .raw_text("text")
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_default();
+        check_message_size(&text)?;
+        let (metadata, name) = shareable_file(&path)?;
+        let shown = FileStamp::of(&metadata);
+        let place = place(ctx).await?;
+        let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
+        yours(&place.snapshot, &channel, &typed)?;
+        let private = private_write(ctx, &place).await?;
+        let mut card = share_card(
+            &place,
+            &channel,
+            &path,
+            metadata.len(),
+            &name,
+            &text,
+            private,
+        );
+        if let Some(line) = crossing(ctx, &place, public_safe(&place, &channel.id)).await {
+            card = card.line(line);
+        }
+        ctx.approve(card).await?;
+        let key = idempotency_key(ctx, 0);
+        let capability = select_shown(
+            FileRequest {
+                approval_pending: false,
+                expected_mode: private.then_some(biorouter::crew::ClusterMode::Private),
+                purpose: FilePurpose::Transfer,
+                connection_id: place.connection.id.clone(),
+                channel_id: channel.id.clone(),
+                direction: Direction::Upload,
+                path,
+                overwrite: false,
+                blob_id: None,
+                transfer_id: None,
+                request_id: Some(key.clone()),
+            },
+            &shown,
+            &name,
+        )
+        .await?;
+        let transfers = service().await.map_err(transfer_refusal)?;
+        let receipt = transfers
+            .start(StartRequest {
+                request_id: key,
+                connection_id: place.connection.id.clone(),
+                channel_id: channel.id.clone(),
+                direction: Direction::Upload,
+                file_capability: capability.capability_id,
+                blob_id: None,
+            })
+            .await
+            .map_err(transfer_refusal)?;
+        let progress = Progress::default();
+        progress.set("job_id", receipt.id.clone());
+        progress.set("transfer_id", receipt.id.clone());
+        progress.set("connection_id", place.connection.id.clone());
+        progress.set("channel_id", channel.id.clone());
+        progress.set("stage", receipt.state.clone());
+        let watched = progress.clone();
+        let crew = ctx.crew()?;
+        let post_key = idempotency_key(ctx, 1);
+        let (connection_id, channel_id, transfer_id) =
+            (place.connection.id.clone(), channel.id.clone(), receipt.id);
+        ctx.follow(progress, async move {
+            let done = finished(&transfers, &transfer_id, &watched).await?;
+            let blob_id = done
+                .blob_id
+                .clone()
+                .ok_or_else(|| said(None, super::FAILED))?;
+            watched.set("stage", "post");
+            let mut params = post_params(
+                &channel_id,
+                &text,
+                std::slice::from_ref(&blob_id),
+                &[],
+                private,
+            );
+            params["idempotency_key"] = json!(post_key);
+            let result = crew
+                .human_request(&connection_id, "message.post", params, Some(post_key))
+                .await?;
+            let mut answer = in_channel(posted(&result), &connection_id, &channel_id);
+            answer["shared"] = json!(true);
+            answer["transfer_id"] = json!(transfer_id);
+            answer["job_id"] = json!(transfer_id);
+            answer["state"] = json!("completed");
+            answer["blob_id"] = json!(blob_id);
+            Ok(answer)
+        })
+        .await
+    })
+}
+
+/// Where a download is saved: `destination` (a folder gets the file's name), or the person's
+/// Downloads folder.
+fn destination(typed: Option<&str>, name: &str) -> Result<std::path::PathBuf> {
+    let Some(typed) = typed else {
+        return Ok(local_path("~/Downloads")?.join(name));
+    };
+    let path = local_path(typed)?;
+    let folder = path.is_dir() || typed.ends_with(std::path::is_separator);
+    Ok(if folder { path.join(name) } else { path })
+}
+
+/// The shared file a download names: `typed` itself when it is a file's ID, else the file by
+/// that name among those this call may see in the channel the call names. Refused when no
+/// channel is named for a name, or no file there has it; that refusal names the channel's team,
+/// so it returns as content does.
+async fn download_blob_id(ctx: &Ctx, reading: &Reading, typed: &str) -> Result<String> {
+    if uuid::Uuid::parse_str(typed).is_ok() {
+        return Ok(typed.to_owned());
+    }
+    let channel_text = ctx.text("channel").ok_or_else(|| {
+        said(
+            None,
+            "Name the channel the file was shared in, or give the file's ID from crew__read action files_list.",
+        )
+    })?;
+    let channel = reading.channel(&channel_text)?;
+    let (files, ..) = shared_files(ctx, reading, &channel.id, usize::MAX, Some(typed)).await?;
+    files
+        .iter()
+        .find(|file| file["name"].as_str() == Some(typed))
+        .and_then(|file| file["attachment_id"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            // The phrase names the channel's team: it returns as content does.
+            naming(
+                said(
+                    Some("unknown_name"),
+                    format!(
+                        "No file you can see in {} is named {typed}.",
+                        reading.phrase(&channel)
+                    ),
+                ),
+                &reading.scope,
+            )
+        })
+}
+
+/// The card a download parks: the file, its size, the channel it was shared in as this call may
+/// name it (`shown_channel`), and where on this computer it is saved.
+fn download_card(
+    workspace: &str,
+    server: &str,
+    shown_channel: &str,
+    name: &str,
+    size: u64,
+    saved: &std::path::Path,
+) -> Card {
+    Card::at(workspace, server, |here| {
+        format!(
+            "Download {name} ({}) from {shown_channel} in {here} to {} on this computer",
+            size_words(size),
+            saved.display()
+        )
+    })
+    .show("file", name.to_owned())
+    .show("size_bytes", size)
+    .show("destination", saved.display().to_string())
+}
+
+/// `biorouter crew files download FILE`: save a file shared in a channel to this computer. Its
+/// name and the destination are the workspace's content, so this asks for the person's read
+/// consent like a read, and raises the chat as a read does; the card names the file, its size,
+/// its channel and where it goes.
+pub(super) fn files_download(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let typed = ctx.required("file")?;
+        let reading = reading(ctx).await?;
+        let crew = ctx.crew()?;
+        let connection_id = reading.connection.id.clone();
+        let blob_id = download_blob_id(ctx, &reading, &typed).await?;
+        let blob = crew
+            .human_request(
+                &connection_id,
+                "blob.status",
+                json!({"blob_id": blob_id}),
+                None,
+            )
+            .await?;
+        let channel_id = blob["channel_id"].as_str().unwrap_or_default().to_owned();
+        if !reading.scope.channel_allowed(&channel_id) || !reading.keeps(&blob) {
+            return Err(said(
+                None,
+                "This chat can't download that file: it is restricted, or in a channel this chat can't read.",
+            ));
+        }
+        let name = blob["name"].as_str().unwrap_or("file").to_owned();
+        let size = blob["size"].as_u64().unwrap_or(0);
+        let saved = destination(ctx.text("destination").as_deref(), &name)?;
+        let shown_channel = item(&reading.visible, "channels", &channel_id)
+            .and_then(|channel| channel["name"].as_str())
+            .map_or_else(|| "its channel".to_owned(), |name| format!("#{name}"));
+        let server = Ctx::server_label(&reading.connection).await;
+        ctx.approve(download_card(
+            &reading.workspace,
+            &server,
+            &shown_channel,
+            &name,
+            size,
+            &saved,
+        ))
+        .await?;
+        let key = idempotency_key(ctx, 0);
+        let transfers = service().await.map_err(transfer_refusal)?;
+        let capability = transfers
+            .register(FileRequest {
+                approval_pending: false,
+                expected_mode: None,
+                purpose: FilePurpose::Transfer,
+                connection_id: connection_id.clone(),
+                channel_id: channel_id.clone(),
+                direction: Direction::Download,
+                path: saved.clone(),
+                overwrite: false,
+                blob_id: Some(blob_id.clone()),
+                transfer_id: None,
+                request_id: Some(key.clone()),
+            })
+            .await
+            .map_err(transfer_refusal)?;
+        let receipt = transfers
+            .start(StartRequest {
+                request_id: key,
+                connection_id,
+                channel_id,
+                direction: Direction::Download,
+                file_capability: capability.capability_id,
+                blob_id: Some(blob_id),
+            })
+            .await
+            .map_err(transfer_refusal)?;
+        let progress = Progress::default();
+        progress.set("job_id", receipt.id.clone());
+        progress.set("transfer_id", receipt.id.clone());
+        progress.set("stage", receipt.state.clone());
+        progress.set("destination", saved.display().to_string());
+        let watched = progress.clone();
+        let transfer_id = receipt.id;
+        let answer = ctx
+            .follow(progress, async move {
+                let done = finished(&transfers, &transfer_id, &watched)
+                    .await
+                    .map_err(|_| {
+                        said(
+                            None,
+                            "The download stopped. It is kept in Crew, under Files, where it can be resumed. See why with crew__read action files_status.",
+                        )
+                    })?;
+                let mut answer = receipt_view(&done, true);
+                answer["downloaded"] = json!(true);
+                answer["destination"] = json!(saved.display().to_string());
+                Ok(answer)
+            })
+            .await?;
+        ctx.release(&reading.scope, answer).await
+    })
+}
+
+/// `biorouter crew files reference CHANNEL PATH`, then a post that carries it (and `text`, when
+/// given). A reference names a file on the server, which stays there; the workspace always
+/// restricts it.
+pub(super) fn files_reference(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
+    Box::pin(async move {
+        let typed = ctx.required("channel")?;
+        let path = ctx.required("path")?;
+        let text = ctx
+            .raw_text("text")
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_default();
+        check_message_size(&text)?;
+        let ServerFile { path, label } = server_file(&path)?;
+        let place = place(ctx).await?;
+        let channel = resolve(ctx, &place, SelectorKind::Channel, &typed)?;
+        yours(&place.snapshot, &channel, &typed)?;
+        let private = private_where_kept(ctx, &place).await?;
+        let mut card = place
+            .card(|here| {
+                format!(
+                    "Post a reference to the server's file {path} in {} in {here} as you",
+                    place.channel(&channel)
+                )
+            })
+            .line("The file stays on the server; members who can read it there open it from the post. The post is restricted, so public models never read it.")
+        .show("path", path.clone())
+        .show("channel", channel.label.clone());
+        if !text.is_empty() {
+            card = card.show("text", text.clone());
+        }
+        ctx.approve(card).await?;
+        let reference = send(
+            ctx,
+            &place.connection,
+            "reference.create",
+            json!({"channel_id": channel.id, "path": path, "label": label}),
+            0,
+        )
+        .await?;
+        let reference_id = reference["id"].as_str().unwrap_or_default().to_owned();
+        let result = send(
+            ctx,
+            &place.connection,
+            "message.post",
+            post_params(
+                &channel.id,
+                &text,
+                &[],
+                std::slice::from_ref(&reference_id),
+                private,
+            ),
+            1,
+        )
+        .await?;
+        let mut answer = in_channel(posted(&result), &place.connection.id, &channel.id);
+        answer["reference_id"] = json!(reference_id);
+        Ok(answer)
+    })
+}

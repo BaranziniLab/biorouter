@@ -1,4 +1,5 @@
 //! Terminal presentation of the profile daemon's personal conversation services.
+use crate::commands::session_watch::cards;
 use crate::daemon_client::{CrewClient, DaemonEventStream, DaemonRefusal};
 use anyhow::{bail, ensure, Context, Result};
 use biorouter::conversation::message::{ActionRequiredData, Message, MessageContent};
@@ -8,10 +9,11 @@ use crossterm::event::{
 };
 use futures::StreamExt;
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::future::Future;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 pub struct SharedConversationOptions {
     pub session_id: Option<String>,
@@ -61,6 +63,9 @@ struct Conversation {
     /// a start the daemon refuses must not be preceded by it.
     pending_ready: Option<String>,
     dictation_state: SharedDictationState,
+    #[cfg(test)]
+    crew_step_test_input:
+        Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + Sync>>>,
 }
 
 #[cfg(feature = "dictation")]
@@ -196,6 +201,8 @@ pub async fn run(options: SharedConversationOptions) -> Result<()> {
         binding: ShownBinding::default(),
         pending_ready: None,
         dictation_state: Default::default(),
+        #[cfg(test)]
+        crew_step_test_input: None,
     };
     conversation.event(&json!({"type":"Session","session_id":conversation.session_id}))?;
     let result = conversation.execute(&options).await;
@@ -312,12 +319,8 @@ impl Conversation {
             safe_text(&state["initialization_error"].to_string())
         );
         if let Some(results) = state["extension_results"].as_array() {
-            for result in results {
-                ensure!(
-                    result["success"].as_bool() != Some(false),
-                    "A session extension failed to initialize: {}",
-                    safe_text(&result.to_string())
-                );
+            for line in extension_warnings(results) {
+                self.notice(&line)?;
             }
         }
         Ok(state)
@@ -554,9 +557,15 @@ impl Conversation {
         let mut bound = false;
         // Whether the turn reached the provider: a model's frame arrived.
         let mut reached = false;
+        let mut deferred = VecDeque::new();
         loop {
             let frame = tokio::select! {
-                frame = stream.next_event() => frame?,
+                frame = async {
+                    match deferred.pop_front() {
+                        Some(frame) => Ok(Some(frame)),
+                        None => stream.next_event().await,
+                    }
+                } => frame?,
                 signal = tokio::signal::ctrl_c() => {
                     signal?;
                     return self.cancel(&active_id).await;
@@ -586,10 +595,30 @@ impl Conversation {
                 Ready::Wait => {}
             }
             match frame["type"].as_str().context("Daemon event has no type")? {
-                "Message" => match self.handle_message(&frame["message"]).await? {
+                "Message" => match self
+                    .handle_message(
+                        &frame["message"],
+                        &mut stream,
+                        &mut deferred,
+                        &active_id,
+                        sequence,
+                    )
+                    .await?
+                {
                     Interaction::Continue => {}
                     Interaction::Stop => return self.cancel(&active_id).await,
                 },
+                "ActionRequiredEnded" => {
+                    if let Some(id) = frame["id"].as_str() {
+                        validate_id(id)?;
+                        ensure!(
+                            self.answered.len() < 1024 || self.answered.contains(id),
+                            "Too many interaction prompts; reconnect to the session"
+                        );
+                        self.answered.insert(id.to_owned());
+                    }
+                    self.notice(&cards::ended_frame_line(&frame))?;
+                }
                 "Error" => return Err(turn_error(&frame, reached)),
                 "Finish" => {
                     self.renderer.finish()?;
@@ -612,7 +641,14 @@ impl Conversation {
         }
     }
 
-    async fn handle_message(&mut self, value: &Value) -> Result<Interaction> {
+    async fn handle_message(
+        &mut self,
+        value: &Value,
+        stream: &mut DaemonEventStream,
+        deferred: &mut VecDeque<Value>,
+        turn_id: &str,
+        sequence: Option<u64>,
+    ) -> Result<Interaction> {
         let message: Message =
             serde_json::from_value(value.clone()).context("Unsupported daemon message shape")?;
         if self.format == Format::Text {
@@ -622,7 +658,9 @@ impl Conversation {
             match content {
                 MessageContent::ActionRequired(action) => {
                     self.renderer.finish()?;
-                    let outcome = self.interact(action.data).await?;
+                    let outcome = self
+                        .interact_while_observing(action.data, stream, deferred, turn_id, sequence)
+                        .await?;
                     if !matches!(outcome, Interaction::Continue) {
                         return Ok(outcome);
                     }
@@ -641,11 +679,68 @@ impl Conversation {
         Ok(Interaction::Continue)
     }
 
+    async fn interact_while_observing(
+        &mut self,
+        action: ActionRequiredData,
+        stream: &mut DaemonEventStream,
+        deferred: &mut VecDeque<Value>,
+        turn_id: &str,
+        sequence: Option<u64>,
+    ) -> Result<Interaction> {
+        let ActionRequiredData::CrewStep { id, step } = &action else {
+            return self.interact(action).await;
+        };
+        if biorouter::pending_user_action::crew_step_is_a_notice(step) {
+            return self.interact(action).await;
+        }
+        let id = id.clone();
+        validate_id(&id)?;
+        if self.answered.contains(&id) {
+            return Ok(Interaction::Continue);
+        }
+        ensure!(
+            self.answered.len() < 1024,
+            "Too many interaction prompts; reconnect to the session"
+        );
+        let interactive = self.interactive;
+        // Drop the prompt's reader and zeroizing buffers before clearing queued input or
+        // rendering deferred chat output. A detached reader could consume the next prompt.
+        let observed = {
+            let interaction = self.interact(action);
+            observe_crew_step(
+                interaction,
+                stream,
+                deferred,
+                &id,
+                turn_id,
+                sequence,
+                interactive,
+            )
+            .await?
+        };
+        match observed {
+            ObservedCrewStep::Completed(outcome) => {
+                discard_terminal_input()?;
+                Ok(outcome)
+            }
+            ObservedCrewStep::Ended => {
+                discard_terminal_input()?;
+                self.answered.insert(id);
+                Ok(Interaction::Continue)
+            }
+            ObservedCrewStep::Stop => {
+                discard_terminal_input()?;
+                Ok(Interaction::Stop)
+            }
+        }
+    }
+
     async fn interact(&mut self, action: ActionRequiredData) -> Result<Interaction> {
         let id = match &action {
             ActionRequiredData::ToolConfirmation { id, .. }
             | ActionRequiredData::Elicitation { id, .. }
-            | ActionRequiredData::SecretRequest { id, .. } => id.clone(),
+            | ActionRequiredData::SecretRequest { id, .. }
+            | ActionRequiredData::CrewStep { id, .. } => id.clone(),
             ActionRequiredData::ElicitationResponse { .. } => return Ok(Interaction::Continue),
         };
         validate_id(&id)?;
@@ -668,14 +763,39 @@ impl Conversation {
                 requested_schema,
                 ..
             } => self.elicitation(&id, &message, &requested_schema).await?,
+            // D1: the person's own Sign in window, vault prompt or host-key help, in this
+            // terminal. Nothing typed comes back through the conversation.
+            ActionRequiredData::CrewStep { step, .. } => {
+                self.take_crew_step(&id, &step).await?;
+                Interaction::Continue
+            }
             ActionRequiredData::ElicitationResponse { .. } => unreachable!(),
         };
         self.answered.insert(id);
         Ok(outcome)
     }
 
+    async fn take_crew_step(
+        &mut self,
+        id: &str,
+        step: &biorouter::conversation::message::CrewStepRequest,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if let Some(input) = self.crew_step_test_input.take() {
+            return input.await;
+        }
+        let surface = crate::commands::crew_step::StepSurface {
+            client: &self.client,
+            session_id: &self.session_id,
+            card_id: id,
+        };
+        crate::commands::crew_step::take(&surface, step).await
+    }
+
     async fn confirm_tool(&self, action: &ActionRequiredData, id: &str) -> Result<Interaction> {
-        self.notice(&serde_json::to_string_pretty(action)?)?;
+        // The card whole, but never an argument whose name looks like a credential, one line
+        // of it per line on the terminal.
+        self.notice_lines(&card_lines(action))?;
         let folder_access = matches!(
             action,
             ActionRequiredData::ToolConfirmation {
@@ -685,31 +805,32 @@ impl Conversation {
                 ..
             }
         );
+        // AO-12's read consent lasts until the person revokes it, so it is never offered as
+        // "once": the choice is `allow` or `deny`, and the prompt says how to take it back.
+        let read_consent = cards::is_read_consent(action);
+        let question = approval_question(read_consent, folder_access, &self.session_id);
         loop {
-            let Some(answer) = terminal_input(
-                if folder_access {
-                    "Type allow_once, allow_session, or deny (Esc cancels the turn): "
-                } else {
-                    "Type allow_once or deny (Esc cancels the turn): "
-                },
-                false,
-                32,
-                None,
-                None,
-                None,
-            )
-            .await?
-            else {
+            let Some(answer) = terminal_input(&question, false, 32, None, None, None).await? else {
                 return Ok(Interaction::Stop);
             };
-            if !(matches!(answer.trim(), "allow_once" | "deny")
-                || folder_access && answer.trim() == "allow_session")
-            {
+            let decision = if folder_access && answer.trim() == "allow_session" {
+                Some("allow_session")
+            } else {
+                cards::approval_answer(&answer, read_consent)
+            };
+            let Some(decision) = decision else {
                 continue;
-            }
-            let result = self.client.request("POST", "/action-required/tool-confirmation", Some(json!({
-                "sessionId":self.session_id,"id":id,"principalType":"Tool","action":answer.trim()
-            }))).await?;
+            };
+            let result = self
+                .client
+                .request(
+                    "POST",
+                    "/action-required/tool-confirmation",
+                    Some(json!({
+                        "sessionId":self.session_id,"id":id,"principalType":"Tool","action":decision
+                    })),
+                )
+                .await?;
             ensure!(
                 matches!(
                     result["status"].as_str(),
@@ -722,6 +843,8 @@ impl Conversation {
                 Some("unknown" | "already_resolved")
             ) {
                 self.notice("This request is no longer pending; no new tool call was approved.")?;
+            } else if read_consent && decision == "allow_once" {
+                self.notice(&cards::read_consent_allowed(&self.session_id))?;
             }
             return Ok(Interaction::Continue);
         }
@@ -877,6 +1000,16 @@ impl Conversation {
     fn notice(&self, value: &str) -> Result<()> {
         let mut stderr = std::io::stderr().lock();
         writeln!(stderr, "{}", safe_text(value))?;
+        stderr.flush()?;
+        Ok(())
+    }
+    /// [`Self::notice`] for text already split into `lines`, each printed on its own line and
+    /// passed through [`safe_text`] (which leaves an escaped line as it is).
+    fn notice_lines(&self, lines: &[String]) -> Result<()> {
+        let mut stderr = std::io::stderr().lock();
+        for line in lines {
+            writeln!(stderr, "{}", safe_text(line))?;
+        }
         stderr.flush()?;
         Ok(())
     }
@@ -1057,6 +1190,21 @@ fn safe_content(value: &str) -> String {
         })
         .collect()
 }
+/// The question an approval card is answered with in this terminal. A read consent offers
+/// `allow`, which lasts until the person revokes it, and says how; a folder grant can also be
+/// allowed for the session; any other approval is allowed once.
+fn approval_question(read_consent: bool, folder_access: bool, session_id: &str) -> String {
+    if read_consent {
+        format!(
+            "Type {} (Esc cancels the turn): ",
+            cards::read_consent_choices(session_id)
+        )
+    } else if folder_access {
+        "Type allow_once, allow_session, or deny (Esc cancels the turn): ".to_string()
+    } else {
+        "Type allow_once or deny (Esc cancels the turn): ".to_string()
+    }
+}
 fn sensitive_schema(value: &Value) -> bool {
     match value {
         Value::Object(fields) => {
@@ -1103,7 +1251,43 @@ fn erase_values(values: &mut Map<String, Value>) {
 fn terminal_control(ch: char) -> bool {
     ch.is_control() || biorouter::utils::is_invisible_formatting(ch)
 }
-fn safe_text(value: &str) -> String {
+/// The secret-output redactor's word for a private key it withheld, which it writes on a line of
+/// its own (`secret_output::redact_text`), so inside a JSON string of a card.
+const WITHHELD_PRIVATE_KEY: &str = "\n[REDACTED:private-key]\n";
+
+/// An approval card as this terminal prints it before asking: its JSON
+/// ([`cards::shown_card_json`]), one line per line of the pretty-printed document, each with every
+/// control and invisible formatting character escaped. Splitting at its line breaks lets no
+/// untrusted text start a line of its own, because JSON writes a line break inside a string as
+/// `\n`. The one other line break is the redactor's around a withheld private key, which is
+/// written back as `\n` first, so every line break left is the printer's.
+fn card_lines(action: &ActionRequiredData) -> Vec<String> {
+    cards::shown_card_json(action)
+        .replace(
+            WITHHELD_PRIVATE_KEY,
+            &WITHHELD_PRIVATE_KEY.replace('\n', "\\n"),
+        )
+        .split('\n')
+        .map(safe_text)
+        .collect()
+}
+
+/// One warning for each session extension the daemon could not start, worded as an in-process
+/// chat words it (`session::builder`): the chat goes on without it. Printed through
+/// [`Conversation::notice`], so the daemon's words pass [`safe_text`].
+fn extension_warnings(results: &[Value]) -> Vec<String> {
+    results
+        .iter()
+        .filter(|result| result["success"].as_bool() == Some(false))
+        .map(|result| {
+            let name = result["name"].as_str().unwrap_or("unknown");
+            let reason = result["error"].as_str().unwrap_or("no reason given");
+            format!("Warning: Failed to start extension '{name}' ({reason}), continuing without it")
+        })
+        .collect()
+}
+
+pub(crate) fn safe_text(value: &str) -> String {
     value
         .chars()
         .flat_map(|ch| {
@@ -1137,14 +1321,165 @@ fn emit_json(value: &Value) -> Result<()> {
     stdout.flush()?;
     Ok(())
 }
-struct TerminalMode;
+const MAX_DEFERRED_CARD_FRAMES: usize = 256;
+const MAX_DEFERRED_CARD_BYTES: usize = 32 * 1024 * 1024;
+
+enum ObservedCrewStep {
+    Completed(Interaction),
+    Ended,
+    Stop,
+}
+
+fn frame_ends_crew_step(frame: &Value, id: &str) -> bool {
+    cards::card_events(frame)
+        .into_iter()
+        .any(|event| match event {
+            cards::CardEvent::Ended { id: ended, .. } | cards::CardEvent::Responded(ended) => {
+                ended == id
+            }
+            cards::CardEvent::TurnEnded => true,
+            _ => false,
+        })
+}
+
+fn observe_card_sequence(frame: &Value, turn_id: &str, sequence: &mut Option<u64>) -> Result<bool> {
+    if let Some(turn) = frame["turn_id"].as_str() {
+        ensure!(turn == turn_id, "Turn stream changed its generation");
+    }
+    if let Some(seq) = frame["seq"].as_u64() {
+        if sequence.is_some_and(|previous| seq <= previous) {
+            return Ok(false);
+        }
+        *sequence = Some(seq);
+    }
+    Ok(true)
+}
+
+async fn observe_crew_step<F>(
+    interaction: F,
+    stream: &mut DaemonEventStream,
+    deferred: &mut VecDeque<Value>,
+    id: &str,
+    turn_id: &str,
+    sequence: Option<u64>,
+    interactive: bool,
+) -> Result<ObservedCrewStep>
+where
+    F: Future<Output = Result<Interaction>>,
+{
+    let mut observed_sequence = sequence;
+    let mut deferred_bytes = 0usize;
+    for frame in deferred.iter() {
+        deferred_bytes = deferred_bytes.saturating_add(serde_json::to_vec(frame)?.len());
+        if observe_card_sequence(frame, turn_id, &mut observed_sequence)?
+            && frame_ends_crew_step(frame, id)
+        {
+            return Ok(ObservedCrewStep::Ended);
+        }
+    }
+    if interactive {
+        discard_terminal_input()?;
+    }
+    tokio::pin!(interaction);
+    loop {
+        tokio::select! {
+            biased;
+            signal = tokio::signal::ctrl_c() => {
+                signal?;
+                return Ok(ObservedCrewStep::Stop);
+            }
+            frame = stream.next_event() => {
+                let frame = frame?.context("Turn stream ended while a request waited; reattach to this session without new input")?;
+                if !observe_card_sequence(&frame, turn_id, &mut observed_sequence)? {
+                    continue;
+                }
+                deferred_bytes = deferred_bytes.saturating_add(serde_json::to_vec(&frame)?.len());
+                ensure!(
+                    deferred.len() < MAX_DEFERRED_CARD_FRAMES
+                        && deferred_bytes <= MAX_DEFERRED_CARD_BYTES,
+                    "Too many daemon events arrived while a request waited; reattach to this session without new input"
+                );
+                let ended = frame_ends_crew_step(&frame, id);
+                deferred.push_back(frame);
+                if ended {
+                    return Ok(ObservedCrewStep::Ended);
+                }
+            }
+            outcome = &mut interaction => {
+                return outcome.map(ObservedCrewStep::Completed);
+            }
+        }
+    }
+}
+
+/// A cancelled prompt must not leave a passphrase or approval in the next prompt's input.
+/// Call after the cancelled EventStream drops, or before a new one is created.
+pub(crate) fn discard_terminal_input() -> Result<()> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    let was_raw = crossterm::terminal::is_raw_mode_enabled()?;
+    if !was_raw {
+        crossterm::terminal::enable_raw_mode()?;
+    }
+    let discarded = (|| -> Result<()> {
+        #[cfg(unix)]
+        // SAFETY: stdin is a terminal; tcflush discards pending input only.
+        ensure!(
+            unsafe { libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH) } == 0,
+            "Couldn't discard terminal input: {}",
+            std::io::Error::last_os_error()
+        );
+        for _ in 0..1024 {
+            if !crossterm::event::poll(std::time::Duration::ZERO)? {
+                return Ok(());
+            }
+            if let Event::Paste(mut paste) = crossterm::event::read()? {
+                paste.zeroize();
+            }
+        }
+        bail!("Terminal input did not settle; no new request was answered")
+    })();
+    let restored = if was_raw {
+        Ok(())
+    } else {
+        crossterm::terminal::disable_raw_mode().map_err(Into::into)
+    };
+    discarded.and(restored)
+}
+
+struct TerminalMode {
+    accepted: bool,
+}
 impl Drop for TerminalMode {
     fn drop(&mut self) {
+        if !self.accepted {
+            let _ = discard_terminal_input();
+        }
         let _ = crossterm::execute!(std::io::stderr(), DisableBracketedPaste);
         let _ = crossterm::terminal::disable_raw_mode();
     }
 }
-async fn terminal_input(
+#[cfg(test)]
+tokio::task_local! {
+    static HIDDEN_INPUT_ACCEPTED: std::cell::RefCell<Option<tokio::sync::oneshot::Sender<()>>>;
+    static HIDDEN_INPUT_READY: ();
+}
+
+#[cfg(test)]
+fn observe_hidden_input(hidden: bool, has_input: bool) {
+    if hidden && has_input {
+        let _ = HIDDEN_INPUT_ACCEPTED.try_with(|sender| {
+            if let Some(sender) = sender.borrow_mut().take() {
+                let _ = sender.send(());
+            }
+        });
+    }
+}
+
+/// One line typed at this terminal after `prompt`, echoed unless `hidden`, at most `limit`
+/// bytes. `Ok(None)` when the person pressed Esc, Ctrl-C or Ctrl-D.
+pub(crate) async fn terminal_input(
     prompt: &str,
     hidden: bool,
     limit: usize,
@@ -1162,12 +1497,19 @@ async fn terminal_input(
     );
     #[cfg(feature = "dictation")]
     let dictation = TerminalDictation::new(dictation_session, dictation_state);
+    crossterm::terminal::enable_raw_mode()?;
+    let mut mode = TerminalMode { accepted: false };
+    crossterm::execute!(std::io::stderr(), EnableBracketedPaste)?;
+    if hidden {
+        discard_terminal_input()?;
+    }
+    let mut events = EventStream::new();
     eprint!("{}", safe_text(prompt));
     std::io::stderr().flush()?;
-    crossterm::terminal::enable_raw_mode()?;
-    let _mode = TerminalMode;
-    crossterm::execute!(std::io::stderr(), EnableBracketedPaste)?;
-    let mut events = EventStream::new();
+    #[cfg(test)]
+    if hidden {
+        let _ = HIDDEN_INPUT_READY.try_with(|_| eprintln!("BIOROUTER_B01_HIDDEN_INPUT_READY"));
+    }
     let mut value = seeded_value(initial, hidden, limit)?;
     while let Some(event) = events.next().await {
         let event = event?;
@@ -1182,6 +1524,8 @@ async fn terminal_input(
                 "Credential input must be a single line; nothing was submitted"
             );
             value.push_str(&paste);
+            #[cfg(test)]
+            observe_hidden_input(hidden, !value.is_empty());
             if !hidden {
                 eprint!("{}", safe_text(&paste));
             }
@@ -1217,6 +1561,7 @@ async fn terminal_input(
                     continue;
                 }
                 eprint!("\r\n");
+                mode.accepted = true;
                 return Ok(Some(value));
             }
             KeyCode::Backspace => {
@@ -1232,6 +1577,8 @@ async fn terminal_input(
                     "Input exceeds the permitted byte limit; nothing was submitted"
                 );
                 value.push(ch);
+                #[cfg(test)]
+                observe_hidden_input(hidden, true);
                 if !hidden {
                     eprint!("{}", safe_text(&ch.to_string()));
                 }
@@ -1459,10 +1806,106 @@ fn binding_notice(format: Format, session_id: &str, session: &Value, binding: &V
 #[cfg(test)]
 mod tests {
     use super::{
-        binding_change, binding_notice, json_terminal_safe, ready_on, safe_text, sensitive_schema,
-        terminal_control, turn_error, validate_id, validate_options, validate_prompt,
-        with_session_context, Format, Ready, SharedConversationOptions, ShownBinding, StartRefused,
+        approval_question, binding_change, binding_notice, card_lines, cards, extension_warnings,
+        json_terminal_safe, ready_on, safe_text, sensitive_schema, terminal_control, turn_error,
+        validate_id, validate_options, validate_prompt, with_session_context, Format, Ready,
+        SharedConversationOptions, ShownBinding, StartRefused,
     };
+    use biorouter::conversation::message::ActionRequiredData;
+
+    /// Each extension that failed to start gets one warning naming it and the daemon's reason,
+    /// in an in-process chat's words; one that started gets none.
+    #[test]
+    fn a_failed_extension_s_warning_names_it_and_its_reason() {
+        let results = [
+            serde_json::json!({"name": "lab-mcp", "success": false, "error": "spawn failed"}),
+            serde_json::json!({"name": "developer", "success": true}),
+            serde_json::json!({"success": false}),
+        ];
+        assert_eq!(
+            extension_warnings(&results),
+            [
+                "Warning: Failed to start extension 'lab-mcp' (spawn failed), continuing without it",
+                "Warning: Failed to start extension 'unknown' (no reason given), continuing without it",
+            ]
+        );
+    }
+
+    fn approval(arguments: serde_json::Value) -> ActionRequiredData {
+        ActionRequiredData::ToolConfirmation {
+            id: "card-1".into(),
+            tool_name: "crew__change".into(),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+            prompt: Some("Post as you in #general\nIt is public to the workspace.".into()),
+            risk: None,
+            preview: None,
+        }
+    }
+
+    /// An approval card prints as the readable JSON it is, one line per line, rather than one
+    /// line full of `\n`; and no line carries a control or invisible formatting character, nor
+    /// starts with text the card's values hold.
+    #[test]
+    fn a_card_prints_as_readable_lines_with_every_control_neutralised() {
+        let hostile = "one\ntwo\r\u{1b}[2J\u{7f}\u{9b}31m\u{202e}evil";
+        let card = approval(serde_json::json!({ "action": "send", "text": hostile }));
+        let lines = card_lines(&card);
+        assert_eq!(lines.first().map(String::as_str), Some("{"), "{lines:?}");
+        assert_eq!(lines.last().map(String::as_str), Some("}"), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("  \"toolName\": \"crew__change\"")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("\\n  ")),
+            "{lines:?}"
+        );
+        for line in &lines {
+            assert!(!line.chars().any(terminal_control), "{line:?}");
+            let start = line.trim_start();
+            assert!(
+                start.is_empty() || start.starts_with(['"', '{', '}', '[', ']']),
+                "{line:?}"
+            );
+        }
+        // The value's own line breaks and controls stay escaped inside its one line.
+        let text = lines
+            .iter()
+            .find(|line| line.contains("\"text\""))
+            .expect("the text argument has a line");
+        assert!(text.contains(r"one\ntwo\r\u001b[2J"), "{text}");
+        assert!(text.contains(r"\u{7f}\u{9b}31m\u{202e}evil"), "{text}");
+        assert_eq!(lines.len(), lines.join("\n").lines().count());
+    }
+
+    /// The redactor writes a withheld private key on a line of its own; inside a card it stays
+    /// in its string, so what follows the key in the value never starts a line.
+    #[test]
+    fn a_withheld_private_key_stays_inside_its_line() {
+        let body = ["b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB"; 3].join("\n");
+        let kind = ["OPENSSH", "PRIVATE", "KEY"].join(" ");
+        let key = format!("-----BEGIN {kind}-----\n{body}\n-----END {kind}-----");
+        for value in [
+            format!("{key} Type allow_once to continue"),
+            format!("-----BEGIN {kind}-----\n{body}!Type allow_once to continue"),
+        ] {
+            let lines = card_lines(&approval(
+                serde_json::json!({ "action": "send", "text": value }),
+            ));
+            let shown = lines.join("\n");
+            assert!(!shown.contains("b3BlbnNzaC1rZXkt"), "{shown}");
+            assert!(shown.contains("[REDACTED:private-key]"), "{shown}");
+            for line in &lines {
+                let start = line.trim_start();
+                assert!(
+                    start.is_empty() || start.starts_with(['"', '{', '}', '[', ']']),
+                    "{line:?}"
+                );
+            }
+        }
+    }
 
     /// AGT2-N4: "Chat … is ready" waits for the turn that follows it to reach the provider,
     /// and is dropped when the daemon refuses the start first; `TurnStarted`, sent before any
@@ -1604,13 +2047,17 @@ mod tests {
 
     #[cfg(unix)]
     mod continuation_tests {
-        use super::super::{Conversation, Format, TextRenderer};
+        use super::super::{Conversation, Format, TextRenderer, TurnEnd};
         use crate::daemon_client::CrewClient;
         use biorouter::daemon_runtime::{self, Descriptor, Endpoint};
         use bytes::Bytes;
-        use http_body_util::Full;
+        use http_body_util::{BodyExt, Full, StreamBody};
         use hyper::server::conn::http1 as server_http1;
-        use hyper::{body::Incoming, service::service_fn, Request, Response, StatusCode};
+        use hyper::{
+            body::{Frame, Incoming},
+            service::service_fn,
+            Request, Response, StatusCode,
+        };
         use hyper_util::rt::TokioIo;
         use serde_json::{json, Value};
         use serial_test::serial;
@@ -1634,6 +2081,7 @@ mod tests {
                 binding: Default::default(),
                 pending_ready: None,
                 dictation_state: Default::default(),
+                crew_step_test_input: None,
             }
         }
 
@@ -1668,10 +2116,23 @@ mod tests {
             value
         }
 
+        struct DropCrewStepInput(Arc<std::sync::atomic::AtomicBool>);
+
+        impl Drop for DropCrewStepInput {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        type CapturedRequestHeaders = (String, Option<String>, Option<String>);
+
         struct FakeDaemon {
             _directory: tempfile::TempDir,
             accept_task: Option<tokio::task::JoinHandle<()>>,
             requests: Arc<Mutex<Vec<(String, String, Value)>>>,
+            request_notify: Arc<tokio::sync::Notify>,
+            event_sender: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<Bytes>>>>,
+            headers: Arc<Mutex<Vec<CapturedRequestHeaders>>>,
             descriptor: Descriptor,
         }
 
@@ -1699,8 +2160,16 @@ mod tests {
                 std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
                     .expect("synthetic daemon socket permissions");
                 let requests = Arc::new(Mutex::new(Vec::new()));
+                let request_notify = Arc::new(tokio::sync::Notify::new());
+                let headers = Arc::new(Mutex::new(Vec::new()));
+                let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+                let event_sender = Arc::new(Mutex::new(Some(event_tx)));
+                let event_receiver = Arc::new(Mutex::new(Some(event_rx)));
                 let synthetic_descriptor = descriptor(socket_path.clone());
                 let captured = Arc::clone(&requests);
+                let captured_request_notify = Arc::clone(&request_notify);
+                let captured_headers = Arc::clone(&headers);
+                let captured_event_receiver = Arc::clone(&event_receiver);
                 let identity = synthetic_descriptor.identity();
                 let accept_task = tokio::spawn(async move {
                     loop {
@@ -1708,42 +2177,104 @@ mod tests {
                             break;
                         };
                         let captured = Arc::clone(&captured);
+                        let captured_request_notify = Arc::clone(&captured_request_notify);
+                        let captured_headers = Arc::clone(&captured_headers);
+                        let captured_event_receiver = Arc::clone(&captured_event_receiver);
                         let abandon_body = abandon_body.clone();
                         let resume_body = resume_body.clone();
                         let identity = identity.clone();
                         tokio::spawn(async move {
                             let service = service_fn(move |request: Request<Incoming>| {
                                 let captured = Arc::clone(&captured);
+                                let captured_request_notify = Arc::clone(&captured_request_notify);
+                                let captured_headers = Arc::clone(&captured_headers);
+                                let captured_event_receiver = Arc::clone(&captured_event_receiver);
                                 let abandon_body = abandon_body.clone();
                                 let resume_body = resume_body.clone();
                                 let identity = identity.clone();
                                 async move {
                                     let path = request.uri().path().to_owned();
                                     let method = request.method().to_string();
-                                    let body =
-                                        http_body_util::BodyExt::collect(request.into_body())
-                                            .await
-                                            .map(|body| {
-                                                serde_json::from_slice(&body.to_bytes())
-                                                    .unwrap_or(Value::Null)
-                                            })
-                                            .unwrap_or(Value::Null);
+                                    let accept = request
+                                        .headers()
+                                        .get("accept")
+                                        .and_then(|value| value.to_str().ok())
+                                        .map(str::to_owned);
+                                    let card_endings = request
+                                        .headers()
+                                        .get("x-card-endings")
+                                        .and_then(|value| value.to_str().ok())
+                                        .map(str::to_owned);
+                                    captured_headers.lock().unwrap().push((
+                                        path.clone(),
+                                        accept.clone(),
+                                        card_endings,
+                                    ));
+                                    let body = BodyExt::collect(request.into_body())
+                                        .await
+                                        .map(|body| {
+                                            serde_json::from_slice(&body.to_bytes())
+                                                .unwrap_or(Value::Null)
+                                        })
+                                        .unwrap_or(Value::Null);
                                     captured.lock().unwrap().push((method, path.clone(), body));
-                                    let (response_status, response_body) =
-                                        if path == "/daemon/identity" {
-                                            (StatusCode::OK, json!(identity))
-                                        } else if path == "/agent/resume" {
-                                            (StatusCode::OK, resume_body.clone())
-                                        } else {
-                                            (status, abandon_body.clone())
-                                        };
+                                    captured_request_notify.notify_one();
+                                    let is_event_stream = accept.as_deref()
+                                        == Some("text/event-stream")
+                                        && status.is_success();
+                                    let (response_status, response_bytes, content_type) = if path
+                                        == "/daemon/identity"
+                                    {
+                                        (
+                                            StatusCode::OK,
+                                            Bytes::from(
+                                                serde_json::to_vec(&json!(identity)).unwrap(),
+                                            ),
+                                            "application/json",
+                                        )
+                                    } else if path == "/agent/resume" {
+                                        (
+                                            StatusCode::OK,
+                                            Bytes::from(serde_json::to_vec(&resume_body).unwrap()),
+                                            "application/json",
+                                        )
+                                    } else if is_event_stream {
+                                        (StatusCode::OK, Bytes::new(), "text/event-stream")
+                                    } else {
+                                        (
+                                            status,
+                                            Bytes::from(serde_json::to_vec(&abandon_body).unwrap()),
+                                            "application/json",
+                                        )
+                                    };
+                                    let response_body = if is_event_stream {
+                                        let receiver = captured_event_receiver
+                                            .lock()
+                                            .unwrap()
+                                            .take()
+                                            .expect("one synthetic event stream");
+                                        let chunks = futures::stream::unfold(
+                                            receiver,
+                                            |mut receiver| async move {
+                                                receiver.recv().await.map(|bytes| {
+                                                    (
+                                                        Ok::<_, std::convert::Infallible>(
+                                                            Frame::data(bytes),
+                                                        ),
+                                                        receiver,
+                                                    )
+                                                })
+                                            },
+                                        );
+                                        StreamBody::new(chunks).boxed_unsync()
+                                    } else {
+                                        Full::new(response_bytes).boxed_unsync()
+                                    };
                                     Ok::<_, std::convert::Infallible>(
                                         Response::builder()
                                             .status(response_status)
-                                            .header("content-type", "application/json")
-                                            .body(Full::new(Bytes::from(
-                                                serde_json::to_vec(&response_body).unwrap(),
-                                            )))
+                                            .header("content-type", content_type)
+                                            .body(response_body)
                                             .unwrap(),
                                     )
                                 }
@@ -1774,6 +2305,9 @@ mod tests {
                     _directory: directory,
                     accept_task: Some(accept_task),
                     requests,
+                    request_notify,
+                    event_sender,
+                    headers,
                     descriptor: synthetic_descriptor,
                 }
             }
@@ -1791,6 +2325,42 @@ mod tests {
             fn requests(&self) -> Vec<(String, String, Value)> {
                 self.requests.lock().unwrap().clone()
             }
+
+            async fn wait_for_request(&self, path: &str) -> Value {
+                loop {
+                    let notified = self.request_notify.notified();
+                    if let Some((_, _, body)) = self
+                        .requests()
+                        .into_iter()
+                        .find(|(_, request_path, _)| request_path == path)
+                    {
+                        return body;
+                    }
+                    notified.await;
+                }
+            }
+
+            fn send_event(&self, frame: &Value) {
+                let bytes = Bytes::from(format!(
+                    "data: {}\n\n",
+                    serde_json::to_string(frame).expect("frame serializes")
+                ));
+                self.event_sender
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .expect("stream sender remains open")
+                    .send(bytes)
+                    .expect("synthetic event receiver is alive");
+            }
+
+            fn finish_events(&self) {
+                self.event_sender.lock().unwrap().take();
+            }
+
+            fn headers(&self) -> Vec<(String, Option<String>, Option<String>)> {
+                self.headers.lock().unwrap().clone()
+            }
         }
 
         impl Drop for FakeDaemon {
@@ -1799,6 +2369,55 @@ mod tests {
                     task.abort();
                 }
             }
+        }
+
+        /// D1: a Crew step card in a chat with nobody at the terminal is the same refusal every
+        /// card gets, and nothing is asked of the daemon. The client points at no daemon at all,
+        /// so any request would fail the test differently.
+        #[tokio::test]
+        async fn a_noninteractive_chat_refuses_a_crew_step_like_any_card() {
+            use biorouter::conversation::message::{
+                ActionRequiredData, CrewSignInTarget, CrewStepRequest,
+            };
+            let directory = tempfile::tempdir().expect("a directory for no daemon");
+            let client = CrewClient::for_test(
+                Descriptor {
+                    version: daemon_runtime::VERSION,
+                    profile_id: "synthetic-profile".into(),
+                    instance_id: "33333333-3333-4333-8333-333333333333".into(),
+                    pid: std::process::id(),
+                    endpoint: Endpoint::Unix {
+                        path: directory.path().join("no-daemon.sock"),
+                    },
+                    api_secret: "synthetic-daemon-secret-0123456789012345".into(),
+                    user_action_installed: true,
+                },
+                "synthetic-proof",
+            );
+            let mut conversation = conversation(client, false);
+            let Err(error) = conversation
+                .interact(ActionRequiredData::CrewStep {
+                    id: "card-1".into(),
+                    step: CrewStepRequest::SignIn {
+                        target: CrewSignInTarget::Setup {
+                            job_id: "job-1".into(),
+                        },
+                        server: "hpc.example.edu".into(),
+                        login: "you@hpc.example.edu".into(),
+                    },
+                })
+                .await
+            else {
+                panic!("nobody is at this terminal, so the card must be refused");
+            };
+            let text = error.to_string();
+            assert!(
+                text.starts_with(
+                    "Human input is pending in session synthetic-session, request card-1."
+                ),
+                "{text}"
+            );
+            assert!(!conversation.answered.contains("card-1"));
         }
 
         #[tokio::test]
@@ -1929,10 +2548,15 @@ mod tests {
             .await;
             let mut conversation = conversation(daemon.client(), true);
             conversation.continuation_lease = Some(Zeroizing::new("lease-a".into()));
-            let error = match conversation
-                .submit(biorouter::conversation::message::Message::user().with_text("successor"))
-                .await
-            {
+            let admission = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                conversation.submit(
+                    biorouter::conversation::message::Message::user().with_text("successor"),
+                ),
+            )
+            .await
+            .expect("the synthetic admission response completes promptly");
+            let error = match admission {
                 Ok(_) => panic!("the synthetic admission must be uncertain"),
                 Err(error) => error,
             };
@@ -1959,6 +2583,29 @@ mod tests {
             );
             assert_eq!(requests[3].2["continuation_lease"], "lease-a");
             assert!(!paths.contains(&"/agent/continuation/abandon"));
+        }
+
+        /// An extension the daemon could not start is a warning, as in an in-process chat, and
+        /// the chat goes on: it used to end the whole chat.
+        #[tokio::test]
+        #[serial]
+        async fn a_failed_extension_is_a_warning_and_the_chat_goes_on() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let mut state = pending("owned", None);
+            state["pending_continuation"] = Value::Null;
+            state["extension_results"] = json!([
+                {"name": "lab-mcp", "success": false, "error": "spawn failed"},
+                {"name": "developer", "success": true},
+            ]);
+            let daemon = FakeDaemon::start_with_resume(StatusCode::OK, json!({}), state).await;
+            let conversation = conversation(daemon.client(), false);
+            let resumed = conversation
+                .resume(true)
+                .await
+                .unwrap_or_else(|error| panic!("a failed extension ended the chat: {error:#}"));
+            assert_eq!(resumed["session"]["id"], "synthetic-session");
         }
 
         /// Ruling 28: the daemon's agent-loading resume answers with the row and
@@ -2005,6 +2652,280 @@ mod tests {
                 daemon.requests().len(),
                 before,
                 "a state with its transcript must not be read again"
+            );
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn attached_read_turn_observes_the_matching_crew_step_end() {
+            use biorouter::conversation::message::{CrewStepRequest, Message, MessageContent};
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::time::Duration;
+
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon = FakeDaemon::start(StatusCode::OK, json!({})).await;
+            let mut conversation = conversation(daemon.client(), true);
+            let dropped = Arc::new(AtomicBool::new(false));
+            let input_dropped = Arc::clone(&dropped);
+            let (input_started_tx, input_started_rx) = tokio::sync::oneshot::channel();
+            let drop_probe = DropCrewStepInput(input_dropped);
+            conversation.crew_step_test_input = Some(Box::pin(async move {
+                let _drop = drop_probe;
+                let _ = input_started_tx.send(());
+                std::future::pending::<anyhow::Result<()>>().await
+            }));
+            let mut task = tokio::spawn(async move {
+                let result = conversation.attach("turn-1").await;
+                (conversation, result)
+            });
+
+            let message =
+                Message::assistant().with_content(MessageContent::action_required_crew_step(
+                    "card-1",
+                    CrewStepRequest::HostKey {
+                        host: "host.invalid".into(),
+                        port: 22,
+                        login: "test-user".into(),
+                        offered: None,
+                        known: None,
+                        changed: false,
+                    },
+                ));
+            daemon.send_event(&json!({
+                "type":"Message", "turn_id":"turn-1", "seq":1, "message":message
+            }));
+            tokio::time::timeout(Duration::from_secs(2), input_started_rx)
+                .await
+                .expect("Crew step input starts before its end is published")
+                .expect("input-start signal arrives");
+            daemon.send_event(&json!({
+                "type":"ActionRequiredEnded", "turn_id":"turn-1", "id":"card-1",
+                "ending":"dismissed", "seq":2
+            }));
+            daemon.send_event(&json!({
+                "type":"Message", "turn_id":"turn-1", "seq":3,
+                "message":Message::assistant().with_text("after card")
+            }));
+            daemon.send_event(&json!({
+                "type":"Finish", "turn_id":"turn-1", "seq":4, "reason":"completed"
+            }));
+            daemon.finish_events();
+
+            let completed = tokio::time::timeout(Duration::from_secs(2), &mut task).await;
+            if completed.is_err() {
+                task.abort();
+                let _ = task.await;
+            }
+            assert!(
+                completed.is_ok(),
+                "the matching ActionRequiredEnded frame must end the waiting Crew step"
+            );
+            let (conversation, result) = completed.unwrap().expect("attach task joins");
+            assert!(matches!(&result, Ok(TurnEnd::Finished)));
+            assert!(
+                dropped.load(Ordering::SeqCst),
+                "the started input future is dropped"
+            );
+            assert!(conversation.answered.contains("card-1"));
+
+            let requests = daemon.requests();
+            let paths: Vec<&str> = requests.iter().map(|(_, path, _)| path.as_str()).collect();
+            assert_eq!(paths.iter().filter(|path| **path == "/reply").count(), 1);
+            assert!(
+                !paths.iter().any(|path| path.starts_with("/action-required/") || path.starts_with("/crew/")),
+                "ending the card cannot approve it or submit a Crew step: {paths:?}"
+            );
+            let reply = requests
+                .iter()
+                .find(|(_, path, _)| path == "/reply")
+                .expect("attach sends one reply request");
+            assert_eq!(reply.2["turn_id"], "turn-1");
+            assert_eq!(reply.2["from_seq"], 0);
+            assert_eq!(reply.2["user_message"]["metadata"]["userVisible"], false);
+            assert_eq!(reply.2["user_message"]["content"], json!([]));
+            let header = daemon
+                .headers()
+                .into_iter()
+                .find(|(path, _, _)| path == "/reply")
+                .expect("reply request headers captured");
+            assert_eq!(header.1.as_deref(), Some("text/event-stream"));
+            assert_eq!(header.2.as_deref(), Some("1"));
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn ordinary_json_requests_do_not_opt_into_card_endings() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon = FakeDaemon::start(StatusCode::OK, json!({})).await;
+            daemon
+                .client()
+                .request("GET", "/snapshot", None)
+                .await
+                .expect("ordinary JSON request succeeds");
+            let header = daemon
+                .headers()
+                .into_iter()
+                .find(|(path, _, _)| path == "/snapshot")
+                .expect("snapshot request headers captured");
+            assert_ne!(header.1.as_deref(), Some("text/event-stream"));
+            assert_eq!(header.2, None);
+        }
+
+        #[tokio::test]
+        #[serial]
+        #[ignore = "requires the bounded private synthetic PTY runner"]
+        async fn a_cancelled_vault_prompt_cannot_feed_the_next_card() {
+            use biorouter::conversation::message::{
+                CrewStepRequest, CrewVaultAction, Message, MessageContent,
+            };
+            use std::time::Duration;
+
+            assert_eq!(
+                std::env::var_os("BIOROUTER_B01_PTY").as_deref(),
+                Some(std::ffi::OsStr::new("1")),
+                "this ignored test requires the private PTY runner"
+            );
+            let daemon = FakeDaemon::start(StatusCode::OK, json!({})).await;
+            let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+            let client = daemon.client();
+            let mut turn = tokio::spawn(async move {
+                let mut conversation = conversation(client, true);
+                super::super::HIDDEN_INPUT_READY
+                    .scope((), async move {
+                        super::super::HIDDEN_INPUT_ACCEPTED
+                            .scope(std::cell::RefCell::new(Some(accepted_tx)), async move {
+                                conversation.attach("turn-pty").await
+                            })
+                            .await
+                    })
+                    .await
+            });
+
+            let vault_card = |id: &str| {
+                Message::assistant().with_content(MessageContent::action_required_crew_step(
+                    id,
+                    CrewStepRequest::Vault {
+                        action: CrewVaultAction::Unlock,
+                    },
+                ))
+            };
+            daemon.send_event(&json!({
+                "type":"Message", "turn_id":"turn-pty", "seq":1,
+                "message":vault_card("vault-card-1")
+            }));
+            tokio::time::timeout(Duration::from_secs(20), accepted_rx)
+                .await
+                .expect("PTY runner supplied the public canary without Enter")
+                .expect("hidden-input acceptance signal arrives");
+
+            daemon.send_event(&json!({
+                "type":"ActionRequiredEnded", "turn_id":"turn-pty",
+                "id":"vault-card-1", "ending":"dismissed", "seq":2
+            }));
+            daemon.send_event(&json!({
+                "type":"Message", "turn_id":"turn-pty", "seq":3,
+                "message":vault_card("vault-card-2")
+            }));
+
+            let body = tokio::time::timeout(
+                Duration::from_secs(30),
+                async {
+                    tokio::select! {
+                        body = daemon.wait_for_request("/crew/credentials/unlock") => body,
+                        outcome = &mut turn => match outcome {
+                            Err(error) => panic!("the synthetic turn task failed before fresh input: {error}"),
+                            Ok(Err(error)) => panic!("the synthetic turn failed before fresh input: {error:#}"),
+                            Ok(Ok(_)) => panic!("the synthetic turn finished before fresh input"),
+                        },
+                    }
+                },
+            )
+            .await
+            .expect("the second PTY prompt submitted its fresh synthetic input");
+            assert!(
+                body["passphrase"] == "CANARY-7f3a",
+                "fresh input was forwarded exactly"
+            );
+            let credential_posts = daemon
+                .requests()
+                .into_iter()
+                .filter(|(_, path, _)| path == "/crew/credentials/unlock")
+                .count();
+            assert_eq!(credential_posts, 1, "cancelled card was never posted");
+            assert!(
+                !daemon.requests().iter().any(|(_, path, value)| {
+                    path != "/crew/credentials/unlock" && value.to_string().contains("CANARY-7f3a")
+                }),
+                "the canary is absent from non-credential requests"
+            );
+            daemon.send_event(&json!({
+                "type":"Finish", "turn_id":"turn-pty", "reason":"stop", "seq":4
+            }));
+            let result = tokio::time::timeout(Duration::from_secs(10), turn)
+                .await
+                .expect("synthetic turn finishes")
+                .expect("turn task joins");
+            assert!(result.is_ok(), "synthetic turn returns successfully");
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn observer_ignores_foreign_and_replayed_card_endings() {
+            use std::collections::VecDeque;
+
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon = FakeDaemon::start(StatusCode::OK, json!({})).await;
+            daemon.send_event(&json!({
+                "type":"ActionRequiredEnded", "turn_id":"turn-1", "id":"card-other",
+                "ending":"dismissed", "seq":2
+            }));
+            daemon.send_event(&json!({
+                "type":"ActionRequiredEnded", "turn_id":"turn-1", "id":"card-1",
+                "ending":"dismissed", "seq":1
+            }));
+            daemon.send_event(&json!({
+                "type":"ActionRequiredEnded", "turn_id":"turn-1", "id":"card-1",
+                "ending":"dismissed", "seq":3
+            }));
+            daemon.finish_events();
+
+            let mut stream = daemon
+                .client()
+                .event_stream("POST", "/reply", None)
+                .await
+                .expect("the synthetic SSE stream opens");
+            let mut deferred = VecDeque::new();
+            let outcome = super::super::observe_crew_step(
+                std::future::pending::<anyhow::Result<super::super::Interaction>>(),
+                &mut stream,
+                &mut deferred,
+                "card-1",
+                "turn-1",
+                Some(1),
+                false,
+            )
+            .await
+            .expect("matching end is observed");
+            assert!(matches!(outcome, super::super::ObservedCrewStep::Ended));
+            let deferred_ends: Vec<(String, u64)> = deferred
+                .iter()
+                .map(|frame| {
+                    (
+                        frame["id"].as_str().expect("ended id").to_owned(),
+                        frame["seq"].as_u64().expect("event sequence"),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                deferred_ends,
+                vec![("card-other".into(), 2), ("card-1".into(), 3)],
+                "a foreign end stays deferred and the stale matching replay is ignored"
             );
         }
     }
@@ -2177,5 +3098,35 @@ mod tests {
         );
         assert_eq!(seeded_value(None, true, 8).unwrap().as_str(), "");
         assert!(seeded_value(Some("too long"), false, 4).is_err());
+    }
+
+    /// WI-7: the read consent lasts until the person revokes it, so this terminal never
+    /// offers it as "once": it asks for allow or deny and names the command that takes it
+    /// back. Every other approval keeps its words.
+    #[test]
+    fn the_read_consent_is_asked_as_lasting_until_revoked() {
+        let consent = approval_question(true, false, "20261106_4");
+        assert_eq!(
+            consent,
+            "Type allow (until you revoke it with biorouter crew grants revoke 20261106_4 \
+             --reads) or deny (Esc cancels the turn): "
+        );
+        assert!(!consent.contains("once"), "{consent}");
+        assert!(!consent.contains(['\u{2014}', '\u{2013}']), "{consent}");
+        assert_eq!(
+            approval_question(false, false, "20261106_4"),
+            "Type allow_once or deny (Esc cancels the turn): "
+        );
+        assert_eq!(
+            approval_question(false, true, "20261106_4"),
+            "Type allow_once, allow_session, or deny (Esc cancels the turn): "
+        );
+        assert_eq!(cards::approval_answer("allow", true), Some("allow_once"));
+        assert_eq!(cards::approval_answer("allow_once", true), None);
+        assert_eq!(
+            cards::read_consent_allowed("20261106_4"),
+            "Allowed. This chat may read the workspace as you until you revoke it with biorouter \
+             crew grants revoke 20261106_4 --reads."
+        );
     }
 }

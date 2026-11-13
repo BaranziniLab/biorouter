@@ -299,3 +299,33 @@ fn status_says_when_the_keyring_does_not_answer() {
     assert_eq!(status.backend, "encrypted_vault");
     assert!(status.available);
 }
+
+/// AO-9: only an unlocked vault that lacks a key says the key is absent
+/// (`crew_device_key_missing` upstream); a locked vault keeps its own refusal, and the words
+/// stay the vault's.
+#[test]
+#[serial(crew_credentials)]
+fn only_an_unlocked_vault_without_the_key_says_it_is_absent() {
+    let (_root, vault) = new_vault();
+    vault
+        .init(passphrase("correct horse battery staple"))
+        .unwrap();
+    let absent = vault
+        .read("device:gone", || {
+            Err(anyhow::anyhow!("legacy fallback was unexpectedly used"))
+        })
+        .unwrap_err();
+    assert!(is_absent(&absent));
+    assert_eq!(
+        absent.to_string(),
+        "Crew credential is absent from the encrypted vault"
+    );
+    vault.lock().unwrap();
+    let locked = vault
+        .read("device:gone", || {
+            Err(anyhow::anyhow!("legacy fallback was unexpectedly used"))
+        })
+        .unwrap_err();
+    assert!(!is_absent(&locked), "{locked}");
+    assert!(!is_absent(&anyhow::anyhow!("anything else")));
+}

@@ -16,6 +16,7 @@ import {
   subscribeSessionNameChanges,
 } from '../../../utils/sessionNameSync';
 import { grantDestinationLabel, sessionGrantState, type CrewSessionGrant } from '../api/grants';
+import { PersonReads } from '../account/PersonReads';
 import { AlertCircle, AlertTriangle } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
@@ -178,8 +179,23 @@ export function useKnownChatTitle(sessionId: string | null): string | null {
  *
  * React gates nothing: Revoke is offered whenever the daemon lists a grant (or just granted one),
  * and the daemon decides what happens. Errors from Allow render here, in this pane's error slot.
+ *
+ * Under it, the workspaces the chat may read as the person without a grant (account ownership
+ * AO-12's read consent), each with Revoke (`PersonReads`).
  */
-export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccessPaneProps) {
+export function ChatAccessPane(props: ChatAccessPaneProps) {
+  const { ui, grantSessionId } = useCrew();
+  const intent = ui.pane?.mode === 'chat-access' ? ui.pane : null;
+  const sessionId = props.sessionId ?? intent?.sessionId ?? grantSessionId ?? null;
+  return (
+    <>
+      <ChatAccessPaneBody {...props} />
+      <PersonReads sessionId={sessionId} />
+    </>
+  );
+}
+
+function ChatAccessPaneBody({ sessionId: sessionProp, className }: ChatAccessPaneProps) {
   const controller = useCrew();
   const {
     connections,

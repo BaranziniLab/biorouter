@@ -231,6 +231,19 @@ const REGISTRY: &[Guard] = &[
                        filter. Plus its import",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/crew_tools/mod.rs",
+                counts: c(1, 0, 1),
+                kind: SiteKind::Guard,
+                what: "`Ctx::lists_chat`, the one filter every Crew person-tool action that \
+                       names another chat asks before it does (account ownership AO-12): \
+                       `crew__read grants_list` and `crew__change grants_revoke` name chats \
+                       holding a grant, and `crew__read tasks_list` and `tasks_watch` show a \
+                       task whose conversation is a chat of its own. A model's call, not an HTTP \
+                       caller, so it is `workspace_list`'s rule on the call's one sampled \
+                       capability rather than `lists_session`, which needs the person's proof. \
+                       Plus its import",
+            },
+            Site {
                 file: "crates/biorouter/src/agents/schedule_tool.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
@@ -394,11 +407,15 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/action_required.rs",
-                counts: c(1, 1, 0),
+                counts: c(2, 2, 0),
                 kind: SiteKind::Guard,
                 what: "the typed folder-decision branch of `POST /action-required/tool-confirmation`, \
-                       before resolving the named chat's pending request. The extra ref is \
-                       the module qualifier in `session_reach::session_reach`, not a second gate",
+                       before resolving the named chat's pending request, and `POST \
+                       /action-required/crew-step` (`dismiss_crew_step`), before the registry is \
+                       read, so a 404 for a private chat's Crew step card cannot tell a caller \
+                       out of reach that the chat exists. The count went 1 -> 2 because the \
+                       dismiss route is new, not because a guarded route grew a second gate. \
+                       Each call also names the module once, which is the second ref",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/folder_access.rs",

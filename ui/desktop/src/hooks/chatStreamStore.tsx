@@ -43,11 +43,13 @@ import {
   subscribeSessionRowChanges,
 } from '../utils/sessionRowSync';
 import { isReadOnlySubagentChat } from '../components/subagent/subagentReadOnly';
+import { noteCardEnded, noteStreamedCrewStep } from '../components/crew/chat/streamedCrewSteps';
 import { mergeStopRecord } from '../components/conversation/turnStoppedNotice';
 import { isBrowserSurface } from '../utils/surface';
 import {
   createUserMessage,
   getCompactingMessage,
+  getCrewStepContent,
   getElicitationContent,
   getSecretRequestContent,
   getThinkingMessage,
@@ -179,6 +181,95 @@ type TurnStateEvent = {
   type: 'TurnState';
   active_turn_id: string | null;
 };
+
+/**
+ * WI-17: the daemon's word that a card this chat drew stopped waiting: its ID and how it ended,
+ * never a value. Read off the frame rather than the generated union, so it parses whether or
+ * not this build's client knows the frame yet.
+ */
+type ActionRequiredEndedEvent = {
+  type: 'ActionRequiredEnded';
+  id: string;
+  ending: string;
+};
+
+function actionRequiredEndedEvent(event: MessageEvent): ActionRequiredEndedEvent | null {
+  const candidate = event as unknown as Partial<ActionRequiredEndedEvent>;
+  return candidate.type === 'ActionRequiredEnded' && typeof candidate.id === 'string'
+    ? (candidate as ActionRequiredEndedEvent)
+    : null;
+}
+
+/**
+ * The headers of a request for a chat's stream (`/reply`, the observer): the person's proof,
+ * and WI-17's ask to be told when each card ends (the daemon's `CARD_ENDINGS_HEADER`). The ask
+ * is a header because a client that predates the frame must never be sent one. Synchronous on
+ * purpose, so a stream request is made in the same tick it was before.
+ */
+function withCardEndings(proof: Record<string, string>): Record<string, string> {
+  return { ...proof, 'X-Card-Endings': '1' };
+}
+
+/**
+ * Whether `message` carries a card that waits for the person (WI-17's (f)): an approval, a
+ * question, a credential card or a Crew step. A changed host key's Crew step is a notice: it
+ * waits for nothing, so the chat is not waiting on it.
+ */
+function waitsForThePerson(message: Message): boolean {
+  if (
+    getToolConfirmationContent(message) !== undefined ||
+    getElicitationContent(message) !== undefined ||
+    getSecretRequestContent(message) !== undefined
+  ) {
+    return true;
+  }
+  const step = getCrewStepContent(message)?.data;
+  if (!step || step.actionType !== 'crewStep') return false;
+  const asked = step.step as { kind?: string; changed?: boolean } | undefined;
+  return !(asked?.kind === 'hostKey' && asked.changed === true);
+}
+
+/** The ID of the card `message` carries when it waits for the person (`waitsForThePerson`). */
+function waitingCardId(message: Message): string | undefined {
+  if (!waitsForThePerson(message)) return undefined;
+  return cardIdOf(message);
+}
+
+/** The ID of the first card `message` carries, of any kind. */
+function cardIdOf(message: Message): string | undefined {
+  for (const content of message.content) {
+    if (content.type !== 'actionRequired') continue;
+    const id = (content.data as { id?: unknown }).id;
+    if (typeof id === 'string') return id;
+  }
+  return undefined;
+}
+
+/** The kinds of card the daemon never stores, which only a stream can draw. */
+const DECISION_CARDS = new Set(['toolConfirmation', 'secretRequest', 'crewStep']);
+
+/** The ID of the decision card `message` carries ({@link DECISION_CARDS}), if any. */
+function decisionCardIdOf(message: Message): string | undefined {
+  for (const content of message.content) {
+    if (content.type !== 'actionRequired') continue;
+    const data = content.data as { actionType?: unknown; id?: unknown };
+    if (typeof data.actionType === 'string' && DECISION_CARDS.has(data.actionType)) {
+      return typeof data.id === 'string' ? data.id : undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether the transcript already draws the decision card `message` carries (WI-17). The daemon
+ * hands a window the cards still waiting again after a resync from storage, which held none of
+ * them, and a window that kept its view (no resync reached it) must not draw a second copy. An
+ * elicitation and its answer share an ID by design, so they are not decision cards here.
+ */
+function alreadyDrawsCard(messages: Message[], message: Message): boolean {
+  const id = decisionCardIdOf(message);
+  return id !== undefined && messages.some((held) => decisionCardIdOf(held) === id);
+}
 
 function turnStartedEvent(event: MessageEvent): TurnStartedEvent | null {
   const candidate = event as unknown as Partial<TurnStartedEvent>;
@@ -909,6 +1000,12 @@ class ChatStreamController {
    */
   private activeTurnId: string | null = null;
   /**
+   * WI-17: the cards this stream drew that wait for the person and have not ended. When the
+   * daemon says the last of them ended, the chat stops showing as waiting at once rather than
+   * at its next frame.
+   */
+  private waitingCards = new Set<string>();
+  /**
    * Highest per-turn `seq` already applied to the snapshot, for `seqTurnId`.
    * `-1` means "nothing from this turn has been rendered yet", which is the
    * only value at which frame 0 is accepted.
@@ -1554,13 +1651,19 @@ class ChatStreamController {
     // real card arrives as `actionRequired` with `actionType: 'toolConfirmation'`
     // — which is exactly what the shared helper tests, so use it rather than
     // spelling the shape a fourth time.
-    const hasToolConfirmation = getToolConfirmationContent(msg) !== undefined;
-    const hasElicitation = getElicitationContent(msg) !== undefined;
-    // Issue #117. A credential card parks the turn the same way, and the chat
-    // must say so — the install is genuinely waiting on the person.
-    const hasSecretRequest = getSecretRequestContent(msg) !== undefined;
+    //
+    // Issue #117: a credential card parks the turn the same way, and the chat
+    // must say so — the install is genuinely waiting on the person. So does a
+    // Crew step (WI-17), which showed as streaming until this said otherwise.
+    const waitingCard = waitingCardId(msg);
+    if (waitingCard !== undefined) this.waitingCards.add(waitingCard);
+    for (const content of msg.content) {
+      // An approval the agent's own loop raised carries its tool call's ID, and
+      // the call's response means it was answered.
+      if (content.type === 'toolResponse') this.waitingCards.delete(content.id);
+    }
     const derivedChatState =
-      hasToolConfirmation || hasElicitation || hasSecretRequest
+      waitingCard !== undefined
         ? ChatState.WaitingForUserInput
         : getCompactingMessage(msg)
           ? ChatState.Compacting
@@ -2440,6 +2543,24 @@ class ChatStreamController {
     };
   }
 
+  /**
+   * WI-17: the daemon said a card ended. Noted for the card to draw its ended state at once
+   * (`streamedCrewSteps.ts`), whatever kind of card it names and whether or not its card has
+   * arrived yet; and when it was the last card this chat waited on, the chat stops showing as
+   * waiting for the person.
+   */
+  private applyCardEnded(ended: ActionRequiredEndedEvent): void {
+    noteCardEnded(this.sessionId, ended.id, ended.ending);
+    const waited = this.waitingCards.delete(ended.id);
+    if (
+      waited &&
+      this.waitingCards.size === 0 &&
+      this.snapshot.chatState === ChatState.WaitingForUserInput
+    ) {
+      this.setChatState(ChatState.Streaming);
+    }
+  }
+
   private finishCurrentStream = async (error?: ChatTurnErrorData): Promise<void> => {
     // Sampled at the very top, and once. It reads `activeTurnId`, which
     // `retireActiveTurn()` below clears — so a check made afterwards answers
@@ -2454,6 +2575,8 @@ class ChatStreamController {
     // The turn is over: any skeleton whose authoritative request never arrived
     // (cancel, provider abort, a dropped block) must not linger.
     this.clearPendingToolCalls();
+    // No card of a turn outlives it.
+    this.waitingCards.clear();
     this.abortController = null;
     // Retire the turn's attach handle and its sequence numbering together. Both
     // outliving the turn is the same bug in two shapes: a stale handle sends a
@@ -2725,6 +2848,11 @@ class ChatStreamController {
               isReplayFrame(event)
             );
             if (!msg) break;
+            if (alreadyDrawsCard(currentMessages, msg)) break;
+            // A Crew step card is never stored, so a streamed one is the only kind the
+            // daemon can be waiting on: only it may draw buttons (`streamedCrewSteps.ts`).
+            // Noted before the snapshot swap, so its first render already knows.
+            noteStreamedCrewStep(this.sessionId, msg);
             currentMessages = pushMessage(currentMessages, msg);
             // #22 — one snapshot swap (state + tokens + transcript + skeleton
             // cleanup) per streamed event, not three.
@@ -2829,8 +2957,13 @@ class ChatStreamController {
           case 'Notification':
             this.updateNotifications(event as NotificationEvent);
             break;
-          default:
+          default: {
+            // WI-17. Matched here rather than as a case so it parses whether or not this
+            // build's generated client knows the frame.
+            const ended = actionRequiredEndedEvent(event);
+            if (ended) this.applyCardEnded(ended);
             break;
+          }
         }
       }
 
@@ -3151,7 +3284,7 @@ class ChatStreamController {
     // the stream id first would leave a window in which this reattach claims the
     // turn with no stream on it. The guard is re-run afterwards because the
     // await is a window in which a submit or a Stop can arrive.
-    const headers = await userActionHeaders();
+    const headers = withCardEndings(await userActionHeaders());
     if (this.activeStreamId !== streamId) return false;
     this.reattachesThisTurn += 1;
 
@@ -3288,7 +3421,7 @@ class ChatStreamController {
             // `stopObserving()` arriving in that window would abort the OLD
             // socket and then be overwritten by a fresh un-aborted one —
             // leaving `hasLiveTurn()` true for a loop that is being torn down.
-            headers: await userActionHeaders(),
+            headers: withCardEndings(await userActionHeaders()),
             path: { session_id: this.sessionId },
             throwOnError: true,
             signal: socket.signal,
@@ -3605,7 +3738,7 @@ class ChatStreamController {
         // person: `submitPreparedMessage` sends the proof here and this did not,
         // which made every mid-turn reload of a private chat a 403 that the SSE
         // client turns into an empty stream. See `userActionHeaders`.
-        headers: await userActionHeaders(),
+        headers: withCardEndings(await userActionHeaders()),
         body: buildAttachRequest(
           this.sessionId,
           turnId,
@@ -3930,7 +4063,7 @@ class ChatStreamController {
         // the user's surface, so every call it makes is a user act; the model
         // reaching this route over HTTP is precisely the caller the header
         // separates out.
-        headers: await userActionHeaders(),
+        headers: withCardEndings(await userActionHeaders()),
         body: {
           session_id: this.sessionId,
           user_message: newMessage,

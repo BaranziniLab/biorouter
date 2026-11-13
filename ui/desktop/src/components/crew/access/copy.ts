@@ -117,10 +117,10 @@ export const accessCopy = {
    * the workspace again by itself whenever the connection comes back (F3), so nothing here tells
    * the person to reconnect: it says what happens next.
    */
-  unconfirmed: 'Stopped on this device. Crew confirms it with the workspace when it reconnects.',
+  unconfirmed: 'Stopped on this computer. Crew confirms it with the workspace when it reconnects.',
   /** The same, naming the workspace, where the note is the chat's one word on it (AG-F11). */
   unconfirmedIn: (workspace: string) =>
-    `Stopped on this device. ${workspace} confirms it when it reconnects.`,
+    `Stopped on this computer. ${workspace} confirms it when it reconnects.`,
   /**
    * A Retry that came back "stopped on this device" again while the workspace is still out of
    * reach (AG-F12): the same sentence as before read as if nothing had happened. `workspace` is
@@ -134,7 +134,7 @@ export const accessCopy = {
   connectToConfirm: 'Connect to confirm it now.',
   connect: 'Connect',
   /** The same, once the connection is back and the daemon is asking the workspace (F3). */
-  confirming: 'Stopped on this device. Confirming with the workspace…',
+  confirming: 'Stopped on this computer. Confirming with the workspace…',
   /** The workspace confirmed a revoke this view saw waiting (F3). */
   confirmed: 'Confirmed. The workspace has stopped this chat’s access too.',
   /** The note stays until the person is done with it (NEW-4). */
@@ -178,7 +178,7 @@ export const accessCopy = {
     revoked: 'Revoked',
     /** A revoked row this device saw confirmed, dated so two revokes of one chat differ (F5). */
     revokedAt: (time: string) => `Revoked · ${time}`,
-    unconfirmed: 'Stopped on this device',
+    unconfirmed: 'Stopped on this computer',
     /** A task's grant after the task: it ended with the task, nobody revoked it (Q2-09). */
     ended: 'Ended',
     /**

@@ -71,6 +71,32 @@ describe('usePeopleDirectory', () => {
     // The verified snapshot wins over a people-map entry for the same principal.
     expect(personLabel(BOB, 'inline', directory)).toBe('Bob Lee (@bob)');
   });
+
+  it('never calls an author a former member when that account is a member now (AO-1)', () => {
+    // bob was let in again under a new principal; his earlier messages carry the old one.
+    const OLD_BOB = '44444444-4444-4444-8444-444444444444';
+    const people: CrewPeopleMap = {
+      [OLD_BOB]: { username: 'bob', display_name: 'Bob Lee', active: false },
+      '33333333-3333-4333-8333-333333333333': {
+        username: 'dan',
+        display_name: 'Dan Wu',
+        active: false,
+      },
+    };
+    const snapshot: Snapshot = {
+      ...wireSnapshot,
+      former_principals: [{ id: OLD_BOB, username: 'bob', display_name: 'Bob Lee' }],
+    };
+    const directory = buildPeopleDirectory(snapshot, null, people);
+    expect(personLabel(OLD_BOB, 'inline', directory)).not.toMatch(/former member/);
+    // Still a former principal for lists and actions: bob is listed once, as the active member.
+    expect(directory.isFormer(OLD_BOB)).toBe(true);
+    expect(directory.people.filter((person) => person.username === 'bob')).toHaveLength(1);
+    // Someone who left and is not back is still said to be a former member.
+    expect(personLabel('33333333-3333-4333-8333-333333333333', 'inline', directory)).toBe(
+      'Dan Wu (@dan) · former member'
+    );
+  });
 });
 
 describe('avatars', () => {

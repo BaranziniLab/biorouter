@@ -1692,6 +1692,378 @@ test('dashes: an em or en dash anywhere in docs/crew is refused', () => {
   );
 });
 
+test("account-sentences: the first pass's words, written from the design, are refused (account ownership)", () => {
+  const JOINING_PAGE = 'docs/crew/joining-a-workspace.md';
+  const ACCOUNT_COPY = 'ui/desktop/src/components/crew/account/copy.ts';
+  const TOOL_HOST = 'crates/biorouter-server/src/routes/crew_tools/mod.rs';
+  const AGENT_ROUTES = 'crates/biorouter-server/src/routes/agent.rs';
+  // The badge, buttons and card answer the first pass named, which no screen shows. The badge
+  // read "This device" until the fix wave of 2026-11 renamed it; the old name is refused now.
+  assertCaught(
+    { [PRIVACY]: (text) => text.replaceAll('**This computer**', '**This device**') },
+    'account-sentences',
+    /privacy-and-security\.md does not name the control .* shows as \*\*This computer\*\*/
+  );
+  assertCaught(
+    { [HOSTING]: (text) => text.replaceAll('**Open it on this computer**', '**Open**') },
+    'account-sentences',
+    /hosting-a-workspace\.md does not name the control .* shows as \*\*Open it on this computer\*\*/
+  );
+  assertCaught(
+    { [AGENTS]: (text) => text.replaceAll('**Allow once**', '**Allow**') },
+    'account-sentences',
+    /agents-and-chat-access\.md does not name the control .* shows as \*\*Allow once\*\*/
+  );
+  // A quote of the chat's refusal in other words than the code's.
+  assertCaught(
+    {
+      [AGENTS]: swap(
+        '| "This chat uses a public model, so it can\'t read this workspace as you. Its connection and the workspace both have to be Public. Choose a private model to read it." |',
+        '| "This chat uses a public model, so it can\'t read this workspace. Choose a private model." |'
+      ),
+    },
+    'account-sentences',
+    /quotes "This chat uses a public model, so it can't read this workspace\. Choose a private model\.", which is not how PUBLIC_MODEL_READ/
+  );
+  // The code rewords a bar note and the manual keeps the old words.
+  assertCaught(
+    {
+      [ACCOUNT_COPY]: swap(
+        'Choose Add this computer again to make a new one.',
+        'Choose Add this computer again to get a new key.'
+      ),
+    },
+    'account-sentences',
+    /joining-a-workspace\.md quotes "This computer no longer has its key for \{workspace\}\. Choose Add this computer again to make a new one\.", which is not how the Add this computer again notes/
+  );
+  // A page a reader is sent to drops a sentence it must quote.
+  assertCaught(
+    {
+      [JOINING_PAGE]: swap(
+        ' Crew says "Two people host a workspace named chen-lab here. Check the host before you open one.", and names each host in the list.',
+        ' Crew names each host in the list.'
+      ),
+    },
+    'account-sentences',
+    /joining-a-workspace\.md does not quote Open a workspace on a server's note for two hosts of one name/
+  );
+  // A control renamed in the code, and the manual still names the old one.
+  assertCaught(
+    {
+      [ACCOUNT_COPY]: swap(
+        "confirmAction: 'Remove computer',",
+        "confirmAction: 'Revoke computer',"
+      ),
+    },
+    'account-sentences',
+    /account\/copy\.ts no longer shows "Remove computer"/
+  );
+  // A constant reworded in the code fails every quote of its old words.
+  assertCaught(
+    {
+      [AGENT_ROUTES]: swap(
+        "so they run only in a chat's own turn, where their approval cards can be shown.",
+        'so they run only inside a chat.'
+      ),
+    },
+    'account-sentences',
+    /agents-and-chat-access\.md quotes "crew__read and crew__change act as you, so they run only in a chat's own turn/
+  );
+  // A family whose words are gone from the code fails instead of passing.
+  assertCaught(
+    {
+      [TOOL_HOST]: swap(
+        '"Let this chat read {workspace} as you\\nIt can then read',
+        '"Allow this chat to read {workspace} as you\\nIt can then read'
+      ),
+    },
+    'account-sentences',
+    /found no the read-consent card's first line/
+  );
+});
+
+test('account-sentences: the words the 2026-11 fix wave replaced are refused (account ownership)', () => {
+  const TOOL_HOST = 'crates/biorouter-server/src/routes/crew_tools/mod.rs';
+  const ONBOARDING_COPY = 'ui/desktop/src/components/crew/onboarding/copy.ts';
+  // The consent card's old second line, as the first pass of the manual quoted it.
+  assertCaught(
+    {
+      [AGENTS]: swap(
+        '"It can then read what you see in chen-lab on lab.example.edu (messages, files, names and the context document), and every change still asks you first. Take this back in this chat\'s Crew bar, or with biorouter crew grants revoke 20260924_2 --reads."',
+        '"It can then read what you see in chen-lab on lab.example.edu: messages, files, names and the context document, until you take this back with biorouter crew grants revoke. It changes nothing; every change still asks you."'
+      ),
+    },
+    'account-sentences',
+    /agents-and-chat-access\.md quotes "It can then read what you see in chen-lab on lab\.example\.edu: messages/
+  );
+  // The consent lasts, so its button is not "once".
+  assertCaught(
+    { [AGENTS]: (text) => text.replaceAll('**Allow**', '**Allow once**') },
+    'account-sentences',
+    /agents-and-chat-access\.md does not name the control .* shows as \*\*Allow\*\*/
+  );
+  // A decline the code rewords, and the manual keeps the old words.
+  assertCaught(
+    {
+      [TOOL_HOST]: swap(
+        'READ_DECLINED: &str = "The person declined. Nothing was read.";',
+        'READ_DECLINED: &str = "The person declined. Nothing was read here.";'
+      ),
+    },
+    'account-sentences',
+    /quotes "The person declined\. Nothing was read\.", which is not how READ_DECLINED/
+  );
+  // The question for a count the server could not give, reworded in the code.
+  assertCaught(
+    {
+      [ONBOARDING_COPY]: swap(
+        "'Other people may be connected. Their running agent commands will stop.'",
+        "'Other people may be connected. Their running agent commands end.'"
+      ),
+    },
+    'account-sentences',
+    /joining-a-workspace\.md quotes "Other people may be connected\. Their running agent commands will stop\."/
+  );
+  // The page a host is sent to drops the host's own sentence for a refused rename.
+  assertCaught(
+    {
+      [HOSTING]: swap(
+        ' such as "Crew can\'t follow this account\'s new name, @achen, because @AChen already uses it in chen-lab. Rename the account back to @alice on the server and remove @AChen from chen-lab before renaming it again."',
+        ''
+      ),
+    },
+    'account-sentences',
+    /hosting-a-workspace\.md does not quote the host's refused rename/
+  );
+  // The command line's invitation line on a server that knows accounts, gone from its page.
+  assertCaught(
+    {
+      'docs/crew/command-line.md': swap(
+        ' and `enroll invite` ends with ``@bob joins as soon as they open the workspace. There is no code to approve.``',
+        ''
+      ),
+    },
+    'account-sentences',
+    /command-line\.md does not quote the account invitation's last line/
+  );
+});
+
+test('account-sentences: the desktop says "computer", and its "device" words are refused (2026-11)', () => {
+  // The new-computer notice, quoted in the words it had before.
+  assertCaught(
+    {
+      [PRIVACY]: swap(
+        '"New computer on your account: {fingerprint}, added {date} by signing in to the server."',
+        '"A new device was added to your account on {date}.", followed by "Its fingerprint is {fingerprint}."'
+      ),
+    },
+    'account-sentences',
+    /privacy-and-security\.md quotes "A new device was added to your account on \{date\}\.", which is not how the new-computer notice/
+  );
+  assertCaught(
+    {
+      [PRIVACY]: swap(
+        '"{count} new computers on your account."',
+        '"{count} new devices were added to your account."'
+      ),
+    },
+    'account-sentences',
+    /quotes "\{count\} new devices were added to your account\.", which is not how the new-computer notice/
+  );
+  // The notice's second sentence, gone since it says how a computer was added in its first.
+  assertCaught(
+    {
+      [PRIVACY]: swap(
+        ' by signing in to the server.", or says ',
+        '." and "It signed in to the server as you.", or says '
+      ),
+    },
+    'account-sentences',
+    /privacy-and-security\.md quotes "It signed in to the server as you\.", which is not how the new-computer notice/
+  );
+  // The page the notice sends a reader to stops quoting it.
+  assertCaught(
+    {
+      [PRIVACY]: (text) =>
+        text
+          .replace(
+            ', such as "New computer on your account: {fingerprint}, added {date} by signing in to the server.", or says ',
+            ', or a count '
+          )
+          .replace('"{count} new computers on your account." for several', 'for several'),
+    },
+    'account-sentences',
+    /privacy-and-security\.md does not quote the new-computer notice/
+  );
+  // The Keys dialog's button, named as it read before.
+  assertCaught(
+    { [PRIVACY]: (text) => text.replaceAll('**Remove computer**', '**Remove device**') },
+    'account-sentences',
+    /privacy-and-security\.md does not name the control .* shows as \*\*Remove computer\*\*/
+  );
+  // The command line words its status line its own way, and its page quotes that.
+  assert.deepEqual(
+    failuresOf(fixed, 'account-sentences').filter((failure) =>
+      failure.includes('command-line.md quotes "New computer on your account')
+    ),
+    []
+  );
+});
+
+test('host-key-retry: the page says the retry after a server key reuses the approval (2026-11 review)', () => {
+  const HOST = 'crates/biorouter-server/src/routes/crew_tools/mod.rs';
+  const NOW =
+    "- After you add a server's key, the chat tries the step once more. A change you allowed is not asked again for that one try:";
+  // The line the review found: it told the person to allow the same change twice.
+  assertCaught(
+    {
+      [AGENTS]: (text) =>
+        text.replace(
+          /- After you add a server's key, the chat tries the step once more\.[^\n]*/,
+          "- After you add a server's key, the chat tries the step once more. If that step's card shows again, choose **Allow once** again."
+        ),
+    },
+    'host-key-retry',
+    /must say a change you allowed is not asked again/
+  );
+  // The page stops saying the step is tried once more at all.
+  assertCaught(
+    {
+      [AGENTS]: (text) =>
+        text.replace(
+          /- After you add a server's key, the chat tries the step once more\.[^\n]*\n/,
+          ''
+        ),
+    },
+    'host-key-retry',
+    /does not say that the chat tries a step once more/
+  );
+  // The host stops taking the approval: the page's promise is then wrong.
+  assertCaught(
+    {
+      [HOST]: swap(
+        'if allowed_for_this_retry(&shown, Instant::now()) {',
+        'if false && allowed_for_this_retry(&shown, Instant::now()) {'
+      ),
+    },
+    'host-key-retry',
+    /no longer calls allowed_for_this_retry/
+  );
+  // A host whose retry approval the reader cannot find fails instead of passing.
+  assertCaught(
+    {
+      [HOST]: (text) => text.replaceAll('fn allowed_for_this_retry(', 'fn approval_for_retry('),
+    },
+    'host-key-retry',
+    /update this rule/
+  );
+  assert.ok((real.read(AGENTS) || '').includes(NOW));
+});
+
+test('standalone-contract: phase 2E cannot require a worker call from a hidden run', () => {
+  assertCaught(
+    {
+      'biorouter-self-test.yaml': (text) => text.replace(
+        /(## PHASE 2E:[^\n]*)/,
+        '$1\n     Require `request_count=1` and `exact_denial=true`.'
+      ),
+    },
+    'standalone-contract',
+    /obsolete worker request contract/
+  );
+});
+
+test('standalone-contract: native roster and forged denial limits remain explicit', () => {
+  assertCaught(
+    {
+      'biorouter-self-test.yaml': (text) => text.replace(
+        /effective_model_roster=NOT OBSERVABLE/g,
+        'effective_model_roster=PASS'
+      ),
+    },
+    'standalone-contract',
+    /effective_model_roster=NOT OBSERVABLE/
+  );
+  assertCaught(
+    {
+      'biorouter-self-test.yaml': (text) => text.replace(
+        /forged_call_denial=NOT OBSERVABLE/g,
+        'forged_call_denial=PASS'
+      ),
+    },
+    'standalone-contract',
+    /forged_call_denial=NOT OBSERVABLE/
+  );
+});
+
+test('standalone-contract: the guide cannot omit the checker scope', () => {
+  assertCaught(
+    {
+      'docs/crew/design/cli-guide.md': (text) => text.replace(
+        /hidden_cli_no_invocation_v1/g, 'some_other_contract'
+      ),
+    },
+    'standalone-contract',
+    /native contract limits/
+  );
+});
+
+test('standalone-contract: an input echo stays optional, exact and initial', () => {
+  for (const path of ['biorouter-self-test.yaml', 'docs/crew/design/cli-guide.md']) {
+    assertCaught(
+      { [path]: (text) => text.replace('You may see no input echo.', 'You must see an input echo.') },
+      'standalone-contract',
+      /omits the input echo contract/
+    );
+    assertCaught(
+      {
+        [path]: (text) => text.replace(
+          'Any input echo must be one exact initial user message.',
+          'Input echoes may occur anywhere.'
+        ),
+      },
+      'standalone-contract',
+      /omits the input echo contract/
+    );
+    assertCaught(
+      {
+        [path]: (text) =>
+          path === 'biorouter-self-test.yaml'
+            ? text.replace('You may see no input echo.',
+              'You may see no input echo. A missing input echo fails.')
+            : text + '\nA missing input echo fails.\n',
+      },
+      'standalone-contract',
+      /requires an input echo the native stream may omit/
+    );
+  }
+});
+
+test('standalone-contract: stdin submission does not prove model input delivery', () => {
+  for (const path of ['biorouter-self-test.yaml', 'docs/crew/design/cli-guide.md']) {
+    assertCaught(
+      {
+        [path]: (text) => text.replace(
+          'The checker sends the exact prompt to stdin.',
+          'The model confirms receipt of the exact prompt.'
+        ),
+      },
+      'standalone-contract',
+      /omits the input echo contract/
+    );
+    assertCaught(
+      {
+        [path]: (text) => text.replace(
+          'You cannot prove which prompt the model received from stream output alone.',
+          'You can prove which prompt the model received from stream output alone.'
+        ),
+      },
+      'standalone-contract',
+      /omits the input echo contract/
+    );
+  }
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

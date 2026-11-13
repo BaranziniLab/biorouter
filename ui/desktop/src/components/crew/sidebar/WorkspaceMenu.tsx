@@ -435,6 +435,9 @@ export function WorkspaceMenu({
           <DropdownMenuItem onSelect={() => crew.openDialog({ kind: 'join' })}>
             {copy.addJoin}
           </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => crew.openDialog({ kind: 'open-workspace' })}>
+            {copy.addOpen}
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => crew.openDialog({ kind: 'host' })}>
             {copy.addHost}
           </DropdownMenuItem>

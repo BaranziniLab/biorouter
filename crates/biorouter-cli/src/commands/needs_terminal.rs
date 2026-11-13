@@ -50,6 +50,26 @@ pub fn prompt_can_run() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
 }
 
+/// The variable an agent's own shell carries: `developer__shell` and the retry runner set
+/// `BIOROUTER_TERMINAL=1` on every command they run (`biorouter-mcp/src/developer/shell.rs`,
+/// `biorouter/src/agents/retry.rs`).
+pub const AGENT_SHELL_MARKER: &str = "BIOROUTER_TERMINAL";
+
+/// Whether this process runs in an agent's own shell rather than at a person's terminal.
+///
+/// ⚠ **Accident prevention, not a defence against forgery.** An agent can unset the variable;
+/// what it stops is a model's ordinary command answering a card as the person (`printf
+/// 'allow_once\n' | biorouter session attach …`), the way D5 stops `biorouter crew` changes
+/// there.
+pub fn in_agent_shell() -> bool {
+    agent_shell_marked(std::env::var_os(AGENT_SHELL_MARKER).as_deref())
+}
+
+/// [`in_agent_shell`] for the marker's value, so a test needs no process environment.
+fn agent_shell_marked(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
 /// `Ok` when a prompt can run, otherwise the refusal carrying `sentence`.
 ///
 /// `terminal` is a parameter, not a call to [`prompt_can_run`], so a test can
@@ -88,6 +108,27 @@ mod tests {
         assert!(
             wrapped.downcast_ref::<NeedsTerminal>().is_some(),
             "a context layer must not hide the refusal from main's downcast"
+        );
+    }
+
+    /// The marker the agent's shell sets is what is read, and set to anything it counts. Read
+    /// from the setter's source, because the CLI cannot import it: a rename there would
+    /// otherwise leave every agent shell looking like a person's terminal.
+    #[test]
+    fn an_agent_shell_is_known_by_its_marker() {
+        use std::ffi::OsStr;
+        assert!(agent_shell_marked(Some(OsStr::new("1"))));
+        assert!(agent_shell_marked(Some(OsStr::new("true"))));
+        assert!(!agent_shell_marked(Some(OsStr::new(""))));
+        assert!(!agent_shell_marked(None));
+        let shell = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../biorouter-mcp/src/developer/shell.rs"),
+        )
+        .expect("the developer shell's source");
+        assert!(
+            shell.contains(&format!(".env(\"{AGENT_SHELL_MARKER}\", \"1\")")),
+            "developer__shell no longer sets {AGENT_SHELL_MARKER}"
         );
     }
 }

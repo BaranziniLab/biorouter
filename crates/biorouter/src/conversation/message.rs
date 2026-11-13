@@ -163,6 +163,93 @@ pub enum ActionRequiredData {
         keys: Vec<SecretKeyRequest>,
         destination: SecretDestination,
     },
+    /// A Crew step only the person can take, opened from a chat (the owner's D1 ruling on
+    /// AO-12): signing in to a server, unlocking or setting up Crew's vault, or checking a
+    /// server's host key.
+    ///
+    /// ⚠ **The card is the ask, never the answer, and it carries nothing a value could sit
+    /// in.** Every field is written by the daemon from its own records (a setup job's server,
+    /// a saved connection, OpenSSH's words about a key), never from the model. What the person
+    /// types goes from the surface the card opens (the Sign in window, the OS-native vault
+    /// prompt) straight to ssh or the daemon's vault route with the person's proof. The parked
+    /// call learns only whether the daemon now sees the step done, and the card can only be
+    /// dismissed: `UserActionRequest::CrewStep` accepts no outcome but Cancelled, TimedOut or
+    /// Failed. A test lists this variant's JSON keys; adding one that could carry a password, a
+    /// code, a passphrase or a typed host-key answer would undo the guarantee.
+    #[serde(rename_all = "camelCase")]
+    CrewStep { id: String, step: CrewStepRequest },
+}
+
+/// The step an [`ActionRequiredData::CrewStep`] card opens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CrewStepRequest {
+    /// Sign in to a server: the Sign in window, an ssh terminal of the person's own.
+    #[serde(rename_all = "camelCase")]
+    SignIn {
+        target: CrewSignInTarget,
+        /// The server, as the job or the saved connection names it.
+        server: String,
+        /// The SSH login the person signs in as.
+        login: String,
+    },
+    /// Unlock or set up Crew's vault on this computer: the OS-native passphrase prompt.
+    #[serde(rename_all = "camelCase")]
+    Vault { action: CrewVaultAction },
+    /// A server's host key that ssh does not trust: unknown, or changed since it was trusted.
+    #[serde(rename_all = "camelCase")]
+    HostKey {
+        host: String,
+        port: u16,
+        login: String,
+        /// The fingerprint the server offered, as the daemon read it from OpenSSH.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offered: Option<String>,
+        /// The fingerprint this computer trusts for the server, when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        known: Option<String>,
+        /// The key changed since it was trusted. A changed key is never accepted from a chat.
+        changed: bool,
+    },
+}
+
+/// What a [`CrewStepRequest::SignIn`] signs in for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CrewSignInTarget {
+    /// A setup job waiting for a sign-in.
+    #[serde(rename_all = "camelCase")]
+    Setup { job_id: String },
+    /// A saved connection whose server asked for one.
+    #[serde(rename_all = "camelCase")]
+    Connection { connection_id: String },
+}
+
+/// What a [`CrewStepRequest::Vault`] card does with Crew's vault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CrewVaultAction {
+    /// Unlock it with its passphrase.
+    Unlock,
+    /// Set it up with a new passphrase.
+    Init,
+}
+
+impl CrewStepRequest {
+    /// The step's kind, as logs and refusal text name it: `sign_in`, `vault_unlock`,
+    /// `vault_init` or `host_key`. Never a server, a login or a fingerprint.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::SignIn { .. } => "sign_in",
+            Self::Vault {
+                action: CrewVaultAction::Unlock,
+            } => "vault_unlock",
+            Self::Vault {
+                action: CrewVaultAction::Init,
+            } => "vault_init",
+            Self::HostKey { .. } => "host_key",
+        }
+    }
 }
 
 /// One credential a [`ActionRequiredData::SecretRequest`] card asks for.
@@ -287,6 +374,25 @@ impl fmt::Display for MessageContent {
                         keys.len()
                     )
                 }
+                // The kind and IDs only: no server, login or fingerprint reaches a log or a
+                // flattened prompt through `Display`.
+                ActionRequiredData::CrewStep { id, step } => match step {
+                    CrewStepRequest::SignIn {
+                        target: CrewSignInTarget::Setup { job_id },
+                        ..
+                    } => write!(
+                        f,
+                        "[ActionRequired: CrewStep sign_in {id} for setup job {job_id}]"
+                    ),
+                    CrewStepRequest::SignIn {
+                        target: CrewSignInTarget::Connection { connection_id },
+                        ..
+                    } => write!(
+                        f,
+                        "[ActionRequired: CrewStep sign_in {id} for connection {connection_id}]"
+                    ),
+                    _ => write!(f, "[ActionRequired: CrewStep {} {id}]", step.kind()),
+                },
             },
             MessageContent::FrontendToolRequest(r) => match &r.tool_call {
                 Ok(tool_call) => write!(f, "[FrontendToolRequest: {}]", tool_call.name),
@@ -428,6 +534,17 @@ impl MessageContent {
                 prompt,
                 keys,
                 destination,
+            },
+        })
+    }
+
+    /// Ask the person to take a Crew step only they can take. Takes no values and has no
+    /// response constructor; see [`ActionRequiredData::CrewStep`].
+    pub fn action_required_crew_step<S: Into<String>>(id: S, step: CrewStepRequest) -> Self {
+        MessageContent::ActionRequired(ActionRequired {
+            data: ActionRequiredData::CrewStep {
+                id: id.into(),
+                step,
             },
         })
     }
@@ -2448,5 +2565,168 @@ mod tests {
         let framed = frame_workspace_injection(None, &huge);
         assert!(framed.contains("truncated"));
         assert!(framed.starts_with("<workspace-injection"));
+    }
+
+    mod crew_step {
+        use crate::conversation::message::{
+            ActionRequiredData, CrewSignInTarget, CrewStepRequest, CrewVaultAction, MessageContent,
+        };
+        use std::collections::BTreeSet;
+
+        /// One card of every shape, with every optional field set.
+        fn every_step() -> Vec<CrewStepRequest> {
+            vec![
+                CrewStepRequest::SignIn {
+                    target: CrewSignInTarget::Setup {
+                        job_id: "job-1".into(),
+                    },
+                    server: "hpc.example.edu".into(),
+                    login: "you@hpc.example.edu".into(),
+                },
+                CrewStepRequest::SignIn {
+                    target: CrewSignInTarget::Connection {
+                        connection_id: "conn-1".into(),
+                    },
+                    server: "hpc.example.edu".into(),
+                    login: "you@hpc.example.edu".into(),
+                },
+                CrewStepRequest::Vault {
+                    action: CrewVaultAction::Unlock,
+                },
+                CrewStepRequest::Vault {
+                    action: CrewVaultAction::Init,
+                },
+                CrewStepRequest::HostKey {
+                    host: "hpc.example.edu".into(),
+                    port: 22,
+                    login: "you".into(),
+                    offered: Some("SHA256:offered".into()),
+                    known: Some("SHA256:known".into()),
+                    changed: true,
+                },
+            ]
+        }
+
+        fn keys(value: &serde_json::Value, found: &mut BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, inner) in map {
+                        found.insert(key.clone());
+                        keys(inner, found);
+                    }
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|item| keys(item, found)),
+                _ => {}
+            }
+        }
+
+        #[test]
+        fn a_crew_step_round_trips_through_json() {
+            for step in every_step() {
+                let content = MessageContent::action_required_crew_step("card-1", step);
+                let json = serde_json::to_value(&content).unwrap();
+                assert_eq!(json["type"], "actionRequired");
+                assert_eq!(json["data"]["actionType"], "crewStep");
+                let back: MessageContent = serde_json::from_value(json).unwrap();
+                assert_eq!(back, content);
+            }
+        }
+
+        /// The owner's D1 ruling: no password, code, passphrase or host-key answer can travel on
+        /// this card. Its keys are exactly these, every one written by the daemon. A new key
+        /// fails here and has to be argued for, as `SecretRequest`'s missing response type is.
+        #[test]
+        fn a_crew_step_carries_only_its_allowed_keys() {
+            let allowed: BTreeSet<String> = [
+                "type",
+                "data",
+                "actionType",
+                "id",
+                "step",
+                "kind",
+                "target",
+                "jobId",
+                "connectionId",
+                "server",
+                "login",
+                "action",
+                "host",
+                "port",
+                "offered",
+                "known",
+                "changed",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            let mut found = BTreeSet::new();
+            for step in every_step() {
+                let content = MessageContent::action_required_crew_step("card-1", step);
+                keys(&serde_json::to_value(&content).unwrap(), &mut found);
+            }
+            assert_eq!(found, allowed);
+            for value_bearing in [
+                "value",
+                "values",
+                "password",
+                "passphrase",
+                "secret",
+                "input",
+                "answer",
+            ] {
+                assert!(!found.contains(value_bearing), "{value_bearing}");
+            }
+        }
+
+        /// A key the card does not define is dropped when the card is parsed, so a forged card
+        /// cannot carry a field past the schema into a surface that renders it. The parse
+        /// itself succeeds: this fails only if the step ever gains a catch-all (a `flatten`
+        /// map) that would keep the forged key.
+        #[test]
+        fn a_crew_step_with_a_value_does_not_deserialize_into_one() {
+            let forged = serde_json::json!({
+                "type": "actionRequired",
+                "data": {"actionType": "crewStep", "id": "card-1",
+                         "step": {"kind": "vault", "action": "unlock", "passphrase": "hunter2"}}
+            });
+            let parsed: MessageContent = serde_json::from_value(forged).unwrap();
+            let json = serde_json::to_string(&parsed).unwrap();
+            assert!(!json.contains("hunter2"), "{json}");
+        }
+
+        /// `Display` reaches logs and flattened prompts: the kind and the IDs, nothing the
+        /// server or the person wrote.
+        #[test]
+        fn a_crew_step_displays_its_kind_and_ids_only() {
+            for step in every_step() {
+                let shown = MessageContent::action_required_crew_step("card-1", step).to_string();
+                assert!(shown.starts_with("[ActionRequired: CrewStep "), "{shown}");
+                assert!(shown.contains("card-1"), "{shown}");
+                for prose in ["hpc.example.edu", "you@", "SHA256", "offered"] {
+                    assert!(!shown.contains(prose), "{shown}");
+                }
+            }
+            let shown = MessageContent::action_required_crew_step(
+                "card-2",
+                CrewStepRequest::SignIn {
+                    target: CrewSignInTarget::Setup {
+                        job_id: "job-9".into(),
+                    },
+                    server: "s".into(),
+                    login: "l".into(),
+                },
+            )
+            .to_string();
+            assert_eq!(
+                shown,
+                "[ActionRequired: CrewStep sign_in card-2 for setup job job-9]"
+            );
+            assert!(matches!(
+                serde_json::from_value::<ActionRequiredData>(serde_json::json!({
+                    "actionType": "crewStep", "id": "x", "step": {"kind": "vault", "action": "init"}
+                })),
+                Ok(ActionRequiredData::CrewStep { .. })
+            ));
+        }
     }
 }

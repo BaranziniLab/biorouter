@@ -1703,37 +1703,8 @@ async fn permission_editor_tools(
             .await?
     };
 
-    if session_id.is_empty() {
-        let Some(extension_name) = extension_name.as_deref() else {
-            return Ok(Json(Vec::new()));
-        };
-        let Some(extension) = biorouter::config::get_all_extensions()
-            .into_iter()
-            .find(|entry| entry.enabled && entry.config.key() == extension_name)
-        else {
-            return Ok(Json(Vec::new()));
-        };
-
-        agent
-            .remove_extension(extension_name)
-            .await
-            .map_err(|error| {
-                warn!(extension = extension_name, %error, "Failed to refresh permission settings extension");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        tokio::time::timeout(
-            PERMISSION_SETTINGS_LOAD_TIMEOUT,
-            agent.add_extension(extension.config),
-        )
-        .await
-        .map_err(|_| {
-            warn!(extension = extension_name, "Timed out loading extension for permission settings");
-            StatusCode::REQUEST_TIMEOUT
-        })?
-        .map_err(|error| {
-            warn!(extension = extension_name, %error, "Failed to load extension for permission settings");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    if session_id.is_empty() && !load_settings_extension(&agent, extension_name.as_deref()).await? {
+        return Ok(Json(Vec::new()));
     }
 
     let permission_manager = agent.config.permission_manager.clone();
@@ -1751,9 +1722,23 @@ async fn permission_editor_tools(
     // which loads one globally enabled extension purely so its tools can be
     // listed here. Gate E is about the model's context; this is the user's own
     // administration surface. Do not swap this for `list_tools`.
-    let mut tools: Vec<ToolInfo> = agent
+    let mut listed = agent
         .list_tools_for_permission_settings(&session_id, extension_name)
-        .await
+        .await;
+    // AO-12: Crew's tools are not a privacy tier's to hide but the chat's own standing, and a
+    // chat is offered only the Crew tools it can use (a granted chat its two worker tools, any
+    // other chat the person tools it may use). So a chat's listing shows exactly those, by the
+    // rule the model's list follows, never a Crew tool the chat is refused. The settings page's
+    // global listing (`session_id` empty) names no chat and is left as it is.
+    if !session_id.is_empty() {
+        listed = biorouter::agents::crew_extension::offered_crew_tools(
+            &agent.extension_manager,
+            &session_id,
+            listed,
+        )
+        .await;
+    }
+    let mut tools: Vec<ToolInfo> = listed
         .into_iter()
         .map(|tool| {
             let permission = permission_manager
@@ -1792,6 +1777,46 @@ async fn permission_editor_tools(
     tools.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(Json(tools))
+}
+
+/// For the settings page's global listing (an empty `session_id`): load the one globally
+/// enabled extension it names into `agent` afresh, so its tools can be listed. `false` when it
+/// names none, or no enabled extension has that name, and then the listing is empty.
+async fn load_settings_extension(
+    agent: &biorouter::agents::Agent,
+    extension_name: Option<&str>,
+) -> Result<bool, StatusCode> {
+    let Some(extension_name) = extension_name else {
+        return Ok(false);
+    };
+    let Some(extension) = biorouter::config::get_all_extensions()
+        .into_iter()
+        .find(|entry| entry.enabled && entry.config.key() == extension_name)
+    else {
+        return Ok(false);
+    };
+
+    agent
+        .remove_extension(extension_name)
+        .await
+        .map_err(|error| {
+            warn!(extension = extension_name, %error, "Failed to refresh permission settings extension");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    tokio::time::timeout(
+        PERMISSION_SETTINGS_LOAD_TIMEOUT,
+        agent.add_extension(extension.config),
+    )
+    .await
+    .map_err(|_| {
+        warn!(extension = extension_name, "Timed out loading extension for permission settings");
+        StatusCode::REQUEST_TIMEOUT
+    })?
+    .map_err(|error| {
+        warn!(extension = extension_name, %error, "Failed to load extension for permission settings");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(true)
 }
 
 #[utoipa::path(
@@ -3601,6 +3626,22 @@ fn direct_crew_tool_refusal(tool_name: &str) -> Option<CallToolResponse> {
     })
 }
 
+/// What a direct call to a Crew person tool answers (account ownership AO-12).
+pub(crate) const DIRECT_PERSON_TOOL_REFUSAL: &str = "crew__read and crew__change act as you, so they run only in a chat's own turn, where their approval cards can be shown. Use the Crew view or biorouter crew instead.";
+
+/// `crew__read` and `crew__change` act as the person, and every change and the first content
+/// read wait on a card only a chat's turn can show. This route has no turn and no surface for
+/// a card (a card parked beneath it is declined at once), and it dispatches as Public and
+/// enforced, so it is refused here, whatever the chat, before anything is dispatched.
+fn direct_person_tool_refusal(tool_name: &str) -> Option<CallToolResponse> {
+    biorouter::crew::tool_host::PersonTool::from_name(tool_name).map(|_| CallToolResponse {
+        content: vec![Content::text(DIRECT_PERSON_TOOL_REFUSAL)],
+        structured_content: None,
+        is_error: true,
+        _meta: None,
+    })
+}
+
 async fn dispatch_direct_tool(
     agent: &biorouter::agents::Agent,
     session_id: &str,
@@ -3670,6 +3711,9 @@ async fn call_tool(
     headers: HeaderMap,
     Json(payload): Json<CallToolRequest>,
 ) -> Result<Json<CallToolResponse>, StatusCode> {
+    if let Some(refusal) = direct_person_tool_refusal(&payload.name) {
+        return Ok(Json(refusal));
+    }
     let crew = biorouter::crew::manager().map_err(|_| StatusCode::FORBIDDEN)?;
     if crew.is_scoped_session(&payload.session_id).await {
         crate::routes::session_reach::session_reach(
@@ -7043,6 +7087,37 @@ mod gate_c_call_tool_tests {
         let helper = crate::routes::body_of(source, "async fn dispatch_direct_tool");
         assert!(helper.contains(".dispatch_tool_call("));
         assert!(reach < refusal && refusal < dispatch);
+    }
+
+    /// AO-12: the two person tools act as the person and wait on cards only a chat's turn can
+    /// show, so this route refuses them in plain words for every chat, before it reads the
+    /// chat's standing or dispatches anything. The worker tools keep their own refusal.
+    #[test]
+    fn a_direct_person_tool_call_is_refused_for_every_chat() {
+        for tool in ["crew__read", "crew__change"] {
+            let refused = super::direct_person_tool_refusal(tool).expect("refused");
+            assert!(refused.is_error);
+            assert_eq!(text_of(&refused), super::DIRECT_PERSON_TOOL_REFUSAL);
+        }
+        for other in [
+            "crew__request",
+            "crew__connections",
+            "todo__write",
+            "crew__",
+        ] {
+            assert!(
+                super::direct_person_tool_refusal(other).is_none(),
+                "{other}"
+            );
+        }
+        let source = include_str!("agent.rs");
+        let handler = crate::routes::body_of(source, "async fn call_tool");
+        let refusal = handler
+            .find("direct_person_tool_refusal(&payload.name)")
+            .expect("the person-tool refusal");
+        let standing = handler.find("is_scoped_session(").expect("standing");
+        let dispatch = handler.find("dispatch_direct_tool(").expect("dispatch");
+        assert!(refusal < standing && standing < dispatch);
     }
 }
 

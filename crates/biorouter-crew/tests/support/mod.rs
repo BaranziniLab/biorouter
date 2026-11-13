@@ -268,6 +268,32 @@ pub fn signed_raw(
     broker.handle(member.uid, &mut member.connection, req)
 }
 
+/// `auth.account {public_key, ...extra}` signed by `member`'s key (account ownership, AO-2).
+/// `extra` may carry `replaces_device_id`.
+pub fn auth_account(broker: &mut Broker, member: &mut Member, extra: Value) -> Response {
+    let mut params = json!({"public_key": key_hex(&member.key)});
+    if let (Some(fields), Some(more)) = (params.as_object_mut(), extra.as_object()) {
+        for (name, value) in more {
+            fields.insert(name.clone(), value.clone());
+        }
+    }
+    signed_raw(broker, member, "auth.account", params)
+}
+
+/// `account.status {}`, unsigned, as `uid` on `connection` (AO-3).
+pub fn account_status(broker: &mut Broker, uid: u32, connection: &mut Connection) -> Response {
+    broker.handle(
+        uid,
+        connection,
+        request(&next_id("status"), "account.status", json!({})),
+    )
+}
+
+/// The grouped fingerprint the snapshot shows for `key`'s device (`3F2A 9C1E 77B0 D4E1`).
+pub fn fingerprint(key: &SigningKey) -> String {
+    biorouter_crew::invitation::grouped_fingerprint(&device_id(key))
+}
+
 /// The result of a request that must succeed.
 pub fn ok(response: Response) -> Value {
     match response.error {
@@ -331,6 +357,78 @@ impl Workspace {
             host,
             root,
         }
+    }
+
+    /// Opened over a [`FakeDirectory`] with the host account `@alice`, and never bootstrapped:
+    /// no principal holds the host's UID yet, and `host.principal_id` is empty.
+    pub fn unbootstrapped(label: &str) -> Self {
+        let root = TempRoot::new(label);
+        let directory = FakeDirectory::default();
+        directory.set(host_uid(), "alice", Some("Alice Chen"));
+        let host_key = key(7);
+        let broker = open(root.path(), &host_key, &directory);
+        Self {
+            broker,
+            directory,
+            host: Member::new(host_uid(), host_key),
+            root,
+        }
+    }
+
+    /// As [`Self::unbootstrapped`], but created with no bootstrap key, as `start --create`
+    /// without `--bootstrap-key` creates one (AO-7): the key is stored empty.
+    pub fn without_bootstrap_key(label: &str) -> Self {
+        let root = TempRoot::new(label);
+        let directory = FakeDirectory::default();
+        directory.set(host_uid(), "alice", Some("Alice Chen"));
+        let mut broker = Broker::create_with_directory(root.path(), directory.boxed()).unwrap();
+        broker.set_runtime_root(&root.path().join("no-sibling-runtimes"));
+        Self {
+            broker,
+            directory,
+            host: Member::new(host_uid(), key(7)),
+            root,
+        }
+    }
+
+    /// `member` adds its own key with `auth.account` (AO-2).
+    pub fn account(&mut self, member: &mut Member, extra: Value) -> Response {
+        auth_account(&mut self.broker, member, extra)
+    }
+
+    /// As [`Self::account`], which must succeed; records the principal ID on `member`.
+    pub fn account_ok(&mut self, member: &mut Member, extra: Value) -> Value {
+        let result = ok(self.account(member, extra));
+        member.principal_id = result["principal"]["id"].as_str().unwrap().to_owned();
+        result
+    }
+
+    /// `account.status` as `uid`, on a connection of its own that is then closed.
+    pub fn status(&mut self, uid: u32) -> Value {
+        let mut connection = Connection::new();
+        let status = ok(account_status(&mut self.broker, uid, &mut connection));
+        self.broker.connection_closed(&mut connection);
+        status
+    }
+
+    /// The host invites `username` by name (S3a), without Add device.
+    pub fn invite_by_name(&mut self, username: &str) -> Value {
+        self.host_ok("enrollment.invite", json!({"username": username}))
+    }
+
+    /// The number of records in the journal.
+    pub fn journal_records(&self) -> usize {
+        String::from_utf8(self.journal_bytes())
+            .unwrap()
+            .lines()
+            .filter(|line| !line.is_empty())
+            .count()
+    }
+
+    /// The journal's last record.
+    pub fn last_record(&self) -> Value {
+        let journal = String::from_utf8(self.journal_bytes()).unwrap();
+        serde_json::from_str(journal.lines().rfind(|line| !line.is_empty()).unwrap()).unwrap()
     }
 
     /// `method(params)` as the host.
@@ -582,6 +680,22 @@ pub fn legacy_channel(id: &str, team_id: &str, name: &str, owner: &str, members:
 /// A fresh UUID, as the broker mints IDs.
 pub fn uuid() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// `cp -a source target` for a stopped workspace's folder: directories made owner-only, and
+/// regular files copied with their modes. Anything else (a socket, a link) is left behind.
+pub fn copy_tree(source: &Path, target: &Path) {
+    fs::create_dir(target).unwrap();
+    fs::set_permissions(target, fs::Permissions::from_mode(0o700)).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target.join(entry.file_name()));
+        } else if kind.is_file() {
+            fs::copy(entry.path(), target.join(entry.file_name())).unwrap();
+        }
+    }
 }
 
 /// Whether `text` contains a UUID or a 64-hex string anywhere.

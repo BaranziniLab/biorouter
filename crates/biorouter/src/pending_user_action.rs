@@ -63,20 +63,34 @@
 //! transcript. A secret that never enters the conversation transport cannot be
 //! persisted into a session row, replayed into a later prompt, or flattened into
 //! a child agent's transcript.
+//!
+//! # The end of a card (WI-17)
+//!
+//! A card a surface drew must stop looking answerable the moment nothing waits on it, on every
+//! surface that drew it, including one that is not the one that answered. So every way an
+//! ephemeral card leaves the registry (answered, dismissed, timed out, or withdrawn by the call
+//! that raised it, the turn's Stop or the chat closing) announces a [`CardEnded`] on
+//! [`PendingUserActions::subscribe_card_endings`], once for its home and once for each chat it
+//! was escalated into. It carries the card's ID and a [`CardEnding`] and nothing else: never a
+//! value, a choice, or even whether an approval was allowed. The daemon's stream code turns it
+//! into a frame for the renderers, and a late observer is handed only the cards still parked
+//! ([`PendingUserActions::pending_cards_for_session`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use uuid::Uuid;
 
 use rmcp::model::JsonObject;
 
-use crate::conversation::message::{Message, MessageContent, SecretDestination, SecretKeyRequest};
+use crate::conversation::message::{
+    CrewStepRequest, Message, MessageContent, SecretDestination, SecretKeyRequest,
+};
 use crate::conversation::tool_preview::ToolPreview;
 use crate::permission::tool_risk::ToolRisk;
 use crate::permission::Permission;
@@ -152,12 +166,22 @@ pub enum UserActionRequest {
     FolderAccess(FolderAccessRequest),
     Elicitation(ElicitationRequest),
     Secrets(SecretsRequest),
+    /// A Crew step only the person can take (the owner's D1 ruling on AO-12): the card opens
+    /// the person's own Sign in window, vault prompt or host-key help, and the parked call
+    /// learns the result from the daemon's state, never from the card.
+    ///
+    /// ⚠ **Nothing can resolve this as a success.** [`Self::accepts`] takes only Cancelled,
+    /// TimedOut and Failed, so a forged `Approved`, `Provided` or `SecretsConfigured` is
+    /// `Rejected` and `is_allowed()` is never true for it. The host that parked it decides
+    /// what happened by reading the daemon (the job left `needs_sign_in`, the vault is
+    /// unlocked, the key is in `known_hosts`) and withdraws the card itself.
+    CrewStep(CrewStepRequest),
 }
 
 impl UserActionRequest {
     fn requires_user_proof(&self) -> bool {
         match self {
-            Self::FolderAccess(_) => true,
+            Self::FolderAccess(_) | Self::CrewStep(_) => true,
             Self::ToolApproval(request) => request.requires_user_proof,
             Self::Elicitation(_) | Self::Secrets(_) => false,
         }
@@ -171,6 +195,18 @@ impl UserActionRequest {
             Self::FolderAccess(_) => "external folder access".to_string(),
             Self::Elicitation(_) => "input".to_string(),
             Self::Secrets(r) => format!("{} credential(s)", r.keys.len()),
+            // Never the server, the login or a fingerprint.
+            Self::CrewStep(step) => match step {
+                CrewStepRequest::SignIn { .. } => "a Crew sign-in",
+                CrewStepRequest::Vault {
+                    action: crate::conversation::message::CrewVaultAction::Unlock,
+                } => "unlocking Crew's vault",
+                CrewStepRequest::Vault {
+                    action: crate::conversation::message::CrewVaultAction::Init,
+                } => "setting up Crew's vault",
+                CrewStepRequest::HostKey { .. } => "a server's host key",
+            }
+            .to_string(),
         }
     }
 
@@ -183,6 +219,9 @@ impl UserActionRequest {
     /// row, replayed into the next prompt, flattened into a child agent's
     /// transcript. Refusing it here means the guarantee holds for surfaces this
     /// module has never heard of.
+    ///
+    /// [`UserActionRequest::CrewStep`] has no arm of its own on purpose: it accepts
+    /// only the three endings every request accepts, so no answer can mean "done".
     fn accepts(&self, outcome: &UserActionOutcome) -> bool {
         matches!(
             (self, outcome),
@@ -256,6 +295,54 @@ impl UserActionOutcome {
         }
     }
 }
+
+/// How a card stopped waiting, as every surface that drew it is told (WI-17).
+///
+/// ⚠ Deliberately coarse. It never says what was answered: an approval allowed and one refused
+/// are both [`Self::Answered`], so the signal can go to every surface that showed the card
+/// without telling any of them more than that the card is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardEnding {
+    /// A person answered it.
+    Answered,
+    /// A person dismissed it (a Crew step's Not now, a card's Cancel).
+    Dismissed,
+    /// Nobody answered before its time ran out.
+    TimedOut,
+    /// The call that raised it stopped waiting: the call withdrew it (a Crew step the daemon
+    /// saw done), the turn was stopped, or the chat closed.
+    Withdrawn,
+}
+
+impl CardEnding {
+    /// The ending a delivered outcome means.
+    fn of(outcome: &UserActionOutcome) -> Self {
+        match outcome {
+            UserActionOutcome::Approved { .. }
+            | UserActionOutcome::Denied { .. }
+            | UserActionOutcome::Provided { .. }
+            | UserActionOutcome::SecretsConfigured { .. } => Self::Answered,
+            UserActionOutcome::Cancelled => Self::Dismissed,
+            UserActionOutcome::TimedOut => Self::TimedOut,
+            UserActionOutcome::Failed { .. } => Self::Withdrawn,
+        }
+    }
+}
+
+/// One card that stopped waiting, for one chat that drew it (WI-17). The card's ID and how it
+/// ended, and nothing a person typed, chose or configured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardEnded {
+    /// A chat the card was shown in: its home, or one it was escalated into.
+    pub session_id: String,
+    /// The card's ID, as its published message carries it.
+    pub id: String,
+    pub ending: CardEnding,
+}
+
+/// How many endings a slow subscriber may fall behind by before it is told it lagged. Endings
+/// are rare (one per card), so this is far beyond any real burst.
+const CARD_ENDINGS_CAPACITY: usize = 256;
 
 /// What [`PendingUserActions::resolve`] did with a decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,9 +491,33 @@ impl Entry {
 /// the surface that answers runs on a different task from the caller that
 /// parked, often in a different subsystem, and on the bridged path there is no
 /// `Agent` for either of them to share.
-#[derive(Default)]
 pub struct PendingUserActions {
     entries: Mutex<HashMap<String, Entry>>,
+    /// Where every ephemeral card's end is announced ([`Self::subscribe_card_endings`]).
+    endings: broadcast::Sender<CardEnded>,
+    /// The cards that ended most recently, oldest first ([`Self::has_ended`]).
+    ended: Mutex<RecentlyEnded>,
+}
+
+/// The IDs of the last [`ENDED_MEMORY`] cards that ended.
+#[derive(Default)]
+struct RecentlyEnded {
+    order: std::collections::VecDeque<String>,
+    ids: std::collections::HashSet<String>,
+}
+
+/// How many ended cards [`PendingUserActions::has_ended`] remembers: far more than are ever
+/// drawn between a card's end and its chat's loop drawing it, which is the window it covers.
+const ENDED_MEMORY: usize = 1024;
+
+impl Default for PendingUserActions {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::default(),
+            endings: broadcast::channel(CARD_ENDINGS_CAPACITY).0,
+            ended: Mutex::default(),
+        }
+    }
 }
 
 /// Can THIS process obtain a person's proof at all?
@@ -456,6 +567,57 @@ impl PendingUserActions {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Every ephemeral card's end, from now on, for every chat (WI-17): a stream filters for its
+    /// own chat. Subscribe before reading [`Self::pending_cards_for_session`], so a card that
+    /// ends between the two is still heard ending.
+    pub fn subscribe_card_endings(&self) -> broadcast::Receiver<CardEnded> {
+        self.endings.subscribe()
+    }
+
+    /// Whether the card `id` was parked here and has ended (one of the last [`ENDED_MEMORY`]).
+    ///
+    /// The card a call parks is queued for its chat's loop to draw, and the queue keeps it after
+    /// the card ends, so the loop can draw a card that waits for nothing: answered from the chat
+    /// it was escalated into, withdrawn by a call that saw the step done at once, dropped by a
+    /// call that failed. A stream asks this before it hands such a card to its client. A card the
+    /// agent's own loop raised was never parked here, so this is `false` for it.
+    pub fn has_ended(&self, id: &str) -> bool {
+        self.ended
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ids
+            .contains(id)
+    }
+
+    /// Announce that the card `id`, which `entry` held, stopped waiting: once for its home and
+    /// once for each chat it was escalated into. Nothing for a card that is a record rather
+    /// than a question (an elicitation, a changed host key's notice), whose stored row stays.
+    /// Called after the entry left the map, never under the lock.
+    fn announce_end(&self, id: &str, entry: &Entry, ending: CardEnding) {
+        if !request_is_ephemeral(&entry.request) {
+            return;
+        }
+        {
+            let mut ended = self.ended.lock().unwrap_or_else(PoisonError::into_inner);
+            if ended.ids.insert(id.to_string()) {
+                ended.order.push_back(id.to_string());
+            }
+            while ended.order.len() > ENDED_MEMORY {
+                if let Some(oldest) = ended.order.pop_front() {
+                    ended.ids.remove(&oldest);
+                }
+            }
+        }
+        for session_id in entry.session_id.iter().chain(&entry.escalated_to) {
+            // No subscriber is an ordinary state: nobody is watching that chat.
+            let _ = self.endings.send(CardEnded {
+                session_id: session_id.clone(),
+                id: id.to_string(),
+                ending,
+            });
+        }
     }
 
     /// Register `request`, publish its card to `session_id`'s queue, and return
@@ -593,6 +755,25 @@ impl PendingUserActions {
         })
     }
 
+    /// Dismiss a Crew step card from a session that shows it: the one answer a
+    /// [`UserActionRequest::CrewStep`] takes from a surface, and harmless by construction,
+    /// since it releases the parked call as Cancelled and grants nothing.
+    ///
+    /// Only a Crew step this session may answer is touched. Any other id, a card of another
+    /// kind or a foreign session is [`ResolveOutcome::Unknown`], so this door can never
+    /// cancel an approval or a credential card.
+    pub fn dismiss_crew_step(&self, session_id: &str, id: &str) -> ResolveOutcome {
+        self.resolve_matching(
+            id,
+            UserActionOutcome::Cancelled,
+            DecisionAuthority::unproven(),
+            |entry| {
+                entry.answerable_in(session_id)
+                    && matches!(entry.request, UserActionRequest::CrewStep(_))
+            },
+        )
+    }
+
     fn resolve_matching(
         &self,
         id: &str,
@@ -651,8 +832,13 @@ impl PendingUserActions {
         let Some(tx) = entry.tx.take() else {
             return ResolveOutcome::Unknown;
         };
-        entries.remove(id);
+        let removed = entries.remove(id);
         drop(entries);
+        // Before the waiter is released, so the end is announced ahead of anything the call
+        // does next.
+        if let Some(removed) = removed {
+            self.announce_end(id, &removed, CardEnding::of(&outcome));
+        }
         match tx.send(outcome) {
             Ok(()) => ResolveOutcome::Delivered,
             // The waiter went away between the lookup and the send — the turn
@@ -744,7 +930,7 @@ impl PendingUserActions {
     }
 
     fn cancel_matching(&self, predicate: impl Fn(&Entry) -> bool) -> usize {
-        let senders: Vec<oneshot::Sender<UserActionOutcome>> = {
+        let removed: Vec<(String, Entry)> = {
             let mut entries = self.lock();
             let ids: Vec<String> = entries
                 .iter()
@@ -752,9 +938,14 @@ impl PendingUserActions {
                 .map(|(id, _)| id.clone())
                 .collect();
             ids.into_iter()
-                .filter_map(|id| entries.remove(&id).and_then(|mut e| e.tx.take()))
+                .filter_map(|id| entries.remove(&id).map(|entry| (id, entry)))
                 .collect()
         };
+        let mut senders = Vec::with_capacity(removed.len());
+        for (id, mut entry) in removed {
+            self.announce_end(&id, &entry, CardEnding::Withdrawn);
+            senders.extend(entry.tx.take());
+        }
         let mut released = 0;
         for tx in senders {
             if tx.send(UserActionOutcome::Cancelled).is_ok() {
@@ -788,9 +979,13 @@ impl PendingUserActions {
         true
     }
 
-    /// Drop the entry for `id` without a decision. Idempotent.
-    fn forget(&self, id: &str) {
-        self.lock().remove(id);
+    /// Drop the entry for `id` without a decision, announcing that it ended as `ending`.
+    /// Idempotent: an entry already gone (answered, cancelled) announces nothing again.
+    fn forget(&self, id: &str, ending: CardEnding) {
+        let removed = self.lock().remove(id);
+        if let Some(entry) = removed {
+            self.announce_end(id, &entry, ending);
+        }
     }
 }
 
@@ -916,8 +1111,13 @@ impl PendingUserAction {
 
         // On every path but a delivered decision the entry is still registered;
         // clearing it here is what stops a late click resolving a receiver that
-        // has already gone.
-        self.registry.forget(&self.id);
+        // has already gone. A delivered decision already took the entry, and
+        // announced its end, so this announces nothing twice.
+        let ending = match outcome {
+            UserActionOutcome::TimedOut => CardEnding::TimedOut,
+            _ => CardEnding::Withdrawn,
+        };
+        self.registry.forget(&self.id, ending);
         outcome
     }
 }
@@ -925,7 +1125,7 @@ impl PendingUserAction {
 impl Drop for PendingUserAction {
     fn drop(&mut self) {
         // wait() moves the receiver before polling; cancellation must still remove its entry.
-        self.registry.forget(&self.id);
+        self.registry.forget(&self.id, CardEnding::Withdrawn);
     }
 }
 
@@ -974,6 +1174,10 @@ fn request_message(id: &str, request: &UserActionRequest) -> Message {
             r.keys.clone(),
             r.destination.clone(),
         ),
+        // The daemon's own fields only; what the person types never comes back on it.
+        UserActionRequest::CrewStep(step) => {
+            MessageContent::action_required_crew_step(id, step.clone())
+        }
     };
     // `user_only` for the same reason `handle_approval_tool_requests` marks its
     // card: a decision prompt is for the person, and a model that read one would
@@ -999,19 +1203,52 @@ fn request_message(id: &str, request: &UserActionRequest) -> Message {
 ///
 /// An **elicitation** is deliberately not ephemeral: its answer is part of the
 /// conversation, and the `ElicitationResponse` row references this message's id.
+///
+/// Nor is a **changed host key's** Crew step ([`crew_step_is_a_notice`]): it waits for nothing
+/// and offers nothing, so it is kept, user-only, as a notice a reloaded chat still shows.
 pub fn is_ephemeral_card(message: &Message) -> bool {
+    ephemeral_card_id(message).is_some()
+}
+
+/// The ID of the decision prompt `message` carries, when it carries one ([`is_ephemeral_card`]):
+/// the ID its [`CardEnded`] names, which lets a stream match a card frame to its end.
+pub fn ephemeral_card_id(message: &Message) -> Option<&str> {
     use crate::conversation::message::ActionRequiredData;
-    message.content.iter().any(|content| {
-        matches!(
-            content,
-            MessageContent::ActionRequired(action)
-                if matches!(
-                    action.data,
-                    ActionRequiredData::ToolConfirmation { .. }
-                        | ActionRequiredData::SecretRequest { .. }
-                )
-        )
+    message.content.iter().find_map(|content| match content {
+        MessageContent::ActionRequired(action) => match &action.data {
+            ActionRequiredData::ToolConfirmation { id, .. }
+            | ActionRequiredData::SecretRequest { id, .. } => Some(id.as_str()),
+            // A Crew step card exists only while the step waits; a reopened chat must never
+            // offer to sign in, unlock or trust from history.
+            ActionRequiredData::CrewStep { id, step } if !crew_step_is_a_notice(step) => {
+                Some(id.as_str())
+            }
+            _ => None,
+        },
+        _ => None,
     })
+}
+
+/// Whether a Crew step is a notice rather than a question: a server's CHANGED host key, which
+/// nothing in a chat can fix and nothing waits on (D2: a changed key is always refused). The
+/// call that raised it releases it at once, so as an ephemeral card it would end before any
+/// surface drew it, and a reload or a late observer would never see it. As a notice it is
+/// stored when the chat's loop takes it from the queue, user-only like every card, so the
+/// model never reads it; its fields are the host, the login and the two fingerprints, which
+/// the call's own answer to the model already carries.
+pub fn crew_step_is_a_notice(step: &CrewStepRequest) -> bool {
+    matches!(step, CrewStepRequest::HostKey { changed: true, .. })
+}
+
+/// [`is_ephemeral_card`] for a request, before its card is drawn.
+fn request_is_ephemeral(request: &UserActionRequest) -> bool {
+    match request {
+        UserActionRequest::Elicitation(_) => false,
+        UserActionRequest::CrewStep(step) => !crew_step_is_a_notice(step),
+        UserActionRequest::ToolApproval(_)
+        | UserActionRequest::FolderAccess(_)
+        | UserActionRequest::Secrets(_) => true,
+    }
 }
 
 #[cfg(test)]
@@ -1299,6 +1536,124 @@ mod tests {
         );
     }
 
+    fn crew_sign_in() -> UserActionRequest {
+        use crate::conversation::message::CrewSignInTarget;
+        UserActionRequest::CrewStep(CrewStepRequest::SignIn {
+            target: CrewSignInTarget::Setup {
+                job_id: "job-1".to_string(),
+            },
+            server: "hpc.example.edu".to_string(),
+            login: "you@hpc.example.edu".to_string(),
+        })
+    }
+
+    /// The owner's D1 ruling: a Crew step card can never be answered as a success, from any
+    /// surface, proven or not. Its parked call learns what happened from the daemon only.
+    #[tokio::test]
+    async fn a_crew_step_refuses_every_answer_that_could_mean_done() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some("sess-1"), None, crew_sign_in());
+        let id = parked.id().to_string();
+        let forged = [
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce,
+            },
+            UserActionOutcome::Denied {
+                permission: Permission::DenyOnce,
+            },
+            UserActionOutcome::Provided {
+                data: serde_json::json!({"password": "hunter2"}),
+            },
+            UserActionOutcome::SecretsConfigured {
+                configured_keys: vec!["passphrase".to_string()],
+            },
+        ];
+        for outcome in forged {
+            for authority in [
+                DecisionAuthority::unproven(),
+                DecisionAuthority::for_test_proven(),
+            ] {
+                assert_eq!(
+                    registry.resolve_in_session("sess-1", &id, outcome.clone(), authority),
+                    ResolveOutcome::Rejected,
+                    "{outcome:?}"
+                );
+                assert!(registry.is_pending(&id), "the caller must stay parked");
+            }
+        }
+        assert_eq!(
+            registry.resolve_in_session(
+                "sess-1",
+                &id,
+                UserActionOutcome::Cancelled,
+                DecisionAuthority::unproven()
+            ),
+            ResolveOutcome::Delivered
+        );
+        let outcome = parked.wait(Duration::from_secs(5), None).await;
+        assert_eq!(outcome, UserActionOutcome::Cancelled);
+        assert!(!outcome.is_allowed());
+    }
+
+    #[test]
+    fn a_crew_step_ends_only_without_an_answer() {
+        let request = crew_sign_in();
+        for ending in [
+            UserActionOutcome::Cancelled,
+            UserActionOutcome::TimedOut,
+            UserActionOutcome::Failed {
+                reason: "no surface".to_string(),
+            },
+        ] {
+            assert!(request.accepts(&ending), "{ending:?}");
+            assert!(!ending.is_allowed());
+        }
+        assert!(request.requires_user_proof());
+        assert_eq!(request.describe(), "a Crew sign-in");
+        assert!(!request.describe().contains("example.edu"));
+    }
+
+    /// The card is the person's alone: the model never reads it, and it is never stored.
+    #[test]
+    fn a_crew_step_card_is_user_only_and_ephemeral() {
+        let card = request_message("req-1", &crew_sign_in());
+        assert!(card.is_user_visible());
+        assert!(!card.is_agent_visible());
+        assert!(is_ephemeral_card(&card));
+    }
+
+    /// Dismissing is the one answer, and only for a Crew step this session shows: it cannot
+    /// reach an approval card, another kind of card, or another session's step.
+    #[tokio::test]
+    async fn only_a_crew_step_in_its_own_session_can_be_dismissed() {
+        let registry = Arc::new(PendingUserActions::default());
+        let approval_card = registry.park(Some("sess-1"), None, approval("developer__shell"));
+        assert_eq!(
+            registry.dismiss_crew_step("sess-1", approval_card.id()),
+            ResolveOutcome::Unknown
+        );
+        assert!(registry.is_pending(approval_card.id()));
+
+        let step = registry.park(Some("sess-1"), None, crew_sign_in());
+        let id = step.id().to_string();
+        assert_eq!(
+            registry.dismiss_crew_step("sess-other", &id),
+            ResolveOutcome::Unknown
+        );
+        assert_eq!(
+            registry.dismiss_crew_step("sess-1", "no-such-card"),
+            ResolveOutcome::Unknown
+        );
+        assert_eq!(
+            registry.dismiss_crew_step("sess-1", &id),
+            ResolveOutcome::Delivered
+        );
+        assert_eq!(
+            step.wait(Duration::from_secs(5), None).await,
+            UserActionOutcome::Cancelled
+        );
+    }
+
     /// Approval and credential cards must not be written into history;
     /// elicitations must, because their answer row references them.
     #[test]
@@ -1316,6 +1671,185 @@ mod tests {
             })
         )));
         assert!(!is_ephemeral_card(&Message::assistant().with_text("hi")));
+    }
+
+    // ------------------------------------------------------------------ WI-17: a card's end
+
+    fn host_key(changed: bool) -> UserActionRequest {
+        UserActionRequest::CrewStep(CrewStepRequest::HostKey {
+            host: "hpc.example.edu".to_string(),
+            port: 22,
+            login: "you".to_string(),
+            offered: Some(format!("SHA256:{}", "A".repeat(43))),
+            known: None,
+            changed,
+        })
+    }
+
+    /// Every end heard so far on `endings`.
+    fn heard(endings: &mut broadcast::Receiver<CardEnded>) -> Vec<CardEnded> {
+        std::iter::from_fn(|| endings.try_recv().ok()).collect()
+    }
+
+    fn ended(session: &str, id: &str, ending: CardEnding) -> CardEnded {
+        CardEnded {
+            session_id: session.to_string(),
+            id: id.to_string(),
+            ending,
+        }
+    }
+
+    /// A chat ID no other test uses: the queue a park publishes to is process-global.
+    fn chat(label: &str) -> String {
+        format!("wi17-{label}-{}", Uuid::new_v4())
+    }
+
+    /// Every way an ephemeral card leaves the registry announces its end once, with how it
+    /// ended and nothing else: answered, dismissed, out of time, withdrawn by the call (its
+    /// cancel token, or dropping the handle), and the chat or the turn closing. A delivered
+    /// decision announces once, not again when the waiter clears up after it.
+    #[tokio::test]
+    async fn every_way_a_card_ends_is_announced_once() {
+        let registry = Arc::new(PendingUserActions::default());
+        let mut endings = registry.subscribe_card_endings();
+        let s = chat("ends");
+
+        let answered = registry.park(Some(&s), None, approval("developer__shell"));
+        let id = answered.id().to_string();
+        let allow = UserActionOutcome::Approved {
+            permission: Permission::AllowOnce,
+        };
+        assert_eq!(
+            registry.resolve_in_session(&s, &id, allow, DecisionAuthority::for_test_proven()),
+            ResolveOutcome::Delivered
+        );
+        assert!(answered
+            .wait(Duration::from_secs(5), None)
+            .await
+            .is_allowed());
+        assert_eq!(heard(&mut endings), [ended(&s, &id, CardEnding::Answered)]);
+        // Remembered, so a stream can leave out a copy its chat's loop draws later; a card that
+        // was never parked here (the agent's own loop raises some) is not.
+        assert!(registry.has_ended(&id));
+        assert!(!registry.has_ended("a-card-the-agent-loop-raised"));
+
+        let dismissed = registry.park(Some(&s), None, crew_sign_in());
+        let id = dismissed.id().to_string();
+        assert_eq!(
+            registry.dismiss_crew_step(&s, &id),
+            ResolveOutcome::Delivered
+        );
+        dismissed.wait(Duration::from_secs(5), None).await;
+        assert_eq!(heard(&mut endings), [ended(&s, &id, CardEnding::Dismissed)]);
+
+        let late = registry.park(Some(&s), None, crew_sign_in());
+        let id = late.id().to_string();
+        assert_eq!(
+            late.wait(Duration::from_millis(5), None).await,
+            UserActionOutcome::TimedOut
+        );
+        assert_eq!(heard(&mut endings), [ended(&s, &id, CardEnding::TimedOut)]);
+
+        let withdraw = CancellationToken::new();
+        let withdrawn = registry.park(Some(&s), None, crew_sign_in());
+        let id = withdrawn.id().to_string();
+        withdraw.cancel();
+        withdrawn
+            .wait(Duration::from_secs(5), Some(&withdraw))
+            .await;
+        assert_eq!(heard(&mut endings), [ended(&s, &id, CardEnding::Withdrawn)]);
+
+        let dropped = registry.park(Some(&s), None, secrets());
+        let id = dropped.id().to_string();
+        drop(dropped);
+        assert_eq!(heard(&mut endings), [ended(&s, &id, CardEnding::Withdrawn)]);
+
+        let stopped = registry.park(Some(&s), None, approval("developer__shell"));
+        let id = stopped.id().to_string();
+        assert_eq!(registry.cancel_session(&s), 1);
+        assert_eq!(heard(&mut endings), [ended(&s, &id, CardEnding::Withdrawn)]);
+        drop(stopped);
+        assert!(heard(&mut endings).is_empty(), "a card ends once");
+    }
+
+    /// The end goes to every chat that drew the card (its home and the chat it was escalated
+    /// into) and to no other; a card that is a record rather than a question (an elicitation,
+    /// a changed host key's notice) announces nothing, since its stored row stays.
+    #[tokio::test]
+    async fn an_end_reaches_exactly_the_chats_that_drew_the_card() {
+        let registry = Arc::new(PendingUserActions::default());
+        let mut endings = registry.subscribe_card_endings();
+        let (child_chat, parent_chat) = (chat("child"), chat("parent"));
+
+        let child = registry.park(Some(&child_chat), None, approval("developer__shell"));
+        let id = child.id().to_string();
+        assert!(child.also_surface_in(&parent_chat));
+        drop(child);
+        assert_eq!(
+            heard(&mut endings),
+            [
+                ended(&child_chat, &id, CardEnding::Withdrawn),
+                ended(&parent_chat, &id, CardEnding::Withdrawn),
+            ]
+        );
+
+        let s = chat("records");
+        let question = registry.park(
+            Some(&s),
+            None,
+            UserActionRequest::Elicitation(ElicitationRequest {
+                message: "Which cohort?".to_string(),
+                requested_schema: serde_json::json!({}),
+            }),
+        );
+        drop(question);
+        let notice = registry.park(Some(&s), None, host_key(true));
+        let notice_id = notice.id().to_string();
+        drop(notice);
+        assert!(heard(&mut endings).is_empty());
+        assert!(
+            !registry.has_ended(&notice_id),
+            "a notice is drawn, not left out"
+        );
+    }
+
+    /// A changed host key's card is a notice: nothing waits on it and the call releases it at
+    /// once, so it is not ephemeral and the chat's loop stores it, user-only, when it drains it
+    /// (WI-17). An unknown key's card is a question and stays ephemeral. Either way the model
+    /// never reads it.
+    #[test]
+    fn a_changed_host_key_is_a_stored_notice_and_an_unknown_one_is_a_question() {
+        let notice = request_message("n-1", &host_key(true));
+        assert!(!is_ephemeral_card(&notice));
+        assert_eq!(ephemeral_card_id(&notice), None);
+        assert!(notice.is_user_visible());
+        assert!(!notice.is_agent_visible());
+
+        let question = request_message("q-1", &host_key(false));
+        assert!(is_ephemeral_card(&question));
+        assert_eq!(ephemeral_card_id(&question), Some("q-1"));
+        assert_eq!(
+            ephemeral_card_id(&request_message("a-1", &approval("developer__shell"))),
+            Some("a-1")
+        );
+        assert_eq!(
+            ephemeral_card_id(&request_message("c-1", &secrets())),
+            Some("c-1")
+        );
+    }
+
+    /// A changed key's notice, released at once, is still in the chat's queue for its loop to
+    /// draw, and a late observer is never handed it as a parked card (it waits for nothing).
+    #[tokio::test]
+    async fn a_released_notice_is_still_drawn_but_never_replayed_as_parked() {
+        use crate::action_required_manager::ActionRequiredManager;
+        let session = format!("notice-{}", Uuid::new_v4());
+        let registry = Arc::clone(PendingUserActions::global());
+        drop(registry.park(Some(&session), None, host_key(true)));
+        assert!(registry.pending_cards_for_session(&session).is_empty());
+        let drawn = ActionRequiredManager::global().drain_requests(&session);
+        assert_eq!(drawn.len(), 1);
+        assert!(!is_ephemeral_card(&drawn[0]), "the loop stores it");
     }
 
     /// A chat-less run's card must be UNSCOPED, not queued under a session

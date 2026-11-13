@@ -91,11 +91,22 @@ async function* streamOf(...frames: MessageEvent[]) {
   for (const frame of frames) yield frame;
 }
 
-/** Every `headers` object the store handed a gated route, in call order. */
-function gatedCallHeaders(): Array<Record<string, string> | undefined> {
+/** Every `headers` object the store handed a gated route, in call order, as sent. */
+function sentHeaders(): Array<Record<string, string> | undefined> {
   return [...mocks.reply.mock.calls, ...mocks.observeSessionEvents.mock.calls].map(
     (call) => (call[0] as { headers?: Record<string, string> }).headers
   );
+}
+
+/**
+ * {@link sentHeaders} without WI-17's ask to hear when each card ends, which every stream
+ * request makes whatever its proof (pinned on its own below): what is left is the proof alone.
+ */
+function gatedCallHeaders(): Array<Record<string, string>> {
+  return sentHeaders().map((headers) => {
+    const { 'X-Card-Endings': _endings, ...proof } = headers ?? {};
+    return proof;
+  });
 }
 
 /**
@@ -219,5 +230,25 @@ describe('gated routes carry the user-action proof', () => {
     await controller.attachToTurn('turn-9');
 
     expect(gatedCallHeaders()).toEqual([{}]);
+  });
+
+  it('asks every stream to say when each card ends, with or without a proof (WI-17)', async () => {
+    const sid = `ua-endings-${++sessionSeq}`;
+    mocks.resumeAgent.mockResolvedValue({ data: { session: session(sid) } });
+    mocks.reply.mockResolvedValue({ stream: streamOf(finishFrame) });
+    mocks.observeSessionEvents.mockResolvedValue({ stream: streamOf(finishFrame) });
+
+    const controller = new ChatStreamRegistry().getController(sid);
+    await controller.loadSession();
+    await controller.attachToTurn('turn-9');
+    const observer = new ChatStreamRegistry().getController(`${sid}-observer`);
+    const loop = observer.observeSession();
+    await vi.waitFor(() => expect(mocks.observeSessionEvents).toHaveBeenCalled());
+    observer.stopObserving();
+    await loop;
+
+    const sent = sentHeaders();
+    expect(sent.length).toBeGreaterThanOrEqual(2);
+    for (const headers of sent) expect(headers?.['X-Card-Endings']).toBe('1');
   });
 });

@@ -2419,6 +2419,25 @@ impl ExtensionManager {
         exclude: &str,
         admitted: Option<crate::privacy::CallCapability>,
     ) -> ExtensionResult<Vec<Tool>> {
+        self.get_prefixed_tools_excluding_for(exclude, admitted, None)
+            .await
+    }
+
+    /// [`Self::get_prefixed_tools_excluding`] for one chat, `session_id`, when the caller knows
+    /// which (every Code Execution handler does): its Crew tools are then the ones that chat is
+    /// offered, by the rule its own tool list follows (`Agent::list_tools`: gate B-1's
+    /// `authorize_session_tool`, then `CrewToolStanding::offers`). A granted chat imports exactly
+    /// `crew.connections` and `crew.request`, and any other session none, so a script is never
+    /// handed a binding its chat is refused (AO-12: "absent from the roster, never offered and
+    /// then refused"). The person tools `crew.read` and `crew.change` are never importable: a
+    /// person's own chat calls them directly (`reply_parts::runs_only_from_the_agent_loop`).
+    /// Without a session, only what holds for every chat in this process is decided.
+    pub async fn get_prefixed_tools_excluding_for(
+        &self,
+        exclude: &str,
+        admitted: Option<crate::privacy::CallCapability>,
+        session_id: Option<&str>,
+    ) -> ExtensionResult<Vec<Tool>> {
         let snapshot = self.get_all_tools_cached().await?;
         let reach = self.extension_reach(admitted).await;
         let mut tools =
@@ -2444,9 +2463,24 @@ impl ExtensionManager {
         // missing, GPT-5.5 wrote `import { kb_delete_base } from "knowledge"`,
         // was refused, and told the user deletion was impossible in this
         // session. It was right.
+        //
+        // Crew's person tools (`crew__read`, `crew__change`, AO-12) leave by the same door:
+        // the host keys each change on the agent loop's id for the tool call, and a script's
+        // sub-call has none, so a retried script could act as the person twice. The one
+        // predicate that strips them here keeps them on the model's roster
+        // (`reply_parts::runs_only_from_the_agent_loop`).
         tools.retain(|tool| {
-            !crate::security::knowledge_delete::is_knowledge_delete_tool(tool.name.as_ref())
+            !crate::agents::reply_parts::runs_only_from_the_agent_loop(tool.name.as_ref())
         });
+        // Told which chat the catalogue is for, that chat's own standing decides the Crew tools
+        // left, as its tool list's does (a grant's two worker tools; none for an app's or a
+        // subagent's session), so a script is not handed a binding that is refused the moment
+        // it is called. Told none, they stay dispatch's to refuse.
+        if let Some(session_id) = session_id {
+            return Ok(
+                crate::agents::crew_extension::offered_crew_tools(self, session_id, tools).await,
+            );
+        }
         Ok(tools)
     }
 
@@ -3461,9 +3495,13 @@ impl ExtensionManager {
     ) -> Result<ToolCallResult> {
         // Some models strip the tool prefix, so auto-add it for known code_execution tools.
         let prefixed_name = self.prefixed_tool_name(tool_call.name.as_ref()).await;
-        let crew = crate::crew::manager()?;
-        crew.authorize_session_tool(session_id, &prefixed_name)
-            .await?;
+        // Crew: a chat a grant restricts calls only its worker tools and the checklist (gate
+        // B-1), and a Crew tool a chat is not offered is refused here as well as left off its
+        // tool list (AO-12). This is the choke point every path shares: the agent loop,
+        // `POST /agent/call_tool`, a Code Execution script and the coding-agent bridge.
+        let crew =
+            crate::agents::crew_extension::authorize_dispatch(self, session_id, &prefixed_name)
+                .await?;
 
         // Dispatch tool call based on the prefix naming convention. The client
         // and the config that authorizes it come out of ONE snapshot — see
@@ -5545,6 +5583,127 @@ mod tests {
 
         assert!(!tool_names.iter().any(|n| n.starts_with("ext_a__")));
         assert!(tool_names.iter().any(|n| n.starts_with("ext_b__")));
+    }
+
+    /// The `crew` extension's tools as it lists them: the two person tools and a grant's two
+    /// worker tools.
+    struct CrewToolsClient;
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for CrewToolsClient {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+
+        async fn list_resources(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            let schema = Arc::new(serde_json::json!({}).as_object().unwrap().clone());
+            Ok(ListToolsResult {
+                tools: ["read", "change", "connections", "request"]
+                    .into_iter()
+                    .map(|name| Tool::new(name.to_string(), name.to_string(), schema.clone()))
+                    .collect(),
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_prompts(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// AO-12: Code Execution's import catalogue never offers a script a Crew person tool,
+    /// installed host or not, because a script's sub-call carries no tool-call id for the
+    /// host's idempotency key; the model calls them directly instead
+    /// (`reply_parts::runs_only_from_the_agent_loop`). A grant's worker tools are the chat's own
+    /// standing, which dispatch decides, so they stay either way.
+    #[tokio::test]
+    async fn the_import_catalogue_never_offers_a_person_tool() {
+        struct NoHost;
+        #[async_trait::async_trait]
+        impl crate::crew::tool_host::CrewToolHost for NoHost {
+            async fn call(
+                &self,
+                _call: crate::crew::tool_host::PersonToolCall,
+            ) -> anyhow::Result<Value> {
+                anyhow::bail!("not in this test")
+            }
+        }
+        let temp_dir = tempfile::tempdir().unwrap();
+        let extension_manager =
+            ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        extension_manager
+            .add_mock_extension("crew".to_string(), Arc::new(CrewToolsClient))
+            .await;
+        async fn catalogue(manager: &ExtensionManager) -> Vec<String> {
+            let mut names: Vec<String> = manager
+                .get_prefixed_tools_excluding("code_execution", None)
+                .await
+                .unwrap()
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            names.sort();
+            names
+        }
+
+        let without_host =
+            crate::crew::tool_host::with_host_for_tests(None, catalogue(&extension_manager)).await;
+        assert_eq!(without_host, ["crew__connections", "crew__request"]);
+
+        let with_host = crate::crew::tool_host::with_host_for_tests(
+            Some(Arc::new(NoHost)),
+            catalogue(&extension_manager),
+        )
+        .await;
+        assert_eq!(with_host, ["crew__connections", "crew__request"]);
     }
 
     #[tokio::test]

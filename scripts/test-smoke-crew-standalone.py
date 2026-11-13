@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the refusal boundary without invoking a provider or reading credentials."""
+"""Exercise the hidden CLI evidence contract with synthetic traces and owned process fixtures."""
 
 import copy
 import importlib.util
@@ -19,142 +19,249 @@ SMOKE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SMOKE)
 
 
-def events(nested=False):
-    arguments = copy.deepcopy(SMOKE.REQUEST)
+FIXTURE_RESPONSE = 'CREW_STANDALONE_NO_INVOCATION_OK'
+FIXTURE_PROMPT = ('Reply with exactly CREW_STANDALONE_NO_INVOCATION_OK. Do not call any tools. '
+                  'Do not make Crew requests, discover connections, use grants, read files '
+                  'or channel messages, or add explanations. This asks only for a fixed '
+                  'synthetic response; it does not ask you to report which tools you have.')
+
+
+def message(content, role='assistant'):
+    return {'type': 'message', 'message': {'id': 'synthetic-message', 'role': role,
+            'created': 0, 'content': content,
+            'metadata': {'userVisible': True, 'agentVisible': True, 'pinned': False}}}
+
+
+def events(*chunks):
+    return [message([{'type': 'text', 'text': FIXTURE_PROMPT}], 'user')] + [
+        message([{'type': 'text', 'text': chunk}])
+            for chunk in (chunks or (FIXTURE_RESPONSE,))] + [
+                {'type': 'complete', 'total_tokens': 1}]
+
+
+def stale_worker_events(nested=False):
+    arguments = {'method': 'messages.history', 'params': {
+        'channel_id': '00000000-0000-4000-8000-0000000002e5', 'limit': 1}}
+    denial = "This chat isn't connected to a Crew channel. To connect it, type /crew in this chat."
     name = 'crew__request'
-    value = {'content': [{'type': 'text', 'text': SMOKE.DENIAL}], 'isError': False}
+    value = {'content': [{'type': 'text', 'text': denial}], 'isError': False}
     if nested:
         name = 'code_execution__execute_code'
-        arguments = {'code': 'request through the advertised runtime transport',
-                     'tool_graph': [{'tool': 'crew/request', 'description': 'synthetic refusal', 'depends_on': []}]}
-        value['_meta'] = {'biorouter/tool-calls': [{'tool': 'crew__request', 'args': json.dumps(SMOKE.REQUEST),
-                                                  'status': 'ok', 'result_bytes': len(SMOKE.DENIAL)}]}
-        value['content'][0]['text'] = '<tool-output source="crew">\nResult: ' + json.dumps(SMOKE.DENIAL) + '\n</tool-output>'
+        actual_arguments = arguments
+        arguments = {'code': 'synthetic legacy transport', 'tool_graph': [
+            {'tool': 'crew/request', 'description': 'synthetic legacy request', 'depends_on': []}]}
+        value['_meta'] = {'biorouter/tool-calls': [
+            {'tool': 'crew__request', 'args': json.dumps(actual_arguments),
+             'status': 'ok', 'result_bytes': len(denial)}]}
+        value['content'][0]['text'] = '<tool-output>Result: ' + json.dumps(denial) + '</tool-output>'
     request = {'type': 'toolRequest', 'id': 'synthetic-call',
                'toolCall': {'status': 'success', 'value': {'name': name, 'arguments': arguments}}}
     response = {'type': 'toolResponse', 'id': 'synthetic-call',
                 'toolResult': {'status': 'success', 'value': value}}
-    return [{'message': {'role': 'assistant', 'content': [request]}},
-            {'message': {'role': 'user', 'content': [response]}}]
+    data = events()
+    return data[:1] + [message([request]), message([response], 'user')] + data[1:]
 
 
 def trace(data):
     return '\n'.join(json.dumps(event) for event in data)
 
 
-class RefusalBoundary(unittest.TestCase):
-    def test_direct_and_nested_runtime_transports(self):
-        for nested in (False, True):
-            with self.subTest(nested=nested):
-                verdict = SMOKE.validate_trace(trace(events(nested)))
-                self.assertTrue(verdict['exact_denial'])
-                self.assertFalse(verdict['channel_content_returned'])
+class HiddenCliContract(unittest.TestCase):
+    def test_fixed_response_and_completion_cover_only_the_named_contract(self):
+        verdict = SMOKE.validate_trace(trace(events()))
+        self.assertEqual(verdict['contract'], 'hidden_cli_no_invocation_v1')
+        self.assertEqual(verdict['tool_request_count'], 0)
+        self.assertEqual(verdict['tool_response_count'], 0)
+        self.assertTrue(verdict['fixed_response'])
+        self.assertTrue(verdict['completed'])
+        self.assertFalse(verdict['channel_content_returned'])
+        self.assertEqual(verdict['limitations'], {
+            'effective_model_roster': 'NOT OBSERVABLE',
+            'forged_call_denial': 'NOT OBSERVABLE',
+            'separate_rust_evidence_required': True})
+        for obsolete in ('exact_arguments', 'response_id_matches', 'exact_denial',
+                         'local_planning_calls', 'request_count'):
+            self.assertNotIn(obsolete, verdict)
 
-    def test_one_local_planning_summary_cannot_carry_channel_content(self):
-        plan = [
-            {'message': {'role': 'assistant', 'content': [{'type': 'toolRequest', 'id': 'local-plan',
-                'toolCall': {'status': 'success', 'value': {'name': 'todo__todo_write',
-                    'arguments': {'content': '- [ ] Make one synthetic Crew refusal request'}}}}]}},
-            {'message': {'role': 'user', 'content': [{'type': 'toolResponse', 'id': 'local-plan',
-                'toolResult': {'status': 'success', 'value': {'isError': False,
-                    'content': [{'type': 'text', 'text': '<tool-output>Todo list set: 1 item(s)</tool-output>'}]}}}]}}
-        ]
-        self.assertEqual(SMOKE.validate_trace(trace(plan + events(True)))['local_planning_calls'], 1)
-        mutations = {
-            'planning-after-Crew': lambda p: events(True) + p,
-            'planning-extra-arguments': lambda p: (p[0]['message']['content'][0]['toolCall']['value']['arguments'].update(connection_id='unexpected') or p + events(True)),
-            'planning-content-result': lambda p: (p[1]['message']['content'][0]['toolResult']['value']['content'][0].update(text='private channel message') or p + events(True)),
-            'planning-nested-Crew': lambda p: (p[1]['message']['content'][0]['toolResult']['value'].update(_meta={'biorouter/tool-calls': [{'tool': 'crew__request'}]}) or p + events(True)),
-            'planning-resource': lambda p: (p[1]['message']['content'][0]['toolResult']['value']['content'].append({'type': 'resource'}) or p + events(True)),
+    def test_streamed_text_fragments_and_known_null_text_defaults(self):
+        data = events('CREW_STANDALONE_', 'NO_INVOCATION_OK\n')
+        data[1]['message']['content'][0].update(annotations=None, _meta=None)
+        self.assertTrue(SMOKE.validate_trace(trace(data))['fixed_response'])
+
+    def test_real_shaped_user_prelude_and_null_total_tokens(self):
+        data = events()
+        data[0]['message']['id'] = '00000000-0000-4000-8000-000000000001'
+        data[0]['message']['metadata'].update(
+            provenance=None, steerOutcome=None, decisionId=None, decisionSummary=None)
+        data[-1]['total_tokens'] = None
+        verdict = SMOKE.validate_trace(trace(data))
+        self.assertTrue(verdict['fixed_response'])
+        self.assertTrue(verdict['completed'])
+
+    def test_no_user_echo_is_valid_for_headless_stream_json(self):
+        verdict = SMOKE.validate_trace(trace(events()[1:]))
+        self.assertTrue(verdict['fixed_response'])
+        self.assertTrue(verdict['completed'])
+        self.assertEqual(verdict['tool_request_count'], 0)
+        self.assertEqual(verdict['tool_response_count'], 0)
+        self.assertEqual(verdict['limitations']['effective_model_roster'], 'NOT OBSERVABLE')
+        self.assertEqual(verdict['limitations']['forged_call_denial'], 'NOT OBSERVABLE')
+
+    def test_eleven_assistant_fragments_need_no_user_echo(self):
+        chunks = ('CREW', '_', 'STAND', 'ALONE', '_', 'NO', '_', 'IN', 'VO', 'CATION', '_OK')
+        self.assertEqual(''.join(chunks), FIXTURE_RESPONSE)
+        data = events(*chunks)[1:]
+        self.assertEqual(len(data), 12)
+        for event in data[:-1]:
+            event['message']['metadata'].update(
+                provenance=None, steerOutcome=None, decisionId=None, decisionSummary=None)
+            event['message']['content'][0].update(annotations=None, _meta=None)
+        data[-1]['total_tokens'] = None
+        verdict = SMOKE.validate_trace(trace(data))
+        self.assertTrue(verdict['fixed_response'])
+        self.assertTrue(verdict['completed'])
+
+    def test_no_echo_keeps_the_complete_zero_tool_response_contract(self):
+        mutants = {
+            'tool-request': lambda d: d[0]['message']['content'].append(
+                {'type': 'toolRequest', 'id': 'synthetic-call', 'toolCall': {
+                    'status': 'success', 'value': {'name': 'crew__request', 'arguments': {}}}}),
+            'tool-response': lambda d: d[0]['message']['content'].append(
+                {'type': 'toolResponse', 'id': 'synthetic-call', 'toolResult': {
+                    'status': 'success', 'value': []}}),
+            'additional-text': lambda d: d[0]['message']['content'].append(
+                {'type': 'text', 'text': 'synthetic additional content'}),
+            'text-metadata': lambda d: d[0]['message']['content'][0].update(
+                _meta={'synthetic': 'additional content'}),
+            'message-extra': lambda d: d[0]['message'].update(tools=[]),
+            'message-metadata': lambda d: d[0]['message']['metadata'].update(
+                decisionSummary='synthetic additional content'),
+            'event-extra': lambda d: d[0].update(messages=[]),
+            'missing-completion': lambda d: d.pop(),
+            'duplicate-completion': lambda d: d.append(copy.deepcopy(d[-1])),
+            'completion-extra': lambda d: d[-1].update(messages=[]),
+            'completion-boolean-token-count': lambda d: d[-1].update(total_tokens=True),
+            'event-after-completion': lambda d: d.append(copy.deepcopy(d[0])),
+            'missing-assistant': lambda d: d.pop(0),
+            'empty-response': lambda d: d[0]['message']['content'][0].update(text=''),
+            'prefix-response': lambda d: d[0]['message']['content'][0].update(
+                text='synthetic prefix ' + FIXTURE_RESPONSE),
+            'suffix-response': lambda d: d[0]['message']['content'][0].update(
+                text=FIXTURE_RESPONSE + ' synthetic suffix'),
+            'wrong-initial-user': lambda d: d.insert(0, message([
+                {'type': 'text', 'text': 'different prompt'}], 'user')),
+            'late-matching-user': lambda d: d.insert(1, message([
+                {'type': 'text', 'text': FIXTURE_PROMPT}], 'user')),
         }
-        for label, mutate in mutations.items():
-            with self.subTest(boundary=label):
-                with self.assertRaises(SMOKE.EvidenceError):
-                    SMOKE.validate_trace(trace(mutate(copy.deepcopy(plan))))
-
-    def test_recorded_mcp_object_must_contain_only_the_exact_refusal(self):
-        mcp = {'isError': False, 'content': [{'type': 'text', 'text': SMOKE.DENIAL}]}
-        data = events(True)
-        data[1]['message']['content'][0]['toolResult']['value']['content'][0]['text'] = (
-            '<tool-output>Result: ' + json.dumps(mcp) + '</tool-output>')
-        self.assertTrue(SMOKE.validate_trace(trace(data))['exact_denial'])
-        mutations = {
-            'object-resource': lambda m: m['content'].append({'type': 'resource'}),
-            'object-messages': lambda m: m.update(messages=['private']),
-            'object-nested-metadata': lambda m: m.update(_meta={'content': ['private']}),
-            'object-is-error': lambda m: m.update(isError=True),
-            'object-hidden-content-key': lambda m: m['content'][0].update(messages=['private']),
-        }
-        for label, mutate in mutations.items():
-            with self.subTest(boundary=label):
-                candidate = copy.deepcopy(mcp)
-                mutate(candidate)
-                data[1]['message']['content'][0]['toolResult']['value']['content'][0]['text'] = (
-                    '<tool-output>Result: ' + json.dumps(candidate) + '</tool-output>')
-                with self.assertRaises(SMOKE.EvidenceError):
-                    SMOKE.validate_trace(trace(data))
-
-    def test_known_optional_mcp_defaults_and_private_schema_diagnostics(self):
-        result = {'content': [{'type': 'text', 'text': SMOKE.DENIAL}],
-                  'isError': None, 'structuredContent': None, '_meta': None}
-        data = events(True)
-        data[1]['message']['content'][0]['toolResult']['value']['content'][0]['text'] = (
-            '<tool-output>Result: ' + json.dumps(result) + '</tool-output>')
-        self.assertTrue(SMOKE.validate_trace(trace(data))['exact_denial'])
-        result['structuredContent'] = {'messages': ['private']}
-        data[1]['message']['content'][0]['toolResult']['value']['content'][0]['text'] = (
-            '<tool-output>Result: ' + json.dumps(result) + '</tool-output>')
-        with self.assertRaises(SMOKE.EvidenceError):
-            SMOKE.validate_trace(trace(data))
-        schema = json.dumps(SMOKE.protocol_schema({'private-dynamic-key': 'private-value',
-                'content': [{'type': 'text', 'text': 'private-text'}], 'isError': False}))
-        for private in ('private-dynamic-key', 'private-value', 'private-text'):
-            self.assertNotIn(private, schema)
-        self.assertIn('unknown_field_count', schema)
-
-    def test_runtime_result_must_decode_to_only_the_exact_denial(self):
-        for text in ('Result: ' + json.dumps({'message': SMOKE.DENIAL}),
-                     'Result: ' + json.dumps(SMOKE.DENIAL) + ' trailing message',
-                     'Result: ' + json.dumps(SMOKE.DENIAL + ' private message')):
-            with self.subTest(text_shape=text[:12]):
-                data = events(True)
-                data[1]['message']['content'][0]['toolResult']['value']['content'][0]['text'] = (
-                    '<tool-output>' + text + '</tool-output>')
-                with self.assertRaises(SMOKE.EvidenceError):
-                    SMOKE.validate_trace(trace(data))
-
-    def test_assistant_prose_is_not_tool_content(self):
-        data = events(True)
-        data.append({'message': {'role': 'assistant', 'content': [
-            {'type': 'text', 'text': 'The channel request was refused; no message content was returned.'}]}})
-        self.assertTrue(SMOKE.validate_trace(trace(data))['exact_denial'])
-
-    def test_returned_payloads_and_transport_ambiguity_are_rejected(self):
-        mutations = {
-            'response-id': lambda d: d[1]['message']['content'][0].update(id='another-call'),
-            'second-call': lambda d: d[0]['message']['content'].append(copy.deepcopy(d[0]['message']['content'][0])),
-            'missing-response': lambda d: d.pop(),
-            'different-channel': lambda d: d[1]['message']['content'][0]['toolResult']['value']['_meta']['biorouter/tool-calls'][0].update(args=json.dumps({'method': 'messages.history', 'params': {'channel_id': 'other', 'limit': 1}})),
-            'grant-argument': lambda d: d[1]['message']['content'][0]['toolResult']['value']['_meta']['biorouter/tool-calls'][0].update(args=json.dumps({**SMOKE.REQUEST, 'connection_id': 'unexpected'})),
-            'extra-nested-call': lambda d: d[1]['message']['content'][0]['toolResult']['value']['_meta']['biorouter/tool-calls'].append({'tool': 'crew__connections', 'args': '{}', 'status': 'ok'}),
-            'wrong-graph': lambda d: d[0]['message']['content'][0]['toolCall']['value']['arguments']['tool_graph'][0].update(tool='crew/connections'),
-            'extra-graph': lambda d: d[0]['message']['content'][0]['toolCall']['value']['arguments']['tool_graph'].append({'tool': 'crew/request'}),
-            'missing-metadata': lambda d: d[1]['message']['content'][0]['toolResult']['value'].pop('_meta'),
-            'nested-error': lambda d: d[1]['message']['content'][0]['toolResult']['value']['_meta']['biorouter/tool-calls'][0].update(status='error'),
-            'transport-error': lambda d: d[1]['message']['content'][0]['toolResult'].update(status='error'),
-            'mcp-error': lambda d: d[1]['message']['content'][0]['toolResult']['value'].update(isError=True),
-            'hidden-messages': lambda d: d[1]['message']['content'][0]['toolResult']['value'].update(structuredContent={'messages': ['private']}),
-            'extra-text': lambda d: d[1]['message']['content'][0]['toolResult']['value']['content'].append({'type': 'text', 'text': 'private message'}),
-            'resource': lambda d: d[1]['message']['content'][0]['toolResult']['value']['content'].append({'type': 'resource', 'resource': {'text': 'private'}}),
-            'message-after-denial': lambda d: d[1]['message']['content'][0]['toolResult']['value']['content'][0].update(text=SMOKE.DENIAL + '\nprivate message'),
-            'xml-child': lambda d: d[1]['message']['content'][0]['toolResult']['value']['content'][0].update(text='<tool-output>' + SMOKE.DENIAL + '<message>private</message></tool-output>'),
-        }
-        for label, mutate in mutations.items():
-            with self.subTest(boundary=label):
-                data = events(True)
+        for label, mutate in mutants.items():
+            with self.subTest(no_echo=label):
+                data = events()[1:]
                 mutate(data)
                 with self.assertRaises(SMOKE.EvidenceError):
                     SMOKE.validate_trace(trace(data))
+        late_after_empty = [message([{'type': 'text', 'text': ''}]),
+                            message([{'type': 'text', 'text': FIXTURE_PROMPT}], 'user')]
+        with self.assertRaises(SMOKE.EvidenceError):
+            SMOKE.validate_trace(trace(late_after_empty + events()[1:]))
+        for kind in ('error', 'aborted', 'notification', 'model_change', 'system'):
+            with self.subTest(event=kind):
+                data = events()[1:]
+                data.insert(0, {'type': kind, 'message': 'synthetic only'})
+                with self.assertRaises(SMOKE.EvidenceError):
+                    SMOKE.validate_trace(trace(data))
+
+    def test_an_optional_user_echo_must_be_exact_unique_and_initial(self):
+        mutants = {
+            'different': lambda d: d[0]['message']['content'][0].update(text='different prompt'),
+            'trailing-whitespace': lambda d: d[0]['message']['content'][0].update(
+                text=FIXTURE_PROMPT + '\n'),
+            'leading-whitespace': lambda d: d[0]['message']['content'][0].update(
+                text=' ' + FIXTURE_PROMPT),
+            'wrong-initial-role': lambda d: d[0]['message'].update(role='assistant'),
+            'duplicate': lambda d: d.insert(1, copy.deepcopy(d[0])),
+            'later': lambda d: d.insert(2, copy.deepcopy(d[0])),
+            'extra-content': lambda d: d[0]['message']['content'].append(
+                {'type': 'text', 'text': ''}),
+            'nontext': lambda d: d[0]['message']['content'].append({'type': 'toolRequest'}),
+        }
+        for label, mutate in mutants.items():
+            with self.subTest(prelude=label):
+                data = events()
+                mutate(data)
+                with self.assertRaises(SMOKE.EvidenceError):
+                    SMOKE.validate_trace(trace(data))
+
+    def test_the_legacy_one_worker_request_contract_is_rejected(self):
+        for nested in (False, True):
+            with self.subTest(nested=nested):
+                with self.assertRaises(SMOKE.EvidenceError):
+                    SMOKE.validate_trace(trace(stale_worker_events(nested)))
+
+    def test_no_tool_or_other_content_is_permitted(self):
+        for name in ('crew__request', 'crew__read', 'todo__todo_write',
+                     'developer__shell', 'code_execution__execute_code'):
+            with self.subTest(tool=name):
+                content = {'type': 'toolRequest', 'id': 'extra',
+                           'toolCall': {'status': 'success',
+                                        'value': {'name': name, 'arguments': {}}}}
+                data = events()
+                data.insert(1, message([content]))
+                with self.assertRaises(SMOKE.EvidenceError):
+                    SMOKE.validate_trace(trace(data))
+        for content_type in ('toolResponse', 'frontendToolRequest', 'toolConfirmationRequest',
+                             'actionRequired', 'image', 'resource', 'thinking',
+                             'redactedThinking', 'systemNotification'):
+            with self.subTest(content_type=content_type):
+                data = events()
+                data.insert(1, message([{'type': content_type}]))
+                with self.assertRaises(SMOKE.EvidenceError):
+                    SMOKE.validate_trace(trace(data))
+
+    def test_extra_text_and_payload_fields_are_rejected(self):
+        mutants = {
+            'additional-text': lambda d: d[1]['message']['content'].append(
+                {'type': 'text', 'text': 'synthetic channel content'}),
+            'extra-text-field': lambda d: d[1]['message']['content'][0].update(messages=['synthetic']),
+            'text-metadata': lambda d: d[1]['message']['content'][0].update(_meta={'messages': ['synthetic']}),
+            'annotations': lambda d: d[1]['message']['content'][0].update(annotations={'priority': 1}),
+            'message-metadata': lambda d: d[1]['message']['metadata'].update(decisionSummary={'calls': 1}),
+            'message-extra-field': lambda d: d[1]['message'].update(tools=['crew__request']),
+            'event-extra-field': lambda d: d[1].update(messages=['synthetic']),
+            'user-message': lambda d: d[1]['message'].update(role='user'),
+            'hidden-message': lambda d: d[1]['message']['metadata'].update(userVisible=False),
+            'completion-payload': lambda d: d[-1].update(messages=['synthetic']),
+            'completion-boolean': lambda d: d[-1].update(total_tokens=True),
+        }
+        for label, mutate in mutants.items():
+            with self.subTest(boundary=label):
+                data = events()
+                mutate(data)
+                with self.assertRaises(SMOKE.EvidenceError):
+                    SMOKE.validate_trace(trace(data))
+
+    def test_completion_and_fixed_content_cannot_be_replaced_by_model_prose(self):
+        mutants = [events()[:-1], [], [{'type': 'complete', 'total_tokens': 1}],
+                   events() + [events()[-1]], events() + events(),
+                   events('No Crew tools are available.'),
+                   events('The forged request was refused.'),
+                   events('prefix ' + FIXTURE_RESPONSE), events(FIXTURE_RESPONSE + ' suffix')]
+        for data in mutants:
+            with self.subTest(event_count=len(data)):
+                with self.assertRaises(SMOKE.EvidenceError):
+                    SMOKE.validate_trace(trace(data))
+        for event_type in ('error', 'aborted', 'notification', 'model_change', 'system'):
+            with self.subTest(event_type=event_type):
+                with self.assertRaises(SMOKE.EvidenceError):
+                    SMOKE.validate_trace(trace([{'type': event_type}] + events()))
+
+    def test_duplicate_fields_cannot_hide_a_tool_payload(self):
+        hidden = (json.dumps(events()[0]) + '\n'
+                  '{"type":"message","message":{"role":"assistant",'
+                  '"content":[{"type":"toolRequest"}],'
+                  '"content":[{"type":"text","text":"' + FIXTURE_RESPONSE + '"}]}}\n'
+                  '{"type":"complete","total_tokens":1}')
+        with self.assertRaises(SMOKE.EvidenceError):
+            SMOKE.validate_trace(hidden)
 
     def test_only_the_single_ordinary_cli_loopback_bridge_is_allowed(self):
         valid = 'p123\nf9\nn127.0.0.1:43210\nTST=LISTEN\nTQR=0\nTQS=0\n'
@@ -186,9 +293,9 @@ class RefusalBoundary(unittest.TestCase):
                 return None if self.polls <= 2 else self.returncode
 
             def communicate(self, prompt):
-                if prompt != b'synthetic request':
+                if prompt != FIXTURE_PROMPT.encode():
                     raise AssertionError('stdin was not the supplied synthetic prompt')
-                return trace(events(True)).encode(), b''
+                return trace(events()[1:]).encode(), b''
 
         process = NativeProcess()
         with tempfile.TemporaryDirectory() as directory:
@@ -202,11 +309,11 @@ class RefusalBoundary(unittest.TestCase):
                     patch.object(SMOKE, 'processes', side_effect=[{}, {process.pid: (123, 'biorouter')}, {}]), \
                     patch.object(SMOKE, 'observe_listeners', return_value=fields) as observe, \
                     patch.object(SMOKE.time, 'sleep'), patch.object(SMOKE.os, 'killpg') as kill:
-                output, samples = SMOKE.invoke(['exact-native-cli'], 'synthetic request',
+                output, samples = SMOKE.invoke(['exact-native-cli'], FIXTURE_PROMPT,
                                                {'HOME': str(root)}, root, root, root,
                                                'exact-observer', 10)
                 self.assertEqual(samples, 1)
-                self.assertTrue(SMOKE.validate_trace(output)['exact_denial'])
+                self.assertTrue(SMOKE.validate_trace(output)['fixed_response'])
                 self.assertEqual(launch.call_args.args[0], ['exact-native-cli'])
                 self.assertTrue(launch.call_args.kwargs['start_new_session'])
                 self.assertEqual(launch.call_args.kwargs['env'], {'HOME': str(root)})

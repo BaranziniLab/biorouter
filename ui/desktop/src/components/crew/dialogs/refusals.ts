@@ -123,6 +123,20 @@ const FULL_BUT_HOST_CAN_ADMINISTER_TEXT =
   /^(?:workspace logical state is full|retained audit journal is nearly full)\b/i;
 
 /**
+ * The `forbidden` texts of the broker's host-only checks, which it writes for a program:
+ * `manager()`'s `workspace host device required` (the host's account, not one of its computers),
+ * the two `human host … decision required` checks and `only host account can stop broker`
+ * (`broker.rs`, `broker/lifecycle.rs`). The CLI words these four with the same sentence
+ * (`placed_refusal` in `commands/crew/output.rs`, which a test there reads back from this file).
+ * Matched whole, so a `forbidden` sentence the broker wrote for a person is kept.
+ */
+const HOST_ONLY_TEXT =
+  /^(?:workspace host device required|human host (?:policy )?decision required|only host account can stop broker)[.!?]?$/i;
+
+/** What a host-only refusal says on every Crew surface (`HOST_ONLY_TEXT`). */
+export const HOST_ONLY_REFUSAL = 'Only the workspace host can do this.';
+
+/**
  * Broker texts written for a program, and the copy deck's words for them. Each is matched on the
  * code and on the text's own form, because a code can also carry a person-written sentence that
  * says something more specific (`identity_conflict` for an invited account, `identity_mismatch`
@@ -176,6 +190,21 @@ const REWORDED: readonly {
     code: 'rate_limited',
     matches: (sentence) => !readsAsSentence(sentence),
     words: () => refusalCopy.tooManyAttempts,
+  },
+  // A person's machine is a computer whatever broker the workspace runs: an older one says "…let
+  // this device in" and "Choose Add device…". The CLI rewrites the same two codes.
+  { code: 'code_mismatch', matches: () => true, words: () => refusalCopy.codeMismatch },
+  {
+    code: 'already_member',
+    matches: (sentence) => MENTION.test(sentence),
+    words: (sentence) => refusalCopy.alreadyMember(MENTION.exec(sentence)?.[1] ?? ''),
+  },
+  // Only the words shown change: the checks that read a refusal for its words
+  // (`isUnknownDeviceFailure` in `onboarding/joinText.ts`) read the daemon's message, not this.
+  {
+    code: 'forbidden',
+    matches: (sentence) => HOST_ONLY_TEXT.test(sentence.trim()),
+    words: () => HOST_ONLY_REFUSAL,
   },
 ];
 

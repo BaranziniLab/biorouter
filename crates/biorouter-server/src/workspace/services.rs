@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use biorouter::agents::ExtensionConfig;
 use biorouter::config::{get_enabled_extensions, get_extension_by_name};
 use biorouter::conversation::message::Message;
 use biorouter::session::session_manager::SessionType;
@@ -82,6 +83,104 @@ impl ServerWorkspaceServices {
     async fn evict_partially_restored_child(&self, session_id: &str) {
         let _ = self.state.agent_manager.remove_session(session_id).await;
     }
+
+    /// The minimal core of POST /agent/start (`start_agent`), for an extension
+    /// set already decided ([`requested_extensions`]): create → apply the set →
+    /// persist → eager-load in background.
+    async fn create_session_with(
+        &self,
+        working_dir: PathBuf,
+        configs: Vec<ExtensionConfig>,
+        knowledge_bases: Vec<String>,
+        primary: KbPrimaryChoice,
+    ) -> Result<String, String> {
+        let manager = self.state.session_manager();
+        let session = manager
+            .create_session(
+                working_dir,
+                biorouter::session::DEFAULT_SESSION_NAME.to_string(),
+                SessionType::User,
+            )
+            .await
+            .map_err(|e| format!("failed to create session: {e}"))?;
+
+        let mut extension_data = session.extension_data.clone();
+        let extensions_state = EnabledExtensionsState::new(configs);
+        extensions_state
+            .to_extension_data(&mut extension_data)
+            .map_err(|e| format!("failed to initialize extensions: {e}"))?;
+        manager
+            .update(&session.id)
+            .extension_data(extension_data)
+            .apply()
+            .await
+            .map_err(|e| format!("failed to save extension state: {e}"))?;
+
+        if !knowledge_bases.is_empty() {
+            // A fresh session has no primary of its own, so `Auto` here always
+            // resolves to "pin the first id" — which is what makes the new
+            // session's KB-less writes work at all. Passing an explicit
+            // `Set(id)` from `workspace_open` is honoured unchanged.
+            self.set_knowledge_bases(&session.id, &knowledge_bases, primary)?;
+        }
+
+        // Eager extension load, exactly as start_agent does.
+        let state = self.state.clone();
+        let session_for_spawn = manager
+            .get_session(&session.id, false)
+            .await
+            .map_err(|e| e.to_string())?;
+        let sid = session.id.clone();
+        let task = tokio::spawn(async move {
+            match state.get_agent(session_for_spawn.id.clone()).await {
+                Ok(agent) => agent.load_extensions_from_session(&session_for_spawn).await,
+                Err(e) => {
+                    tracing::warn!("workspace start_session: agent create failed: {e}");
+                    vec![]
+                }
+            }
+        });
+        self.state.set_extension_loading_task(sid, task).await;
+
+        Ok(session.id)
+    }
+}
+
+/// The extension set a `workspace_open { new }` conversation starts with.
+///
+/// `None` is the person's enabled set, as for any new chat. Named extensions
+/// are resolved against the config registry, and the capabilities the person
+/// turned on for every chat on this computer (Crew among them) are kept beside
+/// them, as a workflow's chat keeps them
+/// (`biorouter::workflow::runtime::keep_machine_wide_capabilities`): naming
+/// the extensions a task needs must not switch the app's own capabilities off.
+/// A named capability keeps the caller's entry, and a capability the person
+/// turned off stays off.
+///
+/// This adds nothing a caller could not already reach: `None` hands it the
+/// whole enabled set, and the named extensions still pass
+/// `refuse_gated_new_session_extensions` before this runs. An unknown name
+/// refuses the whole call before the enabled set is read or a session made.
+fn requested_extensions(
+    names: Option<Vec<String>>,
+    lookup: impl Fn(&str) -> Option<ExtensionConfig>,
+    machine_wide: impl FnOnce() -> Vec<ExtensionConfig>,
+) -> Result<Vec<ExtensionConfig>, String> {
+    let Some(names) = names else {
+        return Ok(machine_wide());
+    };
+    let mut configs = names
+        .iter()
+        .map(|name| {
+            // DD-51: naming the Dictionary never turns it on; only the person does.
+            if biorouter::dictation::activation::is_dictionary_name(name) {
+                return Err(biorouter::dictation::activation::ENABLE_REFUSAL.to_string());
+            }
+            lookup(name).ok_or_else(|| format!("unknown extension '{name}'"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    biorouter::workflow::runtime::keep_machine_wide_capabilities(&mut configs, &machine_wide());
+    Ok(configs)
 }
 
 /// Publish this daemon's platform services to the `biorouter` crate, so the
@@ -287,74 +386,10 @@ impl WorkspaceServices for ServerWorkspaceServices {
         knowledge_bases: Vec<String>,
         primary: KbPrimaryChoice,
     ) -> Result<String, String> {
-        // The minimal core of POST /agent/start (`start_agent`):
-        // create → apply extension set → persist → eager-load in background.
-        let configs = match extensions {
-            None => get_enabled_extensions(),
-            Some(names) => {
-                let mut configs = Vec::with_capacity(names.len());
-                for name in &names {
-                    if biorouter::dictation::activation::is_dictionary_name(name) {
-                        return Err(biorouter::dictation::activation::ENABLE_REFUSAL.to_string());
-                    }
-                    match get_extension_by_name(name) {
-                        Some(c) => configs.push(c),
-                        None => return Err(format!("unknown extension '{name}'")),
-                    }
-                }
-                configs
-            }
-        };
-
-        let manager = self.state.session_manager();
-        let session = manager
-            .create_session(
-                working_dir,
-                biorouter::session::DEFAULT_SESSION_NAME.to_string(),
-                SessionType::User,
-            )
+        let configs =
+            requested_extensions(extensions, get_extension_by_name, get_enabled_extensions)?;
+        self.create_session_with(working_dir, configs, knowledge_bases, primary)
             .await
-            .map_err(|e| format!("failed to create session: {e}"))?;
-
-        let mut extension_data = session.extension_data.clone();
-        let extensions_state = EnabledExtensionsState::new(configs);
-        extensions_state
-            .to_extension_data(&mut extension_data)
-            .map_err(|e| format!("failed to initialize extensions: {e}"))?;
-        manager
-            .update(&session.id)
-            .extension_data(extension_data)
-            .apply()
-            .await
-            .map_err(|e| format!("failed to save extension state: {e}"))?;
-
-        if !knowledge_bases.is_empty() {
-            // A fresh session has no primary of its own, so `Auto` here always
-            // resolves to "pin the first id" — which is what makes the new
-            // session's KB-less writes work at all. Passing an explicit
-            // `Set(id)` from `workspace_open` is honoured unchanged.
-            self.set_knowledge_bases(&session.id, &knowledge_bases, primary)?;
-        }
-
-        // Eager extension load, exactly as start_agent does.
-        let state = self.state.clone();
-        let session_for_spawn = manager
-            .get_session(&session.id, false)
-            .await
-            .map_err(|e| e.to_string())?;
-        let sid = session.id.clone();
-        let task = tokio::spawn(async move {
-            match state.get_agent(session_for_spawn.id.clone()).await {
-                Ok(agent) => agent.load_extensions_from_session(&session_for_spawn).await,
-                Err(e) => {
-                    tracing::warn!("workspace start_session: agent create failed: {e}");
-                    vec![]
-                }
-            }
-        });
-        self.state.set_extension_loading_task(sid, task).await;
-
-        Ok(session.id)
     }
 
     fn set_knowledge_bases(
@@ -716,7 +751,12 @@ mod tests {
     ///   hypothetical: `cargo test -p biorouter-server --lib workspace::services`
     ///   hung there indefinitely (`SecKeychainFindGenericPassword` under
     ///   `Agent::load_extensions_from_session`) until this rule was applied.
-    ///   `Some(vec![])` exercises the same code path with an empty set.
+    ///   Since WI-10 `Some(vec![])` is no longer an empty set either: named
+    ///   extensions keep the capabilities enabled in config. A test that needs
+    ///   an empty set calls `create_session_with(…, Vec::new(), …)`, the same
+    ///   path with the set already decided; capabilities are built in, so the
+    ///   one test that loads them through `start_session` cannot reach the
+    ///   Keychain.
 
     #[tokio::test]
     async fn start_session_creates_a_user_session_in_the_requested_dir_and_rejects_unknown_extensions(
@@ -737,9 +777,9 @@ mod tests {
         assert!(err.contains("no-such-ext"));
 
         let sid = services
-            .start_session(
+            .create_session_with(
                 temp.path().to_path_buf(),
-                Some(Vec::new()),
+                Vec::new(),
                 Vec::new(),
                 KbPrimaryChoice::Auto,
             )
@@ -759,7 +799,7 @@ mod tests {
             session.working_dir.canonicalize().unwrap(),
             temp.path().canonicalize().unwrap()
         );
-        // The extension set the caller asked for is what was persisted.
+        // The extension set it was given is what was persisted.
         let persisted = biorouter::session::EnabledExtensionsState::from_extension_data(
             &session.extension_data,
         )
@@ -870,9 +910,9 @@ mod tests {
         // There IS one to reuse — without this the assertion below would pass
         // against a `start_session` that never registered anything.
         let untouched = services
-            .start_session(
+            .create_session_with(
                 temp.path().to_path_buf(),
-                Some(Vec::new()),
+                Vec::new(),
                 Vec::new(),
                 KbPrimaryChoice::Auto,
             )
@@ -887,9 +927,9 @@ mod tests {
         );
 
         let sid = services
-            .start_session(
+            .create_session_with(
                 temp.path().to_path_buf(),
-                Some(Vec::new()),
+                Vec::new(),
                 Vec::new(),
                 KbPrimaryChoice::Auto,
             )
@@ -912,6 +952,146 @@ mod tests {
             state.take_extension_loading_task(&sid).await.is_none(),
             "the detached turn must consume the eager load, not leave it running \
              beside a second one of its own"
+        );
+    }
+
+    fn platform(name: &str) -> ExtensionConfig {
+        ExtensionConfig::Platform {
+            name: name.into(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        }
+    }
+
+    fn builtin(name: &str, tools: &[&str]) -> ExtensionConfig {
+        ExtensionConfig::Builtin {
+            name: name.into(),
+            display_name: None,
+            description: String::new(),
+            timeout: None,
+            bundled: Some(true),
+            available_tools: tools.iter().map(|tool| tool.to_string()).collect(),
+        }
+    }
+
+    fn installed(name: &str) -> ExtensionConfig {
+        ExtensionConfig::Stdio {
+            name: name.into(),
+            description: String::new(),
+            cmd: "/usr/local/bin/lab-server".into(),
+            args: vec![],
+            envs: Default::default(),
+            env_keys: vec![],
+            timeout: None,
+            bundled: None,
+            available_tools: vec![],
+        }
+    }
+
+    /// The registry in these tests: a narrowed Developer, an installed server.
+    fn lookup(name: &str) -> Option<ExtensionConfig> {
+        match name {
+            "developer" => Some(builtin("developer", &["shell"])),
+            "lab-mcp" => Some(installed("lab-mcp")),
+            _ => None,
+        }
+    }
+
+    fn keys(configs: &[ExtensionConfig]) -> Vec<String> {
+        configs.iter().map(ExtensionConfig::key).collect()
+    }
+
+    /// WI-10. `workspace_open { new: { extensions } }` used to start exactly
+    /// the named set, so a chat opened for one task had no Crew although the
+    /// person turned Crew on for every chat.
+    #[test]
+    fn named_extensions_keep_the_capabilities_turned_on_machine_wide() {
+        let configs = requested_extensions(Some(vec!["developer".into()]), lookup, || {
+            vec![
+                platform("crew"),
+                builtin("developer", &[]),
+                installed("other-server"),
+            ]
+        })
+        .unwrap();
+        assert_eq!(keys(&configs), ["developer", "crew"]);
+        // The named Developer is the caller's narrowed entry, never widened by
+        // the person's unrestricted one; an installed extension is not added.
+        assert_eq!(configs[0], builtin("developer", &["shell"]));
+    }
+
+    #[test]
+    fn a_capability_turned_off_machine_wide_stays_off_in_a_named_set() {
+        let configs = requested_extensions(Some(vec!["lab-mcp".into()]), lookup, || {
+            vec![builtin("developer", &[])]
+        })
+        .unwrap();
+        assert_eq!(keys(&configs), ["lab-mcp", "developer"]);
+    }
+
+    #[test]
+    fn an_unknown_name_refuses_before_the_enabled_set_is_read() {
+        let err = requested_extensions(
+            Some(vec!["developer".into(), "no-such-ext".into()]),
+            lookup,
+            || panic!("the enabled set is read only once every name resolved"),
+        )
+        .unwrap_err();
+        assert!(err.contains("no-such-ext"), "{err}");
+    }
+
+    #[test]
+    fn no_names_is_the_whole_enabled_set_as_before() {
+        let configs = requested_extensions(None, lookup, || {
+            vec![platform("crew"), installed("other-server")]
+        })
+        .unwrap();
+        assert_eq!(keys(&configs), ["crew", "other-server"]);
+    }
+
+    /// The trait method reads the real config (this binary's sandboxed one,
+    /// where the shipped capabilities are on). Other tests may switch entries
+    /// meanwhile, so it asserts what holds regardless: the named set is there,
+    /// something was added, and everything added is a capability.
+    #[tokio::test]
+    async fn start_session_with_names_persists_the_configured_capabilities_beside_them() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let sid = services
+            .start_session(
+                temp.path().to_path_buf(),
+                Some(Vec::new()),
+                Vec::new(),
+                KbPrimaryChoice::Auto,
+            )
+            .await
+            .unwrap();
+        // The eager load is not under test; drop it rather than wait on it.
+        state.remove_extension_loading_task(&sid).await;
+
+        let session = state
+            .session_manager()
+            .get_session(&sid, false)
+            .await
+            .unwrap();
+        let persisted = biorouter::session::EnabledExtensionsState::from_extension_data(
+            &session.extension_data,
+        )
+        .expect("start_session persists an extension state");
+        assert!(
+            !persisted.extensions.is_empty(),
+            "an empty name list still keeps the capabilities turned on in config"
+        );
+        assert!(
+            persisted
+                .extensions
+                .iter()
+                .all(ExtensionConfig::is_capability),
+            "only capabilities are added: {:?}",
+            keys(&persisted.extensions)
         );
     }
 

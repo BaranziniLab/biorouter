@@ -3,7 +3,8 @@
 > **What this is.** How to write, read and copy messages in a Crew channel, how Crew keeps unsent
 > drafts, how to share and list files from your computer or the lab server, and what happens to a
 > deleted channel's messages and files.
-> **Status:** Current. Checked against the Crew code on 2026-10-16.
+> **Status:** Current. Checked against the Crew code on 2026-10-16, and its chat sections on
+> 2026-11-07.
 > **Audience:** Crew members who use the Biorouter desktop app.
 
 This page assumes you have joined a workspace (see [Joining a workspace](joining-a-workspace.md)).
@@ -289,8 +290,22 @@ A transfer is one upload or download on this computer.
 - **Remove from list** deletes only this computer's record. For an unfinished download, choose the
   folder you saved into, then **Remove temporary file**. The row leaves the list. For an unfinished
   upload, the part already sent stays on the server for up to a day.
-- A transfer you pause, resume or remove with `biorouter crew` shows its new state here within a
-  few seconds, or when you bring the window back to the front.
+- A transfer you pause, resume or remove with `biorouter crew` or from a chat shows its new state
+  here within a few seconds, or when you bring the window back to the front.
+
+From a chat, ask "What transfers are running?", then "Pause the counts.csv upload", "Resume it from
+/Users/bob/results/counts.csv" or "Remove it from the list". Each change shows a card first, naming
+the transfer, its file, its size and where it goes, and runs only when you choose **Allow once**. To
+resume, the chat needs the file's path on this computer: the same file for an upload, or the same
+destination for a download. A chat removes a transfer only once it stopped, so it pauses one under
+way first. For an unfinished download, the card names the partial file it deletes from this
+computer. When the chat cannot tell where a download was saving, it says so, and you remove it in
+the **Files** tab instead. A transfer's file name is workspace content, so the chat reads it only
+as it reads other content ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)).
+A transfer whose file the chat may not be told of, such as a restricted one in a chat on a public
+model, is listed by its state, direction and size alone, and one in a channel the chat may not
+read is only counted. The chat cannot resume such an upload: it says "This chat can't resume that
+upload, because it may not see which file it was sharing. Resume it in Crew, under Files."
 
 ### Transfer states
 
@@ -312,6 +327,29 @@ check that it exists.
    name.
 4. Choose **Add to message**, then press Send. Readers see the label, "Not uploaded" and the path
    with a **Copy** button. A reader copies the path to use the file on the server.
+
+## Post files from a chat
+
+An ordinary Biorouter chat can post a message with files for you, after you allow its card
+([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). Ask, for example, "Send
+plot.png and counts.csv from ~/results to #methods with a note that the run finished", or "Post
+/project/results/summary.csv from the server in #methods".
+
+- One message carries up to 10 files from this computer and up to 10 paths on the server, with or
+  without text. Name each file by its full path. A folder, or a file named twice, is refused before
+  any card.
+- One card shows the whole message: its text, each file's name, size and path on this computer,
+  and each path on the server. Its first line says what it posts, such as "Post this with 2 files
+  from this computer in #methods (Analysis Lab) in chen-lab on lab.example.edu as you".
+- A path on the server adds "Referenced files stay on the server; members who can read them there
+  open them from the post. The post is restricted, so public models never read it."
+- After you choose **Allow once**, Crew uploads each file, then posts one message with all of them.
+  If a file changed after the card showed it, nothing is shared or posted. If one upload cannot
+  start, the uploads already started are paused, and nothing is posted. Find them in the **Files**
+  tab.
+- A message with more items than that is refused with "One message carries at most 10 files. Send
+  the rest in another message." (or "references" in place of "files"). Ask the chat to send the
+  rest in a second message.
 
 ## Deleted channels
 

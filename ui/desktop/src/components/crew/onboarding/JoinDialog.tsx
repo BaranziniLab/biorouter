@@ -370,6 +370,15 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     sanitizeDisplayText(preview?.workspace_name) ||
     sanitizeDisplayText(connectionName) ||
     joinCopy.unnamedWorkspace;
+  /** The server account the agent would act as, as the agent row and its warning name it. */
+  const accessUser =
+    sanitizeDisplayText(username.trim()) || sshUsername(manual ? manualLogin : sshAlias) || null;
+  /**
+   * The invitation's host is that same account (a host adding another computer of their own):
+   * full access there also reaches the workspace's own files, so its warning says so.
+   */
+  const hostsInvitedWorkspace =
+    !manual && accessUser !== null && preview?.host_username === accessUser;
 
   // The member setup Join runs for As me on the server (OW-9). Once it connected the account, the
   // controller connects too, so it follows, and the dialog closes as an ordinary join does.
@@ -642,8 +651,12 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
     }
     // Otherwise it connects. If connecting finds Crew missing for the account, the Not set up pane
     // sets it up by itself: this Join was the person's consent (decision 5.7). It carries the level
-    // chosen here, so Off stays off and a folder stays the folder the person typed.
-    requestMemberSetup(saved.id, { agentAccess: level });
+    // chosen here, so Off stays off and a folder stays the folder the person typed, and, for As me
+    // on the server in a workspace this account hosts, the workspace its warning names (W2).
+    requestMemberSetup(saved.id, {
+      agentAccess: level,
+      ...(level === 'full' && hostsInvitedWorkspace ? { hostWorkspace: workspaceLabel } : {}),
+    });
     setPhase('connecting');
     setPendingConnect(saved.id);
   };
@@ -1022,11 +1035,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               {(preview && !existingId) || manual ? (
                 <AgentAccessFields
                   server={server}
-                  user={
-                    sanitizeDisplayText(username.trim()) ||
-                    sshUsername(manual ? manualLogin : sshAlias) ||
-                    null
-                  }
+                  user={accessUser}
                   open={agentOpen}
                   onOpenChange={setAgentOpen}
                   access={access}
@@ -1038,6 +1047,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   remoteExecution={remoteExecution}
                   disabled={locked}
                   fullAvailable={setupSupport.supported !== false}
+                  hostWorkspace={hostsInvitedWorkspace ? workspaceLabel : null}
                   onRemoteRoot={setRemoteRoot}
                   onRemoteExecution={setRemoteExecution}
                 />
@@ -1174,6 +1184,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                   intent="member"
                   server={server || workspaceLabel}
                   testId="crew-join-setup"
+                  connections={crew.connections}
                 />
               ) : (preview && !existingId) || manual ? (
                 <p id={installsId} className="text-supporting text-text-muted">

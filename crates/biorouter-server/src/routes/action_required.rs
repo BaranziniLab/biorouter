@@ -551,6 +551,76 @@ async fn complete_elicitation(
     }
 }
 
+/// What a person did with a Crew step card. Only dismissing it: the step itself (signing in,
+/// unlocking the vault, trusting a key) is done in the person's own window, and the call that
+/// parked the card reads the daemon to learn whether it was.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CrewStepOutcome {
+    Dismiss,
+}
+
+/// Dismissing a Crew step card (`POST /action-required/crew-step`).
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CrewStepResponseRequest {
+    /// The card's ID, as the `crewStep` message carries it.
+    id: String,
+    /// The chat the card is in.
+    session_id: String,
+    outcome: CrewStepOutcome,
+}
+
+/// Dismiss a Crew step card.
+///
+/// The call that parked the card is released as cancelled and says the step was not done. A
+/// dismissal grants nothing and can never mean the step was done, because a Crew step accepts
+/// no outcome but cancelled (`UserActionRequest::CrewStep`), so it needs no proof beyond what
+/// reaching the chat needs. It names a chat, so it asks `session_reach` first, as every route
+/// that names one does: a private chat's card is out of reach to a caller holding only the
+/// daemon secret, and an unknown chat is refused the same way, so the answer discloses nothing
+/// about which chats exist. It reaches only a Crew step card in the session posted, never an
+/// approval or a credential card, so anything else answers 404 as an unknown ID does.
+#[utoipa::path(
+    post,
+    path = "/action-required/crew-step",
+    request_body = CrewStepResponseRequest,
+    responses(
+        (status = 200, description = "Dismissed: the call that parked the card was released", body = Value),
+        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused by a privacy boundary: the named chat is private (or absent, and a caller out of reach is told the same thing for both) and the request carried neither the user-action proof nor a private caller (body = plain text)"),
+        (status = 404, description = "No Crew step card with that ID is waiting in that chat", body = Value),
+    )
+)]
+pub async fn dismiss_crew_step(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<CrewStepResponseRequest>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    use biorouter::pending_user_action::{PendingUserActions, ResolveOutcome as Resolved};
+    // The gate first, before the registry is read: a 404 for a private chat's card would tell
+    // a caller out of reach that the chat exists.
+    if let Err(refusal) =
+        super::session_reach::session_reach(state.session_manager(), &request.session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
+    let CrewStepOutcome::Dismiss = request.outcome;
+    match PendingUserActions::global().dismiss_crew_step(&request.session_id, &request.id) {
+        Resolved::Delivered => Json(serde_json::json!({ "status": "dismissed" })).into_response(),
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "status": "unknown",
+                "error": "No Crew step is waiting with that ID in this chat.",
+            })),
+        )
+            .into_response(),
+    }
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
@@ -562,6 +632,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             post(confirm_tool_action),
         )
         .route("/action-required/secrets", post(submit_secrets))
+        .route("/action-required/crew-step", post(dismiss_crew_step))
         .with_state(state)
 }
 
@@ -817,6 +888,184 @@ mod tests {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
             let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             format!("{prefix}-{}-{sequence}", std::process::id())
+        }
+
+        fn dismiss(id: &str, session_id: &str) -> Request<Body> {
+            dismiss_with_user_action(id, session_id, None)
+        }
+
+        fn dismiss_with_user_action(
+            id: &str,
+            session_id: &str,
+            user_action: Option<&str>,
+        ) -> Request<Body> {
+            let mut builder = Request::builder()
+                .uri("/action-required/crew-step")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("x-secret-key", "test-secret");
+            if let Some(proof) = user_action {
+                builder = builder.header("X-User-Action", proof);
+            }
+            builder
+                .body(Body::from(
+                    serde_json::json!({"id": id, "session_id": session_id, "outcome": "dismiss"})
+                        .to_string(),
+                ))
+                .unwrap()
+        }
+
+        fn parked_crew_step(session_id: &str) -> biorouter::pending_user_action::PendingUserAction {
+            use biorouter::conversation::message::{CrewStepRequest, CrewVaultAction};
+            use biorouter::pending_user_action::{PendingUserActions, UserActionRequest};
+            PendingUserActions::global().park(
+                Some(session_id),
+                None,
+                UserActionRequest::CrewStep(CrewStepRequest::Vault {
+                    action: CrewVaultAction::Unlock,
+                }),
+            )
+        }
+
+        /// A chat in the store: public as a new chat is, or raised to private.
+        async fn stored_chat(state: &AppState, private: bool) -> String {
+            let session = state
+                .session_manager()
+                .create_session(
+                    std::env::temp_dir(),
+                    "Synthetic Crew step dismissal".to_string(),
+                    biorouter::session::SessionType::User,
+                )
+                .await
+                .unwrap();
+            if private {
+                state
+                    .session_manager()
+                    .update(&session.id)
+                    .raise_privacy(
+                        biorouter::privacy::SessionClassification::Private,
+                        "synthetic-crew-step",
+                    )
+                    .apply()
+                    .await
+                    .unwrap();
+            }
+            session.id
+        }
+
+        async fn body_text(response: axum::response::Response) -> String {
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        }
+
+        /// Dismissing a Crew step card in a public chat releases its call as cancelled, from the
+        /// chat that shows it, with only the daemon secret: a dismissal grants nothing, and a
+        /// public chat is in every caller's reach. Naming another chat reaches nothing.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn dismissing_a_crew_step_releases_it_as_cancelled() {
+            use crate::routes::session::diverge_tests::install_test_user_action_key;
+            use biorouter::pending_user_action::UserActionOutcome;
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let session = stored_chat(&state, false).await;
+            let other = stored_chat(&state, false).await;
+            let parked = parked_crew_step(&session);
+            let id = parked.id().to_string();
+            let app = routes(state);
+
+            let foreign = app.clone().oneshot(dismiss(&id, &other)).await.unwrap();
+            assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+
+            let response = app.oneshot(dismiss(&id, &session)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(body_json(response).await["status"], "dismissed");
+            assert_eq!(
+                parked.wait(std::time::Duration::from_secs(5), None).await,
+                UserActionOutcome::Cancelled
+            );
+        }
+
+        /// A private chat's card is out of reach to a caller holding only the daemon secret, or
+        /// a key that is not the person's: refused with `session_reach`'s own words, and left
+        /// waiting. The person's proof dismisses it.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn a_private_chats_crew_step_is_dismissed_only_with_the_persons_proof() {
+            use crate::routes::session::diverge_tests::{
+                install_test_user_action_key, TEST_USER_ACTION_KEY,
+            };
+            use crate::routes::session_reach::SESSION_OUT_OF_REACH;
+            use biorouter::pending_user_action::{PendingUserActions, UserActionOutcome};
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let session = stored_chat(&state, true).await;
+            let parked = parked_crew_step(&session);
+            let id = parked.id().to_string();
+            let app = routes(state);
+
+            for proof in [None, Some("not-the-user-key")] {
+                let refused = app
+                    .clone()
+                    .oneshot(dismiss_with_user_action(&id, &session, proof))
+                    .await
+                    .unwrap();
+                assert_eq!(refused.status(), StatusCode::FORBIDDEN, "{proof:?}");
+                assert_eq!(body_text(refused).await, SESSION_OUT_OF_REACH);
+                assert!(PendingUserActions::global().is_pending(&id));
+            }
+
+            let response = app
+                .oneshot(dismiss_with_user_action(
+                    &id,
+                    &session,
+                    Some(TEST_USER_ACTION_KEY),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(body_json(response).await["status"], "dismissed");
+            assert_eq!(
+                parked.wait(std::time::Duration::from_secs(5), None).await,
+                UserActionOutcome::Cancelled
+            );
+        }
+
+        /// An unknown ID, or a card that is not a Crew step, is a 404 to a caller that reaches
+        /// the chat: this door can never cancel an approval. A chat that is not in the store is
+        /// refused to a caller out of reach exactly as a private one is, so the answer never
+        /// says which chats exist.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn dismissing_an_unknown_or_other_card_is_not_found() {
+            use crate::routes::session::diverge_tests::{
+                install_test_user_action_key, TEST_USER_ACTION_KEY,
+            };
+            use crate::routes::session_reach::SESSION_OUT_OF_REACH;
+            use biorouter::pending_user_action::PendingUserActions;
+            install_test_user_action_key();
+            let session = unique_session("crew-step-unknown");
+            let app = routes(AppState::new().await.unwrap());
+            let unproven = app
+                .clone()
+                .oneshot(dismiss("no-such-card", &session))
+                .await
+                .unwrap();
+            assert_eq!(unproven.status(), StatusCode::FORBIDDEN);
+            assert_eq!(body_text(unproven).await, SESSION_OUT_OF_REACH);
+
+            let proven =
+                |id: &str| dismiss_with_user_action(id, &session, Some(TEST_USER_ACTION_KEY));
+            let response = app.clone().oneshot(proven("no-such-card")).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert_eq!(body_json(response).await["status"], "unknown");
+
+            let approval = parked_approval(&session);
+            let response = app.oneshot(proven(approval.id())).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert!(PendingUserActions::global().is_pending(approval.id()));
         }
 
         #[tokio::test(flavor = "multi_thread")]

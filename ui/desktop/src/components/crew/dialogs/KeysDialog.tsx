@@ -5,8 +5,12 @@ import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { FileText, KeyRound, Lock } from '../../icons/app-icons';
-import type { CrewConnection, CrewDevice } from '../crewApi';
+import { InlineConfirm } from '../access/RevokeControls';
+import { deviceCopy } from '../account/copy';
+import { markNeedsRejoin } from '../account/rejoinMarks';
+import { ACCOUNT_IDENTITY_CAPABILITY, type CrewConnection, type CrewDevice } from '../crewApi';
 import { useInitialFocus } from '../onboarding/fields';
+import { focusIsLost } from '../state/focusReturn';
 import type { ErrorSource } from '../state/types';
 import { keysCopy as copy } from './copy';
 import { DialogErrorNote } from './fields';
@@ -96,12 +100,71 @@ export interface KeysDialogProps {
   onClose(): void;
 }
 
+/**
+ * A device row's Remove, and in its place while asked, the inline two-step question. Another
+ * computer's carries AO-5's warning: a lost computer keeps signing in as the person while it has
+ * their SSH key or password, so revoking its device is the second step. This computer is the one
+ * in use, not a lost one, so its question says only what follows (live QA).
+ */
+function DeviceRemoval({
+  device,
+  isThis,
+  confirming,
+  pending,
+  buttonRef,
+  onAsk,
+  onCancel,
+  onConfirm,
+}: {
+  device: CrewDevice;
+  isThis: boolean;
+  confirming: boolean;
+  pending: boolean;
+  /** The row's Remove, so Keep and Escape can put focus back on it. */
+  buttonRef(button: HTMLButtonElement | null): void;
+  onAsk(): void;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  if (confirming)
+    return (
+      <InlineConfirm
+        className="w-full pt-1"
+        question={isThis ? deviceCopy.confirmThis : deviceCopy.confirm(device.fingerprint)}
+        detail={isThis ? deviceCopy.thisFollows : deviceCopy.sshWarning}
+        confirmLabel={isThis ? deviceCopy.confirmThisAction : deviceCopy.confirmAction}
+        cancelLabel={deviceCopy.keep}
+        pending={pending}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />
+    );
+  return (
+    <Button
+      ref={buttonRef}
+      type="button"
+      variant="ghost"
+      size="xs"
+      aria-label={isThis ? deviceCopy.removeThisLabel : deviceCopy.removeLabel(device.fingerprint)}
+      disabled={pending}
+      onClick={onAsk}
+    >
+      {deviceCopy.remove}
+    </Button>
+  );
+}
+
+/** A fingerprint as compared: grouping and case aside. */
+function sameFingerprint(a: string, b: string): boolean {
+  return a.replace(/\s+/g, '').toUpperCase() === b.replace(/\s+/g, '').toUpperCase();
+}
+
 const HEX_DIGEST = /^[0-9a-f]{64}$/i;
 
 /**
  * This device's fingerprint, grouped as the broker projects every device's (`grouped_fingerprint`
  * of the device ID, which is SHA-256 of the device's public key) — so it matches its own row in
- * "Devices on your account". Read from the saved device ID when that is the digest, else computed
+ * "Computers enrolled as you". Read from the saved device ID when that is the digest, else computed
  * from the key. Never the 64-hex key itself (QA T-33).
  */
 function useDeviceFingerprint(connection: CrewConnection | null): string | null {
@@ -119,13 +182,20 @@ function useDeviceFingerprint(connection: CrewConnection | null): string | null 
  * so there is no refresh button. Unlocking and setting up a vault prompt for the passphrase in the
  * main process's own native dialog; nothing secret passes through this renderer.
  *
- * It also lists the devices on the person's account, so "A new device was added…" has somewhere to
- * send them to review it: each device's fingerprint, and under it, on its own left-aligned line,
+ * It also lists the computers on the person's account ("Computers enrolled as you"), so "New
+ * computer on your account: …" has somewhere to send them to review it: each computer's
+ * fingerprint, and under it, on its own left-aligned line,
  * when and how it was added (QA Q3-41). When this computer is the only device, that line sits under
  * its fingerprint above and nothing repeats the fingerprint. The dialog opens on Done: it is read,
  * not filled in, and the first key must not copy anything. Done keeps that focus while the menu
  * that opened the dialog finishes closing (`useInitialFocus`): opened with the pointer from the You
  * menu, focus used to drop to `<body>` a quarter of a second later (QA Q4-33).
+ *
+ * On a workspace that belongs to accounts (account ownership AO-5), every device row has Remove,
+ * this computer's included, behind an inline question; another computer's says SSH access goes
+ * first. Removing this computer marks the connection for Add this computer again in the connection
+ * bar. A device the new-device notice is about (`new_devices`, AO-10) is marked New. Keep and
+ * Escape put focus back on the row's Remove, and a removal that took its row away puts it on Done.
  */
 export function KeysDialog({ onClose }: KeysDialogProps) {
   const { crew, snapshot } = useDialogView();
@@ -145,6 +215,56 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
     thisDevice !== null && devices.length === 1 && devices[0].fingerprint === thisDevice;
   const doneRef = React.useRef<HTMLButtonElement>(null);
   useInitialFocus(doneRef, true);
+
+  // Removing one of the account's devices (AO-5): a signed request of the person's own, only on a
+  // verified view of a workspace that takes it. Removing this computer leaves the connection
+  // needing Add this computer again.
+  const canRevoke =
+    snapshot !== null &&
+    Boolean(crew.connectionId) &&
+    (crew.capabilities?.includes(ACCOUNT_IDENTITY_CAPABILITY) === true ||
+      connection?.account_identity === true);
+  const [confirming, setConfirming] = React.useState<string | null>(null);
+  const [removed, setRemoved] = React.useState<string | null>(null);
+  // Each row's Remove, by fingerprint: Keep and Escape unmount the focused Keep, and focus goes
+  // back to the Remove that asked (finding 42), as AccessList and the chat bar do.
+  const removeButtons = React.useRef(new Map<string, HTMLButtonElement>());
+  const removeButtonRef = (fingerprint: string) => (button: HTMLButtonElement | null) => {
+    if (button) removeButtons.current.set(fingerprint, button);
+    else removeButtons.current.delete(fingerprint);
+  };
+  const keep = (fingerprint: string) => {
+    setConfirming(null);
+    window.setTimeout(() => removeButtons.current.get(fingerprint)?.focus(), 0);
+  };
+  // The devices the new-device notice is about (AO-10), until they are acknowledged.
+  const newDevices = Array.isArray(connection?.new_devices)
+    ? connection.new_devices.map((item) => item.fingerprint)
+    : [];
+  const isNew = (device: CrewDevice) =>
+    newDevices.some((fingerprint) => sameFingerprint(fingerprint, device.fingerprint));
+  const revokeKey = 'mutate:device.revoke';
+  const revoking = crew.isPending(revokeKey);
+  const revoke = async (device: CrewDevice, isThis: boolean) => {
+    const connectionId = crew.connectionId;
+    const done = await act(SOURCE, revokeKey, async () => {
+      await crew.request('device.revoke', { fingerprint: device.fingerprint }, { mutation: true });
+      return true;
+    });
+    if (!done) return;
+    setConfirming(null);
+    // The question and its row go: Done keeps keyboard focus in the dialog.
+    window.setTimeout(() => {
+      if (focusIsLost()) doneRef.current?.focus();
+    }, 0);
+    if (isThis) {
+      markNeedsRejoin(connectionId);
+      setRemoved(deviceCopy.removedThis);
+      return;
+    }
+    setRemoved(deviceCopy.removed(device.fingerprint));
+    await crew.refresh().catch(() => undefined);
+  };
 
   const readStatus = React.useCallback(async () => {
     const generation = ++reads.current;
@@ -253,6 +373,18 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
                 {deviceMeta(devices[0])}
               </p>
             ) : null}
+            {onlyThisDevice && canRevoke ? (
+              <DeviceRemoval
+                device={devices[0]}
+                isThis
+                confirming={confirming === devices[0].fingerprint}
+                pending={revoking}
+                buttonRef={removeButtonRef(devices[0].fingerprint)}
+                onAsk={() => setConfirming(devices[0].fingerprint)}
+                onCancel={() => keep(devices[0].fingerprint)}
+                onConfirm={() => void revoke(devices[0], true)}
+              />
+            ) : null}
           </div>
         ) : null}
 
@@ -262,6 +394,9 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
             <ul className="biorouter-settings-list">
               {devices.map((device) => {
                 const meta = deviceMeta(device);
+                const isThis =
+                  device.this_device === true ||
+                  (thisDevice !== null && device.fingerprint === thisDevice);
                 return (
                   <li
                     key={device.fingerprint}
@@ -274,9 +409,14 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
                       >
                         {device.fingerprint}
                       </span>
-                      {thisDevice && device.fingerprint === thisDevice ? (
+                      {isThis ? (
                         <Badge tone="neutral" variant="badge">
                           {copy.thisDevice}
+                        </Badge>
+                      ) : null}
+                      {isNew(device) ? (
+                        <Badge tone="info" variant="badge" data-crew-device-new="">
+                          {copy.newDevice}
                         </Badge>
                       ) : null}
                     </span>
@@ -287,11 +427,33 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
                         {meta}
                       </span>
                     ) : null}
+                    {canRevoke ? (
+                      <DeviceRemoval
+                        device={device}
+                        isThis={isThis}
+                        confirming={confirming === device.fingerprint}
+                        pending={revoking}
+                        buttonRef={removeButtonRef(device.fingerprint)}
+                        onAsk={() => setConfirming(device.fingerprint)}
+                        onCancel={() => keep(device.fingerprint)}
+                        onConfirm={() => void revoke(device, isThis)}
+                      />
+                    ) : null}
                   </li>
                 );
               })}
             </ul>
           </section>
+        ) : null}
+
+        {removed ? (
+          <p
+            role="status"
+            className="text-supporting text-text-default"
+            data-testid="crew-device-removed"
+          >
+            {removed}
+          </p>
         ) : null}
 
         {status?.backend === 'keyring' ? (

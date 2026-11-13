@@ -9,6 +9,13 @@
 //! it renders where the conversation has got to, follows it live, and delivers
 //! what you type into the running turn. `cancel` stops that turn.
 //!
+//! Every card the chat waits on (an approval, a question, a credential request,
+//! a Crew step) is one line in all three ([`cards`]), and `attach` answers an
+//! approval in place: it shows the card whole, then the next line typed answers
+//! it, posted with the user-action key the attach already holds, and never
+//! reaches the chat. Only a person typing at a terminal answers one; a pipe or
+//! an agent's own shell gets the card and the desktop's name instead.
+//!
 //! **`attach` is not `--resume`, and cannot be.** `biorouter session --resume`
 //! builds a second `Agent` in the CLI process over the shared sessions store,
 //! while the daemon's single-turn lock (`AppState::active_turns`) is an
@@ -33,6 +40,8 @@ use zeroize::Zeroizing;
 
 use super::apps::{configured_port, daemon_ok, DAEMON_HOST};
 use super::session_grouping::{listed_session_types, SessionRow};
+
+pub(crate) mod cards;
 
 /// The header the daemon's reach gate reads the caller's capability from.
 ///
@@ -71,7 +80,8 @@ pub(crate) struct DaemonAuth {
     /// the daemon to judge.
     ///
     /// Sent only on the requests the proof can change: the attached event
-    /// stream, `/interrupt`, `/agent/cancel` and `/reply`. It is never sourced
+    /// stream, `/interrupt`, `/agent/cancel`, `/reply`, and the approval an
+    /// attach answers (`/action-required/tool-confirmation`). It is never sourced
     /// from argv, environment, config, or desktop settings.
     user_action: Option<Arc<Zeroizing<String>>>,
 }
@@ -412,9 +422,13 @@ pub(crate) fn no_daemon_at(port: u16) -> String {
     )
 }
 
+/// Asks an event stream to say when each card ends (WI-17, the daemon's `CARD_ENDINGS_HEADER`):
+/// `watch` and `attach` read the `ActionRequiredEnded` frame it sends.
+const CARD_ENDINGS: &str = "X-Card-Endings: 1\r\n";
+
 pub(crate) fn build_get_request(path: &str, host: &str, auth: &DaemonAuth) -> String {
     format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\n{}\
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\n{}{CARD_ENDINGS}\
          Accept: text/event-stream\r\nConnection: close\r\n\r\n",
         auth.headers()
     )
@@ -445,6 +459,7 @@ fn build_protected_get_request(path: &str, host: &str, auth: &DaemonAuth) -> Zer
         auth.headers()
     ));
     push_proof(&mut request, auth);
+    request.push_str(CARD_ENDINGS);
     request.push_str("Accept: text/event-stream\r\nConnection: close\r\n\r\n");
     request
 }
@@ -461,8 +476,8 @@ pub(crate) fn build_post_request(path: &str, host: &str, auth: &DaemonAuth, body
 }
 
 /// A POST to a route the user-action proof can change — `/interrupt`,
-/// `/agent/cancel`, `/reply` — carrying the proof exactly when `auth` holds the
-/// key. See [`push_proof`].
+/// `/agent/cancel`, `/reply`, `/action-required/tool-confirmation` — carrying
+/// the proof exactly when `auth` holds the key. See [`push_proof`].
 fn build_protected_post_request(
     path: &str,
     host: &str,
@@ -569,6 +584,18 @@ fn inline_notice_line(message: &serde_json::Value) -> Option<String> {
     (!notices.is_empty()).then(|| format!("[notice] {}", notices.join(" ")))
 }
 
+/// The output for a message with no text and no tool call: its cards (an approval, a
+/// question, a credential request, a Crew step), one line each and never their arguments
+/// ([`cards::message_card_lines`]), or else its inline notices.
+fn wordless_message_line(message: &serde_json::Value) -> Option<String> {
+    let cards = cards::message_card_lines(message);
+    if cards.is_empty() {
+        inline_notice_line(message)
+    } else {
+        Some(cards.join("\n"))
+    }
+}
+
 /// One line of human output for a frame, or `None` for frames a human does not
 /// need to see (heartbeats, token bookkeeping).
 pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
@@ -657,7 +684,7 @@ pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
                 })
                 .unwrap_or_default();
             if text.trim().is_empty() && tools.is_empty() {
-                return inline_notice_line(message);
+                return wordless_message_line(message);
             }
             let mut line = format!("[{role}]{provenance} {text}");
             if !tools.is_empty() {
@@ -698,6 +725,8 @@ pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("stop")
         )),
+        // WI-17: a card this chat showed stopped waiting.
+        "ActionRequiredEnded" => Some(cards::ended_frame_line(frame)),
         _ => None,
     }
 }
@@ -845,7 +874,7 @@ async fn stream_request(
     render: Render,
     status: Option<tokio::sync::oneshot::Sender<u16>>,
 ) -> Result<Streamed> {
-    stream_request_bytes(request.as_bytes(), until, render, status).await
+    stream_request_bytes(request.as_bytes(), until, render, status, None).await
 }
 
 /// A connection to the configured daemon, or the actionable "no daemon" error.
@@ -863,15 +892,18 @@ async fn connect_to_daemon_at(port: u16) -> Result<tokio::net::TcpStream> {
     Ok(biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?)
 }
 
+/// `cards`, when given, is told about every card and turn end the stream carries
+/// ([`cards::card_events`]): `attach`'s way to answer an approval.
 async fn stream_request_bytes(
     request: &[u8],
     until: Until,
     render: Render,
     status: Option<tokio::sync::oneshot::Sender<u16>>,
+    cards: Option<cards::CardSink>,
 ) -> Result<Streamed> {
     let mut stream = connect_to_daemon().await?;
     stream.write_all(request).await?;
-    read_response(&mut stream, until, render, status).await
+    read_response(&mut stream, until, render, status, cards.as_ref()).await
 }
 
 /// Read one HTTP response off `stream` and return the status it carried.
@@ -885,6 +917,7 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
     until: Until,
     render: Render,
     status: Option<tokio::sync::oneshot::Sender<u16>>,
+    cards: Option<&cards::CardSink>,
 ) -> Result<Streamed> {
     let mut status = status;
     let mut raw = Vec::new();
@@ -927,13 +960,13 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
             buffer.clear();
             pending.clear();
             let frames = absorb(&mut pending, &mut buffer, &raw[end + 4..]);
-            if print_frames(&frames, until, render, &mut seen) {
+            if print_frames(&frames, until, render, &mut seen, cards) {
                 return Ok(Streamed::read(code, seen));
             }
             continue;
         }
         let frames = absorb(&mut pending, &mut buffer, &chunk[..read]);
-        if print_frames(&frames, until, render, &mut seen) {
+        if print_frames(&frames, until, render, &mut seen, cards) {
             return Ok(Streamed::read(200, seen));
         }
     }
@@ -983,6 +1016,9 @@ fn stream_frame_lines(frame: &serde_json::Value, render: Render, joined: &mut bo
             lines.push("── live from here ──".to_string());
             lines
         }
+        // `attach` names the card that ended from what it showed ([`cards::Waiting`]), so the
+        // nameless `watch` line would say it twice.
+        Render::JoinThenLines if kind == Some("ActionRequiredEnded") => Vec::new(),
         Render::Lines | Render::JoinThenLines => render_frame(frame).into_iter().collect(),
     }
 }
@@ -992,15 +1028,22 @@ fn stream_frame_lines(frame: &serde_json::Value, render: Render, joined: &mut bo
 /// is left unprinted, so `--no-wait` stops at the frame that named its turn
 /// rather than wherever a TCP read happened to end. (Nothing follows a terminal
 /// frame in a turn's log, so for the other two modes this changes nothing.)
+///
+/// A frame's cards go to `cards` after its line is printed, so `attach` asks
+/// about a card below the line that names it.
 fn print_frames(
     frames: &[serde_json::Value],
     until: Until,
     render: Render,
     seen: &mut Progress,
+    cards: Option<&cards::CardSink>,
 ) -> bool {
     for frame in frames {
         for line in stream_frame_lines(frame, render, &mut seen.joined) {
             println!("{line}");
+        }
+        if let Some(sink) = cards {
+            cards::forward(frame, sink);
         }
         if seen.turn_id.is_none() {
             seen.turn_id = frame
@@ -1470,10 +1513,10 @@ where
 {
     stream.write_all(request).await?;
     let streamed = if wait {
-        read_response(stream, Until::Terminal, Render::Lines, None).await?
+        read_response(stream, Until::Terminal, Render::Lines, None, None).await?
     } else {
         let (status_tx, mut status_rx) = tokio::sync::oneshot::channel();
-        let named = read_response(stream, Until::Named, Render::Lines, Some(status_tx));
+        let named = read_response(stream, Until::Named, Render::Lines, Some(status_tx), None);
         match tokio::time::timeout(deadline, named).await {
             Ok(read) => read?,
             // Out of time. A status line already read IS the acceptance: the turn
@@ -1995,6 +2038,7 @@ async fn post_reply_quiet(
             Until::Terminal,
             Render::Silent,
             Some(status_tx),
+            None,
         )
         .await;
         window.close();
@@ -2450,6 +2494,66 @@ where
     }
 }
 
+fn print_lines(lines: &[String]) {
+    for line in lines {
+        println!("{line}");
+    }
+}
+
+/// One line typed into `attach`: the answer to the approval waiting first, or,
+/// when none waits, a message for the chat.
+///
+/// ⚠ While an approval waits, a line that answers nothing is NOT sent to the
+/// chat: it was typed at a question, and sending it would hand the model
+/// whatever the person meant for the card. The answer goes out on its own task
+/// with the user-action key this attach holds, so the live rendering never waits
+/// on it.
+fn take_typed_line(
+    line: String,
+    waiting: &mut cards::Waiting,
+    send_tx: &tokio::sync::mpsc::Sender<String>,
+    session_id: &str,
+    auth: &DaemonAuth,
+) -> Result<()> {
+    match waiting.on_line(&line) {
+        cards::LineUse::Message => {}
+        cards::LineUse::Unanswered(lines) => {
+            print_lines(&lines);
+            return Ok(());
+        }
+        cards::LineUse::Answer { card, action, next } => {
+            cards::spawn_answer(
+                configured_port(),
+                session_id.to_string(),
+                card,
+                action,
+                auth.clone(),
+                next,
+            );
+            return Ok(());
+        }
+    }
+    if line.trim().is_empty() {
+        return Ok(());
+    }
+    // `try_send`, never `send().await`: awaiting a full queue here blocks the
+    // `select!`, and the live rendering stops with it. Refusing one line loudly
+    // beats freezing the display.
+    match send_tx.try_send(line) {
+        Ok(()) => Ok(()),
+        Err(tokio::sync::mpsc::error::TrySendError::Full(text)) => {
+            println!(
+                "[not sent] {SEND_QUEUE} messages are already waiting to go out; \
+                 let them clear first, then send this again:\n  {text}"
+            );
+            Ok(())
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            Err(anyhow!("the delivery worker stopped; nothing was sent"))
+        }
+    }
+}
+
 /// `biorouter session attach <id>` — render where the session is, follow it
 /// live, and steer it from stdin.
 ///
@@ -2503,6 +2607,18 @@ pub async fn handle_session_attach(
 
     let send_tx = spawn_delivery_worker(session_id.clone(), auth.clone(), window.clone());
 
+    // The approvals waiting for an answer from this terminal: the observer
+    // reports each card it prints, and while one waits a typed line answers it.
+    // Only a person typing here answers one: a pipe or an agent's own shell gets
+    // the card printed and the desktop named, and its lines stay messages.
+    let answering = cards::Answering::for_attach(
+        read_only,
+        std::io::stdin().is_terminal(),
+        super::needs_terminal::in_agent_shell(),
+    );
+    let mut waiting = cards::Waiting::new(&session_id, answering);
+    let (card_tx, mut card_rx) = tokio::sync::mpsc::unbounded_channel();
+
     // The observer stream, exactly as `watch --follow`, except that its first
     // frame is rendered as a transcript. It is READ-ONLY: its task in the daemon
     // merely returns when the channel closes and cancels nothing, so detaching
@@ -2518,6 +2634,7 @@ pub async fn handle_session_attach(
         Until::Closed,
         Render::JoinThenLines,
         None,
+        Some(card_tx),
     );
     tokio::pin!(observer);
 
@@ -2539,26 +2656,12 @@ pub async fn handle_session_attach(
                     )),
                 }
             }
+            Some(event) = card_rx.recv() => print_lines(&waiting.on_event(event)),
             typed = line_rx.recv() => {
                 // Unreachable while `_line_tx` lives; an error rather than a
                 // `continue`, which would spin this loop at full speed.
                 let line = typed.ok_or_else(|| anyhow!("the stdin channel closed"))?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                // `try_send`, never `send().await`: awaiting a full queue here
-                // blocks the `select!`, and the live rendering stops with it.
-                // Refusing one line loudly beats freezing the display.
-                match send_tx.try_send(line) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(text)) => println!(
-                        "[not sent] {SEND_QUEUE} messages are already waiting to go out; \
-                         let them clear first, then send this again:\n  {text}"
-                    ),
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        return Err(anyhow!("the delivery worker stopped; nothing was sent"))
-                    }
-                }
+                take_typed_line(line, &mut waiting, &send_tx, &session_id, &auth)?;
             }
             _ = interrupts.recv() => {
                 match window.on_ctrl_c() {
@@ -3056,6 +3159,12 @@ mod tests {
         assert!(get.starts_with("GET /sessions/abc/events HTTP/1.1\r\n"));
         assert!(get.contains("X-Secret-Key: s3cret\r\n"));
         assert!(get.contains("Accept: text/event-stream\r\n"));
+        // WI-17: `watch` and `attach` ask to be told when each card ends; without it the daemon
+        // never sends the frame, and a held approval waits until the turn ends.
+        assert!(get.contains("X-Card-Endings: 1\r\n"), "{get}");
+        let attach = build_protected_get_request("/sessions/abc/events", "127.0.0.1", &auth);
+        assert!(attach.contains("X-Card-Endings: 1\r\n"));
+        assert!(attach.ends_with("\r\n\r\n"));
 
         let post = build_post_request("/reply", "127.0.0.1", &auth, "{\"a\":1}");
         assert!(post.starts_with("POST /reply HTTP/1.1\r\n"));
@@ -3425,6 +3534,116 @@ mod tests {
     fn empty_403() -> String {
         "HTTP/1.1 403 Forbidden\r\nconnection: close\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\n"
             .to_string()
+    }
+
+    /// WI-7: an approval answered in `attach` goes to the route the desktop's
+    /// button posts to, in the same body, with the user-action key this attach
+    /// holds: the proof is what lets the daemon count it as the person's.
+    #[tokio::test]
+    async fn an_attach_answer_posts_the_approval_with_the_key() {
+        let daemon = FakeDaemon::start(vec![http("200 OK", r#"{"status":"delivered"}"#)]).await;
+        let card = cards::ApprovalCard {
+            id: "card-1".into(),
+            read_consent: true,
+            details: Vec::new(),
+        };
+        let line = cards::answer_approval(
+            daemon.port,
+            "20261106_4",
+            &card,
+            "allow_once",
+            &DaemonAuth::for_test_with_user_action("s3cret", "", "the-typed-key"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            line,
+            "[answered] Allowed. This chat may read the workspace as you until you revoke it \
+             with biorouter crew grants revoke 20261106_4 --reads."
+        );
+        let requests = daemon.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        let request = &requests[0];
+        assert!(
+            request.starts_with("POST /action-required/tool-confirmation HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert!(
+            request.contains("\r\nX-User-Action: the-typed-key\r\n"),
+            "{request}"
+        );
+        assert!(
+            request.contains("\r\nX-Secret-Key: s3cret\r\n"),
+            "{request}"
+        );
+        assert_eq!(
+            json_object(request),
+            Some(serde_json::json!({
+                "sessionId": "20261106_4",
+                "id": "card-1",
+                "principalType": "Tool",
+                "action": "allow_once",
+            }))
+        );
+    }
+
+    /// WI-7: the observer stream tells `attach` about the approval it printed
+    /// and about the turn ending, which retires any approval still asked.
+    #[tokio::test]
+    async fn the_observer_reports_each_approval_and_the_turn_end_to_attach() {
+        use biorouter::conversation::message::{
+            ActionRequired, ActionRequiredData, Message, MessageContent,
+        };
+        let card =
+            Message::assistant().with_content(MessageContent::ActionRequired(ActionRequired {
+                data: ActionRequiredData::ToolConfirmation {
+                    id: "card-1".into(),
+                    tool_name: "crew__change".into(),
+                    arguments: serde_json::Map::new(),
+                    prompt: Some(
+                        "Create the channel #attach-test in lab\nIt is public to the workspace."
+                            .into(),
+                    ),
+                    risk: None,
+                    preview: None,
+                },
+            }));
+        let script = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
+             data: {}\n\ndata: {}\n\n",
+            serde_json::json!({ "type": "Message", "message": card }),
+            serde_json::json!({ "type": "Finish", "reason": "stop" }),
+        );
+        let (mut client, mut daemon) = tokio::io::duplex(16 * 1024);
+        tokio::spawn(async move {
+            let _ = daemon.write_all(script.as_bytes()).await;
+        });
+        let (sink, mut events) = tokio::sync::mpsc::unbounded_channel();
+        read_response(
+            &mut client,
+            Until::Closed,
+            Render::Silent,
+            None,
+            Some(&sink),
+        )
+        .await
+        .unwrap();
+        drop(sink);
+        let mut seen = Vec::new();
+        while let Some(event) = events.recv().await {
+            seen.push(event);
+        }
+        let [cards::CardEvent::Approval(approval), cards::CardEvent::TurnEnded] = seen.as_slice()
+        else {
+            panic!("an approval, then the turn's end: {seen:?}");
+        };
+        assert_eq!(approval.id, "card-1");
+        assert!(!approval.read_consent);
+        // The first line is the card's own line, already printed above it.
+        assert_eq!(
+            approval.details,
+            vec!["It is public to the workspace.".to_string()]
+        );
     }
 
     /// An empty refusal is an empty refusal however the daemon framed it, and
@@ -3932,6 +4151,21 @@ mod tests {
         assert!(!silent);
     }
 
+    /// WI-17: `watch` prints a card's end in a line that names no card (it keeps none), and
+    /// `attach` prints nothing for the frame itself, since its card tracker names the card.
+    #[test]
+    fn a_cards_end_is_one_line_in_watch_and_left_to_the_tracker_in_attach() {
+        let end = serde_json::json!({
+            "type": "ActionRequiredEnded", "id": "card-1", "ending": "timed_out", "seq": 9
+        });
+        let mut joined = false;
+        assert_eq!(
+            stream_frame_lines(&end, Render::Lines, &mut joined),
+            vec!["[closed] A request in this chat is over: timed out.".to_string()]
+        );
+        assert!(stream_frame_lines(&end, Render::JoinThenLines, &mut joined).is_empty());
+    }
+
     /// Reading a response off an in-memory pipe, so the status/termination rules
     /// below are pinned without a daemon, a port or a race.
     async fn read_from(script: &'static [u8], until: Until) -> Result<u16> {
@@ -3940,7 +4174,7 @@ mod tests {
             let _ = daemon.write_all(script).await;
             // and the connection closes here.
         });
-        read_response(&mut client, until, Render::Silent, None)
+        read_response(&mut client, until, Render::Silent, None, None)
             .await
             .map(|streamed| streamed.code)
     }
@@ -4020,6 +4254,7 @@ mod tests {
                 Until::Terminal,
                 Render::Silent,
                 Some(status_tx),
+                None,
             ),
         )
         .await
@@ -4121,6 +4356,7 @@ mod tests {
                 Until::Terminal,
                 Render::Silent,
                 Some(status_tx),
+                None,
             )
             .await
         });

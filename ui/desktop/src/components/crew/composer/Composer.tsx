@@ -26,6 +26,7 @@ import { channelName, channelNamesAcrossTeams, channelSlug } from '../identity';
 import { agentCopy, unknownOutcomeCopy } from '../pane/copy';
 import { ModelTierMarks } from '../pane/CrewModelPicker';
 import {
+  fullAccessWarning,
   isAffiliationRefusal,
   isPublicModelRefusal,
   knownInstitutions,
@@ -598,6 +599,7 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
               privateOnly={check.privateOnly}
               reads={contextChannels.length + 1}
               access={remoteAccessText(controller.connection)}
+              accessWarning={fullAccessWarning(controller.connection, workspace, dir.viewerIsHost)}
               onChange={() =>
                 openAgentPane({
                   task: invocation?.prompt ?? '',
@@ -811,6 +813,7 @@ function AgentConsentLine({
   privateOnly,
   reads,
   access,
+  accessWarning,
   onChange,
   onPostAsMessage,
 }: {
@@ -823,6 +826,8 @@ function AgentConsentLine({
   /** How many channels the task reads, the one it posts in included. */
   reads: number;
   access: string | null;
+  /** With full access, what running as the account means (W1, and W2 for the host). */
+  accessWarning: string | null;
   onChange(): void;
   onPostAsMessage(): void;
 }) {
@@ -840,6 +845,11 @@ function AgentConsentLine({
             {reads > 1 ? composerCopy.agentReadsWide(reads, slug) : composerCopy.agentReads(slug)}
           </span>
           {access && <span className="crew-compose-agent-access">{access}</span>}
+          {accessWarning && (
+            <span className="crew-compose-agent-access" data-crew-full-access="">
+              {accessWarning}
+            </span>
+          )}
         </>
       );
       break;

@@ -31,6 +31,14 @@
 //! directly, and only after [`human_manager`] has admitted the caller: the host, or in an open
 //! workspace any member (OW-2). `enrollment.pending` makes none; `auth.join` makes exactly one,
 //! the fresh `by_uid` of check 2.
+//!
+//! *Amended for account ownership (AO-2):* an invited account can also join with
+//! `auth.account` (`account.rs`, compiled with this module), which runs checks 1 to 3 and the
+//! inviter check here ([`check_generation`], [`inviter_holds_authority`]) without the device
+//! code. Signing in as the account is then the proof, so the device code no longer stands
+//! between a process running as the joiner's account (M2) and the workspace; the owner accepted
+//! that on 2026-11-05 (the design page's "Security position"). `auth.join` and the code still
+//! work, for daemons and brokers that predate the account path.
 
 use super::*;
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
@@ -52,12 +60,12 @@ const JOIN_EXPIRED: &str =
     "join_expired: This invitation expired. Ask the host to invite you again.";
 const JOIN_CHANGED: &str =
     "join_changed: The host sent a new invitation. Check your join status and try again.";
-const ACCOUNT_CHANGED: &str = "account_changed: This server account changed since the host invited it. Ask the host to invite you again.";
-const MEMBERSHIP_CHANGED: &str = "account_changed: Membership for this account changed since the host invited it. Ask the host to invite you again.";
+pub(super) const ACCOUNT_CHANGED: &str = "account_changed: This server account changed since the host invited it. Ask the host to invite you again.";
+pub(super) const MEMBERSHIP_CHANGED: &str = "account_changed: Membership for this account changed since the host invited it. Ask the host to invite you again.";
 /// The person who invited (or, in an open workspace, admitted) the joiner no longer holds that
 /// authority: they were removed, or the workspace became managed and they are not the host.
-const INVITER_CHANGED: &str = "account_changed: The person who invited you can no longer let people in. Ask the host to invite you again.";
-const CODE_MISMATCH: &str = "code_mismatch: The host hasn't let this device in. Send the host the code shown on your screen.";
+pub(super) const INVITER_CHANGED: &str = "account_changed: The person who invited you can no longer let people in. Ask the host to invite you again.";
+const CODE_MISMATCH: &str = "code_mismatch: The host hasn't let this computer in. Send the host the code shown on your screen.";
 const NAME_INVALID: &str = "name_invalid: Type the account's name on the server, with no spaces, slashes, colons or invisible characters.";
 const NAME_DIGITS: &str =
     "name_invalid: Type the account's name on the server, not its numeric user ID.";
@@ -80,11 +88,14 @@ pub(super) struct Runtime {
     last_refusal: BTreeMap<String, Option<String>>,
     /// Typed name to canonical account, with the time it was resolved.
     canonical: BTreeMap<String, (Account, u64)>,
+    /// The account path's own in-memory state (`account.rs`), kept here because both modules
+    /// are compiled with the same feature and live as long as the broker.
+    pub(super) account: super::account::Runtime,
 }
 
 impl Runtime {
     /// Drop entries for joins that no longer exist (cancelled, replaced, joined or purged).
-    fn forget_stale(&mut self, s: &State) {
+    pub(super) fn forget_stale(&mut self, s: &State) {
         let live: BTreeSet<&str> = s
             .pending_joins
             .values()
@@ -230,7 +241,7 @@ fn claim(broker: &mut Broker, uid: u32, conn: &mut Connection, req: &Request) ->
 
 /// Whether `join`'s inviter may still let people in: the host, or in an open workspace any
 /// active member (the same rule [`human_manager`] applied when they invited).
-fn inviter_holds_authority(broker: &Broker, s: &State, join: &PendingJoin) -> bool {
+pub(super) fn inviter_holds_authority(broker: &Broker, s: &State, join: &PendingJoin) -> bool {
     if open_governance(s) {
         s.principals
             .get(&join.inviter_id)
@@ -262,7 +273,7 @@ fn generation(s: &State, uid: u32, username: &str) -> Vec<String> {
         .collect()
 }
 
-fn check_generation(s: &State, join: &PendingJoin) -> Result<()> {
+pub(super) fn check_generation(s: &State, join: &PendingJoin) -> Result<()> {
     let mut expected = join.generation.clone();
     expected.sort();
     expected.dedup();
@@ -415,7 +426,7 @@ fn flag(params: &Value, key: &str) -> Result<bool> {
 /// digits), and no character that renders as nothing or reorders text (categories Cf, Co, Cs,
 /// Cn, Zl, Zp, or `Default_Ignorable_Code_Point`), so `@bob` and a lookalike with an invisible
 /// character can never both be shown.
-fn check_username_characters(name: &str) -> Result<()> {
+pub(super) fn check_username_characters(name: &str) -> Result<()> {
     ensure!(
         name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()),
         NAME_DIGITS
@@ -482,7 +493,7 @@ fn admission_target(s: &State, account: &Account, add_device: bool) -> Result<Op
         Some(member) if member.username == account.name => {
             ensure!(
                 add_device,
-                "already_member: @{} is already a member. Choose Add device to add another computer for them.",
+                "already_member: @{} is already a member. To add another computer for them, choose Add another computer.",
                 member.username
             );
             Ok(Some(member.id.clone()))
@@ -496,7 +507,7 @@ fn admission_target(s: &State, account: &Account, add_device: bool) -> Result<Op
         None => {
             ensure!(
                 !add_device,
-                "invalid_params: @{} is not a member yet. Invite them without Add device.",
+                "invalid_params: @{} is not a member yet. Turn off Add another computer, then invite them.",
                 account.name
             );
             Ok(None)

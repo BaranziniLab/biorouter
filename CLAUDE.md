@@ -1916,6 +1916,9 @@ each for a different reason, and each looked like a working probe:
   `call_tool_boundary_refusal` refuses managed-denied tools, tool access to global
   memory and the session store, knowledge base deletes, and
   `dictionary__add_terms` and `dictionary__remove_added_terms` before dispatch.
+  Crew's person tools (`crew__read`, `crew__change`) are refused there in every
+  chat (`direct_person_tool_refusal`), because their approval cards need a turn,
+  and any `crew__` tool on a Crew-scoped chat (`direct_crew_tool_refusal`).
   What is bypassed is the model-facing capability gate, not a privacy one. Do not
   "fix" this by duplicating the gate into the route without first deciding
   whether a caller who holds the secret and calls the tool deliberately should be
