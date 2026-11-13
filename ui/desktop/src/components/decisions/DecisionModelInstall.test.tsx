@@ -137,33 +137,40 @@ describe('DecisionModelInstall', () => {
     expect(mocks.start).not.toHaveBeenCalled();
 
     mocks.start.mockResolvedValue(status({ job: job('downloading') }));
-    mocks.fetch
-      .mockResolvedValueOnce(
-        read(
-          status({
-            job: job('downloading', { completedBytes: 412_000_000, totalBytes: 1_500_000_000 }),
-          })
-        )
-      )
-      .mockResolvedValueOnce(read(status({ job: job('verifying') })))
-      .mockResolvedValue(
-        read(
-          status({
-            job: job('installed'),
-            offers: status().offers.map((offer, i) => ({ ...offer, installed: i === 0 })),
-          })
-        )
-      );
+    // Each poll waits for the test to answer it, so a state the panel shows for
+    // one poll (5ms here) is still on screen when the test looks for it. With
+    // canned answers the "verifying" line could be replaced before
+    // `findByText` saw it on a slow runner.
+    const polls: Array<(value: ReturnType<typeof read>) => void> = [];
+    mocks.fetch.mockImplementation(
+      () => new Promise<ReturnType<typeof read>>((resolve) => polls.push(resolve))
+    );
+    const answerPoll = async (value: DecisionInstallStatus) => {
+      await waitFor(() => expect(polls.length).toBe(1));
+      await act(async () => polls.shift()!(read(value)));
+    };
     fireEvent.click(install);
     expect(mocks.start).toHaveBeenCalledWith('tev1:0.8b');
 
+    await answerPoll(
+      status({
+        job: job('downloading', { completedBytes: 412_000_000, totalBytes: 1_500_000_000 }),
+      })
+    );
     expect(await screen.findByText('Downloading tev1:0.8b… 412 MB of 1.5 GB')).toBeInTheDocument();
     const bar = screen.getByRole('progressbar');
     expect(bar).toHaveAttribute('aria-valuenow', '412000000');
     expect(bar).toHaveAttribute('aria-valuemax', '1500000000');
+    await answerPoll(status({ job: job('verifying') }));
     expect(
       await screen.findByText('Checking that Ollama answers decisions with it…')
     ).toBeInTheDocument();
+    await answerPoll(
+      status({
+        job: job('installed'),
+        offers: status().offers.map((offer, i) => ({ ...offer, installed: i === 0 })),
+      })
+    );
     expect(await screen.findByTestId('decision-install-done')).toHaveTextContent(
       'tev1:0.8b is installed.'
     );
