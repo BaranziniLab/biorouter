@@ -10,8 +10,7 @@ use super::base::{
 };
 use super::errors::ProviderError;
 use super::formats::openai::{
-    azure_content_filter_refusal, content_filter_block_in_completion, create_request, get_usage,
-    response_to_message,
+    content_filter_block_in_completion, create_request, get_usage, response_to_message,
 };
 use super::formats::openai_responses::{
     create_responses_request, get_responses_usage, responses_api_to_message, stream_responses_api,
@@ -24,8 +23,7 @@ use super::provider_binding::{
 use super::retry::ProviderRetry;
 use super::utils::{
     azure_chat_completions_path as build_chat_completions_path, get_model,
-    handle_status_openai_compat, map_http_error_to_provider_error, stream_openai_compat,
-    ImageFormat,
+    handle_response_azure_openai, handle_status_azure_openai, stream_openai_compat, ImageFormat,
 };
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
@@ -411,29 +409,6 @@ impl Route {
     }
 }
 
-/// A response's status, read as `handle_status_openai_compat` reads it, except
-/// for Azure's refusal of a prompt its content filter blocked (HTTP 400, code
-/// `content_filter`): that one reads as a policy block naming the flagged
-/// categories, is not retried, and carries none of Azure's own paragraph. It
-/// used to read "Bad request (400): The response was filtered due to the
-/// prompt triggering Azure OpenAI's content management policy…", with no
-/// category, on either route.
-async fn checked_status(response: reqwest::Response) -> Result<reqwest::Response, ProviderError> {
-    let status = response.status();
-    if status != reqwest::StatusCode::BAD_REQUEST {
-        return handle_status_openai_compat(response).await;
-    }
-    let body = response.text().await.unwrap_or_default();
-    let payload = serde_json::from_str::<Value>(&body).ok();
-    if let Some(refusal) = payload
-        .as_ref()
-        .and_then(|payload| azure_content_filter_refusal(status.as_u16(), payload))
-    {
-        return Err(refusal);
-    }
-    Err(map_http_error_to_provider_error(status, payload))
-}
-
 /// One request, ready to post: the route it takes, the path, and the body.
 #[derive(Debug)]
 struct PreparedRequest {
@@ -755,15 +730,13 @@ impl VersaAzureProvider {
         ))
     }
 
+    /// A blocking request on either route. Its status is read by the shared
+    /// Azure reading (`handle_status_azure_openai`), so a prompt Azure's content
+    /// filter refused reads as a policy block naming the flagged categories,
+    /// the same words the `azure_openai` provider says.
     async fn post(&self, path: &str, payload: &Value) -> Result<Value, ProviderError> {
         let response = self.api_client.response_post(path, payload).await?;
-        checked_status(response)
-            .await?
-            .json::<Value>()
-            .await
-            .map_err(|e| {
-                ProviderError::RequestFailed(format!("Response body is not valid JSON: {}", e))
-            })
+        handle_response_azure_openai(response).await
     }
 
     /// The route, path and body of one request for `model_config`, shared by
@@ -1071,7 +1044,7 @@ impl Provider for VersaAzureProvider {
         let response = self
             .with_retry(|| async {
                 let resp = self.api_client.response_post(&path, &payload).await?;
-                checked_status(resp).await
+                handle_status_azure_openai(resp).await
             })
             .await
             .inspect_err(|e| {

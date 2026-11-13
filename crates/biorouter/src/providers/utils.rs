@@ -119,7 +119,21 @@ pub fn filter_extensions_from_system_prompt(system: &str) -> String {
 /// This is not a reach decision (it never asks what a model may touch), only
 /// where the model runs: token calibration, the prompt variant, and whether a
 /// reported usage can be a truncation.
+///
+/// ⚠ It reads the language model UNDER a DR-33 decision-bound wrapper
+/// ([`super::decision_bound::unwrap_decision_bound`]). The wrapper's tier is
+/// `least(language model, decision models)`, so a public decision model lowers
+/// it to Public and `ProviderAffiliation::of` then answers "not here" for a
+/// Llama Server or loopback Ollama model that IS here. The turn's provider is
+/// that wrapper at Normal effort, so such a chat got the hosted prompt variant
+/// and an hourly clock that broke prompt-cache reuse on every hour boundary.
+/// Where the model runs is a property of the model, not of the chat's tier.
+/// This is not a privacy gate and must never become one: every gate keeps
+/// reading the wrapper's folded tier.
 pub(crate) fn runs_on_this_machine(provider: &dyn super::base::Provider) -> bool {
+    if let Some(inner) = provider.decision_bound_inner() {
+        return runs_on_this_machine(super::decision_bound::unwrap_decision_bound(inner).as_ref());
+    }
     super::base::ProviderAffiliation::of(provider)
         .is_some_and(|resolved| resolved.kind == super::base::ProviderAffiliationKind::Local)
 }
@@ -1752,6 +1766,94 @@ mod tests {
                 endpoint.1
             );
         }
+    }
+
+    /// A local model stays local when a public decision model lowers the
+    /// chat's tier (DR-33). The turn's provider is then the decision-bound
+    /// wrapper, whose folded tier is Public, and reading where the model runs
+    /// off that fold sent a Llama Server or loopback Ollama chat the hosted
+    /// prompt variant and an hourly clock. The wrapper's tier is untouched:
+    /// this reads where the model runs, never what the chat may reach.
+    #[test]
+    fn runs_on_this_machine_looks_through_a_decision_bound_wrapper() {
+        use crate::conversation::message::Message;
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+        use crate::privacy::decision_axes::{DecisionAxes, HostLabel, LoweredBy, NameSource};
+        use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+        use crate::providers::decision_bound::DecisionBoundProvider;
+        use rmcp::model::Tool;
+        use std::sync::Arc;
+
+        struct Endpoint(&'static str, ProviderTier, Option<ModelAffiliation>);
+
+        #[async_trait::async_trait]
+        impl Provider for Endpoint {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                self.0
+            }
+            fn tier(&self) -> ProviderTier {
+                self.1
+            }
+            fn affiliation(&self) -> Option<ModelAffiliation> {
+                self.2
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new_or_fail("qwen3.8-27b")
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                unreachable!("only asked where it runs")
+            }
+        }
+
+        let public_decision_model = || {
+            DecisionAxes::public_for_test(LoweredBy {
+                source: NameSource::Monitor,
+                label: "Done".to_string(),
+                model: "joey-1".to_string(),
+                host: HostLabel::Baseten,
+                others: 0,
+            })
+        };
+
+        for name in ["llamacpp", "ollama"] {
+            let inner: Arc<dyn Provider> = Arc::new(Endpoint(
+                name,
+                ProviderTier::Private,
+                Some(ModelAffiliation::Local),
+            ));
+            let bound = DecisionBoundProvider::bind(Arc::clone(&inner), public_decision_model());
+            assert!(
+                bound.decision_bound_inner().is_some(),
+                "{name}: the fixture must actually wrap"
+            );
+            assert_eq!(
+                bound.tier(),
+                ProviderTier::Public,
+                "{name}: the chat's tier stays folded"
+            );
+            assert!(runs_on_this_machine(inner.as_ref()), "{name}");
+            assert!(
+                runs_on_this_machine(bound.as_ref()),
+                "{name}: a public decision model does not move the model off this machine"
+            );
+        }
+
+        // A model that does not run here is not made local by the wrapper.
+        let ucsf = ModelAffiliation::institution(InstitutionId::new("ucsf"));
+        let hosted: Arc<dyn Provider> =
+            Arc::new(Endpoint("versa_azure", ProviderTier::Private, Some(ucsf)));
+        let bound = DecisionBoundProvider::bind(hosted, public_decision_model());
+        assert!(bound.decision_bound_inner().is_some());
+        assert!(!runs_on_this_machine(bound.as_ref()));
     }
 
     /// The same KV-collision sentence where no status says "500": an error

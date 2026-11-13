@@ -747,7 +747,7 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
                     Err(e) => {
                         output.push(json!({
                             "role": "tool",
-                            "content": format!("Error: {}", e),
+                            "content": format!("Error: {}", super::tool_error_text(e)),
                             "tool_call_id": request.id
                         }));
                     }
@@ -815,7 +815,10 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
                             // A tool result error is shown as output so the model can interpret the error message
                             output.push(json!({
                                 "role": "tool",
-                                "content": format!("The tool call returned the following error:\n{}", e),
+                                "content": format!(
+                                    "The tool call returned the following error:\n{}",
+                                    super::tool_error_text(e)
+                                ),
                                 "tool_call_id": response.id
                             }));
                         }
@@ -854,7 +857,7 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
                     Err(e) => {
                         output.push(json!({
                             "role": "tool",
-                            "content": format!("Error: {}", e),
+                            "content": format!("Error: {}", super::tool_error_text(e)),
                             "tool_call_id": request.id
                         }));
                     }
@@ -3033,6 +3036,69 @@ data: [DONE]
         assert_eq!(spec[3]["tool_call_id"], spec[2]["tool_calls"][0]["id"]);
 
         Ok(())
+    }
+
+    /// A refused or failed tool call reaches the model as the error's own
+    /// sentence. `ErrorData`'s `Display` put the JSON-RPC code in front of it
+    /// and its `data` after it, so a refused spawn read "Error: -32602: This
+    /// chat is running on a public model ...".
+    #[test]
+    fn a_tool_error_reaches_the_model_without_its_json_rpc_code() {
+        let refusal = "This chat is running on a public model, so it cannot delegate to a \
+                       private one.";
+        let messages = vec![
+            Message::assistant().with_tool_request(
+                "spawn",
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "workspace__subagent".into(),
+                    arguments: Some(object!({"instructions": "go"})),
+                    meta: None,
+                }),
+            ),
+            Message::user().with_tool_response(
+                "spawn",
+                Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    refusal.to_string(),
+                    None,
+                )),
+            ),
+            Message::assistant().with_tool_request(
+                "garbled",
+                Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    "Could not interpret tool use parameters".to_string(),
+                    Some(json!({"biorouterToolCallFailure": "invalid_arguments"})),
+                )),
+            ),
+            Message::user().with_tool_response(
+                "silent",
+                Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, " ", None)),
+            ),
+        ];
+
+        let spec = format_messages(&messages, &ImageFormat::OpenAi);
+        let tool_text: Vec<&str> = spec
+            .iter()
+            .filter(|item| item["role"] == "tool")
+            .filter_map(|item| item["content"].as_str())
+            .collect();
+
+        let refused = format!("The tool call returned the following error:\n{refusal}");
+        assert_eq!(
+            tool_text,
+            vec![
+                refused.as_str(),
+                "Error: Could not interpret tool use parameters",
+                "The tool call returned the following error:\nThe tool call failed without \
+                 saying why.",
+            ]
+        );
+        for text in tool_text {
+            assert!(!text.contains("-326"), "{text}");
+            assert!(!text.contains("biorouterToolCallFailure"), "{text}");
+        }
     }
 
     #[test]

@@ -104,7 +104,13 @@ fn render_content(content: &MessageContent) -> Option<String> {
                     truncate(body.trim(), TOOL_RESULT_CHAR_BUDGET)
                 )
             }
-            Err(e) => format!("[tool error: {e}]"),
+            // The error's own sentence, as every provider format sends it
+            // (`formats::tool_error_text`), never `ErrorData`'s `Display`, which
+            // puts the JSON-RPC code in front and the `data` payload after.
+            Err(e) => format!(
+                "[tool error: {}]",
+                crate::providers::formats::tool_error_text(e)
+            ),
         }),
         // Control-plane content the child has no use for and cannot act on.
         MessageContent::ToolConfirmationRequest(_)
@@ -312,6 +318,29 @@ mod tests {
             out.len() < TOOL_RESULT_CHAR_BUDGET * 2,
             "truncation did not bound the prompt"
         );
+    }
+
+    /// A failed tool call reaches Claude Code or Codex as the error's own
+    /// sentence, the words every provider format sends. `ErrorData`'s
+    /// `Display` put the JSON-RPC code in front and the `data` payload, an
+    /// internal tag here, after it.
+    #[test]
+    fn a_tool_error_reaches_the_prompt_as_its_own_sentence() {
+        use rmcp::model::{ErrorCode, ErrorData};
+        let sentence = "This chat is running on a public model, so it cannot delegate to a \
+                        private one.";
+        let msg = Message::user().with_tool_response(
+            "call-1",
+            Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                sentence.to_string(),
+                Some(serde_json::json!({"biorouterToolCallFailure": "invalid_arguments"})),
+            )),
+        );
+        let out = flatten(&[user("first"), msg, user("now answer")]).unwrap();
+        assert!(out.contains(&format!("[tool error: {sentence}]")), "{out}");
+        assert!(!out.contains("-32602"), "{out}");
+        assert!(!out.contains("biorouterToolCallFailure"), "{out}");
     }
 
     /// QA-E F4: a result a tool addressed to two readers is flattened as a model
