@@ -367,9 +367,55 @@ export interface DecideErrorGroup {
   chunks: number;
 }
 
+/** One answer `escalate` asked again (`EscalatedAnswer`). */
+export interface DecideEscalatedAnswer {
+  /** The question's name, which the card maps to its words. */
+  question: string;
+  /** The final answer and its probability. */
+  label: string;
+  p: number | null;
+  /** The model that gave the final answer, by the name a person reads. */
+  by: string;
+  /** The first model's answer and its probability. */
+  firstLabel: string;
+  firstP: number | null;
+  /** Why the second model gave no answer, when it did not (the first answer stands). */
+  error: string | null;
+}
+
+/** One chunk `escalate` asked again (`EscalatedItem`). */
+export interface DecideEscalatedItem {
+  chunkId: string;
+  answers: DecideEscalatedAnswer[];
+}
+
+/**
+ * What `escalate` did (`EscalationSummary`): the second model, how many chunks the
+ * first decided and how many the second was asked about again, and each one asked.
+ */
+export interface DecideEscalation {
+  /** The second model, by the name a person reads. */
+  label: string;
+  tier: 'public' | 'private' | null;
+  firstLabel: string;
+  /** A top answer under this probability was asked again. */
+  below: number | null;
+  firstDecided: number;
+  /** Chunks asked again. */
+  escalated: number;
+  /** Answers asked again (a chunk asked two questions again counts two). */
+  answers: number;
+  decided: number;
+  changed: number;
+  /** Answers asked again that failed: the first answer stands. */
+  errors: number;
+  items: DecideEscalatedItem[];
+}
+
 /**
  * What one `decide` call did (`DecideSummary`, the call's MCP `structuredContent`):
- * counts, never chunks.
+ * counts, never chunks. The one exception is `escalation.items`, the chunk ids the
+ * second model was asked about, which the card shows only in its open well.
  */
 export interface DecideBatchSummary {
   batchId: string;
@@ -384,6 +430,8 @@ export interface DecideBatchSummary {
   errorGroups: DecideErrorGroup[];
   /** The models of a vote, in the order they were asked; `null` for one model's batch. */
   voteModels: DecideVoteModel[] | null;
+  /** What `escalate` did; `null` when the call did not escalate. */
+  escalation: DecideEscalation | null;
 }
 
 const optionalCount = (value: unknown): number | null => {
@@ -463,6 +511,52 @@ function voteModelsOf(value: unknown): DecideVoteModel[] {
     : [];
 }
 
+function escalatedAnswerOf(value: unknown): DecideEscalatedAnswer[] {
+  const answer = record(value);
+  const question = text(answer?.question);
+  const label = text(answer?.label);
+  if (!answer || !question || !label) return [];
+  return [
+    {
+      question,
+      label,
+      p: probability(answer.p),
+      by: text(answer.by) ?? '',
+      firstLabel: text(answer.firstLabel) ?? '',
+      firstP: probability(answer.firstP),
+      error: text(answer.error),
+    },
+  ];
+}
+
+function escalationOf(value: unknown): DecideEscalation | null {
+  const escalation = record(value);
+  const label = text(escalation?.label);
+  if (!escalation || !label) return null;
+  const items = Array.isArray(escalation.items)
+    ? escalation.items.flatMap((entry): DecideEscalatedItem[] => {
+        const item = record(entry);
+        const chunkId = text(item?.chunkId);
+        if (!item || !chunkId) return [];
+        const answers = Array.isArray(item.answers) ? item.answers.flatMap(escalatedAnswerOf) : [];
+        return answers.length > 0 ? [{ chunkId, answers }] : [];
+      })
+    : [];
+  return {
+    label,
+    tier: escalation.tier === 'public' || escalation.tier === 'private' ? escalation.tier : null,
+    firstLabel: text(escalation.firstLabel) ?? '',
+    below: probability(escalation.below),
+    firstDecided: count(escalation.firstDecided),
+    escalated: count(escalation.escalated),
+    answers: count(escalation.answers),
+    decided: count(escalation.decided),
+    changed: count(escalation.changed),
+    errors: count(escalation.errors),
+    items,
+  };
+}
+
 function modelOf(value: unknown): DecideBatchSummary['model'] {
   const ref = record(value);
   const provider = text(ref?.provider);
@@ -503,6 +597,7 @@ function batchSummaryOf(value: unknown): DecideBatchSummary | null {
     questions,
     errorGroups,
     voteModels: vote ? voteModelsOf(summary.models) : null,
+    escalation: vote ? null : escalationOf(summary.escalation),
   };
 }
 
@@ -571,12 +666,28 @@ export function decideQuestionKind(question: Record<string, unknown> | null): st
   return written;
 }
 
-/** What a `decide` call's own arguments state: how many chunks, and its questions. */
+/**
+ * What a `decide` call's own arguments state: how many chunks it decides (only those
+ * `only_ids` names, when it names any), each chunk's id in call order, and its
+ * questions. A chunk's place in that order is the number the decision history gives
+ * it ("Chunk 4"), so the card names a chunk the same way. The chunks' text is never
+ * read.
+ */
 export function decideArguments(args: Record<string, unknown> | undefined): {
   chunks: number | null;
+  chunkIds: string[];
   questions: Array<{ name: string; instructions: string; kind: string; threshold: number | null }>;
 } {
-  const chunks = Array.isArray(args?.chunks) ? args.chunks.length : null;
+  const chunkIds = Array.isArray(args?.chunks)
+    ? args.chunks.map((chunk) => text(record(chunk)?.id) ?? '')
+    : [];
+  const onlyIds = args?.only_ids ?? args?.onlyIds;
+  const chunks =
+    Array.isArray(onlyIds) && onlyIds.length > 0
+      ? onlyIds.length
+      : Array.isArray(args?.chunks)
+        ? args.chunks.length
+        : null;
   const raw = record(args?.questions);
   const questions = raw
     ? Object.entries(raw).map(([name, value]) => {
@@ -596,5 +707,5 @@ export function decideArguments(args: Record<string, unknown> | undefined): {
         };
       })
     : [];
-  return { chunks, questions };
+  return { chunks, chunkIds, questions };
 }

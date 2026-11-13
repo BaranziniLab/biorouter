@@ -664,20 +664,38 @@ daemon ran.
 - **The closed row** says what was checked, and its meta stays short, because a row's meta never
   truncates: "Checked 30 chunks against 1 question · 10 yes", or "… · 41 yes, 6 to review, 2
   errors". The yes count is given for one yes or no question only (from the daemon's four groups when it sends them, where a yes is a pass; "N yes by majority" for a vote); a choice, a score or several
-  questions add only the error count. While the call runs it reads "Checking 30 chunks against 1
+  questions add only the error count, even when a threshold gives the daemon's groups for them. A call that escalated adds how many chunks it asked again, "… · 10 yes, 8 escalated". While the call runs it reads "Checking 30 chunks against 1
+  question", or, for a call with `only_ids`, the chunks it names: "Checking 20 chunks against 1
   question".
 - **The open well** starts with one muted line: the model and where it runs (`joey-1 ·
   Baseten`), a private model's padlock right after its name (in `PRIVATE_MARK_INK`, as on the decision card), the errors when there are any, and "598 of 600 chunks checked" only when fewer
   chunks were checked than sent and the errors do not account for it. When the batch is
   uncalibrated, the history's sentence follows ("This model's probabilities are its own
   estimate.", with its InfoTip). Then, for at most three questions, the question in plain words
-  (never its name; "Question 1" when the call gave none) and one muted counts line: the answers, each with its number first, then the review count said as part of them, "1 yes · 19 no · 4 of them to review" (a yes is a pass; the review count is never a group beside the answers). A choice or a score gives each answer in option order ("300 rrms · 200 spms · 98 none · 12 of them to review"). A vote of several models opens its well with "Vote of 3 models: …" and counts the majority, "Majority 7 yes · 13 no · the models agreed on 19 of 20", with ties counted when there are any.
+  (never its name; "Question 1" when the call gave none) and one muted counts line: the answers, each with its number first, then the review count said as part of them, "1 yes · 19 no · 4 of them to review" (a yes is a pass; the review count is never a group beside the answers). A choice or a score gives each answer in option order ("300 rrms · 200 spms · 98 none · 12 of them to review"), with or without a threshold: the daemon sends a thresholded choice its four groups too, and the card used to draw them as "10 yes · 20 no", answers a three-way choice never offered (`decideCountsLine` reads the groups as yes and no only for a yes or no question, and for a choice or a score takes only the review count from them). A vote of several models opens its well with "Vote of 3 models: …" and counts the majority, "Majority 7 yes · 13 no · the models agreed on 19 of 20", with ties counted when there are any.
   A fourth question and beyond are "2 more questions in the decision history". Grouped errors
   follow, and the well ends with the history link, named "Open this decide call in the decision
   history". While the call runs only the question texts show.
+- **A call that escalated** (`escalate`, see "Escalating the unsure answers" in [the agent-loop
+  guide](../agent-loop/decision-models.md#the-decide-tool-screening-a-large-input)) says so in ONE
+  line under the model, "8 of 30 escalated to clef-flash:latest", with the second model's padlock
+  when it is private and "· 1 failed" when the second model failed some answers. An InfoTip
+  ends the line (hover peeks, click pins): "Answers with a top probability under 0.80 were asked
+  again of clef-flash:latest, and its answers are final.", then "It changed 3 of 8." or, when it
+  failed some, "Where it gave no answer, tev1:0.8b's answer stands." Its per-chunk details sit in the
+  open well, which is the row's own disclosure, under an "Escalated" section shaped like the
+  errors: each chunk asked again by its number in the call, "Chunk 4", the number the decision
+  history gives the same chunk (never the id the agent gave it), with its final answer beside
+  the first model's ("no 0.90, was yes 0.60 by tev1:0.8b", or "yes by tev1:0.8b: the second model
+  gave no answer" when it failed or the chunk was too large for its window), each answer prefixed by its question's words only when several questions were asked
+  again. At most ten chunks are listed (`DECIDE_CARD_ESCALATED_SHOWN`), then "2 more chunks in the
+  decision history"; the batch's other chunks are never listed. `decisionWire.ts` reads the
+  daemon's `escalation` block into `DecideEscalation`, and `decideArguments` gives the call's
+  chunk ids in order, from which the card takes each number.
 - **What is not on the card.** The question type, the threshold, the passed count and the time
-  are in the history's rows and detail. The chunks, which may hold clinical text, and the
-  result's text for the model, which names chunk ids, are never listed.
+  are in the history's rows and detail. The chunks' text, which may hold clinical notes, the
+  result's text for the model and the chunks' ids are never shown; the escalated chunks are
+  named by their number in the call, in the open well only.
 
 The to-review count is the chunks the agent has to read before it reports them (the result's
 `review`, explained under "The review list" in

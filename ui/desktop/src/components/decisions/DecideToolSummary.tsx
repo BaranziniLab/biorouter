@@ -6,13 +6,15 @@ import { InfoTip } from '../ui/info-tip';
 import { PRIVATE_MARK_INK } from '../ui/PrivacyBadge';
 import { TranscriptRowSection } from '../TranscriptRow';
 import type { ArtifactSource } from '../artifacts/artifactTypes';
-import { decisionHistoryArtifact } from '../../utils/sessionDecisions';
+import { decisionHistoryArtifact, formatProbability } from '../../utils/sessionDecisions';
 import { DecisionHistoryLink } from './DecisionHistoryLink';
 import {
   decideArguments,
   parseDecideBatchSummary,
   pluralize,
   type DecideBatchSummary,
+  type DecideEscalatedAnswer,
+  type DecideEscalation,
   type DecideQuestionSummary,
 } from './decisionWire';
 import { CALIBRATION_COPY, decisionModelDisplay } from './decisionWords';
@@ -20,6 +22,9 @@ import { useRevealWhenOpened } from './useRevealWhenOpened';
 
 /** The card names at most this many questions; the rest are in the history. */
 export const DECIDE_CARD_QUESTIONS_SHOWN = 3;
+
+/** The open well lists at most this many escalated chunks; the rest are in the history. */
+export const DECIDE_CARD_ESCALATED_SHOWN = 10;
 
 export const DECIDE_TOOL_COPY = {
   errors: 'Errors',
@@ -51,6 +56,55 @@ export const DECIDE_TOOL_COPY = {
     `${n.toLocaleString('en-US')} more ${n === 1 ? 'question' : 'questions'} in the decision history`,
   calibration: 'Probabilities',
   privateModel: 'Private model',
+  /** `escalate`'s one line: `8 of 30 escalated to clef-flash:latest`. */
+  escalated: (escalated: number, of: number, label: string) =>
+    `${escalated.toLocaleString('en-US')} of ${of.toLocaleString('en-US')} escalated to ${label}`,
+  /** Escalated answers the second model failed to give; the first answer stands. */
+  escalationFailed: (count: number) => `${count.toLocaleString('en-US')} failed`,
+  escalation: 'Escalation',
+  /**
+   * The escalation line's InfoTip: the bound and that the second model's answers are
+   * final, then what it changed, or, when it failed some, that the first answers stand.
+   */
+  escalationTip: (escalation: {
+    label: string;
+    firstLabel: string;
+    below: number | null;
+    answers: number;
+    changed: number;
+    errors: number;
+  }) => {
+    const below = formatProbability(escalation.below);
+    const asked = below
+      ? `Answers with a top probability under ${below} were asked again of ${escalation.label}, and its answers are final.`
+      : `The unsure answers were asked again of ${escalation.label}, and its answers are final.`;
+    const after =
+      escalation.errors > 0
+        ? `Where it gave no answer, ${escalation.firstLabel}'s answer stands.`
+        : escalation.answers > 0
+          ? `It changed ${escalation.changed.toLocaleString('en-US')} of ${escalation.answers.toLocaleString('en-US')}.`
+          : 'No answer was that unsure, so it was asked nothing.';
+    return `${asked} ${after}`;
+  },
+  /** A chunk by its place in the call, as the decision history numbers it. */
+  chunk: (n: number) => `Chunk ${n.toLocaleString('en-US')}`,
+  /** The closed row's meta: `10 yes, 8 escalated`. */
+  escalatedMeta: (count: number) => `${count.toLocaleString('en-US')} escalated`,
+  escalatedSection: 'Escalated',
+  /** One escalated answer: the final answer, then the first model's. */
+  escalatedAnswer: (
+    label: string,
+    p: string | null,
+    firstModel: string,
+    firstLabel: string,
+    firstP: string | null
+  ) =>
+    `${label}${p ? ` ${p}` : ''}, was ${firstLabel}${firstP ? ` ${firstP}` : ''} by ${firstModel}`,
+  /** An answer the second model did not give: it failed, or the chunk was too large. */
+  escalatedKept: (label: string, firstModel: string) =>
+    `${label} by ${firstModel}: the second model gave no answer`,
+  escalatedMore: (n: number) =>
+    `${n.toLocaleString('en-US')} more ${n === 1 ? 'chunk' : 'chunks'} in the decision history`,
 };
 
 const n = (value: number) => value.toLocaleString('en-US');
@@ -66,9 +120,10 @@ export function summarizeDecideCall(args: Record<string, unknown> | undefined): 
 
 /**
  * The row's meta once the batch answered, which never truncates, so it stays short:
- * for ONE yes or no question its yes count, then what is left to review and the
- * errors (`10 yes`, `41 yes, 6 to review, 2 errors`); for a choice, a score or
- * several questions only the errors. `null` when there is nothing to say.
+ * for ONE yes or no question its yes count, then what is left to review, the chunks
+ * `escalate` asked again and the errors (`10 yes`, `41 yes, 6 to review, 2 errors`,
+ * `10 yes, 8 escalated`); for a choice, a score or several questions only the
+ * escalated count and the errors. `null` when there is nothing to say.
  */
 export function decideCallMeta(toolResult: unknown): string | null {
   const summary = parseDecideBatchSummary(toolResult);
@@ -79,7 +134,7 @@ export function decideCallMeta(toolResult: unknown): string | null {
     // A vote: its majority's yes count (G-1).
     const yes = only.vote.majority.find(({ answer }) => answer === 'yes');
     if (yes) parts.push(`${n(yes.count)} yes by majority`);
-  } else if (only?.groups) {
+  } else if (only?.kind === 'yes_no' && only.groups) {
     const yes = only.groups.yesConfident + only.groups.yesReview;
     const review = only.groups.yesReview + only.groups.noReview;
     parts.push(`${n(yes)} yes`);
@@ -87,6 +142,9 @@ export function decideCallMeta(toolResult: unknown): string | null {
   } else if (only && only.kind === 'yes_no' && only.yes !== null) {
     parts.push(`${n(only.yes)} yes`);
     if (only.review) parts.push(DECIDE_TOOL_COPY.review(only.review));
+  }
+  if (summary.escalation?.escalated) {
+    parts.push(DECIDE_TOOL_COPY.escalatedMeta(summary.escalation.escalated));
   }
   if (summary.errors > 0) parts.push(pluralize(summary.errors, 'error'));
   return parts.length > 0 ? parts.join(', ') : null;
@@ -97,7 +155,8 @@ export function decideCallMeta(toolResult: unknown): string | null {
  * review count, said as part of them (R1-5): `1 yes · 19 no · 4 of them to review`
  * for a yes or no question (from the daemon's four groups when it sends them, where a
  * yes is a pass); `300 rrms · 200 spms · 98 none · 12 of them to review` for a choice
- * or a score, in option order. A vote of several models (G-1) shows its majority and
+ * or a score, in option order, with or without a threshold (its groups give only the
+ * review count). A vote of several models (G-1) shows its majority and
  * how often the models agreed: `Majority 7 yes · 13 no · the models agreed on 19 of 20`.
  * The type word, the threshold and the passed count are not on the card: the history's
  * rows and detail say them.
@@ -114,12 +173,16 @@ export function decideCountsLine(question: DecideQuestionSummary): string {
     return parts.join(' · ');
   }
   const parts: string[] = [];
-  let review = question.review;
-  if (question.groups) {
+  let review = question.groups
+    ? question.groups.yesReview + question.groups.noReview
+    : question.review;
+  if (question.kind === 'yes_no' && question.groups) {
+    // A yes or no question's four groups, where a yes is a pass. A choice or a
+    // score with a threshold has the groups too, but its answers are its options:
+    // a three-way choice drawn as "10 yes · 20 no" named answers it never offered.
     const { yesConfident, yesReview, noReview, noConfident } = question.groups;
     parts.push(...answers([{ answer: 'yes', count: yesConfident + yesReview }]));
     parts.push(...answers([{ answer: 'no', count: noReview + noConfident }]));
-    review = yesReview + noReview;
   } else if (question.kind === 'yes_no' && question.yes !== null) {
     parts.push(DECIDE_TOOL_COPY.answerCount('yes', question.yes));
     if (question.decided !== null && question.decided >= question.yes) {
@@ -176,6 +239,117 @@ function headLine(summary: DecideBatchSummary): {
   };
 }
 
+/** One escalated answer in words, its question named when the call asked several. */
+function escalatedAnswerText(
+  answer: DecideEscalatedAnswer,
+  escalation: DecideEscalation,
+  question: string | null
+): string {
+  const prefix = question ? `${question}: ` : '';
+  if (answer.error) {
+    return prefix + DECIDE_TOOL_COPY.escalatedKept(answer.label, escalation.firstLabel);
+  }
+  return (
+    prefix +
+    DECIDE_TOOL_COPY.escalatedAnswer(
+      answer.label,
+      formatProbability(answer.p) || null,
+      escalation.firstLabel,
+      answer.firstLabel,
+      formatProbability(answer.firstP) || null
+    )
+  );
+}
+
+/**
+ * The open well's escalation line: `8 of 30 escalated to clef-flash:latest`, a private
+ * model's padlock after its name, and the failures when there are any, then an InfoTip
+ * (hover peeks, click pins) with the bound and what the second model changed. The well
+ * is the row's own disclosure, so this never shows while the row is closed; the closed
+ * row's meta says only `8 escalated`.
+ */
+function EscalationLine({ escalation }: { escalation: DecideEscalation }) {
+  return (
+    <p
+      className="br-decide-card__line br-decide-card__estimate"
+      data-testid="decide-tool-escalation"
+    >
+      <span data-testid="decide-tool-escalation-text">
+        {DECIDE_TOOL_COPY.escalated(
+          escalation.escalated,
+          escalation.firstDecided,
+          escalation.label
+        )}
+        {escalation.tier === 'private' ? (
+          <Lock
+            role="img"
+            aria-label={DECIDE_TOOL_COPY.privateModel}
+            className={`ml-1 inline-block size-3 align-[-1px] ${PRIVATE_MARK_INK}`}
+          />
+        ) : null}
+        {escalation.errors > 0
+          ? ` · ${DECIDE_TOOL_COPY.escalationFailed(escalation.errors)}`
+          : null}
+      </span>
+      <InfoTip
+        label={DECIDE_TOOL_COPY.escalation}
+        help={DECIDE_TOOL_COPY.escalationTip(escalation)}
+      />
+    </p>
+  );
+}
+
+/**
+ * The chunks `escalate` asked again, each named by its place in the call ("Chunk 4",
+ * the decision history's own number for it, never the id the agent gave it) with its
+ * final answer beside the first model's, at most `DECIDE_CARD_ESCALATED_SHOWN` of them,
+ * then how many more the decision history holds. Never a row per chunk of the batch:
+ * only those asked again.
+ */
+function EscalatedChunks({
+  escalation,
+  chunkName,
+  questionText,
+}: {
+  escalation: DecideEscalation;
+  chunkName: (chunkId: string) => string;
+  questionText: (name: string) => string;
+}) {
+  const shown = escalation.items.slice(0, DECIDE_CARD_ESCALATED_SHOWN);
+  if (shown.length === 0) return null;
+  const more = escalation.items.length - shown.length;
+  const several =
+    new Set(escalation.items.flatMap((item) => item.answers.map((answer) => answer.question)))
+      .size > 1;
+  return (
+    <TranscriptRowSection label={DECIDE_TOOL_COPY.escalatedSection}>
+      <ul className="br-decide-card__errors" data-testid="decide-tool-escalated">
+        {shown.map((item) => (
+          <li key={item.chunkId} className="br-decide-card__error">
+            <span className="br-decide-card__error-count">{chunkName(item.chunkId)}</span>
+            <span className="br-decide-card__error-message">
+              {item.answers
+                .map((answer) =>
+                  escalatedAnswerText(
+                    answer,
+                    escalation,
+                    several ? questionText(answer.question) : null
+                  )
+                )
+                .join('; ')}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {more > 0 ? (
+        <p className="br-decide-card__more" data-testid="decide-tool-escalated-more">
+          {DECIDE_TOOL_COPY.escalatedMore(more)}
+        </p>
+      ) : null}
+    </TranscriptRowSection>
+  );
+}
+
 export interface DecideToolSummaryProps {
   /** The chat, for the history link. A surface with no chat draws no link. */
   sessionId?: string;
@@ -186,13 +360,14 @@ export interface DecideToolSummaryProps {
 }
 
 /**
- * The well of a `decisions__decide` tool row (F-7): the model, then per question (at
- * most three) the question in plain words and its counts, the distinct errors with
- * how many chunks each hit, and the link to this call in the decision history (owner
- * addendum A1). Question names, the type, the threshold, the passed count and the
- * time are not here: the history shows them. The chunks themselves, which may number
- * in the hundreds and hold clinical text, are never listed, and neither is the
- * result's text for the model, which names chunk ids.
+ * The well of a `decisions__decide` tool row (F-7): the model, the escalation's one
+ * line when the call escalated, then per question (at most three) the question in
+ * plain words and its counts, the chunks `escalate` asked again (at most ten, by their
+ * number in the call, with the final answer beside the first model's), the distinct errors with how many
+ * chunks each hit, and the link to this call in the decision history (owner addendum
+ * A1). Question names, the type, the threshold, the passed count and the time are not
+ * here: the history shows them. The chunks' text, which may hold clinical notes, is
+ * never shown, and neither is the result's text for the model.
  */
 export function DecideToolSummary({
   sessionId,
@@ -244,6 +419,7 @@ export function DecideToolSummary({
           <InfoTip label={DECIDE_TOOL_COPY.calibration} help={CALIBRATION_COPY.estimateTip} />
         </p>
       ) : null}
+      {summary?.escalation ? <EscalationLine escalation={summary.escalation} /> : null}
       {shown.length > 0 ? (
         <ul className="br-decide-card__questions" data-testid="decide-tool-questions">
           {shown.map((question, index) => (
@@ -265,6 +441,20 @@ export function DecideToolSummary({
       ) : null}
       {toolResult !== undefined && !summary ? (
         <p className="br-decide-card__line">{DECIDE_TOOL_COPY.noSummary}</p>
+      ) : null}
+      {summary?.escalation ? (
+        <EscalatedChunks
+          escalation={summary.escalation}
+          chunkName={(chunkId) => {
+            const place = asked.chunkIds.indexOf(chunkId);
+            // The call's own arguments always hold it; the id is only a fallback.
+            return place >= 0 ? DECIDE_TOOL_COPY.chunk(place + 1) : chunkId;
+          }}
+          questionText={(name) => {
+            const index = questions.findIndex((question) => question.name === name);
+            return textOf.get(name)?.trim() || DECIDE_TOOL_COPY.question(index + 1);
+          }}
+        />
       ) : null}
       {summary && summary.errorGroups.length > 0 && (
         <TranscriptRowSection label={DECIDE_TOOL_COPY.errors}>
