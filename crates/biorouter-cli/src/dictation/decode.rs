@@ -672,10 +672,37 @@ fn decode(
     trim: Trim,
 ) -> Result<Decoded, DecodeError> {
     let refused = DecodeError::UnsupportedFormat { kind: kind.clone() };
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        decode_unguarded(source, ext, kind, trim)
-    }))
+    quiet_panics_while(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decode_unguarded(source, ext, kind, trim)
+        }))
+    })
     .unwrap_or(Err(refused))
+}
+
+thread_local! {
+    /// Set while this thread runs a guarded decode, whose panics are caught and answered.
+    static DECODE_GUARDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `body` with the process's panic hook silent on this thread, so a reader panic that
+/// [`decode`] catches does not also print a raw `thread … panicked` line beside the
+/// sentence the person reads. The hook is wrapped once and passes every other panic, on
+/// this thread outside a decode and on every other thread, to the hook it wrapped.
+fn quiet_panics_while<T>(body: impl FnOnce() -> T) -> T {
+    static WRAPPED: std::sync::Once = std::sync::Once::new();
+    WRAPPED.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !DECODE_GUARDED.with(std::cell::Cell::get) {
+                previous(info);
+            }
+        }));
+    });
+    let was = DECODE_GUARDED.with(|guarded| guarded.replace(true));
+    let result = body();
+    DECODE_GUARDED.with(|guarded| guarded.set(was));
+    result
 }
 
 fn decode_unguarded(
@@ -1675,13 +1702,15 @@ mod tests {
             // Any answer will do, an error or audio; returning at all is the test.
             let _ = decode_reader(bytes.as_slice());
         }
-        // The panic itself, caught: a damaged `stsc` entry count.
+        // The panic itself, caught: a damaged `stsc` entry count. The hook is silent only
+        // while the decode runs.
         let mut bytes = ALAC_M4A.to_vec();
         bytes[find(b"stsc") + 8] ^= 0xA5;
         assert_eq!(
             decode_reader(bytes.as_slice()).unwrap_err(),
             DecodeError::UnsupportedFormat { kind: None }
         );
+        assert!(!DECODE_GUARDED.with(std::cell::Cell::get));
         // The `alac` box inside the sample entry: size, type, version and flags, then the
         // decoder's configuration, whose sixth byte is the bit depth.
         let entry = ALAC_M4A
