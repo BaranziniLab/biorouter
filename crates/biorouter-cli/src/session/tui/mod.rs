@@ -3582,9 +3582,10 @@ mod tests {
         let all = lines.join("\n");
         let (header, _) = line_with(&lines, "Subagents").expect("a header");
         assert!(lines[header].contains("running 1 · done 1/2"), "{all}");
-        let (name_at, name_line) = line_with(&lines, "◐ researcher").expect("the row");
+        // A running language-model agent leads with the grid's running square.
+        let (name_at, name_line) = line_with(&lines, "▣ researcher").expect("the row");
         assert!(
-            name_line.contains("◐ researcher  research-api"),
+            name_line.contains("▣ researcher  research-api"),
             "the role leads and the name follows:\n{all}"
         );
         // The pane is 48 cells inside, too narrow for the words, so the
@@ -3594,8 +3595,8 @@ mod tests {
             lines[name_at + 1].contains("gpt-5.5 · 3 ext · 2 skills · 1 kb base …"),
             "the setup sits on the row's second line:\n{all}"
         );
-        let (writer_at, writer) = line_with(&lines, "● writer").expect("the second row");
-        assert!(writer.contains('●'), "{all}");
+        let (writer_at, writer) = line_with(&lines, "■ writer").expect("the second row");
+        assert!(writer.contains('■'), "{all}");
         assert!(
             lines[writer_at + 1].contains("    gpt-5.5 · 30s  "),
             "a count that is zero is left out:\n{all}"
@@ -3669,11 +3670,24 @@ mod tests {
             all.contains("running 19 · done 5/25 · failed 1 · 1 quiet"),
             "{all}"
         );
-        assert!(all.contains("Gene survey"), "the plan title:\n{all}");
-        assert!(all.contains("● plan 2/2"), "{all}");
+        // The Plan section's heading, then the phases: headings in words, never
+        // a mark, each after the first opened by a dim rule.
         assert!(
-            all.contains("◐ research 3/5 · 2 running · 1 quiet"),
-            "{all}"
+            all.contains("PLAN 1/4 · Gene survey"),
+            "the plan heading:\n{all}"
+        );
+        assert!(all.contains("│ plan 2/2"), "{all}");
+        let (research_at, _) =
+            line_with(&lines, "research 3/5 · 2 running · 1 quiet").expect("{all}");
+        assert!(
+            lines[research_at - 1].contains("──────"),
+            "a rule opens the research phase:\n{all}"
+        );
+        // Under each phase, a line of its agents' marks in spawn order: the
+        // research phase's three done, one gone quiet (half full), one running.
+        assert!(
+            all.contains("  ■■■◧▣"),
+            "the research phase's marks:\n{all}"
         );
         assert!(
             !all.contains(" ext · "),
@@ -3692,7 +3706,7 @@ mod tests {
         let all = lines.join("\n");
         assert!(all.contains("implementation agent 25"), "{all}");
         assert!(all.contains("↑ "), "{all}");
-        assert!(all.contains("○ testing · not started"), "{all}");
+        assert!(all.contains("│ testing · not started"), "{all}");
     }
 
     #[test]
@@ -3776,7 +3790,7 @@ mod tests {
         on_key(&mut app, ctrl('b'));
         assert!(!app.subagents.visible());
         assert!(
-            hint_text(&app, 120).starts_with("◐ 1 of 2 subagents running · ^B show"),
+            hint_text(&app, 120).starts_with("▣ 1 of 2 subagents running · ^B show"),
             "{}",
             hint_text(&app, 120)
         );
@@ -3951,12 +3965,14 @@ mod tests {
         subagents::list_into(&mut app);
         let lines = buffer_lines(&mut app, 160, 40);
         let text = lines.join("\n");
-        let (first, _) = line_with(&lines, "1. ◐ researcher").expect("the role leads");
+        let (first, _) = line_with(&lines, "1. ▣ researcher").expect("the role leads");
         assert!(
             lines[first + 1].trim_start().starts_with("research-api"),
             "the name follows on its own line:\n{text}"
         );
-        assert!(text.contains("2. ● writer"), "{text}");
+        // A finished language-model agent is the solid square, never the
+        // decision model's circle.
+        assert!(text.contains("2. ■ writer"), "{text}");
         assert!(text.contains("/attach <number>"), "{text}");
         assert_eq!(
             app.subagents.model.resolve("2").as_deref(),
@@ -4005,9 +4021,9 @@ mod tests {
         // Wide: the side pane's two-line row.
         let lines = buffer_lines(&mut app, 160, 30);
         let all = lines.join("\n");
-        let (at, row) = line_with(&lines, "● celsius").expect("the role leads the row");
+        let (at, row) = line_with(&lines, "■ celsius").expect("the role leads the row");
         assert!(
-            row.contains("● celsius  Convert 37 degrees"),
+            row.contains("■ celsius  Convert 37 degrees"),
             "the name follows the role:\n{all}"
         );
         assert!(row.contains('…'), "and is cut to the pane:\n{all}");
@@ -4021,7 +4037,7 @@ mod tests {
         // Narrow: the strip leads with the role too.
         let narrow = buffer_lines(&mut app, 90, 30);
         let narrow_all = narrow.join("\n");
-        let (_, strip_row) = line_with(&narrow, "● celsius").expect("{narrow_all}");
+        let (_, strip_row) = line_with(&narrow, "■ celsius").expect("{narrow_all}");
         assert!(strip_row.contains("Convert 37"), "{narrow_all}");
 
         // The details keep both.
@@ -4053,7 +4069,7 @@ mod tests {
         subagents::list_into(&mut app);
         let lines = buffer_lines(&mut app, 160, 40);
         let all = lines.join("\n");
-        let (n, _) = line_with(&lines, "1. ● celsius  done · gpt-5.5 · 30s").expect("{all}");
+        let (n, _) = line_with(&lines, "1. ■ celsius  completed · gpt-5.5 · 30s").expect("{all}");
         assert!(
             lines[n + 1].trim_start().starts_with("Convert 37 degrees"),
             "{all}"
@@ -4081,7 +4097,7 @@ mod tests {
         });
         let lines = buffer_lines(&mut app, 160, 30);
         let all = lines.join("\n");
-        let (at, _) = line_with(&lines, "● celsius").expect("{all}");
+        let (at, _) = line_with(&lines, "■ celsius").expect("{all}");
         assert!(
             lines[at + 1].contains("    gpt-5.5 · 1 knowledge base · 30s"),
             "{all}"
